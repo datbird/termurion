@@ -98,7 +98,9 @@ pub fn title(components: u32, p: &TitleParts) -> String {
     } else if c & PROFILE_AND_SESSION != 0 {
         if session == p.profile { out.push_str(session) } else { out.push_str(&format!("{}: {session}", p.profile)) }
     }
-    let job = if c & COMMAND_LINE != 0 { p.cmdline.as_str() } else if c & JOB != 0 { p.job.as_str() } else { "" };
+    // A job's name and command line are another program's text (a tmux pane's, a remote's).
+    let job = if c & COMMAND_LINE != 0 { crate::inert_files::clean_name(&p.cmdline) } else if c & JOB != 0 { crate::inert_files::shown_name(&p.job) } else { String::new() };
+    let job = job.as_str();
     if !job.is_empty() {
         if out.is_empty() { out.push_str(job) } else { out.push_str(&format!(" ({job})")) }
     }
@@ -200,6 +202,17 @@ mod tests {
         assert_eq!(title(SESSION_NAME | JOB, &p), "build (vim)", "the pane title is the session name");
         assert_eq!(title(SESSION_NAME, &TitleParts { explicit: Some("x".into()), ..p.clone() }), "build");
         assert_eq!(title(SESSION_NAME, &parts()), "Default");
+    }
+
+    /// A job name or command line is shown like any other name: hidden characters dropped,
+    /// a long one cut (`inert_files::shown_name`).
+    #[test]
+    fn job_names_are_sanitized() {
+        let p = TitleParts { job: "vi\u{202e}m\u{7}".into(), cmdline: "vim \u{200b}a\u{1b}b".into(), ..parts() };
+        assert_eq!(title(JOB, &p), "vim");
+        assert_eq!(title(COMMAND_LINE, &p), "vim ab");
+        let long = TitleParts { job: "j".repeat(500), ..parts() };
+        assert_eq!(title(JOB, &long).chars().count(), crate::inert_files::SHOWN_NAME + 1);
     }
 
     #[test]

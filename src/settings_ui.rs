@@ -117,6 +117,9 @@ pub struct SettingsWindow {
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
     /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
+    /// Profiles > Terminal's "Change Locale\u{2026}" was pressed for this profile Guid: the locale
+    /// picker opens for it (the app takes it after each frame).
+    pub locale_pick: Option<String>,
     /// Profiles > General's Configure SSH sheet.
     ssh_sheet: Option<crate::settings_ssh::Sheet>,
     /// A page to open in the browser (the Configure SSH help button); the app takes it after
@@ -136,6 +139,8 @@ pub struct SettingsWindow {
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
+    /// Session > Prevent Sleep's gray line (`PSV:465-482`), set by the app.
+    pub sleep_status: String,
     /// Settings > Advanced: the search, the non-default filter and the field being edited.
     advanced: crate::settings_advanced_pane::AdvancedState,
     /// Settings > General > AI: its sub-tab and whether it was just revealed.
@@ -263,6 +268,7 @@ impl SettingsWindow {
             shortcuts: Default::default(),
             hotkeys: Default::default(),
             configure_status_bar: None,
+            locale_pick: None,
             ssh_sheet: None,
             open_url: None,
             scheme_ask: None,
@@ -270,6 +276,7 @@ impl SettingsWindow {
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
+            sleep_status: String::new(),
             advanced: Default::default(),
             ai: Default::default(),
             sheet: None,
@@ -357,6 +364,7 @@ impl SettingsWindow {
         settings_keys::set_indicate_non_default(globals.bool("NoSyncHideDefaultValuedSettings"));
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
+        let locale_pick = &mut self.locale_pick;
         let ssh_sheet = &mut self.ssh_sheet;
         let open_url = &mut self.open_url;
         let scheme_ask = &mut self.scheme_ask;
@@ -364,6 +372,7 @@ impl SettingsWindow {
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
+        let sleep_status = &self.sleep_status;
         let advanced = &mut self.advanced;
         let ai = &mut self.ai;
         let sheet = &mut self.sheet;
@@ -634,6 +643,15 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            // The locale's status line under the mode (`PTM:397-445`) and the Change
+                            // Locale button, shown only for the Custom mode; the button is the only
+                            // way to set the locale, as in iTerm2.
+                            if s.key == "Custom Locale" {
+                                if profile.int("Set Local Environment Vars") == 2 && ui.button("Change Locale\u{2026}").on_hover_text(&s.help).clicked() {
+                                    *locale_pick = Some(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == crate::ssh_config::KEY {
                                 if crate::settings_ssh::row(ui, &selected, profile, ssh_sheet, open_url, &home) {
                                     edit = Edit::Changed(selected.clone());
@@ -705,7 +723,11 @@ impl SettingsWindow {
                             }
                             let enabled = crate::transparency::row_enabled(&s.key, profile.float("Transparency"), profile.bool("Blur")) && profile_row_enabled(profile, &s.key, dark);
                             let mut changed = false;
-                            ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
+                            if s.key == "Progress Bar Height" {
+                                ui.add_enabled_ui(enabled, |ui| changed = progress_height_row(ui, profile, s, globals.int("TerminalVMargin")));
+                            } else {
+                                ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
+                            }
                             // The notes under Transparency and Blur Radius (PWP:157-170, 762-769).
                             if s.key == "Transparency" && profile.float("Transparency") > 0.0 {
                                 ui.label(egui::RichText::new(crate::transparency::OVERRIDE_NOTICE).small());
@@ -720,6 +742,12 @@ impl SettingsWindow {
                             }
                             if s.key == crate::session_end::END_ACTION_KEY && short_lived_row(ui, profile, &saved_guid, globals) {
                                 edit = Edit::GlobalsChanged;
+                            }
+                            if s.key == "Prevent Sleep" && !sleep_status.is_empty() {
+                                ui.label(egui::RichText::new(sleep_status).small().color(ui.visuals().weak_text_color()));
+                            }
+                            if s.key == "Set Local Environment Vars" {
+                                locale_status_line(ui, profile, &globals.string("FallbackLCCType"));
                             }
                             if changed {
                                 // Choosing Meta for either Option key warns (`PK:554-559`).
@@ -1103,6 +1131,18 @@ pub fn profile_row_enabled(p: &Profile, key: &str, dark: bool) -> bool {
         | "Cursor Blink Visible Dwell"
         | "Cursor Blink Hidden Dwell" => p.bool("Blinking Cursor") && p.bool("Cursor Smooth Blink"),
         "Animate Movement Only in Interactive Apps" => p.bool("Animate Movement"),
+        // The directory rows follow Initial working directory (`AWD:60-86`, `ID:19-62`): the custom
+        // path is for Custom, the six Advanced rows for Advanced, and each path needs its option on Custom.
+        "Working Directory" => p.string("Custom Directory") == "Yes",
+        "AWDS Window Option" | "AWDS Tab Option" | "AWDS Pane Option" => p.string("Custom Directory") == "Advanced",
+        "AWDS Window Directory" | "AWDS Tab Directory" | "AWDS Pane Directory" => {
+            let option = key.replace("Directory", "Option");
+            p.string("Custom Directory") == "Advanced" && p.string(&option) == "Yes"
+        }
+        // The bar's height and scheme need Enable Progress Bars (`PSV:357-385`).
+        "Progress Bar Height" | "Progress Bar Color Scheme" => p.bool("Enable Progress Bars"),
+        // Change Locale is for the Custom mode (`PTM:397-445`).
+        "Custom Locale" => p.int("Set Local Environment Vars") == 2,
         // The swatch follows its switch (`ProfilesColorsPreferencesViewController.m:468`).
         "Underline Color" => p.bool_for("Use Underline Color", dark),
         // The logging rows follow "Automatically Log", the archive folder "Archive On Closure"
@@ -1129,6 +1169,64 @@ pub fn short_lived_row(ui: &mut egui::Ui, p: &Profile, saved_guid: &str, g: &mut
     }
     changed
 }
+
+/// The line beside the Progress Bar Height field: a typed height above the top margin was cut
+/// to it (`PSV:365-371`).
+pub fn height_message(typed: f64, margin: i64) -> Option<&'static str> {
+    crate::progress::clamp_typed(typed, margin as f64).1.then_some(crate::progress::HEIGHT_TOO_TALL)
+}
+
+/// The Progress Bar Height field (`PSV:358-371`): a typed value is cut to 1 up to the top margin,
+/// and one above the margin shows `HEIGHT_TOO_TALL` beside the field until the next edit.
+/// True when a change is committed (a drag ended or a typed value was taken).
+fn progress_height_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, margin: i64) -> bool {
+    let id = egui::Id::new("progress_height_cut");
+    let mut commit = false;
+    ui.horizontal(|ui| {
+        ui.label(&s.label);
+        let mut height = profile.float(&s.key);
+        let r = ui.add(egui::DragValue::new(&mut height).speed(0.1).range(0.0..=1000.0));
+        if r.changed() {
+            let (value, cut) = crate::progress::clamp_typed(height, margin as f64);
+            profile.set(&s.key, Value::Float(value));
+            ui.ctx().data_mut(|d| d.insert_temp(id, cut));
+            commit = r.drag_stopped() || !r.dragged();
+        }
+        if ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false) {
+            ui.label(egui::RichText::new(crate::progress::HEIGHT_TOO_TALL.replace("**", "")).small());
+        }
+    });
+    commit
+}
+
+/// The line under "Set Locale Variables" (`PTM:397-445`): `LANG=<locale>` in the fixed font and
+/// the locale's title in gray after three en spaces, or the plain status text.
+#[cfg(windows)]
+fn locale_status_line(ui: &mut egui::Ui, profile: &Profile, fallback: &str) {
+    let key = (profile.int("Set Local Environment Vars"), profile.string("Custom Locale"), profile.int("Character Encoding"), fallback.to_string());
+    let id = egui::Id::new("locale_status");
+    // Windows answers are read once per change, not every frame.
+    let cached: Option<((i64, String, i64, String), crate::locale_win::Status)> = ui.ctx().data(|d| d.get_temp(id));
+    let status = match cached {
+        Some((k, v)) if k == key => v,
+        _ => {
+            let v = crate::locale_win::status(key.0, &key.1, key.2, &key.3);
+            ui.ctx().data_mut(|d| d.insert_temp(id, (key, v.clone())));
+            v
+        }
+    };
+    ui.horizontal_wrapped(|ui| {
+        if let Some(lang) = &status.lang {
+            ui.label(egui::RichText::new(format!("LANG={lang}")).monospace());
+            ui.label(egui::RichText::new(format!("\u{2002}\u{2002}\u{2002}{}", status.text)).color(ui.visuals().weak_text_color()));
+        } else {
+            ui.label(egui::RichText::new(&status.text).color(ui.visuals().weak_text_color()));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn locale_status_line(_ui: &mut egui::Ui, _profile: &Profile, _fallback: &str) {}
 
 /// The title of the smooth-blink presets pull-down (`PreferencePanel.xib:11312`).
 pub const PRESETS_TITLE: &str = "Presets";
@@ -1691,6 +1789,38 @@ mod tests {
     }
 
     #[test]
+    fn awds_rows_enable_as_iterm2() {
+        let on = |p: &Profile, key: &str| profile_row_enabled(p, key, false);
+        let s = |v: &str| Value::String(v.into());
+        let rows = ["Window", "Tab", "Pane"];
+        let mut p = Profile::default();
+        for r in rows {
+            assert!(!on(&p, &format!("AWDS {r} Option")) && !on(&p, &format!("AWDS {r} Directory")), "{r}");
+        }
+        assert!(!on(&p, "Working Directory"));
+        p.set("Custom Directory", s("Yes"));
+        assert!(on(&p, "Working Directory"));
+        for r in rows {
+            assert!(!on(&p, &format!("AWDS {r} Option")), "{r}");
+        }
+        p.set("Custom Directory", s("Advanced"));
+        assert!(!on(&p, "Working Directory"));
+        for r in rows {
+            assert!(on(&p, &format!("AWDS {r} Option")), "{r}");
+            assert!(!on(&p, &format!("AWDS {r} Directory")), "{r}: option No");
+            p.set(&format!("AWDS {r} Option"), s("Recycle"));
+            assert!(!on(&p, &format!("AWDS {r} Directory")), "{r}: option Recycle");
+            p.set(&format!("AWDS {r} Option"), s("Yes"));
+            assert!(on(&p, &format!("AWDS {r} Directory")), "{r}: option Yes");
+        }
+        // Each option offers exactly No, Yes and Recycle (`AWD:60-86`).
+        for r in rows {
+            let values: Vec<_> = crate::schema::find(&format!("AWDS {r} Option")).unwrap().choices.iter().filter_map(|c| c.value.as_str()).collect();
+            assert_eq!(values, ["No", "Yes", "Recycle"]);
+        }
+    }
+
+    #[test]
     fn cursor_profile_rows_enable_as_iterm2() {
         let on = |p: &Profile, key: &str| profile_row_enabled(p, key, false);
         let colors = ["Cursor Color", "Cursor Text Color"];
@@ -1789,6 +1919,33 @@ mod tests {
         assert!(profile_row_enabled(&p, "Underline Color", false));
         // Reduce Flicker has no rule.
         assert!(profile_row_enabled(&Profile::default(), "Reduce Flicker", false));
+    }
+
+    /// 13p (P5): the "Change Locale" row is for the Custom mode only (`PTM:397-445`).
+    #[test]
+    fn change_locale_row_needs_custom() {
+        let mut p = Profile::default();
+        for (mode, on) in [(0, false), (1, false), (2, true), (3, false)] {
+            p.set("Set Local Environment Vars", Value::Integer(mode));
+            assert_eq!(profile_row_enabled(&p, "Custom Locale", false), on, "mode {mode}");
+        }
+    }
+
+    /// 13p: the progress bar's height and color scheme need "Enable Progress Bars"
+    /// (`PSV:357-385`); the switch itself is always on offer.
+    #[test]
+    fn progress_rows_enable_as_iterm2() {
+        let mut p = Profile::default();
+        for (on, expect) in [(true, true), (false, false)] {
+            p.set("Enable Progress Bars", Value::Boolean(on));
+            assert_eq!(profile_row_enabled(&p, "Progress Bar Height", false), expect, "height, enabled {on}");
+            assert_eq!(profile_row_enabled(&p, "Progress Bar Color Scheme", false), expect, "scheme, enabled {on}");
+            assert!(profile_row_enabled(&p, "Enable Progress Bars", false));
+        }
+        // The clamp message shows beside the field only for a value above the margin.
+        assert_eq!(height_message(5.0, 2), Some(crate::progress::HEIGHT_TOO_TALL));
+        assert_eq!(height_message(2.0, 2), None);
+        assert_eq!(height_message(0.0, 2), None);
     }
 
     #[test]

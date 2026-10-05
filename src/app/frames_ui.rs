@@ -28,7 +28,7 @@ pub(super) fn route_output(outputs: &[PaneId], front: &[PaneId], back: &[PaneId]
 }
 
 /// A window's tabs' panes split into its front tab's and all the others'.
-fn split_tabs(tabs: Vec<Vec<PaneId>>, active: usize) -> (Vec<PaneId>, Vec<PaneId>) {
+pub(super) fn split_tabs(tabs: Vec<Vec<PaneId>>, active: usize) -> (Vec<PaneId>, Vec<PaneId>) {
     let front = tabs.get(active).cloned().unwrap_or_default();
     let back = tabs.into_iter().enumerate().filter(|(i, _)| *i != active).flat_map(|(_, p)| p).collect();
     (front, back)
@@ -56,7 +56,7 @@ impl App {
             let last_output = self.activity.get(id).and_then(|a| a.last_output());
             let Some(p) = self.panes.get_mut(id) else { continue };
             let output = with_output && changed.contains(id);
-            let idle = !output && !p.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > cadence::IDLE_AFTER);
+            let idle = !output && !p.got_output && last_output.is_none_or(|t| now.saturating_duration_since(t) > cadence::idle_after(p.idle_time));
             // A tick with no new output does not run the estimator again (it mutates).
             let throughput = if with_output { p.throughput.estimate(now) } else { 0 };
             reading.typing |= output && cadence::typing_now(throughput, last_key, now);
@@ -67,12 +67,12 @@ impl App {
 
     /// 13k's one decision for "a pane blinking a cursor or animating", for the key window.
     fn window_active(&self) -> bool {
-        self.blink_clock_needed() || self.anim_frame.is_some()
+        self.blink_clock_needed() || self.anim_frame.is_some() || self.progress_frame.is_some()
     }
 
     /// The panes of the current window's front tab, and of its other tabs; both empty when the
     /// window is not on screen.
-    fn tab_panes_here(&self) -> (Vec<PaneId>, Vec<PaneId>) {
+    pub(super) fn tab_panes_here(&self) -> (Vec<PaneId>, Vec<PaneId>) {
         let shown = self.hotkey.as_ref().map(|h| h.shown);
         let on_screen = self.gpu.as_ref().is_some_and(|g| window_on_screen(g.window.is_visible(), g.window.is_minimized(), shown));
         if !on_screen {
@@ -248,7 +248,7 @@ impl App {
 
 /// Whether a window is on screen: not hidden, not minimized and, for a hotkey window, shown
 /// (`shown` false means DWM-cloaked, which winit still reports as visible).
-fn window_on_screen(visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
+pub(super) fn window_on_screen(visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
     visible != Some(false) && minimized != Some(true) && shown != Some(false)
 }
 

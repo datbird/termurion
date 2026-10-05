@@ -172,5 +172,7 @@ test data) is left out. Changes:
     tab in the pending-wrap state does nothing (upstream wrapped the line); with `tabs_wrap` a
     tab at the last column (or pending wrap) wraps the line softly and moves to the first tab
     stop after column 0 (`MS:2795-2818`), whether DECAWM is on or off (`wrapline_always`).
+29. `term/mod.rs`: `Term.resets` counts RIS (`reset_state`), so Tandem can stop an OSC 9;4 progress bar on
+    a reset (iTerm2 `terminalDidReset`).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

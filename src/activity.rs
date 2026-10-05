@@ -1,11 +1,9 @@
-//! Output and idle per session, with iTerm2's timings: idle after 3 quiet seconds, one
+//! Output and idle per session, with iTerm2's timings: idle after the idle time (2 s) plus one
+//! quiet second, one
 //! new-output and one idle event per burst, and output right after a resize ignored.
 
 use std::time::{Duration, Instant};
 
-/// iTerm2's idleTimeSeconds (2) plus one: quiet this long is idle.
-const IDLE_AFTER: Duration = Duration::from_secs(3);
-const PROCESSING: Duration = Duration::from_secs(2);
 /// Output this soon after a resize is the program redrawing, not activity.
 const RESIZE_JIGGLE: Duration = Duration::from_millis(250);
 /// No idle or new-output events this soon after a resize.
@@ -22,8 +20,10 @@ pub enum ActivityEvent {
 }
 
 /// One session's output and idle state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Activity {
+    /// `idleTimeSeconds`, read when the session started.
+    idle: Duration,
     last_output: Option<Instant>,
     last_resize: Option<Instant>,
     /// Output since the last Idle.
@@ -35,12 +35,31 @@ pub struct Activity {
     unseen: bool,
 }
 
+/// `idleTimeSeconds` default (`AS:488`).
+pub const DEFAULT_IDLE: Duration = Duration::from_secs(2);
+
+impl Default for Activity {
+    fn default() -> Activity {
+        Activity::new(DEFAULT_IDLE)
+    }
+}
+
 impl Activity {
+    /// A tracker for a session whose `idleTimeSeconds` is `idle`.
+    pub fn new(idle: Duration) -> Activity {
+        Activity { idle, last_output: None, last_resize: None, burst: false, new_output_posted: false, idle_posted: false, pending: Vec::new(), unseen: false }
+    }
+
+    /// The session's idle time, read when it starts (a restarted session keeps its tracker).
+    pub fn set_idle(&mut self, idle: Duration) {
+        self.idle = idle;
+    }
+
     pub fn output(&mut self, now: Instant) {
         if self.last_resize.is_some_and(|r| now.saturating_duration_since(r) <= RESIZE_JIGGLE) {
             return;
         }
-        if self.last_output.is_some_and(|l| now.saturating_duration_since(l) > IDLE_AFTER) {
+        if self.last_output.is_some_and(|l| now.saturating_duration_since(l) > crate::cadence::idle_after(self.idle)) {
             self.pending.push(ActivityEvent::ActivityAfterIdle);
         }
         self.last_output = Some(now);
@@ -53,14 +72,14 @@ impl Activity {
         self.last_resize = Some(now);
     }
 
-    /// Output within the last 2 s.
+    /// Output less than the idle time ago (`PS:6580`).
     pub fn is_processing(&self, now: Instant) -> bool {
-        self.last_output.is_some_and(|l| now.saturating_duration_since(l) <= PROCESSING)
+        self.last_output.is_some_and(|l| now.saturating_duration_since(l) < self.idle)
     }
 
-    /// Output once, none for more than 3 s.
+    /// Output once, none for more than the idle time plus one second (`PS:6586`).
     pub fn is_idle(&self, now: Instant) -> bool {
-        self.last_output.is_some_and(|l| now.saturating_duration_since(l) > IDLE_AFTER)
+        self.last_output.is_some_and(|l| now.saturating_duration_since(l) > crate::cadence::idle_after(self.idle))
     }
 
     pub fn last_output(&self) -> Option<Instant> {
@@ -151,5 +170,42 @@ mod tests {
         b.output(ms(t0, 1000));
         assert!(b.tick(ms(t0, 1100)).is_empty() && b.tick(ms(t0, 4500)).is_empty(), "nothing within 5 s of a resize");
         assert!(!b.tick(ms(t0, 5500)).is_empty(), "after that, the burst counts");
+    }
+
+    /// `idleTimeSeconds` is read per session (`PS:849`): processing is output less than the
+    /// idle time ago (`PS:6580`), idle is no output for more than the idle time plus one
+    /// second (`PS:6586`); the default tracker keeps 2 s and 3 s.
+    #[test]
+    fn idle_time_follows_iterm2() {
+        let t0 = Instant::now() + Duration::from_secs(100);
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut a = Activity::new(Duration::from_secs(5));
+        a.output(t0);
+        assert!(a.is_processing(at(4900)));
+        assert!(!a.is_processing(at(5000)));
+        assert!(!a.is_idle(at(6000)));
+        assert!(a.is_idle(at(6001)));
+        assert_eq!(a.tick(at(100)), vec![ActivityEvent::NewOutput]);
+        assert_eq!(a.tick(at(3100)), vec![], "3 s is not idle for a 5 s tracker");
+        assert_eq!(a.tick(at(6000)), vec![]);
+        assert_eq!(a.tick(at(6001)), vec![ActivityEvent::Idle]);
+        // Output after the idle spell is Activity After Idle only past the idle time plus one.
+        let mut b = Activity::new(Duration::from_secs(5));
+        b.output(t0);
+        b.output(at(4000));
+        assert!(b.tick(at(4100)).iter().all(|e| *e != ActivityEvent::ActivityAfterIdle));
+        b.output(at(11_000));
+        assert!(b.tick(at(11_100)).contains(&ActivityEvent::ActivityAfterIdle));
+        // A tracker made with the default, then told the pane's idle time.
+        let mut c = Activity::default();
+        c.set_idle(Duration::from_secs(5));
+        c.output(t0);
+        assert!(c.is_processing(at(4900)) && !c.is_idle(at(6000)));
+        // The default tracker.
+        let mut d = Activity::default();
+        d.output(t0);
+        assert!(d.is_processing(at(1900)) && !d.is_processing(at(2100)));
+        assert!(!d.is_idle(at(3000)) && d.is_idle(at(3001)));
+        assert_eq!(DEFAULT_IDLE, Duration::from_secs(2));
     }
 }

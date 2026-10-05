@@ -93,6 +93,9 @@ mod session_ui;
 mod seltools_ui;
 mod view_ui;
 mod marks_ui;
+mod offscreen_ui;
+mod progress_ui;
+mod sleep_ui;
 mod menu;
 mod porthole_ui;
 mod prompted_ui;
@@ -143,6 +146,7 @@ mod script_ui;
 mod script_runtime_ui;
 mod claude_code_app;
 mod scripts_alerts;
+mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
 mod suppressed_app;
@@ -550,6 +554,20 @@ pub struct App {
     /// The tab the next pane goes into once started (a split), for its `ITERM_SESSION_ID`;
     /// None is a new tab. Set and cleared around one start, so it is not per-window state.
     start_tab: Option<usize>,
+    /// What the next session is for, which picks its Advanced working directory (`start_dir`):
+    /// a Tab unless `split_as`, `api_split` or `open_window_with` set it around one start.
+    start_object: crate::start_dir::Object,
+    /// The pane a split comes from (its folder and its variables feed the new session's
+    /// directory); None is the current tab's focused pane. Set around one start with
+    /// `start_object` Pane.
+    start_from: Option<PaneId>,
+    /// A new window's first session comes from the previously current window's focused
+    /// pane: its folder and the pane itself (R3), taken before the empty window swaps in.
+    window_previous_dir: Option<PathBuf>,
+    window_previous_pane: Option<PaneId>,
+    /// Tandem's terminfo folder, written once per run on the first WSL session that needs it
+    /// (`terminfo::ensure`); app-wide.
+    terminfo_dir: Option<PathBuf>,
     /// Sessions opened for a git menu command, by pane (app-wide).
     single_use: HashMap<PaneId, git_ui::SingleUse>,
     /// Undo Close: closed things waiting, and the close being collected now.
@@ -958,6 +976,13 @@ pub struct App {
     cursor_due: Option<Instant>,
     /// When the running cursor slide or smear next asks for a frame.
     anim_frame: Option<Instant>,
+    /// When the next OSC 9;4 bar frame is due (`tick_progress`); panes are shared by every
+    /// window, so app-wide and not in `swap_live`.
+    progress_frame: Option<Instant>,
+    /// Prevent Sleep (13p): the one request, what the last look saw, and the Session tab's line.
+    sleep: crate::sleep_guard::Guard,
+    sleep_tracker: crate::sleep_guard::Tracker,
+    sleep_status: String,
     /// The focused pane's smooth-blink fade, advanced by `tick_cursor`.
     blink_fade: crate::cursor_anim::Fade,
     /// The smooth blink's alpha for the key window's focused pane, stored by `tick_cursor`
@@ -1091,6 +1116,10 @@ pub struct App {
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// Locale questions waiting for the picker: the start-time prompts, and Settings' Change
+    /// Locale requests (`locale_ui`).
+    locale_asks: VecDeque<locale_ui::Ask>,
+    locale_window: Option<locale_ui::PickerWindow>,
     /// iTerm2's suppressed alerts (app-wide): the catalog of warnings answered automatically,
     /// "Always show alerts with remembered selections" (not saved, as iTerm2's process global),
     /// and when the catalog's write is due.
@@ -1194,6 +1223,10 @@ pub struct App {
     chat_picker: Option<chat_session_app::Pick>,
     /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The offscreen command lines this window drew: pane, band, line to reveal (13p; in `WinSlot`).
+    offscreen_hits: Vec<(PaneId, Rect, i32)>,
+    /// Each visible pane's prompt facts for this frame (`prepare_offscreen`); scratch, not swapped.
+    offscreen_prepared: HashMap<PaneId, Vec<crate::offscreen::PromptFacts>>,
     /// The inline chat panels' rectangles this window drew, for a press on them.
     inline_hits: Vec<inline_chat_ui::PanelHit>,
     /// The AI indicators this window drew (this window's, in `WinSlot`).
@@ -1323,6 +1356,8 @@ pub struct App {
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
     /// The last bar layout pass that asked for status bar strings (`begin_script_pass`).
     script_pass: u64,
+    /// Each pane's latest Initial Text generation (`bump_initial_text`): a late answer of an older start is dropped.
+    initial_text_gen: HashMap<PaneId, u64>,
     /// Status bar component unread counts set by scripts: by component identifier, and per
     /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`), drawn as
     /// a badge on the component.
@@ -1565,6 +1600,7 @@ pub fn run() {
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
+    jobs.set_fast_updates(globals.bool("FastForegroundJobUpdates"));
     let side_bar_preferred = side_bar_default(&globals);
     let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
@@ -1715,6 +1751,11 @@ pub fn run() {
         start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
+        start_object: crate::start_dir::Object::Tab,
+        start_from: None,
+        window_previous_dir: None,
+        window_previous_pane: None,
+        terminfo_dir: None,
         single_use: HashMap::new(),
         undo: Default::default(),
         undo_capture: None,
@@ -1908,6 +1949,10 @@ pub fn run() {
         blink: crate::cursor_anim::Blink::new(Instant::now()),
         cursor_due: None,
         anim_frame: None,
+        progress_frame: None,
+        sleep: Default::default(),
+        sleep_tracker: Default::default(),
+        sleep_status: crate::sleep_guard::status_text(0, 0),
         blink_fade: crate::cursor_anim::Fade::default(),
         cursor_alpha: None,
         api_server: None,
@@ -1959,6 +2004,7 @@ pub fn run() {
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
         script_pass: 0,
+        initial_text_gen: HashMap::new(),
         script_alert: None,
         provisioner: None,
         provision_after: HashMap::new(),
@@ -1969,6 +2015,8 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        locale_asks: VecDeque::new(),
+        locale_window: None,
         suppressed,
         show_remembered: false,
         catalog_due: None,
@@ -2027,6 +2075,8 @@ pub fn run() {
         chat_convo_dirty: true,
         chat_picker: None,
         picker_hits: Vec::new(),
+        offscreen_hits: Vec::new(),
+        offscreen_prepared: HashMap::new(),
         inline_hits: Vec::new(),
         chat_indicator_hits: Vec::new(),
         streaming_chats: std::collections::HashSet::new(),
@@ -3178,6 +3228,9 @@ impl App {
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
+        // A slow Initial Text of the old shell must not type into the new one (13p); the new
+        // shell sends its own once it is installed (P14).
+        self.bump_initial_text(id);
         // A live shell ends first, as iTerm2's does (`PS:3863-3871`), with the words under its
         // text; a start that then fails leaves an ended pane.
         if self.panes.get(&id).is_some_and(|p| p.exited.is_none()) {
@@ -3259,7 +3312,7 @@ impl App {
     /// count less one once it is in the tab, `TAB:7435-7443`). The result holds a secret:
     /// never log it. A pane started on SSH transport `t` other than ConPTY is told which
     /// (`TANDEM_SSH_TRANSPORT`, for it2ssh).
-    fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport) -> (Vec<String>, Option<String>) {
+    fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport, cmd: &str) -> (Vec<String>, Option<String>) {
         let window = self.window_number();
         let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
         let holding = self.tabs.iter().position(|t| t.layout.panes().contains(&id));
@@ -3302,8 +3355,87 @@ impl App {
         };
         let mut env = crate::session_env::overlay(crate::session_env::vars(&facts), &extra);
         // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
-        env.extend(crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type()));
+        // Decided before the POSIX variables (which never name TERM) so a WSL session's
+        // `WSLENV` can list it (P17); the entry still goes last.
+        let term = crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type());
+        // The POSIX variables follow, never interleaved (`PS:3284-3366`); `merge` puts them over
+        // the inherited block.
+        let posix = self.posix(p, cmd, term.is_some());
+        env.extend(crate::session_env::posix_vars(&posix));
+        env.extend(term);
         (env, cookie)
+    }
+
+    /// The POSIX variables a session on `cmd` gets: `COLORFGBG` from the profile's palette, the
+    /// locale (`locale_guess::locale_vars`), and `TERMINFO_DIRS` for WSL (R6).
+    fn posix(&mut self, p: &Profile, cmd: &str, term_set: bool) -> crate::session_env::Posix {
+        let palette = crate::palette::Palette::from_profile(p, self.dark());
+        let colorfgbg = crate::session_env::colorfgbg(&palette.ansi, palette.fg, palette.bg, self.globals.bool("UseColorfgbgFallback"));
+        let locale = self.locale_pairs(p);
+        // Only a WSL session wants it, and only a local `%APPDATA%` is written (P12).
+        let terminfo = (self.globals.bool("ShouldSetTerminfoDirs") && crate::session_env::is_wsl(cmd)).then(|| self.terminfo_folder()).flatten();
+        posix_for(cmd, terminfo.as_deref().map(|d| d.to_string_lossy()).as_deref(), colorfgbg, locale, std::env::var("WSLENV").ok(), term_set)
+    }
+
+    /// The locale variables for the profile (`PS:3284-3331`). The start-time prompt and the
+    /// wrong-encoding warning do not hold the shell (Decisions "Locale on Windows"): a suspect
+    /// custom locale is used as written and the warning is asked, a failed guess falls to
+    /// `LC_CTYPE` (iTerm2's path after "Use Minimal POSIX Locale") and the prompt is queued. An
+    /// override launch (a git window, a script, an orchestrated command) never asks.
+    #[cfg(windows)]
+    fn locale_pairs(&mut self, p: &Profile) -> Vec<(String, String)> {
+        use crate::locale_guess::{self, Outcome};
+        let encoding = p.int("Character Encoding");
+        let facts = crate::locale_win::facts(encoding, &self.globals.string("FallbackLCCType"));
+        let name = locale_guess::encoding_name(encoding);
+        let supported = |c: &str| crate::locale_win::supported(c, name);
+        let mode = locale_guess::Mode::from_value(p.int("Set Local Environment Vars"));
+        let asks = self.start_command_override.is_none() && self.start_env_override.is_none();
+        match locale_guess::locale_vars(mode, &p.string("Custom Locale"), &facts, encoding == 4, &supported) {
+            Outcome::Vars(v) => v,
+            Outcome::None => Vec::new(),
+            Outcome::SuspectCustom(l) => {
+                if asks {
+                    let guid = self.store.shared_guid(&p.guid());
+                    self.ask_locale_mismatch(guid, l.clone(), false);
+                }
+                vec![("LANG".to_string(), l)]
+            }
+            Outcome::NeedsPrompt => {
+                if asks {
+                    let guid = self.store.shared_guid(&p.guid());
+                    self.queue_locale_prompt(guid, p.name(), !p.bool("Is Dynamic Profile"));
+                }
+                locale_guess::lc_ctype(&facts, &supported).map(|v| vec![("LC_CTYPE".to_string(), v)]).unwrap_or_default()
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn locale_pairs(&mut self, _p: &Profile) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Tandem's terminfo folder, written on first use and kept for the run. A UNC `%APPDATA%`
+    /// is never written (none, silently); a write error leaves it out with a banner.
+    #[cfg(windows)]
+    fn terminfo_folder(&mut self) -> Option<PathBuf> {
+        if self.terminfo_dir.is_none() {
+            let appdata = crate::session_env::appdata_local()?;
+            match crate::terminfo::ensure(&appdata) {
+                Ok(dir) => {
+                    self.banners.clear("terminfo");
+                    self.terminfo_dir = Some(dir);
+                }
+                Err(e) => self.banners.set("terminfo", format!("Could not write Tandem's terminfo files: {e}")),
+            }
+        }
+        self.terminfo_dir.clone()
+    }
+
+    #[cfg(not(windows))]
+    fn terminfo_folder(&mut self) -> Option<PathBuf> {
+        None
     }
 
     /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
@@ -3343,6 +3475,14 @@ impl App {
         match self.spawn_pane(id, rect, guid) {
             Ok((pane, p)) => {
                 self.install_pane(id, pane, &p, false);
+                // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
+                // `:2188`): a git window, an orchestrated or scripted command and an ssh: URL's
+                // copy never type the profile's text (B2). The API's CreateTab with custom
+                // properties starts the base profile's own shell with the text, as iTerm2's does
+                // (the API is authenticated; its command is a profile property, not an override).
+                if self.start_command_override.is_none() && self.start_env_override.is_none() {
+                    self.send_initial_text(id, &p);
+                }
                 true
             }
             Err(e) => {
@@ -3367,7 +3507,7 @@ impl App {
         };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
-            Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
+            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| d.is_dir()) => (PathBuf::from(d), None),
             // A git command's window runs only in its folder, never the profile's.
             Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
                 return Err(format!("The folder {d} no longer exists, so git did not run."));
@@ -3377,7 +3517,7 @@ impl App {
                 (c, Some(format!("The folder {d} from the arrangement does not exist; the profile's folder is used.")))
             }
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
-            _ => profile::start_dir_with(&p, self.previous_dir().as_deref()),
+            _ => self.profile_start_dir(&p),
         };
         match warning {
             Some(w) => self.banners.set("directory", w),
@@ -3387,18 +3527,22 @@ impl App {
             self.host = None;
             self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
         }
-        let (env, cookie) = self.session_env(id, &p, transport);
+        let (env, cookie) = self.session_env(id, &p, transport, &cmd);
+        // Only the profile's own shell is injected; `cmd` stays the profile's line for the pane,
+        // its banner and its title (B6).
+        let injected = self.injected_command(&p, &cmd, transport);
+        let launch = injected.as_deref().unwrap_or(&cmd);
         let started = match &self.host {
-            Some(h) => match Pane::start_hosted_transport(id, h, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()) {
+            Some(h) => match Pane::start_hosted_transport(id, h, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()) {
                 // A host below protocol 4 cannot run this transport: the session runs inside
                 // Tandem instead.
                 Err(e) if e == crate::host_client::HOST_TOO_OLD => {
                     self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Tandem.");
-                    Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone())
+                    Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone())
                 }
                 other => other,
             },
-            None => Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
+            None => Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()),
         };
         match started {
             Ok(mut pane) => {
@@ -3407,7 +3551,7 @@ impl App {
                 if self.start_command_override.is_none() {
                     // Not an ssh session for F27 yet: its hook, vouched by the origin token,
                     // makes it one.
-                    pane.ssh.profile_ssh = profile::is_ssh(&p);
+                    pane.start_as_profile(profile::is_ssh(&p));
                     pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
                 }
                 if let Some(jumps) = self.start_jumps_override.take() {
@@ -3420,6 +3564,21 @@ impl App {
                 Err(format!("Could not start {cmd}: {e}"))
             }
         }
+    }
+
+    /// The command line with the PowerShell shell integration loaded, when the profile asks
+    /// ("Load Shell Integration Automatically"), the launch is the profile's own shell on
+    /// ConPTY (never a git, orchestrated, script or API command, never an SSH profile), the
+    /// shell is PowerShell and the script is written (`PS:3633-3653`). None leaves the line as
+    /// it is.
+    fn injected_command(&mut self, p: &Profile, cmd: &str, transport: crate::ssh_transport::Transport) -> Option<String> {
+        let own = self.start_command_override.is_none() && self.start_env_override.is_none();
+        if !own || transport != crate::ssh_transport::Transport::Conpty || profile::is_ssh(p) || !p.bool("Load Shell Integration Automatically") {
+            return None;
+        }
+        crate::shell_inject::shell_of(cmd)?;
+        let script = self.ensure_pwsh_script()?;
+        crate::shell_inject::inject(cmd, &script)
     }
 
     /// The command profile `p` starts and its transport. An SSH profile runs `it2ssh.exe` from
@@ -3469,6 +3628,8 @@ impl App {
         if !relaunch {
             self.apply_new_pane_defaults(id);
         }
+        // Idle time and the other per-session start reads: a restarted shell is a new session (S4, P21).
+        self.apply_session_start(id);
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
@@ -3513,6 +3674,38 @@ impl App {
             }
         }
         due
+    }
+
+    /// The folder and the variables' pane a new session's profile directory comes from. A new
+    /// window reads the previously current window's focused pane (captured before the empty
+    /// window swapped in, R3); a split reads the pane it splits; a tab the focused pane.
+    fn start_source(&self) -> (Option<PathBuf>, Option<PaneId>) {
+        use crate::start_dir::Object;
+        let object = self.start_object;
+        let scope = match object {
+            Object::Window => self.window_previous_pane,
+            Object::Pane => self.start_from.or_else(|| self.focused_id()),
+            Object::Tab => self.focused_id(),
+        };
+        let here = match object {
+            Object::Window => None,
+            _ => scope.and_then(|id| self.pane_dir(id)),
+        };
+        (crate::start_dir::previous_for(object, here, self.window_previous_dir.clone()), scope)
+    }
+
+    /// The directory a profile starts a session in (`start_dir::resolve`). The custom text is
+    /// interpolated in the source pane's scope only when that pane is local: a remote pane's
+    /// variables are set by its program, so they are never an expansion scope (B4).
+    fn profile_start_dir(&self, p: &Profile) -> (PathBuf, Option<String>) {
+        let (previous, scope) = self.start_source();
+        let local = scope.filter(|id| self.panes.contains_key(id) && !self.remote_text(*id));
+        let expand = |text: &str| match local {
+            Some(id) => self.evaluate_for(id, text).unwrap_or_else(|_| text.to_string()),
+            None => text.to_string(),
+        };
+        let mode = crate::start_dir::mode(p, self.start_object);
+        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| d.is_dir())
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine
@@ -3562,6 +3755,7 @@ impl App {
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
+                s.sleep_status = self.sleep_status.clone();
                 s.ai.found = self.ai_discovery.all();
                 match mode {
                     Mode::Settings => self.settings = Some(s),
@@ -3628,6 +3822,8 @@ impl App {
     /// settle, or the next pass), so a script's request that changed them is answered first.
     pub(super) fn globals_changed(&mut self, api_now: bool) {
         self.save_globals();
+        // Job updates wait on a job's exit, or only poll (Advanced > Experimental Features).
+        self.jobs.set_fast_updates(self.globals.bool("FastForegroundJobUpdates"));
         if api_now {
             self.api_settings_changed();
         }
@@ -3938,7 +4134,9 @@ impl App {
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
         };
         self.start_tab = Some(self.active);
+        (self.start_object, self.start_from) = (crate::start_dir::Object::Pane, Some(target));
         let started = self.start_pane(half, guid);
+        (self.start_object, self.start_from) = (crate::start_dir::Object::Tab, None);
         self.start_tab = None;
         if let Some(id) = started {
             let tab = &mut self.tabs[self.active];
@@ -4384,16 +4582,21 @@ impl App {
         pointer::Prefs { pass_on_control_click: self.globals.bool("PassOnControlClick"), report_right_click: self.globals.bool("ReportRightClick") }
     }
 
-    /// The multi-click count for a press of `button` here: 1 to 4.
-    fn os_clicks(&mut self, button: u8) -> u8 {
+    /// The multi-click count a press of `button` here would be, 1 to 4, without recording it.
+    fn next_os_clicks(&self, button: u8) -> u8 {
         let now = Instant::now();
         let (x, y) = self.cursor;
         let near = 4.0 * self.scale();
-        let count = match self.pointer_last {
+        match self.pointer_last {
             Some((t, b, (px, py), n)) if b == button && now.duration_since(t) <= input::MULTI_CLICK && (x - px).abs() <= near && (y - py).abs() <= near => (n + 1).min(4),
             _ => 1,
-        };
-        self.pointer_last = Some((now, button, (x, y), count));
+        }
+    }
+
+    /// The multi-click count for a press of `button` here: 1 to 4.
+    fn os_clicks(&mut self, button: u8) -> u8 {
+        let count = self.next_os_clicks(button);
+        self.pointer_last = Some((Instant::now(), button, self.cursor, count));
         count
     }
 
@@ -4671,6 +4874,13 @@ impl App {
         }
         // Any button on one of Tandem's overlays inside a pane is Tandem's, never the program's (B5).
         if self.tandem_ui_at(x, y) {
+            return;
+        }
+        // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`): after
+        // every Tandem surface that can sit over its strip, a single click that did not activate
+        // the window (`clickCount == 1`); the band covers the pane's scrollbar, so it comes first.
+        if button == MouseButton::Left && offscreen_ui::click_allowed(first, self.next_os_clicks(0)) && self.offscreen_click(x, y) {
+            self.os_clicks(0);
             return;
         }
         // The scrollbar is the pane's own, below Tandem's overlays and before any report.
@@ -5092,6 +5302,8 @@ impl App {
         if self.tab_press_moved() {
             self.tab_press = None;
         }
+        // The bars' clocks follow what programs reported, before the tab bar's looks read them.
+        self.update_progress_anims(Instant::now());
         if let Some(area) = self.tab_bar_rect() {
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             if let Some(i) = held_close(self.tab_press) {
@@ -5141,12 +5353,16 @@ impl App {
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
+        let mut fps_rect: Option<Rect> = None;
         let mut picker_hits = Vec::new();
+        let mut offscreen_hits: Vec<(PaneId, Rect, i32)> = Vec::new();
+        let mut band_jobs: Vec<(PaneId, Rect, (f32, f32))> = Vec::new();
         let mut indicator_hits = Vec::new();
         let mut inline_hits = Vec::new();
         self.prepare_portholes();
         self.prepare_cursors();
         self.prepare_badges();
+        self.prepare_offscreen();
         self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
         let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
@@ -5244,6 +5460,8 @@ impl App {
                         let r = self.text_rect(id, rect);
                         frame.images.push(scene::ImageQuad { rect: r, uv: [0.0, 0.0, r.w / *n as f32, r.h / *n as f32], key: (0x5354_5249, *n as usize), pixels: px.clone(), size: (*n, *n), repeat: true });
                     }
+                    // The offscreen command line is drawn last, below (`band_jobs`).
+                    band_jobs.push((id, rect, cell));
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
                 self.draw_view_extras(&mut frame, id, rect, cell);
@@ -5303,9 +5521,10 @@ impl App {
                 overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
                 if id == tab.focused {
                     if let Some(text) = self.fps_overlay() {
-                        scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
+                        fps_rect = scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
                 }
+                self.draw_inline_progress(&mut frame, id, rect);
                 for row in frame.rows[rows_from..].iter_mut().filter(|r| r.face == crate::render::DEFAULT_FACE) {
                     row.face = face;
                 }
@@ -5345,6 +5564,7 @@ impl App {
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let mut tip_rect: Option<Rect> = None;
         let line = self.division_height();
         if line > 0.0 {
             scene::division_line(&mut frame, ww, line, crate::chrome::division_color(self.resolved_style(), self.focused));
@@ -5357,7 +5577,7 @@ impl App {
         // height below it).
         if let Some(text) = self.tab_tip_shown().and_then(|i| self.tab_tip_text(i)) {
             let (x, y) = self.cursor;
-            scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+            tip_rect = Some(scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
         }
         if see_through {
             let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
@@ -5377,6 +5597,25 @@ impl App {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             overlay_drawn.push((mouse::Overlay::Banner, scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell)));
         }
+        // The offscreen command lines, last: over the pane's rows and strokes (they are cut out)
+        // but around every Tandem surface drawn over a pane's top, which the one overlay list
+        // names (`ui_rects`): info bars, the composer and completion, portholes, pills,
+        // pickers, indicators, the find bar, the toast and the banner (Task 6 review 2).
+        let mut holes: Vec<Rect> = overlay_drawn.iter().map(|(_, r)| *r).collect();
+        holes.extend(self.porthole_hits.iter().map(|h| h.3));
+        holes.extend(self.block_buttons.iter().map(|b| b.0));
+        holes.extend(self.picker_hits.iter().map(|h| h.1));
+        holes.extend(self.chat_indicator_hits.iter().map(|h| h.1));
+        holes.extend(self.find_bar_rect.into_iter().chain(self.find_mode_rect));
+        // The tab tooltip, the fps meter, the clippings panels and preview and the inline chat
+        // panels are drawn over a pane too (Task 6 review, r1).
+        holes.extend(tip_rect.into_iter().chain(fps_rect));
+        holes.extend(self.clip_holes());
+        holes.extend(self.inline_hits.iter().filter_map(|h| if let inline_chat_ui::PanelHit::Body(_, r) = h { Some(*r) } else { None }));
+        for (id, rect, cell) in band_jobs {
+            offscreen_hits.extend(self.draw_offscreen(&mut frame, id, rect, cell, &holes).into_iter().map(|(r, line)| (id, r, line)));
+        }
+        self.offscreen_hits = offscreen_hits;
         self.overlay_drawn = overlay_drawn;
         frame
     }
@@ -5786,6 +6025,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.open_locale_asks(event_loop);
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
@@ -5838,7 +6078,10 @@ impl ApplicationHandler<UserEvent> for App {
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
         let restart_due = self.tick_restarts();
-        let wake = [ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due].into_iter().flatten().min();
+        self.tick_progress();
+        let progress_due = self.progress_wake();
+        let sleep_due = self.recompute_sleep(Instant::now());
+        let wake = [ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5932,7 +6175,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -5964,6 +6207,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     // Profiles > Text's "Manage Special Exceptions" opens its window.
                     let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
+                    // Profiles > Terminal's "Change Locale" opens the picker.
+                    let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
@@ -5974,6 +6219,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(guid) = special {
                         self.open_special_exceptions(guid, event_loop);
+                    }
+                    if let Some(guid) = locale {
+                        self.open_locale_settings(guid);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {
@@ -6397,6 +6645,21 @@ fn menu_should_hide(full_screen: bool, hide_key: bool) -> bool {
     full_screen && hide_key
 }
 
+/// The session's POSIX variables for a program started from `cmdline`: `TERMINFO_DIRS` only for
+/// a WSL session (R6: MSYS2, Git Bash, cmd and PowerShell never get it), the rest as given.
+/// `term_set` says 13o's `term_var` gave the session a `TERM`; a WSL session then lists it in
+/// `WSLENV` so the profile's Terminal Type reaches the distribution (P17).
+pub(super) fn posix_for(cmdline: &str, terminfo_dir: Option<&str>, colorfgbg: Option<String>, locale: Vec<(String, String)>, inherited_wslenv: Option<String>, term_set: bool) -> crate::session_env::Posix {
+    let wsl = crate::session_env::is_wsl(cmdline);
+    crate::session_env::Posix {
+        colorfgbg,
+        locale,
+        terminfo: terminfo_dir.filter(|_| wsl).map(str::to_string),
+        inherited_wslenv,
+        wsl_term: term_set && wsl,
+    }
+}
+
 /// DEC mode 2048: the text area a `rows` x `cols` grid covers in physical pixels, from the
 /// pane's own cell (13n: each pane has its own face), as (height, width).
 fn resize_report_px(rows: u16, cols: u16, (cw, ch): (f32, f32)) -> (u32, u32) {
@@ -6449,6 +6712,45 @@ mod tests {
         assert!(answer.contains("print_guards.get_mut(&pane)"), "no guard is made for a pane that closed");
         assert!(answer.contains(".refused("), "the answer re-checks the guard");
         assert!(!answer.contains("or_default"));
+    }
+
+    #[test]
+    fn terminfo_is_for_wsl_only() {
+        let dir = Some(r"C:\A\Tandem\terminfo");
+        let at = |cmd: &str| posix_for(cmd, dir, Some("15;0".into()), vec![("LANG".into(), "en_US.UTF-8".into())], Some("X/p".into()), true);
+        assert_eq!(at("wsl.exe -d Ubuntu").terminfo.as_deref(), dir);
+        assert_eq!(at(r#""C:\Windows\System32\wsl.exe""#).terminfo.as_deref(), dir);
+        for other in ["pwsh.exe", r"C:\msys64\usr\bin\bash.exe --login", "cmd.exe", r"C:\Program Files\Git\bin\bash.exe", "ubuntu.exe"] {
+            let p = at(other);
+            assert_eq!(p.terminfo, None, "{other}");
+            // The rest is untouched for every program.
+            assert_eq!(p.colorfgbg.as_deref(), Some("15;0"));
+            assert_eq!(p.locale, vec![("LANG".to_string(), "en_US.UTF-8".to_string())]);
+            assert_eq!(p.inherited_wslenv.as_deref(), Some("X/p"));
+        }
+        assert_eq!(posix_for("wsl.exe", None, None, Vec::new(), None, false).terminfo, None, "no folder, no variable");
+        let line = crate::session_env::posix_vars(&at("pwsh.exe"));
+        assert!(!line.iter().any(|v| v.starts_with("TERMINFO_DIRS=") || v.contains("TERMINFO_DIRS")), "{line:?}");
+    }
+
+    /// P17: 13o's `TERM` reaches a WSL session through `WSLENV`, only when `term_var` set it
+    /// (a TERM in Tandem's own environment or a profile's own `TERM=` entry wins and is not
+    /// listed), never for another program; the `TERM=` entry goes after the POSIX block.
+    #[test]
+    fn term_reaches_wsl_through_wslenv() {
+        let at = |cmd: &str, set: bool| crate::session_env::posix_vars(&posix_for(cmd, None, None, Vec::new(), None, set));
+        assert_eq!(at("wsl.exe -d Ubuntu", true), ["WSLENV=TERM"]);
+        assert_eq!(at(r#""C:\Windows\System32\wsl.exe""#, true), ["WSLENV=TERM"]);
+        assert!(at("wsl.exe", false).is_empty(), "no TERM set, nothing listed");
+        for other in ["pwsh.exe", "cmd.exe", r"C:\msys64\usr\bin\bash.exe --login", "ubuntu.exe"] {
+            assert!(at(other, true).is_empty(), "{other}");
+        }
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("    fn session_env(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        let term = body.find("let term = crate::session_env::term_var(").expect("TERM is decided first");
+        assert!(term < body.find("self.posix(p, cmd, term.is_some())").unwrap());
+        assert!(body.find("posix_vars(&posix)").unwrap() < body.find("env.extend(term)").unwrap(), "TERM= still goes last");
     }
 
     #[test]

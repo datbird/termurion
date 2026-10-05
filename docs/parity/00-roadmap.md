@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 248 | 56 | 12 |
-| `02-global-settings.md` | 820 | 557 | 54 | 209 |
-| `03-features-and-menus.md` | 647 | 562 | 44 | 41 |
-| Total | 1,783 | 1,367 | 154 | 262 |
+| `01-profile-settings.md` | 316 | 261 | 43 | 12 |
+| `02-global-settings.md` | 820 | 565 | 52 | 203 |
+| `03-features-and-menus.md` | 647 | 563 | 43 | 41 |
+| Total | 1,783 | 1,389 | 138 | 256 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -638,6 +638,32 @@ Character Encoding uses Windows code pages (ISO 2022-JP is not streamed); typed 
 Deferred: DECRQCRA's origin mode and default-0 rectangles, DOCS (ESC % G), directory handles, offers, drags out and the SSH tier of OSC 72,
 AggressiveBaseCharacterDetection off, BufferDepth. Nothing of 13o was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13o-checklist.md` and ruled on in `docs/superpowers/rulings/m13o-rulings.txt`.
+On the m13p branch, main (13o) merged into 13p's Tasks 1-6 (2026-10-05): 13p changes no parity row before its docs task, so
+the union is 13o's (01: 316 rows, 248 have, 56 partial, 12 missing; 02: 820, 557, 54, 209; 03: 647, 562, 44, 41; 1,783 rows,
+1,367 have, 154 partial, 262 missing). Seams wired at the merge: 13o's TERM (the profile's Terminal Type) reaches a WSL session
+through WSLENV (P17), every 13o Character Encoding choice has a locale name for 13p's locale guess (P18: GB18030, Big5, eucKR,
+KOI8-R), Initial Text is typed through 13o's session encoder, and the offscreen command line reads only the displayed grid (no band
+over 13o's alternate-screen history) and draws in the profile's Unicode Normalization form.
+Milestone 13p built session start (01: 13 rows from partial to have: Send text at start, Initial working directory, the three Advanced
+working directory rows, Set Locale Variables, Change Locale, Show Offscreen Command Line and its current-command key, Prevent Sleep, Enable
+Progress Bars, Progress Bar Height and Progress Bar Color Scheme; Load shell integration automatically stays partial, PowerShell only; 02: 8 rows
+to have, 6 from missing and 2 from partial: doNotSetCtype (stored, inert, R2), useColorfgbgFallback, shouldSetTerminfoDirs, preventSleepOnBatteryToo,
+jiggleTTYSizeOnClearBuffer, fallbackLCCType, plus idleTimeSeconds and fastForegroundJobUpdates; 03: OSC 9;4 from partial to have; 1,783 rows, 1,389
+have, 138 partial, 256 missing). WSL and MSYS2 programs get LANG or LC_CTYPE and COLORFGBG (WSL through WSLENV), WSL also Tandem's extended terminfo;
+Initial Text, Advanced working directories, the offscreen command line, OSC 9;4 progress bars (inline and in tab cells, no taskbar button, as
+iTerm2), Prevent Sleep, Clear Buffer's jiggle, the idle time and event-driven job updates are built. Security fixes found by the reviews: Initial Text
+is never typed into an SSH password or host-key prompt and is blanked for git, orchestration, the script REPL and ssh: launches; a NUL in a profile value
+cannot add an environment variable; an expanded working directory must be a local drive path; one network-path filter (UNC, device and file://host forms)
+runs at every non-Settings ingress for the twelve path-valued profile keys (arrangements, imports, remote prefs, the API); the PowerShell injection
+doubles every PowerShell quote character. Deferred: bash, zsh and fish injection in WSL or MSYS2 (milestone 14). Nothing of 13p was checked on
+screen during the build. Every kept quirk is listed in `docs/acceptance/m13p-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13p-rulings.txt`.
+On the m13q branch, main (13p) merged into 13q's Tasks 1-6 (2026-10-05): 13q changes no parity row before its docs task, so
+the union is 13p's (01: 316 rows, 261 have, 43 partial, 12 missing; 02: 820, 565, 52, 203; 03: 647, 563, 43, 41; 1,783 rows,
+1,389 have, 138 partial, 256 missing). Seams wired at the merge: a restart starts in the pane's own start folder (P13), drops the
+old start's late Initial Text and types the new shell's own once (P14; an SSH profile still waits for its login), reads the
+session start values again (idle time), and clears the dead program's progress bar; an exited shell leaves the job watcher when
+its exit is first seen (no dead handle in the wait set); Prevent Sleep stops counting an exited shell.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

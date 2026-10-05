@@ -420,9 +420,14 @@ impl Screen {
     }
 
     pub fn resolve(&self, a: Anchor) -> Option<Point> {
+        self.resolve_from(self.mark_line(a.mark)?, a)
+    }
+
+    /// `resolve` when the anchor's mark is known to be on grid line `base`.
+    fn resolve_from(&self, base: i32, a: Anchor) -> Option<Point> {
         let grid = self.term.primary_grid();
         let (cols, bottom) = (grid.columns(), grid.screen_lines() as i32);
-        let mut r = self.mark_line(a.mark)?;
+        let mut r = base;
         for _ in 0..a.lines {
             while self.wrapped(r) {
                 r += 1;
@@ -694,6 +699,60 @@ impl Screen {
         self.marks.records.retain(|id, _| live.contains(id));
     }
 
+    /// The prompt marks in the buffer as the offscreen command line's rules read them, oldest
+    /// first. One pass over the rows, kept until the grid, a mark or the screen changes
+    /// (`tick_digest`), so a frame never scans the buffer or prunes records (P11).
+    pub fn offscreen_facts(&mut self) -> Vec<crate::offscreen::PromptFacts> {
+        let digest = self.tick_digest();
+        if let Some((d, facts)) = &self.offscreen_cache {
+            if *d == digest {
+                return facts.clone();
+            }
+        }
+        let facts = self.compute_offscreen_facts();
+        self.offscreen_cache = Some((digest, facts.clone()));
+        facts
+    }
+
+    fn compute_offscreen_facts(&self) -> Vec<crate::offscreen::PromptFacts> {
+        let lines: std::collections::HashMap<u32, i32> = self.row_marks().into_iter().map(|(l, id)| (id, l)).collect();
+        let mut prompts: Vec<(i32, &Mark)> = lines.iter().filter_map(|(id, l)| Some((*l, self.marks.records.get(id)?))).filter(|(_, m)| m.kind == Kind::Prompt).collect();
+        prompts.sort_by_key(|(l, m)| (*l, m.id));
+        let grid = self.term.primary_grid();
+        let cursor_line = grid.cursor.point.line.0;
+        let blank = |line: i32| {
+            let row = &grid[Line(line)];
+            (0..grid.columns()).all(|c| row[Column(c)].c.is_whitespace() || row[Column(c)].c == '\0')
+        };
+        let at = |m: &Mark, a: Anchor| self.resolve_from(*lines.get(&m.id)?, a);
+        let mut out = Vec::new();
+        for (i, (line, m)) in prompts.iter().enumerate() {
+            let start = m.command_range.and_then(|(a, _)| at(m, a)).map(|p| p.line.0);
+            let end = m.command_range.and_then(|(_, b)| at(m, b)).map(|p| {
+                // The range ends where the output begins, at the start of the next line.
+                if p.column.0 == 0 && Some(p.line.0) > start { p.line.0 - 1 } else { p.line.0 }
+            });
+            // `rangeOfOutputForCommandMark:` (`VSS:1045-1080`): to the next prompt's line (one
+            // less for a line-style mark), or for the newest to the cursor's.
+            let first = m.output_start.and_then(|a| at(m, a)).map_or(end.unwrap_or(*line) + 1, |p| p.line.0);
+            let last = match prompts.get(i + 1) {
+                Some((next, n)) => (*next - i32::from(n.line_style)).max(first),
+                None => (cursor_line + 1).max(first),
+            };
+            out.push(crate::offscreen::PromptFacts {
+                prompt_line: *line,
+                command_line: start,
+                command_end_line: end,
+                has_code: m.code.is_some(),
+                running: m.output_start.is_some() && m.code.is_none(),
+                ended: m.end.is_some(),
+                output_rows: last - first + 1,
+                command_empty: start.is_none_or(|l| l >= grid.screen_lines() as i32 || l < -(grid.history_size() as i32) || blank(l)),
+            });
+        }
+        out
+    }
+
     /// Every mark still in the buffer, top first. Records whose row is gone are dropped.
     pub fn marks_in_order(&mut self) -> Vec<(i32, Mark)> {
         let rows = self.row_marks();
@@ -841,6 +900,18 @@ impl Screen {
         self.marks.in_command = false;
         self.marks.prompts += 1;
         self.fire_event(crate::trigger_events::EventKind::PromptDetected, &Default::default(), &[]);
+    }
+
+    /// Sets the progress bar's state; the request and the event follow a change of whether it
+    /// shows (`PTYSession.m:24278-24279`).
+    pub(crate) fn set_progress(&mut self, next: crate::progress::Progress) {
+        let (was, shown) = (self.progress.visible(), next.visible());
+        self.progress = next;
+        if shown != was {
+            self.requests.push(crate::screen::Request::Progress(shown));
+            let word = if shown { "appeared" } else { "disappeared" };
+            self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
+        }
     }
 
     /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
@@ -1084,14 +1155,11 @@ impl Screen {
                 self.requests.push(crate::screen::Request::Notify { title: None, message: text.clone() });
                 self.fire_event(crate::trigger_events::EventKind::NotificationPosted, &crate::trigger_events::EventFacts { value: text.clone(), ..Default::default() }, &[text]);
             }
-            Osc::Progress(p) => {
-                // 9;4;0 removes the bar; any other state shows it.
-                let shown = p.split(';').next().is_some_and(|st| st.trim() != "0");
-                if shown != self.progress_shown {
-                    self.progress_shown = shown;
-                    self.requests.push(crate::screen::Request::Progress(shown));
-                    let word = if shown { "appeared" } else { "disappeared" };
-                    self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
+            Osc::Progress(body) => {
+                // 9;4 reads as iTerm2 does (`TDEL:1607-1660`): a bare 9;4 stops, a bad or
+                // out-of-range field is ignored. The event fires when the bar appears or goes.
+                if let Some(next) = crate::progress::parse(body.as_deref(), self.progress) {
+                    self.set_progress(next);
                 }
             }
             Osc::Sixel(data) => self.sixel(&data),
@@ -1950,6 +2018,26 @@ mod tests {
         s.resize(30, 14);
         s.feed(b"\x1b[?1049l");
         assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()]);
+    }
+
+    #[test]
+    fn offscreen_facts_follow_the_prompt_marks() {
+        let mut s = Screen::with_scrollback(20, 5, 1000);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
+        for i in 0..10 {
+            s.feed(format!("o{i}\r\n").as_bytes());
+        }
+        s.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        let f = s.offscreen_facts();
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert_eq!((f[0].prompt_line, f[0].command_line, f[0].command_end_line), (-7, Some(-7), Some(-7)));
+        assert_eq!((f[0].has_code, f[0].running, f[0].command_empty, f[0].output_rows), (true, false, false, 11));
+        assert_eq!((f[1].prompt_line, f[1].has_code), (4, false));
+        assert!(f[1].command_empty);
+        // Cached until the grid changes.
+        assert_eq!(s.offscreen_facts(), f);
+        s.feed(b"x\r\n");
+        assert_ne!(s.offscreen_facts(), f);
     }
 
     #[test]

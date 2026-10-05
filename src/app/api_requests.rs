@@ -625,7 +625,9 @@ impl App {
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
         };
         self.start_tab = Some(index);
+        (self.start_object, self.start_from) = (crate::start_dir::Object::Pane, Some(target));
         let started = self.start_pane(half, Some(guid));
+        (self.start_object, self.start_from) = (crate::start_dir::Object::Tab, None);
         self.start_tab = None;
         let Some(id) = started else { return SplitResult::Refused };
         let focus = super::pane_nav_ui::focus_new_split(self.globals.bool("FocusFollowsMouse"), self.globals.bool("FocusNewSplitPaneWithFocusFollowsMouse"), index == self.active && self.tabs[index].focused == target);

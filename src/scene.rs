@@ -1590,6 +1590,38 @@ pub enum ButtonFace {
     Blank,
 }
 
+/// A horizontal gradient over `rect` (`CAGradientLayer`: `colors` as sRGB floats with alpha at
+/// evenly spaced locations, left to right), cut to `clip`, in vertical slices at most 2 pixels
+/// wide in `frame.overlay` (OSC 9;4 progress bars).
+pub fn gradient_bar(frame: &mut Frame, rect: Rect, colors: &[[f32; 4]], clip: Rect) {
+    const SLICE: f32 = 2.0;
+    if colors.is_empty() || rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    // Locations are i / (n - 1), a single color is flat (`CAGradientLayer.locations`).
+    let color_at = |t: f32| -> [f32; 4] {
+        if colors.len() == 1 {
+            return colors[0];
+        }
+        let x = t.clamp(0.0, 1.0) * (colors.len() - 1) as f32;
+        let i = (x.floor() as usize).min(colors.len() - 2);
+        let f = x - i as f32;
+        let (a, b) = (colors[i], colors[i + 1]);
+        [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f]
+    };
+    let linear = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let first = ((clip.x - rect.x) / SLICE).floor().max(0.0) as usize;
+    let mut x = rect.x + first as f32 * SLICE;
+    while x < rect.x + rect.w && x < clip.x + clip.w {
+        let w = SLICE.min(rect.x + rect.w - x);
+        let c = color_at((x + w / 2.0 - rect.x) / rect.w);
+        if let Some(r) = cut(Rect { x, y: rect.y, w, h: rect.h }, clip) {
+            frame.overlay.push(Quad { rect: r, color: [linear(c[0]), linear(c[1]), linear(c[2]), c[3]] });
+        }
+        x += SLICE;
+    }
+}
+
 /// OSC 1337 inline buttons: a faint rounded box with the icon, at 40% when inert.
 pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], bg: Rgb, fg: Rgb) {
     for (r, face, valid) in buttons {
@@ -1646,6 +1678,49 @@ pub struct TabLook {
     pub hidden: bool,
     /// The session's icon (`PTYSession tabGraphic`), drawn 16 by 16 points at the tab's left.
     pub icon_image: Option<TabImage>,
+    /// OSC 9;4 in the tab's cell (`TBC:305-356`): the tab's progress, its clock, the active
+    /// pane's color scheme and whether the tab bar is dark. Set only when the cell shows one.
+    pub progress: Option<ProgressLook>,
+}
+
+/// What a progress bar draws from: the state, its animation clock, the color scheme's name, dark.
+pub type ProgressLook = (crate::progress::Progress, crate::progress::Anim, String, bool);
+
+/// The tab bar's progress bar is this many points high (`PSMTabBarProgressBarHeight`).
+pub const TAB_PROGRESS_PT: f32 = 2.0;
+
+/// One OSC 9;4 bar in `rect` (`iTermProgressBarView`), cut to `clip`: the profile's background
+/// first when `bg` is given, then by state a determinate gradient to its eased width, two copies
+/// of the bar-wide indeterminate gradient at their centers, or the error gradient pulsing toward
+/// its light colors. The clock counts in fractions of the bar (see `progress::Anim`).
+pub fn progress_bar(frame: &mut Frame, rect: Rect, look: &ProgressLook, bg: Option<Rgb>, clip: Rect, now: std::time::Instant) {
+    use crate::progress::{self, Progress};
+    let (p, anim, scheme, dark) = (look.0, &look.1, look.2.as_str(), look.3);
+    let Some(clip) = cut(rect, clip).filter(|_| p != Progress::Stopped) else { return };
+    if let Some(bg) = bg {
+        if let Some(r) = cut(rect, clip) {
+            frame.overlay.push(Quad { rect: r, color: rgba(bg, 1.0) });
+        }
+    }
+    match p {
+        Progress::Stopped => {}
+        Progress::Error => {
+            let (base, light) = progress::error_colors(dark);
+            let t = anim.pulse(now);
+            let mixed: Vec<[f32; 4]> = base.iter().zip(&light).map(|(b, l)| [b[0] + (l[0] - b[0]) * t, b[1] + (l[1] - b[1]) * t, b[2] + (l[2] - b[2]) * t, b[3] + (l[3] - b[3]) * t]).collect();
+            gradient_bar(frame, rect, &mixed, clip);
+        }
+        Progress::Indeterminate => {
+            let colors = progress::scheme_colors(scheme, dark, true);
+            for center in anim.indeterminate_offsets(rect.w, dark, now) {
+                gradient_bar(frame, Rect { x: rect.x + center - rect.w / 2.0, ..rect }, &colors, clip);
+            }
+        }
+        Progress::Success(_) | Progress::ErrorAt(_) | Progress::Warning(_) => {
+            let w = (anim.width(now) * rect.w).clamp(0.0, rect.w);
+            gradient_bar(frame, Rect { w, ..rect }, &progress::determinate_colors(p, scheme, dark), clip);
+        }
+    }
 }
 
 /// A tab's icon picture (`app::tab_groups_ui::tab_icon_for`): a decoded picture (a bundled icon
@@ -1935,6 +2010,10 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             if let Some(fill) = colored {
                 fill_quad(frame, cell, fill);
             }
+        }
+        // OSC 9;4: the tab's bar, 2 points at the top of the cell (`PSMYosemiteTabStyle.m:266-272`).
+        if let Some(look) = &tab.progress {
+            progress_bar(frame, Rect { h: TAB_PROGRESS_PT * scale, ..cell }, look, None, clip, std::time::Instant::now());
         }
         let color = over(back, text_fill);
         // A glyph from the icon font centered in `box_`.
@@ -2936,10 +3015,87 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     r
 }
 
+/// The offscreen command line (`TDH:3593-3617`): `band` is filled over the pane's top (the
+/// rows, box glyphs and strokes under it are cut out first, so nothing of row 0 shows through),
+/// outlined by a 1 pixel line at its top and bottom, and the command's cells on `line` are
+/// drawn in it from `text_origin`. The box goes in `popups` and the text in `rows`, never in
+/// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB). `holes` are
+/// Tandem's surfaces already drawn over the band's strip (info bar, find bar, indicators): the
+/// band is drawn around them, so it is called last.
+pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16, holes: &[Rect]) {
+    let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
+    // Around Tandem's own surfaces over the pane's top, which keep their pixels.
+    let parts = crate::offscreen::band_pieces(band, holes);
+    let (top, bottom) = (Rect { h: 1.0, ..band }, Rect { y: band.y + band.h - 1.0, h: 1.0, ..band });
+    for part in &parts {
+        cut_out(frame, *part, cell.1);
+        frame.popups.push(Quad { rect: *part, color: lin(colors.0) });
+        for edge in [top, bottom] {
+            if let Some(r) = cut(edge, *part) {
+                frame.popups.push(Quad { rect: r, color: lin(colors.1) });
+            }
+        }
+    }
+    if face != crate::render::DEFAULT_FACE && !frame.face_heights.iter().any(|(f, _)| *f == face) {
+        frame.face_heights.push((face, cell.1));
+    }
+    let grid = screen.term().grid();
+    if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+        return;
+    }
+    // The line's cells as the pane draws them: an ASCII run is one piece, any other character
+    // its own piece at its cell (fallback fonts are not monospace). Box glyphs stay text here.
+    let row = &grid[alacritty_terminal::index::Line(line)];
+    let palette = &screen.palette;
+    let mut piece: Option<(usize, Vec<Span>)> = None;
+    let mut pieces: Vec<(usize, Vec<Span>)> = Vec::new();
+    for col in 0..grid.columns() {
+        let c = &row[alacritty_terminal::index::Column(col)];
+        if c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            continue;
+        }
+        let mut text = c.c.to_string();
+        if let Some(extra) = c.zerowidth() {
+            text.extend(extra);
+        }
+        // In the profile's Unicode Normalization form, as the pane draws it (S12, 13o).
+        crate::encoding::normalize_in_place(&mut text, screen.normalization);
+        let ascii = text.is_ascii();
+        let fg = if c.flags.contains(Flags::HIDDEN) { palette.cell(c.fg, c.bg, c.flags).1 } else { palette.cell(c.fg, c.bg, c.flags).0 };
+        let (bold, italic) = (c.flags.contains(Flags::BOLD), c.flags.contains(Flags::ITALIC));
+        let span = |text: String| Span { text, color: fg, bold, italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask: 0, font: 0 };
+        if !ascii {
+            pieces.extend(piece.take());
+            pieces.push((col, vec![span(text)]));
+            continue;
+        }
+        let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
+        match spans.last_mut() {
+            Some(l) if l.color == fg && l.bold == bold && l.italic == italic => l.text.push_str(&text),
+            _ => spans.push(span(text)),
+        }
+    }
+    pieces.extend(piece);
+    for (col, mut spans) in pieces {
+        while spans.last().is_some_and(|s| s.text.trim_end().is_empty()) {
+            spans.pop();
+        }
+        if let Some(l) = spans.last_mut() {
+            l.text.truncate(l.text.trim_end().len());
+        }
+        if spans.is_empty() {
+            continue;
+        }
+        for part in &parts {
+            frame.rows.push(TextRow { x: text_origin.0 + col as f32 * cell.0, y: text_origin.1, spans: spans.clone(), clip: *part, scale: 1.0, face });
+        }
+    }
+}
+
 /// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
 /// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
 /// inside `area` (the window).
-pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) {
+pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) -> Rect {
     let lines: Vec<&str> = text.lines().collect();
     let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let (w, h) = ((widest + 2) as f32 * cell.0, lines.len() as f32 * cell.1 + 4.0);
@@ -2952,6 +3108,7 @@ pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, ce
     for (i, line) in lines.iter().enumerate() {
         frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
+    r
 }
 
 /// One clipping as the panel draws it: its title and its detail's lines.
@@ -4050,18 +4207,19 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Re
 /// The FPS meter (`iTermMetalPerFrameState.m:2531-2552`): `text` right-aligned on row 0 of the
 /// pane's text area, one cell per character, magenta on near black. Its box goes in `popups`
 /// with the pane's text under it cut out, so the meter replaces that row's cells there.
-pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f32)) {
+pub fn fps_meter(frame: &mut Frame, text: &str, pane_inner: Rect, cell: (f32, f32)) -> Option<Rect> {
     let chars = text.chars().count();
     let w = (chars as f32 * cell.0).min(pane_inner.w);
     let r = Rect { x: pane_inner.x + pane_inner.w - w, y: pane_inner.y, w, h: cell.1 };
     if r.w <= 0.0 {
-        return;
+        return None;
     }
     let to_rgb = |c: [f32; 4]| rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(to_rgb(crate::perf_stats::FPS_BG), 1.0) });
     let span = Span { text: text.to_string(), color: to_rgb(crate::perf_stats::FPS_FG), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     frame.rows.push(TextRow { x: r.x, y: r.y, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    Some(r)
 }
 
 #[cfg(test)]
@@ -4945,6 +5103,12 @@ mod tests {
         assert!(rows.windows(2).all(|w| w[1].y == w[0].y + cell.1));
         // The widest line and a cell each side: "Profile: Default" is 16 characters.
         assert_eq!(b.w, 18.0 * cell.0);
+        // The rectangle it answers is the box (the offscreen band leaves it alone).
+        let mut g = Frame::default();
+        assert_eq!(tab_tooltip(&mut g, "Name: zsh", (100.0, 40.0), window, cell), g.popups[0].rect);
+        let mut g = Frame::default();
+        assert_eq!(fps_meter(&mut g, "60 fps", Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, cell), Some(g.popups[0].rect));
+        assert_eq!(fps_meter(&mut g, "60 fps", Rect { x: 0.0, y: 0.0, w: 0.0, h: 100.0 }, cell), None);
         // A tip that would pass the right edge moves left to fit; past the bottom, up.
         let mut f = Frame::default();
         tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (390.0, 290.0), window, cell);
@@ -5166,6 +5330,21 @@ mod tests {
         assert_eq!(draw(&normal_screen("e\u{301}x", Form::Nfc)), vec![(0.0, "\u{e9}".to_string()), (10.0, "x".to_string())]);
         assert_eq!(draw(&normal_screen("\u{e9}x", Form::Nfd)), vec![(0.0, "e\u{301}".to_string()), (10.0, "x".to_string())]);
         assert_eq!(draw(&normal_screen("e\u{301}x", Form::None)), vec![(0.0, "e\u{301}".to_string()), (10.0, "x".to_string())]);
+    }
+
+    /// S12 (13o x 13p): the offscreen band's text is in the profile's normalization form, like
+    /// the pane's own rows.
+    #[test]
+    fn offscreen_band_normalizes() {
+        use crate::encoding::Form;
+        let band = |s: &Screen| {
+            let mut f = Frame::default();
+            offscreen_band(&mut f, s, RECT, (0.0, 0.0), CELL, 0, ([0.0; 4], [1.0; 4]), crate::render::DEFAULT_FACE, &[]);
+            f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect::<String>()).collect::<Vec<_>>()
+        };
+        assert_eq!(band(&normal_screen("\u{e9}x", Form::Nfd)), vec!["e\u{301}".to_string(), "x".to_string()]);
+        assert_eq!(band(&normal_screen("e\u{301}x", Form::Nfc)), vec!["\u{e9}".to_string(), "x".to_string()]);
+        assert_eq!(band(&normal_screen("e\u{301}x", Form::None)), vec!["e\u{301}".to_string(), "x".to_string()]);
     }
 
     /// 13m bidi and 13j cells: the display order, the cells and the columns of a row are the
@@ -7682,6 +7861,76 @@ mod tests {
         assert!(plain.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "the cursor otherwise");
     }
     #[test]
+    fn offscreen_band_draws_the_command() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"ls -R\r\nnext");
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 160.0, h: 64.0 };
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let (before, overlay) = (f.rows.len(), f.overlay.len());
+        let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
+        let colors = ([0.105, 0.105, 0.105, 0.5], [0.5, 0.5, 0.5, 1.0]);
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, colors, 3, &[]);
+        let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
+        assert!(f.popups.iter().any(|q| q.rect == band && q.color == lin(colors.0)), "{:?}", f.popups);
+        assert!(f.popups.iter().any(|q| q.rect == Rect { h: 1.0, ..band } && q.color == lin(colors.1)));
+        assert!(f.popups.iter().any(|q| q.rect == Rect { y: 31.0, h: 1.0, ..band } && q.color == lin(colors.1)));
+        assert!(f.overlay.len() == overlay && f.quads.iter().all(|q| q.rect != band), "the box is a popup");
+        let row = f.rows.last().unwrap();
+        assert!(f.rows.len() > before);
+        assert_eq!(row.spans.iter().map(|s| s.text.as_str()).collect::<String>(), "ls -R");
+        assert_eq!((row.clip, row.face, row.y), (band, 3, 8.0));
+    }
+
+    #[test]
+    fn offscreen_band_covers_row_zero() {
+        // Row 0 is underlined, struck and box drawn; nothing of it shows inside the band.
+        let mut s = Screen::new(20, 4);
+        s.feed("\x1b[4;9m\u{2500}\u{2502}abc\x1b[0m\r\n\x1b[4mxyz".as_bytes());
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 160.0, h: 64.0 };
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        assert!(!f.glyphs.is_empty() && !f.underlines.is_empty() && !f.strikes.is_empty(), "the fixture draws all three");
+        let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
+        let under = f.rows.len();
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, ([0.1, 0.1, 0.1, 0.5], [0.5, 0.5, 0.5, 1.0]), crate::render::DEFAULT_FACE, &[]);
+        let hit = |r: Rect| r.x < band.x + band.w && r.x + r.w > band.x && r.y < band.y + band.h && r.y + r.h > band.y;
+        assert!(f.underlines.iter().chain(&f.strikes).all(|q| !hit(q.rect)), "strokes: {:?}", f.underlines);
+        assert!(f.glyphs.iter().all(|g| {
+            let c = g.clip;
+            !(hit(g.rect) && c.w > 0.0 && c.h > 0.0 && hit(c))
+        }), "glyphs: {:?}", f.glyphs);
+        assert!(f.rows.iter().enumerate().all(|(i, r)| i >= under || r.clip.w <= 0.0 || !hit(Rect { x: r.clip.x, y: r.y, w: r.clip.w, h: 16.0 })), "rows: {:?}", f.rows.iter().map(|r| (r.y, r.clip, r.spans.iter().map(|s| s.text.clone()).collect::<String>())).collect::<Vec<_>>());
+    }
+
+    /// Task 6 review 2: Tandem's surfaces over the pane's top (an info bar, the find bar, an
+    /// indicator) keep their own pixels: the band's fill and outlines go around them, its text is
+    /// clipped away from them, and what they drew is not cut.
+    #[test]
+    fn offscreen_band_leaves_later_surfaces_alone() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"ls -R\r\nnext");
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 160.0, h: 64.0 };
+        pane_with(&mut f, &s, pane, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let info = Rect { x: 0.0, y: 0.0, w: 160.0, h: 12.0 };
+        let corner = Rect { x: 120.0, y: 12.0, w: 40.0, h: 20.0 };
+        let span = Span { text: "Allow?".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        f.rows.push(TextRow { x: 4.0, y: 0.0, spans: vec![span], clip: info, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        let band = Rect { x: 0.0, y: 0.0, w: 160.0, h: 32.0 };
+        offscreen_band(&mut f, &s, band, (0.0, 8.0), CELL, 0, ([0.1, 0.1, 0.1, 0.5], [0.5, 0.5, 0.5, 1.0]), crate::render::DEFAULT_FACE, &[info, corner]);
+        let touches = |a: Rect, b: Rect| a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        for hole in [info, corner] {
+            assert!(f.popups.iter().all(|q| !touches(q.rect, hole)), "box: {:?}", f.popups);
+        }
+        assert!(f.popups.iter().any(|q| q.rect.w > 0.0), "the band still shows below the info bar");
+        let prompt = f.rows.iter().find(|r| r.spans[0].text == "Allow?").expect("the info bar's text survives");
+        assert_eq!((prompt.x, prompt.clip), (4.0, info));
+        let band_rows: Vec<&TextRow> = f.rows.iter().filter(|r| r.y == 8.0 && r.spans.iter().any(|s| s.text.contains("ls"))).collect();
+        assert!(!band_rows.is_empty() && band_rows.iter().all(|r| !touches(r.clip, info) && !touches(r.clip, corner)), "band text clipped away from the surfaces: {:?}", band_rows.iter().map(|r| r.clip).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn picker_hits_follow_iterm2() {
         let cell = (10.0, 20.0);
         let (fg, bg) = (rgb(0xee, 0xee, 0xee), rgb(0x10, 0x10, 0x10));
@@ -8028,5 +8277,130 @@ mod drawn_overlay_tests {
         scrollbar(&mut dark, &g, Style::Overlay, true, false);
         assert_ne!(dark.scrollbars[0].color[..3], calm.scrollbars[0].color[..3]);
         assert!(over.scrollbars[0].color[3] > calm.scrollbars[0].color[3], "hover is stronger");
+    }
+    /// 13p: the progress gradient is vertical slices of at most 2 pixels in `overlay`, colors
+    /// evenly spaced, alpha kept, cut to the clip.
+    #[test]
+    fn gradient_bar_follows_calayer() {
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let rect = Rect { x: 0.0, y: 4.0, w: 100.0, h: 2.0 };
+        let mut f = Frame::default();
+        gradient_bar(&mut f, rect, &[[0.0, 0.0, 0.0, 0.5], [1.0, 1.0, 1.0, 0.5]], rect);
+        assert!(f.quads.is_empty() && f.popups.is_empty() && f.rows.is_empty());
+        assert_eq!(f.overlay.len(), 50);
+        let mut x = 0.0;
+        for q in &f.overlay {
+            assert_eq!((q.rect.x, q.rect.y, q.rect.w, q.rect.h), (x, 4.0, 2.0, 2.0));
+            assert_eq!(q.color[3], 0.5);
+            x += 2.0;
+        }
+        assert!(f.overlay[0].color[0] < f.overlay[49].color[0]);
+        assert!((f.overlay[0].color[0] - lin(0.01)).abs() < 1e-4, "{:?}", f.overlay[0].color);
+        assert!((f.overlay[49].color[0] - lin(0.99)).abs() < 1e-4);
+        // Three colors sit at 0, 0.5 and 1: the middle slice is the middle color.
+        let mut g = Frame::default();
+        gradient_bar(&mut g, rect, &[[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]], rect);
+        let mid = g.overlay[24].color;
+        assert!(mid[1] > 0.9 && mid[0] < 0.05 && mid[2] < 0.05, "{mid:?}");
+        // One color fills flat; a clip cuts the slices; an odd width ends in a short slice.
+        let mut h = Frame::default();
+        gradient_bar(&mut h, Rect { x: 0.0, y: 0.0, w: 5.0, h: 2.0 }, &[[1.0, 1.0, 1.0, 1.0]], Rect { x: 0.0, y: 0.0, w: 5.0, h: 2.0 });
+        assert_eq!(h.overlay.iter().map(|q| q.rect.w).collect::<Vec<_>>(), vec![2.0, 2.0, 1.0]);
+        let mut c = Frame::default();
+        gradient_bar(&mut c, rect, &[[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]], Rect { x: 10.0, y: 0.0, w: 20.0, h: 100.0 });
+        let spans: Vec<(f32, f32)> = c.overlay.iter().map(|q| (q.rect.x, q.rect.x + q.rect.w)).collect();
+        assert_eq!(spans.first().unwrap().0, 10.0);
+        assert_eq!(spans.last().unwrap().1, 30.0);
+        assert!(c.overlay.iter().all(|q| q.rect.h == 2.0));
+        // Nothing to draw for no colors or no width.
+        let mut e = Frame::default();
+        gradient_bar(&mut e, rect, &[], rect);
+        gradient_bar(&mut e, Rect { w: 0.0, ..rect }, &[[1.0; 4]], rect);
+        assert!(e.overlay.is_empty());
+    }
+    /// 13p: each bar state draws as iTerm2 builds it (`PBV:359-535`).
+    #[test]
+    fn progress_bar_draws_by_state() {
+        use crate::progress::{Anim, Progress};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let rect = Rect { x: 10.0, y: 0.0, w: 100.0, h: 2.0 };
+        let look = |p: Progress| {
+            let mut a = Anim::default();
+            a.update(p, 1.0, t0);
+            (p, a, "default".to_string(), true)
+        };
+        let mut f = Frame::default();
+        progress_bar(&mut f, rect, &look(Progress::Stopped), Some(rgb(1, 2, 3)), rect, t0);
+        assert!(f.overlay.is_empty(), "a stopped bar draws nothing, not even its background");
+        // Determinate: the background, then the gradient from the left to the width.
+        let mut f = Frame::default();
+        progress_bar(&mut f, rect, &look(Progress::Success(50)), Some(rgb(1, 2, 3)), rect, t0);
+        assert_eq!(f.overlay[0], Quad { rect, color: rgba(rgb(1, 2, 3), 1.0) });
+        let right = f.overlay[1..].iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max);
+        assert_eq!(right, 60.0);
+        assert_eq!(f.overlay[1].rect.x, 10.0);
+        assert!(f.overlay[1].color[1] > f.overlay[1].color[0], "the dark default is green");
+        assert!(f.overlay.iter().all(|q| q.rect.h == 2.0 && q.rect.y == 0.0));
+        // Indeterminate: both copies stay inside the bar; the gradient moves with the clock.
+        let mut a = Frame::default();
+        let mut b = Frame::default();
+        let ind = look(Progress::Indeterminate);
+        progress_bar(&mut a, rect, &ind, None, rect, t0 + Duration::from_millis(300));
+        progress_bar(&mut b, rect, &ind, None, rect, t0 + Duration::from_millis(900));
+        assert!(!a.overlay.is_empty() && !b.overlay.is_empty());
+        for q in a.overlay.iter().chain(&b.overlay) {
+            assert!(q.rect.x >= 10.0 && q.rect.x + q.rect.w <= 110.0, "{:?}", q.rect);
+        }
+        assert_ne!(a.overlay, b.overlay);
+        // Error: base colors at rest, light colors at the top of the pulse.
+        let err = look(Progress::Error);
+        let (mut rest, mut top) = (Frame::default(), Frame::default());
+        progress_bar(&mut rest, rect, &err, None, rect, t0);
+        progress_bar(&mut top, rect, &err, None, rect, t0 + Duration::from_millis(800));
+        assert_eq!(rest.overlay.len(), top.overlay.len());
+        assert!(top.overlay[0].color[1] > rest.overlay[0].color[1], "{:?} {:?}", top.overlay[0].color, rest.overlay[0].color);
+        // A clip narrower than the bar cuts it.
+        let mut c = Frame::default();
+        progress_bar(&mut c, rect, &look(Progress::Success(100)), None, Rect { x: 30.0, y: 0.0, w: 20.0, h: 2.0 }, t0);
+        assert!(c.overlay.iter().all(|q| q.rect.x >= 30.0 && q.rect.x + q.rect.w <= 50.0));
+    }
+
+    /// 13p: a tab's cell draws its bar 2 points high at its top (`PSMTabBarProgressBarHeight`),
+    /// inside the cell; a tab with no progress draws none.
+    #[test]
+    fn tab_cell_draws_its_progress_bar() {
+        use crate::progress::{Anim, Progress};
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let pal = palette(
+            TabStyle::Light,
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 2 },
+        );
+        let mut anim = Anim::default();
+        anim.update(Progress::Success(50), 1.0, std::time::Instant::now());
+        let mut looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let mut plain = Frame::default();
+        tab_bar(&mut plain, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        assert!(plain.overlay.is_empty());
+        looks[1].progress = Some((Progress::Success(50), anim, "default".into(), false));
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        let cell = Rect { x: area.x + bar.cells[1].2.x, y: area.y + bar.cells[1].2.y, w: bar.cells[1].2.w, h: bar.cells[1].2.h };
+        assert!(!f.overlay.is_empty());
+        for q in &f.overlay {
+            assert_eq!((q.rect.y, q.rect.h), (cell.y, TAB_PROGRESS_PT), "{:?}", q.rect);
+            assert!(q.rect.x >= cell.x && q.rect.x + q.rect.w <= cell.x + cell.w, "{:?} in {cell:?}", q.rect);
+        }
+        let right = f.overlay.iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max);
+        assert!((right - (cell.x + cell.w / 2.0)).abs() < 0.01, "half the cell: {right} of {cell:?}");
     }
 }

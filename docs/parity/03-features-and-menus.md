@@ -397,7 +397,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 133 ; F (semantic text end) | Marks the end of semantic text. | have, parsed and ignored, as iTerm2 does |
 | OSC 133 ; G (progress) | Updates or clears a progress indicator/percentage shown for the running command. | have, parsed and ignored, as iTerm2 does |
 | OSC 9 ; &lt;text&gt; | Posts a plain notification with the text (iTerm2's Growl-style OSC 9). | have, milestone 6b |
-| OSC 9 ; 4 ; &lt;state&gt; ; &lt;progress&gt; | Shows or clears a progress bar for the session. | partial, milestone 6b: parsed, and the Progress Bar Changed event trigger fires; no bar is drawn yet |
+| OSC 9 ; 4 ; &lt;state&gt; ; &lt;progress&gt; | Shows or clears a progress bar for the session. | have, milestone 13p: iTerm2's thin bar at the pane top (or in the tab cell with several tabs; no taskbar button), all states and colors; a bare 9;4 and RIS stop it; the Progress Bar Changed event still fires |
 | OSC 133 ; H (terminal command) | Sends an arbitrary terminal command token to the delegate. | have, parsed and ignored, as iTerm2 does |
 | OSC 7 ; file://user@host/path | Reports the current directory, user, and host as a URL; iTerm2's current shell scripts use it instead of 1337;CurrentDir and RemoteHost. Without a machineID it also marks a prompt. | have |
 | OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a 4-on, 3-off dashed underline at the underline position (Settings > Advanced > Underline OSC 8 hyperlinks switches it); Win-click opens them; the right-click menu and a pointer action copy the address |

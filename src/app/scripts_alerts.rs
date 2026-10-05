@@ -71,6 +71,8 @@ pub(super) enum Answer {
 pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
     match then {
         Then::SlowScan => Answer::Button(1),
+        // Neither: a close never changes the person's locale.
+        Then::LocaleMismatch { .. } => Answer::Closed,
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
@@ -235,6 +237,10 @@ pub(super) enum Then {
     /// and binds the scheme to the profile `guid` once Windows reports Tandem as the handler;
     /// Cancel (1) does nothing. A closed window cancels: a close never changes Windows.
     BindScheme { guid: String, scheme: String },
+    /// "Wrong Encoding Detected" for the custom `locale` of profile `guid` under a UTF-8 profile:
+    /// Change Locale (0) asks for another, Keep This Locale (1) keeps it, storing it when
+    /// `from_settings` (a pick made in Settings). A closed window does neither.
+    LocaleMismatch { guid: String, locale: String, from_settings: bool },
 }
 
 impl Then {
@@ -540,6 +546,7 @@ impl App {
                 }
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
+            Then::LocaleMismatch { guid, locale, from_settings } => self.locale_mismatch_answered(guid, locale, from_settings, index),
             Then::BindScheme { guid, scheme } => {
                 if index == 0 {
                     self.bind_scheme_confirmed(&guid, &scheme);
@@ -732,5 +739,18 @@ mod tests {
         assert_eq!(a.spec.cancel, Some(1), "Escape is Cancel");
         let mut queue: VecDeque<Ask> = (0..LIMIT).map(|_| ask("H", "T", &["OK"], None, Kind::Persistent, Then::Nothing)).collect();
         assert!(push_capped(&mut queue, a).is_none());
+    }
+
+    /// The wrong-encoding warning (13p Task 3): a closed window changes nothing; its spec is
+    /// iTerm2's, permanently silenceable under the profile's own identifier.
+    #[test]
+    fn locale_mismatch_warning_is_iterm2s() {
+        let then = Then::LocaleMismatch { guid: "G".into(), locale: "C".into(), from_settings: true };
+        assert_eq!(on_close(&then, 0), Answer::Closed);
+        let a = ask(crate::locale_guess::MISMATCH_HEADING, crate::locale_guess::MISMATCH_TEXT, &[crate::locale_guess::CHANGE_LOCALE, crate::locale_guess::KEEP_LOCALE], Some(&crate::locale_guess::mismatch_id("G")), crate::warnings::Kind::Permanent, then);
+        assert_eq!(a.spec.id.as_deref(), Some("NoSyncUTF8Mismatch_G"));
+        assert_eq!(a.spec.cancel, None);
+        assert!(a.spec.never_remember.is_empty());
+        assert!(!a.then.capped());
     }
 }

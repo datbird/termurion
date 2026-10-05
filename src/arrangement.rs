@@ -610,6 +610,10 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 if !get("Initial Text").is_empty() {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} types: {}", get("Initial Text")));
                 }
+                let mut shown = prof.clone();
+                if !without_network_folders(&mut shown).is_empty() {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network path (a folder, icon, image or ssh file); Tandem ignores it."));
+                }
                 if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
                     lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
                 }
@@ -622,6 +626,24 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
     lines.push(String::new());
     lines.push("Open it only if you trust where it came from.".into());
     lines.join("\n")
+}
+
+pub use crate::start_dir::PATH_KEYS;
+
+/// Empties every path of an arrangement's embedded profile that names a network or device path
+/// (`\\host`, `//host`, `\\?\`), however it is padded, and drops such a program or file from
+/// its SSH dictionary: Windows connects to the host, so a file from elsewhere could make the
+/// person's PC authenticate to it. The profile the person typed themselves keeps its UNC path;
+/// one from a file never does (`start_dir::scrub_value` is the one filter every such ingress
+/// uses). Returns the keys changed.
+pub fn without_network_folders(copy: &mut Table) -> Vec<String> {
+    let mut gone = Vec::new();
+    for key in crate::start_dir::SCRUBBED_KEYS {
+        if copy.get_mut(key).is_some_and(|v| crate::start_dir::scrub_value(key, v)) {
+            gone.push(key.to_string());
+        }
+    }
+    gone
 }
 
 /// Windows marks a downloaded file with a Zone.Identifier stream (its quarantine flag).
@@ -907,6 +929,65 @@ mod tests {
         let mut empty = Vec::new();
         plist::Value::Array(vec![plist::Value::String("x".into())]).to_writer_xml(&mut empty).unwrap();
         assert!(from_plist(&empty).is_err(), "an array without windows");
+    }
+
+    #[test]
+    fn embedded_profiles_lose_network_folders() {
+        let mut t = Table::new();
+        for (k, v) in [("Working Directory", r"\\evil\share"), ("AWDS Window Directory", "//evil/share"), ("AWDS Tab Directory", r"\\?\UNC\evil\s"), ("AWDS Pane Directory", r"D:\ok"), ("Name", r"\\keep")] {
+            t.insert(k.into(), Value::String(v.into()));
+        }
+        let mut gone = without_network_folders(&mut t);
+        gone.sort();
+        assert_eq!(gone, ["AWDS Tab Directory", "AWDS Window Directory", "Working Directory"]);
+        for k in ["Working Directory", "AWDS Window Directory", "AWDS Tab Directory"] {
+            assert_eq!(t[k].as_str(), Some(""), "{k}");
+        }
+        assert_eq!(t["AWDS Pane Directory"].as_str(), Some(r"D:\ok"), "a drive folder stays");
+        assert_eq!(t["Name"].as_str(), Some(r"\\keep"), "only folder keys are looked at");
+        // Whitespace or quotes in front do not hide it from the filter (`resolve` trims first).
+        for (i, v) in [" \\\\evil\\share", "\t//evil/share", "\n\\\\?\\UNC\\evil\\s", "\"\\\\evil\\share\""].into_iter().enumerate() {
+            let key = PATH_KEYS[i];
+            let mut t = Table::new();
+            t.insert(key.into(), Value::String(v.into()));
+            assert_eq!(without_network_folders(&mut t), [key], "{v:?}");
+            assert_eq!(t[key].as_str(), Some(""));
+        }
+        // Every other path key of the embedded profile too (Task 4 ruling), and the SSH files.
+        let mut t = Table::new();
+        for k in ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"] {
+            t.insert(k.into(), Value::String(r"\\evil\s".into()));
+        }
+        let mut ssh = Table::new();
+        ssh.insert("pathToSSH".into(), Value::String(r"\\evil\ssh.exe".into()));
+        t.insert("SSH".into(), Value::Table(ssh));
+        let mut gone = without_network_folders(&mut t);
+        gone.sort();
+        assert_eq!(gone, ["Archive Directory", "Background Image Folder Location", "Background Image Location", "Custom Icon Path", "Log Directory", "SSH"]);
+        assert!(t["SSH"].as_table().unwrap().get("pathToSSH").is_none());
+        // A saved arrangement's `~` or interpolated folder stays too.
+        let mut t = Table::new();
+        t.insert("Working Directory".into(), Value::String(r"~\src".into()));
+        assert!(without_network_folders(&mut t).is_empty());
+    }
+
+    #[test]
+    fn trust_text_names_a_network_folder() {
+        let mut p = Table::new();
+        p.insert("Name".into(), Value::String("Ops".into()));
+        p.insert("AWDS Tab Directory".into(), Value::String(r"\\evil\share".into()));
+        let t = trust_text("x.itermarrangement", &one_window(p));
+        assert!(t.contains("Ops") && t.contains("network path"), "{t}");
+    }
+
+    /// The copy an arrangement's profile becomes is filtered before it can start a session.
+    #[test]
+    fn arrangement_copy_drops_network_folders() {
+        let src = include_str!("app/arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let i = src.find("fn arrangement_copy(").expect("arrangement_copy");
+        let body = src[i..].split("\n    }\n").next().unwrap();
+        assert!(body.contains("arrangement::without_network_folders(&mut table);"));
+        assert!(body.find("without_network_folders").unwrap() < body.find("copy.set(").unwrap());
     }
 
     #[test]

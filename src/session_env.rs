@@ -1,6 +1,8 @@
 //! The session environment (`PS:3246-3350`): the variables a new session's shell gets from
 //! Tandem, and the Windows environment block that carries them with the inherited ones. Pure.
 
+use crate::palette::Rgb;
+
 /// The session restoration key that keeps a session's cookie (iTerm2's
 /// `SESSION_ARRANGEMENT_REUSABLE_COOKIE`, `PS:7395-7396`), so a shell that comes back keeps a
 /// cookie that works.
@@ -123,12 +125,13 @@ pub fn overlay(vars: Vec<String>, extra: &[String]) -> Vec<String> {
 
 /// `extra`'s `NAME=value` entries over `base`: a name already there (compared ignoring case,
 /// as Windows compares names) is replaced, with the extra's spelling; the result is sorted by
-/// the uppercase name, as Windows keeps an environment block. `NEVER_INHERITED` names in
+/// the uppercase name, as Windows keeps an environment block. An extra entry holding a NUL is
+/// dropped whole (B3): it would split the block into a second variable. `NEVER_INHERITED` names in
 /// `base` are dropped, whether or not `extra` sets them.
 pub fn merge(base: Vec<(String, String)>, extra: &[String]) -> Vec<(String, String)> {
     let mut out = base;
     out.retain(|(n, _)| !NEVER_INHERITED.iter().any(|x| n.eq_ignore_ascii_case(x)));
-    for e in extra {
+    for e in extra.iter().filter(|e| !e.contains('\0')) {
         // The name ends at the first `=` after its first character: a drive's current folder
         // is kept as `=C:=C:\x`.
         let Some(at) = e.char_indices().skip(1).find(|(_, c)| *c == '=').map(|(i, _)| i) else { continue };
@@ -141,10 +144,122 @@ pub fn merge(base: Vec<(String, String)>, extra: &[String]) -> Vec<(String, Stri
     out
 }
 
+/// The `COLORFGBG` value (`PS:5505-5535`): the last ANSI color equal to the foreground and the
+/// last equal to the background as `fg;bg`; with no match for either, `15;0` when the
+/// foreground is brighter (HSB brightness) than the background and `0;15` otherwise, if
+/// `fallback` (`UseColorfgbgFallback`) is on, else nothing.
+pub fn colorfgbg(ansi: &[Rgb; 16], fg: Rgb, bg: Rgb, fallback: bool) -> Option<String> {
+    let (mut fg_at, mut bg_at) = (None, None);
+    for (i, c) in ansi.iter().enumerate() {
+        if *c == fg {
+            fg_at = Some(i);
+        }
+        if *c == bg {
+            bg_at = Some(i);
+        }
+    }
+    if let (Some(f), Some(b)) = (fg_at, bg_at) {
+        return Some(format!("{f};{b}"));
+    }
+    // HSB brightness is the largest component.
+    let brightness = |c: Rgb| c.r.max(c.g).max(c.b);
+    fallback.then(|| if brightness(fg) > brightness(bg) { "15;0" } else { "0;15" }.to_string())
+}
+
+/// The POSIX variables Tandem adds to a session beside `vars`.
+#[derive(Clone, Debug, Default)]
+pub struct Posix {
+    pub colorfgbg: Option<String>,
+    /// `LANG` or `LC_CTYPE`, in the order to set.
+    pub locale: Vec<(String, String)>,
+    /// The Windows path of Tandem's terminfo folder, for a WSL session only.
+    pub terminfo: Option<String>,
+    /// Tandem's own `WSLENV`, kept so a user's setup is not lost.
+    pub inherited_wslenv: Option<String>,
+    /// A WSL session that gets 13o's `TERM` (the profile's Terminal Type): `WSLENV` names it, as
+    /// WSL imports no Windows variable it does not list (P17). The `TERM=` entry itself is
+    /// `term_var`'s.
+    pub wsl_term: bool,
+}
+
+/// `WSLENV` with `add`'s `(name, flags)` entries appended after `inherited`'s; a name already
+/// listed (ignoring ASCII case, flags aside) is not added again.
+pub fn wslenv(inherited: Option<&str>, add: &[(&str, &str)]) -> String {
+    let name = |e: &str| e.split('/').next().unwrap_or("").to_string();
+    let mut out: Vec<String> = inherited.unwrap_or("").split(':').filter(|e| !e.is_empty()).map(str::to_string).collect();
+    for (n, flags) in add {
+        if !out.iter().any(|e| name(e).eq_ignore_ascii_case(n)) {
+            out.push(if flags.is_empty() { n.to_string() } else { format!("{n}/{flags}") });
+        }
+    }
+    out.join(":")
+}
+
+/// The POSIX variables as `NAME=value`: `COLORFGBG`, the locale pairs, `TERMINFO_DIRS`, then
+/// `WSLENV` naming each added variable so WSL passes it on; no `WSLENV` when nothing was added.
+pub fn posix_vars(p: &Posix) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut added: Vec<(&str, &str)> = Vec::new();
+    if let Some(c) = &p.colorfgbg {
+        out.push(format!("COLORFGBG={c}"));
+        added.push(("COLORFGBG", ""));
+    }
+    for (n, v) in &p.locale {
+        out.push(format!("{n}={v}"));
+        added.push((n, ""));
+    }
+    if let Some(t) = &p.terminfo {
+        out.push(format!("TERMINFO_DIRS={t}"));
+        // `/p`: WSL translates the Windows path to its own.
+        added.push(("TERMINFO_DIRS", "p"));
+    }
+    if p.wsl_term {
+        added.push(("TERM", ""));
+    }
+    if !added.is_empty() {
+        out.push(format!("WSLENV={}", wslenv(p.inherited_wslenv.as_deref(), &added)));
+    }
+    out
+}
+
+/// Whether the command line starts `wsl.exe` or `wslhost.exe`: its first token, quotes
+/// stripped, file name lowercased without `.exe`. A distribution launcher (`ubuntu.exe`) is not
+/// recognized.
+pub fn is_wsl(cmdline: &str) -> bool {
+    let line = cmdline.trim_start();
+    let first = match line.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(""),
+        None => line.split_whitespace().next().unwrap_or(""),
+    };
+    let file = first.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
+    let stem = file.strip_suffix(".exe").unwrap_or(&file);
+    matches!(stem, "wsl" | "wslhost")
+}
+
+/// Whether `path` is a UNC or device path (`\\host\share`, `//host`): never probed or written
+/// from the UI thread.
+pub fn is_unc(path: &str) -> bool {
+    let p = path.trim_start();
+    p.starts_with("\\\\") || p.starts_with("//")
+}
+
+/// The roaming application data folder (`%APPDATA%`), or `None` when it is not set or is a
+/// network path (folder redirection): Tandem writes its terminfo and the PowerShell
+/// integration script only to a local folder (P12).
+pub fn appdata_local() -> Option<std::path::PathBuf> {
+    appdata_local_from(std::env::var("APPDATA").ok().as_deref())
+}
+
+/// `appdata_local` over a given `%APPDATA%` value.
+pub fn appdata_local_from(appdata: Option<&str>) -> Option<std::path::PathBuf> {
+    appdata.filter(|a| !a.trim().is_empty() && !is_unc(a)).map(std::path::PathBuf::from)
+}
+
 /// The pairs as a `CREATE_UNICODE_ENVIRONMENT` block: `NAME=value\0` each, then a final `\0`.
 pub fn block(pairs: &[(String, String)]) -> Vec<u16> {
     let mut out = Vec::new();
     for (name, value) in pairs {
+        debug_assert!(!name.contains('\0') && !value.contains('\0'), "a NUL would split the block");
         out.extend(name.encode_utf16());
         out.push(u16::from(b'='));
         out.extend(value.encode_utf16());
@@ -236,6 +351,109 @@ mod tests {
         assert_eq!(merge(base.clone(), &["X=1".into()]), pairs(&[("Path", "a"), ("X", "1")]), "no cookie of Tandem's: none at all");
         assert_eq!(merge(base, &["ITERM2_COOKIE=mine".into()]), pairs(&[("ITERM2_COOKIE", "mine"), ("Path", "a")]), "only the cookie minted for the session");
         assert_eq!(merge(Vec::new(), &[]), Vec::<(String, String)>::new());
+    }
+
+
+    fn rgbs() -> [Rgb; 16] {
+        std::array::from_fn(|i| crate::palette::rgb(i as u8 * 10, i as u8 * 10, i as u8 * 10))
+    }
+
+    #[test]
+    fn colorfgbg_follows_iterm2() {
+        let a = rgbs();
+        assert_eq!(colorfgbg(&a, a[15], a[0], false).as_deref(), Some("15;0"));
+        assert_eq!(colorfgbg(&a, a[15], a[0], true).as_deref(), Some("15;0"));
+        // The last match wins.
+        let mut dup = a;
+        dup[7] = dup[15];
+        assert_eq!(colorfgbg(&dup, a[15], a[0], false).as_deref(), Some("15;0"));
+        assert_eq!(colorfgbg(&dup, a[15], a[1], false).as_deref(), Some("15;1"));
+        let mut both = a;
+        both[3] = both[0];
+        assert_eq!(colorfgbg(&both, a[15], a[0], false).as_deref(), Some("15;3"), "the last background match");
+        // No match: the fallback by brightness, or nothing.
+        let (bright, dark, mid) = (crate::palette::rgb(250, 251, 252), crate::palette::rgb(1, 2, 3), crate::palette::rgb(0, 0, 77));
+        assert_eq!(colorfgbg(&a, bright, dark, false), None);
+        assert_eq!(colorfgbg(&a, bright, dark, true).as_deref(), Some("15;0"));
+        assert_eq!(colorfgbg(&a, dark, bright, true).as_deref(), Some("0;15"));
+        assert_eq!(colorfgbg(&a, mid, mid, true).as_deref(), Some("0;15"), "equal brightness");
+        // The brightness is the largest component (HSB), not the average.
+        assert_eq!(colorfgbg(&a, crate::palette::rgb(200, 0, 0), crate::palette::rgb(100, 100, 100), true).as_deref(), Some("15;0"));
+        // A match for one side only is no match.
+        assert_eq!(colorfgbg(&a, a[15], dark, true).as_deref(), Some("15;0"));
+        assert_eq!(colorfgbg(&a, a[15], dark, false), None);
+    }
+
+    #[test]
+    fn posix_vars_follow_iterm2() {
+        let full = Posix {
+            colorfgbg: Some("15;0".into()),
+            locale: vec![("LANG".into(), "en_US.UTF-8".into())],
+            terminfo: Some(r"C:\A\Tandem\terminfo".into()),
+            inherited_wslenv: None,
+            wsl_term: false,
+        };
+        assert_eq!(posix_vars(&full), ["COLORFGBG=15;0", "LANG=en_US.UTF-8", r"TERMINFO_DIRS=C:\A\Tandem\terminfo", "WSLENV=COLORFGBG:LANG:TERMINFO_DIRS/p"]);
+        assert_eq!(posix_vars(&Posix::default()), Vec::<String>::new());
+        let lc = Posix { locale: vec![("LC_CTYPE".into(), "UTF-8".into())], ..Posix::default() };
+        assert_eq!(posix_vars(&lc), ["LC_CTYPE=UTF-8", "WSLENV=LC_CTYPE"]);
+        let kept = Posix { colorfgbg: Some("0;15".into()), inherited_wslenv: Some("USERPROFILE/p".into()), ..Posix::default() };
+        assert_eq!(posix_vars(&kept), ["COLORFGBG=0;15", "WSLENV=USERPROFILE/p:COLORFGBG"]);
+        for yes in ["wsl.exe", r#""C:\Windows\System32\wsl.exe" -d Ubuntu"#, "WSL", "wslhost.exe --x", r"C:\Windows\System32\WSL.EXE -d x", "  wsl  "] {
+            assert!(is_wsl(yes), "{yes}");
+        }
+        for no in ["pwsh.exe", r"C:\msys64\usr\bin\bash.exe --login", "cmd.exe", "ubuntu.exe", "", "wsl2.exe", r"C:\x\notwsl.exe", r"C:\wsl.exe\cmd.exe"] {
+            assert!(!is_wsl(no), "{no}");
+        }
+    }
+
+    /// P17: a WSL session given 13o's `TERM` lists it in `WSLENV` (no flag: a name, not a
+    /// path), after Tandem's own entries and once even when the inherited value names it.
+    #[test]
+    fn wslenv_lists_term_for_wsl() {
+        let full = Posix {
+            colorfgbg: Some("15;0".into()),
+            locale: vec![("LANG".into(), "en_US.UTF-8".into())],
+            terminfo: Some(r"C:\A\Tandem\terminfo".into()),
+            inherited_wslenv: None,
+            wsl_term: true,
+        };
+        assert_eq!(posix_vars(&full).last().map(String::as_str), Some("WSLENV=COLORFGBG:LANG:TERMINFO_DIRS/p:TERM"));
+        let only = Posix { wsl_term: true, ..Posix::default() };
+        assert_eq!(posix_vars(&only), ["WSLENV=TERM"], "TERM alone still needs WSLENV");
+        let kept = Posix { wsl_term: true, inherited_wslenv: Some("term/u:X".into()), ..Posix::default() };
+        assert_eq!(posix_vars(&kept), ["WSLENV=term/u:X"], "a user's own TERM entry is kept as written");
+        assert!(!posix_vars(&Posix::default()).iter().any(|v| v.contains("TERM")));
+    }
+
+    #[test]
+    fn wslenv_appends_once() {
+        assert_eq!(wslenv(Some("USERPROFILE/p:lang"), &[("LANG", ""), ("COLORFGBG", "")]), "USERPROFILE/p:lang:COLORFGBG");
+        assert_eq!(wslenv(Some(""), &[("TERMINFO_DIRS", "p")]), "TERMINFO_DIRS/p");
+        assert_eq!(wslenv(None, &[]), "");
+        assert_eq!(wslenv(Some("A/l::B"), &[]), "A/l:B", "empty entries go");
+        assert_eq!(wslenv(None, &[("X", ""), ("x", "p")]), "X", "added once");
+    }
+
+    #[test]
+    fn merge_drops_entries_with_a_nul() {
+        // B3: a NUL inside an extra entry would split the environment block.
+        let evil = "ITERM_PROFILE=a\0PATH=x".to_string();
+        assert_eq!(merge(pairs(&[("Path", "a")]), &[evil.clone()]), pairs(&[("Path", "a")]));
+        assert_eq!(merge(Vec::new(), &["LANG=x\0PATH=C:\\evil".into(), "OK=1".into(), "A\0B=1".into()]), pairs(&[("OK", "1")]));
+        // A name ends at its first `=` after its first character, so a value holding `=` is
+        // one variable, never two.
+        assert_eq!(merge(Vec::new(), &["LANG=a=b".into()]), pairs(&[("LANG", "a=b")]));
+        assert_eq!(merge(Vec::new(), &["=".into(), "".into(), "=x".into()]), Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn appdata_refuses_network_paths() {
+        assert_eq!(appdata_local_from(Some(r"C:\Users\a\AppData\Roaming")), Some(std::path::PathBuf::from(r"C:\Users\a\AppData\Roaming")));
+        for no in [None, Some(""), Some("  "), Some(r"\\host\home\a"), Some("//host/home"), Some(r"\\?\UNC\h\s")] {
+            assert_eq!(appdata_local_from(no), None, "{no:?}");
+        }
+        assert!(is_unc(r"\\h\s") && !is_unc(r"C:\h"));
     }
 
     #[test]

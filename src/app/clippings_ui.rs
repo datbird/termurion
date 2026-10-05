@@ -117,6 +117,20 @@ impl App {
         }
     }
 
+    /// The rectangles `draw_clippings` covers: each panel and a shown preview (the preview takes
+    /// the pane's whole text area).
+    pub(super) fn clip_holes(&self) -> Vec<Rect> {
+        let mut out = Vec::new();
+        for (id, panel) in self.clip_panels() {
+            out.push(panel);
+            let Some(c) = self.clips.get(&id) else { continue };
+            if let (true, Some(tab)) = (c.preview && !c.selected.is_empty(), self.tabs.get(self.active)) {
+                out.extend(self.visible(tab).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r));
+            }
+        }
+        out
+    }
+
     /// Where a dragged row lands: the row index it goes before and the line's y.
     fn clip_drop(&self, l: &clippings::Layout, y: f32) -> (usize, f32) {
         for (i, r) in l.rows.iter().enumerate() {

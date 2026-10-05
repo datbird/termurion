@@ -60,11 +60,7 @@ impl App {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
                     if let Some(io) = self.panes.get(&id).and_then(|p| p.tmux_io()) {
                         let mut info = io.info.borrow_mut();
-                        match what {
-                            crate::tmux_controller::Info::Title => info.title = value,
-                            crate::tmux_controller::Info::Job => info.job = value,
-                            crate::tmux_controller::Info::Cwd => info.cwd = value,
-                        }
+                        info.store(what, value);
                     }
                     self.redraw();
                 }
@@ -775,6 +771,7 @@ impl App {
         self.panes.insert(id, pane);
         self.apply_emu_rules(id);
         self.apply_new_pane_defaults(id);
+        self.apply_session_start(id);
         let sixteen = self.emu_rules().color_16;
         // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
         let job = profile.int("Icon") != 0;

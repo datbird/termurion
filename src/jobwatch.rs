@@ -10,7 +10,7 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForMultipleObjects};
 
 use crate::proctree::{self, Job, Proc};
 use crate::toolbelt_tools::SignalWay;
@@ -19,6 +19,12 @@ use crate::toolbelt_tools::SignalWay;
 /// process cache rates).
 pub const FAST: Duration = Duration::from_millis(500);
 pub const SLOW: Duration = Duration::from_secs(5);
+/// The most handles one wait takes (`WaitForMultipleObjects` allows 64; one is kept spare).
+pub const MAX_WAIT: usize = 63;
+/// The shortest time between two looks, so a handle that stays signaled (an exited process
+/// something else still holds open) can never make the watcher spin.
+const MIN_LOOK: Duration = Duration::from_millis(50);
+const SYNCHRONIZE: u32 = 0x0010_0000;
 
 fn os_err(what: &str) -> String {
     format!("{what} failed: {}", std::io::Error::last_os_error())
@@ -197,6 +203,40 @@ pub fn snapshot_trees(roots: &[u32], trees: &[u32], cache: &mut Cache) -> Result
     Ok((procs, out))
 }
 
+/// The processes the watcher waits on: with the key on, each watched shell's foreground job
+/// (the shell itself when it runs the job), sorted, once each, at most `MAX_WAIT`; off, none.
+pub fn wait_pids(jobs: &HashMap<u32, ShellJob>, on: bool) -> Vec<u32> {
+    if !on {
+        return Vec::new();
+    }
+    let mut pids: Vec<u32> = jobs.values().filter_map(|j| j.job.as_ref().map(|j| j.pid)).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    pids.truncate(MAX_WAIT);
+    pids
+}
+
+/// Waits until any of `pids` exits or `gap` passes. Handles are opened fresh and closed on
+/// return, so no pid is held past its process's end; a pid that cannot be opened (gone, or
+/// not ours) is skipped, and with no handle this is a plain sleep.
+pub fn wait_any(pids: &[u32], gap: Duration) {
+    let handles: Vec<HANDLE> = pids.iter().take(MAX_WAIT).filter_map(|&pid| {
+        let h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        (!h.is_null()).then_some(h)
+    }).collect();
+    if handles.is_empty() {
+        std::thread::sleep(gap);
+        return;
+    }
+    let ms = gap.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+    unsafe {
+        WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, ms);
+        for h in handles {
+            CloseHandle(h);
+        }
+    }
+}
+
 /// What the window knows about one shell's job.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShellJob {
@@ -211,6 +251,9 @@ struct Shared {
     roots: HashSet<u32>,
     jobs: HashMap<u32, ShellJob>,
     fast: bool,
+    /// `FastForegroundJobUpdates`: the wait between looks ends when a watched foreground job
+    /// exits. Off, the watcher only polls.
+    fast_updates: bool,
     error: Option<String>,
     /// Shells whose whole tree the Jobs tool shows, and each one's last tree.
     trees_wanted: HashSet<u32>,
@@ -244,18 +287,18 @@ pub struct JobWatch {
 
 impl JobWatch {
     pub fn start(notify: Arc<dyn Fn() + Send + Sync>) -> JobWatch {
-        let shared = Arc::new(Mutex::new(Shared { fast: true, ..Default::default() }));
+        let shared = Arc::new(Mutex::new(Shared { fast: true, fast_updates: true, ..Default::default() }));
         let weak = Arc::downgrade(&shared);
         std::thread::spawn(move || {
             let mut cache = Cache::default();
             loop {
                 let Some(shared) = weak.upgrade() else { return };
-                let (roots, trees, fast, shells) = {
+                let (roots, trees, fast, shells, waits) = {
                     let s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let trees: Vec<u32> = s.trees_wanted.iter().copied().collect();
                     let roots: Vec<u32> = s.roots.union(&s.trees_wanted).copied().collect();
                     let shells = if s.read_debounce.is_some() { console_targets(&s.consoles) } else { Vec::new() };
-                    (roots, trees, s.fast, shells)
+                    (roots, trees, s.fast, shells, wait_pids(&s.jobs, s.fast_updates))
                 };
                 drop(shared);
                 if !shells.is_empty() {
@@ -316,7 +359,13 @@ impl JobWatch {
                         notify();
                     }
                 }
-                std::thread::sleep(if fast { FAST } else { SLOW });
+                // A job that ends wakes the next look at once (iTerm2's process exit source);
+                // a job that starts is found by the look after the plain gap.
+                let began = std::time::Instant::now();
+                wait_any(&waits, if fast { FAST } else { SLOW });
+                if let Some(rest) = MIN_LOOK.checked_sub(began.elapsed()) {
+                    std::thread::sleep(rest);
+                }
             }
         });
         JobWatch { shared }
@@ -388,6 +437,12 @@ impl JobWatch {
     /// line input on); false when unknown.
     pub fn password_input(&self, shell: u32) -> bool {
         self.lock().prompts.get(&shell).is_some_and(|d| d.on)
+    }
+
+    /// `FastForegroundJobUpdates`: on, a watched foreground job's exit ends the wait at once;
+    /// off, plain polling from the next look.
+    pub fn set_fast_updates(&self, on: bool) {
+        self.lock().fast_updates = on;
     }
 
     /// Tandem in front: look every 0.5 s; else every 5 s.
@@ -540,6 +595,42 @@ mod tests {
         assert_eq!(subsystem(b"not a program"), None);
         assert!(is_gui_exe(r"C:\Windows\notepad.exe"));
         assert!(!is_gui_exe(r"C:\Windows\System32\cmd.exe"));
+    }
+
+    fn job_of(pid: u32) -> ShellJob {
+        ShellJob { job: Some(Job { name: String::new(), title: String::new(), cmdline: String::new(), pid }), ..Default::default() }
+    }
+
+    /// Review Focus 9: the wait set follows the rule.
+    #[test]
+    fn wait_pids_follow_the_rule() {
+        let jobs: HashMap<u32, ShellJob> = [(10, job_of(11)), (20, job_of(20)), (30, ShellJob::default())].into_iter().collect();
+        assert_eq!(wait_pids(&jobs, true), vec![11, 20]);
+        assert_eq!(wait_pids(&jobs, false), Vec::<u32>::new());
+        let many: HashMap<u32, ShellJob> = (0..100u32).map(|i| (1000 + i, job_of(500 - i))).collect();
+        let got = wait_pids(&many, true);
+        assert_eq!(got.len(), MAX_WAIT);
+        assert_eq!(got, (0..MAX_WAIT as u32).map(|i| 401 + i).collect::<Vec<_>>(), "the smallest 63");
+        let same: HashMap<u32, ShellJob> = [(1, job_of(7)), (2, job_of(7))].into_iter().collect();
+        assert_eq!(wait_pids(&same, true), vec![7], "once each");
+    }
+
+    #[test]
+    fn watcher_wakes_on_job_exit() {
+        use std::time::Instant;
+        let mut child = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", "Start-Sleep -Milliseconds 300"]).spawn().expect("spawn");
+        let t = Instant::now();
+        wait_any(&[child.id()], Duration::from_secs(5));
+        assert!(t.elapsed() < Duration::from_secs(2), "woke on exit, not on the gap: {:?}", t.elapsed());
+        let _ = child.wait();
+        let t = Instant::now();
+        wait_any(&[4_000_000_000], Duration::from_millis(100));
+        let e = t.elapsed();
+        assert!(e >= Duration::from_millis(90) && e < Duration::from_secs(1), "a gone pid waits the gap: {e:?}");
+        let t = Instant::now();
+        wait_any(&[], Duration::from_millis(50));
+        let e = t.elapsed();
+        assert!(e >= Duration::from_millis(40) && e < Duration::from_secs(1), "{e:?}");
     }
 
     #[test]

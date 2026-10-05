@@ -389,6 +389,15 @@ pub mod api_misc;
 pub mod api_notify;
 pub mod session_env;
 pub mod session_end;
+pub mod start_dir;
+pub mod shell_inject;
+pub mod sleep_guard;
+pub mod offscreen;
+pub mod progress;
+pub mod locale_guess;
+#[cfg(windows)]
+pub mod locale_win;
+pub mod terminfo;
 #[cfg(windows)]
 pub mod api_server;
 pub mod ai_settings;

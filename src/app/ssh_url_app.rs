@@ -33,8 +33,19 @@ pub(super) fn click_plan(remote: bool, url: &str, bound: Option<&str>) -> Option
 /// used unchanged). The URL path is never a profile key: it is a remote folder, and the copy's
 /// Working Directory feeds the local folder check (ruling r1, revised P9).
 pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crate::ssh_url::Settings) -> Result<Option<Vec<(String, Option<toml::Value>)>>, crate::ssh_url::UrlError> {
-    let Some(changed) = crate::ssh_url::profile_for_url(base, url, s)? else { return Ok(None) };
-    let values = changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+    let Some(changed) = crate::ssh_url::profile_for_url(base, url, s)? else {
+        // A profile with a command of its own is used unchanged, but an ssh: launch still never
+        // types its Initial Text (`iTermController.m:2188`).
+        let is_ssh = url.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"));
+        let blank = is_ssh && !base.string("Initial Text").is_empty();
+        return Ok(blank.then(|| vec![("Initial Text".to_string(), Some(toml::Value::String(String::new())))]));
+    };
+    let mut values: Vec<(String, Option<toml::Value>)> = changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+    // A link from a web page never types the person's Initial Text into the host it names
+    // (iTerm2 blanks it for URL launches, `iTermController.m:2188`); an empty text stays unchanged.
+    if !base.string("Initial Text").is_empty() {
+        values.push(("Initial Text".to_string(), Some(toml::Value::String(String::new()))));
+    }
     Ok(Some(values))
 }
 
@@ -250,6 +261,29 @@ mod session_tests {
         }
     }
 
+    /// B2: the copy a URL opens types no Initial Text, whether or not it changes anything else,
+    /// and a profile with none gains no key.
+    #[test]
+    fn url_session_sends_no_initial_text() {
+        for integration in [true, false] {
+            for url in PROBE_URLS {
+                let mut base = Profile::default();
+                base.set("Initial Text", toml::Value::String("echo hi".to_string()));
+                let Ok(Some(values)) = session_values(&base, url, &settings(integration)) else { continue };
+                let mut copy = base.clone();
+                for (k, v) in values {
+                    if let Some(v) = v {
+                        copy.set(&k, v);
+                    }
+                }
+                assert_eq!(copy.string("Initial Text"), "", "{url} (integration {integration})");
+                let plain = Profile::default();
+                let Ok(Some(values)) = session_values(&plain, url, &settings(integration)) else { continue };
+                assert!(values.iter().all(|(k, _)| k != "Initial Text"), "{url}: an empty text adds no key");
+            }
+        }
+    }
+
     /// A path that starts `//` or `\\` after decoding drops the cd part in both modes.
     #[test]
     fn a_unc_looking_path_drops_the_cd_part() {
@@ -270,5 +304,21 @@ mod session_tests {
         let body = &src[src.find("fn open_ssh_url").unwrap()..src.find("fn receive_url").unwrap()];
         assert!(body.contains("self.forget_session_profile(copy)") && body.contains("add_session_copy"));
         assert!(!body.contains("store.get_mut"), "the shared profile never changes");
+    }
+
+    /// iTerm2 blanks Initial Text for every ssh: launch, also when the bound profile has a
+    /// command of its own and the link changes nothing else (`profile_for_url` leaves it unchanged).
+    #[test]
+    fn a_custom_command_profile_gets_no_initial_text_from_a_url() {
+        let mut base = Profile::default();
+        base.set("Custom Command", toml::Value::String("Yes".into()));
+        base.set("Command", toml::Value::String("mytool".into()));
+        base.set("Initial Text", toml::Value::String("echo hi".into()));
+        let values = session_values(&base, "ssh://h/", &settings(true)).unwrap().expect("a copy with the text blanked");
+        assert_eq!(values, vec![("Initial Text".to_string(), Some(toml::Value::String(String::new())))]);
+        let mut plain = base.clone();
+        plain.set("Initial Text", toml::Value::String(String::new()));
+        assert_eq!(session_values(&plain, "ssh://h/", &settings(true)).unwrap(), None, "nothing to blank, the profile is used as it is");
+        assert_eq!(session_values(&base, "https://example.com/", &settings(true)).unwrap(), None, "only ssh: links");
     }
 }

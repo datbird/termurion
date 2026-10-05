@@ -176,7 +176,7 @@ section = "Advanced working directory"
 label = "Advanced working directory (window) option"
 type = "enum"
 default = "No"
-choices = [ { value = "No", label = "Home" }, { value = "Yes", label = "Custom" }, { value = "Recycle", label = "Reuse previous session's directory" }, { value = "Advanced", label = "Advanced" } ]
+choices = [ { value = "No", label = "Home" }, { value = "Yes", label = "Custom" }, { value = "Recycle", label = "Reuse previous session's directory" } ]
 help = "Sets a working-directory rule specific to new windows from this profile."
 light_dark = false
 macos_only = false
@@ -199,7 +199,7 @@ section = "Advanced working directory"
 label = "Advanced working directory (tab) option"
 type = "enum"
 default = "No"
-choices = [ { value = "No", label = "Home" }, { value = "Yes", label = "Custom" }, { value = "Recycle", label = "Reuse previous session's directory" }, { value = "Advanced", label = "Advanced" } ]
+choices = [ { value = "No", label = "Home" }, { value = "Yes", label = "Custom" }, { value = "Recycle", label = "Reuse previous session's directory" } ]
 help = "Sets a working-directory rule specific to new tabs from this profile."
 light_dark = false
 macos_only = false
@@ -222,7 +222,7 @@ section = "Advanced working directory"
 label = "Advanced working directory (pane) option"
 type = "enum"
 default = "No"
-choices = [ { value = "No", label = "Home" }, { value = "Yes", label = "Custom" }, { value = "Recycle", label = "Reuse previous session's directory" }, { value = "Advanced", label = "Advanced" } ]
+choices = [ { value = "No", label = "Home" }, { value = "Yes", label = "Custom" }, { value = "Recycle", label = "Reuse previous session's directory" } ]
 help = "Sets a working-directory rule specific to new split panes from this profile."
 light_dark = false
 macos_only = false
@@ -365,7 +365,7 @@ section = ""
 label = "Load shell integration automatically"
 type = "bool"
 default = false
-help = "Automatically injects the shell integration script for supported shells (bash, fish, xonsh, zsh) at session start."
+help = "Automatically injects the shell integration script at session start: for PowerShell here, and for the shells of an SSH integration session (zsh, fish and xonsh) on the remote host."
 light_dark = false
 macos_only = false
 

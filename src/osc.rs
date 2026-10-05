@@ -73,7 +73,7 @@ pub enum Osc {
     /// OSC 9: a notification's text.
     Notify(String),
     /// OSC 9;4: a progress bar (its state and value).
-    Progress(String),
+    Progress(Option<String>),
     /// A sequence a setting may drop or rewrite (milestone 13o).
     Held(crate::emu::Held),
     /// OSC 72: the kitty drag-and-drop protocol, everything after `72;` (13o Task 9).
@@ -517,6 +517,9 @@ fn arg<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
 }
 
+/// How many characters of an OSC 9;4 body are kept (state, value and a few more fields).
+const PROGRESS_KEPT: usize = 64;
+
 /// Reads one OSC payload (the part between `ESC ]` and the terminator).
 pub fn parse(payload: &str) -> Option<Osc> {
     let (head, rest) = payload.split_once(';')?;
@@ -554,8 +557,14 @@ pub fn parse(payload: &str) -> Option<Osc> {
         }
         "7" => Some(Osc::Location(rest.to_string())),
         "9" => {
-            if let Some(p) = rest.strip_prefix("4;") {
-                return Some(Osc::Progress(p.to_string()));
+            // OSC 9;4 (`TDEL:1607-1660`): the first field reads as the number 4; a bare `9;4`
+            // has no more and stops the bar. Only the fields progress reads are kept.
+            let (n, tail) = match rest.split_once(';') {
+                Some((n, tail)) => (n, Some(tail)),
+                None => (rest, None),
+            };
+            if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n.trim_start_matches('0') == "4" {
+                return Some(Osc::Progress(tail.map(|t| t.chars().take(PROGRESS_KEPT).collect())));
             }
             // ConEmu's subcommands (`9;<n>;...`, which Windows shells send): 9;9 reports the
             // current folder (quoted or not); the others are not notifications.
@@ -582,6 +591,22 @@ pub fn parse(payload: &str) -> Option<Osc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 13p (R3): a bare `9;4` means "stopped" (`TDEL:1655-1657`); it was read as a ConEmu
+    /// subcommand and dropped, leaving a bar up.
+    #[test]
+    fn bare_progress_stops() {
+        let mut s = Scanner::default();
+        let ev = s.scan(b"\x1b]9;4\x07\x1b]9;4;\x07\x1b]9;4;1;5\x07");
+        assert_eq!(ev.len(), 3);
+        assert!(matches!(&ev[0].1, Osc::Progress(None)));
+        assert!(matches!(&ev[1].1, Osc::Progress(Some(b)) if b.is_empty()));
+        assert!(matches!(&ev[2].1, Osc::Progress(Some(b)) if b == "1;5"));
+        // The ConEmu forms around it are unchanged: 9;9 reports the folder, 9;5 is dropped.
+        let ev = s.scan(b"\x1b]9;5\x07\x1b]9;9;\"C:\\x\"\x07");
+        assert_eq!(ev.len(), 1);
+        assert!(matches!(&ev[0].1, Osc::Kv(k, v) if k == "CurrentDir" && v == "C:\\x"));
+    }
 
     #[test]
     fn finds_133_7_and_1337() {

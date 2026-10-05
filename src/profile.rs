@@ -301,25 +301,10 @@ pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::
     start_dir_probing(p, previous, &|d| d.is_dir())
 }
 
-/// `start_dir_with`, with the local folder check given (tests record what it is asked).
+/// `start_dir_with`, with the local folder check given (tests record what it is asked). A
+/// tab's directory (`start_dir::resolve`), without interpolation: the app expands for a session.
 pub fn start_dir_probing(p: &Profile, previous: Option<&std::path::Path>, is_dir: &dyn Fn(&std::path::Path) -> bool) -> (std::path::PathBuf, Option<String>) {
-    let home = home();
-    if p.string("Custom Directory") == "Recycle" {
-        return (previous.filter(|d| is_dir(d)).map(|d| d.to_path_buf()).unwrap_or(home), None);
-    }
-    let wanted = p.string("Working Directory");
-    if p.string("Custom Directory") != "Yes" || wanted.trim().is_empty() {
-        return (home, None);
-    }
-    let dir = match wanted.trim().strip_prefix('~') {
-        Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
-        None => std::path::PathBuf::from(wanted.trim()),
-    };
-    if is_dir(&dir) {
-        (dir, None)
-    } else {
-        (home, Some(format!("Start directory {wanted} does not exist; using your home folder.")))
-    }
+    crate::start_dir::resolve(&crate::start_dir::mode(p, crate::start_dir::Object::Tab), previous, &home(), &|t| t.to_string(), is_dir)
 }
 
 #[cfg(test)]

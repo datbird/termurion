@@ -174,6 +174,7 @@ impl App {
         if targets.is_empty() || !self.enter_pane_window(me) {
             return;
         }
+        let jiggle = self.globals.bool("JiggleTTYSizeOnClearBuffer");
         for t in targets {
             // A replaying pane's buffer is not touched (its replay view has no shell).
             if self.panes.get(&t).is_some_and(|p| p.replay.is_some()) {
@@ -185,7 +186,7 @@ impl App {
             }
             if let Some(p) = self.panes.get_mut(&t) {
                 if clear {
-                    p.clear();
+                    crate::pane::clear_then_jiggle(p, jiggle);
                 } else {
                     p.screen.soft_reset();
                 }

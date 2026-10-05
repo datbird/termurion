@@ -22,8 +22,9 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         return None;
     }
     // Stricter than iTerm2: the Answerback String is typed back into the input on ENQ, so only
-    // the person's own profile may set it, never a program (13o Task 6 review).
-    if key == "Answerback String" {
+    // the person's own profile may set it, never a program (13o Task 6 review); Restart
+    // Session types the Initial Text, so the same holds for it (13p final review).
+    if key == "Answerback String" || key == "Initial Text" {
         return None;
     }
     let s = schema::find(key)?;
@@ -33,6 +34,9 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         (Kind::Float, J::Number(n)) => Value::Float(n.as_f64()?),
         // A program may only point the background image at a local file.
         (Kind::String, J::String(t)) if matches!(key, "Background Image Location" | "Background Image Folder Location") && !t.is_empty() && !local_path_ok(t) => return None,
+        // Nor may it start sessions in, log to, archive to or read an icon from a network path:
+        // Windows connects to the host.
+        (Kind::String, J::String(t)) if crate::start_dir::PATH_KEYS.contains(&key) && crate::start_dir::network_value(key, t) => return None,
         (Kind::String | Kind::Font, J::String(t)) => Value::String(t.clone()),
         (Kind::Enum, J::Number(n)) => {
             let v = Value::Integer(n.as_i64()?);
@@ -527,6 +531,12 @@ mod tests {
         assert_eq!(UPLOAD_CANCEL, b"\x03");
         assert_eq!(UPLOAD_OK, b"ok\n");
     }
+    /// 13p final review: Restart Session types the Initial Text, so a program can never set it.
+    #[test]
+    fn a_program_cannot_set_the_initial_text() {
+        assert_eq!(valid("Initial Text", &serde_json::json!("rm -rf ~\r")), None);
+    }
+
     /// 13o Task 6 fix: a program can never set the Answerback String.
     #[test]
     fn a_program_cannot_set_the_answerback() {
@@ -579,5 +589,28 @@ mod tests {
         assert_eq!(open_url(&b("C:\\Users\\me\\x.xll")), None);
         assert_eq!(open_url(&b("file://localhost/C:/x.xll")), None);
         assert_eq!(open_url(&b("ms-settings:privacy")), None);
+    }
+
+    /// A program never sets a network log, archive, icon or image path either (Task 4 ruling).
+    #[test]
+    fn a_program_cannot_set_any_network_path() {
+        for key in ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"] {
+            for bad in [" \\\\evil\\share", "//evil/s", "\"\\\\evil\\s\""] {
+                assert_eq!(valid(key, &serde_json::json!(bad)), None, "{key} {bad:?}");
+            }
+        }
+        assert!(valid("Log Directory", &serde_json::json!("D:\\logs")).is_some());
+        assert!(valid("Custom Icon Path", &serde_json::json!("D:\\i.png")).is_some());
+    }
+
+    /// A program (OSC 1337 SetProfileProperty) never sets a network start folder.
+    #[test]
+    fn a_program_cannot_set_a_network_start_folder() {
+        for key in crate::start_dir::PATH_KEYS {
+            for bad in [" \\\\evil\\share", "//evil/s", "\"\\\\evil\\s\""] {
+                assert_eq!(valid(key, &serde_json::json!(bad)), None, "{key} {bad:?}");
+            }
+            assert!(valid(key, &serde_json::json!("D:\\ok")).is_some(), "{key}");
+        }
     }
 }
