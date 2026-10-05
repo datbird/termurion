@@ -46,7 +46,7 @@ and 200% display scale. Mark each line pass or fail.
 |---|---|---|
 | 16 | Stock profile with Cascadia Code: `echo '-> != === www'` shows plain separate characters (no joined arrows). | |
 | 17 | ASCII Ligatures on, Cascadia Code: the same line joins `->`, `!=` and `===`; letters beside an arrow (`a->b`) never join it; "www" never joins while Advanced "Improves drawing performance..." is on. With that key off, letter ligatures may form in fonts that have them. | |
-| 18 | ASCII Ligatures on, put the cursor on a ligature (block, then bar and underline): a block cursor on a ligature splits it per cell; a ligature is also broken by a color change (`printf '-\e[31m>\e[0m'`) and by selecting half of it. | |
+| 18 | ASCII Ligatures on, put the cursor on a ligature (block, then bar and underline): a block cursor on a ligature splits it per cell (a bar or underline cursor leaves it whole); a ligature is also broken by a color change (`printf '-\e[31m>\e[0m'`) and by selecting half of it. | |
 | 19 | Advanced "Enable contextual alternates" off with ASCII Ligatures on in Cascadia Code: arrows stay unjoined; on: joined. | |
 | 20 | Courier New or another blacklisted family: never a ligature even with the switch on. | |
 | 21 | Non-ASCII Ligatures with a Nerd Font: a run of private-use symbols draws as one piece; Arabic still joins as before with the switch off. | |
@@ -98,3 +98,14 @@ and 200% display scale. Mark each line pass or fail.
 | 47 | Export then Import a .json file round-trips; a file naming a missing font or malformed text shows iTerm2's alert text. | |
 | 48 | A range U+E000 to U+F8FF mapped to a Nerd Font draws the icons in that font while the text stays in the main font. With U+E0B0 to U+E0FF mapped and Draw Powerline Glyphs off, the arrows draw in that font; with it on they stay Tandem's. | |
 | 49 | A destination entry (start U+41, destination U+10000): `printf '\xf0\x90\x80\x80'` draws "A" from the chosen font; copying the selection copies the original character. Make Text Bigger on a pane with a sized entry grows that entry too. | |
+| 50 | Import a .json file with overlapping ranges and an entry starting below U+80 (hand-written): it imports, the window lists every row, an edit that still overlaps another is refused, OK keeps every row; the earlier start draws an overlapped code point and nothing in ASCII is drawn from the table. | |
+| 51 | In a destination entry, an end past U+10FFFF in the font's own run (start U+10FFF0, end U+110010, destination U+1000) shows "End is higher than U+110000, the maximum Unicode code point." | |
+
+## Final review fixes
+
+| # | Check | Result |
+|---|---|---|
+| 52 | A pane zoomed with Make Text Bigger several times: a toast, a tooltip or a menu over its right part hides the pane's text fully, with no line half drawn through it. | |
+| 53 | Restore a window whose pane had a scrollbar and timestamps on: the shell is not resized right after attaching (no second prompt redraw). | |
+| 54 | Reduce Flicker on, zoom the pane while a TUI hides the cursor: no flash of old-size text. | |
+| 55 | U+E0A1 (LN) has hard edges (no gray pixels); U+E0A0 keeps its smooth edges. | |
