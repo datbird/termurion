@@ -6,6 +6,13 @@
 use super::*;
 use crate::progress::{self, Progress};
 
+/// The bars that can be seen: of the animating candidates, only those in a window that is on
+/// screen (front tab, or any tab when the tab bar shows progress). A stuck indeterminate bar in a
+/// minimized or hidden window, another tab or a buried pane asks for no frames.
+fn drawn(candidates: Vec<PaneId>, on_screen: &std::collections::HashSet<PaneId>) -> Vec<PaneId> {
+    candidates.into_iter().filter(|id| on_screen.contains(id)).collect()
+}
+
 impl App {
     /// Moves every pane's animation clock to what its program last reported. The clock counts
     /// in fractions of the bar, so a resize never restarts an ease. Run at the start of a frame,
@@ -68,7 +75,8 @@ impl App {
     /// and nothing at all (the loop sleeps) when no bar moves. Run in `about_to_wait`.
     pub(super) fn tick_progress(&mut self) {
         let now = Instant::now();
-        let running: Vec<PaneId> = self.panes.iter().filter(|(id, p)| p.screen.progress.visible() && p.progress_anim.animating(now) && self.progress_profile(**id).0).map(|(id, _)| *id).collect();
+        let candidates: Vec<PaneId> = self.panes.iter().filter(|(id, p)| p.screen.progress.visible() && p.progress_anim.animating(now) && self.progress_profile(**id).0).map(|(id, _)| *id).collect();
+        let running = if candidates.is_empty() { candidates } else { drawn(candidates, &self.panes_on_screen()) };
         if running.is_empty() {
             self.progress_frame = None;
             return;
@@ -81,6 +89,29 @@ impl App {
         }
     }
 
+    /// The panes whose bar can be seen: in this window and in each parked window that is on
+    /// screen (not minimized or hidden), the front tab's panes, and the other tabs' too when the
+    /// tab bar shows (its cell draws their bar). A buried or stashed pane is in no tab.
+    fn panes_on_screen(&self) -> std::collections::HashSet<PaneId> {
+        let mut out = std::collections::HashSet::new();
+        let (front, back) = self.tab_panes_here();
+        out.extend(front);
+        if self.tabs.len() > 1 {
+            out.extend(back);
+        }
+        for (_, s) in self.windows.parked() {
+            let up = s.gpu.as_ref().is_some_and(|g| super::frames_ui::window_on_screen(g.window.is_visible(), g.window.is_minimized(), s.hotkey.as_ref().map(|h| h.shown)));
+            if up {
+                let (front, back) = super::frames_ui::split_tabs(s.tabs.iter().map(|t| t.layout.panes()).collect(), s.active);
+                out.extend(front);
+                if s.tabs.len() > 1 {
+                    out.extend(back);
+                }
+            }
+        }
+        out
+    }
+
     /// When the next bar frame is due, None when no bar animates (set by `tick_progress`).
     pub(super) fn progress_wake(&self) -> Option<Instant> {
         self.progress_frame
@@ -89,6 +120,17 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A bar nobody can see asks for no frames (review of Task 7, item 1).
+    #[test]
+    fn only_a_seen_bar_asks_for_frames() {
+        let seen: std::collections::HashSet<PaneId> = [1, 2].into_iter().collect();
+        assert_eq!(drawn(vec![1, 3], &seen), vec![1]);
+        assert!(drawn(vec![3], &seen).is_empty(), "a hidden window's indeterminate bar");
+        assert!(drawn(vec![1], &Default::default()).is_empty(), "nothing on screen");
+    }
+
     /// The bars' wiring: the clocks move before the tab bar's looks are made, the inline bar
     /// is drawn inside the pane's iteration, and the frame deadline joins the one `wake`
     /// minimum (no second timer) and stops when nothing animates.
