@@ -38,12 +38,6 @@ pub const SPECIAL_FONT_CONFIG: &str = crate::font_table::KEY;
 /// The stored key View > Size Changes Update Profile toggles (`kPreferenceKeySizeChangesAffectProfile`).
 pub const SIZE_CHANGES_AFFECT_PROFILE: &str = "Size Changes Affect Profile";
 
-/// The columns and rows `rect` (width, height) holds at `cell`, with the margins taken out
-/// (`margins::grid_size`): the one path a pane's pixels become a grid.
-pub fn grid_for(rect: (f32, f32), cell: (f32, f32), margins: (f32, f32)) -> (u16, u16) {
-    margins::grid_size(rect, cell, margins)
-}
-
 /// The cell under a point of a pane whose text area starts at `origin`, and which half of the
 /// cell it is in.
 pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: u32, rows: u32) -> (u32, u32, Side) {
@@ -716,14 +710,6 @@ mod tests {
         faces.ensure(&mut r, [(2, FaceKey::new("Cascadia Mono", None, 64.0, 1.0, 1.0))]);
         assert_eq!(faces.face(2), Some(id));
         assert!(faces.cell(2).unwrap().0 > own.0 * 1.8);
-    }
-
-    #[test]
-    fn pane_cells_follow_faces() {
-        // 13l's default margins at scale 1: 5 points a side and 2 above and below.
-        let margins = (margins::px(5, 1.0), margins::px(2, 1.0));
-        assert_eq!(grid_for((1000.0, 500.0), (10.0, 20.0), margins), (99, 24));
-        assert_eq!(grid_for((1000.0, 500.0), (8.0, 16.0), margins), (123, 31));
     }
 
     #[test]

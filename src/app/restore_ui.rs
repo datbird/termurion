@@ -165,9 +165,10 @@ impl App {
         let host = self.host.clone().ok_or("no session host is running")?;
         let p = self.profile(guid);
         let cell = self.profile_cell(&p);
-        let (cols, rows) = fonts_ui::grid_for((rect.w, rect.h), cell, self.margins());
-        let (pty, _from, dropped) = host.attach(host_id, pid, since, self.notify.clone())?;
+        // The grid is less the pane's room (scrollbar strip, timestamps), as every new pane's is.
         let id = self.next_id;
+        let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
+        let (pty, _from, dropped) = host.attach(host_id, pid, since, self.notify.clone())?;
         self.next_id += 1;
         let mut pane = Pane::attached(id, pty, cols, rows);
         if let Some(c) = &cookie {

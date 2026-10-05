@@ -452,7 +452,7 @@ impl App {
             None => {
                 let cell = self.profile_cell(&profile);
                 let area = self.content_area();
-                fonts_ui::grid_for((area.w, area.h), cell, self.margins())
+                self.grid_size_in(area, cell, self.pane_room_for(self.next_id, &profile))
             }
         };
         let id = self.next_id;

@@ -791,6 +791,21 @@ mod tests {
         assert!(body(MOD, "grid_size_in").contains("margins::pane_grid("), "the one path");
     }
 
+    /// 13n final 2: a restored or replayed pane starts at the grid its room leaves (13m's scrollbar
+    /// strip and timestamp column), or its first layout resizes the shell (a second SIGWINCH and
+    /// a reflow). Every pixel-to-grid conversion goes through `grid_size_in`, never `grid_for`.
+    #[test]
+    fn restored_and_replayed_panes_start_at_their_room() {
+        let restore = body(include_str!("restore_ui.rs"), "attach_pane");
+        assert!(restore.contains("grid_size_in(") && restore.contains("pane_room_for("), "a restored shell starts less its room");
+        let replay = body(include_str!("replay_ui.rs"), "import_recording");
+        assert!(replay.contains("grid_size_in(") && replay.contains("pane_room_for("), "a replayed recording starts less its room");
+        for (name, text) in [("mod.rs", MOD), ("restore_ui.rs", include_str!("restore_ui.rs")), ("replay_ui.rs", include_str!("replay_ui.rs")), ("sizing_ui.rs", include_str!("sizing_ui.rs")), ("windows_ui.rs", include_str!("windows_ui.rs")), ("tmux_tabs_ui.rs", include_str!("tmux_tabs_ui.rs"))] {
+            let production = text.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+            assert!(!production.contains("grid_for("), "{name} sizes a grid without the room");
+        }
+    }
+
     /// 13m Task 7: the bar is drawn per pane, routes its press, drag and wheel before the report
     /// path, keeps the arrow over it, and follows a style change at the places Windows tells us.
     #[test]
