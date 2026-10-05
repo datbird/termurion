@@ -425,6 +425,10 @@ struct CellLook {
     mask: u8,
     /// The cursor is on this cell: a ligature never joins it to a neighbor.
     cursor: bool,
+    /// The terminal made the cell two columns (`Flags::WIDE_CHAR`): 13o's width rules widen
+    /// cells unicode-width calls narrow (ambiguous, VS16, lone flags), so this, not the text's
+    /// width, keeps a wide cell out of a ligature group (S2).
+    wide: bool,
     /// The cell joins its neighbors when drawn (an Arabic letter in a right-to-left run): its
     /// run is one text piece, so the font can pick the joining forms.
     joins: bool,
@@ -454,10 +458,11 @@ fn bidi_control(c: char) -> bool {
 }
 
 /// A one-column non-ASCII cell that Non-ASCII Ligatures may group with its neighbors (P7): wide
-/// characters and emoji keep their own piece, and so do bidi controls.
-fn groupable(text: &str) -> bool {
+/// characters and emoji keep their own piece, and so do bidi controls. A cell the terminal made
+/// wide never groups, whatever unicode-width says of its text (S2).
+fn groupable(c: &CellLook) -> bool {
     use unicode_width::UnicodeWidthStr;
-    !text.is_ascii() && text.width() == 1 && !text.chars().any(bidi_control)
+    !c.wide && !c.text.is_ascii() && c.text.width() == 1 && !c.text.chars().any(bidi_control)
 }
 
 /// The Special Font Config entry (1 plus its index) that draws a cell, and the code point it
@@ -493,7 +498,7 @@ fn piece_continues(prev: &CellLook, next: &CellLook, group: bool) -> bool {
     if prev.joins || next.joins {
         return prev.joins && next.joins;
     }
-    !ligature_break(prev, next) && if next.text.is_ascii() { prev.text.is_ascii() } else { group && groupable(&next.text) && groupable(&prev.text) }
+    !ligature_break(prev, next) && if next.text.is_ascii() { prev.text.is_ascii() } else { group && groupable(next) && groupable(prev) }
 }
 
 /// Whether a ligature must not join `prev` and `next`, two neighboring cells: only when one of
@@ -833,7 +838,7 @@ pub fn pane_with(
     let orders: Vec<Option<std::sync::Arc<crate::bidi::Order>>> = (0..lines).map(|row| screen.row_order(row as i32 - display_offset).filter(|o| o.lut.len() <= cols)).collect();
     let visual_col = |row: usize, col: usize| orders.get(row).and_then(|o| o.as_ref()).and_then(|o| o.lut.get(col)).map_or(col, |&v| v as usize);
     let cursor = cursor_at.map(|(row, col)| (row, visual_col(row, col)));
-    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, joins: false, table: None };
+    let blank = || CellLook { ul: None, text: " ".into(), fg: palette.fg, bg: palette.bg, bold: false, italic: false, selected: false, level: cell_level(" ", draw), mask: cell_mask(" ", draw, dark(palette.fg, palette.bg)), cursor: false, wide: false, joins: false, table: None };
     let mut grid: Vec<Vec<CellLook>> = (0..lines).map(|_| (0..cols).map(|_| blank()).collect()).collect();
     for indexed in content.display_iter {
         let Some(vp) = point_to_viewport(content.display_offset, indexed.point) else { continue };
@@ -933,7 +938,10 @@ pub fn pane_with(
         if hidden || blink_off {
             text.push(' ');
         } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-            text.push(c.c);
+            // U+200B in a cell of its own (13o, Zero-Width Space Advances Cursor) draws as a
+            // space: a zero-advance glyph in a shaped run would pull the text after it one cell
+            // left (S3).
+            text.push(if c.c == '\u{200B}' { ' ' } else { c.c });
             if let Some(extra) = c.zerowidth() {
                 text.extend(extra);
             }
@@ -960,6 +968,7 @@ pub fn pane_with(
             mask,
             // The logical cursor cell (the row is not in display order yet); only a block cursor breaks a ligature.
             cursor: block_cursor && cursor_at == Some((row, col)),
+            wide: c.flags.contains(Flags::WIDE_CHAR),
             joins: false,
             table: None,
         };
@@ -1068,7 +1077,7 @@ pub fn pane_with(
                 }
             }
             let ascii = c.text.is_ascii();
-            let joinable = group && groupable(&c.text);
+            let joinable = group && groupable(c);
             // What the cell draws: the table's code point in place of the sent one.
             let shown = shown_text(c);
             // The previous cell, when it is the one right before (a wide character's spacer is empty).
@@ -5102,6 +5111,39 @@ mod tests {
         assert_eq!(bidi, vec![(0.0, vec![("\u{e0b0}\u{200f}".to_string(), 2)]), (10.0, vec![("\u{e0b1}".to_string(), 2)])]);
     }
 
+    /// S2 (13n x 13o): a cell the terminal made wide groups with nothing, even when
+    /// unicode-width calls its text one column (an ambiguous character under Ambiguous Double
+    /// Width, a lone regional indicator).
+    #[test]
+    fn ligature_groups_skip_wide_cells() {
+        use crate::fonts::LigatureRules;
+        let prefs = DrawPrefs { ligatures: LigatureRules { ascii: false, non_ascii: true, prefer_speed: true, level: 2 }, ..DrawPrefs::default() };
+        let pieces = |s: &Screen| {
+            let mut f = Frame::default();
+            pane_with(&mut f, s, RECT, CELL, false, &CursorLook::shown(false), &prefs, None, crate::render::DEFAULT_FACE);
+            f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| s.text.trim_end().to_string()).collect::<String>())).collect::<Vec<_>>()
+        };
+        // Two narrow Thai letters group (the control case).
+        assert_eq!(pieces(&screen("\u{e01}\u{e02}".as_bytes())), vec![(0.0, "\u{e01}\u{e02}".to_string())]);
+        let ambiguous = crate::screen::Look { ambiguous_wide: true, ..crate::screen::Look::default() };
+        let mut s = Screen::with_look(80, 24, crate::palette::Palette::default(), ambiguous);
+        s.feed("\u{e01}\u{a7}\u{e02}".as_bytes());
+        assert_eq!(pieces(&s), vec![(0.0, "\u{e01}".to_string()), (10.0, "\u{a7}".to_string()), (30.0, "\u{e02}".to_string())]);
+        let flag = screen("\u{e01}\u{1f1e6}\u{e02}".as_bytes());
+        assert_eq!(pieces(&flag), vec![(0.0, "\u{e01}".to_string()), (10.0, "\u{1f1e6}".to_string()), (30.0, "\u{e02}".to_string())]);
+    }
+
+    /// S3 (13n x 13o): U+200B in a cell of its own draws as a space, so the ASCII run around it
+    /// stays one piece and every later character keeps its column.
+    #[test]
+    fn zwsp_cell_keeps_columns() {
+        let s = screen("a\u{200B}b".as_bytes());
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), None, crate::render::DEFAULT_FACE);
+        let rows: Vec<(f32, String)> = f.rows.iter().map(|r| (r.x, r.spans.iter().map(|s| s.text.trim_end().to_string()).collect())).collect();
+        assert_eq!(rows, vec![(0.0, "a b".to_string())]);
+    }
+
     fn table_prefs(non_ascii: bool, extra: &[crate::font_table::Entry]) -> DrawPrefs {
         use crate::font_table::{Config, Entry};
         let mut entries = vec![
@@ -7051,7 +7093,7 @@ mod tests {
         assert_eq!(find(&f, 0.0), Some(red));
         assert_eq!(find(&f, 10.0), Some(rgba(green, 1.0)));
         // The default color is the cell's final text color: a selected cell's.
-        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, mask: 0, cursor: false, joins: false, table: None }], None);
+        let runs = underline_runs(&[CellLook { ul: Some(Ul { style: crate::underline::Style::Single, strike: false, sgr: None }), text: "a".into(), fg: rgb(1, 2, 3), bg: rgb(0, 0, 0), bold: false, italic: false, selected: false, level: 0, mask: 0, cursor: false, wide: false, joins: false, table: None }], None);
         assert_eq!(runs[0].color, rgb(1, 2, 3));
     }
 

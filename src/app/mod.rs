@@ -4059,9 +4059,9 @@ impl App {
                         reframe.push(id);
                     }
                     // DEC mode 2048 (13o Task 6): the new grid and the text area it covers in
-                    // physical pixels, written after the pty was resized.
-                    let px = ((f32::from(rows) * ch).round() as u32, (f32::from(cols) * cw).round() as u32);
-                    if let Some(report) = p.resize_report_if_on(rows, cols, px) {
+                    // physical pixels from the pane's own cell (13n), written after the pty
+                    // was resized.
+                    if let Some(report) = p.resize_report_if_on(rows, cols, resize_report_px(rows, cols, (cw, ch))) {
                         resize_reports.push((id, report));
                     }
                 }
@@ -6307,9 +6307,30 @@ fn menu_should_hide(full_screen: bool, hide_key: bool) -> bool {
     full_screen && hide_key
 }
 
+/// DEC mode 2048: the text area a `rows` x `cols` grid covers in physical pixels, from the
+/// pane's own cell (13n: each pane has its own face), as (height, width).
+fn resize_report_px(rows: u16, cols: u16, (cw, ch): (f32, f32)) -> (u32, u32) {
+    ((f32::from(rows) * ch).round() as u32, (f32::from(cols) * cw).round() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DEC mode 2048 x 13n: the report's pixel size is the grid times the pane's OWN cell (its
+    /// face, Make Text Bigger), the same cell its grid was sized from, never the window's.
+    #[test]
+    fn resize_report_uses_the_pane_cell() {
+        assert_eq!(resize_report_px(24, 80, (10.0, 20.0)), (480, 800));
+        assert_eq!(resize_report_px(12, 40, (20.5, 40.25)), (483, 820));
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("    fn relayout(&mut self) {").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.contains(".map(|(id, rect)| (id, self.grid_size_for(id, rect), self.pane_cell(id)))"), "sizes carry each pane's cell");
+        assert!(body.contains("for (id, (cols, rows), (cw, ch)) in sizes {"));
+        assert!(body.contains("p.resize_report_if_on(rows, cols, resize_report_px(rows, cols, (cw, ch)))"), "the report reads the tuple's cell");
+        assert!(!body.contains("self.cell()"), "relayout never reads the window cell");
+    }
 
     #[test]
     fn menu_bar_hides_in_full_screen() {
