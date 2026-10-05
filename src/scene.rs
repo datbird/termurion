@@ -2277,6 +2277,9 @@ pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
 /// starts, and so do those rows' underline and strikethrough strokes (the rule for every surface
 /// that cuts text: its strokes go with it, or a program's SGR 4 line draws through the surface).
 pub fn cut_rows_from(frame: &mut Frame, r: Rect, line_h: f32) {
+    // The box itself cuts every stroke under it, rows with text or not (a row of underlined
+    // spaces pushes no text row).
+    cut_quads(frame, r);
     let mut bands: Vec<Rect> = Vec::new();
     for row in frame.rows.iter_mut() {
         if row.y < r.y + r.h && row.y + line_h > r.y && row.clip.x + row.clip.w > r.x {
@@ -5736,6 +5739,29 @@ mod tests {
         timestamps(&mut f, &[(3, "12:00:00".to_string())], RECT, CELL);
         let r = Rect { x: 800.0 - 100.0, y: 60.0, w: 100.0, h: CELL.1 };
         assert!(!hits(&f, r), "timestamp {r:?}");
+    }
+
+    /// A row of underlined and struck SPACES pushes no text row, so a cut that follows the text
+    /// rows alone leaves its strokes through the toast and the find bar: they cut by their rect.
+    #[test]
+    fn toast_and_find_bar_cut_strokes_on_blank_rows() {
+        let line = format!("\x1b[4;9m{}\x1b[0m\r\n", " ".repeat(80)).repeat(23);
+        let s = screen(line.as_bytes());
+        let hits = |f: &Frame, r: Rect| f.underlines.iter().chain(&f.strikes).any(|q| q.rect.x < r.x + r.w && q.rect.x + q.rect.w > r.x && q.rect.y < r.y + r.h && q.rect.y + q.rect.h > r.y);
+        let fresh = || {
+            let mut f = Frame::default();
+            pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
+            assert!(f.rows.iter().all(|r| r.spans.iter().all(|sp| sp.text.trim().is_empty())), "no row has visible text");
+            assert!(hits(&f, RECT), "the strokes are there before the surface");
+            f
+        };
+        let mut f = fresh();
+        let r = toast(&mut f, "saved", RECT, CELL);
+        assert!(!hits(&f, r), "toast {r:?}");
+        let mut f = fresh();
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let mode = find_bar(&mut f, &bar, RECT, CELL);
+        assert!(!hits(&f, Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 }), "find bar");
     }
 
     #[test]
