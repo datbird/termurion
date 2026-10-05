@@ -444,3 +444,4 @@ pub mod transparency;
 pub mod presence;
 #[cfg(windows)]
 pub mod backdrop;
+pub mod flicker;

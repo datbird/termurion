@@ -136,6 +136,8 @@ pub struct Screen {
     parser: Processor,
     events: Receiver<Event>,
     pub palette: Palette,
+    /// When the program hid the cursor (DECTCEM), until it shows it again (Reduce Flicker).
+    pub cursor_hidden_at: Option<std::time::Instant>,
     title: Option<String>,
     /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
     pub allow_title: bool,
@@ -414,6 +416,7 @@ impl Screen {
             parser: Processor::new(),
             events,
             palette,
+            cursor_hidden_at: None,
             title: None,
             allow_title: true,
             cell_px: (0, 0),
@@ -1255,6 +1258,12 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        // DECTCEM: the time the cursor went away (the first, while it stays away).
+        match (self.term.mode().contains(TermMode::SHOW_CURSOR), self.cursor_hidden_at) {
+            (true, Some(_)) => self.cursor_hidden_at = None,
+            (false, None) => self.cursor_hidden_at = Some(std::time::Instant::now()),
+            _ => {}
+        }
         // The alternate screen turns the prompt state machine off (`MS:839-845`).
         let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
         if alt != self.composer_alt {
@@ -2123,6 +2132,19 @@ mod tests {
 
     fn row_text(s: &Screen, l: i32) -> String {
         (0..s.term.columns()).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn cursor_hide_is_noticed() {
+        let mut s = Screen::new(20, 4);
+        assert_eq!(s.cursor_hidden_at, None);
+        s.feed(b"\x1b[?25l");
+        let first = s.cursor_hidden_at.expect("hidden");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.feed(b"\x1b[?25l");
+        assert_eq!(s.cursor_hidden_at, Some(first), "hiding twice keeps the first time");
+        s.feed(b"\x1b[?25h");
+        assert_eq!(s.cursor_hidden_at, None);
     }
 
     #[test]

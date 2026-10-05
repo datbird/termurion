@@ -4922,6 +4922,7 @@ impl App {
         self.prepare_inline_chats();
         let mut porthole_hits = Vec::new();
         let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
+        let mut held_updates: Vec<(PaneId, Option<crate::flicker::Held>, Option<Instant>)> = Vec::new();
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
@@ -4962,10 +4963,39 @@ impl App {
                     }
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
+                    let (quad_from, image_from, row_from) = (frame.quads.len(), frame.images.len(), frame.rows.len());
                     let (overlay_from, underline_from, strike_from) = (frame.overlay.len(), frame.underlines.len(), frame.strikes.len());
-                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
-                    if let Some(c) = cover {
-                        composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                    // Reduce Flicker: while the program has the cursor hidden, the pane's last
+                    // live picture stands in for the one it is drawing.
+                    let reduce = self.store.get(&p.profile).is_some_and(|pr| pr.bool("Reduce Flicker"));
+                    let hold = crate::flicker::holding(reduce, p.screen.cursor_hidden_at, Instant::now());
+                    match p.held.as_ref().filter(|_| hold) {
+                        Some(h) => {
+                            frame.quads.extend(h.quads.iter().copied());
+                            frame.images.extend(h.images.iter().cloned());
+                            frame.rows.extend(h.rows.iter().cloned());
+                            frame.overlay.extend(h.overlay.iter().copied());
+                            frame.underlines.extend(h.underlines.iter().copied());
+                            frame.strikes.extend(h.strikes.iter().copied());
+                            held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
+                        }
+                        None => {
+                            scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl));
+                            if let Some(c) = cover {
+                                composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, c);
+                            }
+                            // Kept for the next hold; dropped when the switch is off.
+                            let held = reduce.then(|| crate::flicker::Held {
+                                since: Instant::now(),
+                                quads: frame.quads[quad_from..].to_vec(),
+                                images: frame.images[image_from..].to_vec(),
+                                rows: frame.rows[row_from..].to_vec(),
+                                overlay: frame.overlay[overlay_from..].to_vec(),
+                                underlines: frame.underlines[underline_from..].to_vec(),
+                                strikes: frame.strikes[strike_from..].to_vec(),
+                            });
+                            held_updates.push((id, held, None));
+                        }
                     }
                     // The gray quad over the whole pane (margins included); Dim Only Text dimmed the cells itself.
                     if dim.amount > 0.0 && !dim.only_text {
@@ -5038,6 +5068,14 @@ impl App {
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
                 self.find_bar_rect = frame.quads.last().map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
+            }
+        }
+        for (id, held, until) in held_updates {
+            if let Some(p) = self.panes.get_mut(&id) {
+                match until {
+                    Some(t) => p.held_until = Some(t),
+                    None => (p.held, p.held_until) = (held, None),
+                }
             }
         }
         if let Some(r) = self.tab_bar_rect().filter(|_| flash_over) {
@@ -5538,8 +5576,9 @@ impl ApplicationHandler<UserEvent> for App {
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let cursor_due = self.tick_cursor();
         let frame_due = self.frame_wake();
+        let flicker_due = self.flicker_tick(Instant::now());
         let power_due = self.power_tick(Instant::now());
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, power_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, power_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

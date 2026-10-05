@@ -262,6 +262,28 @@ impl App {
         }
         due
     }
+
+    /// When the earliest hold on a pane's last picture ends (Reduce Flicker). None while no
+    /// pane is held, so an idle app sleeps.
+    pub(super) fn flicker_wake(&self) -> Option<Instant> {
+        self.panes.values().filter_map(|p| p.held_until).min()
+    }
+
+    /// Releases the holds that have ended: the pane draws live again, and its window is asked
+    /// for a frame. Every hold is at most `flicker::HOLD` long, so none can outlast it.
+    pub(super) fn flicker_tick(&mut self, now: Instant) -> Option<Instant> {
+        let mut released = false;
+        for p in self.panes.values_mut() {
+            if p.held_until.is_some_and(|t| t <= now) {
+                p.held_until = None;
+                released = true;
+            }
+        }
+        if released {
+            self.redraw_here();
+        }
+        self.flicker_wake()
+    }
 }
 
 /// Whether a window is on screen: not hidden, not minimized and, for a hotkey window, shown
