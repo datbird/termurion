@@ -33,9 +33,9 @@ pub enum Hit {
 impl Geometry {
     /// Where the marks and search-result ticks go: the track inset 2 vertically, and one
     /// narrower on the right in a dark window (`SV:2615-2648`, `updateMinimapFrameAnimated`).
-    pub fn minimap(&self, dark: bool) -> Rect {
+    pub fn minimap(&self, dark: bool, scale: f32) -> Rect {
         let t = self.track;
-        Rect { x: t.x, y: t.y + 2.0, w: if dark { t.w - 1.0 } else { t.w }, h: (t.h - 4.0).max(0.0) }
+        Rect { x: t.x, y: t.y + 2.0 * scale, w: if dark { t.w - scale } else { t.w }, h: (t.h - 4.0 * scale).max(0.0) }
     }
 }
 
@@ -130,25 +130,29 @@ pub const MINIMAP_ALPHA: f32 = 0.62;
 /// skipped. Lines are bucketed per pixel row first, so the work is the line count and the
 /// memory the track height, whatever the history; the order of `lines` does not matter.
 /// `style_narrow` is the overlay scroller's narrow state: 11 wide, 5 in (`SV:2626-2629`).
-pub fn ticks(track: Rect, lines: &[usize], total: usize, style_narrow: bool) -> Vec<Rect> {
+/// The height, the merge distance and the narrow values are points: times `scale`.
+pub fn ticks(track: Rect, lines: &[usize], total: usize, style_narrow: bool, scale: f32) -> Vec<Rect> {
     if total == 0 || lines.is_empty() || track.h <= 0.0 {
         return Vec::new();
     }
-    let span = (track.h - TICK_HEIGHT).max(0.0);
+    let height = TICK_HEIGHT * scale;
+    let span = (track.h - height).max(0.0);
     let mut rows = vec![false; span.round() as usize + 1];
     for &line in lines.iter().filter(|&&l| l < total) {
-        let y = ((line as f64 / total as f64) * f64::from(span)).round() as usize;
+        // iTerm2's `height - round((1 - fraction) * height)` in flipped coordinates, top-down.
+        let from_bottom = ((1.0 - line as f64 / total as f64) * f64::from(span)).round();
+        let y = (f64::from(span).round() - from_bottom).max(0.0) as usize;
         let last = rows.len() - 1;
         rows[y.min(last)] = true;
     }
-    let (x, w) = if style_narrow { (track.x + 5.0, 11.0) } else { (track.x, track.w) };
+    let (x, w) = if style_narrow { (track.x + 5.0 * scale, 11.0 * scale) } else { (track.x, track.w) };
     let mut out = Vec::new();
     let mut last: Option<usize> = None;
     for (y, _) in rows.iter().enumerate().filter(|(_, hit)| **hit) {
-        if last.is_some_and(|l| y < l + 2) {
+        if last.is_some_and(|l| (y as f32) < l as f32 + 2.0 * scale) {
             continue;
         }
-        out.push(Rect { x, y: track.y + y as f32, w, h: TICK_HEIGHT });
+        out.push(Rect { x, y: track.y + y as f32, w, h: height });
         last = Some(y);
     }
     out
@@ -251,8 +255,29 @@ mod tests {
     #[test]
     fn minimap_insets_like_the_session_view() {
         let g = geometry(PANE, Style::Legacy, 1.0, 100, 50, 0).unwrap();
-        assert_eq!(g.minimap(false), Rect { x: 785.0, y: 2.0, w: 15.0, h: 596.0 });
-        assert_eq!(g.minimap(true), Rect { x: 785.0, y: 2.0, w: 14.0, h: 596.0 });
+        assert_eq!(g.minimap(false, 1.0), Rect { x: 785.0, y: 2.0, w: 15.0, h: 596.0 });
+        assert_eq!(g.minimap(true, 1.0), Rect { x: 785.0, y: 2.0, w: 14.0, h: 596.0 });
+    }
+
+    #[test]
+    fn ticks_and_minimap_scale_with_the_display() {
+        let track = |h: f32| Rect { x: 10.0, y: 20.0, w: 30.0, h };
+        // 200%: height 6, merge distance 4, the narrow overlay 22 wide, 10 in.
+        let t = ticks(track(406.0), &[0, 3, 4, 99], 400, false, 2.0);
+        assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![0.0, 4.0, 99.0]);
+        assert!(t.iter().all(|r| r.h == 2.0 * TICK_HEIGHT));
+        let t = ticks(track(406.0), &[0], 400, true, 2.0);
+        assert_eq!((t[0].x, t[0].w), (20.0, 22.0));
+        // 125%: height 3.75, and the last line sits at the track's height less one tick.
+        let t = ticks(track(203.75), &[0, 99], 100, false, 1.25);
+        assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![0.0, 198.0]);
+        assert!(t.iter().all(|r| r.h == 3.75));
+        // Lines 0 and 1 of 100 at 125% are 2 px apart: under 2.5, one tick.
+        assert_eq!(ticks(track(203.75), &[0, 1], 200, false, 1.25).len(), 1);
+        // The minimap's insets scale too.
+        let g = geometry(PANE, Style::Legacy, 2.0, 100, 50, 0).unwrap();
+        assert_eq!(g.minimap(false, 2.0), Rect { x: 770.0, y: 4.0, w: 30.0, h: 592.0 });
+        assert_eq!(g.minimap(true, 2.0), Rect { x: 770.0, y: 4.0, w: 28.0, h: 592.0 });
     }
 
     #[test]
@@ -266,21 +291,21 @@ mod tests {
     fn ticks_follow_iterm2() {
         let track = |h: f32| Rect { x: 10.0, y: 20.0, w: 15.0, h };
         // Height 203, 100 lines: line 0 at the top, line 99 at round(0.99 * 200).
-        let t = ticks(track(203.0), &[0, 99], 100, false);
+        let t = ticks(track(203.0), &[0, 99], 100, false, 1.0);
         assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![0.0, 198.0]);
         assert!(t.iter().all(|r| r.h == TICK_HEIGHT && r.x == 10.0 && r.w == 15.0));
         // Lines 500 and 501 of 1000 in a 103 high track both land on y 50: one tick.
-        let t = ticks(track(103.0), &[500, 501], 1000, false);
+        let t = ticks(track(103.0), &[500, 501], 1000, false, 1.0);
         assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![50.0]);
         // Lines 0 and 1 of 100,000: within 2 points, one tick.
-        assert_eq!(ticks(track(203.0), &[0, 1], 100_000, false).len(), 1);
+        assert_eq!(ticks(track(203.0), &[0, 1], 100_000, false, 1.0).len(), 1);
         // A tick 2 points below the last is kept; 1 point is not.
-        let t = ticks(track(103.0), &[0, 1, 2, 3], 100, false);
+        let t = ticks(track(103.0), &[0, 1, 2, 3], 100, false, 1.0);
         assert_eq!(t.iter().map(|r| r.y - 20.0).collect::<Vec<_>>(), vec![0.0, 2.0]);
-        assert!(ticks(track(203.0), &[], 100, false).is_empty());
-        assert!(ticks(track(203.0), &[5], 0, false).is_empty());
+        assert!(ticks(track(203.0), &[], 100, false, 1.0).is_empty());
+        assert!(ticks(track(203.0), &[5], 0, false, 1.0).is_empty());
         // The narrow overlay style: 11 wide, 5 in.
-        let t = ticks(track(203.0), &[0], 100, true);
+        let t = ticks(track(203.0), &[0], 100, true, 1.0);
         assert_eq!((t[0].x, t[0].w), (15.0, 11.0));
     }
 
@@ -288,13 +313,13 @@ mod tests {
     fn ticks_stay_bounded_and_order_free() {
         let track = Rect { x: 0.0, y: 0.0, w: 15.0, h: 403.0 };
         let lines: Vec<usize> = (0..2_000_000).rev().collect();
-        let t = ticks(track, &lines, 2_000_000, false);
+        let t = ticks(track, &lines, 2_000_000, false, 1.0);
         assert!(t.len() <= 201, "one tick per two pixel rows at most: {}", t.len());
         assert!(t.windows(2).all(|w| w[1].y - w[0].y >= 2.0), "sorted top-down, 2 apart");
         assert_eq!(t[0].y, 0.0);
         let up: Vec<usize> = (0..2_000_000).collect();
-        assert_eq!(ticks(track, &up, 2_000_000, false), t, "the input order does not matter");
-        assert!(ticks(track, &[9, 2_000_000, 5_000_000], 2_000_000, false).len() == 1, "lines past the buffer are ignored");
+        assert_eq!(ticks(track, &up, 2_000_000, false, 1.0), t, "the input order does not matter");
+        assert!(ticks(track, &[9, 2_000_000, 5_000_000], 2_000_000, false, 1.0).len() == 1, "lines past the buffer are ignored");
     }
 
     #[test]

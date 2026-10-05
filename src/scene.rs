@@ -933,11 +933,11 @@ pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate
         Style::Legacy => {
             let scale = g.track.w / LEGACY_WIDTH;
             frame.overlay.push(Quad { rect: g.track, color: gray(if dark { 0.13 } else { 0.96 }, 1.0) });
-            let edge = Rect { w: 1.0, ..g.track };
+            let edge = Rect { w: scale.max(1.0), ..g.track };
             frame.overlay.push(Quad { rect: edge, color: gray(if dark { 0.24 } else { 0.86 }, 1.0) });
             if g.thumb.h < g.track.h {
                 let inset = 3.0 * scale;
-                let knob = Rect { x: g.thumb.x + inset, y: g.thumb.y + 2.0, w: g.thumb.w - 2.0 * inset, h: (g.thumb.h - 4.0).max(1.0) };
+                let knob = Rect { x: g.thumb.x + inset, y: g.thumb.y + 2.0 * scale, w: g.thumb.w - 2.0 * inset, h: (g.thumb.h - 4.0 * scale).max(1.0) };
                 let v = match (dark, hover) {
                     (false, false) => 0.62,
                     (false, true) => 0.48,
@@ -960,16 +960,19 @@ pub fn scrollbar(frame: &mut Frame, g: &crate::scrollbar::Geometry, style: crate
 /// Marks and search results along the scrollbar (`MM:85-125`): per non-empty series, each
 /// tick a 1 px outline around a fill inset by 1, at `MINIMAP_ALPHA`. `track` is the minimap
 /// rectangle (`Geometry::minimap`). Series draw in the order given.
-pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollbar::Series, Vec<usize>)], total: usize) {
+pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollbar::Series, Vec<usize>)], total: usize, scale: f32) {
     use crate::scrollbar::{MINIMAP_ALPHA, series_colors, ticks};
     for (kind, lines) in series {
         let (outline, fill) = series_colors(*kind);
-        for t in ticks(track, lines, total, false) {
+        for t in ticks(track, lines, total, false, scale) {
             let c = rgba(outline, MINIMAP_ALPHA);
-            for edge in [Rect { h: 1.0, ..t }, Rect { y: t.y + t.h - 1.0, h: 1.0, ..t }, Rect { w: 1.0, ..t }, Rect { x: t.x + t.w - 1.0, w: 1.0, ..t }] {
+            // The outline is half a point stroked, so a point wide at each side: `scale` px. The
+            // side edges stop at the top and bottom edges so no corner draws twice.
+            let o = scale.max(1.0);
+            for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }] {
                 frame.overlay.push(Quad { rect: edge, color: c });
             }
-            let inner = Rect { x: t.x + 1.0, y: t.y + 1.0, w: (t.w - 2.0).max(0.0), h: (t.h - 2.0).max(0.0) };
+            let inner = Rect { x: t.x + o, y: t.y + o, w: (t.w - 2.0 * o).max(0.0), h: (t.h - 2.0 * o).max(0.0) };
             frame.overlay.push(Quad { rect: inner, color: rgba(fill, MINIMAP_ALPHA) });
         }
     }
@@ -6476,7 +6479,7 @@ mod drawn_overlay_tests {
         use crate::scrollbar::{MINIMAP_ALPHA, Series, TICK_HEIGHT, series_colors};
         let track = Rect { x: 100.0, y: 10.0, w: 15.0, h: 203.0 };
         let mut f = Frame::default();
-        scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0, 99]), (Series::Error, vec![]), (Series::Manual, vec![50])], 100);
+        scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0, 99]), (Series::Error, vec![]), (Series::Manual, vec![50])], 100, 1.0);
         assert!(f.quads.is_empty() && f.rows.is_empty() && f.popups.is_empty(), "ticks hold no text and sit in the overlay");
         assert!(f.overlay.iter().all(|q| (q.color[3] - MINIMAP_ALPHA).abs() < 1e-6));
         // Two search ticks and one manual tick: each is four outline edges and one fill.
@@ -6490,8 +6493,28 @@ mod drawn_overlay_tests {
         assert_eq!(top, 10.0, "line 0 sits at the top of the track");
         let none: &[(Series, Vec<usize>)] = &[];
         let mut g = Frame::default();
-        scrollbar_ticks(&mut g, track, none, 100);
+        scrollbar_ticks(&mut g, track, none, 100, 1.0);
         assert!(g.overlay.is_empty());
+    }
+
+    #[test]
+    fn scrollbar_pieces_scale_with_the_display() {
+        use crate::scrollbar::{Series, Style, geometry};
+        // 200%: the outline is 2 px and the fill sits 2 px in.
+        let track = Rect { x: 100.0, y: 10.0, w: 30.0, h: 406.0 };
+        let mut f = Frame::default();
+        scrollbar_ticks(&mut f, track, &[(Series::Search, vec![0])], 100, 2.0);
+        let top = f.overlay.iter().find(|q| q.rect.y == 10.0 && q.rect.h == 2.0).expect("a 2 px top edge");
+        assert_eq!(top.rect.w, 30.0);
+        let fill = f.overlay.last().unwrap();
+        assert_eq!(fill.rect, Rect { x: 102.0, y: 12.0, w: 26.0, h: 2.0 });
+        // The legacy track's edge line and the knob's top and bottom padding.
+        let pane = Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+        let g = geometry(pane, Style::Legacy, 2.0, 100, 50, 0).unwrap();
+        let mut s = Frame::default();
+        scrollbar(&mut s, &g, Style::Legacy, false, false);
+        assert!(s.overlay.iter().any(|q| q.rect.w == 2.0 && q.rect.x == g.track.x && q.rect.h == g.track.h), "a 2 px edge");
+        assert!(s.overlay.iter().any(|q| q.rect.y >= g.thumb.y + 3.9 && q.rect.y <= g.thumb.y + 4.1), "the knob starts 4 px in");
     }
 
     #[test]
