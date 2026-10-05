@@ -27,6 +27,8 @@ pub struct Palette {
     pub match_bg: Rgb,
     /// Links and URLs under the pointer.
     pub link: Rgb,
+    /// The profile's Underline Color when "Use Underline Color" is on (the SGR 58 color wins).
+    pub underline_color: Option<Rgb>,
 }
 
 impl Default for Palette {
@@ -64,6 +66,7 @@ impl Palette {
             faint_alpha: p.float("Faint Text Alpha") as f32,
             match_bg: c("Match Background Color"),
             link: c("Link Color"),
+            underline_color: p.bool_for("Use Underline Color", dark).then(|| c("Underline Color")),
         }
     }
 
@@ -202,5 +205,15 @@ mod tests {
     #[test]
     fn spec_colors_pass_through() {
         assert_eq!(Palette::default().color(Color::Spec(rgb(1, 2, 3))), rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn underline_color_follows_the_profile() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
+        assert_eq!(Palette::from_profile(&p, true).underline_color, None);
+        p.set("Use Underline Color", toml::Value::Boolean(true));
+        p.set("Underline Color", crate::profile::color_value(rgb(9, 8, 7)));
+        assert_eq!(Palette::from_profile(&p, true).underline_color, Some(rgb(9, 8, 7)));
     }
 }

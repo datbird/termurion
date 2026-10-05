@@ -278,16 +278,19 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 }
 
 /// Drops what the pane drew into `overlay` from index `from` on (link dashes, annotation and
-/// hover underlines) inside the rows `cover` spans: the rows under an Auto Composer are skipped.
-/// A quad reaching past them (the dimming over the whole pane) stays.
-pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, cover: Rect) {
-    let mut i = from;
-    while i < overlay.len() {
-        let r = overlay[i].rect;
-        if r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5 {
-            overlay.remove(i);
-        } else {
-            i += 1;
+/// hover underlines) and into `underlines` from `underline_from` on (SGR underlines and
+/// strikethrough, link dashes) inside the rows `cover` spans: the rows under an Auto Composer
+/// are skipped. A quad reaching past them (the dimming over the whole pane) stays.
+pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, cover: Rect) {
+    for (quads, from) in [(overlay, from), (underlines, underline_from)] {
+        let mut i = from;
+        while i < quads.len() {
+            let r = quads[i].rect;
+            if r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5 {
+                quads.remove(i);
+            } else {
+                i += 1;
+            }
         }
     }
 }
@@ -2591,9 +2594,13 @@ mod tests {
         // outside the rows stay; nothing drawn before `from` is touched.
         let q = |y: f32, h: f32| scene::Quad { rect: Rect { x: 0.0, y, w: 10.0, h }, color: [1.0; 4] };
         let mut overlay = vec![q(45.0, 1.0), q(45.0, 1.0), q(0.0, 200.0), q(10.0, 1.0), q(69.0, 1.0)];
-        skip_covered(&mut overlay, 1, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        let mut underlines = vec![q(45.0, 1.0), q(45.0, 1.0), q(10.0, 1.0), q(69.0, 1.0)];
+        skip_covered(&mut overlay, 1, &mut underlines, 1, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
         let ys: Vec<(f32, f32)> = overlay.iter().map(|o| (o.rect.y, o.rect.h)).collect();
         assert_eq!(ys, vec![(45.0, 1.0), (0.0, 200.0), (10.0, 1.0)]);
+        // `underlines_skip_an_auto_composer_cover`: the same rule for the strokes.
+        let ys: Vec<f32> = underlines.iter().map(|o| o.rect.y).collect();
+        assert_eq!(ys, vec![45.0, 10.0]);
 
         // The prompt prefix's colors map onto the editor's text, line by line.
         use crate::palette::rgb;

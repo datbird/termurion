@@ -290,6 +290,8 @@ pub struct Renderer {
     v_spacing: f32,
     font_px: f32,
     pub cell: (f32, f32),
+    /// The primary face's underline numbers (`set_font_px`).
+    ul_metrics: Option<crate::underline::Metrics>,
     /// The font's own cell, without the spacings (`cell_metrics`).
     base_cell: (f32, f32),
     /// The texture format the pipelines draw into.
@@ -336,6 +338,7 @@ impl Renderer {
             v_spacing: 1.0,
             font_px,
             cell: (0.0, 0.0),
+            ul_metrics: None,
             base_cell: (0.0, 0.0),
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
@@ -357,9 +360,22 @@ impl Renderer {
         b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
+        // The primary face's underline numbers at this size (`iTermMetalPerFrameStateConfiguration.m:147-167`).
+        let face = b.layout_runs().next().and_then(|r| r.glyphs.first().map(|g| (r.line_y, g.font_id, g.font_weight)));
+        self.ul_metrics = face.and_then(|(baseline, id, weight)| {
+            let font = self.font_system.get_font(id, weight)?;
+            let m = font.as_swash().metrics(&[]).scale(px);
+            Some(crate::underline::Metrics { underline_offset: m.underline_offset.abs(), thickness: m.stroke_size, x_height: m.x_height, baseline })
+        });
         (self.cell, self.base_cell) = cell_metrics(w, px, self.h_spacing, self.v_spacing);
         self.buffers.clear();
         self.widths.clear();
+    }
+
+    /// The primary face's underline metrics in pixels (all zero when the face did not load, which
+    /// `scene::DrawPrefs` reads as "derive from the cell").
+    pub fn underline_metrics(&mut self) -> crate::underline::Metrics {
+        self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 })
     }
 
     /// The font's own cell, without the spacings: what iTerm2 calls `cellSizeWithoutSpacing`.
@@ -634,7 +650,8 @@ impl Renderer {
 
         self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
         let under = QuadPipeline::vertices(&frame.quads);
-        let over = QuadPipeline::vertices(&frame.overlay);
+        // Underline strokes lie under the overlay (the dimming, the cursor extras).
+        let over = QuadPipeline::vertices(&frame.underlines.iter().chain(&frame.overlay).copied().collect::<Vec<_>>());
         let pops = QuadPipeline::vertices(&frame.popups);
         let make = |v: &[f32]| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -898,6 +915,7 @@ mod tests {
                 scale: 1.0,
             }],
             overlay: vec![],
+            underlines: vec![],
             popups: vec![],
             backgrounds: vec![],
         };
@@ -949,6 +967,7 @@ mod tests {
                 scale: 1.0,
             }],
             overlay: vec![],
+            underlines: vec![],
             popups: vec![],
             backgrounds: vec![],
         };

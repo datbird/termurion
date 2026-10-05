@@ -1487,6 +1487,48 @@ mod tests {
         assert_eq!(s.term().cursor_style().shape, Look::default().cursor_shape);
     }
 
+    /// 13l P15: a program's underline style and color are per cell, bounded and reset.
+    #[test]
+    fn underline_state_is_bounded_and_reset() {
+        use alacritty_terminal::term::cell::Flags;
+        let cell = |s: &Screen, col: usize| {
+            let g = s.term().grid();
+            g[alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(0), alacritty_terminal::index::Column(col))].clone()
+        };
+        let mut s = Screen::new(80, 24);
+        // Colon and semicolon forms of SGR 58 and the 4:x styles reach the cells.
+        s.feed(b"\x1b[4:3;58:2::255:0:0mA\x1b[58;2;1;2;3mB\x1b[4:4mC\x1b[4:5mD\x1b[4:2mE\x1b[0mF");
+        assert!(cell(&s, 0).flags.contains(Flags::UNDERCURL));
+        assert_eq!(cell(&s, 0).underline_color(), Some(alacritty_terminal::vte::ansi::Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 255, g: 0, b: 0 })));
+        assert_eq!(cell(&s, 1).underline_color(), Some(alacritty_terminal::vte::ansi::Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 })));
+        assert!(cell(&s, 2).flags.contains(Flags::DOTTED_UNDERLINE));
+        assert!(cell(&s, 3).flags.contains(Flags::DASHED_UNDERLINE));
+        assert!(cell(&s, 4).flags.contains(Flags::DOUBLE_UNDERLINE));
+        assert!(!cell(&s, 5).flags.intersects(Flags::ALL_UNDERLINES) && cell(&s, 5).underline_color().is_none(), "SGR 0 clears both");
+        // SGR 59 and 24 clear each on its own.
+        s.feed(b"\r\x1b[4;58;5;9mA\x1b[59mB\x1b[24mC\x1b[0m");
+        assert!(cell(&s, 0).underline_color().is_some());
+        assert!(cell(&s, 1).flags.contains(Flags::UNDERLINE) && cell(&s, 1).underline_color().is_none());
+        assert!(!cell(&s, 2).flags.intersects(Flags::ALL_UNDERLINES));
+        // RIS clears the pen; an erase draws no underline color.
+        s.feed(b"\x1b[4;58;5;9m\x1bc\rX");
+        assert!(!cell(&s, 0).flags.intersects(Flags::ALL_UNDERLINES) && cell(&s, 0).underline_color().is_none());
+        s.feed(b"\x1b[4;58;5;9m\x1b[2J\x1b[H");
+        assert!(cell(&s, 0).underline_color().is_none());
+        // Out of range values and a pseudo-random SGR stream never panic.
+        s.feed(b"\x1b[0m\x1b[58:5:300mA\x1b[58:2:::999mB\x1b[4:9mC\x1b[0m");
+        let mut seed = 12345u32;
+        let mut bytes = Vec::new();
+        for _ in 0..5000 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let n = (seed >> 16) % 70;
+            bytes.extend_from_slice(format!("\x1b[{n}m").as_bytes());
+        }
+        s.feed(&bytes);
+        s.feed(b"\x1bc");
+        assert_eq!(s.term().columns(), 80);
+    }
+
     #[test]
     fn exfiltrated_follows_iterm2() {
         let mut s = Screen::new(80, 24);
