@@ -268,11 +268,9 @@ impl App {
         let hover = hover.map(|(id, cells, _)| (id, cells));
         if hover != self.hover {
             self.hover = hover;
-            if let Some(g) = &self.gpu {
-                g.window.set_cursor(if hover.is_some() { winit::window::CursorIcon::Pointer } else { winit::window::CursorIcon::Default });
-            }
             self.redraw();
         }
+        self.refresh_pointer_shape();
     }
 
     /// The pane menu for `at`: the pane and, for a right click, the point (Smart Selection

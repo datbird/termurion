@@ -294,6 +294,8 @@ struct Gpu {
     instance: wgpu::Instance,
     /// Set on a window that needs alpha: the handles its surface and renderer were made on.
     alpha: Option<AlphaGpu>,
+    /// The pointer shape last set on the window (`refresh_pointer_shape` writes it only on change).
+    shape: Option<crate::pointer_shape::Shape>,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -629,6 +631,8 @@ pub struct App {
     /// pick as the last frame DREW them: the draw code records each rectangle, nothing
     /// recomputes it, and the mouse holds exactly these back from the program (B5).
     overlay_drawn: Vec<(mouse::Overlay, Rect)>,
+    /// The drawn I-beam cursors, built once in `resumed` and shared by every window.
+    cursors: Option<crate::pointer_shape::Cursors>,
     /// A link under a porthole press (opened when the button comes up without a drag), the
     /// links waiting on a bar, and the language list a popup shows.
     porthole_link: Option<(PaneId, u32, String)>,
@@ -1681,6 +1685,7 @@ pub fn run() {
         porthole_views: HashMap::new(),
         porthole_hits: Vec::new(),
         overlay_drawn: Vec::new(),
+        cursors: None,
         porthole_link: None,
         porthole_link_asks: HashMap::new(),
         porthole_languages: None,
@@ -2795,16 +2800,7 @@ impl App {
             return;
         }
         self.side_handle_hover = on;
-        if let Some(g) = &self.gpu {
-            use winit::window::CursorIcon;
-            g.window.set_cursor(if on {
-                CursorIcon::EwResize
-            } else if self.hover.is_some() {
-                CursorIcon::Pointer
-            } else {
-                CursorIcon::Default
-            });
-        }
+        self.refresh_pointer_shape();
     }
 
     /// The window's room below the line under the title bar and above any banner, which the
@@ -4618,6 +4614,7 @@ impl App {
         self.inline_move(x, y);
         self.update_hover();
         self.update_block_hover();
+        self.refresh_pointer_shape();
         // Hover timestamps show while the pointer is at a pane's right edge.
         let near = self.near_stamp_edge();
         if near != self.stamp_near {
@@ -5087,6 +5084,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let k = windows_ui::key(gpu.window.id());
                 self.last_window = Some(gpu.window.id());
                 self.gpu = Some(gpu);
+                self.load_cursors(event_loop);
                 self.windows.start(k);
                 self.registry.open(k);
                 // Edge drags snap to the cell grid, and follow AllowLiveResize.
@@ -5773,7 +5771,7 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, window })
 }
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).

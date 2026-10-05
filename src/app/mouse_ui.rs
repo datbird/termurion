@@ -205,6 +205,73 @@ impl App {
         ui
     }
 
+    /// Builds the two drawn I-beam cursors (the 2x images above a scale of 1.5) once for every
+    /// window; the hot spot is the center, as iTerm2's. None when the system refuses an image.
+    pub(super) fn load_cursors(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::pointer_shape as ps;
+        let scale2 = self.scale() > 1.5;
+        let make = |(rgba, w, h): (Vec<u8>, u16, u16)| {
+            let (hx, hy) = ps::hot_spot(w, h);
+            winit::window::CustomCursor::from_rgba(rgba, w, h, hx, hy).ok().map(|c| event_loop.create_custom_cursor(c))
+        };
+        self.cursors = make(ps::draw_ibeam(scale2)).zip(make(ps::draw_ibeam_circle(scale2))).map(|(ibeam, ibeam_circle)| ps::Cursors { ibeam, ibeam_circle });
+    }
+
+    /// What is under the pointer, for the shape (`PTYTextView+ARC.m:728-771`): the divider and
+    /// side bar handle resize shapes first (Tandem's), then `pointer_shape::choose`'s inputs.
+    /// Overlays are the one list (`tandem_ui_at`) and the program's claim is `report_gate`.
+    fn pointer_over(&self) -> Result<crate::pointer_shape::Over, crate::pointer_shape::Shape> {
+        use crate::pointer_shape::{Over, Shape};
+        let (x, y) = self.cursor;
+        if self.side_handle_hover || matches!(self.drag, Drag::SideBar { .. }) {
+            return Err(Shape::ResizeH);
+        }
+        let axis = match &self.drag {
+            Drag::Divider { axis, .. } => Some(*axis),
+            Drag::None => self.divider_at(x, y).map(|d| d.axis),
+            _ => None,
+        };
+        if let Some(axis) = axis {
+            return Err(if axis == crate::layout::Axis::Row { Shape::ResizeH } else { Shape::ResizeV });
+        }
+        let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover.is_some() && self.mods.cmd && !self.mods.alt, button: self.tandem_ui_at(x, y), ..Over::default() };
+        if let Some((id, rect)) = self.pane_at(x, y) {
+            o.terminal = true;
+            let (col, row, _) = self.cell_at(id, rect, x, y);
+            let point = self.grid_point(id, col, row);
+            o.image = self.panes.get(&id).is_some_and(|p| p.screen.term().grid()[point].image().is_some());
+            o.fold = self.fold_at_point(id, point).is_some();
+            o.reporting = self.report_gate(id, mouse::Kind::Click);
+        }
+        Ok(o)
+    }
+
+    /// The window's pointer shape, and the ONLY writer of it: set when the shape changed.
+    pub(super) fn refresh_pointer_shape(&mut self) {
+        use crate::pointer_shape::{choose, Shape};
+        use winit::window::{Cursor, CursorIcon};
+        let shape = self.pointer_over().map_or_else(|s| s, choose);
+        if self.gpu.as_ref().is_none_or(|g| g.shape == Some(shape)) {
+            return;
+        }
+        let system = self.globals.bool("UseSystemCursorWhenPossible");
+        let drawn = |c: Option<&winit::window::CustomCursor>| c.cloned().map_or(Cursor::Icon(CursorIcon::Text), Cursor::Custom);
+        let cursor = match shape {
+            Shape::Arrow => Cursor::Icon(CursorIcon::Default),
+            Shape::IBeam if system => Cursor::Icon(CursorIcon::Text),
+            Shape::IBeam => drawn(self.cursors.as_ref().map(|c| &c.ibeam)),
+            Shape::IBeamWithCircle => drawn(self.cursors.as_ref().map(|c| &c.ibeam_circle)),
+            Shape::PointingHand => Cursor::Icon(CursorIcon::Pointer),
+            Shape::Crosshair => Cursor::Icon(CursorIcon::Crosshair),
+            Shape::ResizeH => Cursor::Icon(CursorIcon::EwResize),
+            Shape::ResizeV => Cursor::Icon(CursorIcon::NsResize),
+        };
+        if let Some(g) = self.gpu.as_mut() {
+            g.window.set_cursor(cursor);
+            g.shape = Some(shape);
+        }
+    }
+
     /// The split divider whose grab zone holds the point (the zone every button's press belongs
     /// to: the left starts a drag, the others do nothing).
     pub(super) fn divider_at(&self, x: f32, y: f32) -> Option<crate::layout::Divider> {
@@ -481,6 +548,36 @@ mod tests {
 
     const MOD: &str = include_str!("mod.rs");
     const UI: &str = include_str!("mouse_ui.rs");
+
+    const SEMANTIC: &str = include_str!("semantic_ui.rs");
+
+    /// P13: the window's pointer shape has one writer, and every hover path asks it.
+    #[test]
+    fn refresh_pointer_shape_is_the_only_cursor_writer() {
+        let prod = |s: &'static str| s.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let writers: usize = [MOD, UI, SEMANTIC].into_iter().map(|s| prod(s).matches(".set_cursor(").count()).sum();
+        assert_eq!(writers, 1, "one set_cursor call in the whole app");
+        assert!(body(UI, "refresh_pointer_shape").contains(".set_cursor("));
+        for (src, f) in [(SEMANTIC, "update_hover"), (MOD, "update_side_handle_hover"), (MOD, "mouse_move")] {
+            assert!(body(src, f).contains("refresh_pointer_shape()"), "{f}");
+        }
+    }
+
+    #[test]
+    fn the_pointer_shape_reads_the_one_overlay_list_and_the_gate() {
+        let b = body(UI, "pointer_over");
+        for needle in ["tandem_ui_at(", "report_gate(", "divider_at(", "fold_at_point(", ".image()", "self.hover"] {
+            assert!(b.contains(needle), "{needle}");
+        }
+        assert!(!b.contains("app_owns_mouse("), "the gate decides, not a private copy");
+    }
+
+    #[test]
+    fn the_cursors_are_built_once_in_resumed() {
+        assert!(body(MOD, "resumed").contains("load_cursors("));
+        assert!(body(UI, "load_cursors").contains("create_custom_cursor"));
+        assert!(MOD.contains("cursors: Option<crate::pointer_shape::Cursors>"));
+    }
 
     /// B7: every reader of "would this event be reported" asks `report_gate`, one test each.
     #[test]

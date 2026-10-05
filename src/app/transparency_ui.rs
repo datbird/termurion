@@ -39,6 +39,7 @@ fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Resul
         renderer,
         instance: primary.instance.clone(),
         alpha: Some(alpha.clone()),
+        shape: None,
         window,
     })
 }

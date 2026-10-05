@@ -144,6 +144,7 @@ pub mod alt_infer;
 pub mod input;
 pub mod keys;
 pub mod stuck_mouse;
+pub mod pointer_shape;
 pub mod wheel;
 pub mod keyproto;
 pub mod reports;
