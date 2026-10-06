@@ -4761,3 +4761,12 @@ label = "Disable performing the first matching Smart Selection\u2019s Action on 
 type = "bool"
 default = false
 help = "Disable performing the first matching Smart Selection\u2019s Action on Win-click?"
+
+[[setting]]
+key = "Custom Color Presets"
+tab = "Stored"
+section = "Colors"
+label = "Custom color presets"
+type = "dict"
+default = {}
+help = "The color presets you imported or saved, by name. Each is a table of color keys (Ansi 0 Color, Foreground Color, and their Light and Dark variants), each color {r, g, b, a}. Managed from the Colors tab's Color Presets menu."

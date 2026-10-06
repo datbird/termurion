@@ -37,7 +37,7 @@ pub fn p3_to_srgb(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     (round(enc(sr)), round(enc(sg)), round(enc(sb)))
 }
 
-fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option<Value> {
+pub(crate) fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option<Value> {
     let (mut r, mut g, mut b) = (get("Red Component")?, get("Green Component")?, get("Blue Component")?);
     if space == Some("P3") {
         (r, g, b) = p3_to_srgb(r, g, b);
@@ -48,6 +48,17 @@ fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option
     t.insert("b".into(), Value::Float(b));
     t.insert("a".into(), Value::Float(get("Alpha Component").unwrap_or(1.0)));
     Some(Value::Table(t))
+}
+
+/// A preset color as a profile value: `{r, g, b, a}` in sRGB (a P3 color converted, a missing alpha 1).
+pub(crate) fn preset_color_to_value(c: &crate::color_presets::PresetColor) -> Value {
+    let get = |k: &str| match k {
+        "Red Component" => Some(c.r),
+        "Green Component" => Some(c.g),
+        "Blue Component" => Some(c.b),
+        _ => c.a,
+    };
+    color_table(get, c.space.as_deref()).expect("a preset color has all three components")
 }
 
 pub(crate) fn from_plist(v: &plist::Value) -> Option<Value> {

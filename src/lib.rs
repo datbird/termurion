@@ -159,6 +159,8 @@ pub mod undo_close;
 pub mod startup;
 pub mod jobtitle;
 pub mod profile;
+pub mod color_presets;
+pub mod oklab;
 pub mod prompted;
 pub mod schema;
 pub mod scene;
