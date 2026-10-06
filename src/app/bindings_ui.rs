@@ -225,6 +225,21 @@ mod tests {
         std::iter::once(e.to_string()).collect()
     }
 
+    /// Merge seams S4/S5 (13s): one `about_to_wait` wakes for the bindings tick and for 13s's
+    /// selection autoscroll and command-click timer; neither side's deadline was lost when the
+    /// one-line `wake` array was merged.
+    #[test]
+    fn wake_keeps_bindings_and_selection_deadlines() {
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("let bindings_due = self.tick_bindings();").expect("the bindings tick runs in about_to_wait")..];
+        let wake = &body[body.find("let wake = [").unwrap()..];
+        let wake = &wake[..wake.find("].into_iter()").unwrap()];
+        for due in ["bindings_due", "sel_scroll_due", "command_due", "cmdinfo_due", "sleep_due"] {
+            assert!(wake.split(", ").any(|d| d.trim_start_matches("let wake = [") == due), "{due} missing from the wake array");
+        }
+        assert!(body.find("let command_due = self.command_click_tick();").unwrap() < body.find("let wake = [").unwrap());
+    }
+
     /// A pane whose profile binds "Foreground Color" to "user.fg": an answer sets the session
     /// value, null restores the profile's own, a removed binding ends the writes.
     #[test]
