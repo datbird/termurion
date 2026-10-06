@@ -549,4 +549,38 @@ mod tests {
         assert!(body(&read("windows_ui.rs"), "fn open_window_with(", "self.registry.open(").contains("access_install_host"));
         assert!(body(&m, "fn teardown_process()", "\n}\n").contains("uia_win::disconnect_all"));
     }
+
+    /// The 13v1 merge (S8 b): a hidden resident window has no screen reader provider (going resident
+    /// forgets the window, and with it the host); the wake gives it back, and the next pass publishes.
+    #[test]
+    fn a_resident_window_has_no_provider_and_a_wake_publishes() {
+        let read = |f: &str| std::fs::read_to_string(format!("{}/src/app/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let body = |src: &str, name: &str, end: &str| src.split(name).nth(1).and_then(|r| r.split(end).next()).unwrap_or_default().to_string();
+        let r = read("resident_ui.rs");
+        let go = body(&r, "pub(super) fn go_resident(&mut self)", "\n    }\n");
+        assert!(go.find("self.forget_window(k)").is_some_and(|f| f < go.find("self.resident = true").unwrap_or(0)), "the host goes before the window is hidden");
+        assert!(body(&read("windows_ui.rs"), "fn forget_window(", "\n    }\n").contains("access_forget_window"));
+        let leave = body(&r, "pub(super) fn leave_resident_for(", "\n    }\n");
+        assert!(leave.find("self.resident = false").is_some_and(|f| f < leave.find("self.access_install_host()").unwrap_or(0)), "the woken window gets its host back");
+        // Every wake path leaves residence through that one function (open_window_with's resident
+        // branch and wake_in_place).
+        assert!(body(&r, "fn wake_in_place(", "\n    }\n").contains("self.leave_resident_for(false)"));
+        assert!(body(&read("windows_ui.rs"), "fn open_window_with(", "self.install_sizing()").contains("None => self.leave_resident_for(hotkey)"));
+        // The publish needs a host: nothing is built for a window without one.
+        let update = body(&read("access_app.rs"), "fn access_update(&mut self", "let lines");
+        assert!(update.contains("if !self.uia_hosts.contains_key(&key)"));
+    }
+
+    /// The 13v1 merge (S13): the one process teardown (13u S6, 13v1's every exit and logoff) ends
+    /// 13v2's update check, Dynamic Profiles watch and screen reader providers beside 13v1's handoff.
+    #[test]
+    fn the_one_teardown_ends_the_update_check_the_watch_and_the_providers() {
+        let m = std::fs::read_to_string(format!("{}/src/app/mod.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert_eq!(m.matches("fn teardown_process()").count(), 1, "one teardown");
+        let t = m.split("pub(crate) fn teardown_process()").nth(1).and_then(|r| r.split("\n}\n").next()).unwrap();
+        for call in ["handoff_win::begin_closing()", "update_fetch_win::cancel_running()", "dynamic_profiles_scan::stop_all()", "uia_win::disconnect_all()"] {
+            assert!(t.contains(call), "the teardown calls {call}");
+        }
+    }
+
 }

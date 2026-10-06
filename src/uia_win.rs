@@ -982,6 +982,12 @@ impl Host {
         }
     }
 
+    /// Whether the window's destruction closed this host and removed its subclass (the tests read it).
+    #[cfg(test)]
+    pub fn closed_by_window(&self) -> bool {
+        self.shared.closed.load(Ordering::SeqCst) && self.shared.unhooked.load(Ordering::SeqCst)
+    }
+
     /// Whether any UI Automation client listens; the snapshot is built only then.
     pub fn listening() -> bool {
         // SAFETY: a plain query.

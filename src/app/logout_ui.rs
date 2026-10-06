@@ -236,6 +236,12 @@ pub(super) fn watched() -> usize {
     windows().lock().map_or(0, |w| w.len())
 }
 
+/// Whether `hwnd` carries the subclass (the tests read it).
+#[cfg(test)]
+pub(super) fn is_watched(hwnd: isize) -> bool {
+    windows().lock().is_ok_and(|w| w.contains(&hwnd))
+}
+
 /// Runs work on the app thread from inside the window procedure: `post` hands the flag to the
 /// app (an event the app answers by doing the work and setting the flag), and this thread
 /// handles its own messages until the flag is set, at most `limit`, so the event is delivered
@@ -684,4 +690,35 @@ mod tests {
         let at = whole.find("UserEvent::Logoff(done) =>").expect("a Logoff arm in user_event");
         assert!(whole[at..].chars().take(200).collect::<String>().contains("logoff_now"), "UserEvent::Logoff calls logoff_now");
     }
+
+    /// The 13v1 merge (S7, P19): the end-of-session subclass (13v1's one WM_QUERYENDSESSION and
+    /// WM_ENDSESSION hook), the screen reader host's subclass and the menu-tip hook sit on the same
+    /// window as one chain, in either order: each passes every message on, so the window's
+    /// destruction reaches all of them and each takes itself off (none is left on a reused handle).
+    #[test]
+    fn the_end_of_session_and_screen_reader_subclasses_share_one_chain() {
+        let _g = serial();
+        for uia_first in [false, true] {
+            let h = hidden_window();
+            assert!(!h.is_null());
+            let host = |h: HWND| crate::uia_win::Host::install(h as isize, Box::new(|_| {})).expect("the screen reader host");
+            let made = if uia_first {
+                let made = host(h);
+                watch(h as isize);
+                made
+            } else {
+                watch(h as isize);
+                host(h)
+            };
+            crate::menu_tip_win::install(h as isize, Duration::from_secs(1));
+            assert!(is_watched(h as isize), "the end-of-session hook is on");
+            assert!(!made.closed_by_window());
+            // SAFETY: the test's own hidden window.
+            unsafe { DestroyWindow(h) };
+            assert!(!is_watched(h as isize), "WM_NCDESTROY reached the end-of-session hook through the chain (uia first: {uia_first})");
+            assert!(made.closed_by_window(), "WM_DESTROY and WM_NCDESTROY reached the screen reader host through the chain (uia first: {uia_first})");
+            drop(made);
+        }
+    }
+
 }
