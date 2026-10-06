@@ -298,6 +298,15 @@ impl Book {
         self.live.iter().any(|(p, x)| *p == pane && x == s) || self.pending.iter().any(|(p, x, _)| *p == pane && x == s) || self.ignored.contains(&pane)
     }
 
+    /// A session that a program made (an arrangement, the API, an undone close) already carries a
+    /// value: it asks like any program's write, once, unless the book already knows the value.
+    pub fn adopt(&mut self, pane: PaneId, s: Option<Shortcut>) -> Written {
+        match s {
+            Some(s) if !self.knows(pane, &s) => self.program_set(pane, Some(s), Origin::Program),
+            _ => Written::default(),
+        }
+    }
+
     /// The pane's value waits for the person (it shows as not registered, never as live).
     pub fn waiting(&self, pane: PaneId) -> bool {
         self.pending.iter().any(|(p, _, _)| *p == pane)
@@ -591,6 +600,29 @@ mod tests {
         assert!(b.live().is_empty() && b.pending().is_empty());
         assert!(b.knows(2, &a), "a refused session is known: nothing more to decide");
         assert!(!b.waiting(2));
+    }
+
+    #[test]
+    fn restored_and_api_sessions_ask_once() {
+        let a = sc(18, CTRL_ALT, "1");
+        let mut b = Book::default();
+        // A restored arrangement's or API session's value: asked, not live.
+        let w = b.adopt(3, Some(a.clone()));
+        assert_eq!(w.ask, Some((3, a.clone(), Origin::Program)));
+        assert!(b.live().is_empty());
+        assert!(b.waiting(3), "the Settings row shows it as waiting, never live");
+        // Seen again (another pass): nothing more to ask.
+        assert!(b.adopt(3, Some(a.clone())).ask.is_none());
+        // Register makes it live; the row no longer waits.
+        assert!(b.allow(3, &a));
+        assert!(!b.waiting(3) && b.live() == [(3, a.clone())]);
+        assert!(b.adopt(3, Some(a.clone())).ask.is_none());
+        // Ignore leaves it inert and silent.
+        b.adopt(4, Some(a.clone()));
+        b.ignore(4, &a);
+        assert!(!b.waiting(4) && b.adopt(4, Some(a.clone())).ask.is_none() && b.live().len() == 1);
+        // No value, nothing to ask.
+        assert!(b.adopt(5, None).ask.is_none());
     }
 
     #[test]

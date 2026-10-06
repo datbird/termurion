@@ -38,6 +38,11 @@ impl App {
     /// session by the caller, and here it is made inert, and the person is asked.
     pub(super) fn session_hotkey_from_program(&mut self, pane: PaneId, s: Option<Shortcut>, origin: Origin) {
         let written = self.session_hotkeys.program_set(pane, s, origin);
+        self.session_hotkey_asked(pane, written);
+    }
+
+    /// What a program's write did: its replaced question is dropped, and its own is asked.
+    fn session_hotkey_asked(&mut self, pane: PaneId, written: session_hotkeys::Written) {
         self.session_hotkeys_dirty = true;
         // The question this one replaces is dropped if it still waits in the queue.
         if let Some(old) = written.stale {
@@ -59,6 +64,20 @@ impl App {
         self.ask_scripts(ask);
     }
 
+    /// A session that came with its own hotkey value (restored from an arrangement or an undone
+    /// close, made by the API, or opened by anything else that writes a session copy) is seen once,
+    /// the first pass after it exists: the value asks like any program's write and is inert until
+    /// the person answers Register. Every writer is covered, the next pass after it.
+    fn session_hotkeys_adopt(&mut self) {
+        let fresh: Vec<PaneId> = self.panes.keys().copied().filter(|p| !self.session_hotkey_seen.contains(p)).collect();
+        for pane in fresh {
+            self.session_hotkey_seen.insert(pane);
+            let Some(s) = self.session_hotkey_value(pane) else { continue };
+            let written = self.session_hotkeys.adopt(pane, Some(s));
+            self.session_hotkey_asked(pane, written);
+        }
+    }
+
     /// A tmux pane opened with a hotkey in the server's `@hotkeys`: stored with the pane, inert.
     pub(super) fn tmux_pane_hotkey_arrived(&mut self, pane: PaneId, s: Shortcut, session: &str) {
         let Some(guid) = self.divorce(pane) else { return };
@@ -73,12 +92,14 @@ impl App {
             self.register_hotkeys();
         } else {
             self.session_hotkeys.ignore(pane, &s);
+            self.sync_session_hotkey_row();
         }
     }
 
     /// A session ended: its hotkey goes (registered again without it on the next pass).
     pub(super) fn session_hotkey_pane_gone(&mut self, pane: PaneId) {
         self.session_hotkeys.pane_gone(pane);
+        self.session_hotkey_seen.remove(&pane);
         self.session_hotkeys_dirty = true;
         if let Some(s) = self.settings.as_mut().filter(|s| s.edit_session == Some(pane)) {
             s.edit_session = None;
@@ -88,6 +109,7 @@ impl App {
 
     /// Once per pass: registrations are rebuilt when a session ended or a value changed.
     pub(super) fn session_hotkeys_flush(&mut self) {
+        self.session_hotkeys_adopt();
         if std::mem::take(&mut self.session_hotkeys_dirty) && self.hotkeys_registered {
             self.register_hotkeys();
         }
@@ -105,8 +127,10 @@ impl App {
     pub(super) fn sync_session_hotkey_row(&mut self) {
         let Some(pane) = self.settings.as_ref().and_then(|s| s.edit_session) else { return };
         let value = self.session_hotkey_value(pane);
+        let waiting = self.session_hotkeys.waiting(pane);
         if let Some(s) = self.settings.as_mut() {
             s.session_hotkey = value;
+            s.session_hotkey_waiting = waiting;
         }
     }
 

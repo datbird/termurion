@@ -147,6 +147,8 @@ pub struct SettingsWindow {
     pub edit_session: Option<crate::layout::PaneId>,
     /// The edited session's hotkey, as the app holds it (the row shows it).
     pub session_hotkey: Option<crate::hotkey::Shortcut>,
+    /// The row's value waits for the person's answer (a program's or a restored value): not registered.
+    pub session_hotkey_waiting: bool,
     /// Session > Prevent Sleep's gray line (`PSV:465-482`), set by the app.
     pub sleep_status: String,
     /// Settings > Advanced: the search, the non-default filter and the field being edited.
@@ -286,6 +288,7 @@ impl SettingsWindow {
             title_providers: Vec::new(),
             edit_session: None,
             session_hotkey: None,
+            session_hotkey_waiting: false,
             sleep_status: String::new(),
             advanced: Default::default(),
             ai: Default::default(),
@@ -384,6 +387,7 @@ impl SettingsWindow {
         let title_providers = &self.title_providers;
         let edit_session = self.edit_session;
         let session_hotkey = self.session_hotkey.clone();
+        let session_hotkey_waiting = self.session_hotkey_waiting;
         let sleep_status = &self.sleep_status;
         let advanced = &mut self.advanced;
         let ai = &mut self.ai;
@@ -631,7 +635,7 @@ impl SettingsWindow {
                             // The session's own hotkey: a row only while Settings edits a session.
                             if s.key == "Session Hotkey" {
                                 if let Some(pane) = crate::settings_hotkey::session_row_pane(edit_session) {
-                                    if let Some(e) = crate::settings_hotkey::session_row(ui, pane, session_hotkey.as_ref(), hk, keys) {
+                                    if let Some(e) = crate::settings_hotkey::session_row(ui, pane, session_hotkey.as_ref(), session_hotkey_waiting, hk, keys) {
                                         edit = e;
                                     }
                                 }

@@ -661,6 +661,8 @@ pub struct App {
     session_hotkeys: crate::session_hotkeys::Book,
     session_hotkey_ids: Vec<Vec<PaneId>>,
     session_hotkeys_dirty: bool,
+    /// Panes whose own session hotkey value was looked at once (`session_hotkeys_adopt`).
+    session_hotkey_seen: std::collections::HashSet<PaneId>,
     /// A Tandem window was in front at the last check (Reopen on activation).
     app_active: bool,
     /// Focus follows mouse: the pointer's screen point when Tandem lost the foreground, then
@@ -1726,6 +1728,7 @@ pub fn run() {
         session_hotkeys: Default::default(),
         session_hotkey_ids: Vec::new(),
         session_hotkeys_dirty: false,
+        session_hotkey_seen: Default::default(),
         app_active: false,
         ffm_saved: None,
         magnifier: Default::default(),

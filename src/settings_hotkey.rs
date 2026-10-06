@@ -226,9 +226,18 @@ pub fn session_edit(pane: crate::layout::PaneId, s: Option<Shortcut>) -> crate::
     crate::settings_ui::Edit::SessionHotkey(pane, s)
 }
 
+/// The note under the Session Hotkey row: a value that waits for the person's answer is not
+/// registered (never shown as live), and a refused chord says why.
+pub fn session_row_note(has_value: bool, waiting: bool, error: Option<&str>) -> Option<String> {
+    if has_value && waiting {
+        return Some("Not registered: waiting for your answer to the question".to_string());
+    }
+    error.map(|e| format!("Warning: {e}"))
+}
+
 /// The Session Hotkey row: a recorder for `pane`'s hotkey, with the app's warning when the chord
 /// is not registered. The edit when the person recorded or cleared one.
-pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
+pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, waiting: bool, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
     let mut out = None;
     if let Some((HotkeySlot::Session, k)) = keys.hotkey_recorded.clone() {
         keys.hotkey_recorded = None;
@@ -242,8 +251,8 @@ pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Opti
             out = Some(session_edit(pane, None));
         }
     });
-    if let Some(e) = st.errors.get(&crate::session_hotkeys::error_key(pane)) {
-        ui.colored_label(WARN, format!("Warning: {e}"));
+    if let Some(e) = session_row_note(current.is_some(), waiting, st.errors.get(&crate::session_hotkeys::error_key(pane)).map(String::as_str)) {
+        ui.colored_label(WARN, e);
     }
     out
 }
@@ -604,6 +613,15 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_row_marks_a_waiting_value() {
+        assert_eq!(session_row_note(true, true, None).as_deref(), Some("Not registered: waiting for your answer to the question"));
+        assert_eq!(session_row_note(true, true, Some("Another hotkey uses this shortcut")).as_deref(), Some("Not registered: waiting for your answer to the question"), "waiting comes first");
+        assert_eq!(session_row_note(true, false, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Warning: Windows keeps this shortcut for itself"));
+        assert_eq!(session_row_note(true, false, None), None);
+        assert_eq!(session_row_note(false, false, None), None);
+    }
 
     #[test]
     fn open_quickly_hotkey_stores_like_iterm2() {
