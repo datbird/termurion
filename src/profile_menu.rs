@@ -10,32 +10,74 @@ pub enum Node {
     Folder { name: String, children: Vec<Node> },
     /// "Open All" for the folder at `path` ("" is the top); Alt opens them in a new window.
     OpenAll { path: String },
+    /// The menu was cut at `MAX_ITEMS`: a disabled note ("More profiles are in Settings").
+    More,
 }
 
-/// One menu while the tree is built: its folders in the order they were made, and its profiles.
+/// Menu items at most in the whole tree: a profile is one, a folder two (itself and its Open All),
+/// the note one. A profile sits in every folder its tags name, so this bounds the build and the
+/// muda items however many profiles or tags arrive.
+pub const MAX_ITEMS: usize = 1024;
+/// Chain steps (one folder lookup) at most while the tree is built.
+pub const MAX_WORK: usize = 16 * 1024;
+/// Profiles read into the tree at most (the rows are built before it).
+pub const MAX_PROFILES: usize = 2048;
+
+/// One menu while the tree is built: its folders in the order they were made (found by lowercase
+/// name through `index`), and its profiles (found by guid through `guids`).
 #[derive(Default)]
 struct Menu {
     folders: Vec<(String, Menu)>,
+    index: std::collections::HashMap<String, usize>,
     leaves: Vec<Node>,
+    guids: std::collections::HashSet<String>,
+}
+
+/// What the build has spent against `MAX_ITEMS` and `MAX_WORK`.
+#[derive(Default)]
+struct Budget {
+    items: usize,
+    over: bool,
+}
+
+impl Budget {
+    /// Items that may be spent: two stay free, for the note and the top menu's Open All.
+    const CAP: usize = MAX_ITEMS - 2;
+
+    fn spend(&mut self, n: usize) -> bool {
+        if self.items + n > Self::CAP {
+            self.over = true;
+            return false;
+        }
+        self.items += n;
+        true
+    }
 }
 
 impl Menu {
-    /// The folder named `name`, made when missing; names match ignoring case, as
+    /// The folder named `name`, made when missing (and affordable); names match ignoring case, as
     /// `findOrCreateTagSubmenuInMenu` compares titles (the first spelling is kept).
-    fn folder(&mut self, name: &str) -> &mut Menu {
-        let at = match self.folders.iter().position(|(n, _)| n.to_lowercase() == name.to_lowercase()) {
-            Some(i) => i,
+    fn folder(&mut self, name: &str, budget: &mut Budget) -> Option<&mut Menu> {
+        let key = name.to_lowercase();
+        let at = match self.index.get(&key) {
+            Some(i) => *i,
             None => {
+                // The folder and its Open All.
+                if !budget.spend(2) {
+                    return None;
+                }
                 self.folders.push((name.to_string(), Menu::default()));
+                self.index.insert(key, self.folders.len() - 1);
                 self.folders.len() - 1
             }
         };
-        &mut self.folders[at].1
+        Some(&mut self.folders[at].1)
     }
 
-    fn add(&mut self, node: &Node) {
+    fn add(&mut self, node: &Node, budget: &mut Budget) {
         let Node::Profile { guid, .. } = node else { return };
-        if !self.leaves.iter().any(|l| matches!(l, Node::Profile { guid: g, .. } if g == guid)) {
+        if !self.guids.contains(guid) && budget.spend(1) {
+            self.guids.insert(guid.clone());
             self.leaves.push(node.clone());
         }
     }
@@ -62,8 +104,17 @@ impl Menu {
 /// profile is in the last folder of every tag it names, once. Names and tags are cleaned of
 /// control, bidi and zero-width characters (P23); empty parts are skipped.
 pub fn tree(profiles: &[(String, String, Vec<String>, Option<char>)]) -> Vec<Node> {
+    tree_counted(profiles, &mut 0)
+}
+
+/// `tree`, adding the chain steps taken to `work`.
+pub fn tree_counted(profiles: &[(String, String, Vec<String>, Option<char>)], work: &mut usize) -> Vec<Node> {
     let mut top = Menu::default();
-    for (guid, name, tags, shortcut) in profiles {
+    let mut budget = Budget::default();
+    'profiles: for (guid, name, tags, shortcut) in profiles {
+        if budget.over {
+            break;
+        }
         let node = Node::Profile { guid: guid.clone(), name: crate::profile_list::display_text(name), shortcut: *shortcut };
         let chains: Vec<Vec<String>> = tags
             .iter()
@@ -71,24 +122,34 @@ pub fn tree(profiles: &[(String, String, Vec<String>, Option<char>)]) -> Vec<Nod
             .filter(|c| !c.is_empty())
             .collect();
         if chains.is_empty() {
-            top.add(&node);
+            top.add(&node, &mut budget);
             continue;
         }
-        let mut seen: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for chain in chains {
-            let key = chain.join("/").to_lowercase();
-            if seen.contains(&key) {
+            if !seen.insert(chain.join("/").to_lowercase()) {
                 continue;
             }
-            seen.push(key);
             let mut menu = &mut top;
             for part in &chain {
-                menu = menu.folder(part);
+                *work += 1;
+                if *work > MAX_WORK {
+                    budget.over = true;
+                    break 'profiles;
+                }
+                match menu.folder(part, &mut budget) {
+                    Some(m) => menu = m,
+                    None => continue 'profiles,
+                }
             }
-            menu.add(&node);
+            menu.add(&node, &mut budget);
         }
     }
-    top.nodes("")
+    let mut out = top.nodes("");
+    if budget.over {
+        out.push(Node::More);
+    }
+    out
 }
 
 /// The guids an "Open All" at `path` opens: every profile of that menu and its submenus, once
@@ -217,6 +278,44 @@ mod tests {
         // One profile alone shows no Open All.
         assert_eq!(tree(&[p("A", &[])]), vec![leaf("A")]);
         assert!(tree(&[]).is_empty());
+    }
+
+    fn count(nodes: &[Node]) -> usize {
+        nodes
+            .iter()
+            .map(|n| match n {
+                Node::Folder { children, .. } => 1 + count(children),
+                _ => 1,
+            })
+            .sum()
+    }
+
+    /// 500 profiles of 64 tags each: the tree stays within `MAX_ITEMS` and `MAX_WORK`, ends with
+    /// a note, and Bonjour hosts (one folder, up to 128 profiles) are inside the same bound.
+    #[test]
+    fn menu_tree_is_bounded() {
+        let many: Vec<_> = (0..500)
+            .map(|i| {
+                let tags: Vec<String> = (0..64).map(|t| format!("t{t}/u{}", i % 7)).collect();
+                (format!("g{i}"), format!("n{i}"), tags, None)
+            })
+            .collect();
+        let mut work = 0;
+        let t = tree_counted(&many, &mut work);
+        assert!(count(&t) <= MAX_ITEMS, "{} items", count(&t));
+        assert!(work <= MAX_WORK + 8, "work {work}");
+        assert!(matches!(t.last(), Some(Node::More)), "a cut tree says so");
+        let mut small = Vec::new();
+        for i in 0..128 {
+            small.push((format!("b{i}"), format!("h{i}"), vec!["bonjour".to_string()], None));
+        }
+        let mut with_bonjour = many.clone();
+        with_bonjour.extend(small);
+        assert!(count(&tree(&with_bonjour)) <= MAX_ITEMS);
+        let only_bonjour: Vec<_> = (0..128).map(|i| (format!("b{i}"), format!("h{i}"), vec!["bonjour".to_string()], None)).collect();
+        let t = tree(&only_bonjour);
+        assert!(!matches!(t.last(), Some(Node::More)), "128 hosts fit");
+        assert_eq!(count(&t), 1 + 128 + 1, "one folder, the hosts, its Open All");
     }
 
     #[test]

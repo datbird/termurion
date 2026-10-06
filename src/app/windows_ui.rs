@@ -1109,7 +1109,8 @@ impl App {
     /// tag, "Open All" where a menu holds several (`iTermProfilesMenuController.m`). It is rebuilt
     /// only when the tree changes.
     pub(super) fn refresh_profiles_menu(&mut self) {
-        let rows: Vec<(String, String, Vec<String>, Option<char>)> = crate::profile_list::rows(&self.store.profiles).into_iter().zip(&self.store.profiles).map(|((guid, name, tags, _), p)| (guid, name, tags, crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
+        let shown = &self.store.profiles[..self.store.profiles.len().min(crate::profile_menu::MAX_PROFILES)];
+        let rows: Vec<(String, String, Vec<String>, Option<char>)> = crate::profile_list::rows(shown).into_iter().zip(shown).map(|((guid, name, tags, _), p)| (guid, name, tags, crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
         let tree = crate::profile_menu::tree(&rows);
         let Some(bar) = &mut self.menu_bar else { return };
         if bar.profile_items == tree {
@@ -1178,6 +1179,7 @@ fn append_profile_nodes(sub: &muda::Submenu, nodes: &[crate::profile_menu::Node]
                 append_profile_nodes(&folder, children)?;
                 sub.append(&folder)?;
             }
+            Node::More => sub.append(&muda::MenuItem::new("More profiles are in Settings", false, None))?,
             Node::OpenAll { path } => {
                 sub.append(&muda::PredefinedMenuItem::separator())?;
                 sub.append(&muda::MenuItem::with_id(format!("{}{path}", menu::PROFILE_ALL_ID), "Open All", true, None))?;
