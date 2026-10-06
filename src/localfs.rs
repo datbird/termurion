@@ -258,6 +258,11 @@ pub fn pick_file(dialog: rfd::FileDialog) -> Option<LocalPath> {
     dialog.pick_file().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p))
 }
 
+/// The files the person picks in this open dialog at this moment (as `pick_file`, several allowed).
+pub fn pick_files(dialog: rfd::FileDialog) -> Vec<LocalPath> {
+    dialog.pick_files().unwrap_or_default().into_iter().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p)).collect()
+}
+
 /// The file the person names in this save dialog at this moment (as `pick_file`).
 pub fn save_file(dialog: rfd::FileDialog) -> Option<LocalPath> {
     dialog.save_file().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p))

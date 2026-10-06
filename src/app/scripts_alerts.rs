@@ -85,7 +85,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Cancel: a closed window never uploads the person's files (P9).
         Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
         // Cancel: a closed window never runs an opened script or adds a preset (B6).
-        Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) => Answer::Button(1),
+        Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::TriggerImportMarked(_) => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -293,6 +293,10 @@ pub(super) enum Then {
     /// nothing (`PD:44-61`, a faithful quirk). A closed window cancels; another process can raise it,
     /// so it is capped (B6).
     OpenRenamedProfile { by_guid: String, by_name: String },
+    /// "This file was downloaded. Its triggers can run commands." for an opened `.it2triggers`
+    /// (B1, 13v1 P21): OK (0) goes on to the profile chooser, Cancel (1) imports nothing. A closed
+    /// window cancels; another process raises it, so it is capped.
+    TriggerImportMarked(Vec<toml::Table>),
 }
 
 impl Then {
@@ -319,13 +323,13 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. })
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_))
     }
 }
 
 /// How many ignored files a question that never shows stands for (the opened-file questions).
 pub(super) fn dropped_open_files(then: &Then) -> usize {
-    matches!(then, Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. }) as usize
+    matches!(then, Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_)) as usize
 }
 
 /// The queue holds at most this many capped asks (`Then::capped`); later ones are dropped (a
@@ -665,6 +669,11 @@ impl App {
                 }
             }
             Then::OpenRenamedProfile { by_guid, by_name } => self.renamed_profile_answered(&by_guid, &by_name, index),
+            Then::TriggerImportMarked(imported) => {
+                if index == 0 {
+                    self.trigger_import_queue(imported);
+                }
+            }
         }
     }
 }

@@ -6,6 +6,38 @@ thread_local! {
     /// Which row the editor selects next time it draws: set by Add Trigger... and Edit
     /// Triggers (the last row, or the first).
     static FOCUS: Cell<Option<bool>> = const { Cell::new(None) };
+    /// The alerts Import and Export raised this frame (heading, text), taken by the Settings window
+    /// as `Edit::Alert`, one per frame.
+    static ALERTS: std::cell::RefCell<std::collections::VecDeque<(String, String)>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// A file Export just wrote, for the Settings window to show in Explorer.
+    static REVEAL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The next alert the editor raised, if any.
+pub fn take_alert() -> Option<(String, String)> {
+    ALERTS.with(|a| a.borrow_mut().pop_front())
+}
+
+/// Whether an alert waits for a frame to carry it.
+pub fn alerts_pending() -> bool {
+    ALERTS.with(|a| !a.borrow().is_empty())
+}
+
+/// The file an Export wrote, to show in Explorer.
+pub fn take_reveal() -> Option<String> {
+    REVEAL.with(|r| r.borrow_mut().take())
+}
+
+/// Most alerts one Import raises (a folder of broken files must not queue windows forever).
+const MAX_ALERTS: usize = 8;
+
+fn push_alert(heading: &str, text: String) {
+    ALERTS.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.len() < MAX_ALERTS {
+            a.push_back((heading.to_string(), text));
+        }
+    });
 }
 
 /// Add Trigger...: the editor shows the new (last) trigger.
@@ -315,6 +347,112 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String) -> bool {
     }
 }
 
+/// The editor's Import (`TriggerController.m:1171-1203`): each file's text parsed in order and its
+/// triggers merged into the stored list; each failure is an alert (heading, text), and a file that
+/// failed adds nothing. `files` are (shown name, the text or the reason it could not be read).
+pub fn import_into(stored: Option<&toml::Value>, files: &[(String, Result<String, String>)]) -> (toml::Value, Vec<(String, String)>) {
+    use crate::trigger_file as tf;
+    let mut list = stored.cloned().unwrap_or_else(|| toml::Value::Array(Vec::new()));
+    let mut alerts = Vec::new();
+    for (name, text) in files {
+        match text {
+            Err(e) => alerts.push((tf::IMPORT_FAILED_HEADING.to_string(), tf::load_error_text(name, e))),
+            Ok(text) => match tf::parse(text, name) {
+                Ok(imported) => list = tf::add_triggers(Some(&list), &imported),
+                Err(e) => alerts.push((e.heading.to_string(), e.text)),
+            },
+        }
+    }
+    (list, alerts)
+}
+
+/// The text of a trigger file the person picked: at most `MAX_FILE` bytes, read through the judge's
+/// type, valid UTF-8 (`TriggerController.m:580-600`). The error is the reason, for "While loading".
+pub fn read_text(p: &crate::localfs::LocalPath) -> Result<String, String> {
+    use std::io::Read;
+    let file = crate::localfs::open(p).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(crate::trigger_file::MAX_FILE as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() > crate::trigger_file::MAX_FILE {
+        return Err("the file is too large for a trigger file".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "the file is not valid UTF-8".to_string())
+}
+
+/// Writes an exported file: a new file readable by this user alone, made beside the target and moved
+/// over it, so an existing file (or a link planted there) is replaced as itself, never written
+/// through. The path is the person's pick.
+pub fn write_export(path: &crate::localfs::LocalPath, text: &str) -> std::io::Result<()> {
+    let bad = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "this is not a file name");
+    let name = path.path().file_name().ok_or_else(bad)?.to_os_string();
+    let folder = path.parent().ok_or_else(bad)?;
+    let target = folder.unfollowed(&name).ok_or_else(bad)?;
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        let mut temp_name = std::ffi::OsString::from(".");
+        temp_name.push(&name);
+        temp_name.push(format!(".{}.tmp", std::process::id()));
+        let temp = folder.unfollowed(&temp_name).ok_or_else(bad)?;
+        match crate::localfs::remove_unfollowed(&temp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let written = crate::localfs::create_owner_only(&temp).and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.sync_all()));
+        let moved = written.and_then(|()| crate::localfs::rename_unfollowed(&temp, &target));
+        if moved.is_err() {
+            let _ = crate::localfs::remove_unfollowed(&temp);
+        }
+        moved
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        crate::localfs::write(path, text)
+    }
+}
+
+/// "Export to File" (`TriggerController.m:1139-1169`): the trigger as a one-element array in a file
+/// the person names. A failure is an "Export Failed" alert; a file written is shown in Explorer.
+fn export_one(t: &Trigger) {
+    use crate::trigger_file as tf;
+    let mut table = t.to_table();
+    for k in ["name", "job"] {
+        if table.get(k).and_then(|v| v.as_str()).is_some_and(str::is_empty) {
+            table.remove(k);
+        }
+    }
+    let dialog = rfd::FileDialog::new().set_title(tf::EXPORT_TITLE).set_file_name(format!("triggers.{}", tf::EXTENSION)).add_filter("iTerm2 triggers", &[tf::EXTENSION]);
+    let Some(path) = crate::localfs::save_file(dialog) else { return };
+    let shown = crate::inert_files::shown_name(&path.path().file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+    match write_export(&path, &tf::export_text(&[table])) {
+        Ok(()) => REVEAL.with(|r| *r.borrow_mut() = Some(path.path().to_string_lossy().into_owned())),
+        Err(e) => push_alert(tf::EXPORT_FAILED_HEADING, tf::save_error_text(&shown, &e.to_string())),
+    }
+}
+
+/// The Import button (`TriggerController.m:1171-1203`): files the person picks, each read and merged
+/// into the profile's list. True when the list changed.
+fn import_button(profile: &mut Profile) -> bool {
+    use crate::trigger_file as tf;
+    let dialog = rfd::FileDialog::new().set_title(tf::IMPORT_TITLE).add_filter("iTerm2 triggers", &[tf::EXTENSION]);
+    let files: Vec<(String, Result<String, String>)> = crate::localfs::pick_files(dialog)
+        .iter()
+        .map(|p| (crate::inert_files::shown_name(&p.path().file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())), read_text(p)))
+        .collect();
+    let stored = profile.get("Triggers");
+    let (merged, alerts) = import_into(stored.as_ref(), &files);
+    for (heading, text) in alerts {
+        push_alert(&heading, text);
+    }
+    let changed = stored.as_ref() != Some(&merged) && !(stored.is_none() && merged.as_array().is_some_and(Vec::is_empty));
+    if changed {
+        profile.set("Triggers", merged);
+    }
+    changed
+}
+
 /// The Triggers editor: the list with + and -, and the selected trigger's fields. True when
 /// the profile's triggers changed.
 pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
@@ -323,15 +461,24 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
     let sel_id = egui::Id::new("trigger-selected");
     let mut selected: Option<usize> = take_focus(list.len()).or_else(|| ui.data(|d| d.get_temp(sel_id))).filter(|i: &usize| *i < list.len());
     let mut changed = false;
+    let mut imported = false;
     ui.label("Triggers act on output that matches a regular expression.");
     egui::ScrollArea::vertical().max_height(220.0).id_salt("trigger-list").show(ui, |ui| {
         for (i, t) in list.iter().enumerate() {
             let r = row(t);
             let text = egui::RichText::new(format!("{}  {}", if r.name.is_empty() { "(no name)" } else { &r.name }, r.detail));
             let text = if r.faint { text.weak() } else { text };
-            if ui.selectable_label(selected == Some(i), text).clicked() {
+            let response = ui.selectable_label(selected == Some(i), text);
+            if response.clicked() || response.secondary_clicked() {
                 selected = Some(i);
             }
+            // The row's menu (`TriggerController.m:1133-1135`).
+            response.context_menu(|ui| {
+                if ui.button(crate::trigger_file::EXPORT_TITLE).clicked() {
+                    export_one(t);
+                    ui.close();
+                }
+            });
         }
     });
     ui.horizontal(|ui| {
@@ -345,6 +492,10 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                 list.remove(i);
                 changed = true;
             }
+        }
+        if ui.button(crate::trigger_file::IMPORT_TITLE).clicked() && import_button(profile) {
+            // The list changed under the editor: it reads the stored one again next frame.
+            imported = true;
         }
     });
     match selected {
@@ -435,12 +586,12 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
         }
         None => d.remove::<usize>(sel_id),
     });
-    if changed {
+    if changed && !imported {
         // Entries the list could not read stay in place; untouched triggers stay as stored.
         let stored = profile.get("Triggers");
         profile.set("Triggers", triggers::merge_list(stored.as_ref(), &list));
     }
-    changed
+    changed || imported
 }
 
 #[cfg(test)]
@@ -486,5 +637,37 @@ mod tests {
         assert_eq!(split_tab_status("#00ff00\u{1}#ffffff\u{1}work"), ("#00ff00".to_string(), "#ffffff".to_string(), "work".to_string()));
         assert_eq!(setting("Silence Bell", true), "Silence Bell\u{1}1");
         assert_eq!(split_setting("Silence Bell\u{1}0"), ("Silence Bell".to_string(), false));
+    }
+
+    #[test]
+    fn editor_import_merges_files_and_reports_failures() {
+        let alert = |r: &str| toml::Table::from_iter([("action".to_string(), "AlertTrigger".into()), ("regex".to_string(), r.into()), ("parameter".to_string(), "hi".into())]);
+        let a = crate::trigger_file::canonical(&alert("a")).unwrap();
+        let c = crate::trigger_file::canonical(&alert("c")).unwrap();
+        let stored = toml::Value::Array(vec![a.clone().into()]);
+        let files = vec![("x.it2triggers".to_string(), Ok(crate::trigger_file::export_text(std::slice::from_ref(&c)))), ("y.it2triggers".to_string(), Err("denied".to_string()))];
+        let (merged, alerts) = import_into(Some(&stored), &files);
+        assert_eq!(merged, toml::Value::Array(vec![a.into(), c.into()]));
+        assert_eq!(alerts, vec![("Import Failed".to_string(), "While loading y.it2triggers: denied".to_string())]);
+        let bad = vec![("z.it2triggers".to_string(), Ok("5".to_string()))];
+        let (kept, alerts) = import_into(Some(&stored), &bad);
+        assert_eq!(kept, stored, "a file that failed adds nothing");
+        assert_eq!(alerts, vec![("Import Failed".to_string(), "Malformed file at z.it2triggers".to_string())]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn export_writes_owner_only_and_replaces() {
+        let dir = std::env::temp_dir().join(format!("tandem-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = crate::localfs::LocalPath::judge(dir.join("t.it2triggers")).expect("a local path");
+        write_export(&file, "[1]").unwrap();
+        write_export(&file, "[2]").unwrap();
+        assert_eq!(std::fs::read_to_string(file.path()).unwrap(), "[2]");
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 1, "no temporary file stays: {names:?}");
+        let sddl = crate::localfs::dacl_sddl(&file.parent().unwrap().unfollowed("t.it2triggers").unwrap()).unwrap();
+        assert!(sddl.contains("D:P(A;;FA;;;"), "owner-only: {sddl}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

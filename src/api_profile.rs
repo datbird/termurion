@@ -106,7 +106,7 @@ fn coerced_bool(v: Option<&Value>) -> bool {
 /// One trigger as `sanitizedTriggerDictionary:` answers it (`Trigger.m:62-97,521-533`): only
 /// the keys a Trigger keeps, an absent string as "", name, job, provenance and event
 /// parameters only when present; None (left out) when its action names no trigger.
-fn sanitized_trigger(t: &toml::Table) -> Option<Json> {
+pub(crate) fn sanitized_trigger(t: &toml::Table) -> Option<Json> {
     let action = t.get("action").and_then(Value::as_str)?;
     crate::triggers::action_info(action)?;
     let text = |k: &str| t.get(k).and_then(Value::as_str);

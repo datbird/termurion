@@ -181,6 +181,13 @@ pub fn runs_command(action: &str) -> bool {
     matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger" | "CaptureTrigger")
 }
 
+/// Whether the class acts on the shell or the machine: the command classes, Send Text (types into
+/// the shell), Open Password Manager (types a saved password), Invoke Script Function and Set
+/// Profile Setting. An imported trigger file turns these off until the person enables each (B7).
+pub fn acts_on_machine(action: &str) -> bool {
+    runs_command(action) || matches!(action, "SendTextTrigger" | "PasswordTrigger" | "iTermRPCTrigger" | "iTermSetProfileBooleanTrigger")
+}
+
 /// `substitute` for a cmd.exe command line, through the one builder
 /// (`semantic::build_cmd_line`): None when a capture the parameter uses is refused. The
 /// parameter's own text is the person's and stays as written.
@@ -338,7 +345,8 @@ impl CommandPool {
 pub const MAX_TRIGGERS: usize = 256;
 pub const MAX_PATTERN: usize = 4096;
 pub const MAX_PARAMETER: usize = 64 * 1024;
-const MAX_KEYS: usize = 32;
+/// Keys in a trigger or in a nested table: 64, as B1 bounds an imported event's parameters (P8).
+const MAX_KEYS: usize = 64;
 const MAX_DEPTH: usize = 8;
 
 fn depth_ok(v: &toml::Value, depth: usize) -> bool {

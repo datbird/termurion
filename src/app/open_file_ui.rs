@@ -85,7 +85,7 @@ impl App {
         self.outside_note("open-ignored", open_file::ignored_banner(total));
     }
 
-    fn open_file_banner(&mut self, text: String) {
+    pub(super) fn open_file_banner(&mut self, text: String) {
         self.outside_note(BANNER, text);
     }
 
@@ -128,6 +128,7 @@ impl App {
         for launch in std::mem::take(&mut self.open_runs) {
             self.run_opened(launch, event_loop);
         }
+        self.show_trigger_import(event_loop);
         if self.gpu.is_some() { self.open_batch.due() } else { None }
     }
 
@@ -191,7 +192,7 @@ impl App {
             }
             Kind::ColorPresets => self.open_color_file(&f.path),
             Kind::ProfileTab => self.open_profile_tab(&f.path),
-            Kind::Triggers => self.open_file_banner(format!("Tandem cannot open \u{201c}{shown}\u{201d} yet.")),
+            Kind::Triggers => self.import_triggers_file(&f, event_loop),
             Kind::Folder => self.open_folder_or_script(&f, event_loop),
             Kind::Script => self.open_folder_or_script(&f, event_loop),
         }

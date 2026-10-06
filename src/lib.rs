@@ -151,6 +151,7 @@ pub mod badge;
 pub mod bell;
 pub mod bell_badge;
 pub mod trigger_eval;
+pub mod trigger_file;
 pub mod trigger_events;
 pub mod proctree;
 pub mod winmodel;
