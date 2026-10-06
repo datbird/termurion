@@ -486,6 +486,15 @@ impl Tracker {
     }
 }
 
+/// The 13v2 x 13w seam (no event storm): output whose built text, cursor and first line equal
+/// the last published snapshot's (`prev`: its text, cursor offset and first absolute line) changed
+/// nothing a client reads. A chunk of bells, a title or any other non-cell output moves the
+/// screen's tick, and without this each publish (up to one per `BUILD_GAP`) would raise a
+/// TextChanged for it.
+pub fn output_unchanged(prev: Option<(&Text, usize, i64)>, rows: &Rows, text: &Text) -> bool {
+    prev.is_some_and(|(t, cursor, first)| first == rows.first_line && t == text && cursor == offset_of(text, rows.cursor.0, rows.cursor.1))
+}
+
 /// What the provider's snapshot of a pane depends on besides its text, so a selection, a scroll,
 /// a focus change or a move republishes (`tick` is `Screen::tick_digest`, `offset` the display
 /// offset, `sel` the selection's ends as (line, column)).
