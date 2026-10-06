@@ -426,7 +426,7 @@ impl App {
         }
         let windows = self.snapshots(what, Contents::Plain);
         let Some(path) = rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"]).save_file() else { return };
-        match arrangement::to_plist(&windows).and_then(|b| crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, b)).map_err(|e| e.to_string())) {
+        match arrangement::to_plist(&windows).and_then(|b| crate::localfs::picked(&path).and_then(|p| crate::localfs::write(&p, b)).map_err(|e| e.to_string())) {
             Ok(()) => self.banners.clear("arrangement"),
             Err(e) => self.banners.set("arrangement", format!("Could not save {}: {e}", path.display())),
         }
@@ -967,7 +967,7 @@ impl App {
     /// first (`open_arrangement_windows`). The caller has checked the path is local.
     pub(super) fn load_arrangement_path(&mut self, path: &std::path::Path) {
         let path = path.to_path_buf();
-        let windows = match crate::localfs::judge_io(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| e.to_string()).and_then(|b| arrangement::from_plist(&b)) {
+        let windows = match crate::localfs::picked(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| e.to_string()).and_then(|b| arrangement::from_plist(&b)) {
             Ok(w) => w,
             Err(e) => {
                 self.banners.set("arrangement", format!("Could not load {}: {e}", super::files_ui::shown_name(&path.display().to_string())));

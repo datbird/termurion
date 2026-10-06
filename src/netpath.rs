@@ -62,6 +62,23 @@ const DRIVE_FIXED: u32 = 3;
 /// `DRIVE_REMOTE`.
 const DRIVE_REMOTE: u32 = 4;
 
+/// Whether a `GetDriveTypeW` answer is a local drive: FIXED, REMOVABLE, CDROM or RAMDISK. REMOTE,
+/// UNKNOWN (0) and NO_ROOT_DIR (1) are not (judge rulings r3, item 2).
+fn drive_local(kind: u32) -> bool {
+    matches!(kind, 2 | 3 | 5 | 6)
+}
+
+/// `remote_answer` with the real answer kept for the caller: REMOTE once seen stays REMOTE.
+#[cfg(any(windows, test))]
+fn drive_answer(cache: &std::sync::Mutex<[Option<bool>; 26]>, letter: usize, ask: impl FnOnce() -> u32) -> u32 {
+    let mut kind = 0;
+    let remote = remote_answer(cache, letter, || {
+        kind = ask();
+        kind
+    });
+    if remote { DRIVE_REMOTE } else { kind }
+}
+
 /// Whether drive `letter` (0 for A) is a network drive. Only a REMOTE answer is kept for the run (the
 /// safe side: a letter once seen as a share stays refused); every other answer is asked again.
 #[cfg(any(windows, test))]
@@ -117,12 +134,11 @@ impl Drives for RealDrives {
             return 0;
         }
         let index = (letter.to_ascii_uppercase() as u8 - b'A') as usize;
-        let remote = remote_answer(&CACHE, index, || {
+        drive_answer(&CACHE, index, || {
             let wide: Vec<u16> = format!("{letter}:\\").encode_utf16().chain(Some(0)).collect();
             // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
             unsafe { GetDriveTypeW(wide.as_ptr()) }
-        });
-        if remote { DRIVE_REMOTE } else { DRIVE_FIXED }
+        })
     }
 }
 
@@ -410,9 +426,15 @@ fn letter_kind(target: Option<String>) -> Letter {
         let plain = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\');
         return if plain { Letter::Subst(rest.to_string()) } else { Letter::Elsewhere };
     }
-    let volume = [r"\Device\HarddiskVolume", r"\Device\CdRom", r"\Device\Floppy"].iter().any(|prefix| {
-        t.len() > prefix.len() && t.is_char_boundary(prefix.len()) && t[..prefix.len()].eq_ignore_ascii_case(prefix) && t[prefix.len()..].bytes().all(|c| c.is_ascii_digit())
-    });
+    // Any device that is not a redirector may be a local volume (HarddiskVolume, CdRom, a RAM disk,
+    // a VeraCrypt volume); `GetDriveTypeW` then has the last word (REMOTE, UNKNOWN and NO_ROOT_DIR refuse).
+    let name = t.strip_prefix(r"\Device\").or_else(|| t.get(..8).filter(|p| p.eq_ignore_ascii_case(r"\Device\")).map(|_| &t[8..]));
+    // A local volume's target is the device alone; a mapped, RDP or VirtualBox drive names a share after it.
+    let redirector = match name {
+        Some(n) => n.is_empty() || n.contains('\\') || n.eq_ignore_ascii_case("Mup") || n.to_ascii_lowercase().ends_with("redirector"),
+        None => true,
+    };
+    let volume = !redirector;
     if volume { Letter::Volume } else { Letter::Network }
 }
 
@@ -452,33 +474,67 @@ fn local_chain(path: &Path, r: &Rule, read_link: &dyn Fn(&Path) -> Option<PathBu
         Letter::Network => {}
         // 3. The drive type, only for a local volume.
         Letter::Volume => {
-            if !r.allow_network && r.drives.drive_type(letter) == DRIVE_REMOTE {
+            if !r.allow_network && !drive_local(r.drives.drive_type(letter)) {
                 return false;
             }
         }
     }
-    // 4. Every folder root first, each one's reparse data before anything below it.
-    let mut chain: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
-    chain.reverse();
-    for at in chain {
-        if budget.verified.borrow().contains(at) {
+    // 4. Every folder root first, each one's reparse data before anything below it. The walk is on
+    // the path as Windows resolves it: after a link, a relative target is joined onto the parent as
+    // already redirected, and the rest of the path continues on the resolved target.
+    let mut resolved = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Prefix(_) => {
+                resolved.push(comp.as_os_str());
+                continue;
+            }
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                resolved.pop();
+                continue;
+            }
+            _ => resolved.push(comp.as_os_str()),
+        }
+        let at = resolved.clone();
+        if budget.verified.borrow().contains(&at) {
             continue;
         }
         if !budget.spend() {
             return false;
         }
-        if let Some(target) = read_link(at) {
-            let target = match at.parent() {
-                Some(parent) if target.is_relative() => parent.join(target),
+        if let Some(target) = read_link(&at) {
+            let parent = at.parent().map(Path::to_path_buf);
+            let target = match parent {
+                Some(parent) if target.is_relative() => normalize(&parent.join(target)),
                 _ => target,
             };
             if !local_chain(&target, r, read_link, budget, depth + 1) {
                 return false;
             }
+            // The rest of the path is below the link's target.
+            resolved = target;
         }
-        budget.verified.borrow_mut().insert(at.to_path_buf());
+        budget.verified.borrow_mut().insert(at);
     }
     true
+}
+
+/// `p` with `.` and `..` collapsed lexically (never above the root).
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if out.parent().is_some() && !matches!(out.components().next_back(), Some(std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// `may_probe_with` over the real links with a budget of its own.
@@ -691,6 +747,66 @@ mod tests {
         assert!(!reads.iter().any(|r| r.ends_with("f.txt")), "{reads:?}");
     }
 
+    /// Judge round 3 re-review, Important 1: a relative link target is joined onto the path already
+    /// redirected by earlier links, as Windows resolves it, and the walk goes on from there. With
+    /// C:\r\d -> x\y and C:\r\d\l -> ..\z the real place is C:\r\x\z (not the lexical C:\r\z), and a
+    /// link there to a share must be found before anything below it is read.
+    #[test]
+    fn a_chain_of_relative_links_is_walked_where_windows_resolves_it() {
+        let seen = RefCell::new(Vec::new());
+        let map: &'static [(&str, &str)] = &[(r"c:\r\d", r"x\y"), (r"c:\r\x\y\l", r"..\z"), (r"c:\r\x\z", r"\\attacker\share")];
+        let rl = links(map, &seen);
+        assert!(!judge(Path::new(r"C:\r\d\l\f"), &rl, &Subst::new()), "the chain ends on a share");
+        let reads = seen.borrow().clone();
+        assert!(reads.iter().any(|r| r == r"c:\r\x\z"), "the redirected place was read: {reads:?}");
+        assert!(!reads.iter().any(|r| r == r"c:\r\z" || r.ends_with(r"\f")), "nothing lexical or below the share link was read: {reads:?}");
+        // A chain that stays local is accepted, and every component read is on the resolved path.
+        let seen = RefCell::new(Vec::new());
+        let map: &'static [(&str, &str)] = &[(r"c:\r\d", r"x\y"), (r"c:\r\x\y\l", r"..\z")];
+        let rl = links(map, &seen);
+        assert!(judge(Path::new(r"C:\r\d\l\f"), &rl, &Subst::new()));
+        assert!(seen.borrow().iter().any(|r| r == r"c:\r\x\z\f"), "{:?}", seen.borrow());
+    }
+
+    /// Judge rulings r3, item 2: FIXED, REMOVABLE, CDROM and RAMDISK are local while the device is
+    /// not a redirector (RAM disks and VeraCrypt volumes are allowed); REMOTE, UNKNOWN and
+    /// NO_ROOT_DIR are refused, and the real drive answer is passed through, not collapsed to FIXED.
+    #[test]
+    fn drive_kinds_follow_the_ruling() {
+        let k = |t: &str| letter_kind(Some(t.to_string()));
+        for local in [r"\Device\ImDisk0", r"\Device\VeraCryptVolumeE", r"\Device\HarddiskVolume9"] {
+            assert_eq!(k(local), Letter::Volume, "{local}");
+        }
+        for net in [r"\Device\Mup\h\s", r"\Device\LanmanRedirector\h\s", r"\Device\WebDavRedirector\h", r"\Device\SomeVendorRedirector\x", r"\device\mup", r"\Device\Harddisk3\DR7", r"\Device\RdpDr\;T:1\tsclient\c"] {
+            assert_eq!(k(net), Letter::Network, "{net}");
+        }
+        assert_eq!(k(r"\??\UNC\h\s"), Letter::Elsewhere);
+        for (kind, ok) in [(0u32, false), (1, false), (2, true), (3, true), (4, false), (5, true), (6, true), (7, false)] {
+            assert_eq!(drive_local(kind), ok, "type {kind}");
+        }
+        let cache = std::sync::Mutex::new([None; 26]);
+        assert_eq!(drive_answer(&cache, 3, || 6), 6, "the answer is passed through");
+        assert_eq!(drive_answer(&cache, 3, || 0), 0);
+        assert_eq!(drive_answer(&cache, 3, || DRIVE_REMOTE), DRIVE_REMOTE);
+        assert_eq!(drive_answer(&cache, 3, || 3), DRIVE_REMOTE, "a share once seen stays refused");
+        // The judge: a device that is not a redirector is local only with a local drive type.
+        struct Typed(&'static str, u32);
+        impl Drives for Typed {
+            fn dos_device(&self, _: char) -> Option<String> {
+                Some(self.0.to_string())
+            }
+            fn drive_type(&self, _: char) -> u32 {
+                self.1
+            }
+        }
+        let seen = RefCell::new(Vec::new());
+        let rl = links(&[], &seen);
+        for (kind, ok) in [(2u32, true), (3, true), (5, true), (6, true), (0, false), (1, false), (4, false)] {
+            assert_eq!(judge(Path::new(r"R:\a"), &rl, &Typed(r"\Device\ImDisk0", kind)), ok, "ImDisk type {kind}");
+        }
+        assert!(!judge(Path::new(r"R:\a"), &rl, &Typed(r"\Device\LanmanRedirector\x", 3)), "a redirector is refused whatever the type");
+    }
+
     /// Round 3, item 2a: the judge itself never touches the network. A letter's device map is read
     /// first; GetDriveTypeW (which opens the root) is asked only for a letter whose target is a local
     /// volume, never for a SUBST letter, a mapped drive or any other redirected device, and no
@@ -723,7 +839,7 @@ mod tests {
         for t in [r"\??\UNC\h\s", r"\??\Volume{x}\", r"\??\GLOBALROOT\Device\Mup\h", r"\??\CC:\x"] {
             assert_eq!(k(t), Letter::Elsewhere, "{t}");
         }
-        for t in [r"\Device\Mup\h\s", r"\Device\LanmanRedirector\;Z:0\h\s", r"\Device\WebDavRedirector\h", r"\Device\HarddiskVolume", r"\Device\HarddiskVolume1\..\Mup", r"\Device\RdpDr\;T:1\tsclient\c", ""] {
+        for t in [r"\Device\Mup\h\s", r"\Device\LanmanRedirector\;Z:0\h\s", r"\Device\WebDavRedirector\h", r"\Device\HarddiskVolume1\..\Mup", r"\Device\RdpDr\;T:1\tsclient\c", ""] {
             assert_eq!(k(t), Letter::Network, "{t}");
         }
         assert_eq!(letter_kind(None), Letter::Missing);

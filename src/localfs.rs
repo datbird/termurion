@@ -43,6 +43,13 @@ impl LocalPath {
         crate::netpath::may_probe_with(p, probe, &crate::netpath::read_reparse, budget).then(|| LocalPath(PathBuf::from(p)))
     }
 
+    /// A path the person picked in a file dialog at this moment (judge rulings r3, item 1): their
+    /// own choice, so it may be on a share (Windows authenticates as it does for every app). Made
+    /// only by dialog code; every other path is judged. A guard test enforces who calls it.
+    pub fn person_picked(p: &Path) -> LocalPath {
+        LocalPath(p.to_path_buf())
+    }
+
     pub fn path(&self) -> &Path {
         &self.0
     }
@@ -144,6 +151,15 @@ pub fn refused() -> io::Error {
 /// The judge as an `io::Result` (a refused path is `refused()`), for callers that go on to open.
 pub fn judge_io(p: impl AsRef<Path>) -> io::Result<LocalPath> {
     LocalPath::judge(p).ok_or_else(refused)
+}
+
+/// A path a file dialog just returned, as an `io::Result` for the callers that go on to read or
+/// write it: the person's own pick is not judged (`LocalPath::person_picked`). Dialog code only.
+pub fn picked(p: &Path) -> io::Result<LocalPath> {
+    if p.as_os_str().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no path was picked"));
+    }
+    Ok(LocalPath::person_picked(p))
 }
 
 /// Judge, then `is_dir` (a refused path is no folder).
@@ -395,7 +411,8 @@ mod tests {
         let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         let is_test_attr = |l: &str| {
             let t = l.trim();
-            t == "#[test]" || (t.starts_with("#[cfg(") && t.contains("test") && !t.contains("not(test)"))
+            // Only test-only items: `#[cfg(any(windows, test))]` is live code on Windows.
+            t == "#[test]" || t == "#[cfg(test)]" || t.starts_with("#[cfg(all(test,") || t.starts_with("#[cfg(all(test)")
         };
         let mut i = 0;
         while i < lines.len() {
@@ -524,6 +541,18 @@ mod tests {
         "Path::exists(",
         "Path::is_file(",
         "judge_with(",
+        "fs::exists(",
+        "ShellExecuteW(",
+        "ShellExecuteExW(",
+        "FindFirstFileW(",
+        "FindFirstFileExW(",
+        "GetFileAttributesW(",
+        "GetFileAttributesExW(",
+        "fs::set_permissions(",
+        ".set_permissions(",
+        "fs::hard_link(",
+        "symlink_file(",
+        "symlink_dir(",
     ];
     /// Probe functions that must not be imported bare (`use std::fs::read_to_string;`).
     const BARE: &[&str] = &["metadata", "symlink_metadata", "canonicalize", "read", "read_to_string", "read_dir", "read_link", "write", "copy", "rename", "create_dir", "create_dir_all", "remove_file", "remove_dir", "remove_dir_all"];
@@ -642,7 +671,9 @@ mod tests {
         ("terminfo.rs", "ensure", 3, "Tandem's own terminfo folder under %APPDATA%\\Tandem"),
         ("util_console.rs", "open_console", 1, "the console devices CONIN$ and CONOUT$, not paths"),
         ("utilities.rs", "ensure", 5, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
-        ("utilities.rs", "refresh", 5, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
+        ("utilities.rs", "refresh", 6, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
+        ("app/scripts_app.rs", "edit_new_script", 1, "opens the new script's file in Tandem's own Scripts folder (a custom folder is judged by scripts_folder on every call)"),
+        ("app/semantic_ui.rs", "shell_open", 1, "hands the shell a URL, or a path Semantic History already judged (semantic::open_local_result); no path of its own. The final review confirms each caller's gate"),
         ("utilities.rs", "stamp", 1, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("winpipe.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
@@ -803,9 +834,15 @@ mod tests {
             ("a probe after a raw string ending in a backslash", "fn f(p: &Path) {\n    let _ = (r\"C:\\\", p.is_dir());\n}\n"),
             ("a probe after a char literal quote", "fn f(p: &Path) {\n    let _ = ('\"', p.exists());\n}\n"),
             ("a second probe in an OWN function", "fn own_one(b: &Path) {\n    let _ = b.is_file();\n    let _ = b.is_dir();\n}\n"),
+            ("a cfg(any(windows, test)) item is live code", "#[cfg(any(windows, test))]\nfn f(b: &Path) {\n    let _ = b.is_dir();\n}\n"),
+            ("fs::exists", "fn f(b: &Path) {\n    let _ = std::fs::exists(b);\n}\n"),
+            ("ShellExecuteW", "fn f(b: &[u16]) {\n    unsafe { ShellExecuteW(0, w!(\"open\"), b.as_ptr(), null(), null(), 1) };\n}\n"),
+            ("FindFirstFileW", "fn f(b: &[u16]) {\n    unsafe { FindFirstFileW(b.as_ptr(), &mut d) };\n}\n"),
+            ("GetFileAttributesW", "fn f(b: &[u16]) {\n    unsafe { GetFileAttributesW(b.as_ptr()) };\n}\n"),
+            ("set_permissions", "fn f(b: &Path, p: std::fs::Permissions) {\n    let _ = std::fs::set_permissions(b, p);\n}\n"),
         ];
         let own: &[(&str, &str, usize, &str)] = &[("planted.rs", "own_one", 1, "a test entry")];
-        let missed: Vec<&str> = planted.iter().filter(|(_, text)| scan_with("planted.rs", text, own).is_empty()).map(|(what, _)| *what).collect();
+        let missed: Vec<&str> = planted.iter().filter(|(_, text)| scan_with("planted.rs", text, if text.contains("fn own_one") { own } else { &[] }).is_empty()).map(|(what, _)| *what).collect();
         assert!(missed.is_empty(), "the guard missed: {missed:?}");
         let clean: &[&str] = &[
             "fn f(p: &LocalPath) {\n    let _ = crate::localfs::is_dir(p) && localfs::read_dir_ok(p);\n    let _ = crate::localfs::read(p);\n}\n",
@@ -818,6 +855,37 @@ mod tests {
             assert_eq!(scan_with("planted.rs", text, &[]), Vec::<String>::new(), "{text}");
         }
         assert_eq!(scan_with("planted.rs", "fn own_one(b: &Path) {\n    let _ = b.is_file();\n}\n", own), Vec::<String>::new(), "a listed probe");
+    }
+
+    /// Judge rulings r3, item 1: a path the person picks in a file dialog at that moment may be on a
+    /// share (every Windows app connects there); every other path stays refused. Only dialog code
+    /// (a file that opens an `rfd::FileDialog`) makes one.
+    #[test]
+    fn a_person_picked_path_may_be_on_a_share() {
+        let share = Path::new(r"\\srv\share\notes.txt");
+        assert!(LocalPath::judge(share).is_none(), "the judge still refuses it");
+        let got = picked(share).expect("a picked path is the person's choice");
+        assert_eq!(got.path(), share);
+        assert!(picked(Path::new("")).is_err(), "nothing picked is no path");
+        assert!(LocalPath::person_picked(Path::new(r"Z:\x")).path().ends_with("x"));
+    }
+
+    #[test]
+    fn only_dialog_code_makes_a_picked_path() {
+        let mut makers = Vec::new();
+        for (file, text) in sources() {
+            if file == "localfs.rs" {
+                continue;
+            }
+            let live = live_code(&text);
+            if (live.contains("localfs::picked(") || live.contains("person_picked(")) && !live.contains("rfd::FileDialog") {
+                makers.push(file);
+            }
+        }
+        assert!(makers.is_empty(), "these make a picked path but open no dialog: {makers:?}");
+        // The dialogs that probe what they picked use it (and not the judge, which would refuse a share).
+        let uses = sources().into_iter().filter(|(f, t)| f != "localfs.rs" && live_code(t).contains("localfs::picked(")).count();
+        assert!(uses >= 6, "{uses} dialog files use localfs::picked");
     }
 
     /// There is one device-name rule (`inert_files::is_device_name`; `scripts::is_device_name` and

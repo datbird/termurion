@@ -1,0 +1,14 @@
+m13v1 rulings (app integration)
+
+Path judge, round 3 rulings (judge-rulings-r3.md)
+- A path the person picks in a file dialog at that moment may be on a share (LocalPath::person_picked, localfs::picked): their own choice, as in every Windows app. Only code in a file that opens an rfd::FileDialog makes one (a guard test). Every other path stays judged and refused. Cost if wrong: a share picked in a dialog connects.
+- Drive kinds: DRIVE_FIXED, REMOVABLE, CDROM and RAMDISK are local when the device is one name after \Device\ that is not Mup or a name ending in Redirector (RAM disks and VeraCrypt volumes pass); REMOTE, UNKNOWN and NO_ROOT_DIR are refused; GetDriveTypeW's answer is passed through, a REMOTE once seen stays REMOTE. Unknown reparse tags stay refused. Cost if wrong: an unusual network driver that reports a fixed type under a plain device name would pass.
+- Start folders on a share: home plus a banner naming the share (as built).
+- A relative link target is joined onto the path already redirected by earlier links and the walk goes on from the resolved target (netpath::local_chain), as Windows resolves it.
+- TOCTOU (decision): probes open by path after a per-call judge. A local account that can swap a folder for a junction inside the window between the judge and the probe can redirect one probe. Accepted: the window is one call, every poll judges again, and a same-account attacker gains nothing. Cost if wrong: on a shared machine another local user flapping a junction in a folder Tandem probes repeatedly (a shared repo, C:\Users\Public) can eventually win the race and capture a hash.
+- The guard now also counts fs::exists, ShellExecuteW(Ex), FindFirstFile(Ex)W, GetFileAttributes(Ex)W, set_permissions, hard_link and symlink_file/dir, and treats #[cfg(any(..test))] items as live code. Its proof compared planted texts against an OWN list that always reported something, so it proved nothing; it now checks each planted case alone.
+
+Task 5 (default terminal)
+- The handoff gate is Tandem's own (4 per second, 16 live panes), the caller must be this user, handles are typed, the title is bounded and cleaned, and a handoff while Tandem closes is refused. -Embedding runs only while Tandem is the default with its pack and no Tandem answers the launch pipe; it makes no window until a handoff arrives and ends after 15 s with none.
+- No test registers the real COM class or writes the real registry (the brief's ignored round-trip test is not written). Cost if wrong: the COM round trip is covered only by the on-screen checklist (rows 8 to 13).
+- Make Terminal Default restores the saved pair only while the pair is still Tandem's.

@@ -324,7 +324,7 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
         if ui.add_enabled(!st.snippets_selected.is_empty(), egui::Button::new("Export...")).clicked() {
             let picked: Vec<&Snippet> = shown.iter().filter(|i| st.snippets_selected.contains(i)).map(|&i| &store.snippets[i]).collect();
             if let Some(path) = rfd::FileDialog::new().add_filter("Snippets", &["it2snippets"]).set_file_name("snippets.it2snippets").save_file() {
-                if let Err(e) = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, snippets::export(&picked))) {
+                if let Err(e) = crate::localfs::picked(&path).and_then(|p| crate::localfs::write(&p, snippets::export(&picked))) {
                     st.alert = Some(("Export Failed".into(), format!("Error saving to {}: {e}", path.display())));
                 }
             }
@@ -503,7 +503,7 @@ fn actions_tab(ui: &mut egui::Ui, g: &mut Globals, st: &mut State, _profiles: &[
         if ui.add_enabled(!st.actions_selected.is_empty(), egui::Button::new("Export...")).clicked() {
             let picked: Vec<&UserAction> = (0..list.len()).filter(|i| st.actions_selected.contains(i)).map(|i| &list[i]).collect();
             if let Some(path) = rfd::FileDialog::new().add_filter("Actions", &["it2actions"]).set_file_name("actions.it2actions").save_file() {
-                if let Err(e) = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, user_actions::export(&picked))) {
+                if let Err(e) = crate::localfs::picked(&path).and_then(|p| crate::localfs::write(&p, user_actions::export(&picked))) {
                     st.alert = Some(("Export Failed".into(), format!("Error saving to {}: {e}", path.display())));
                 }
             }

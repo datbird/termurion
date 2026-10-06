@@ -429,7 +429,7 @@ impl App {
             d.pick_file()
         });
         let Some(path) = path else { return };
-        let loaded = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
+        let loaded = crate::localfs::picked(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
         let (dvr, values) = match loaded {
             Ok(l) => l,
             Err(e) => {

@@ -547,7 +547,7 @@ pub fn begin_import(st: &mut State) {
 pub fn begin_export(st: &mut State, profile: &Profile) {
     let Some(path) = rfd::FileDialog::new().add_filter("Color presets", &["itermcolors"]).set_file_name("Colors.itermcolors").save_file() else { return };
     let bytes = cp::write_itermcolors(&cp::current(profile, st.editing.dark));
-    match crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, bytes)) {
+    match crate::localfs::picked(&path).and_then(|p| crate::localfs::write(&p, bytes)) {
         Ok(()) => st.reveal = Some(path.to_string_lossy().into_owned()),
         Err(_) => st.dialog = Some(Dialog::Alert { heading: SAVE_FAILED_HEADING.into(), text: could_not_save_text(&path.to_string_lossy()) }),
     }
