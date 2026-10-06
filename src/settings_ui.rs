@@ -65,6 +65,17 @@ pub enum Edit {
     Preview,
 }
 
+/// What `App::apply_edit` does first with an edit (B2): false when nothing more is applied (no edit,
+/// or a preview, which only redraws). Any other edit first puts a stale preview back through
+/// `restore`, so the previewed colors are never in the store when it is saved.
+pub fn gate_edit(edit: &Edit, restore: &mut dyn FnMut()) -> bool {
+    if matches!(edit, Edit::None | Edit::Preview) {
+        return false;
+    }
+    restore();
+    true
+}
+
 /// Whether an edit starts the pause before the profiles are saved: a preview never does.
 pub fn edit_arms_save(edit: &Edit) -> bool {
     !matches!(edit, Edit::Preview | Edit::None)
@@ -846,6 +857,10 @@ impl SettingsWindow {
                 });
             });
         });
+        // A preview whose header is gone (another tab, page or profile) goes back now (B2).
+        if self.presets.strand_check(store) && matches!(edit, Edit::None) {
+            edit = Edit::Preview;
+        }
         if let Some(e) = self.ai.take_error() {
             edit = Edit::Error(e);
         }
@@ -2074,6 +2089,29 @@ mod tests {
     fn preview_never_arms_the_save() {
         assert!(!edit_arms_save(&Edit::Preview));
         assert!(edit_arms_save(&Edit::Changed("g".into())));
-        assert!(include_str!("app/mod.rs").contains("Edit::Preview => {\n                self.refresh_panes();"));
+    }
+
+    /// B2 through the gate `apply_edit` runs first: a preview stops there with the colors still
+    /// previewed; any other edit puts a stale preview back before it is applied and saved.
+    #[test]
+    fn a_stale_preview_never_reaches_a_save() {
+        let mut store = Store::fresh(&std::env::temp_dir().join(format!("tandem-gate-{}.toml", std::process::id())));
+        let guid = store.default_guid.clone();
+        let before = store.get(&guid).unwrap().values.clone();
+        let mut st = crate::settings_presets::State::new(false);
+        let p = store.get_mut(&guid).unwrap();
+        st.preview = Some(crate::settings_presets::Preview::begin(p, &guid, false, "Solarized"));
+        crate::settings_presets::load(&crate::color_presets::built_in()[0].1, p, false, false, false);
+        let previewed = store.get(&guid).unwrap().values.clone();
+        assert_ne!(previewed, before);
+        let mut run = |edit: &Edit, store: &mut Store| gate_edit(edit, &mut || {
+            st.restore(store);
+        });
+        assert!(!run(&Edit::Preview, &mut store), "a preview stops at the gate");
+        assert_eq!(store.get(&guid).unwrap().values, previewed, "and leaves the colors previewed");
+        assert!(!run(&Edit::None, &mut store));
+        // Another edit (a tab away, then any change) restores before it is applied.
+        assert!(run(&Edit::Changed("g".into()), &mut store));
+        assert_eq!(store.get(&guid).unwrap().values, before);
     }
 }

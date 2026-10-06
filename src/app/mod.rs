@@ -3855,14 +3855,24 @@ impl App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
-        match edit {
-            Edit::None => return,
-            // A color preset's hover preview: the panes redraw, nothing is saved (B2).
-            Edit::Preview => {
+        // The one gate (B2): a preview only redraws; any other edit first puts a stale preview back,
+        // in either window, so the previewed colors are never saved.
+        let preview = matches!(edit, Edit::Preview);
+        let (store, settings, profiles_win) = (&mut self.store, &mut self.settings, &mut self.profiles_win);
+        let go = crate::settings_ui::gate_edit(&edit, &mut || {
+            for w in [settings.as_mut(), profiles_win.as_mut()].into_iter().flatten() {
+                w.restore_preview(store);
+            }
+        });
+        if !go {
+            if preview {
                 self.refresh_panes();
                 self.redraw();
-                return;
             }
+            return;
+        }
+        match edit {
+            Edit::None | Edit::Preview => return,
             Edit::Open(guid, how) => match how {
                 // A tab or split goes to the window the person used last.
                 How::Tab => self.new_tab(Some(&guid)),

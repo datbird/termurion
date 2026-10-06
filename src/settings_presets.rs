@@ -356,6 +356,9 @@ pub struct State {
     pub editing: Editing,
     /// A live preview: restored when the menu closes, the window closes or the app quits.
     pub preview: Option<Preview>,
+    /// The profile whose colors header was drawn this frame (set by `colors_header`, taken by
+    /// `strand_check`).
+    pub shown: Option<String>,
     /// The row hovered and since when (`_timer`).
     hover: Option<(String, Instant)>,
     /// The menu as it was when it opened (`popupButtonWillPopUp:` marks once).
@@ -370,7 +373,7 @@ pub struct State {
 
 impl State {
     pub fn new(system_dark: bool) -> State {
-        State { editing: Editing::new(system_dark), preview: None, hover: None, entries: None, pending: None, dialog: None, queue: VecDeque::new(), reveal: None }
+        State { editing: Editing::new(system_dark), preview: None, shown: None, hover: None, entries: None, pending: None, dialog: None, queue: VecDeque::new(), reveal: None }
     }
 
     /// Puts a live preview's colors back (B2). True when the profile changed.
@@ -381,6 +384,16 @@ impl State {
             pre.restore(p);
         }
         true
+    }
+
+    /// After a frame (B2): a preview whose header was not drawn for its profile (the tab, page or
+    /// profile changed, the menu is gone) is put back. True when a profile changed.
+    pub fn strand_check(&mut self, store: &mut crate::store::Store) -> bool {
+        let shown = self.shown.take();
+        match &self.preview {
+            Some(pre) if shown.as_deref() != Some(pre.guid()) => self.restore(store),
+            _ => false,
+        }
     }
 
     /// Whether a dialog is showing.
@@ -409,6 +422,7 @@ pub struct Header {
 /// "Color Presets\u{2026}" menu. The preview timer runs while a preset row is hovered.
 pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &mut Profile, guid: &str, system_dark: bool) -> Header {
     let mut out = Header::default();
+    st.shown = Some(guid.to_string());
     let separate = profile.bool(SEPARATE);
     ui.horizontal(|ui| {
         ui.label("Editing:");
@@ -861,6 +875,26 @@ mod tests {
         assert!(st.restore(&mut store));
         assert_eq!(store.get(&guid).unwrap().values, before);
         assert!(!st.restore(&mut store));
+    }
+
+    #[test]
+    fn a_preview_is_put_back_when_its_header_is_gone() {
+        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-presets-strand-{}.toml", std::process::id())));
+        let guid = store.default_guid.clone();
+        let before = store.get(&guid).unwrap().values.clone();
+        let mut st = State::new(false);
+        let p = store.get_mut(&guid).unwrap();
+        st.preview = Some(Preview::begin(p, &guid, false, "Solarized"));
+        load(&named("Tango Dark"), p, false, false, false);
+        // The Colors header drew for the profile this frame: the preview stays.
+        st.shown = Some(guid.clone());
+        assert!(!st.strand_check(&mut store));
+        assert!(st.preview.is_some());
+        assert_ne!(store.get(&guid).unwrap().values, before);
+        // The next frame the person is on another tab (no header): the colors go back.
+        assert!(st.strand_check(&mut store));
+        assert!(st.preview.is_none());
+        assert_eq!(store.get(&guid).unwrap().values, before);
     }
 
     #[test]
