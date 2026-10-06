@@ -239,6 +239,8 @@ pub enum HotkeySlot {
     App,
     /// Settings > Keys > Hotkey's Open Quickly Hotkey.
     OpenQuickly,
+    /// The Session Hotkey row of Edit Session.
+    Session,
 }
 
 /// The binding editors' state, kept by the settings window.

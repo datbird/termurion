@@ -299,6 +299,7 @@ pub mod host;
 pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
+pub mod session_hotkeys;
 pub mod broadcast;
 pub mod dim;
 mod tmux_probe;

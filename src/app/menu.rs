@@ -363,9 +363,15 @@ impl App {
         self.open_settings(event_loop, Mode::Settings);
         if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
             s.select(&g);
+            s.edit_session = pane;
             // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
             s.set_tmux_session(tmux);
         }
+        if let Some(s) = self.settings.as_mut().filter(|_| pane.is_none()) {
+            s.edit_session = None;
+            s.session_hotkey = None;
+        }
+        self.sync_session_hotkey_row();
     }
 
     /// A context menu built from `entries` (`tab_menu::Entry`) as a popup at the pointer;

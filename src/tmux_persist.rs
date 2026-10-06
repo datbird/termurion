@@ -176,6 +176,42 @@ pub fn parse_tab_colors(value: &str) -> (std::collections::HashMap<u32, Option<(
     (out, red)
 }
 
+/// The most bytes of `@hotkeys` (decoded) and the most entries read: the value comes from the tmux
+/// server, which may be a stranger's.
+pub const MAX_HOTKEYS_BYTES: usize = 4096;
+pub const MAX_HOTKEYS: usize = 64;
+
+/// `@hotkeys` (plain): `pane=shortstring` joined by spaces, in pane order, for the panes in
+/// `live` only (tmux's option would grow for ever with panes that are gone).
+pub fn hotkeys_string(map: &[(u32, crate::hotkey::Shortcut)], live: &BTreeSet<u32>) -> String {
+    let mut entries: Vec<&(u32, crate::hotkey::Shortcut)> = map.iter().filter(|(p, _)| live.contains(p)).collect();
+    entries.sort_by_key(|(p, _)| *p);
+    entries.iter().map(|(p, s)| format!("{p}={}", crate::session_hotkeys::short_string(s))).collect::<Vec<_>>().join(" ")
+}
+
+/// `@hotkeys` back (`getHotkeysResponse:`): each pane's shortcut. Bounded: a value over
+/// `MAX_HOTKEYS_BYTES` is ignored, only the first `MAX_HOTKEYS` entries count, and each shortcut
+/// goes through `from_short_string`'s own cap.
+pub fn parse_hotkeys(value: &str) -> std::collections::HashMap<u32, crate::hotkey::Shortcut> {
+    let mut out = std::collections::HashMap::new();
+    // The hex form is twice as long as its text, plus the prefix.
+    if value.len() > 2 * MAX_HOTKEYS_BYTES + 2 {
+        return out;
+    }
+    let text = crate::tmux_windows::decode_option(value, "h_");
+    if text.len() > MAX_HOTKEYS_BYTES {
+        return out;
+    }
+    for part in text.split(' ').take(MAX_HOTKEYS) {
+        let Some((pane, short)) = part.split_once('=').filter(|(p, s)| !p.is_empty() && !s.is_empty()) else { continue };
+        let Ok(pane) = pane.parse::<u32>() else { continue };
+        if let Some(s) = crate::session_hotkeys::from_short_string(short) {
+            out.insert(pane, s);
+        }
+    }
+    out
+}
+
 /// `#rrggbb` or iTerm2's Display P3 `p3#rrrrggggbbbb` (16 bits a channel, shown as sRGB).
 fn parse_color(text: &str) -> Option<(u8, u8, u8)> {
     let (hex, wide) = match text.strip_prefix("p3#") {
@@ -428,5 +464,29 @@ mod tests {
         assert_eq!(visible_origin((5000, 5000), size, &mons), (3680, 840), "the whole window fits on the right one");
         assert_eq!(visible_origin((5000, 50), (3000, 600), &mons), (1920, 50), "wider than the monitor: its left edge");
         assert_eq!(visible_origin((7, 7), size, &[]), (7, 7), "no monitors known");
+    }
+
+    #[test]
+    fn hotkeys_option_round_trips() {
+        let s = crate::hotkey::Shortcut { keycode: 18, flags: 1048576, chars: "1".into(), chars_ignoring: "1".into() };
+        let live: BTreeSet<u32> = [3].into_iter().collect();
+        assert_eq!(hotkeys_string(&[(3, s.clone())], &live), "3=18,1048576,1,1");
+        assert_eq!(hotkeys_string(&[(3, s.clone()), (4, s.clone())], &live), "3=18,1048576,1,1", "pane 4 is not live");
+        let value = option_command(5, "@hotkeys", "3=18,1048576,1,1");
+        let hex = value.split('"').nth(1).expect("quoted value");
+        assert_eq!(parse_hotkeys(hex).get(&3), Some(&s));
+        assert_eq!(parse_hotkeys("3=18,1048576,1,1").get(&3), Some(&s), "a value with no prefix is plain");
+    }
+
+    #[test]
+    fn tmux_hotkeys_parse_is_bounded() {
+        let many: Vec<String> = (0..100).map(|i| format!("{i}=18,1048576,1,1")).collect();
+        let m = parse_hotkeys(&many.join(" "));
+        assert_eq!(m.len(), MAX_HOTKEYS, "only the first entries count");
+        assert!(!m.contains_key(&64));
+        assert!(parse_hotkeys(&"1=18,1048576,1,1 ".repeat(400)).is_empty(), "a value over 4 KiB is ignored");
+        assert!(parse_hotkeys(&hexed("h_", &"x".repeat(5000))).is_empty(), "so is a hex value that decodes to over 4 KiB");
+        assert!(parse_hotkeys(&format!("1=1,2,{},x", "a".repeat(65))).is_empty(), "text is capped per entry");
+        assert!(parse_hotkeys("x=1,2,3,4 =1,2,3,4 5= 6=1,2,3").is_empty(), "malformed entries are skipped");
     }
 }

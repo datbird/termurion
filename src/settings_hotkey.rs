@@ -211,8 +211,41 @@ fn assign(model: &mut Model, slot: HotkeySlot, s: Option<Shortcut>) {
                 *a = s;
             }
         }
-        HotkeySlot::App | HotkeySlot::OpenQuickly => {}
+        HotkeySlot::App | HotkeySlot::OpenQuickly | HotkeySlot::Session => {}
     }
+}
+
+/// The pane the Session Hotkey row writes: the one Settings was opened to edit (Edit Session), and
+/// no row at all otherwise (`PreferencePanel` shows it only in a session's own editor).
+pub fn session_row_pane(edit_session: Option<crate::layout::PaneId>) -> Option<crate::layout::PaneId> {
+    edit_session
+}
+
+/// A set or cleared session hotkey as the edit the app takes: the pane's own session value.
+pub fn session_edit(pane: crate::layout::PaneId, s: Option<Shortcut>) -> crate::settings_ui::Edit {
+    crate::settings_ui::Edit::SessionHotkey(pane, s)
+}
+
+/// The Session Hotkey row: a recorder for `pane`'s hotkey, with the app's warning when the chord
+/// is not registered. The edit when the person recorded or cleared one.
+pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
+    let mut out = None;
+    if let Some((HotkeySlot::Session, k)) = keys.hotkey_recorded.clone() {
+        keys.hotkey_recorded = None;
+        if let Some(s) = shortcut_of(&k) {
+            out = Some(session_edit(pane, Some(s)));
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label("Session hotkey:");
+        if recorder(ui, keys, HotkeySlot::Session, current, true) {
+            out = Some(session_edit(pane, None));
+        }
+    });
+    if let Some(e) = st.errors.get(&crate::session_hotkeys::error_key(pane)) {
+        ui.colored_label(WARN, format!("Warning: {e}"));
+    }
+    out
 }
 
 /// The HotKey Window Preferences sheet.

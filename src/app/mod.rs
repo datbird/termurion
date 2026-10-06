@@ -131,6 +131,7 @@ mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
 mod hotkey_ui;
+mod session_hotkey_ui;
 mod broadcast_ui;
 mod tmux_ui;
 mod tmux_tabs_ui;
@@ -654,6 +655,12 @@ pub struct App {
     hotkey_ids: Vec<String>,
     hotkey_errors: std::collections::HashMap<String, String>,
     hotkeys_registered: bool,
+    /// Session hotkeys: the ones the person set or allowed (the only ones that register) and those
+    /// waiting for an answer; the sessions of each registered group, by id from
+    /// `SESSION_HOTKEY_BASE`; and a pass is due to register them again. App-wide.
+    session_hotkeys: crate::session_hotkeys::Book,
+    session_hotkey_ids: Vec<Vec<PaneId>>,
+    session_hotkeys_dirty: bool,
     /// A Tandem window was in front at the last check (Reopen on activation).
     app_active: bool,
     /// Focus follows mouse: the pointer's screen point when Tandem lost the foreground, then
@@ -1714,6 +1721,9 @@ pub fn run() {
         hotkey_ids: Vec::new(),
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
+        session_hotkeys: Default::default(),
+        session_hotkey_ids: Vec::new(),
+        session_hotkeys_dirty: false,
         app_active: false,
         ffm_saved: None,
         magnifier: Default::default(),
@@ -3908,6 +3918,7 @@ impl App {
         }
         match edit {
             Edit::None => return,
+            Edit::SessionHotkey(pane, s) => self.set_session_hotkey(pane, s),
             Edit::Open(guid, how) => match how {
                 // A tab or split goes to the window the person used last.
                 How::Tab => self.new_tab(Some(&guid)),
@@ -4361,6 +4372,7 @@ impl App {
             }
         }
         self.tmux_pane_closed(id);
+        self.session_hotkey_pane_gone(id);
         self.aps.remove(&id);
         self.focus_order.remove(&id);
         self.forget_scrollbar(id);
@@ -6224,6 +6236,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.enter(w);
         }
         self.sync_pane_activity();
+        self.session_hotkeys_flush();
         self.flush_dropped();
         self.ssh_suggest_purge();
         for w in std::mem::take(&mut self.pending_windows) {

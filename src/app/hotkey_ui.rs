@@ -86,9 +86,15 @@ impl App {
         if let Some(c) = crate::settings_hotkey::quickly_hotkey(&self.globals).as_ref().and_then(hotkey::chord) {
             chords.push((OPEN_QUICKLY_HOTKEY, c));
         }
+        // Profile ids stay below the session ids.
+        let mut too_many = false;
         for (guid, prefs) in self.hotkey_prefs() {
             if !prefs.active() {
                 continue;
+            }
+            if self.hotkey_ids.len() + 1 >= crate::session_hotkeys::SESSION_HOTKEY_BASE as usize {
+                too_many = true;
+                break;
             }
             self.hotkey_ids.push(guid);
             let id = self.hotkey_ids.len() as u32;
@@ -97,9 +103,22 @@ impl App {
                 taps.push((id, m));
             }
         }
+        // The sessions' hotkeys the person set or allowed, after every other hotkey (those win a
+        // clash), at most 16 chords; a refused one is shown in its row.
+        let reserved: Vec<hotkey::Chord> = chords.iter().map(|(_, c)| *c).collect();
+        let live: Vec<(PaneId, hotkey::Shortcut)> = self.session_hotkeys.live().iter().filter(|(p, _)| self.panes.contains_key(p)).cloned().collect();
+        let plan = crate::session_hotkeys::plan(&live, &reserved);
+        self.session_hotkey_ids.clear();
+        for (i, (chord, panes)) in plan.groups.into_iter().enumerate() {
+            chords.push((crate::session_hotkeys::SESSION_HOTKEY_BASE + i as u32, chord));
+            self.session_hotkey_ids.push(panes);
+        }
         let secs = |k: &str, d: f64| Duration::from_secs_f64(self.globals.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(d).clamp(0.0, 5.0));
         let (min, max) = (secs("hotKeyDoubleTapMinDelay", 0.01), secs("hotKeyDoubleTapMaxDelay", 0.3));
         self.hotkey_errors.clear();
+        for (pane, why) in plan.refused {
+            self.hotkey_errors.insert(crate::session_hotkeys::error_key(pane), why.text().to_string());
+        }
         match crate::winkeys::set_hotkeys(chords, taps, min, max) {
             Ok(results) => {
                 for (id, r) in results {
@@ -107,7 +126,14 @@ impl App {
                         let owner = match id {
                             APP_HOTKEY => "App Hotkey".to_string(),
                             OPEN_QUICKLY_HOTKEY => "Open Quickly Hotkey".to_string(),
-                            _ => self.hotkey_ids.get(id as usize - 1).cloned().unwrap_or_default(),
+                            // A refused session chord is shown on each session that uses it.
+                            id if crate::session_hotkeys::is_session_id(id) => {
+                                for key in crate::session_hotkeys::error_keys(id, &self.session_hotkey_ids) {
+                                    self.hotkey_errors.insert(key, e.clone());
+                                }
+                                continue;
+                            }
+                            _ => self.hotkey_ids.get((id as usize).wrapping_sub(1)).cloned().unwrap_or_default(),
                         };
                         self.hotkey_errors.insert(owner, e);
                     }
@@ -115,6 +141,9 @@ impl App {
                 self.banners.clear("hotkeys");
             }
             Err(e) => self.banners.set("hotkeys", format!("Hotkeys are unavailable: {e}")),
+        }
+        if too_many {
+            self.banners.set("hotkeys", "Too many profiles have a hotkey: the rest are not registered.");
         }
         for s in [self.settings.as_mut(), self.profiles_win.as_mut()].into_iter().flatten() {
             s.hotkeys.errors = self.hotkey_errors.clone();
@@ -173,6 +202,16 @@ impl App {
     /// A registered hotkey was pressed.
     /// A press, with every hotkey it matched (siblings share a chord or a double tap).
     pub(super) fn hotkey_pressed(&mut self, ids: &[u32], event_loop: &ActiveEventLoop) {
+        // A session's hotkey brings its window forward, so it is routed first and never meets the
+        // tail below that returns to the window before.
+        let route = crate::session_hotkeys::route(ids);
+        for index in &route.sessions {
+            self.session_hotkey_pressed(*index);
+        }
+        if !route.tail_applies() {
+            return;
+        }
+        let ids = &route.others[..];
         if ids.contains(&APP_HOTKEY) {
             self.app_hotkey_pressed();
         }

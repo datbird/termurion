@@ -57,6 +57,10 @@ enum Req {
     PerTab,
     Origins,
     TabColors,
+    /// The attach list's `@hotkeys`.
+    Hotkeys,
+    /// `list-panes -s` before `@hotkeys` is written: the panes that still exist.
+    LiveHotkeys,
     /// `list-panes -s` before `@tab_colors` is written: the panes that still exist.
     LivePanes,
     /// `break-pane -P`: the tmux window whose Tandem window gets the new one (None: a new window).
@@ -173,6 +177,10 @@ pub struct Restore {
     /// The Tandem window (`pty-<key>`) it was hidden from.
     pub terminal: Option<String>,
     pub tab_colors: Vec<(u32, Option<(u8, u8, u8)>)>,
+    /// The panes' session hotkeys `@hotkeys` holds (the person has not allowed them yet).
+    pub hotkeys: Vec<(u32, crate::hotkey::Shortcut)>,
+    /// The tmux session's name, for the question about them.
+    pub session_name: String,
 }
 
 /// One Tandem window, as saved: its name, its tmux windows (tab order), where it is, its
@@ -307,6 +315,8 @@ pub struct Controller {
     origins: HashMap<u32, (i32, i32)>,
     buried: HashMap<String, Vec<(u32, usize)>>,
     tab_colors: HashMap<u32, Option<(u8, u8, u8)>>,
+    /// `@hotkeys`: what the server held at attach, then what the person allowed.
+    pub hotkeys: HashMap<u32, crate::hotkey::Shortcut>,
     /// Where a pane broken out to a new window should open (by pane).
     break_points: HashMap<u32, (i32, i32)>,
     /// Hidden windows opened again: their Tandem window and tab index.
@@ -374,6 +384,7 @@ impl Controller {
             origins: HashMap::new(),
             buried: HashMap::new(),
             tab_colors: HashMap::new(),
+            hotkeys: HashMap::new(),
             break_points: HashMap::new(),
             unburied: HashMap::new(),
             last_saved: HashMap::new(),
@@ -862,6 +873,8 @@ impl Controller {
             tab_index: unburied.as_ref().map(|u| u.1),
             terminal: unburied.map(|u| u.0),
             tab_colors: panes.iter().filter_map(|p| Some((*p, *self.tab_colors.get(p)?))).collect(),
+            hotkeys: panes.iter().filter_map(|p| Some((*p, self.hotkeys.get(p)?.clone()))).collect(),
+            session_name: self.session.as_ref().map(|(_, n)| n.clone()).unwrap_or_default(),
         }
     }
 
@@ -909,6 +922,16 @@ impl Controller {
         }
         self.tab_colors.extend(colors.iter().copied());
         let t = self.tag(Req::LivePanes);
+        gw.send(&format!("list-panes -s -t ${s} -F \"#{{pane_id}}\""), Some(t), Flags { tolerate: true, ..Default::default() });
+    }
+
+    /// The panes' session hotkeys the person set or allowed: written to `@hotkeys` for the panes tmux
+    /// still has (`setHotkeyForWindowPane:`). A value the server held that nobody allowed is not
+    /// written back.
+    pub fn save_hotkeys(&mut self, allowed: &[(u32, crate::hotkey::Shortcut)], gw: &mut Gateway) {
+        let Some((s, _)) = self.session.clone() else { return };
+        self.hotkeys = allowed.iter().cloned().collect();
+        let t = self.tag(Req::LiveHotkeys);
         gw.send(&format!("list-panes -s -t ${s} -F \"#{{pane_id}}\""), Some(t), Flags { tolerate: true, ..Default::default() });
     }
 
@@ -1066,7 +1089,7 @@ impl Controller {
         let Some((s, _)) = self.session.clone() else { return };
         let h = tmux_windows::client_height(h, self.status_bar, self.version);
         let format = tmux_windows::detailed_format(self.v());
-        let reqs = [Req::SessionGuid, Req::Ignore, Req::Hidden, Req::Buried, Req::Affinities, Req::PerWindow, Req::PerTab, Req::Origins, Req::Ignore, Req::TabColors, Req::ListSessions, Req::ListWindows];
+        let reqs = [Req::SessionGuid, Req::Ignore, Req::Hidden, Req::Buried, Req::Affinities, Req::PerWindow, Req::PerTab, Req::Origins, Req::Hotkeys, Req::TabColors, Req::ListSessions, Req::ListWindows];
         let strict = [0usize, 10, 11];
         let list = tmux_windows::open_list(s, w, h, &format)
             .into_iter()
@@ -1113,6 +1136,17 @@ impl Controller {
                 self.tab_colors = colors;
                 if red {
                     out.push(Action::RedTabColors);
+                }
+            }
+            Req::Hotkeys => self.hotkeys = crate::tmux_persist::parse_hotkeys(if ok { text.trim() } else { "" }),
+            Req::LiveHotkeys => {
+                if ok {
+                    let live: BTreeSet<u32> = text.lines().filter_map(|l| l.trim().strip_prefix('%')?.parse().ok()).collect();
+                    let entries: Vec<(u32, crate::hotkey::Shortcut)> = self.hotkeys.iter().map(|(p, s)| (*p, s.clone())).collect();
+                    if let Some((s, _)) = self.session.clone() {
+                        let cmd = crate::tmux_persist::option_command(s, "@hotkeys", &crate::tmux_persist::hotkeys_string(&entries, &live));
+                        self.save_option("@hotkeys", cmd, Flags { tolerate: true, ..Default::default() }, gw);
+                    }
                 }
             }
             Req::LivePanes => {
@@ -1947,6 +1981,32 @@ mod tests {
         assert_eq!(got.tab_colors, vec![(0, Some((255, 128, 0)))]);
         a.ctl.reset_red_tab_colors();
         assert!(!a.ctl.tab_colors.contains_key(&9));
+    }
+
+    #[test]
+    fn tmux_hotkeys_not_written_for_pending() {
+        let sc = |code: u16, text: &str| crate::hotkey::Shortcut { keycode: code, flags: crate::keystroke::CONTROL | crate::keystroke::OPTION, chars: text.into(), chars_ignoring: text.into() };
+        // The server holds a hotkey for pane 0 at attach: it is read, and handed to the pane's open.
+        let held = crate::tmux_persist::encode_option("0=18,786432,1,1", "h_");
+        let mut r = Rig::new();
+        r.lines(&["%session-changed $0 main"]);
+        r.answer(Some(""));
+        for reply in ["", "", "", "", "", "", "", "", held.as_str(), "", ""] {
+            r.answer(Some(reply));
+        }
+        r.answer(Some(ONE_PANE));
+        r.sent();
+        for _ in 0..6 {
+            r.answer(Some(""));
+        }
+        let got = r.ctl.restore_of(0, &[0]);
+        assert_eq!(got.hotkeys, vec![(0, sc(18, "1"))]);
+        assert_eq!(got.session_name, "main");
+        // The person allows one on pane 1 only: the held, unallowed one is not written back.
+        r.ctl.save_hotkeys(&[(1, sc(19, "2"))], &mut r.gw);
+        assert_eq!(r.sent(), "list-panes -s -t $0 -F \"#{pane_id}\"\r");
+        r.answer(Some("%0\n%1"));
+        assert_eq!(r.sent(), format!("{}\r", crate::tmux_persist::option_command(0, "@hotkeys", "1=19,786432,2,2")));
     }
 
     #[test]

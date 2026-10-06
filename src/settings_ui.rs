@@ -41,6 +41,9 @@ pub fn value_of_rgb(c: [u8; 3]) -> Value {
 pub enum Edit {
     None,
     Changed(String),
+    /// The Session Hotkey row set (or cleared) the hotkey of this session; only the person's own
+    /// edit gets here, and the app registers it.
+    SessionHotkey(crate::layout::PaneId, Option<crate::hotkey::Shortcut>),
     Imported(usize),
     Error(String),
     /// Open a session with this profile Guid.
@@ -139,6 +142,11 @@ pub struct SettingsWindow {
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
+    /// The session Settings was opened to edit (Edit Session): the Session Hotkey row shows, and
+    /// writes that pane's own session value (never the shared profile).
+    pub edit_session: Option<crate::layout::PaneId>,
+    /// The edited session's hotkey, as the app holds it (the row shows it).
+    pub session_hotkey: Option<crate::hotkey::Shortcut>,
     /// Session > Prevent Sleep's gray line (`PSV:465-482`), set by the app.
     pub sleep_status: String,
     /// Settings > Advanced: the search, the non-default filter and the field being edited.
@@ -276,6 +284,8 @@ impl SettingsWindow {
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
+            edit_session: None,
+            session_hotkey: None,
             sleep_status: String::new(),
             advanced: Default::default(),
             ai: Default::default(),
@@ -372,6 +382,8 @@ impl SettingsWindow {
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
+        let edit_session = self.edit_session;
+        let session_hotkey = self.session_hotkey.clone();
         let sleep_status = &self.sleep_status;
         let advanced = &mut self.advanced;
         let ai = &mut self.ai;
@@ -614,6 +626,15 @@ impl SettingsWindow {
                                 continue;
                             }
                             if s.key.starts_with("HotKey ") {
+                                continue;
+                            }
+                            // The session's own hotkey: a row only while Settings edits a session.
+                            if s.key == "Session Hotkey" {
+                                if let Some(pane) = crate::settings_hotkey::session_row_pane(edit_session) {
+                                    if let Some(e) = crate::settings_hotkey::session_row(ui, pane, session_hotkey.as_ref(), hk, keys) {
+                                        edit = e;
+                                    }
+                                }
                                 continue;
                             }
                             if s.key == "Keyboard Map" {
@@ -1464,6 +1485,21 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_hotkey_row_is_edit_session_only() {
+        use crate::settings_hotkey::{session_edit, session_row_pane};
+        // Edit Session shows the row for its pane; Settings alone has none.
+        assert_eq!(session_row_pane(Some(7)), Some(7));
+        assert_eq!(session_row_pane(None), None);
+        // What it records is the pane's own session value, never the shared profile.
+        let s = crate::hotkey::Shortcut { keycode: 18, flags: crate::keystroke::CONTROL | crate::keystroke::OPTION, chars: "1".into(), chars_ignoring: "1".into() };
+        match session_edit(7, Some(s.clone())) {
+            Edit::SessionHotkey(7, Some(got)) => assert_eq!(got, s),
+            _ => panic!("the row edits the session"),
+        }
+        assert!(matches!(session_edit(7, None), Edit::SessionHotkey(7, None)), "x clears it");
+    }
 
     struct Reg(Option<String>);
     impl crate::url_schemes::SchemeRegistry for Reg {
