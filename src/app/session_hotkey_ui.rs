@@ -79,10 +79,10 @@ impl App {
     }
 
     /// A tmux pane opened with a hotkey in the server's `@hotkeys`: stored with the pane, inert.
-    pub(super) fn tmux_pane_hotkey_arrived(&mut self, pane: PaneId, s: Shortcut, session: &str) {
+    pub(super) fn tmux_pane_hotkey_arrived(&mut self, gw: PaneId, pane: PaneId, s: Shortcut, session: &str) {
         let Some(guid) = self.divorce(pane) else { return };
         self.store.set_session(&guid, &[(KEY.to_string(), Some(s.to_value()))]);
-        self.session_hotkey_from_program(pane, Some(s), Origin::Tmux(session.to_string()));
+        self.session_hotkey_from_program(pane, Some(s), Origin::Tmux { host: self.tmux.get(&gw).map(|t| t.client.clone()).unwrap_or_default(), name: session.to_string() });
     }
 
     /// The answer to the question.
@@ -106,6 +106,7 @@ impl App {
             s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, pane);
             s.session_hotkey = None;
             s.session_hotkey_waiting = false;
+            s.session_hotkey_refused = false;
         }
     }
 
@@ -130,9 +131,11 @@ impl App {
         let Some(pane) = self.settings.as_ref().and_then(|s| s.edit_session) else { return };
         let value = self.session_hotkey_value(pane);
         let waiting = self.session_hotkeys.waiting(pane);
+        let refused = self.session_hotkeys.refused(pane, value.is_some());
         if let Some(s) = self.settings.as_mut() {
             s.session_hotkey = value;
             s.session_hotkey_waiting = waiting;
+            s.session_hotkey_refused = refused;
         }
     }
 

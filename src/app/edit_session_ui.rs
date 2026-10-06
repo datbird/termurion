@@ -21,6 +21,7 @@ impl App {
         if s.edit_session.is_none() {
             s.session_hotkey = None;
             s.session_hotkey_waiting = false;
+            s.session_hotkey_refused = false;
         }
         self.sync_session_hotkey_row();
     }

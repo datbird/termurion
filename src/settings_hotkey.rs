@@ -227,17 +227,20 @@ pub fn session_edit(pane: crate::layout::PaneId, s: Option<Shortcut>) -> crate::
 }
 
 /// The note under the Session Hotkey row: a value that waits for the person's answer is not
-/// registered (never shown as live), and a refused chord says why.
-pub fn session_row_note(has_value: bool, waiting: bool, error: Option<&str>) -> Option<String> {
+/// registered (never shown as live), nor is one the person answered Ignore, and a refused chord says why.
+pub fn session_row_note(has_value: bool, waiting: bool, refused: bool, error: Option<&str>) -> Option<String> {
     if has_value && waiting {
         return Some("Not registered: waiting for your answer to the question".to_string());
+    }
+    if has_value && refused {
+        return Some("Not registered: you chose Ignore".to_string());
     }
     error.map(|e| format!("Warning: {e}"))
 }
 
 /// The Session Hotkey row: a recorder for `pane`'s hotkey, with the app's warning when the chord
 /// is not registered. The edit when the person recorded or cleared one.
-pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, waiting: bool, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
+pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, waiting: bool, refused: bool, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
     let mut out = None;
     if let Some((HotkeySlot::Session, k)) = keys.hotkey_recorded.clone() {
         keys.hotkey_recorded = None;
@@ -251,7 +254,7 @@ pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Opti
             out = Some(session_edit(pane, None));
         }
     });
-    if let Some(e) = session_row_note(current.is_some(), waiting, st.errors.get(&crate::session_hotkeys::error_key(pane)).map(String::as_str)) {
+    if let Some(e) = session_row_note(current.is_some(), waiting, refused, st.errors.get(&crate::session_hotkeys::error_key(pane)).map(String::as_str)) {
         ui.colored_label(WARN, e);
     }
     out
@@ -616,11 +619,19 @@ mod tests {
 
     #[test]
     fn session_row_marks_a_waiting_value() {
-        assert_eq!(session_row_note(true, true, None).as_deref(), Some("Not registered: waiting for your answer to the question"));
-        assert_eq!(session_row_note(true, true, Some("Another hotkey uses this shortcut")).as_deref(), Some("Not registered: waiting for your answer to the question"), "waiting comes first");
-        assert_eq!(session_row_note(true, false, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Warning: Windows keeps this shortcut for itself"));
-        assert_eq!(session_row_note(true, false, None), None);
-        assert_eq!(session_row_note(false, false, None), None);
+        assert_eq!(session_row_note(true, true, false, None).as_deref(), Some("Not registered: waiting for your answer to the question"));
+        assert_eq!(session_row_note(true, true, false, Some("Another hotkey uses this shortcut")).as_deref(), Some("Not registered: waiting for your answer to the question"), "waiting comes first");
+        assert_eq!(session_row_note(true, false, false, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Warning: Windows keeps this shortcut for itself"));
+        assert_eq!(session_row_note(true, false, false, None), None);
+        assert_eq!(session_row_note(false, false, false, None), None);
+    }
+
+    #[test]
+    fn a_refused_value_shows_as_not_registered() {
+        // Answered Ignore (or refused by a tmux decision): stored, not live, and the row says so.
+        assert_eq!(session_row_note(true, false, true, None).as_deref(), Some("Not registered: you chose Ignore"));
+        assert_eq!(session_row_note(true, false, true, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Not registered: you chose Ignore"));
+        assert_eq!(session_row_note(false, false, true, None), None, "no value, no note");
     }
 
     #[test]

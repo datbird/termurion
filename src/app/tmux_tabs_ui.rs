@@ -819,7 +819,7 @@ impl App {
         // The server's `@hotkeys` is a program's say: stored with each pane, inert, and asked about.
         for (p, s) in restore.hotkeys.clone() {
             if let Some(id) = ids.get(&p) {
-                self.tmux_pane_hotkey_arrived(*id, s, &restore.session_name);
+                self.tmux_pane_hotkey_arrived(gw, *id, s, &restore.session_name);
             }
         }
         let size = restore.settings.and_then(|s| s.size).filter(|_| self.globals.bool("rememberTmuxWindowSizes") && variable);

@@ -167,8 +167,8 @@ impl Route {
 pub enum Origin {
     /// A script, the API, an escape sequence, an arrangement or an import.
     Program,
-    /// The tmux session's `@hotkeys` (its name).
-    Tmux(String),
+    /// The tmux session's `@hotkeys`: the server's host (its gateway's client name) and the session name.
+    Tmux { host: String, name: String },
 }
 
 /// How a chord reads ("Ctrl+Alt+1"): its modifiers, then its key (the key at that scan code's place on
@@ -250,7 +250,7 @@ pub fn chord_and_label(s: &Shortcut) -> Option<(Chord, String)> {
 pub fn consent_text(origin: &Origin, label: &str) -> String {
     let who = match origin {
         Origin::Program => "A program in a session".to_string(),
-        Origin::Tmux(name) => format!("tmux session \u{201c}{name}\u{201d}"),
+        Origin::Tmux { name, .. } => format!("tmux session \u{201c}{name}\u{201d}"),
     };
     format!("{who} asks to register {label} as a hotkey that works in every app.")
 }
@@ -280,8 +280,8 @@ pub struct Book {
     pending: Vec<(PaneId, Shortcut, Origin)>,
     /// Sessions that said Ignore: their program writes are refused silently until they end.
     ignored: Vec<PaneId>,
-    /// A tmux session's answer (name, value, allowed), for the next pane with the same value.
-    decided: Vec<(String, Shortcut, bool)>,
+    /// A tmux session's answer ((host, name), value, allowed), for the next pane with the same value.
+    decided: Vec<((String, String), Shortcut, bool)>,
 }
 
 impl Book {
@@ -305,6 +305,12 @@ impl Book {
             Some(s) if !self.knows(pane, &s) => self.program_set(pane, Some(s), Origin::Program),
             _ => Written::default(),
         }
+    }
+
+    /// A value is stored for the pane (`has_value`) but is neither live nor waiting for an answer:
+    /// the person said Ignore, or a tmux decision refused it. The row shows it as not registered.
+    pub fn refused(&self, pane: PaneId, has_value: bool) -> bool {
+        has_value && !self.live.iter().any(|(p, _)| *p == pane) && !self.waiting(pane)
     }
 
     /// The pane's value waits for the person (it shows as not registered, never as live).
@@ -337,8 +343,9 @@ impl Book {
             return Written { ask: None, stale };
         }
         // A tmux session answered for this value before: the same answer.
-        if let Origin::Tmux(name) = &origin {
-            if let Some((_, _, allowed)) = self.decided.iter().find(|(n, x, _)| n == name && *x == s) {
+        if let Origin::Tmux { host, name } = &origin {
+            let key = (host.clone(), name.clone());
+            if let Some((_, _, allowed)) = self.decided.iter().find(|(n, x, _)| *n == key && *x == s) {
                 if *allowed {
                     self.live.push((pane, s));
                     self.live.sort_by_key(|(p, _)| *p);
@@ -353,9 +360,10 @@ impl Book {
     }
 
     fn decide(&mut self, origin: &Origin, s: &Shortcut, allowed: bool) {
-        if let Origin::Tmux(name) = origin {
-            self.decided.retain(|(n, x, _)| !(n == name && x == s));
-            self.decided.push((name.clone(), s.clone(), allowed));
+        if let Origin::Tmux { host, name } = origin {
+            let key = (host.clone(), name.clone());
+            self.decided.retain(|(n, x, _)| !(*n == key && x == s));
+            self.decided.push((key, s.clone(), allowed));
             if self.decided.len() > MAX_DECIDED {
                 self.decided.remove(0);
             }
@@ -580,7 +588,7 @@ mod tests {
     #[test]
     fn tmux_answers_stand_for_the_same_session_and_value() {
         let a = sc(18, CTRL_ALT, "1");
-        let tmux = |n: &str| Origin::Tmux(n.into());
+        let tmux = |n: &str| Origin::Tmux { host: "me@box".into(), name: n.into() };
         let mut b = Book::default();
         assert!(b.program_set(1, Some(a.clone()), tmux("work")).ask.is_some());
         assert!(b.allow(1, &a));
@@ -600,6 +608,46 @@ mod tests {
         assert!(b.live().is_empty() && b.pending().is_empty());
         assert!(b.knows(2, &a), "a refused session is known: nothing more to decide");
         assert!(!b.waiting(2));
+    }
+
+    #[test]
+    fn a_stored_value_that_is_not_live_is_refused_or_waiting() {
+        let a = sc(18, CTRL_ALT, "1");
+        let mut b = Book::default();
+        // Nothing stored: not refused. Waiting: not refused (the row says waiting). Live: not refused.
+        assert!(!b.refused(1, false));
+        b.program_set(1, Some(a.clone()), Origin::Program);
+        assert!(!b.refused(1, true));
+        b.allow(1, &a);
+        assert!(!b.refused(1, true));
+        // Ignore: stored and inert, so refused. With no stored value there is nothing to refuse.
+        b.program_set(2, Some(a.clone()), Origin::Program);
+        b.ignore(2, &a);
+        assert!(b.refused(2, true) && !b.refused(2, false));
+        // A tmux decision that refused the value: the same.
+        let t = Origin::Tmux { host: "me@box".into(), name: "h".into() };
+        b.program_set(3, Some(a.clone()), t.clone());
+        b.ignore(3, &a);
+        b.pane_gone(3);
+        assert!(b.program_set(4, Some(a.clone()), t).ask.is_none());
+        assert!(b.refused(4, true));
+        // The person setting a value makes it live again.
+        b.person_set(2, Some(a.clone()));
+        assert!(!b.refused(2, true));
+    }
+
+    #[test]
+    fn tmux_answers_do_not_cross_hosts() {
+        // tmux's default session names ("0", "1") repeat across servers: an answer is for one host.
+        let a = sc(18, CTRL_ALT, "1");
+        let on = |h: &str| Origin::Tmux { host: h.into(), name: "0".into() };
+        let mut b = Book::default();
+        assert!(b.program_set(1, Some(a.clone()), on("me@local")).ask.is_some());
+        assert!(b.allow(1, &a));
+        b.pane_gone(1);
+        assert!(b.program_set(2, Some(a.clone()), on("me@local")).ask.is_none(), "the same host and session stands");
+        assert!(b.program_set(3, Some(a.clone()), on("root@remote")).ask.is_some(), "another host with the same session name is asked");
+        assert_eq!(b.live(), &[(2, a.clone())]);
     }
 
     #[test]
@@ -629,10 +677,10 @@ mod tests {
     fn program_supplied_hotkey_needs_consent() {
         let s = sc(18, CTRL_ALT, "1");
         let mut b = Book::default();
-        let ask = b.program_set(3, Some(s.clone()), Origin::Tmux("x".into())).ask;
+        let ask = b.program_set(3, Some(s.clone()), Origin::Tmux { host: "me@box".into(), name: "x".into() }).ask;
         assert!(ask.is_some(), "the person is asked");
         assert!(b.live().is_empty(), "nothing registers before the answer");
-        assert_eq!(consent_text(&Origin::Tmux("x".into()), "Ctrl+Alt+1"), "tmux session \u{201c}x\u{201d} asks to register Ctrl+Alt+1 as a hotkey that works in every app.");
+        assert_eq!(consent_text(&Origin::Tmux { host: "me@box".into(), name: "x".into() }, "Ctrl+Alt+1"), "tmux session \u{201c}x\u{201d} asks to register Ctrl+Alt+1 as a hotkey that works in every app.");
         assert!(b.allow(3, &s));
         assert_eq!(b.live(), &[(3, s.clone())]);
         // A program rewriting it turns it off until asked again.
