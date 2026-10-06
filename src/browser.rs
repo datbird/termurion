@@ -225,6 +225,12 @@ pub fn button_glyph(b: Button) -> char {
 
 pub const GLYPH_DEV_NULL: char = '\u{E7B3}';
 pub const GLYPH_GLOBE: char = '\u{E774}';
+
+/// `BrowserTransitionType` (`BrowserHistory.swift:10-18`): how a visit began.
+pub const TRANSITION_TYPED: i64 = 0;
+pub const TRANSITION_RELOAD: i64 = 2;
+pub const TRANSITION_BACK_FORWARD: i64 = 3;
+pub const TRANSITION_OTHER: i64 = 6;
 pub const GLYPH_LOCK: char = '\u{E72E}';
 pub const GLYPH_WARNING: char = '\u{E7BA}';
 
@@ -410,6 +416,13 @@ pub fn wants_open_search(query: &str) -> bool {
 /// parser the Enter path uses (`normalize_url`), so a `localhost:3000/x?token=y` never leaves.
 pub fn suggest_allowed(query: &str) -> bool {
     wants_open_search(query) && query.trim().chars().count() <= 200 && normalize_url(query).is_none()
+}
+
+/// Whether a message's source is one of Tandem's own `iterm2-about:` pages: the scheme, compared
+/// ignoring ASCII case, and nothing else (a web page that holds a local page's name in its path or
+/// as a scheme prefix is not one). 13x2 calls this from `browser_js::local_page_ok`.
+pub fn local_source_ok(source: &str) -> bool {
+    source.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("iterm2-about"))
 }
 
 /// The service's answer to `query`, as rows (`BOS:66-104`): `[query, [suggestion, ...]]` where the
@@ -1297,6 +1310,16 @@ mod tests {
         assert!(fit.starts_with('\u{2026}') && fit.contains("bank.test") && fit.chars().count() <= 24, "{fit}");
         // Something that is not an authority URL is cut from the right.
         assert_eq!(fit_address("about:blank", 6), "about\u{2026}");
+    }
+
+    #[test]
+    fn local_page_messages_need_their_source() {
+        for ok in ["iterm2-about:history", "ITERM2-ABOUT:bookmarks", "Iterm2-About:welcome", "iterm2-about:"] {
+            assert!(local_source_ok(ok), "{ok}");
+        }
+        for bad in ["https://evil.invalid/", "", "iterm2-aboutx:y", "https://a.test/iterm2-about:history", "blob:iterm2-about:history/1", " iterm2-about:history", "iterm2-about", "xiterm2-about:history", "about:blank", "file:///iterm2-about:history"] {
+            assert!(!local_source_ok(bad), "{bad:?}");
+        }
     }
 
     #[test]

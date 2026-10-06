@@ -46,6 +46,7 @@ fn icon(kind: &ItemKind) -> char {
         ItemKind::Invocation(_) => '\u{E943}',
         // A swatch drawn in the preset's colors (`PaletteRow.swatch`); the glyph is its fallback.
         ItemKind::ColorPreset(_) => '\u{E790}',
+        ItemKind::Bookmark(_) | ItemKind::Visited(_) | ItemKind::Url(_) => '\u{E774}',
     }
 }
 
@@ -169,6 +170,9 @@ impl App {
         }
         let (mut sources, snippet_guids, actions) = (self.quickly_sources(), self.quickly_snippets().into_iter().map(|i| self.snippets.snippets[i].guid.clone()).collect(), self.quickly_actions());
         let current = self.focused_id();
+        // Bookmarks and visited sites of the browser, when it is allowed (Task 7).
+        let typed = self.open_quickly.as_ref().map(|q| q.window.query().to_string()).unwrap_or_default();
+        sources.browser = self.quickly_browser_sources(&typed);
         let Some(q) = self.open_quickly.as_mut() else { return };
         // The whole query, when it is a call or a call sequence (`OQM:916-923`), in the
         // current session's scope, else the app's (`OQM:950-1003`). Tandem's call parser
@@ -495,6 +499,7 @@ impl App {
                 }
                 self.bring_forward();
             }
+            ItemKind::Bookmark(u) | ItemKind::Visited(u) | ItemKind::Url(u) => self.quickly_open_url(u),
             ItemKind::MenuItem(id) => {
                 // On the next turn, after the palette is gone; the command runs only if it
                 // still does (`run_command` skips a command owned by a later milestone).

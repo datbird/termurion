@@ -161,6 +161,13 @@ pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
     }
 }
 
+/// Opens the SQLite database at a judged path (created when absent, no URI parsing, no shared
+/// mutex). The gate's one database opener: a path from outside reaches SQLite only as a `LocalPath`.
+pub fn open_database(p: &LocalPath) -> rusqlite::Result<rusqlite::Connection> {
+    use rusqlite::OpenFlags;
+    rusqlite::Connection::open_with_flags(&p.0, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+}
+
 /// How many names (hard links) the open file has.
 #[cfg(windows)]
 pub fn link_count(f: &File) -> io::Result<u32> {

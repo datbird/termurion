@@ -123,6 +123,7 @@ mod tests {
     }
 
     const RESOURCES: &[(&str, Cover)] = &[
+        ("browser/", Cover::Folder),
         ("ssh/", Cover::Folder),
         ("utilities/", Cover::Folder),
         ("tab_icons/", Cover::Folder),

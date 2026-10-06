@@ -27,6 +27,8 @@ pub(super) struct BrowserView {
     pub(super) retried: bool,
     /// The page finished loading (`BST`'s `navigationSettled`).
     pub(super) settled: bool,
+    /// The last title the page sent for this load (kept for the history row; bounded by the host).
+    pub(super) last_title: Option<String>,
     /// The toolbar's state: the address field, its suggestions, a press, the history list.
     pub(super) bar: BarState,
 }
@@ -51,6 +53,8 @@ pub(super) struct BarState {
     call: Option<(Box<dyn crate::ai_transport::Call>, String)>,
     pub(super) press: Option<BarPress>,
     pub(super) nav: browser::NavList,
+    /// How the next history row's visit began (`BrowserTransitionType`); None is "other".
+    pub(super) transition: Option<i64>,
     /// The favicon decoded: a key for the texture, RGBA and its size.
     favicon: Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u32))>,
 }
@@ -89,10 +93,22 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 }
 
 /// How a browser view is made: the browser's agent (the engine's with "Tandem" appended), developer
-/// tools on, every navigation guarded, new windows posted, InPrivate for Dev Null Mode. No bridge
-/// (`web_message` off: `iterm2-about:` pages come with Task 7) and no host objects.
+/// tools on, every navigation guarded, new windows posted, InPrivate for Dev Null Mode. The only
+/// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
+/// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
+/// (`browser_pages::route`). No host objects.
 pub(super) fn browser_setup(dev_null: bool) -> ViewSetup {
-    ViewSetup { user_agent: Some(String::new()), devtools: true, new_windows: true, guard_local_schemes: true, in_private: dev_null, web_message: false, ..Default::default() }
+    ViewSetup {
+        user_agent: Some(String::new()),
+        devtools: true,
+        new_windows: true,
+        guard_local_schemes: true,
+        in_private: dev_null,
+        web_message: true,
+        scripts: vec![crate::browser_pages::SHIM_JS.to_string()],
+        resource_filters: vec!["iterm2-about:*".to_string()],
+        ..Default::default()
+    }
 }
 
 /// The text a browser profile shows when there is no WebView2 Runtime (Task 9 makes it the dialog).
@@ -138,7 +154,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, retried: false, settled: false, bar: BarState::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, retried: false, settled: false, last_title: None, bar: BarState::default() });
         true
     }
 
@@ -311,7 +327,9 @@ impl App {
                 }
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.title(&browser::display_title(title));
+                    bv.last_title = Some(title.clone()).filter(|t| !t.is_empty());
                 }
+                self.browser_record_title(pane, title);
                 self.browser_name(pane);
             }
             Event::Favicon(_, bytes) => {
@@ -335,6 +353,7 @@ impl App {
                 if *on {
                     if let Some(bv) = self.browser_views.get_mut(&pane) {
                         bv.settled = false;
+                        bv.last_title = None;
                         bv.bar.favicon = None;
                     }
                 }
@@ -347,6 +366,10 @@ impl App {
                 self.redraw();
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.settled = true;
+                }
+                // A page that really loaded is one history row (an error page is not).
+                if *ok {
+                    self.browser_record_visit(pane);
                 }
                 self.browser_name(pane);
             }
@@ -402,7 +425,10 @@ impl App {
                 }
                 self.redraw();
             }
-            // Messages, requests and keys have no owner until the later tasks; pages get no bridge.
+            // A local page's message and the request for a local page (Task 7): the one route judges
+            // the source and the closed set; everything else a page posts is dropped there.
+            Event::Message { json, source, .. } => self.local_page_message(pane, source, json),
+            Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url),
             _ => {}
         }
     }
@@ -646,6 +672,7 @@ impl App {
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.expect(-1);
+                    bv.bar.transition = Some(browser::TRANSITION_BACK_FORWARD);
                     if let Some(v) = &bv.view {
                         v.go_back();
                     }
@@ -654,12 +681,16 @@ impl App {
             Button::Forward => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.expect(1);
+                    bv.bar.transition = Some(browser::TRANSITION_BACK_FORWARD);
                     if let Some(v) = &bv.view {
                         v.go_forward();
                     }
                 }
             }
             Button::Reload => {
+                if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    bv.bar.transition = Some(browser::TRANSITION_RELOAD);
+                }
                 if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                     v.reload();
                 }
@@ -678,8 +709,10 @@ impl App {
     fn show_browser_menu(&mut self, pane: PaneId, at: (f32, f32)) {
         use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
-        let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return };
-        let items = browser::menu_items(false, !io.url.is_empty() && browser::saved_url(&io.url).is_some(), io.dev_null);
+        let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
+        // Add or Remove Bookmark: the page's own state, enabled for a web page.
+        let (marked, can_mark) = self.browser_bookmark_state(pane);
+        let items = browser::menu_items(marked, can_mark, dev_null);
         let menu = muda::Menu::new();
         let mut failed = None;
         for item in items {
@@ -727,6 +760,7 @@ impl App {
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 if steps != 0 && steps.abs() <= 100 {
                     bv.bar.nav.expect(steps);
+                    bv.bar.transition = Some(browser::TRANSITION_BACK_FORWARD);
                     if let Some(v) = &bv.view {
                         v.execute_script(&format!("history.go({steps})"), 0);
                     }
@@ -736,6 +770,10 @@ impl App {
         }
         let Some(rest) = id.strip_prefix(MENU_ID) else { return false };
         let Some((pane, label)) = rest.split_once(':').and_then(|(p, l)| Some((p.parse::<PaneId>().ok()?, l))) else { return true };
+        if matches!(label, "Add Bookmark" | "Remove Bookmark") {
+            self.browser_toggle_bookmark(pane);
+            return true;
+        }
         let target = match label {
             "Manage Bookmarks" => Some("iterm2-about:bookmarks"),
             "History" => Some("iterm2-about:history"),
@@ -874,8 +912,9 @@ impl App {
     }
 
     /// Loads `url` in the pane's view (Tandem's own load: the person typed it).
-    fn browser_navigate(&mut self, pane: PaneId, url: &str) {
+    pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.bar.transition = Some(browser::TRANSITION_TYPED);
             match &bv.view {
                 Some(v) => v.navigate_tandem(url),
                 None => bv.pending_url = Some(url.to_string()),
@@ -883,7 +922,7 @@ impl App {
         }
     }
 
-    /// An edit of the field: bookmark and history candidates come from Task 7's database (none yet),
+    /// An edit of the field: bookmark and history candidates come from the database,
     /// the service's answer from the cache now and the network in the background (the 50 ms race
     /// of `BOS:43-64` is the cache answering at once and the late answer replacing it).
     pub(super) fn browser_suggest(&mut self, pane: PaneId, text: &str) {
@@ -904,6 +943,13 @@ impl App {
         } else {
             None
         };
+        // Bookmarks and visited sites from the database (`BSC:44-126`): bookmarks first, each with
+        // its visit count; the database bounds every limit and every text.
+        let dev_null = self.pane_dev_null(pane);
+        let (bookmarks, history) = match self.browser_db(dev_null) {
+            Some(db) => (db.bookmark_suggestions(&query, 10).into_iter().map(|(u, t)| { let v = db.visit_count(&u); (u, t, v) }).collect::<Vec<_>>(), db.history_suggestions(&query, 10)),
+            None => (Vec::new(), Vec::new()),
+        };
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         if let Some(call) = started {
             if let Some((mut old, _)) = bv.bar.call.take() {
@@ -916,7 +962,7 @@ impl App {
             }
         }
         let open = if asks { bv.bar.cache.get(&query).unwrap_or_else(|| bv.bar.cache.fallback(&query)) } else { Vec::new() };
-        let mut rows = browser::rank(text, &[], &[], &open, &search);
+        let mut rows = browser::rank(text, &bookmarks, &history, &open, &search);
         rows.truncate(browser::MAX_SUGGESTIONS);
         bv.bar.suggestions = rows;
         bv.bar.selected = None;
@@ -1141,7 +1187,7 @@ mod tests {
         // The views are made in the Dev Null store InPrivate, and never with a bridge or host objects.
         assert!(browser_setup(true).in_private && !browser_setup(false).in_private);
         let s = browser_setup(false);
-        assert!(s.guard_local_schemes && !s.web_message && s.user_agent.as_deref() == Some(""));
+        assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
     }
 
     /// The hand-over compares per window and moves focus only for the window in front (fix r1).
@@ -1178,12 +1224,19 @@ mod tests {
         assert!(super::super::webhost_app::HOSTED_VIEWS.iter().any(|h| h.file == "browser_app.rs"));
     }
 
-    /// The only COM handlers are the host's; a browser pane gets no bridge and no host objects.
+    /// The only COM handlers are the host's; a browser pane gets no host objects, and the only bridge
+    /// is the `iterm2-about:` pages' shim and the filter that serves them.
     #[test]
     fn browser_views_get_no_page_bridge() {
         let src = include_str!("browser_app.rs");
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
-        assert!(!prod.contains("web_message: true") && !prod.contains("navigate_to_string") && !prod.contains("HostObject"));
+        assert!(!prod.contains("navigate_to_string") && !prod.contains("HostObject"));
+        for dev_null in [false, true] {
+            let s = browser_setup(dev_null);
+            assert!(s.web_message, "the local pages post messages; the host judges each by its source");
+            assert_eq!(s.scripts, vec![crate::browser_pages::SHIM_JS.to_string()], "the shim is the only injected script");
+            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
+        }
     }
 
     /// A typed URL loads only through the one route: web and Tandem pages directly, `file:` through

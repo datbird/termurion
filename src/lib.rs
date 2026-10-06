@@ -67,6 +67,8 @@ pub mod webhost;
 pub mod webhost_win;
 pub mod svg_icon;
 pub mod browser;
+pub mod browser_db;
+pub mod browser_pages;
 #[cfg(windows)]
 pub mod svg_raster_win;
 pub mod seltext;

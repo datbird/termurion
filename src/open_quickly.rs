@@ -314,6 +314,11 @@ pub enum ItemKind {
     Invocation(String),
     /// A color preset, by name (`OQM:617-646`).
     ColorPreset(String),
+    /// A bookmark or a visited site, by its URL as stored; activation judges it again (P11).
+    Bookmark(String),
+    Visited(String),
+    /// A typed https URL (`OQM:584-615`).
+    Url(String),
 }
 
 /// One ranked result: its score, its display title with the query-matched char indexes to bold,
@@ -353,6 +358,15 @@ pub struct SessionSource {
     pub host: String,
 }
 
+/// The browser's bookmarks and visited sites that match the query, as (title, URL): the app asks
+/// the database for them (`iTermBrowserBookmarkFinder`, `iTermBrowserVisitsFinder`), and only when
+/// the browser is allowed (`browserAllowedCheckingIfNot:NO`; `Sources.browser` is None otherwise).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BrowserSources {
+    pub bookmarks: Vec<(String, String)>,
+    pub visited: Vec<(String, String)>,
+}
+
 /// A snapshot of everything Open Quickly can search, built by the app once per keystroke.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sources {
@@ -387,6 +401,8 @@ pub struct Sources {
     pub color_presets: Vec<(String, crate::palette::Rgb, crate::palette::Rgb)>,
     /// The whole query when it parses as a call or a call sequence (`OQM:950-1003`).
     pub invocation: Option<String>,
+    /// Bookmarks and visited sites; None when the browser is not allowed.
+    pub browser: Option<BrowserSources>,
 }
 
 /// The most results kept, highest score first (`kMaxItems`).
@@ -416,6 +432,14 @@ pub const UNTITLED: &str = "Untitled";
 pub const INVOKE_DETAIL: &str = "Invoke";
 /// A script item's detail (`OQM:821`).
 pub const RUN_SCRIPT: &str = "Run Script";
+/// A bookmark or visited site's detail (`OQM:553`, `OQM:573`) and a typed URL's (`OQM:604`).
+pub const OPEN_BOOKMARK: &str = "Open Bookmark in Browser";
+pub const OPEN_VISITED: &str = "Open Visited Site in Browser";
+pub const OPEN_URL: &str = "Open URL in Browser";
+/// `kProfileNameMultiplierForBookmarkItem`; its limit is twice that.
+pub const BOOKMARK_MULT: f64 = 0.097;
+/// `kMultiplierForURLItem`; its limit is twice that.
+pub const URL_MULT: f64 = 6.0;
 /// An invocation's multiplier (`kInvocationMultiplier`); its limit is twice that.
 pub const INVOCATION_MULTIPLIER: f64 = 5.0;
 
@@ -472,6 +496,9 @@ struct Supports {
     menu_items: bool,
     script: bool,
     color_preset: bool,
+    /// Bookmarks and visited sites (`supportsBookmarks`) and a typed https URL (`supportsURLs`).
+    bookmarks: bool,
+    urls: bool,
 }
 
 const NOTHING: Supports = Supports {
@@ -486,6 +513,8 @@ const NOTHING: Supports = Supports {
     menu_items: false,
     script: false,
     color_preset: false,
+    bookmarks: false,
+    urls: false,
 };
 
 fn supports(cmd: Command) -> Supports {
@@ -502,6 +531,8 @@ fn supports(cmd: Command) -> Supports {
             menu_items: true,
             script: true,
             color_preset: true,
+            bookmarks: true,
+            urls: true,
         },
         Command::InTabsArrangement => Supports { open_arrangement: Some(true), ..NOTHING },
         Command::Arrangement => Supports { open_arrangement: Some(false), ..NOTHING },
@@ -511,7 +542,7 @@ fn supports(cmd: Command) -> Supports {
         Command::CreateTab => Supports { create_new_tab: true, ..NOTHING },
         Command::Script => Supports { script: true, ..NOTHING },
         Command::ColorPreset => Supports { color_preset: true, ..NOTHING },
-        Command::Bookmark => NOTHING,
+        Command::Bookmark => Supports { bookmarks: true, ..NOTHING },
         Command::Action => Supports { action: true, ..NOTHING },
         Command::Snippet => Supports { snippet: true, ..NOTHING },
     }
@@ -915,6 +946,44 @@ fn add_menu_items(items: &mut Vec<Item>, query: &str, s: &Sources) {
     }
 }
 
+/// Bookmarks, then visited sites, then a typed https URL (`addBookmarkToItems:`, `addURLToItems:`,
+/// `OQM:532-615`): only with the browser allowed, never for a query starting with a slash, a URL
+/// at most once. The words shown are cleaned of what a page chose (P11: hidden characters gone,
+/// a look-alike host in punycode); the item keeps the stored URL and activation judges it again.
+fn add_browser_items(items: &mut Vec<Item>, query: &str, s: &Sources, sup: &Supports) {
+    let Some(browser) = &s.browser else { return };
+    if query.starts_with('/') {
+        return;
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    if sup.bookmarks {
+        for (list, detail, visited) in [(&browser.bookmarks, OPEN_BOOKMARK, false), (&browser.visited, OPEN_VISITED, true)] {
+            for (title, url) in list {
+                if seen.contains(url) {
+                    continue;
+                }
+                let docs = vec![crate::browser::display_url(url), crate::browser::display_title(title)];
+                let (score, result) = score_feature(query, &docs, BOOKMARK_MULT, 2.0 * BOOKMARK_MULT);
+                if score <= 0.0 {
+                    continue;
+                }
+                let (name, title_bold) = title_from(&docs, result);
+                let kind = if visited { ItemKind::Visited(url.clone()) } else { ItemKind::Bookmark(url.clone()) };
+                items.push(Item { kind, score, title: untitled_if_empty(name), title_bold, detail: detail.to_string(), detail_bold: Vec::new() });
+                seen.insert(url.clone());
+            }
+        }
+    }
+    if sup.urls && query.starts_with("https://") && crate::browser::normalize_url(query).is_some() && !seen.contains(query) {
+        let docs = vec![crate::browser::display_url(query)];
+        let (score, result) = score_feature(query, &docs, URL_MULT, 2.0 * URL_MULT);
+        if score > 0.0 {
+            let (name, title_bold) = title_from(&docs, result);
+            items.push(Item { kind: ItemKind::Url(query.to_string()), score, title: untitled_if_empty(name), title_bold, detail: OPEN_URL.to_string(), detail_bold: Vec::new() });
+        }
+    }
+}
+
 /// The invocation item (`addInvocation:scope:toItems:withMatcher:`, `OQM:699-716`), for every
 /// command and whatever its score.
 fn add_invocation(items: &mut Vec<Item>, query: &str, s: &Sources) {
@@ -971,6 +1040,7 @@ pub fn items(query: &str, s: &Sources) -> Vec<Item> {
         add_menu_items(&mut items, &text, s);
     }
     add_invocation(&mut items, &text, s);
+    add_browser_items(&mut items, &text, s, &sup);
 
     items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     items.truncate(MAX_ITEMS);
@@ -980,6 +1050,69 @@ pub fn items(query: &str, s: &Sources) -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn browser_sources() -> Sources {
+        Sources {
+            browser: Some(BrowserSources {
+                bookmarks: vec![("Rust".into(), "https://rust-lang.org".into()), ("Both".into(), "https://both.test/".into())],
+                visited: vec![("Rust Book".into(), "https://doc.rust-lang.org/book/".into()), ("Both again".into(), "https://both.test/".into())],
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn open_quickly_browser_items_follow_iterm2() {
+        let s = browser_sources();
+        let r = items("rust", &s);
+        let b = r.iter().find(|i| i.kind == ItemKind::Bookmark("https://rust-lang.org".into())).expect("the bookmark");
+        assert_eq!(b.detail, OPEN_BOOKMARK);
+        let v = r.iter().find(|i| i.kind == ItemKind::Visited("https://doc.rust-lang.org/book/".into())).expect("the visited site");
+        assert_eq!(v.detail, OPEN_VISITED);
+        assert!(r.iter().position(|i| i == b) < r.iter().position(|i| i == v), "bookmark items come before visited sites");
+        // A URL a bookmark covers is not repeated as a visited site.
+        let both = items("both", &s);
+        assert_eq!(both.iter().filter(|i| matches!(&i.kind, ItemKind::Bookmark(u) | ItemKind::Visited(u) if u == "https://both.test/")).count(), 1);
+        assert!(both.iter().any(|i| i.kind == ItemKind::Bookmark("https://both.test/".into())));
+        // A query starting with a slash gives none; so does a browser that is not allowed.
+        assert!(!items("/x", &s).iter().any(|i| matches!(i.kind, ItemKind::Bookmark(_) | ItemKind::Visited(_) | ItemKind::Url(_))));
+        let off = Sources { browser: None, ..browser_sources() };
+        assert!(!items("rust", &off).iter().any(|i| matches!(i.kind, ItemKind::Bookmark(_) | ItemKind::Visited(_) | ItemKind::Url(_))));
+        // A typed https URL is its own item, once.
+        let u = items("https://x.y", &s);
+        let url = u.iter().find(|i| i.kind == ItemKind::Url("https://x.y".into())).expect("the URL item");
+        assert_eq!(url.detail, OPEN_URL);
+        assert_eq!(u.iter().filter(|i| matches!(i.kind, ItemKind::Url(_))).count(), 1);
+        assert!(!items("http://x.y", &s).iter().any(|i| matches!(i.kind, ItemKind::Url(_))), "only https, as iTerm2");
+        assert!(!items("https://x.y", &off).iter().any(|i| matches!(i.kind, ItemKind::Url(_))));
+        // `/b` supports the bookmarks, not the typed URL; no other command supports either.
+        let b = items("/b rust", &s);
+        assert!(b.iter().any(|i| matches!(i.kind, ItemKind::Bookmark(_))) && !b.iter().any(|i| matches!(i.kind, ItemKind::Url(_))));
+        assert!(!items("/b https://x.y", &s).iter().any(|i| matches!(i.kind, ItemKind::Url(_))));
+        assert!(!items("/f rust", &s).iter().any(|i| matches!(i.kind, ItemKind::Bookmark(_))));
+        assert!((BOOKMARK_MULT, URL_MULT) == (0.097, 6.0));
+    }
+
+    #[test]
+    fn open_quickly_browser_text_is_sanitized() {
+        // A page chose these: a title with a bidi override and markup, a host in look-alike letters.
+        let s = Sources {
+            browser: Some(BrowserSources {
+                bookmarks: vec![("pay\u{202e}pal\u{7}\"><img src=x onerror=alert(1)>".into(), "https://\u{430}pple.com/\u{200b}x".into())],
+                visited: vec![],
+            }),
+            ..Default::default()
+        };
+        let r = items("pay", &s);
+        let i = r.iter().find(|i| matches!(i.kind, ItemKind::Bookmark(_))).expect("matched");
+        assert!(!i.title.chars().any(crate::inert_files::is_hidden), "no hidden character reaches the list: {:?}", i.title);
+        assert!(i.title.starts_with("paypal"));
+        let r = items("xn--pple", &s);
+        let i = r.iter().find(|i| matches!(i.kind, ItemKind::Bookmark(_))).expect("matched");
+        assert!(i.title.contains("xn--") && !i.title.contains('\u{430}'), "the host shows as punycode: {:?}", i.title);
+        // The item still carries the stored URL: activation judges it again.
+        assert_eq!(i.kind, ItemKind::Bookmark("https://\u{430}pple.com/\u{200b}x".into()));
+    }
 
     #[test]
     fn scores_follow_iterm2() {

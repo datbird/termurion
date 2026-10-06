@@ -156,6 +156,7 @@ mod git_ui;
 mod toolbelt_ui;
 mod tool_web_ui;
 mod browser_app;
+mod browser_db_app;
 mod web_popover_app;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
@@ -1379,6 +1380,12 @@ pub struct App {
     /// opening it failed (then it is not tried again), and the broker.
     chat_db: Option<crate::chat_store::Store>,
     chat_db_failed: bool,
+    /// The browser's history and bookmarks (app-wide, never swapped): the persistent database,
+    /// opened on first use; whether opening it failed (then it is not tried again and history
+    /// lives in `browser_db_mem` for the run); Dev Null Mode's in-memory database.
+    browser_db: Option<crate::browser_db::Db>,
+    browser_db_failed: bool,
+    browser_db_mem: Option<crate::browser_db::Db>,
     /// The cleanup of an earlier run's chat links failed: no chat binds to a pane this run.
     chat_links_off: bool,
     chat_broker: crate::chat_broker::Broker,
@@ -2479,6 +2486,9 @@ pub fn run() {
         ai_annotations: HashMap::new(),
         chat_db: None,
         chat_db_failed: false,
+        browser_db: None,
+        browser_db_failed: false,
+        browser_db_mem: None,
         chat_links_off: false,
         chat_broker: crate::chat_broker::Broker::new(),
         chat_window: None,
