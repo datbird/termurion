@@ -2476,7 +2476,40 @@ impl Screen {
         let first = screen as i32 - rows.len() as i32;
         let cursor = grid.cursor.point;
         let cursor_row = (cursor.line.0 - first).clamp(0, rows.len() as i32 - 1).max(0) as usize;
-        crate::access::Rows { rows, cursor: (cursor_row, cursor.column.0), first_line: (grid.history_size() as i32 + first) as i64 }
+        crate::access::Rows { rows, cursor: (cursor_row, cursor.column.0), first_line: self.abs_base() + first as i64 }
+    }
+
+    /// The absolute number of grid line 0 (iTerm2's `totalScrollbackOverflow` plus the history
+    /// size): it grows by one for every line that scrolls in, even once the history is full, so
+    /// the screen reader's cursor line never stands still while output scrolls.
+    fn abs_base(&self) -> i64 {
+        let grid = self.term.grid();
+        grid.dropped() as i64 + grid.history_size() as i64
+    }
+
+    /// The cursor's absolute line, from the same base as `access_rows`' `first_line`.
+    pub fn cursor_abs(&self) -> i64 {
+        self.abs_base() + self.term.grid().cursor.point.line.0 as i64
+    }
+
+    /// The text of an absolute line (trailing blanks trimmed), for the announcement after a burst.
+    pub fn abs_line_text(&self, abs: i64) -> Option<String> {
+        let grid = self.term.grid();
+        let line = abs - self.abs_base();
+        if line < -(grid.history_size() as i64) || line >= grid.screen_lines() as i64 {
+            return None;
+        }
+        let row = &grid[Line(line as i32)];
+        let mut out = String::new();
+        for c in 0..grid.columns() {
+            let cell = &row[Column(c)];
+            if cell.flags.intersects(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            out.push(if cell.c == '\0' { ' ' } else { cell.c });
+            out.extend(cell.zerowidth().into_iter().flatten());
+        }
+        Some(out.trim_end().to_string())
     }
 
     /// The whole buffer as text, oldest line first, trailing spaces trimmed.
@@ -4209,6 +4242,27 @@ mod tests {
         a.feed(b"x\r\ny\r\nz\x1b[?1049hq");
         assert_eq!(a.access_rows(100).rows.len(), 2);
         assert_eq!(a.access_rows(1).rows.len(), 1, "at least one row");
+    }
+
+    /// Absolute lines keep counting once the scrollback is full (iTerm2 adds
+    /// `totalScrollbackOverflow`), so a new prompt is never the old line with new text.
+    #[test]
+    fn access_lines_stay_absolute_past_full_scrollback() {
+        let mut s = Screen::with_scrollback(10, 3, 5);
+        let mut last = None;
+        for i in 0..30 {
+            s.feed(format!("l{i}\r\n").as_bytes());
+            let r = s.access_rows(100);
+            let abs = r.first_line + r.cursor.0 as i64;
+            assert_eq!(abs, s.cursor_abs(), "one source for the cursor's line");
+            if let Some(prev) = last {
+                assert_eq!(abs, prev + 1, "line {i}: the cursor line grows by one per new line");
+            }
+            last = Some(abs);
+        }
+        assert_eq!(s.abs_line_text(s.cursor_abs() - 1).as_deref(), Some("l29"));
+        assert_eq!(s.abs_line_text(s.cursor_abs() - 2).as_deref(), Some("l28"));
+        assert_eq!(s.abs_line_text(0), None, "a line that scrolled off is gone");
     }
 
     /// The tick cache's key moves with any grid change: erasers and movers that touch no record.
