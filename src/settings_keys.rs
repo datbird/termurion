@@ -2605,6 +2605,26 @@ mod tests {
         }
     }
 
+    /// `AS:444-450` and `AS:880-885`: the ftp: and telnet: URL rows (Task 3). The ssh rows are
+    /// 14e's (`sshSchemePath`, `validCharactersInSSHUserNames`: lower-case, one row each, P20).
+    #[test]
+    fn url_rows_follow_iterm2() {
+        for (key, label, help) in [
+            ("PathToFTP", "Path to ftp for opening ftp: URLs.", "Path to ftp for opening ftp: URLs.\nYou may want to set this to the full path of another ftp program."),
+            ("PathToTelnet", "Path to telnet for opening telnet: URLs.", "Path to telnet for opening telnet: URLs.\nYou may want to set this to the full path of another telnet program."),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::String), "{key}");
+            assert_eq!(row.default, Some(Value::String(key.trim_start_matches("PathTo").to_lowercase())), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help), "{key}");
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+        for dup in ["SshSchemePath", "ValidCharactersInSSHUserNames"] {
+            assert!(schema::find_global(dup).is_none(), "{dup}: the built lower-case row is the only one");
+        }
+    }
+
     /// `AS:853-885`: the five open-file rows (Task 2): tab, section, kind, default, label and help.
     #[test]
     fn open_file_rows_follow_iterm2() {

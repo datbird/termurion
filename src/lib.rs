@@ -335,6 +335,7 @@ pub mod launch;
 pub mod open_file;
 pub mod reg;
 pub mod url_launch;
+pub mod url_open;
 pub mod ssh_recovery;
 pub mod ssh_registry;
 pub mod ssh_procs;

@@ -5098,3 +5098,21 @@ label = "How should new instances be opened when triggered by scripts or externa
 type = "int"
 default = -1
 help = "How should new instances be opened when triggered by scripts or external applications?\n-1: Use legacy settings (default)\n0: New Window\n1: New Tab\n2: Vertical Split Pane\n3: Horizontal Split Pane\nThis provides a unified setting for controlling external instance creation."
+
+[[setting]]
+key = "PathToFTP"
+tab = "Advanced"
+section = "General"
+label = "Path to ftp for opening ftp: URLs."
+type = "string"
+default = "ftp"
+help = "Path to ftp for opening ftp: URLs.\nYou may want to set this to the full path of another ftp program."
+
+[[setting]]
+key = "PathToTelnet"
+tab = "Advanced"
+section = "General"
+label = "Path to telnet for opening telnet: URLs."
+type = "string"
+default = "telnet"
+help = "Path to telnet for opening telnet: URLs.\nYou may want to set this to the full path of another telnet program."

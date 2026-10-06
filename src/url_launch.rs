@@ -27,21 +27,25 @@ pub enum UrlArg {
     Refused(String),
 }
 
-/// The one rule for a URL from outside (P10): scheme `ssh` (ignoring case), at most 8 KiB, no
-/// quote, no control, whitespace or invisible formatting character.
+/// The schemes Tandem takes from outside (m13v1 P7): the one list for the command line, the pipe
+/// and every check after them. iTerm2's `x-man-page` is macOS only and is not offered.
+pub const EXTERNAL_SCHEMES: [&str; 3] = ["ssh", "telnet", "ftp"];
+
+/// The one rule for a URL from outside (P10): a scheme of `EXTERNAL_SCHEMES` (ignoring case), at
+/// most 8 KiB, no quote, no control, whitespace or invisible formatting character.
 pub fn url_ok(url: &str) -> bool {
     url.len() <= MAX_URL
-        && url.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"))
+        && crate::url_open::scheme_of(url).is_some()
         && !url.chars().any(|c| c == '"' || crate::ssh_url::is_hostile_char(c))
 }
 
 /// `argv` is the whole `args_os`, `argv[0]` included. `Url` only for exactly `[exe, "--url", u]`
 /// with `url_ok(u)`; `None` when no argument after `argv[0]` is `--url` (ignoring case) or starts
-/// with `ssh:` (ignoring case); anything else is `Refused`.
+/// with an external scheme and a colon (ignoring case); anything else is `Refused`.
 pub fn url_argument(argv: &[OsString]) -> UrlArg {
     let names_url = |a: &OsString| {
         let s = a.to_string_lossy();
-        s.eq_ignore_ascii_case("--url") || s.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("ssh:"))
+        s.eq_ignore_ascii_case("--url") || crate::url_open::scheme_of(&s).is_some()
     };
     if !argv.iter().skip(1).any(names_url) {
         return UrlArg::None;
@@ -108,7 +112,7 @@ impl Flood {
 
 /// The one banner for dropped URLs.
 pub fn ignored_banner(n: usize) -> String {
-    format!("{n} ssh link{} ignored", if n == 1 { "" } else { "s" })
+    format!("{n} link{} ignored", if n == 1 { "" } else { "s" })
 }
 
 /// Adds an admitted URL to the ones waiting for the first window; false (counted as ignored)
@@ -125,7 +129,8 @@ pub fn queue_for_start(pending: &mut Vec<String>, flood: &mut Flood, url: String
 /// The banner an external open shows, naming what the link connects to as `user@host:port`
 /// through `shown_name` (URL text is the sender's). None for a URL with no host: it opens nothing.
 pub fn open_banner(url: &str) -> Option<String> {
-    let parsed = crate::ssh_url::parse(url)?;
+    let scheme = crate::url_open::scheme_of(url)?;
+    let parsed = crate::ssh_url::parse_as(url, scheme)?;
     let host = parsed.host?;
     let mut who = String::new();
     if let Some(user) = &parsed.user {
@@ -136,7 +141,8 @@ pub fn open_banner(url: &str) -> Option<String> {
     if let Some(port) = parsed.port {
         who.push_str(&format!(":{port}"));
     }
-    Some(format!("Opened an ssh link to {who}."))
+    let article = if scheme == "telnet" { "a" } else { "an" };
+    Some(format!("Opened {article} {scheme} link to {who}."))
 }
 
 /// What handing a URL to a running Tandem came to.
@@ -442,8 +448,8 @@ mod tests {
         assert_eq!(queued, QUEUE_MAX);
         assert_eq!(pending.len(), QUEUE_MAX);
         assert_eq!(flood.ignored(), 4);
-        assert_eq!(ignored_banner(1), "1 ssh link ignored");
-        assert_eq!(ignored_banner(6), "6 ssh links ignored");
+        assert_eq!(ignored_banner(1), "1 link ignored");
+        assert_eq!(ignored_banner(6), "6 links ignored");
     }
 
     /// P13(b), (c): the banner names user@host:port through `shown_name`; a host-less URL has none.
