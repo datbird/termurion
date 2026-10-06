@@ -173,7 +173,7 @@ impl App {
         let cell = self.pane_cell(shot.pane);
         let cols = self.panes.get(&shot.pane).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
         let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
-        screenshot::parts(e + 1 - s, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX).len().max(1)
+        screenshot::parts(e + 1 - s, cell.1.round().max(1.0) as usize, width, screenshot::max_px(self.globals.int(screenshot::MAX_PX_KEY))).len().max(1)
     }
 
     /// Renders lines `first..=last` of the frozen copy with the panel's redactions and
@@ -235,7 +235,7 @@ impl App {
         let cell = self.pane_cell(self.shot.as_ref().ok_or("no screenshot")?.pane);
         let cols = self.shot.as_ref().and_then(|s| self.panes.get(&s.pane)).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
         let width = (cols as f32 * cell.0 + 2.0 * self.margins().0.round()).ceil() as usize;
-        let parts = screenshot::parts(end + 1 - start, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX);
+        let parts = screenshot::parts(end + 1 - start, cell.1.round().max(1.0) as usize, width, screenshot::max_px(self.globals.int(screenshot::MAX_PX_KEY)));
         let paths = screenshot::save_paths(chosen, parts.len());
         let mut first_path = None;
         for (part, path) in parts.into_iter().zip(paths) {

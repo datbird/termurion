@@ -2430,6 +2430,88 @@ impl Screen {
         out.trim_end().to_string()
     }
 
+    /// The rows a screen reader reads (13v2 Task 8): the last `max` rows (clamped to
+    /// `access::MAX_LINES` and to `access::MAX_UNITS` of text, older rows first out) of history
+    /// plus screen, each row's cells as text with its wrap flag, and the cursor in those rows.
+    /// A wide character's spacer cell is an empty string, a blank cell a space, a combining
+    /// sequence one cell. A row that does not wrap drops its trailing blank cells.
+    pub fn access_rows(&self, max: usize) -> crate::access::Rows {
+        use alacritty_terminal::term::cell::Flags;
+        let grid = self.term.grid();
+        let screen = grid.screen_lines();
+        let cols = grid.columns();
+        let n = (screen + grid.history_size()).min(crate::access::clamp_lines(max as i64));
+        let top = screen as i32 - n as i32;
+        let mut rows: Vec<(Vec<String>, bool)> = Vec::with_capacity(n);
+        let mut units = 0usize;
+        for l in (top..screen as i32).rev() {
+            let row = &grid[Line(l)];
+            let wraps = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+            let mut cells: Vec<String> = Vec::with_capacity(cols);
+            for c in 0..cols {
+                let cell = &row[Column(c)];
+                cells.push(if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                    String::new()
+                } else if (cell.c == ' ' || cell.c == '\0') && cell.zerowidth().is_none() {
+                    " ".to_string()
+                } else {
+                    let mut t = String::new();
+                    t.push(cell.c);
+                    t.extend(cell.zerowidth().into_iter().flatten());
+                    t
+                });
+            }
+            if !wraps {
+                while cells.last().is_some_and(|c| c.is_empty() || c == " ") {
+                    cells.pop();
+                }
+            }
+            units += cells.iter().map(|c| c.encode_utf16().count()).sum::<usize>() + 1;
+            if units > crate::access::MAX_UNITS && !rows.is_empty() {
+                break;
+            }
+            rows.push((cells, wraps));
+        }
+        rows.reverse();
+        let first = screen as i32 - rows.len() as i32;
+        let cursor = grid.cursor.point;
+        let cursor_row = (cursor.line.0 - first).clamp(0, rows.len() as i32 - 1).max(0) as usize;
+        crate::access::Rows { rows, cursor: (cursor_row, cursor.column.0), first_line: self.abs_base() + first as i64 }
+    }
+
+    /// The absolute number of grid line 0 (iTerm2's `totalScrollbackOverflow` plus the history
+    /// size): it grows by one for every line that scrolls in, even once the history is full, so
+    /// the screen reader's cursor line never stands still while output scrolls.
+    fn abs_base(&self) -> i64 {
+        let grid = self.term.grid();
+        grid.dropped() as i64 + grid.history_size() as i64
+    }
+
+    /// The cursor's absolute line, from the same base as `access_rows`' `first_line`.
+    pub fn cursor_abs(&self) -> i64 {
+        self.abs_base() + self.term.grid().cursor.point.line.0 as i64
+    }
+
+    /// The text of an absolute line (trailing blanks trimmed), for the announcement after a burst.
+    pub fn abs_line_text(&self, abs: i64) -> Option<String> {
+        let grid = self.term.grid();
+        let line = abs - self.abs_base();
+        if line < -(grid.history_size() as i64) || line >= grid.screen_lines() as i64 {
+            return None;
+        }
+        let row = &grid[Line(line as i32)];
+        let mut out = String::new();
+        for c in 0..grid.columns() {
+            let cell = &row[Column(c)];
+            if cell.flags.intersects(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+            out.push(if cell.c == '\0' { ' ' } else { cell.c });
+            out.extend(cell.zerowidth().into_iter().flatten());
+        }
+        Some(out.trim_end().to_string())
+    }
+
     /// The whole buffer as text, oldest line first, trailing spaces trimmed.
     pub fn all_text(&self) -> String {
         let grid = self.term.grid();
@@ -4129,6 +4211,59 @@ mod tests {
         let running = p.tick_digest();
         p.feed(b"\x1b]133;D;1\x07");
         assert_ne!(p.tick_digest(), running, "the command finished with a code");
+    }
+
+    /// m13v2 Task 8: the rows the screen reader reads: the last rows of history plus screen,
+    /// each with its wrap flag, and the cursor in those rows.
+    #[test]
+    fn access_rows_follow_the_grid() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"abc\r\n0123456789xy");
+        let r = s.access_rows(10);
+        let text: Vec<(String, bool)> = r.rows.iter().map(|(c, w)| (c.concat(), *w)).collect();
+        assert_eq!(text, vec![("abc".to_string(), false), ("0123456789".to_string(), true), ("xy".to_string(), false)]);
+        assert_eq!(r.cursor, (2, 2));
+        assert_eq!(r.first_line, 0);
+        let r = s.access_rows(2);
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].0.concat(), "0123456789");
+        assert_eq!(r.cursor, (1, 2));
+        assert_eq!(r.first_line, 1);
+        // History comes first; a wide character keeps its spacer cell, a combining mark its cell.
+        let mut h = Screen::new(10, 2);
+        h.feed("one\r\ntwo\r\n\u{3042}e\u{301}".as_bytes());
+        let r = h.access_rows(100);
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].0.concat(), "one");
+        assert_eq!(r.first_line, 0);
+        assert_eq!(r.rows[2].0, vec!["\u{3042}".to_string(), String::new(), "e\u{301}".to_string()]);
+        assert_eq!(r.cursor, (2, 3));
+        // The alternate screen has no history.
+        let mut a = Screen::new(10, 2);
+        a.feed(b"x\r\ny\r\nz\x1b[?1049hq");
+        assert_eq!(a.access_rows(100).rows.len(), 2);
+        assert_eq!(a.access_rows(1).rows.len(), 1, "at least one row");
+    }
+
+    /// Absolute lines keep counting once the scrollback is full (iTerm2 adds
+    /// `totalScrollbackOverflow`), so a new prompt is never the old line with new text.
+    #[test]
+    fn access_lines_stay_absolute_past_full_scrollback() {
+        let mut s = Screen::with_scrollback(10, 3, 5);
+        let mut last = None;
+        for i in 0..30 {
+            s.feed(format!("l{i}\r\n").as_bytes());
+            let r = s.access_rows(100);
+            let abs = r.first_line + r.cursor.0 as i64;
+            assert_eq!(abs, s.cursor_abs(), "one source for the cursor's line");
+            if let Some(prev) = last {
+                assert_eq!(abs, prev + 1, "line {i}: the cursor line grows by one per new line");
+            }
+            last = Some(abs);
+        }
+        assert_eq!(s.abs_line_text(s.cursor_abs() - 1).as_deref(), Some("l29"));
+        assert_eq!(s.abs_line_text(s.cursor_abs() - 2).as_deref(), Some("l28"));
+        assert_eq!(s.abs_line_text(0), None, "a line that scrolled off is gone");
     }
 
     /// The tick cache's key moves with any grid change: erasers and movers that touch no record.

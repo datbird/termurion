@@ -137,6 +137,7 @@ impl Profile {
     /// A profile from a stored or imported table.
     /// A profile from a stored or imported table; its "Bindings" is cleaned (`bindings::clean`).
     pub fn from_values(mut values: BTreeMap<String, Value>) -> Profile {
+        crate::dynamic_profiles::strip_internal(&mut values);
         if let Some(b) = values.remove(crate::bindings::KEY).and_then(crate::bindings::clean) {
             values.insert(crate::bindings::KEY.to_string(), b);
         }
@@ -381,6 +382,18 @@ pub fn start_dir_probing(p: &Profile, previous: Option<&std::path::Path>, is_dir
 
 #[cfg(test)]
 mod tests {
+    /// Task 5 fix r2 item 4: a profile built from outside values never carries the loader's marks.
+    #[test]
+    fn from_values_drops_the_dynamic_marks() {
+        let mut v = BTreeMap::new();
+        v.insert("Name".to_string(), Value::String("N".into()));
+        for key in crate::dynamic_profiles::INTERNAL_KEYS {
+            v.insert(key.to_string(), Value::Boolean(true));
+        }
+        let p = Profile::from_values(v);
+        assert_eq!(p.values.keys().cloned().collect::<Vec<_>>(), ["Name"]);
+    }
+
     use super::*;
     use crate::palette::rgb;
 

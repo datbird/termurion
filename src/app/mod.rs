@@ -1,6 +1,6 @@
 //! The Tandem window: tabs of split panes, drawn with wgpu.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -169,6 +169,10 @@ mod script_ui;
 mod script_runtime_ui;
 mod claude_code_app;
 mod scripts_alerts;
+mod tips_app;
+mod update_app;
+mod dynamic_profiles_app;
+mod access_app;
 mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
@@ -242,6 +246,8 @@ pub enum UserEvent {
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
+    /// A screen reader asked to select text or scroll, or attached (`uia_win::Request`).
+    Uia(crate::uia_win::Request),
     /// Windows asks whether the session may end (WM_QUERYENDSESSION on window `hwnd`): the app sets
     /// `end_now` (true = nothing to ask) and then `done` (`logout_ui`, `resident_ui::shutdown_decide`).
     ShutdownQuery { done: Arc<std::sync::atomic::AtomicBool>, end_now: Arc<std::sync::atomic::AtomicBool>, hwnd: isize },
@@ -583,6 +589,15 @@ pub struct App {
     composer_worker: crate::composer_worker::Worker,
     /// Watches and scans the Scripts folder (started with the first window).
     scripts_scan: Option<crate::scripts_scan::Scanner>,
+    /// The Dynamic Profiles folder's watch (app-wide, 13v2 Task 6); None where there is none.
+    dynamic_scan: Option<crate::dynamic_profiles_scan::Scanner>,
+    /// Errors of a burst that came while an alert for the first still waited (`_pendingErrors`).
+    dynamic_errors_pending: usize,
+    /// Each dynamic profile's file as read (its text and what it looked like), for a write-back.
+    dynamic_files: HashMap<String, dynamic_profiles_app::Source>,
+    /// Rewritable dynamic profiles edited since the last write-back, and when it falls due.
+    dynamic_write: BTreeSet<String>,
+    dynamic_write_due: Option<Instant>,
     /// The Scripts menu's tree from the last scan.
     scripts_tree: Vec<crate::scripts::Node>,
     /// Every script's relative name ("folder/name.py"), iTerm2's `allScripts`.
@@ -1259,6 +1274,32 @@ pub struct App {
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// Checking for updates (M13v2): the worker, the window, the next scheduled check, whether the
+    /// check in flight is the person's, and the view waiting to show. App-wide, never per window.
+    update_checker: Option<crate::update_fetch_win::Checker>,
+    update_window: Option<crate::update_ui::UpdateWindow>,
+    update_due: Option<Instant>,
+    update_manual: bool,
+    update_show: Option<crate::update_ui::View>,
+    /// The waiting view comes from a manual check (it opens while resident too).
+    update_show_manual: bool,
+    /// The Tip of the Day (M13v2): the card, the one deadline for the next try, and whether the
+    /// launch started the schedule. App-wide, never per window.
+    tip_window: Option<crate::tip_ui::TipWindow>,
+    tip_due: Option<Instant>,
+    tips_started: bool,
+    /// Screen readers (M13v2 Task 10): the UI Automation host of each window (by registry key),
+    /// what is kept of each pane while a client listens, the one settle deadline, the window
+    /// and focus last published, and whether an Attach is already posted. App-wide.
+    uia_hosts: HashMap<u64, crate::uia_win::Host>,
+    access_trackers: HashMap<PaneId, access_app::AccessPane>,
+    access_due: Option<Instant>,
+    /// When the snapshot was last built, and the deadline a held-back build waits for (one build a frame).
+    access_built: Option<Instant>,
+    access_hold: Option<Instant>,
+    access_window: Option<access_app::AccessWindow>,
+    access_focus_sent: Option<(u64, PaneId)>,
+    access_attach: Arc<std::sync::atomic::AtomicBool>,
     /// Locale questions waiting for the picker: the start-time prompts, and Settings' Change
     /// Locale requests (`locale_ui`).
     locale_asks: VecDeque<locale_ui::Ask>,
@@ -1599,6 +1640,15 @@ pub(crate) fn teardown_process() {
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
     crate::handoff_win::begin_closing();
+    // A running update check ends with Tandem (its curl.exe), not after it.
+    #[cfg(windows)]
+    crate::update_fetch_win::cancel_running();
+    // The Dynamic Profiles folder's watch stops with Tandem.
+    #[cfg(windows)]
+    crate::dynamic_profiles_scan::stop_all();
+    // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
+    #[cfg(windows)]
+    crate::uia_win::disconnect_all();
 }
 
 pub fn run() {
@@ -1993,6 +2043,11 @@ pub fn run() {
         composers: HashMap::new(),
         composer_worker,
         scripts_scan: None,
+        dynamic_scan: None,
+        dynamic_errors_pending: 0,
+        dynamic_files: HashMap::new(),
+        dynamic_write: BTreeSet::new(),
+        dynamic_write_due: None,
         scripts_tree: Vec::new(),
         scripts_all: Vec::new(),
         scripts_keys: Default::default(),
@@ -2312,6 +2367,23 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        update_checker: None,
+        update_window: None,
+        update_due: None,
+        update_manual: false,
+        update_show: None,
+        update_show_manual: false,
+        tip_window: None,
+        tip_due: None,
+        tips_started: false,
+        uia_hosts: HashMap::new(),
+        access_trackers: HashMap::new(),
+        access_due: None,
+        access_built: None,
+        access_hold: None,
+        access_window: None,
+        access_focus_sent: None,
+        access_attach: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         locale_asks: VecDeque::new(),
         locale_window: None,
         suppressed,
@@ -4161,6 +4233,10 @@ impl App {
                 self.redraw();
             }
             return;
+        }
+        // A rewritable dynamic profile's edit goes back to its file once it settles.
+        if let Edit::Changed(guid) = &edit {
+            self.dynamic_edited(guid);
         }
         match edit {
             Edit::None | Edit::Preview => return,
@@ -6451,6 +6527,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.snippets.broken {
             self.banners.set("snippets", format!("Could not read the snippets in {}. The file stays as it is until a snippet is added.", snippets_ui::snippets_path().display()));
         }
+        // The Dynamic Profiles folder is read before the first window, so a startup arrangement
+        // can name a dynamic profile.
+        self.dynamic_profiles_start();
         let arrangement_policy = self.globals.bool("OpenArrangementAtStartup");
         let hotkey_only = !arrangement_policy && self.globals.bool("OpenNoWindowsAtStartup");
         let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();
@@ -6649,6 +6728,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_launch_queue(event_loop);
         self.open_handoff_queue(event_loop);
         self.register_open_with();
+        // After the first window and the launch's own requests: the second launch's question.
+        self.update_start();
+        self.tips_launch();
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -6724,6 +6806,7 @@ impl ApplicationHandler<UserEvent> for App {
         if active && !self.app_active {
             self.hotkey_reactivated();
             self.ffm_became_active();
+            self.tips_became_active();
         } else if !active && self.app_active {
             self.ffm_became_inactive();
         }
@@ -6785,6 +6868,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.script_export_tick();
         self.ssh_unzip_tick();
         self.scripts_scan_tick();
+        self.update_tick(event_loop);
+        self.tips_tick(event_loop);
+        let dynamic_due = self.dynamic_profiles_tick();
+        self.access_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);
@@ -6860,7 +6947,9 @@ impl ApplicationHandler<UserEvent> for App {
         let open_due = self.open_tick(event_loop);
         let jump_due = self.jump_list_tick();
         let command_due = self.command_click_tick();
-        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
+        let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
+        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6870,6 +6959,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
+            UserEvent::Uia(r) => self.uia_request(r),
             UserEvent::Chord(c) => {
                 // Win+B, Win+U and Win+C in a password manager window are its own keys.
                 if self.pwm_take_chord(&c) {
@@ -6976,7 +7066,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;
@@ -7021,6 +7111,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
                     // Edit Session's Copy Current Settings to Selected Profile, after its question.
                     let copy = slot.as_mut().and_then(|s| s.copy_request.take());
+                    // The dynamic profile warning's Mark as Rewritable and Reveal in Explorer.
+                    let dynamic = slot.as_mut().and_then(|s| s.dynamic_request.take());
                     // "Edit Profiles\u{2026}" opens the Settings window, which needs the event loop.
                     let edit = match edit {
                         Edit::EditProfiles(guid) => {
@@ -7045,6 +7137,11 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some((pane, dest)) = copy {
                         self.copy_to_profile(pane, &dest);
+                    }
+                    match dynamic {
+                        Some(crate::settings_ui::DynamicRequest::Mark(guid)) => self.mark_rewritable(&guid),
+                        Some(crate::settings_ui::DynamicRequest::Reveal(guid)) => self.reveal_dynamic(&guid),
+                        None => {}
                     }
                     if let Some(path) = reveal {
                         self.reveal_in_explorer(&path);
@@ -7158,6 +7255,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.ime_cancel();
                 }
                 self.focused = f;
+                self.access_focus();
                 // The border takes the focused or unfocused color.
                 self.apply_border();
                 // Tandem going to the background saves the windows (iTerm2 saves on resign

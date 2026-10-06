@@ -1086,20 +1086,27 @@ pub fn possible_override_spec() -> crate::warnings::Spec {
     settings_spec("NeverWarnAboutPossibleOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
 }
 
-/// Editing a dynamic profile (`showDynamicProfileWarning`, `ProfilePreferencesViewController.m:1217-1245`):
-/// iTerm2's first paragraph; Tandem imports Dynamic Profiles once and never writes them back, so
-/// its second paragraph and its Mark as Rewritable and Reveal buttons are not offered.
-pub fn dynamic_profile_spec(name: &str) -> crate::warnings::Spec {
-    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem imports dynamic profiles once and does not write changes back to the file.");
-    crate::warnings::Spec {
+/// Editing a dynamic profile that is not rewritable (`showDynamicProfileWarning`,
+/// `ProfilePreferencesViewController.m:1217-1253`): iTerm2's text and buttons ("rewritable" closes
+/// with a second left quote there, kept). None for a saved profile and for a rewritable one.
+/// Supersedes the m13t Task 8 ruling that Tandem never writes dynamic profiles back (13v2).
+pub fn dynamic_profile_spec(profile: &crate::profile::Profile) -> Option<crate::warnings::Spec> {
+    if !profile.bool("Is Dynamic Profile") || profile.bool("Rewritable") {
+        return None;
+    }
+    let name = profile.name();
+    let name = if name.is_empty() { "(unknown name)".to_string() } else { name };
+    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change.");
+    Some(crate::warnings::Spec {
         id: Some("NoSyncDynamicProfileChangeWillBeLost".to_string()),
         kind: crate::warnings::Kind::Temporary,
         heading: "Changes Will Be Lost".to_string(),
         text,
-        labels: vec![crate::api_auth::OK.to_string()],
-        cancel: None,
-        never_remember: Vec::new(),
-    }
+        labels: vec!["Mark as Rewritable".to_string(), "Reveal in Explorer".to_string(), crate::api_auth::CANCEL.to_string()],
+        cancel: Some(2),
+        // "Reveal in Explorer" is a one-time navigation and is never remembered.
+        never_remember: vec![1],
+    })
 }
 
 /// Copy to Profile's question (`PP:780-791`); 13t's Copy to Profile asks it.
@@ -1116,6 +1123,8 @@ pub enum SheetThen {
     SaveKey,
     /// Create a Dedicated Hotkey Window's question, with the hotkey profiles as (Guid, name).
     CreateHotkey(Vec<(String, String)>),
+    /// The dynamic profile (its Guid) warning: Mark as Rewritable (0) or Reveal in Explorer (1).
+    DynamicProfile(String),
 }
 
 /// A warning shown over the settings window, with its checkbox's state.
@@ -2097,6 +2106,168 @@ mod tests {
         // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
         assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    /// m13v2 Task 1: the Software Update rows (`IP:50`, `IP:51`, `IP:716`).
+    #[test]
+    fn update_rows_follow_iterm2() {
+        for (key, default, label) in [
+            ("SUEnableAutomaticChecks", true, "Check for updates automatically"),
+            ("CheckTestRelease", false, "Update to Beta test releases"),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Software Update", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert!(!s.help.is_empty(), "{key}");
+        }
+        // The stored-only keys have no row.
+        for key in ["SUScheduledCheckInterval", "SULastCheckTime", "SUHasLaunchedBefore", "SUSkippedVersion"] {
+            assert!(schema::find_global(key).is_none(), "{key}");
+        }
+    }
+
+    /// m13v2 Task 3: the Tip of the Day rows (`IP:1029`, `IP:1030`); the controller's stored
+    /// keys have no row.
+    #[test]
+    fn tip_rows_follow_iterm2() {
+        for (key, kind, default, label) in [
+            ("NoSyncTipsDisabled", Kind::Bool, Value::Boolean(false), "Disable the Tip of the Day?"),
+            ("TimeBetweenTips", Kind::Float, Value::Float(86400.0), "Time between tips (in seconds)"),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Tip of the Day", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, label, "{key}");
+        }
+        for key in [
+            "NoSyncTipsToNotShow",
+            "NoSyncLastTipTime",
+            "NoSyncPermissionToShowTip",
+            "NoSyncTipOfTheDayOffset",
+            "NoSyncLaunchExperienceControllerRunCount",
+            "NoSyncNextAnnoyanceTime",
+            "NoSyncTipOfTheDayEligibilityBeganTime",
+        ] {
+            assert!(schema::find_global(key).is_none(), "{key}");
+        }
+    }
+
+    /// m13v2 Task 7: the menu hint, menu tip and screenshot cap rows (`AS`: `showHintsInSplitPaneMenuItems`,
+    /// `menuTipDelay`, `screenshotMaxPixelHeight`).
+    #[test]
+    fn menu_rows_follow_iterm2() {
+        for (key, kind, default, label, help_tail) in [
+            (
+                "ShowHintsInSplitPaneMenuItems",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Show hints in split pane menu items to indicate horizontal vs vertical semantics.",
+                "\nYou must restart Tandem after changing this setting for it to take effect.",
+            ),
+            ("MenuTipDelay", Kind::Float, Value::Float(1.0), "Time to wait before showing tips in the main menu.", "\nSet this to a big number if you don\u{2019}t like the tips."),
+            (
+                "ScreenshotMaxPixelHeight",
+                Kind::Int,
+                Value::Integer(30000),
+                "Maximum pixel height for a single screenshot file.",
+                "\nScreenshots taller than this will be split into multiple files. Also affects the maximum total pixels (this value squared / 5).",
+            ),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, format!("{label}{help_tail}"), "{key}");
+        }
+    }
+
+    /// m13v2 Task 8: the screen reader's line count (`AS`: `numberOfLinesForAccessibility`).
+    #[test]
+    fn access_row_follows_iterm2() {
+        let s = schema::find_global("NumberOfLinesForAccessibility").expect("the row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Terminal", Kind::Int));
+        assert_eq!(s.default, Some(Value::Integer(1000)));
+        assert_eq!(s.label, "Maximum number of lines of history to expose to Accessibility.");
+        assert_eq!(
+            s.help,
+            "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
+        );
+    }
+
+    /// m13v2 Task 6 (supersedes the m13t Task 8 ruling): iTerm2's full warning for the first edit
+    /// of a dynamic profile that is not rewritable (`PPV:1217-1253`); none for a saved profile or a
+    /// rewritable one.
+    #[test]
+    fn dynamic_warning_follows_iterm2() {
+        let mut saved = crate::profile::Profile::new("Dev");
+        assert!(dynamic_profile_spec(&saved).is_none(), "a saved profile");
+        saved.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        let spec = dynamic_profile_spec(&saved).expect("a dynamic one");
+        assert_eq!(spec.heading, "Changes Will Be Lost");
+        assert_eq!(
+            spec.text,
+            "The selected profile, \u{201c}Dev\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change."
+        );
+        assert_eq!(spec.labels, ["Mark as Rewritable", "Reveal in Explorer", "Cancel"]);
+        assert_eq!(spec.cancel, Some(2));
+        assert_eq!(spec.never_remember, vec![1], "Reveal in Explorer is never remembered");
+        assert_eq!(spec.id.as_deref(), Some("NoSyncDynamicProfileChangeWillBeLost"));
+        assert_eq!(spec.kind, crate::warnings::Kind::Temporary);
+        saved.set("Rewritable", toml::Value::Boolean(true));
+        assert!(dynamic_profile_spec(&saved).is_none(), "a rewritable one");
+        let mut unnamed = crate::profile::Profile::new("");
+        unnamed.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        assert!(dynamic_profile_spec(&unnamed).unwrap().text.contains("\u{201c}(unknown name)\u{201d}"));
+    }
+
+    /// m13v2 Task 5: the Dynamic Profiles rows (`AS`: `dynamicProfilesPath`,
+    /// `dynamicProfilesNotificationLatency`, `addDynamicTagToDynamicProfiles`) and the profile keys
+    /// iTerm2 stores for a dynamic profile, which have no control.
+    #[test]
+    fn dynamic_rows_follow_iterm2() {
+        for (key, kind, default, label, help_tail) in [
+            (
+                "DynamicProfilesPath",
+                Kind::String,
+                Value::String(String::new()),
+                "Path to folder with dynamic profiles.",
+                "\nWhen empty, %APPDATA%\\Tandem\\DynamicProfiles will be used. You must restart Tandem after modifying this setting.",
+            ),
+            (
+                "DynamicProfilesNotificationLatency",
+                Kind::Float,
+                Value::Float(0.1),
+                "Delay between detecting a change to dynamic profiles and acting on it.",
+                "\nIf a lot of changes happen to the DynamicProfiles folder a longer delay will help coalesce filesystem events to reduce CPU usage.",
+            ),
+            (
+                "AddDynamicTagToDynamicProfiles",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Add a 'Dynamic' tag to dynamic profiles.",
+                "\nWhen enabled, dynamic profiles will have a 'Dynamic' tag added to them, which can be used to filter or identify them.",
+            ),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, format!("{label}{help_tail}"), "{key}");
+        }
+        for (key, kind) in [
+            ("Dynamic Profile Parent Name", Kind::String),
+            ("Dynamic Profile Parent GUID", Kind::String),
+            ("Rewritable", Kind::Bool),
+            ("Is Dynamic Profile", Kind::Bool),
+        ] {
+            let s = schema::find(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.kind), ("", kind), "{key}: no Settings control");
+            assert!(s.default.is_none(), "{key}: iTerm2 has no default for it");
+        }
+        // The filename is the folder's record, never a row.
+        assert!(schema::find("Dynamic Profile Filename").is_none());
     }
 
     /// m13i Task 1: the pane navigation rows (`AS:311`, `:510`, `:667`, `:715`, `:716`, `:881`).

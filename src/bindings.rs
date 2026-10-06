@@ -153,7 +153,7 @@ pub fn bindable(key: &str) -> bool {
     let keys = KEYS.get_or_init(|| {
         let mut set = std::collections::HashSet::new();
         for s in crate::schema::profile().iter().filter(|s| matches!(s.kind, Kind::Color | Kind::Bool)) {
-            let excluded = s.key == crate::profile::GUID || s.key == crate::profile::NAME || s.key == crate::session_profile::ORIGINAL_GUID || crate::start_dir::SCRUBBED_KEYS.contains(&s.key.as_str());
+            let excluded = matches!(s.key.as_str(), "Rewritable" | "Is Dynamic Profile") || s.key == crate::profile::GUID || s.key == crate::profile::NAME || s.key == crate::session_profile::ORIGINAL_GUID || crate::start_dir::SCRUBBED_KEYS.contains(&s.key.as_str());
             if excluded {
                 continue;
             }

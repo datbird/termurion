@@ -8,10 +8,10 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
 | iTerm2 > About iTerm2 | no shortcut | Shows the About panel with version and build info. | have |
-| iTerm2 > Show Tip of the Day | no shortcut | Shows a tip of the day dialog on startup or on demand. (milestone 13) | missing |
+| iTerm2 > Show Tip of the Day | no shortcut | Shows a tip of the day dialog on startup or on demand. (milestone 13) | have, milestone 13v2: Tandem > Show Tip of the Day opens a card at the top left (Dismiss, Next, Previous, Show Tips Weekly, Disable Tips, drag to move; the spot is remembered). Windows: iTerm2's tips without two macOS-only ones, Mac keys shown as Windows keys; text only. The question "See Tips of the Day?" comes on the third launch. |
 | iTerm2 > Companion Device Settings | no shortcut | Opens settings for pairing a companion mobile device with iTerm2. (milestone 13) | missing |
 | iTerm2 > Suppressed Alerts... | no shortcut | Lists alert dialogs the user chose to suppress and lets them re-enable. (milestone 13b: Tandem > Suppressed Alerts… in every window, titled as iTerm2's ("1 Alert Suppressed (< 1 min ago)…", "3 Alerts Suppressed (2 hrs ago)…", refreshed at each change and once a minute); the window lists each alert answered automatically with its Automatic Response and Last Suppressed, Un-suppress (or a double click) and Un-suppress All ask again, and "Always show alerts with remembered selections" shows them with the saved answer and "Permanently Forget Saved Selection" until Tandem quits) | have |
-| iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. (milestone 13) | missing |
+| iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. (milestone 13) | have, milestone 13v2: "Checking for updates..." then "A new version of Tandem is available!" with the release notes and Skip This Version, Remind Me Later, Learn More... Windows: Tandem checks its GitHub releases (datbird/tandem) and only tells you: it never downloads, installs or replaces anything. Learn More opens the release page. |
 | iTerm2 > Toggle Debug Logging | no shortcut | Turns internal debug log capture on or off. (milestone 6) | missing |
 | iTerm2 > Save Retrospective Debug Logs | no shortcut | Dumps recent internal debug logs to a file for bug reports. (milestone 13) | missing |
 | iTerm2 > Copy Performance Stats | no shortcut | Copies GPU and CPU performance counters to the clipboard. (milestone 13) | have, milestone 13l: copies Tandem's renderer timings (start-to-start, surface wait, dropped frames) under iTerm2's text format ("Precise timers Window 1: ..."); numbers are not comparable with iTerm2's |
@@ -328,8 +328,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
 | Help > iTerm2 Help | Cmd+? | Opens the iTerm2 help/documentation. | have |
-| Help > Copy Mode Shortcuts | no shortcut | Shows a cheat sheet of Copy Mode keyboard shortcuts. (milestone 13) | missing |
-| Help > Open Source Licenses | no shortcut | Shows license text for bundled open source components. (milestone 13) | missing |
+| Help > Copy Mode Shortcuts | no shortcut | Shows a cheat sheet of Copy Mode keyboard shortcuts. (milestone 13) | have, milestone 13v2: opens iTerm2's page in the browser (a pinned address through the opening guard); Tandem has no local list. |
+| Help > Open Source Licenses | no shortcut | Shows license text for bundled open source components. (milestone 13) | have, milestone 13v2: opens `%LOCALAPPDATA%\Tandem\Tandem Licenses.txt` in the default text app; it lists Tandem's crates, the three vendored crates and every bundled non-crate file's notice (a test fails on a bundled file with none). |
 | Help > GPU Renderer Availability | no shortcut | Shows diagnostic info on which GPU renderer is active and why. (milestone 13) | have, milestone 13l: always says enabled and names the adapter and backend |
 
 Note: MainMenu.xib also defines a Web menu (Open Location, Back, Forward, Reload Page, History) for iTerm2's built in browser feature. That menu falls outside the ten requested menus and is not listed here.
@@ -765,6 +765,16 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Broadcast input | Toggle Broadcast Input to Current Session | Adds/removes just the current session from the active broadcast domain. | have |  |
 | Broadcast input | Background pattern indicator | Optional diagonal stripe overlay rendered on panes currently receiving broadcast input, so it is visually obvious. | have |  |
 | Broadcast input | Broadcast source designation | Marks a specific session as the source pane whose input gets mirrored elsewhere. | have |  |
+
+### accessibility
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Accessibility | Screen reader support | The terminal's text is exposed to assistive technology: review by character, word and line, new output and deleted characters announced, selection through the screen reader. | have | Milestone 13v2: UI Automation (Narrator, NVDA, JAWS) in place of VoiceOver. Each pane is a Text element named "shell" in a Pane for the window; new output is announced once after it settles, not the typed line; Backspace speaks the deleted character; a pane at a password prompt exposes only the prompt and raises nothing; text is built only while a client listens; a closed window's providers answer UIA_E_ELEMENTNOTAVAILABLE. Only the current window publishes. Not run against a real screen reader by the automated tests (see docs/acceptance/m13v2-checklist.md). |
+
+### dynamic profiles
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Dynamic Profiles | Live Dynamic Profiles folder | Profiles in JSON or plist files in a watched folder appear, change and vanish as the files do; a bad file shows "Dynamic Profiles Error"; editing one warns "Changes Will Be Lost" unless it is marked rewritable. | have | Milestone 13v2: `%APPDATA%\Tandem\DynamicProfiles` (or the Advanced path), read recursively with limits (1 MiB a file, 512 entries, 256 profiles); a profile is never saved to profiles.toml, never the default, never part of Open All. Command may run only from a folder and files the person owns. Mark as Rewritable writes only changed keys back, atomically, and only if the file is unchanged since the load. The one-time import (Profiles > Import) stays. |
 
 ### utilities scripts
 | Subsystem | Feature | What it does | Tandem status | Windows note |

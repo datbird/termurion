@@ -350,6 +350,23 @@ pub mod default_term;
 #[cfg(windows)]
 pub mod handoff_win;
 pub mod url_launch;
+pub mod update;
+pub mod tip_ui;
+pub mod tips;
+pub mod menu_tips;
+#[cfg(windows)]
+pub mod menu_tip_win;
+pub mod licenses;
+pub mod access;
+#[cfg(windows)]
+pub mod uia_win;
+pub mod dynamic_profiles;
+pub mod dynamic_profiles_trust;
+#[cfg(windows)]
+pub mod dynamic_profiles_scan;
+#[cfg(windows)]
+pub mod update_fetch_win;
+pub mod update_ui;
 pub mod url_open;
 pub mod ssh_recovery;
 pub mod ssh_registry;

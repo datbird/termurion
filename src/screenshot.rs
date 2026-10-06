@@ -5,8 +5,19 @@ use std::ops::Range;
 
 use crate::layout::Rect;
 
-/// iTerm2's cap on one image's height in pixels (and `MAX_PX^2 / 5` pixels in all).
-pub const MAX_PX: usize = 30000;
+/// iTerm2's default cap on one image's height in pixels (and `cap^2 / 5` pixels in all);
+/// `ScreenshotMaxPixelHeight` changes it (R3: Tandem used to ignore the setting).
+pub const DEFAULT_MAX_PX: usize = 30000;
+
+/// The setting's key.
+pub const MAX_PX_KEY: &str = "ScreenshotMaxPixelHeight";
+
+/// The cap `ScreenshotMaxPixelHeight` asks for, kept to 1000..=100000 px (P22): 0 or a negative
+/// value would split every line into its own file and a huge one would build a multi-gigabyte
+/// image.
+pub fn max_px(setting: i64) -> usize {
+    setting.clamp(1000, 100_000) as usize
+}
 
 /// A range of buffer lines, kept inside `0..total` with start <= end.
 pub fn clamp_range(start: usize, end: usize, total: usize) -> (usize, usize) {
@@ -330,15 +341,29 @@ mod tests {
 
     #[test]
     fn parts_split_tall_images() {
-        assert_eq!(parts(100, 20, 800, MAX_PX), vec![0..100]);
+        assert_eq!(parts(100, 20, 800, DEFAULT_MAX_PX), vec![0..100]);
         // 30000 / 20 = 1500 lines a part by height.
-        let p = parts(4000, 20, 800, MAX_PX);
+        let p = parts(4000, 20, 800, DEFAULT_MAX_PX);
         assert_eq!(p, vec![0..1500, 1500..3000, 3000..4000]);
         // A very wide image: the pixel cap (180 Mpx) wins over the height.
-        let wide = parts(4000, 20, 20000, MAX_PX);
+        let wide = parts(4000, 20, 20000, DEFAULT_MAX_PX);
         assert_eq!(wide[0], 0..450);
-        assert_eq!(parts(0, 20, 800, MAX_PX), Vec::<Range<usize>>::new());
-        assert_eq!(parts(3, 50000, 800, MAX_PX), vec![0..1, 1..2, 2..3], "at least one line a part");
+        assert_eq!(parts(0, 20, 800, DEFAULT_MAX_PX), Vec::<Range<usize>>::new());
+        assert_eq!(parts(3, 50000, 800, DEFAULT_MAX_PX), vec![0..1, 1..2, 2..3], "at least one line a part");
+    }
+
+    /// R3: the cap is the setting, not a constant. A cap of 10000 splits 4000 lines of 20 px into
+    /// 500-line files; the setting is kept to 1000..=100000 (P22).
+    #[test]
+    fn max_height_follows_the_setting() {
+        assert_eq!(parts(4000, 20, 800, 10000).len(), 8);
+        assert!(parts(4000, 20, 800, 10000).len() > parts(4000, 20, 800, DEFAULT_MAX_PX).len());
+        assert_eq!(parts(4000, 20, 800, max_px(10000)), parts(4000, 20, 800, 10000));
+        assert_eq!(max_px(30000), DEFAULT_MAX_PX);
+        assert_eq!((max_px(0), max_px(-5), max_px(999)), (1000, 1000, 1000));
+        assert_eq!((max_px(i64::MAX), max_px(100_001)), (100_000, 100_000));
+        let g = crate::globals::Globals::empty(std::path::Path::new("shot-cap-test.toml"));
+        assert_eq!(max_px(g.int(MAX_PX_KEY)), DEFAULT_MAX_PX, "the schema default is iTerm2's 30000");
     }
 
     #[test]

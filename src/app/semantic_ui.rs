@@ -1078,6 +1078,8 @@ mod tests {
         ("localfs.rs", "shell_verb", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("app/scripts_alerts.rs", "bind_scheme_confirmed", "opens the constant Default apps page (url_schemes::DEFAULT_APPS_URI), never text from a pane or a link"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
+        ("app/dynamic_profiles_app.rs", "reveal_dynamic", "selects a Dynamic Profiles file below the folder (a plain-name path the network judge passed); nothing runs it"),
+        ("app/scripts_alerts.rs", "scripts_answered", "the Dynamic Profiles error's Reveal in Explorer selects the file the loader named; nothing runs it"),
         ("app/semantic_ui.rs", "spawn_direct", "the sink itself; execute's callers are checked"),
         ("semantic.rs", "plan", "builds a Run and opens nothing; its callers are checked"),
         ("semantic.rs", "open_url_run", "builds a Run and opens nothing; smart_action_run's callers are checked"),
@@ -1118,6 +1120,10 @@ mod tests {
         ("pwm_run.rs", "run", "the password manager CLI the user set up"),
         ("script_proc.rs", "start", "a local Python API script"),
         ("script_provision.rs", "run_watched", "the scripts' Python setup steps"),
+        ("update_fetch_win.rs", "fetch", "curl.exe from System32 with Tandem's own fixed arguments (update::fetch_args), https only"),
+        ("app/tips_app.rs", "tip_learn_more", "a URL from the static tips, a fixed https page, through guard_open"),
+        ("app/update_app.rs", "learn_more_target", "the pinned releases page (update::release_url) through guard_open"),
+        ("app/update_app.rs", "learn_more", "opens what learn_more_target settled, the pinned releases page"),
         ("util_console.rs", "run_command", "tandem-utils' program runner, run by the user at a prompt"),
     ];
 

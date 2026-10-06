@@ -21,6 +21,10 @@ pub struct Store {
     pub transient: std::collections::HashSet<String>,
 }
 
+/// The profile key that marks a Dynamic Profile (`dynamic_profiles::DYNAMIC_KEY`): its profile
+/// lives in a JSON or plist file in the Dynamic Profiles folder, never in `profiles.toml`.
+const DYNAMIC_KEY: &str = "Is Dynamic Profile";
+
 #[derive(Serialize, Deserialize)]
 struct FileFormat {
     default: String,
@@ -55,6 +59,7 @@ impl Store {
         let mut profiles: Vec<Profile> = file
             .profile
             .into_iter()
+            // profiles.toml never holds a dynamic profile: `from_values` drops the loader's marks.
             .map(Profile::from_values)
             .collect();
         ensure_unique_guids(&mut profiles);
@@ -76,7 +81,7 @@ impl Store {
     pub fn file_profiles(&self) -> Vec<BTreeMap<String, Value>> {
         self.profiles
             .iter()
-            .filter(|p| !self.transient.contains(&p.guid()))
+            .filter(|p| !self.unsaved_profile(p))
             .map(|p| {
                 p.values
                     .iter()
@@ -89,19 +94,36 @@ impl Store {
             .collect()
     }
 
-    /// The default Guid as the file holds it: a transient default is written as the first saved
-    /// profile's Guid.
-    pub fn saved_default_guid(&self) -> String {
-        if !self.transient.contains(&self.default_guid) {
-            return self.default_guid.clone();
-        }
-        self.profiles.iter().find(|p| !self.transient.contains(&p.guid())).map_or_else(|| self.default_guid.clone(), |p| p.guid())
+    /// Whether a profile is kept out of the file: a Bonjour host (`transient`) or a Dynamic Profile
+    /// (marked "Is Dynamic Profile"). The one "not in the file" test (13v2 B1).
+    fn unsaved_profile(&self, p: &Profile) -> bool {
+        self.transient.contains(&p.guid()) || p.values.get(DYNAMIC_KEY).and_then(|v| v.as_bool()) == Some(true)
     }
 
-    /// Makes `guid` the default profile. A transient profile (a Bonjour host) cannot be it, and
-    /// neither can an unknown Guid (13t B1).
+    /// Whether the profile `guid` is kept out of the file (see `unsaved_profile`). `transient`
+    /// stays the Bonjour set; a dynamic Guid is never put in it.
+    pub fn unsaved(&self, guid: &str) -> bool {
+        self.transient.contains(guid) || self.profiles.iter().any(|p| p.guid() == guid && self.unsaved_profile(p))
+    }
+
+    /// The Guids of the Dynamic Profiles in the list, in list order.
+    pub fn dynamic_guids(&self) -> Vec<String> {
+        self.profiles.iter().filter(|p| p.values.get(DYNAMIC_KEY).and_then(|v| v.as_bool()) == Some(true)).map(|p| p.guid()).collect()
+    }
+
+    /// The default Guid as the file holds it: an unsaved default is written as the first saved
+    /// profile's Guid.
+    pub fn saved_default_guid(&self) -> String {
+        if !self.unsaved(&self.default_guid) {
+            return self.default_guid.clone();
+        }
+        self.profiles.iter().find(|p| !self.unsaved_profile(p)).map_or_else(|| self.default_guid.clone(), |p| p.guid())
+    }
+
+    /// Makes `guid` the default profile. A profile that is not in the file (a Bonjour host or a
+    /// Dynamic Profile) cannot be it, and neither can an unknown Guid (13t B1, 13v2 B1).
     pub fn set_default(&mut self, guid: &str) -> bool {
-        if self.transient.contains(guid) || !self.profiles.iter().any(|p| p.guid() == guid) {
+        if self.unsaved(guid) || !self.profiles.iter().any(|p| p.guid() == guid) {
             return false;
         }
         self.default_guid = guid.to_string();
@@ -205,6 +227,13 @@ impl Store {
             let tags: Vec<Value> = copy.get("Tags").and_then(|t| t.as_array().cloned()).map(|a| a.into_iter().filter(|t| t.as_str() != Some("bonjour")).collect()).unwrap_or_default();
             copy.set("Tags", Value::Array(tags));
         }
+        // A copy of a dynamic profile is an ordinary saved profile (`duplicateProfile:` removes the
+        // marks, `PPV:860-876`): without them it would not be written to the file.
+        if copy.values.get(DYNAMIC_KEY).and_then(|v| v.as_bool()) == Some(true) {
+            crate::dynamic_profiles::strip_internal(&mut copy.values);
+            let tags: Vec<Value> = copy.get("Tags").and_then(|t| t.as_array().cloned()).map(|a| a.into_iter().filter(|t| t.as_str() != Some("Dynamic")).collect()).unwrap_or_default();
+            copy.set("Tags", Value::Array(tags));
+        }
         let new_guid = uuid::Uuid::new_v4().to_string().to_uppercase();
         copy.set(GUID, Value::String(new_guid.clone()));
         copy.set(NAME, Value::String(format!("{} copy", copy.name())));
@@ -215,9 +244,9 @@ impl Store {
     /// Deletes a profile. The last profile cannot be deleted. Deleting the default
     /// makes the first remaining profile the default.
     pub fn delete(&mut self, guid: &str) -> bool {
-        // The file needs one saved profile at least, so transient ones do not count.
-        let saved = self.profiles.iter().filter(|p| !self.transient.contains(&p.guid())).count();
-        if saved < 2 && !self.transient.contains(guid) {
+        // The file needs one saved profile at least, so unsaved ones do not count.
+        let saved = self.profiles.iter().filter(|p| !self.unsaved_profile(p)).count();
+        if saved < 2 && !self.unsaved(guid) {
             return false;
         }
         // Remove exactly one profile. Guids are unique after load, but never delete more than one.
@@ -225,7 +254,7 @@ impl Store {
         self.profiles.remove(i);
         self.transient.remove(guid);
         if self.default_guid == guid {
-            self.default_guid = self.profiles.iter().find(|p| !self.transient.contains(&p.guid())).unwrap_or(&self.profiles[0]).guid();
+            self.default_guid = self.profiles.iter().find(|p| !self.unsaved_profile(p)).unwrap_or(&self.profiles[0]).guid();
         }
         true
     }
@@ -422,5 +451,86 @@ mod tests {
         assert!(!s.delete(&only), "the last saved profile stays although a transient one exists");
         assert!(s.delete(&guid));
         assert!(s.transient.is_empty());
+    }
+
+    /// A Dynamic Profile as `dynamic_profiles::merge` makes it: marked, in the list, not in the file.
+    fn with_dynamic(name: &str) -> (Store, String) {
+        let mut s = Store::fresh(&scratch(name));
+        let mut p = Profile::new("dyn");
+        p.set("Is Dynamic Profile", Value::Boolean(true));
+        let guid = p.guid();
+        s.add(p);
+        (s, guid)
+    }
+
+    #[test]
+    fn store_never_saves_dynamic_profiles() {
+        let (s, guid) = with_dynamic("dynsave");
+        assert!(s.unsaved(&guid) && s.transient.is_empty(), "the mark, never the Bonjour set");
+        assert_eq!(s.dynamic_guids(), vec![guid.clone()]);
+        assert_eq!(s.file_profiles().len(), 1);
+        s.save().unwrap();
+        let back = Store::load(&s.path).unwrap();
+        assert_eq!(back.profiles.len(), 1);
+        assert!(back.get(&guid).is_none());
+        assert!(!s.unsaved(&s.profiles[0].guid()));
+    }
+
+    #[test]
+    fn dynamic_default_is_not_written() {
+        let (mut s, guid) = with_dynamic("dyndefault");
+        let saved = s.profiles[0].guid();
+        assert!(!s.set_default(&guid), "a dynamic profile can never be the default");
+        // Even a default that got there another way is written as the first saved Guid.
+        s.default_guid = guid;
+        assert_eq!(s.saved_default_guid(), saved);
+        s.save().unwrap();
+        assert_eq!(Store::load(&s.path).unwrap().default_guid, saved);
+    }
+
+    #[test]
+    fn deleting_the_last_saved_profile_with_dynamic_ones_is_refused() {
+        let (mut s, guid) = with_dynamic("dyndelete");
+        let only = s.profiles[0].guid();
+        assert!(!s.delete(&only), "the file would hold no profile");
+        assert!(s.delete(&guid), "a dynamic profile itself can go");
+        assert_eq!(s.profiles.len(), 1);
+    }
+
+    #[test]
+    fn exports_leave_dynamic_profiles_out() {
+        // The remote-prefs snapshot and Export All both read `file_profiles()`.
+        let (s, guid) = with_dynamic("dynexport");
+        assert!(s.file_profiles().iter().all(|m| m.get("Guid").and_then(|g| g.as_str()) != Some(guid.as_str())));
+    }
+
+    #[test]
+    fn duplicating_a_dynamic_profile_makes_a_saved_one() {
+        let (mut s, guid) = with_dynamic("dynduplicate");
+        s.get_mut(&guid).unwrap().set("Dynamic Profile Parent Name", Value::String("Default".into()));
+        let copy = s.duplicate(&guid).unwrap();
+        assert!(!s.unsaved(&copy));
+        assert!(s.get(&copy).unwrap().values.get("Dynamic Profile Parent Name").is_none());
+        assert_eq!(s.file_profiles().len(), 2);
+    }
+
+    /// profiles.toml never holds a dynamic profile, so a file that carries the marks (an older
+    /// import, a hand edit, remote settings) loads them as ordinary saved profiles and writes
+    /// them back whole.
+    #[test]
+    fn a_file_with_the_dynamic_marks_loads_as_saved_profiles() {
+        let path = scratch("marks");
+        std::fs::write(
+            &path,
+            "default = \"A\"\n[[profile]]\nGuid = \"A\"\nName = \"one\"\n\"Is Dynamic Profile\" = true\nRewritable = true\n\"Dynamic Profile Filename\" = \"x.json\"\n[[profile]]\nGuid = \"B\"\nName = \"two\"\n",
+        )
+        .unwrap();
+        let s = Store::load(&path).unwrap();
+        assert!(s.dynamic_guids().is_empty());
+        assert!(!s.unsaved("A"));
+        assert!(s.profiles[0].values.keys().all(|k| !["Is Dynamic Profile", "Rewritable", "Dynamic Profile Filename"].contains(&k.as_str())));
+        s.save().unwrap();
+        let back = Store::load(&path).unwrap();
+        assert_eq!(back.profiles.len(), 2, "both are written back");
     }
 }

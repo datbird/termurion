@@ -253,16 +253,17 @@ pub fn copy_confirmed(index: usize) -> bool {
 
 /// Copy to Profile (`ProfilePreferencesViewController.m:765-812`): the session's values with the
 /// destination's guid and name; the original guid, the session hotkey and the keys that make a
-/// profile transient or dynamic are removed (P4), each trigger's performance entry is dropped,
-/// and the one network-path filter runs over it (P3).
+/// profile transient or dynamic are removed (P4; the destination keeps its own loader marks),
+/// each trigger's performance entry is dropped, and the one network-path filter runs over it (P3).
 pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
     let mut values = session.values.clone();
     for key in [profile::GUID, profile::NAME, "Shortcut"] {
         values.remove(key);
     }
-    for key in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename", "Is Dynamic Profile", "Rewritable", "Bonjour Service Address"] {
+    for key in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Bonjour Service Address"] {
         values.remove(key);
     }
+    crate::dynamic_profiles::strip_internal(&mut values);
     for key in [profile::GUID, profile::NAME, "Shortcut"] {
         if let Some(v) = destination.values.get(key) {
             values.insert(key.to_string(), v.clone());
@@ -277,7 +278,13 @@ pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
         }
     }
     crate::start_dir::scrub_map(&mut values);
-    Profile::from_values(values)
+    let mut copy = Profile::from_values(values);
+    // The destination keeps its own loader marks: a dynamic profile stays dynamic (and out of
+    // profiles.toml). `from_values` strips them from outside values, so they go back by `set`.
+    for (key, v) in crate::dynamic_profiles::internal_of(&destination.values) {
+        copy.set(&key, v);
+    }
+    copy
 }
 
 /// Opening more than this many sessions at once asks first (P6).
@@ -398,6 +405,10 @@ pub struct SettingsWindow {
     copy_dest: Option<String>,
     copy_pending: Option<String>,
     pub copy_request: Option<(PaneId, String)>,
+    /// What the dynamic profile warning's buttons ask the app to do, taken after each frame.
+    pub dynamic_request: Option<DynamicRequest>,
+    /// Dynamic profiles whose first edit already showed the warning in this window.
+    dynamic_warned: std::collections::HashSet<String>,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
     /// The registered session title providers as (display name, unique id), for the Title
@@ -432,6 +443,15 @@ pub struct SettingsWindow {
     /// Whether a terminal window is open; the app sets it before each redraw (it enables the
     /// Profiles window's split buttons).
     pub window_exists: bool,
+}
+
+/// What the dynamic profile warning asks of the app (its buttons).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DynamicRequest {
+    /// "Mark as Rewritable" for this profile.
+    Mark(String),
+    /// "Reveal in Explorer" for this profile's file.
+    Reveal(String),
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -571,6 +591,8 @@ impl SettingsWindow {
             copy_dest: None,
             copy_pending: None,
             copy_request: None,
+            dynamic_request: None,
+            dynamic_warned: Default::default(),
             open_editor: None,
             title_providers: Vec::new(),
             session_hotkey: None,
@@ -605,6 +627,11 @@ impl SettingsWindow {
         }
         self.host.window.request_redraw();
         self.host.focus();
+    }
+
+    /// The profile the editor shows.
+    pub fn selected_guid(&self) -> Option<&str> {
+        self.selected.as_deref()
     }
 
     /// Shows this profile in the editor (Edit Session).
@@ -705,6 +732,7 @@ impl SettingsWindow {
         let copy_dest = &mut self.copy_dest;
         let copy_pending = &mut self.copy_pending;
         let copy_request = &mut self.copy_request;
+        let dynamic_request = &mut self.dynamic_request;
         let shortcut_rows: Vec<(String, String, Option<char>)> = store.profiles.iter().map(|p| (p.guid(), p.name(), crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
         let mut shortcut_take: Option<(String, Option<char>)> = None;
         let title_providers = &self.title_providers;
@@ -751,7 +779,7 @@ impl SettingsWindow {
                             let dest = copy_pending.take();
                             if let (true, Some(pane), Some(dest)) = (copy_confirmed(answer.index), edit_session, dest) {
                                 if store.get(&dest).is_some_and(|d| !d.string("Dynamic Profile Filename").is_empty()) {
-                                    then_dynamic = store.get(&dest).map(Profile::name);
+                                    then_dynamic = Some(dest.clone());
                                 }
                                 *copy_request = Some((pane, dest));
                             }
@@ -763,10 +791,17 @@ impl SettingsWindow {
                                 settings_keys::Saved::Profile(g) => edit = Edit::Changed(g),
                             },
                             Some(settings_keys::SheetThen::CreateHotkey(existing)) => crate::settings_hotkey::create_answered(hk, store, &existing, answer.index),
+                            Some(settings_keys::SheetThen::DynamicProfile(guid)) => match answer.index {
+                                0 => *dynamic_request = Some(DynamicRequest::Mark(guid)),
+                                1 => *dynamic_request = Some(DynamicRequest::Reveal(guid)),
+                                _ => {}
+                            },
                             Some(settings_keys::SheetThen::Nothing) | None => {}
                         }
-                        if let Some(name) = then_dynamic {
-                            *sheet = Some(settings_keys::SheetWarning::new(settings_keys::dynamic_profile_spec(&name), settings_keys::SheetThen::Nothing));
+                        if let Some(guid) = then_dynamic {
+                            if let Some(spec) = store.get(&guid).and_then(settings_keys::dynamic_profile_spec) {
+                                *sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::DynamicProfile(guid)));
+                            }
                         }
                     }
                     answered.push(answer);
@@ -946,8 +981,9 @@ impl SettingsWindow {
                         edit = Edit::Changed(String::new());
                     }
                 });
-                // A Bonjour host lives in memory only (13t B1): it cannot be the default.
-                let transient = store.transient.contains(&selected);
+                // A Bonjour host or a Dynamic Profile is not in the file (13t B1, 13v2 B1): it cannot be
+                // the default.
+                let transient = store.unsaved(&selected);
                 if ui.add_enabled(!transient, egui::Button::new("Set as Default")).clicked() {
                     if store.set_default(&selected) {
                         edit = Edit::Changed(selected.clone());
@@ -1287,6 +1323,17 @@ impl SettingsWindow {
                 });
             });
         });
+        // The first edit of a dynamic profile that is not rewritable asks "Changes Will Be Lost"
+        // (`PPV:1196-1253`), once per profile in this window; the edit itself stands.
+        if let Edit::Changed(guid) = &edit {
+            if !guid.is_empty() && self.sheet.is_none() && !self.dynamic_warned.contains(guid) {
+                if let Some(spec) = store.profiles.iter().find(|p| p.guid() == *guid).and_then(settings_keys::dynamic_profile_spec) {
+                    self.dynamic_warned.insert(guid.clone());
+                    self.sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::DynamicProfile(guid.clone())));
+                    self.host.request_redraw();
+                }
+            }
+        }
         // The shortcut a profile took leaves every other profile (`setShortcutValueToSelectedItem`).
         if let Some((guid, key)) = shortcut_take {
             crate::profile_menu::take_shortcut(&mut store.profiles, &guid, key);
@@ -2870,6 +2917,34 @@ mod tests {
         let q = settings_keys::replace_profile_spec("Work");
         assert_eq!((q.id.as_deref(), q.labels.clone()), (Some("NoSyncReplaceProfileWarning"), vec!["Replace".to_string(), "Cancel".into()]));
         assert!(copy_confirmed(0) && !copy_confirmed(1));
+    }
+
+    /// Final review 1: copying a session into a dynamic profile keeps the destination's own
+    /// loader marks (it stays dynamic and out of profiles.toml); the source's marks still go.
+    #[test]
+    fn copy_into_a_dynamic_profile_keeps_it_dynamic() {
+        let mut session = Profile::new("S");
+        session.set("Ansi 1 Color", Value::String("changed".into()));
+        let mut dest = Profile::new("Dyn");
+        dest.set("Guid", Value::String("d".into()));
+        for (key, v) in [("Is Dynamic Profile", Value::Boolean(true)), ("Rewritable", Value::Boolean(true)), ("Dynamic Profile Filename", Value::String("f.json".into()))] {
+            dest.set(key, v);
+        }
+        let c = copied_profile(&session, &dest);
+        assert_eq!(c.string("Ansi 1 Color"), "changed");
+        for key in ["Is Dynamic Profile", "Rewritable", "Dynamic Profile Filename"] {
+            assert_eq!(c.values.get(key), dest.values.get(key), "{key} stays the destination's");
+        }
+        let mut store = crate::store::Store::fresh(std::path::Path::new("x.toml"));
+        store.profiles.push(c);
+        assert!(store.unsaved("d"));
+        assert!(!store.file_profiles().iter().any(|p| p.get("Guid").and_then(|g| g.as_str()) == Some("d")));
+        // The source's marks never carry over into a saved destination.
+        let mut marked = Profile::new("M");
+        marked.set("Is Dynamic Profile", Value::Boolean(true));
+        let mut plain = Profile::new("P");
+        plain.set("Guid", Value::String("p".into()));
+        assert!(copied_profile(&marked, &plain).values.get("Is Dynamic Profile").is_none());
     }
 }
 

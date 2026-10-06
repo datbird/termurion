@@ -692,4 +692,18 @@ mod tests {
         let got = from_plist_bytes(plist.as_bytes()).unwrap();
         assert_eq!((got[0].string("Log Directory"), got[0].string("Custom Icon Path")), (String::new(), "D:\\i.png".to_string()));
     }
+
+    /// An imported profile never carries the dynamic marks: only the Dynamic Profiles loader sets
+    /// them (an iTerm2 export holds them for its dynamic profiles).
+    #[test]
+    fn imports_strip_the_dynamic_marks() {
+        let marks = |p: &Profile| ["Is Dynamic Profile", "Rewritable", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename"].iter().any(|k| p.values.contains_key(*k));
+        let json = r#"{"Profiles": [{"Guid": "G", "Name": "d", "Is Dynamic Profile": true, "Rewritable": true, "Dynamic Profile Parent Name": "P", "Dynamic Profile Parent GUID": "Q", "Dynamic Profile Filename": "x.json", "Columns": 90}]}"#;
+        let got = from_dynamic_json(json).unwrap();
+        assert!(!marks(&got[0]), "{:?}", got[0].values);
+        assert_eq!(got[0].int("Columns"), 90);
+        let xml = r#"<?xml version="1.0"?><plist version="1.0"><dict><key>New Bookmarks</key><array><dict><key>Guid</key><string>G</string><key>Name</key><string>d</string><key>Is Dynamic Profile</key><true/><key>Rewritable</key><true/></dict></array></dict></plist>"#;
+        let got = from_plist_bytes(xml.as_bytes()).unwrap();
+        assert!(!marks(&got[0]), "{:?}", got[0].values);
+    }
 }

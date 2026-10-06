@@ -21,6 +21,10 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
     if key == crate::profile::GUID || key == crate::session_profile::ORIGINAL_GUID {
         return None;
     }
+    // The marks of a dynamic profile are the Dynamic Profiles loader's alone.
+    if crate::dynamic_profiles::is_internal(key) {
+        return None;
+    }
     // Stricter than iTerm2: the Answerback String is typed back into the input on ENQ, so only
     // the person's own profile may set it, never a program (13o Task 6 review); Restart
     // Session types the Initial Text, so the same holds for it (13p final review).
@@ -637,5 +641,23 @@ mod tests {
         let src = include_str!("prompted.rs");
         let f = &src[src.find("pub fn network_path(").unwrap()..];
         assert!(f[..f.find("\n}\n").unwrap()].contains("crate::scripts::is_network_path(path)"), "delegates, no second body");
+    }
+
+    /// The marks of a dynamic profile belong to the loader alone: a program (OSC 1337 SetProfile,
+    /// the API's SetProfileProperty) can neither set nor clear them, or a saved profile would drop
+    /// out of profiles.toml, or a dynamic one be laundered into it.
+    #[test]
+    fn a_program_never_sets_the_dynamic_marks() {
+        for (key, v) in [
+            ("Is Dynamic Profile", serde_json::json!(true)),
+            ("Is Dynamic Profile", serde_json::json!(false)),
+            ("Rewritable", serde_json::json!(true)),
+            ("Dynamic Profile Parent Name", serde_json::json!("x")),
+            ("Dynamic Profile Parent GUID", serde_json::json!("x")),
+            ("Dynamic Profile Filename", serde_json::json!("C:\\x.json")),
+        ] {
+            assert_eq!(valid(key, &v), None, "{key}");
+        }
+        assert!(valid("Columns", &serde_json::json!(80)).is_some(), "an ordinary key still works");
     }
 }

@@ -84,6 +84,23 @@ pub fn zone_text(host_url: Option<&str>) -> String {
     }
 }
 
+/// The ZoneId of a Zone.Identifier stream's text (the Mark of the Web): the first `ZoneId=` line
+/// of the `[ZoneTransfer]` section, None when there is none or it is not a number.
+pub fn zone_of(text: &str) -> Option<u32> {
+    let mut in_section = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line.eq_ignore_ascii_case("[ZoneTransfer]");
+        } else if in_section {
+            if let Some(v) = line.strip_prefix("ZoneId=") {
+                return v.trim().parse().ok();
+            }
+        }
+    }
+    None
+}
+
 /// Marks the existing file `path` as from the internet, and fails when it cannot: a missing
 /// file (writing a stream would create it), or a drive that keeps no streams (FAT). For a
 /// download that must not land unmarked; `write_marked` stays lenient for inline files (12d).
@@ -178,6 +195,18 @@ mod tests {
         let zone = std::fs::read_to_string(format!("{}:Zone.Identifier", p.display())).unwrap();
         assert_eq!(zone, ZONE_MARK);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zone_ids_are_read_from_the_stream() {
+        assert_eq!(zone_of(ZONE_MARK), Some(3));
+        assert_eq!(zone_of(&zone_text(Some("https://x/y"))), Some(3));
+        assert_eq!(zone_of("[ZoneTransfer]\r\nZoneId=4\r\n"), Some(4));
+        assert_eq!(zone_of("[ZoneTransfer]\r\nZoneId=2"), Some(2));
+        assert_eq!(zone_of("[Other]\r\nZoneId=3\r\n"), None);
+        assert_eq!(zone_of("ZoneId=3"), None);
+        assert_eq!(zone_of("[ZoneTransfer]\r\nZoneId=x\r\n"), None);
+        assert_eq!(zone_of(""), None);
     }
 
     #[test]

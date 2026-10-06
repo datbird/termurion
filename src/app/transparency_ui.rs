@@ -367,6 +367,7 @@ impl App {
         self.theme_applied = None;
         self.install_sizing();
         self.guard_theme();
+        self.access_reinstall_host(key(old_id));
         // The display change subclass (the old handle's goes with its window).
         if let Some(h) = menu::hwnd_of(&window) {
             crate::display_watch::watch(h);

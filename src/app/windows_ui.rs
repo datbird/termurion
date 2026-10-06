@@ -670,6 +670,9 @@ impl App {
                 self.windows.park(old, slot);
             }
             self.windows.start(key(id));
+            // The screen reader's host (the key is the window's: the slot is current already). A
+            // resident window gets its host back in `leave_resident_for`.
+            self.access_install_host();
             self.registry.open(key(id));
             let number = self.registry.number(key(id)).unwrap_or(0);
             crate::rlog!("window opened: number {}", number);
@@ -990,6 +993,7 @@ impl App {
             self.perf.forget_window(n + 1);
         }
         crate::rlog!("window closed: number {}", self.registry.number(k).unwrap_or(0));
+        self.access_forget_window(k);
         self.registry.close(k);
         if self.registry.order().is_empty() {
             crate::rlog!("the last window closed");

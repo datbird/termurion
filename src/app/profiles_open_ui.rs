@@ -11,11 +11,22 @@ pub(super) fn open_many_text(count: usize) -> (String, &'static str) {
     (format!("Open {count} sessions?"), "Each profile starts a session of its own.")
 }
 
+/// `guids` as a crowd may open them: when more than one opens at once (Open All, a multiple
+/// selection, a tag open) the Bonjour profiles (P5) and the dynamic ones (P8, a planted file
+/// cannot fan out sessions) are left out; a single pick is the person's choice.
+pub(super) fn crowd_guids(store: &crate::store::Store, guids: Vec<String>) -> Vec<String> {
+    let guids = super::bonjour_ui::without_bonjour(store, guids);
+    if guids.len() < 2 {
+        return guids;
+    }
+    guids.into_iter().filter(|g| !store.get(g).is_some_and(|p| p.bool(crate::dynamic_profiles::DYNAMIC_KEY))).collect()
+}
+
 impl App {
     /// Opens `guids` as `how`, asking first when there are more than `OPEN_ASK_ABOVE` (P6).
     pub(super) fn open_selected_profiles(&mut self, guids: Vec<String>, how: How, from: Opener) {
-        // Bonjour hosts never open in a crowd (P5).
-        let guids = super::bonjour_ui::without_bonjour(&self.store, guids);
+        // Bonjour hosts and dynamic profiles never open in a crowd (P5, P8).
+        let guids = crowd_guids(&self.store, guids);
         if guids.is_empty() {
             return;
         }
@@ -59,6 +70,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P8: a dynamic profile never takes part in a multi-profile open, a single pick opens.
+    #[test]
+    fn a_crowd_leaves_dynamic_profiles_out() {
+        let mut s = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-crowd-{}.toml", std::process::id())));
+        let saved = s.profiles[0].guid();
+        let mut d = crate::profile::Profile::new("dyn");
+        d.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        let dynamic = d.guid();
+        s.add(d);
+        let other = crate::profile::Profile::new("other");
+        let other_guid = other.guid();
+        s.add(other);
+        assert_eq!(crowd_guids(&s, vec![saved.clone(), dynamic.clone(), other_guid.clone()]), [saved.clone(), other_guid]);
+        assert_eq!(crowd_guids(&s, vec![dynamic.clone()]), [dynamic.clone()], "a single pick is the person's choice");
+    }
 
     /// More than eight profiles ask first (P6); closing the question is Cancel, never OK.
     #[test]

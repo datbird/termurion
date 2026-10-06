@@ -42,12 +42,16 @@ const NUDGE: f32 = 0.05;
 /// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&". Mac words read
 /// as Windows ones ("Finder" is "Explorer").
 pub(super) fn menu_text(item: &Item) -> String {
-    let label = menus::shown_label(item.label()).replace('&', "&&");
+    let label = crate::menu_tips::split_hint(&item.selector, &menus::shown_label(item.label()), *SPLIT_HINTS.get().unwrap_or(&false)).replace('&', "&&");
     match item.chord().filter(menus::reaches_tandem) {
         Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
         None => label,
     }
 }
+
+/// `ShowHintsInSplitPaneMenuItems` as it was at launch: iTerm2 reads it once while it builds the
+/// menus (`AD:394`), so a change needs a restart.
+static SPLIT_HINTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 pub(super) struct MenuBar {
     /// The window's menu bar (hidden in full screen, `App::sync_menu_hidden`).
@@ -93,6 +97,8 @@ pub(super) struct MenuBar {
     /// Edit > Explain Output with AI, enabled with a selection or a command mark in the focused
     /// pane (`PTA:172-174`; `sync_checks`).
     pub(super) explain_ai: Option<MenuItem>,
+    /// iTerm2 > Show Tip of the Day, disabled while a tip shows (`AD:523-524`; `sync_checks`).
+    pub(super) tip_item: Option<MenuItem>,
     /// Shell > ssh > Disconnect, retitled and enabled for the focused session (`refresh_ssh_menu`).
     pub(super) ssh_disconnect: Option<MenuItem>,
     /// Shell > ssh > Download Files, enabled while any host is connected (`refresh_download_files_menu`, P21).
@@ -133,6 +139,7 @@ impl App {
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
     pub(super) fn install_menus(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
+        SPLIT_HINTS.get_or_init(|| self.globals.bool("ShowHintsInSplitPaneMenuItems"));
         let menu = Menu::new();
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
@@ -141,6 +148,7 @@ impl App {
         let mut make_default = None;
         let default_now = crate::default_term::make_enabled(&crate::reg::HkcuRegistry);
         let mut explain_ai = None;
+        let mut tip_item = None;
         let mut ssh_disconnect = None;
         let mut ssh_download_files = None;
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
@@ -180,6 +188,9 @@ impl App {
                     if item.selector == "explainOutputWithAI:" {
                         explain_ai = Some(m.clone());
                     }
+                    if item.selector == "showTipOfTheDay:" {
+                        tip_item = Some(m.clone());
+                    }
                     if item.selector == "sshDisconnect:" {
                         ssh_disconnect = Some(m.clone());
                     }
@@ -209,6 +220,9 @@ impl App {
         if let Err(e) = unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) } {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
+        // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
+        #[cfg(windows)]
+        crate::menu_tip_win::install(hwnd, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
 
         let proxy = self.proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -260,7 +274,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -536,12 +550,16 @@ impl App {
         // Explain Output follows the focused pane's selection and command marks, not the gate.
         let can_explain = self.can_explain();
         self.explain_shown = Some(can_explain);
+        let tip_showing = self.tip_window.is_some();
         for bar in self.menu_bars_mut() {
             if let Some(item) = &bar.engage_ai {
                 item.set_enabled(ai_allowed);
             }
             if let Some(item) = &bar.explain_ai {
                 item.set_enabled(can_explain);
+            }
+            if let Some(item) = &bar.tip_item {
+                item.set_enabled(!tip_showing);
             }
         }
         let mode = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| *p.screen.term().mode());
@@ -699,8 +717,32 @@ impl App {
             return self.relayout();
         }
         match item.selector.as_str() {
-            "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", env!("CARGO_PKG_VERSION"))),
+            "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", crate::update::current_version())),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
+            "checkForUpdatesFromMenu:" => self.check_for_updates(true),
+            // Help pages and the license file: fixed targets, the page through the one guard.
+            "copyModeShortcuts:" => match crate::semantic::guard_open(crate::menu_tips::COPY_MODE_URL, false) {
+                crate::semantic::Run::Open(url) => {
+                    if let Err(e) = super::semantic_ui::shell_open(&url, false) {
+                        self.banners.set("action", format!("Could not open {url}: {e}"));
+                    }
+                }
+                crate::semantic::Run::Blocked(why) => self.banners.set("action", why),
+                _ => {}
+            },
+            "openSourceLicenses:" => {
+                let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Tandem");
+                // The folder goes through the one path judge (a redirected LocalAppData on a share is refused).
+                match crate::localfs::judge_io(&dir).and_then(|d| crate::licenses::write_to(&d, crate::licenses::text())) {
+                    Ok(path) => {
+                        if let Err(e) = crate::localfs::open_with_shell(&path, None, false) {
+                            self.banners.set("action", format!("Could not open the license list: {e}"));
+                        }
+                    }
+                    Err(e) => self.banners.set("action", format!("Could not write the license list: {e}")),
+                }
+            }
+            "showTipOfTheDay:" => self.show_tip_from_menu(event_loop),
             "makeScreenshot:" => self.make_screenshot(event_loop),
             "renderSelection:" => self.render_selection(),
             "findGlobally:" => self.open_global_find(event_loop),

@@ -85,8 +85,9 @@ pub fn default_path() -> PathBuf {
 
 /// Keys whose presence means something even at the default: "AI Safety Check" chosen by the
 /// person, on or off, ends its one-time question (`RemoteCommand+Mac.swift:36-38`,
-/// `object(forKey:) != nil`).
-const KEPT_WHEN_DEFAULT: [&str; 2] = [crate::ai_settings::SAFETY_CHECK, "NoSyncDisableDECRQCRA"];
+/// `object(forKey:) != nil`); "SUEnableAutomaticChecks" present is Sparkle's "answered"
+/// (`SUUpdater.m:199`).
+const KEPT_WHEN_DEFAULT: [&str; 3] = [crate::ai_settings::SAFETY_CHECK, "NoSyncDisableDECRQCRA", crate::update::AUTOMATIC_KEY];
 
 /// What iTerm2 reads for a key that is not set. The AI prompts' defaults live in their
 /// resource files, not the schema.
@@ -152,6 +153,12 @@ impl Globals {
         let tmp = self.path.with_extension("toml.tmp");
         std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))
+    }
+
+    /// The stored value only, with no default: for a key whose presence means something
+    /// (`KEPT_WHEN_DEFAULT`), as Sparkle reads `SUEnableAutomaticChecks`.
+    pub fn raw(&self, key: &str) -> Option<&Value> {
+        self.values.get(key)
     }
 
     /// The stored value, else iTerm2's default.

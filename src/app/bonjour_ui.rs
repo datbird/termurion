@@ -240,4 +240,20 @@ mod tests {
         assert_eq!(without_bonjour(&s, all.clone()), vec![all[0].clone()]);
         assert_eq!(without_bonjour(&s, vec![all[1].clone()]), vec![all[1].clone()], "a single pick is the person's choice");
     }
+
+    #[test]
+    fn bonjour_sweeps_leave_dynamic_profiles_alone() {
+        let mut s = store();
+        let mut live = Vec::new();
+        let mut d = crate::profile::Profile::new("dyn");
+        d.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        let guid = d.guid();
+        s.add(d);
+        apply_event(&mut s, &mut live, found("A", "10.0.1.1"), "ssh");
+        assert!(!s.transient.contains(&guid));
+        assert!(remove_all(&mut s, &mut live));
+        assert!(s.get(&guid).is_some(), "Remove Bonjour profiles keeps the dynamic one");
+        after_profiles_replaced(&mut s, &mut live);
+        assert!(s.get(&guid).is_some());
+    }
 }

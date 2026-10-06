@@ -114,6 +114,9 @@ impl App {
         }
         self.resident = false;
         self.pending_wake = None;
+        // The screen reader's host comes back with the window (a hidden resident window has none:
+        // `go_resident` dropped it with the window's registration); the next pass publishes.
+        self.access_install_host();
         for key in OUTSIDE_KEYS {
             self.banners.clear(key);
         }

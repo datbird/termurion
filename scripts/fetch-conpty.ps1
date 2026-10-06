@@ -16,5 +16,6 @@ Expand-Archive -Path $pkg -DestinationPath $tmp
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item (Join-Path $tmp 'runtimes\win-x64\native\conpty.dll') $dest -Force
 Copy-Item (Join-Path $tmp 'build\native\runtimes\x64\OpenConsole.exe') $dest -Force
+# The package carries no license files: the notices are resources\conpty\LICENSE and NOTICE.md (Windows Terminal's own).
 Remove-Item -Recurse -Force $tmp, $pkg
 Write-Output "ConPTY $version installed in $dest"

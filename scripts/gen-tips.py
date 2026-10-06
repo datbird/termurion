@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Generates resources/tips.toml from iTerm2's tip data (iTermTipData.m).
+
+Usage: scripts/gen-tips.py [--check] [path/to/iTermTipData.m]
+
+Without --check it writes resources/tips.toml. With --check it regenerates in memory and exits
+non-zero when the committed file differs. Edit this script, never the generated file.
+"""
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_SOURCE = os.path.expanduser("~/gitrepos/iterm2-ref/sources/TIps/iTermTipData.m")
+OUT = os.path.join(ROOT, "resources", "tips.toml")
+
+EXPECTED = 124
+# Not ported: they describe the Mac only (Touch Bar, "on your Mac"), or a setting Tandem has no
+# row for (0068: the hotkey window floating over other apps' full-screen windows; 0052: every new
+# tab opening next to the current one, Tandem only has the duplicated-tab setting).
+DROPPED = ["0066", "0105", "0068", "0052"]
+
+# Applied in exactly this order (the triple before any pair, pairs before singles).
+REPLACEMENTS = [
+    ("iTerm2", "Tandem"),
+    ("⇧⌥⌘", "Shift+Alt+Win+"),
+    ("⇧⌘", "Shift+Win+"),
+    ("⌥⌘", "Alt+Win+"),
+    ("^⌘", "Ctrl+Win+"),
+    ("^⇧", "Ctrl+Shift+"),
+    ("⌥⇧", "Alt+Shift+"),
+    ("⌘-click", "Win+click"),
+    ("⌘", "Win+"),
+    ("⌥", "Alt+"),
+    ("⇧", "Shift+"),
+    ("↑", "Up"),
+    ("↓", "Down"),
+    ("Finder", "Explorer"),
+    ("The dock icon", "The taskbar button"),
+    ("Prefs", "Settings"),
+]
+CARET = re.compile(r"\^(?=[A-Za-z-])")
+# A modifier word that names no key after it ("holding Alt+ while dragging") loses its plus.
+# A period after a modifier and then a space is the period KEY ("\u21e7\u2318. to open"); only a period
+# that ends the text is sentence punctuation.
+BARE_MODIFIER = re.compile(r"\b(Win|Alt|Shift|Ctrl)\+(?=[ ,)]|\.$|$)")
+# "\u2325-drag", "^\u2318-Arrow": the hyphen joined a modifier to a word; after the translation it
+# would read as a minus key ("Alt+-drag").
+HYPHEN_AFTER_PLUS = re.compile(r"\+-(?=[A-Za-z])")
+LEFT_OVER = ["iTerm2", "⌘", "⌥", "⇧", "⌃", "Finder", "↑", "↓"]
+
+ENTRY = re.compile(r'@"(\d+)"\s*:\s*@\{')
+STRING = re.compile(r'@"((?:[^"\\]|\\.)*)"')
+URL_OK = re.compile(r"^https://(iterm2\.com|www\.iterm2\.com|gitlab\.com/gnachman/iterm2)/")
+
+
+def unescape(s):
+    return re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), s)
+
+
+def parse(text):
+    starts = list(ENTRY.finditer(text))
+    entries = []
+    for i, m in enumerate(starts):
+        end = starts[i + 1].start() if i + 1 < len(starts) else len(text)
+        chunk = text[m.end():end]
+        key = m.group(1)
+        fields = {}
+        for name in ("kTipTitleKey", "kTipBodyKey"):
+            at = chunk.index(name)
+            call = chunk.index("[NSBundle mainBundle],", at)
+            s = STRING.search(chunk, call)
+            fields[name] = unescape(s.group(1))
+        url = re.search(r'kTipUrlKey:\s*@"([^"]*)"', chunk)
+        entries.append((key, fields["kTipTitleKey"], fields["kTipBodyKey"], url.group(1) if url else None))
+    return entries
+
+
+# iTerm2 release numbers are not Tandem's: the tip keeps its feature and drops the number.
+RELEASE_WORDS = [
+    ("The big new feature of Tandem version 3 is", "A big feature of Tandem is"),
+]
+# Names that are iTerm2's, not Tandem's controls (checked by tips::tip_paths_are_real_menus_and_settings).
+NAME_FIXES = [
+    ("turn that on in \u201cSettings > Advanced.\u201d", "turn that on in \u201cSettings > Profiles > Terminal > Notifications.\u201d"),
+    ("Settings > Profiles > Keys > Customize Hotkey Window", "Settings > Profiles > Keys > Hotkey Window"),
+    ("View > Disable transparency in key window", "View > Disable Transparency for Active Window"),
+    (" > Smart Selection > Edit Actions.", " > Smart Selection."),
+]
+NEW_IN = re.compile(r"New in [0-9.]+: ")
+
+
+def translate(s):
+    for a, b in REPLACEMENTS:
+        s = s.replace(a, b)
+    s = CARET.sub("Ctrl+", s)
+    s = s.replace("Hold ^ while", "Hold Ctrl while")
+    s = BARE_MODIFIER.sub(r"\1", s)
+    s = HYPHEN_AFTER_PLUS.sub("+", s)
+    for a, b in RELEASE_WORDS:
+        s = s.replace(a, b)
+    s = NEW_IN.sub("", s)
+    for a, b in NAME_FIXES:
+        s = s.replace(a, b)
+    for g in LEFT_OVER:
+        assert g not in s, f"{g!r} remains in {s!r}"
+    return s
+
+
+def toml_string(s):
+    out = ['"']
+    for ch in s:
+        o = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif o < 0x20 or o > 0x7E:
+            out.append("\\u%04X" % o if o <= 0xFFFF else "\\U%08X" % o)
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def generate(source):
+    with open(source, encoding="utf-8") as f:
+        entries = parse(f.read())
+    assert len(entries) == EXPECTED, f"parsed {len(entries)} tips, expected {EXPECTED}"
+    keys = [e[0] for e in entries]
+    assert len(set(keys)) == len(keys), "duplicate tip key"
+    for k in DROPPED:
+        assert k in keys, f"{k} not found"
+    kept = sorted((e for e in entries if e[0] not in DROPPED), key=lambda e: e[0])
+    out = ["# Generated by scripts/gen-tips.py from iTerm2's iTermTipData.m. Do not edit.\n"]
+    for key, title, body, url in kept:
+        if url is not None:
+            assert URL_OK.match(url), f"tip {key}: url {url!r} is not an iterm2.com or gitlab.com/gnachman/iterm2 https url"
+        out.append("\n[[tip]]\n")
+        out.append(f"key = {toml_string(key)}\n")
+        out.append(f"title = {toml_string(translate(title))}\n")
+        out.append(f"body = {toml_string(translate(body))}\n")
+        if url is not None:
+            out.append(f"url = {toml_string(url)}\n")
+    return "".join(out)
+
+
+def main():
+    args = sys.argv[1:]
+    check = "--check" in args
+    rest = [a for a in args if a != "--check"]
+    text = generate(rest[0] if rest else DEFAULT_SOURCE)
+    if check:
+        with open(OUT, encoding="utf-8") as f:
+            if f.read() != text:
+                print("resources/tips.toml differs from the generator's output", file=sys.stderr)
+                sys.exit(1)
+        print("resources/tips.toml is up to date")
+    else:
+        with open(OUT, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        print("wrote", OUT)
+
+
+main()

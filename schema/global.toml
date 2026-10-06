@@ -3193,6 +3193,25 @@ type = "bool"
 default = false
 help = "Add Bonjour hosts to Profiles"
 
+# 13v2 Task 1: Software Update (the stored-only SU keys have no row, as NoSync keys are read).
+[[setting]]
+key = "SUEnableAutomaticChecks"
+tab = "General"
+section = "Software Update"
+label = "Check for updates automatically"
+type = "bool"
+default = true
+help = "Tandem checks its GitHub releases once a day and tells you about a newer one. It never downloads or installs anything."
+
+[[setting]]
+key = "CheckTestRelease"
+tab = "General"
+section = "Software Update"
+label = "Update to Beta test releases"
+type = "bool"
+default = false
+help = "Beta releases (GitHub prereleases) are offered too."
+
 [[setting]]
 key = "Bidi"
 tab = "General"
@@ -5125,6 +5144,96 @@ label = "Auto-lock session name after editing it."
 type = "bool"
 default = true
 help = "Auto-lock session name after editing it."
+
+# 13v2 Task 3: Tip of the Day. The controller's stored keys (NoSyncTipsToNotShow, NoSyncLastTipTime,
+# NoSyncPermissionToShowTip, NoSyncTipOfTheDayOffset, NoSyncLaunchExperienceControllerRunCount,
+# NoSyncNextAnnoyanceTime, NoSyncTipOfTheDayEligibilityBeganTime) have no row, as NoSync keys are read.
+[[setting]]
+key = "NoSyncTipsDisabled"
+tab = "Advanced"
+section = "Tip of the Day"
+label = "Disable the Tip of the Day?"
+type = "bool"
+default = false
+help = "Disable the Tip of the Day?"
+
+[[setting]]
+key = "TimeBetweenTips"
+tab = "Advanced"
+section = "Tip of the Day"
+label = "Time between tips (in seconds)"
+type = "float"
+default = 86400.0
+help = "Time between tips (in seconds)"
+
+# 13v2 Task 5: Dynamic Profiles (iTermAdvancedSettingsModel: dynamicProfilesPath,
+# dynamicProfilesNotificationLatency, addDynamicTagToDynamicProfiles).
+[[setting]]
+key = "DynamicProfilesPath"
+tab = "Advanced"
+section = "General"
+label = "Path to folder with dynamic profiles."
+type = "string"
+default = ""
+help = "Path to folder with dynamic profiles.\nWhen empty, %APPDATA%\\Tandem\\DynamicProfiles will be used. You must restart Tandem after modifying this setting."
+
+[[setting]]
+key = "DynamicProfilesNotificationLatency"
+tab = "Advanced"
+section = "General"
+label = "Delay between detecting a change to dynamic profiles and acting on it."
+type = "float"
+default = 0.1
+help = "Delay between detecting a change to dynamic profiles and acting on it.\nIf a lot of changes happen to the DynamicProfiles folder a longer delay will help coalesce filesystem events to reduce CPU usage."
+
+[[setting]]
+key = "AddDynamicTagToDynamicProfiles"
+tab = "Advanced"
+section = "General"
+label = "Add a 'Dynamic' tag to dynamic profiles."
+type = "bool"
+default = false
+help = "Add a 'Dynamic' tag to dynamic profiles.\nWhen enabled, dynamic profiles will have a 'Dynamic' tag added to them, which can be used to filter or identify them."
+
+# 13v2 Task 7: menu hints and tips, and the screenshot cap (iTermAdvancedSettingsModel:
+# showHintsInSplitPaneMenuItems, menuTipDelay, screenshotMaxPixelHeight).
+[[setting]]
+key = "ShowHintsInSplitPaneMenuItems"
+tab = "Advanced"
+section = "General"
+label = "Show hints in split pane menu items to indicate horizontal vs vertical semantics."
+type = "bool"
+default = false
+help = "Show hints in split pane menu items to indicate horizontal vs vertical semantics.\nYou must restart Tandem after changing this setting for it to take effect."
+
+[[setting]]
+key = "MenuTipDelay"
+tab = "Advanced"
+section = "General"
+label = "Time to wait before showing tips in the main menu."
+type = "float"
+default = 1.0
+help = "Time to wait before showing tips in the main menu.\nSet this to a big number if you don\u2019t like the tips."
+
+[[setting]]
+key = "ScreenshotMaxPixelHeight"
+tab = "Advanced"
+section = "General"
+label = "Maximum pixel height for a single screenshot file."
+type = "int"
+default = 30000
+help = "Maximum pixel height for a single screenshot file.\nScreenshots taller than this will be split into multiple files. Also affects the maximum total pixels (this value squared / 5)."
+
+# 13v2 Task 8: the screen reader's line count (iTermAdvancedSettingsModel: numberOfLinesForAccessibility).
+# The provider clamps it to 1..=10000 (access::MAX_LINES).
+[[setting]]
+key = "NumberOfLinesForAccessibility"
+tab = "Advanced"
+section = "Terminal"
+label = "Maximum number of lines of history to expose to Accessibility."
+type = "int"
+default = 1000
+help = "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
 
 [[setting]]
 key = "OpenFileOverridesSendText"

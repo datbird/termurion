@@ -21,6 +21,19 @@ pub const DEFAULT_DEBOUNCE: f64 = 0.2;
 /// The profile setting that opens the manager at a password prompt.
 pub const AUTO_OPEN_KEY: &str = "Open Password Manager Automatically";
 
+/// The debounce the prompt samplers run with: the configured value, and ALWAYS something, so the
+/// screen reader's privacy gate never depends on the "Show key at cursor" display setting
+/// (`detect_on`): that setting is a display preference, not a privacy switch.
+pub fn sampling_debounce(_detect_on: bool, configured: Option<f64>) -> Option<f64> {
+    Some(configured.unwrap_or(DEFAULT_DEBOUNCE))
+}
+
+/// A sampled prompt state as (shown, secure): `shown` drives the key cursor and the manager
+/// (the setting gates it), `secure` drives what the screen reader may read (nothing gates it).
+pub fn states(raw: bool, detect_on: bool) -> (bool, bool) {
+    (raw && detect_on, raw)
+}
+
 /// A console at a password prompt: echo off with line input on. Raw mode (line input off)
 /// is not a prompt.
 pub fn at_prompt(mode: u32) -> bool {
@@ -119,6 +132,17 @@ pub const KEY_GLYPH: char = '\u{E8D7}';
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detection_for_the_text_model_ignores_the_setting() {
+        assert_eq!(sampling_debounce(false, None), Some(DEFAULT_DEBOUNCE), "sampling runs with the setting off");
+        assert_eq!(sampling_debounce(false, Some(0.5)), Some(0.5));
+        assert_eq!(sampling_debounce(true, Some(0.5)), Some(0.5));
+        assert_eq!(states(true, false), (false, true), "off: no key cursor, still secure");
+        assert_eq!(states(true, true), (true, true));
+        assert_eq!(states(false, false), (false, false));
+        assert_eq!(states(false, true), (false, false));
+    }
 
     #[test]
     fn prompt_detection_follows_iterm2() {
