@@ -45,7 +45,7 @@ Build a release binary (`scripts/xt build --release`), close any open Tandem win
 | S39 | Security, icu.dll: with Process Monitor, a double click in a pane makes `icu.dll` load from C:\Windows\System32 (never from the exe's folder or the current folder); a planted `icu.dll` beside tandem.exe is ignored. | |
 | S40 | Security, search path: tandem renders (Vulkan and D3D12 backends) and a new session opens through the shipped ConPTY; a `vulkan-1.dll` or `d3d12.dll` placed in the folder Tandem is started from is ignored; tandem-host and the utilities start. | |
 | S41 | Security, child processes: from a Tandem pane, a program that loads a DLL from its own folder or the current folder (for example python importing a local .pyd, or a Go or .NET tool with a sidecar DLL) still finds it (SetDllDirectoryW("") may be inherited by child processes; if it is, note which programs break). | |
-| S42 | Test suite: a full `scripts/xt test --lib` on EXTREME three times in a row ends with no STATUS_ACCESS_VIOLATION once the shared GPU test device is in (pending final-wave fix; vulkan-1.dll 1.4.341 is the cause). | |
+| S42 | Test suite: a full `scripts/xt test --lib` on EXTREME three times in a row ends with no STATUS_ACCESS_VIOLATION now that the shared GPU test device is in (built; vulkan-1.dll 1.4.341 was the cause; the 20-run stress loop of render::tests at 26 threads ends clean). | |
 | S43 | Filter with a command selected (shell integration): shows only that command's lines, in color. | |
 | S44 | Typing a new query during a filter run restarts it; closing the bar mid-run stops it; output while filtering adds matching lines at the end without losing the scroll position. | |
 | S45 | Idle with the find bar open: no CPU wake (the frame counter holds steady). | |

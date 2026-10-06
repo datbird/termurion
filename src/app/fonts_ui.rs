@@ -704,9 +704,7 @@ mod tests {
 
     #[test]
     fn pane_cell_is_warm_before_the_first_frame() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let (device, queue) = crate::render::test_gpu::shared();
         let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let mut faces = PaneFaces::default();
         let default = FaceKey::new("Cascadia Mono", None, 16.0, 1.0, 1.0);

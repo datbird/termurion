@@ -173,12 +173,49 @@ mod tests {
         assert!(super::failure_line("X", false).unwrap().contains("X failed"));
     }
 
+    /// Final review fix 1: `harden_process` changes the search path of the whole process, so no
+    /// test in the shared test process may call it (other test threads load vulkan-1.dll, d3d12 and
+    /// winhttp); the real check runs in a child (`harden_child`).
+    #[test]
+    fn the_shared_test_process_is_never_hardened() {
+        let text = include_str!("dll.rs");
+        let tests = &text[text.find(concat!("mod ", "tests {")).unwrap()..];
+        let call = concat!("super::harden_", "process()");
+        for (at, _) in tests.match_indices(call) {
+            let name = tests[..at].rfind("fn ").unwrap();
+            let fn_name = &tests[name + 3..tests[name..].find('(').unwrap() + name];
+            assert_eq!(fn_name, "harden_child", "{fn_name} hardens the shared process");
+            assert!(tests[..name].trim_end().ends_with("#[ignore]"), "the child half runs only when asked for");
+        }
+        assert!(tests.contains("harden_child"), "the child half exists");
+    }
+
     #[cfg(windows)]
     #[test]
     fn harden_process_restricts_the_search() {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "dll::tests::harden_child", "--ignored", "--test-threads=1", "--nocapture"])
+            .env("TANDEM_DLL_CHILD", "1")
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("HARDEN_CHILD_RAN"), "the child ran its test");
+    }
+
+    /// The child half of `harden_process_restricts_the_search`: hardens its own process.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn harden_child() {
+        if std::env::var_os("TANDEM_DLL_CHILD").is_none() {
+            return;
+        }
         assert!(super::harden_process());
         // A system DLL still loads, by the flags `load_system` passes.
         assert!(super::load_system("kernel32.dll").is_some());
+        println!("HARDEN_CHILD_RAN");
     }
 
     #[cfg(windows)]
