@@ -981,8 +981,20 @@ impl Screen {
 
     /// The selections a Win-press keeps beside the one it starts (B11: they join at the press,
     /// never at the release): every selection now, as buffer rows; none for a plain press.
-    pub fn carried_subs(&self, append: bool) -> Vec<crate::seltext::Sub> {
-        if append { self.subs() } else { Vec::new() }
+    ///
+    /// `multi` is a second or third press of a multi-click: iTerm2 resumes there, removing the
+    /// previous click's word or line selection before the new one (`iTermSelection.m:391-394`),
+    /// so a Win+triple-click replaces the Win+double-click's word instead of cutting it out.
+    pub fn carried_subs(&self, append: bool, multi: bool) -> Vec<crate::seltext::Sub> {
+        use crate::seltext::Mode;
+        if !append {
+            return Vec::new();
+        }
+        let mut subs = self.subs();
+        if multi && !self.live_is_empty() && matches!(self.sel.live_mode, Mode::Word | Mode::Line | Mode::WholeLine | Mode::Smart) {
+            subs.pop();
+        }
+        subs
     }
 
     /// Puts `subs` (buffer rows now) beside the live selection a press just made.
@@ -1025,6 +1037,22 @@ impl Screen {
         use alacritty_terminal::selection::{Selection, SelectionType};
         let capped = subs.len() > crate::seltext::MAX_SUBS;
         subs.truncate(crate::seltext::MAX_SUBS);
+        // Rows and columns come from a client (the API): keep every sub inside the buffer, so a
+        // copy or a draw never walks a range of 10^12 rows, and drop one that starts past it.
+        let last_row = (self.term.grid().history_size() + self.term.grid().screen_lines()).saturating_sub(1);
+        let last_col = self.term.columns().saturating_sub(1);
+        subs.retain_mut(|sub| {
+            if sub.start.row > last_row {
+                return false;
+            }
+            sub.end.row = sub.end.row.min(last_row);
+            sub.start.col = sub.start.col.min(last_col);
+            sub.end.col = sub.end.col.min(last_col);
+            if let Some((lo, hi)) = sub.window {
+                sub.window = Some((lo.min(last_col), hi.min(last_col)));
+            }
+            true
+        });
         let Some(last) = subs.pop() else {
             self.clear_selection();
             return false;
@@ -5295,6 +5323,28 @@ mod tests {
         let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(line), Column(from)), Side::Left);
         sel.update(Point::new(Line(line), Column(to)), Side::Right);
         s.set_selection(Some(sel), crate::seltext::Mode::Character);
+    }
+
+    /// Review I2: subs from a client are clamped to the buffer; a huge BOX cannot hang a copy.
+    #[test]
+    fn set_subs_clamps_to_the_buffer() {
+        use crate::seltext::{Mode, Sub};
+        let mut s = Screen::new(10, 3);
+        s.feed(b"one\r\ntwo\r\nthree");
+        let sub = |a: (usize, usize), b: (usize, usize), mode| Sub { start: crate::find::Pos { row: a.0, col: a.1 }, end: crate::find::Pos { row: b.0, col: b.1 }, mode, window: Some((0, 1 << 40)), connected: false };
+        let huge = usize::MAX / 2;
+        let capped = s.set_subs(vec![
+            sub((0, 0), (huge, 1 << 40), Mode::Box),
+            sub((huge, 0), (huge, 3), Mode::Character),
+            sub((2, 0), (2, 4), Mode::Character),
+        ]);
+        assert!(!capped);
+        let subs = s.subs();
+        assert_eq!(subs.len(), 2, "the sub past the buffer is gone: {subs:?}");
+        assert_eq!(subs[0].end.row, 2);
+        assert!(subs[0].end.col <= 9 && subs[0].window.is_none_or(|(_, hi)| hi <= 9));
+        assert!(s.selection_text().is_some());
+        assert!(!crate::styled_copy::runs(&s).is_empty());
     }
 
     #[test]

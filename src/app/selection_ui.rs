@@ -142,8 +142,8 @@ impl App {
     /// every selection now, to be put back beside the new one with `carry_subs`; a new
     /// non-append selection starts over, which empties the extras. The selections join at the
     /// press, never at the release (B11).
-    pub(super) fn commit_live_selection(&mut self, id: PaneId, append: bool) -> Vec<crate::seltext::Sub> {
-        self.panes.get(&id).map(|p| p.screen.carried_subs(append)).unwrap_or_default()
+    pub(super) fn commit_live_selection(&mut self, id: PaneId, append: bool, multi: bool) -> Vec<crate::seltext::Sub> {
+        self.panes.get(&id).map(|p| p.screen.carried_subs(append, multi)).unwrap_or_default()
     }
 
     pub(super) fn carry_subs(&mut self, id: PaneId, subs: Vec<crate::seltext::Sub>) {
@@ -288,9 +288,39 @@ mod tests {
     /// A press as `mouse_press` makes it: the carried selections first (B11), the new live one,
     /// the carried ones back beside it.
     fn press(s: &mut Screen, row: i32, col: usize, append: bool) {
-        let carried = s.carried_subs(append);
+        let carried = s.carried_subs(append, false);
         s.set_selection(Some(Selection::new(SelectionType::Simple, Point::new(Line(row), Column(col)), Side::Left)), Mode::Character);
         s.carry_subs(carried);
+    }
+
+    /// Review I1: a Win second or third click resumes, replacing the previous click's word.
+    #[test]
+    fn win_triple_click_replaces_the_word() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abc def");
+        let make = |s: &mut Screen, a: usize, b: usize, mode: Mode, multi: bool| {
+            let carried = s.carried_subs(true, multi);
+            let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(a)), Side::Left);
+            sel.update(Point::new(Line(0), Column(b)), Side::Right);
+            s.set_selection(Some(sel), mode);
+            s.carry_subs(carried);
+        };
+        make(&mut s, 0, 2, Mode::Word, false);
+        make(&mut s, 0, 9, Mode::Line, true);
+        assert_eq!(s.subs().len(), 1, "one line sub, not the word and the line");
+        assert_eq!(s.selection_text().as_deref(), Some("abc def"));
+        // An earlier separate selection survives the resume.
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abc def\r\nxyz");
+        make(&mut s, 0, 2, Mode::Character, false);
+        let carried = s.carried_subs(true, false);
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(1), Column(0)), Side::Left);
+        sel.update(Point::new(Line(1), Column(2)), Side::Right);
+        s.set_selection(Some(sel), Mode::Word);
+        s.carry_subs(carried);
+        let carried = s.carried_subs(true, true);
+        assert_eq!(carried.len(), 1, "the first selection stays, the word goes");
+        assert_eq!(carried[0].end.col, 2);
     }
 
     fn drag_to(s: &mut Screen, row: i32, col: usize) {

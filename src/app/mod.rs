@@ -5048,11 +5048,13 @@ impl App {
                 // Win without Alt adds a selection (`MH:360-431`); the earlier ones are held while the new
                 // one is made and put back beside it. Win with Ctrl did not reach the open above.
                 let append = mods.cmd && !mods.alt;
+                // The Win release must not open the Start menu, whether or not CommandSelection
+                // masked it above (it is off: a Win-drag still appends).
                 #[cfg(windows)]
-                if mods.cmd && mods.ctrl {
+                if mods.cmd {
                     crate::winkeys::mask_start_menu();
                 }
-                let carried = self.commit_live_selection(id, append);
+                let carried = self.commit_live_selection(id, append, count > 1);
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
                 // A character drag on a bidi row is visual: remember where it began on screen.
