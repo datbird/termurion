@@ -406,6 +406,12 @@ pub fn wants_open_search(query: &str) -> bool {
     !t.is_empty() && !t.starts_with("https://")
 }
 
+/// Whether typed text may go to the suggestion service: only text that is not a URL by the one
+/// parser the Enter path uses (`normalize_url`), so a `localhost:3000/x?token=y` never leaves.
+pub fn suggest_allowed(query: &str) -> bool {
+    wants_open_search(query) && query.trim().chars().count() <= 200 && normalize_url(query).is_none()
+}
+
 /// The service's answer to `query`, as rows (`BOS:66-104`): `[query, [suggestion, ...]]` where the
 /// query is echoed. At most `max` rows scored 2000000 minus their index; an empty entry is
 /// skipped (it still counts as an index).
@@ -1213,6 +1219,18 @@ mod tests {
         assert_eq!(display_url(&format!("https://a.test/{}", "x".repeat(5000))).chars().count(), MAX_URL + 1, "bounded with an ellipsis");
         assert_eq!(display_title("a\u{202e}b\u{1}c\nd"), "abcd");
         assert_eq!(display_title(&"y".repeat(500)).chars().count(), 121);
+    }
+
+    #[test]
+    fn a_url_never_reaches_the_suggestion_service() {
+        for url in ["localhost:3000/reset?token=abc123", "localhost/admin?key=k", "intranet:8080", "http://u:p@h.test/", "a.b/c?token=1", "10.0.0.1:80/x"] {
+            assert!(normalize_url(url).is_some(), "{url} navigates on Enter");
+            assert!(!suggest_allowed(url), "{url} must not be sent");
+        }
+        for q in ["rust lang", "how to cook", "what is 1.5 times 2"] {
+            assert!(suggest_allowed(q), "{q} is a search");
+        }
+        assert!(!suggest_allowed(&"x".repeat(201)) && !suggest_allowed("  "));
     }
 
     #[test]

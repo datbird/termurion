@@ -890,8 +890,8 @@ impl App {
         let search = browser::search_template(&self.globals.string("SearchCommand"));
         let service = browser::suggest_template(&self.globals.string("SearchSuggestURL"));
         let query = text.trim().to_string();
-        // A URL is not sent to the service: it could hold a password (iTerm2 sends http ones).
-        let asks = browser::wants_open_search(&query) && query.chars().count() <= 200 && !browser::strongly_url_like(&query);
+        // Anything the Enter path would navigate to is not sent: a URL could hold a password or token.
+        let asks = browser::suggest_allowed(&query);
         let started = if asks {
             let cached = self.browser_views.get(&pane).is_some_and(|b| b.bar.cache.has(&query)) || self.browser_views.get(&pane).and_then(|b| b.bar.call.as_ref()).is_some_and(|(_, q)| *q == query);
             if cached {
@@ -1199,7 +1199,7 @@ mod tests {
         let nav = &prod[prod.find("fn browser_navigate").unwrap()..prod.find("pub(super) fn browser_suggest").unwrap()];
         assert!(nav.contains("navigate_tandem") && !nav.contains(".navigate("));
         let suggest = &prod[prod.find("pub(super) fn browser_suggest").unwrap()..prod.find("pub(super) fn browser_key").unwrap()];
-        assert!(suggest.contains("!browser::strongly_url_like(&query)"), "a URL may hold a password: never sent to the service");
+        assert!(suggest.contains("browser::suggest_allowed(&query)"), "a URL may hold a password: never sent to the service");
         assert!(suggest.contains("Proxy::System") && suggest.contains("from_secs(5)"));
         let draw = &prod[prod.find("pub(super) fn draw_browser_bar").unwrap()..prod.find("pub(super) fn browser_toolbar_press").unwrap()];
         assert!(draw.contains("browser::display_url(&io.url)") && draw.contains("browser::security(&io.url, io.failed)"), "the field shows the sanitized page URL and the mark follows the page's state");
