@@ -1228,6 +1228,9 @@ pub struct App {
     uia_hosts: HashMap<u64, crate::uia_win::Host>,
     access_trackers: HashMap<PaneId, access_app::AccessPane>,
     access_due: Option<Instant>,
+    /// When the snapshot was last built, and the deadline a held-back build waits for (one build a frame).
+    access_built: Option<Instant>,
+    access_hold: Option<Instant>,
     access_window: Option<access_app::AccessWindow>,
     access_focus_sent: Option<(u64, PaneId)>,
     access_attach: Arc<std::sync::atomic::AtomicBool>,
@@ -2210,6 +2213,8 @@ pub fn run() {
         uia_hosts: HashMap::new(),
         access_trackers: HashMap::new(),
         access_due: None,
+        access_built: None,
+        access_hold: None,
         access_window: None,
         access_focus_sent: None,
         access_attach: Arc::new(std::sync::atomic::AtomicBool::new(false)),

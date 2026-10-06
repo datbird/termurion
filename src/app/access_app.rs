@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -28,6 +28,16 @@ pub(super) struct AccessPane {
     snap: Option<PaneSnapshot>,
     /// The absolute line of the published text's row 0 (the offsets a client sends refer to it).
     first_abs: i64,
+}
+
+/// The least time between two snapshot builds: one frame, as iTerm2 refreshes accessibility on its
+/// cadence timer and Windows Terminal raises UIA events once per painted frame.
+pub(super) const BUILD_GAP: Duration = Duration::from_millis(16);
+
+/// None when a snapshot may be built now, else when the held-back build may run (every pty wake
+/// inside the gap folds into that one build).
+pub(super) fn build_wait(last: Option<Instant>, now: Instant, gap: Duration) -> Option<Instant> {
+    last.map(|l| l + gap).filter(|d| *d > now)
 }
 
 /// The current window's title, rectangle and shown panes at the last publish.
@@ -152,10 +162,16 @@ impl App {
             self.access_window = None;
             self.access_focus_sent = None;
             self.access_due = None;
+            self.access_built = None;
+            self.access_hold = None;
             return;
         }
         let now = Instant::now();
-        self.access_update(now);
+        // Every pty wake inside a frame folds into the next frame's build.
+        self.access_hold = build_wait(self.access_built, now, BUILD_GAP);
+        if self.access_hold.is_none() {
+            self.access_update(now);
+        }
         self.access_raise_focus();
         self.access_settle(now);
     }
@@ -165,6 +181,7 @@ impl App {
         if !Host::listening() {
             return;
         }
+        // A focus change is a user action: it is not held back.
         self.access_update(Instant::now());
         self.access_raise_focus();
     }
@@ -237,6 +254,7 @@ impl App {
         }
         self.access_trackers.retain(|id, _| self.panes.contains_key(id));
         self.access_window = Some(window);
+        self.access_built = Some(now);
         let snapshot = self.access_snapshot();
         if let Some(h) = self.uia_hosts.get(&key) {
             h.publish(snapshot);
@@ -326,7 +344,7 @@ impl App {
                 }
             }
         }
-        self.access_due = self.access_trackers.values().filter_map(|s| s.tracker.due()).min();
+        self.access_due = self.access_trackers.values().filter_map(|s| s.tracker.due()).chain(self.access_hold).min();
     }
 
     /// A client's request, posted from UI Automation's threads (`UserEvent::Uia`). The text it
@@ -393,6 +411,28 @@ mod tests {
         assert_eq!(selection_cells(&t, 0, 900).0, (0, 0));
     }
 
+    /// A progress bar that wakes the loop every millisecond builds at most once a frame.
+    #[test]
+    fn builds_are_one_a_frame() {
+        let t0 = Instant::now();
+        let (mut last, mut builds) = (None, 0);
+        for ms in 0..1000u64 {
+            let now = t0 + Duration::from_millis(ms);
+            if build_wait(last, now, BUILD_GAP).is_none() {
+                builds += 1;
+                last = Some(now);
+            }
+        }
+        assert!(builds <= 1000 / 16 + 1, "{builds} builds in a second");
+        assert!(builds >= 50, "{builds} builds: the pane still follows the output");
+        // Held back, the wait names the instant it ends; at that instant it builds.
+        let last = Some(t0);
+        let due = build_wait(last, t0 + Duration::from_millis(5), BUILD_GAP).unwrap();
+        assert_eq!(due, t0 + BUILD_GAP);
+        assert_eq!(build_wait(last, due, BUILD_GAP), None);
+        assert_eq!(build_wait(None, t0, BUILD_GAP), None);
+    }
+
     #[test]
     fn lines_follow_iterm2() {
         assert_eq!(snapshot_rows(1000, 50000, 40), 1000);
@@ -444,7 +484,8 @@ mod tests {
         let body = |src: &str, name: &str, end: &str| src.split(name).nth(1).and_then(|r| r.split(end).next()).unwrap_or_default().to_string();
         let me = read("access_app.rs");
         let tick = body(&me, "pub(super) fn access_tick(", "\n    }\n");
-        assert!(tick.find("Host::listening()").is_some_and(|l| l < tick.find("access_publish").unwrap_or(usize::MAX)), "nothing is built before a client listens");
+        assert!(tick.find("Host::listening()").is_some_and(|l| l < tick.find("self.access_update(").unwrap_or(usize::MAX)), "nothing is built before a client listens");
+        assert!(tick.contains("build_wait(self.access_built"), "builds are one a frame");
         let m = read("mod.rs");
         assert!(body(&m, "fn about_to_wait(", "ControlFlow::Wait),").contains("self.access_tick()"));
         assert!(m.contains("self.access_due") && m.contains("UserEvent::Uia(r)"));
