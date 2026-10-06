@@ -70,6 +70,8 @@ fn progid(scheme: &str) -> String {
 const CAPABILITIES: &str = "Software\\Tandem\\Capabilities";
 const ASSOCIATIONS: &str = "Software\\Tandem\\Capabilities\\URLAssociations";
 const REGISTERED_APPS: &str = "Software\\RegisteredApplications";
+/// Where the exe path each OK registered is kept, one value per scheme (Tandem's own key).
+const RECORDED: &str = "Software\\Tandem\\Registered";
 
 /// Every value Tandem writes to be listed as a handler of `scheme` (key, name, value; `""` is a key's
 /// default): its ProgId, its capabilities and its RegisteredApplications entry. Empty for a scheme
@@ -113,6 +115,7 @@ pub fn unregister_with(r: &mut dyn crate::reg::Registry, scheme: &str, exe: &Pat
     }
     r.delete_tree(&progid(scheme))?;
     r.delete_value(ASSOCIATIONS, scheme)?;
+    r.delete_value(RECORDED, scheme)?;
     let class = format!("Software\\Classes\\{scheme}\\shell\\open\\command");
     if let Some(c) = r.get(&class, "") {
         let ours = is_tandem_command(&c) || c.trim().eq_ignore_ascii_case(&tandem_command(exe));
@@ -132,22 +135,33 @@ fn is_tandem_command(command: &str) -> bool {
     command_argument_shape(command).is_some_and(|p| Path::new(&p).file_name().is_some_and(|f| f.eq_ignore_ascii_case("tandem.exe")))
 }
 
-/// The bound schemes whose registration Tandem wrote at another path (the exe moved): its own
-/// command, exactly as `tandem_command` writes it, naming `tandem.exe`. A scheme that is not bound,
-/// not registered, or registered by another program is never listed, so a repair adds no association.
-pub fn stale_schemes(table: &toml::Table, reg: &dyn SchemeRegistry, exe: &Path) -> Vec<String> {
+/// The bound schemes whose registration the person's OK wrote at a path that is gone (the exe
+/// moved): the exe path recorded at that OK (`record_exe`) is not this exe, `HKCU\Software\Classes\
+/// <scheme>` still holds exactly the command written for that path (never the effective handler,
+/// which may be HKLM's or a UserChoice ProgId), and `gone` says the recorded exe no longer exists.
+/// Another live copy, a machine-wide registration and a binding imported with no OK recorded on this
+/// machine are never listed, so a repair takes nothing the person did not give.
+pub fn stale_schemes(table: &toml::Table, reg: &dyn SchemeRegistry, exe: &Path, gone: &dyn Fn(&Path) -> bool) -> Vec<String> {
     let now = tandem_command(exe);
-    let stale = |c: Option<String>| c.is_some_and(|c| is_tandem_command(&c) && !c.trim().eq_ignore_ascii_case(&now));
-    SCHEMES.iter().filter(|s| guid_for(table, s).is_some()).filter(|s| stale(reg.handler_command(s)) || stale(reg.classes_command(s))).map(|s| s.to_string()).collect()
+    let stale = |s: &str| {
+        let Some(recorded) = reg.recorded_exe(s) else { return false };
+        let recorded = Path::new(&recorded);
+        let then = tandem_command(recorded);
+        exe_ok(recorded) && then != now && reg.classes_command(s).is_some_and(|c| c.trim() == then) && gone(recorded)
+    };
+    SCHEMES.iter().filter(|s| guid_for(table, s).is_some()).filter(|s| stale(s)).map(|s| s.to_string()).collect()
 }
 
-/// Rewrites Tandem's own entries for the schemes `stale_schemes` names; the ones repaired.
-pub fn repair(table: &toml::Table, reg: &mut dyn SchemeRegistry, exe: &Path) -> Vec<String> {
-    stale_schemes(table, reg, exe).into_iter().filter(|s| reg.register(s, exe).is_ok()).collect()
+/// Rewrites Tandem's own entries for the schemes `stale_schemes` names and records the new path;
+/// the ones repaired.
+pub fn repair(table: &toml::Table, reg: &mut dyn SchemeRegistry, exe: &Path, gone: &dyn Fn(&Path) -> bool) -> Vec<String> {
+    stale_schemes(table, reg, exe, gone).into_iter().filter(|s| reg.register(s, exe).and_then(|()| reg.record_exe(s, exe)).is_ok()).collect()
 }
 
 /// Startup: rewrites Tandem's own registrations for the schemes the person bound when the exe moved.
 /// Registers nothing new and never asks (it only restores what the person's earlier OK created).
+/// The recorded exe path is saved state, so it is judged before it is probed: a path the judge
+/// refuses counts as still there, and nothing is rewritten.
 pub fn repair_at_start(globals: &crate::globals::Globals) {
     let Ok(exe) = std::env::current_exe() else { return };
     let table = globals.table(HANDLERS_KEY);
@@ -155,7 +169,7 @@ pub fn repair_at_start(globals: &crate::globals::Globals) {
         return;
     }
     let mut reg = system();
-    repair(&table, reg.as_mut(), &exe);
+    repair(&table, reg.as_mut(), &exe, &|p| crate::localfs::judged(p) && !crate::localfs::exists(p));
 }
 
 /// The items of the "Select URL Schemes..." popup: the title unchecked, then each scheme checked
@@ -178,6 +192,16 @@ pub trait SchemeRegistry {
     fn classes_command(&self, scheme: &str) -> Option<String>;
     /// Registers Tandem as a handler for the user (`HKCU` only). Runs only after the person's OK.
     fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String>;
+    /// The exe path the person's OK registered for `scheme` (`HKCU\Software\Tandem\Registered`, a
+    /// key no settings import carries), None when no OK on this machine did.
+    fn recorded_exe(&self, _scheme: &str) -> Option<String> {
+        None
+    }
+    /// Keeps `exe` as the path registered for `scheme`; written only with a registration the
+    /// person's OK made, or its repair.
+    fn record_exe(&mut self, _scheme: &str, _exe: &Path) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The protocol handler's command: the URL is one quoted argument (`tandem.exe` accepts only
@@ -296,6 +320,7 @@ pub fn register_and_bind(table: &mut toml::Table, reg: &mut dyn SchemeRegistry, 
         return Err(format!("Tandem does not register for {scheme} links."));
     }
     reg.register(scheme, exe).map_err(|e| format!("Could not register Tandem for {scheme} links: {e}"))?;
+    reg.record_exe(scheme, exe).map_err(|e| format!("Could not register Tandem for {scheme} links: {e}"))?;
     if !is_default(reg, scheme, exe) {
         return Err(protected(scheme));
     }
@@ -499,6 +524,17 @@ impl SchemeRegistry for WinRegistry {
     fn classes_command(&self, scheme: &str) -> Option<String> {
         let key = format!("Software\\Classes\\{scheme}\\shell\\open\\command");
         win::get(&key, None).or_else(|| win::key_exists(&key).then(String::new))
+    }
+
+    fn recorded_exe(&self, scheme: &str) -> Option<String> {
+        is_listed(scheme).then(|| win::get(RECORDED, Some(scheme))).flatten()
+    }
+
+    fn record_exe(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
+        if !is_listed(scheme) || !exe_ok(exe) {
+            return Err(format!("Tandem does not register for {scheme} links."));
+        }
+        win::set(RECORDED, Some(scheme), &exe.to_string_lossy())
     }
 
     fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
@@ -815,9 +851,14 @@ mod registration_tests {
         assert!(r.delete_scheme_class("http").is_err());
     }
 
+    /// A registry that tells the effective handler (`command`, which may come from HKLM or a
+    /// UserChoice ProgId) apart from the HKCU scheme key (`classes`), and keeps the exe path the
+    /// person's OK registered (`recorded`).
     #[derive(Default)]
     struct FakeScheme {
         command: Option<String>,
+        classes: Option<String>,
+        recorded: Option<String>,
         registered: Vec<String>,
     }
 
@@ -832,41 +873,83 @@ mod registration_tests {
             None
         }
         fn classes_command(&self, _: &str) -> Option<String> {
-            self.command.clone()
+            self.classes.clone()
         }
         fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
             self.registered.push(scheme.to_string());
             self.command = Some(tandem_command(exe));
+            self.classes = Some(tandem_command(exe));
+            Ok(())
+        }
+        fn recorded_exe(&self, _: &str) -> Option<String> {
+            self.recorded.clone()
+        }
+        fn record_exe(&mut self, _: &str, exe: &Path) -> Result<(), String> {
+            self.recorded = Some(exe.to_string_lossy().into_owned());
             Ok(())
         }
     }
 
+    /// Task 4 fix round 1, item 1: the startup repair rewrites a scheme only when HKCU still holds
+    /// exactly the exe path the person's OK registered AND that exe is gone. Another live copy, an
+    /// HKLM-only registration and a binding imported without an OK on this machine are left alone.
     #[test]
-    fn a_moved_exe_is_repaired_only_for_bound_schemes() {
+    fn a_moved_exe_is_repaired_only_for_what_the_ok_registered() {
         let old = PathBuf::from(r"D:\Old\tandem.exe");
+        let old_s = old.to_string_lossy().into_owned();
         let mut t = toml::Table::new();
         bind(&mut t, "ssh", "G1");
-        // Bound, registered by Tandem at its old path: rewritten.
-        let mut moved = FakeScheme { command: Some(tandem_command(&old)), ..FakeScheme::default() };
-        assert_eq!(stale_schemes(&t, &moved, &exe()), vec!["ssh".to_string()]);
-        assert_eq!(repair(&t, &mut moved, &exe()), vec!["ssh".to_string()]);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let gone = |p: &Path| {
+            asked.borrow_mut().push(p.to_path_buf());
+            true
+        };
+        let alive = |_: &Path| false;
+        // The person's OK registered D:\Old, HKCU still holds it, and D:\Old is gone: rewritten,
+        // and the record follows the new path.
+        let mut moved = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        assert_eq!(stale_schemes(&t, &moved, &exe(), &gone), vec!["ssh".to_string()]);
+        assert_eq!(asked.borrow().as_slice(), [old.clone()], "only the recorded path is probed");
+        assert_eq!(repair(&t, &mut moved, &exe(), &gone), vec!["ssh".to_string()]);
         assert_eq!(moved.registered, ["ssh"]);
-        assert!(stale_schemes(&t, &moved, &exe()).is_empty(), "now current");
-        // Another program's command is never replaced, and an unbound scheme is never added.
-        let other = FakeScheme { command: Some("putty.exe %1".into()), ..FakeScheme::default() };
-        assert!(stale_schemes(&t, &other, &exe()).is_empty());
-        let none = FakeScheme::default();
-        assert!(stale_schemes(&t, &none, &exe()).is_empty(), "no registration, nothing to repair");
-        let unbound = toml::Table::new();
-        assert!(stale_schemes(&unbound, &FakeScheme { command: Some(tandem_command(&old)), ..FakeScheme::default() }, &exe()).is_empty());
-        // A look-alike (extra arguments, another file name) is not Tandem's.
-        for cmd in ["\"D:\\Old\\tandem.exe\" --url \"%1\" --x", "\"D:\\Old\\notandem.exe\" --url \"%1\"", "\"D:\\Old\\tandem.exe\" \"%1\""] {
-            assert!(stale_schemes(&t, &FakeScheme { command: Some(cmd.into()), ..FakeScheme::default() }, &exe()).is_empty(), "{cmd}");
+        assert_eq!(moved.recorded.as_deref(), Some(r"C:\T\tandem.exe"));
+        assert!(stale_schemes(&t, &moved, &exe(), &gone).is_empty(), "now current");
+        // Two live copies: the other copy still exists, so its registration stays.
+        let mut live = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        assert!(repair(&t, &mut live, &exe(), &alive).is_empty());
+        assert!(live.registered.is_empty() && live.recorded.as_deref() == Some(old_s.as_str()));
+        // A machine-wide (HKLM) Tandem registration: the effective handler is Tandem's old path but
+        // HKCU holds nothing, so nothing is written.
+        let mut hklm = FakeScheme { command: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        assert!(repair(&t, &mut hklm, &exe(), &gone).is_empty());
+        assert!(hklm.registered.is_empty());
+        // An imported table (bound, HKCU holds a Tandem command) with no OK recorded on this machine.
+        let mut imported = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), ..FakeScheme::default() };
+        assert!(repair(&t, &mut imported, &exe(), &gone).is_empty());
+        assert!(imported.registered.is_empty());
+        // HKCU holds another Tandem path than the recorded one (or a look-alike): not what the OK wrote.
+        let other_tandem = PathBuf::from(r"E:\Else\tandem.exe");
+        let mut differs = FakeScheme { classes: Some(tandem_command(&other_tandem)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        assert!(repair(&t, &mut differs, &exe(), &gone).is_empty());
+        for cmd in ["\"D:\\Old\\tandem.exe\" --url \"%1\" --x", "putty.exe %1", ""] {
+            let mut f = FakeScheme { classes: Some(cmd.into()), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+            assert!(repair(&t, &mut f, &exe(), &gone).is_empty(), "{cmd}");
         }
-        // A binding for a scheme Tandem does not list is ignored.
+        // An unbound scheme, or a binding for a scheme Tandem does not list, is never repaired.
+        let full = || FakeScheme { classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        assert!(stale_schemes(&toml::Table::new(), &full(), &exe(), &gone).is_empty());
         let mut odd = toml::Table::new();
         bind(&mut odd, "http", "G1");
-        assert!(stale_schemes(&odd, &FakeScheme { command: Some(tandem_command(&old)), ..FakeScheme::default() }, &exe()).is_empty());
+        assert!(stale_schemes(&odd, &full(), &exe(), &gone).is_empty());
+    }
+
+    /// The person's OK records the exe path it registered (the only evidence a later repair trusts).
+    #[test]
+    fn the_ok_records_the_registered_exe() {
+        let mut reg = FakeScheme::default();
+        let mut t = toml::Table::new();
+        register_and_bind(&mut t, &mut reg, "ssh", "G1", &exe()).unwrap();
+        assert_eq!(reg.recorded.as_deref(), Some(r"C:\T\tandem.exe"));
     }
 
     #[test]
