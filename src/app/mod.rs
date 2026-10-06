@@ -4690,7 +4690,7 @@ impl App {
             self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
             // iTerm2's rule for the last window (`AD:915-942`, R3): Tandem stays resident unless
             // "Quit when all windows are closed" says otherwise (and the grace period has passed).
-            if self.windows.parked().next().is_none() && self.hotkey.is_none() && self.after_last_window_now() == crate::resident::AfterLast::StayResident {
+            if self.windows.parked().next().is_none() && self.after_last_window_now() == crate::resident::AfterLast::StayResident {
                 self.prefs_gpu = None;
                 return self.go_resident_after_last();
             }

@@ -22,7 +22,8 @@ impl App {
     pub(super) fn after_last_window_now(&mut self) -> AfterLast {
         let min = self.globals.number(MIN_RUNNING_KEY).unwrap_or(10.0);
         let ran = self.launched_at.elapsed();
-        let hotkeys = self.hotkey_windows().len();
+        // The window that is closing is no terminal left (a hotkey window counts while it exists).
+        let hotkeys = self.hotkey_windows().len().saturating_sub(usize::from(self.hotkey.is_some()));
         let decision = resident::after_last_window(false, hotkeys, self.user_interacted, ran, min, self.globals.bool(QUIT_KEY));
         let graced = !self.user_interacted && (ran.as_secs_f64() < min) && self.globals.bool(QUIT_KEY) && hotkeys == 0;
         if graced {
@@ -65,7 +66,7 @@ impl App {
     /// window and GPU, it leaves the window list, the taskbar and the screen.
     pub(super) fn go_resident(&mut self) {
         let Some(k) = self.windows.current() else { return };
-        if self.resident || self.hotkey.is_some() {
+        if self.resident {
             return;
         }
         self.save_window_frame();
@@ -287,16 +288,19 @@ mod tests {
         assert!(presence.contains("(Some(g), false) = (&self.gpu, self.resident)"));
     }
 
-    /// S11 (13u): only the regular last window goes resident; a hotkey window, hidden or shown, and the
-    /// hotkey windows left keep the old path. Hotkeys keep working while resident (S5): the hook and the
-    /// registered ids belong to the window that stays, which is hidden and never dropped.
+    /// R3 (`AD:915-942`): the last window goes resident whatever kind it is while the key is off; a hotkey
+    /// window as the last window (S5 reuses the resident window as one) is no exception. Hotkeys keep
+    /// working while resident: the hook and the registered ids belong to the window that stays, hidden.
     #[test]
-    fn resident_hide_leaves_hotkey_windows_alone() {
+    fn resident_hide_takes_a_hotkey_window_too() {
         let close = body(production(MOD), "close_pane");
         let gate = close.split("iTerm2's rule for the last window").nth(1).unwrap().split("self.go_resident_after_last()").next().unwrap();
-        assert!(gate.contains("self.windows.parked().next().is_none()") && gate.contains("self.hotkey.is_none()"), "no other window and not a hotkey window");
+        assert!(gate.contains("self.windows.parked().next().is_none()") && gate.contains("after_last_window_now()"), "no other window");
+        assert!(!gate.contains("self.hotkey"), "a hotkey window is a last window like any other");
         let go = body(production(OWN), "go_resident");
-        assert!(go.contains("self.resident || self.hotkey.is_some()"));
+        assert!(!go.contains("self.hotkey"), "go_resident takes a hotkey window too (the fresh state clears it)");
+        let after = body(production(OWN), "after_last_window_now");
+        assert!(after.contains("self.hotkey.is_some()"), "the closing hotkey window is not a terminal left");
         for never in ["drop_current_window", "winkeys::", "register_hotkeys", "unregister", "close_current", "install_menus"] {
             assert!(!production(OWN).contains(never), "the resident window keeps its hook and hotkeys: {never}");
         }
