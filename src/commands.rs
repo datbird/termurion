@@ -57,7 +57,7 @@ pub const DONE: &[&str] = &[
     "terminalStateToggleApplicationKeypad:|Report Associated Text", "terminalStateToggleLiteralMode:",
     "terminalStateSetEmulationLevel:", "toggleBufferInput:", "copyWithStyles:", "copyWithControlSequences:",
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
-    "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
+    "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:", "makeDefaultTerminal:", "unmakeDefaultTerminal:",
     "moveTabToNewWindow:", "moveSessionToWindow:", "moveSessionToTab:", "paste:|Paste Slowly", "pasteFaster:", "pasteSlower:",
     "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "openCommandHistory:", "openDirectories:", "openAutocomplete:", "toggleAutoCommandHistory:", "compose:", "toggleAutoComposer:", "toggleShowClippings:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
     "toggleMultiLinePasteWarning:|Limit Multi-Line Paste Warning to Shell Prompt",

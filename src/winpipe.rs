@@ -156,6 +156,20 @@ pub fn user_sid() -> Result<String, String> {
     }
 }
 
+/// The user SID of the identity this thread is running as: after `CoImpersonateClient`, the
+/// caller's. The token is opened as this process (so the check does not depend on the caller's
+/// rights), and an anonymous or identification-level caller reads as a different SID.
+pub fn thread_user_sid() -> Result<String, String> {
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if windows_sys::Win32::System::Threading::OpenThreadToken(windows_sys::Win32::System::Threading::GetCurrentThread(), TOKEN_QUERY, 1, &mut token) == 0 {
+            return Err(last_error("OpenThreadToken"));
+        }
+        let token = Owned(token);
+        token_sid(token.0)
+    }
+}
+
 /// Whether this process runs elevated (as administrator).
 pub fn elevated() -> Result<bool, String> {
     unsafe {

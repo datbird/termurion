@@ -1309,13 +1309,13 @@ mod tests {
     }
 
     /// B2: a git, orchestrated, script or API command, and an ssh: URL's copy, are not the
-    /// profile's own shell: no Initial Text, no injection.
+    /// profile's own shell: no Initial Text, no injection (a handed-off console, `handed`, types nothing either).
     #[test]
     fn override_launches_get_no_initial_text_or_injection() {
         let start = body("fn start_pane_as(");
         let at = start.find("self.send_initial_text(id, &p)").expect("start_pane_as sends Initial Text");
         let guard = &start[..at];
-        assert!(guard.trim_end().ends_with("if self.start_command_override.is_none() && self.start_env_override.is_none() {"), "{}", &guard[guard.len().saturating_sub(200)..]);
+        assert!(guard.trim_end().ends_with("if self.start_command_override.is_none() && self.start_env_override.is_none() && !handed {"), "{}", &guard[guard.len().saturating_sub(200)..]);
         let inject = body("fn injected_command(");
         let own = inject.find("let own = self.start_command_override.is_none() && self.start_env_override.is_none();").expect("the override check");
         assert!(inject[own..].contains("if !own ||") && inject.contains("transport != crate::ssh_transport::Transport::Conpty") && inject.contains("profile::is_ssh(p)"));

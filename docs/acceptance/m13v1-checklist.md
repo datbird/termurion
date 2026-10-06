@@ -29,3 +29,17 @@ row with `net use` listing the mapping and the capture cleared.
 |---|---|---|
 | 6 | Bind ssh to a profile with OK. Copy the whole release folder to `D:\T2`, quit Tandem, rename the first folder, start `D:\T2\tandem.exe`: `HKCU\Software\Classes\ssh\shell\open\command` now names `D:\T2\tandem.exe` and `HKCU\Software\Tandem\Registered` value `ssh` names it too. | |
 | 7 | With both copies present (undo the rename), start the copy that did not register: the ssh command still names the first copy (two live copies never take a scheme from each other). | |
+
+## Default terminal (task 5)
+
+Run these with a release build next to its own `conpty.dll` and `OpenConsole.exe`, Windows Terminal
+installed. Note the pair first: `reg query "HKCU\Console\%%Startup"`.
+
+| # | Check | Result |
+|---|---|---|
+| 8 | iTerm2 > Make iTerm2 Default Term: the banner says Tandem is the default; `reg query "HKCU\Console\%%Startup"` shows `DelegationConsole` `{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}` and `DelegationTerminal` `{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}`, `HKCU\Software\Tandem\PreviousDefaultTerminal` holds the old pair and the item is now greyed. Nothing under `HKLM` changed. | |
+| 9 | With Tandem running and default, start `cmd.exe` from Win+R: a new Tandem tab (or a window when none) shows the cmd prompt, titled with the startup title; typing, resizing the window and the tab's close button work, and closing the tab ends cmd. | |
+| 10 | Quit Tandem, run `cmd.exe` from Win+R: Windows starts `tandem.exe -Embedding`, the one Tandem window opens with that console and nothing else (no startup shell). Run `tandem.exe -Embedding` by hand with nothing else running and the default set: no window, and the process ends by itself about 15 s later. | |
+| 11 | With Tandem running, run `tandem.exe -Embedding` by hand: it ends at once and shows nothing. Run `for ($i=0;$i -lt 30;$i++){ cmd /c start cmd }`: no more than a few tabs per second open, at most 16 stay, and the banner "N terminal hand-offs ignored" appears. | |
+| 12 | Make Terminal Default Term (Alt on the iTerm2 menu): the old pair is back, `HKCU\Software\Classes\CLSID\{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}` and the saved key are gone, and the item is enabled again. With Windows Terminal removed (or renamed `wt.exe` alias), Make iTerm2 Default Term shows "Windows Terminal Required" and changes nothing. | |
+| 13 | The server handle check: the first real handoff of cmd.exe must succeed (the `server` handle is checked as a process handle with `GetProcessId`). If row 9 fails with nothing opening and `host.log` names a refused handle, that check is wrong for this Windows build. | |

@@ -29,7 +29,7 @@ pub fn deletable(key: &str) -> bool {
         return false;
     }
     let under = |root: &str| k == root || k.starts_with(&format!("{root}\\"));
-    under("software\\tandem") || under("software\\classes\\applications\\tandem.exe") || k.strip_prefix("software\\classes\\tandem.").is_some_and(|rest| !rest.is_empty() && !rest.starts_with('\\'))
+    under("software\\tandem") || under(&format!("software\\classes\\clsid\\{}", crate::default_term::CLSID_TANDEM_TERMINAL.to_ascii_lowercase())) || under("software\\classes\\applications\\tandem.exe") || k.strip_prefix("software\\classes\\tandem.").is_some_and(|rest| !rest.is_empty() && !rest.starts_with('\\'))
 }
 
 /// Writes only the entries that differ from what is there; returns how many were written.

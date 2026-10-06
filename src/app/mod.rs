@@ -122,6 +122,7 @@ mod windows_ui;
 mod chrome_ui;
 mod desktops_ui;
 mod launch_ui;
+mod default_term_ui;
 mod open_file_ui;
 mod presence_ui;
 #[cfg(windows)]
@@ -229,6 +230,8 @@ pub enum UserEvent {
     OpenUrl(String),
     /// Another `tandem.exe` handed over a request (the launch pipe, `launch_ui`).
     Launch(crate::launch::Request),
+    /// A console handed over by the Windows default-terminal handoff (`handoff_win`, `default_term_ui`).
+    Handoff(crate::handoff_win::Handoff),
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
@@ -646,6 +649,15 @@ pub struct App {
     /// them (app-wide, not in `swap_live`; m13v1).
     launch_queue: Vec<crate::launch::Request>,
     launch_flood: crate::url_launch::Flood,
+    /// The default-terminal handoff class, registered while Tandem is the default (m13v1 Task 5).
+    handoff: Option<crate::handoff_win::Server>,
+    /// The handed-off console the next started pane takes (`spawn_pane`), and the ones that
+    /// arrived before the first window.
+    start_handoff: Option<crate::handoff_win::Handoff>,
+    handoff_queue: Vec<crate::handoff_win::Handoff>,
+    /// When an `-Embedding` start began: it makes no window until its handoff arrives.
+    embedding: Option<Instant>,
+    handoffs_seen: usize,
     /// Files and folders opened with Tandem: the batch gathering, the workers that check them and
     /// the scripts the person said OK to run (app-wide, not in `swap_live`; m13v1 Task 2).
     open_batch: crate::open_file::Batch,
@@ -1542,6 +1554,7 @@ pub(crate) fn teardown_process() {
     crate::winkeys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
+    crate::handoff_win::begin_closing();
 }
 
 pub fn run() {
@@ -1578,6 +1591,7 @@ pub fn run() {
     // never hands its start to the Tandem it replaced). With none running, this one starts and
     // runs the request after its first window.
     let mut launch_queue = Vec::new();
+    let mut embedding = false;
     let request = match std::env::args_os().skip(1).map(|a| a.into_string()).collect::<Result<Vec<String>, _>>() {
         Ok(args) => crate::launch::parse(&args, &std::env::current_dir().unwrap_or_default()),
         Err(_) => Err(crate::launch::USAGE.to_string()),
@@ -1586,6 +1600,18 @@ pub fn run() {
         Err(usage) => return message_box(&usage),
         // Handled above (its hand-over and its queue are the URL's own).
         Ok(crate::launch::Request::Url { .. }) => {}
+        // COM starts `tandem.exe -Embedding` for one handoff; any local program can too. It runs
+        // only while Tandem is the default terminal with its pack and no Tandem answers the
+        // launch pipe; it forwards nothing and makes no window until a handoff arrives (B9).
+        Ok(crate::launch::Request::Embedding) => {
+            let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
+            let pack = conpty::load(&Source::Shipped(exe)).is_ok_and(|a| a.pack.is_some());
+            let tandem = crate::default_term::is_tandem(&crate::default_term::current(&crate::reg::HkcuRegistry));
+            match crate::default_term::embedding_start(tandem, pack, &crate::url_launch::probe_running()) {
+                crate::default_term::EmbeddingStart::Run => embedding = true,
+                crate::default_term::EmbeddingStart::Exit(why) => return crate::host::log(&format!("embedding: not started: {why}")),
+            }
+        }
         Ok(request) => {
             if crate::launch::forwardable_start(&request, wait_pid.is_some()) {
                 match crate::url_launch::hand_to_running(&request) {
@@ -1647,6 +1673,9 @@ pub fn run() {
         Ok(h) => Some(h),
         Err(e) => {
             crate::host::log(&format!("launch: not listening: {e}"));
+            if embedding {
+                return;
+            }
             let mut again = pending_urls_at_start.iter().map(|u| crate::launch::Request::Url { url: u.clone() }).chain(launch_queue.iter().cloned()).collect::<Vec<_>>();
             if again.is_empty() {
                 again.push(crate::launch::Request::Reopen);
@@ -1957,6 +1986,11 @@ pub fn run() {
         url_flood: Default::default(),
         launch_queue,
         launch_flood: Default::default(),
+        handoff: None,
+        start_handoff: None,
+        handoff_queue: Vec::new(),
+        embedding: embedding.then(Instant::now),
+        handoffs_seen: 0,
         open_batch: Default::default(),
         open_ignored: Default::default(),
         open_work,
@@ -2375,6 +2409,8 @@ pub fn run() {
         restored_scripts,
         restored_dir: None,
     };
+    // The handoff class is registered before the first window, so COM's wait for it is short.
+    app.sync_handoff_server();
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
@@ -3729,6 +3765,7 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
+        let handed = self.start_handoff.is_some();
         match self.spawn_pane(id, rect, guid, None) {
             Ok((pane, p)) => {
                 self.install_pane(id, pane, &p, false);
@@ -3737,7 +3774,7 @@ impl App {
                 // copy never type the profile's text (B2). The API's CreateTab with custom
                 // properties starts the base profile's own shell with the text, as iTerm2's does
                 // (the API is authenticated; its command is a profile property, not an override).
-                if self.start_command_override.is_none() && self.start_env_override.is_none() {
+                if self.start_command_override.is_none() && self.start_env_override.is_none() && !handed {
                     self.send_initial_text(id, &p);
                 }
                 true
@@ -3759,6 +3796,10 @@ impl App {
         let p = self.profile(guid);
         let cell = self.profile_cell(&p);
         let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
+        // A console handed over by Windows is the pane; no shell is started (m13v1 Task 5).
+        if let Some(h) = self.start_handoff.take() {
+            return self.pane_from_handoff(id, p, h, cols, rows);
+        }
         let (cmd, transport) = match self.start_command_override.clone() {
             // The API's create command never takes the SSH path.
             Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
@@ -6252,6 +6293,10 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
+        // An `-Embedding` start makes its window when the handoff arrives (`handoff_arrived`).
+        if self.embedding.is_some() && self.start_handoff.is_none() {
+            return;
+        }
         // Disable App Nap: opt out of EcoQoS once at start (effective after a restart).
         #[cfg(windows)]
         if self.globals.bool("DisableAppNap") {
@@ -6267,7 +6312,7 @@ impl ApplicationHandler<UserEvent> for App {
         let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();
         let system_policy = !arrangement_policy && !hotkey_only;
         // `state_frozen` at launch: a second copy of Tandem, which leaves the state to the first.
-        let mut saved = if (system_policy || hotkey_only) && !self.state_frozen { self.saved_windows() } else { None };
+        let mut saved = if (system_policy || hotkey_only) && !self.state_frozen && self.start_handoff.is_none() { self.saved_windows() } else { None };
         let regular_saved = saved.as_ref().is_some_and(|(w, _)| w.iter().any(|w| crate::arrangement::hotkey_guid(w).is_none()));
         let g = &self.globals;
         let policy = if arrangement_policy { crate::startup::DEFAULT_ARRANGEMENT } else if hotkey_only { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
@@ -6276,7 +6321,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Nothing to show at launch (Only Restore Hotkey Window, or policy 0 with a hotkey
         // window and nothing restored): the first window is a hotkey window, made hidden.
         let quiet = hotkey_only || (system_policy && !early.window && !early.restore);
-        let startup_hotkey = if quiet && !self.state_frozen { hotkey_profiles.first().cloned() } else { None };
+        let startup_hotkey = if quiet && !self.state_frozen && self.start_handoff.is_none() { hotkey_profiles.first().cloned() } else { None };
         let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
         if startup_hotkey.is_some() {
             use winit::platform::windows::WindowAttributesExtWindows;
@@ -6356,7 +6401,9 @@ impl ApplicationHandler<UserEvent> for App {
         let default_arrangement = self
             .globals
             .bool("OpenArrangementAtStartup")
-            .then(|| {
+            .then_some(())
+            .filter(|_| self.start_handoff.is_none())
+            .map(|_| {
                 let store = self.arrangements();
                 store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
             })
@@ -6441,11 +6488,22 @@ impl ApplicationHandler<UserEvent> for App {
         // URLs that came with the start or before the window open now, after the first window.
         self.open_pending_urls();
         self.open_launch_queue(event_loop);
+        self.open_handoff_queue(event_loop);
         self.register_open_with();
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // An `-Embedding` start waits for its handoff with no window, and ends itself when none comes.
+        if self.gpu.is_none() {
+            if let Some(t0) = self.embedding {
+                if crate::default_term::idle_exit(t0, Instant::now(), self.handoffs_seen, 0) {
+                    return event_loop.exit();
+                }
+                return event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(t0 + crate::default_term::IDLE_EXIT));
+            }
+        }
+        self.handoff_banner_tick();
         // Timers (blink, bells, activity, marks, animations) act for the window the person
         // uses; the window that drew last may be another one.
         if let Some(w) = self.last_window {
@@ -6672,6 +6730,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
             UserEvent::Launch(request) => return self.receive_launch(request, event_loop),
+            UserEvent::Handoff(h) => return self.handoff_arrived(h, event_loop),
             UserEvent::Logoff(done) => {
                 #[cfg(windows)]
                 self.logoff_now(&done);

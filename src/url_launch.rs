@@ -204,7 +204,7 @@ pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn 
 }
 
 #[cfg(windows)]
-pub use pipe::{hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on};
+pub use pipe::{hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running};
 
 #[cfg(windows)]
 mod pipe {
@@ -225,6 +225,35 @@ mod pipe {
             handed
         };
         hand_over(&mut attempt, 3, &|| std::thread::sleep(Duration::from_millis(300)))
+    }
+
+    /// Whether a Tandem of this user answers on the launch pipe, with nothing sent (an
+    /// `-Embedding` start asks before it makes anything: B9).
+    pub fn probe_running() -> Handed {
+        match winpipe::url_pipe_name() {
+            Ok(n) => probe_on(&n, &verify_server),
+            Err(e) => Handed::Failed(format!("no link pipe name: {e}")),
+        }
+    }
+
+    /// `probe_running` on pipe `name`; a holder `verify` refuses is `OtherOwner`.
+    pub fn probe_on(name: &str, verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
+        let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
+            Ok(Some(p)) => p,
+            Ok(None) => return Handed::NoServer,
+            Err(winpipe::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
+            Err(winpipe::ConnectError::Other(e)) => return Handed::Failed(e),
+        };
+        if let Err(e) = pipe.server_is_this_user() {
+            return Handed::OtherOwner(e);
+        }
+        match pipe.server_pid() {
+            Ok(pid) => match verify(pid) {
+                Ok(()) => Handed::Taken,
+                Err(e) => Handed::OtherOwner(e),
+            },
+            Err(e) => Handed::Failed(e),
+        }
     }
 
     /// Lets the Tandem that serves the pipe (and only it) come forward (P16).

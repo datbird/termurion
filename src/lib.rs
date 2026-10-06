@@ -338,6 +338,9 @@ pub mod url_schemes;
 pub mod launch;
 pub mod open_file;
 pub mod reg;
+pub mod default_term;
+#[cfg(windows)]
+pub mod handoff_win;
 pub mod url_launch;
 pub mod url_open;
 pub mod ssh_recovery;
