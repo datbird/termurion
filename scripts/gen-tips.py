@@ -16,8 +16,9 @@ OUT = os.path.join(ROOT, "resources", "tips.toml")
 
 EXPECTED = 124
 # Not ported: they describe the Mac only (Touch Bar, "on your Mac"), or a setting Tandem has no
-# row for (0068: the hotkey window floating over other apps' full-screen windows).
-DROPPED = ["0066", "0105", "0068"]
+# row for (0068: the hotkey window floating over other apps' full-screen windows; 0052: every new
+# tab opening next to the current one, Tandem only has the duplicated-tab setting).
+DROPPED = ["0066", "0105", "0068", "0052"]
 
 # Applied in exactly this order (the triple before any pair, pairs before singles).
 REPLACEMENTS = [
@@ -79,6 +80,13 @@ def parse(text):
 RELEASE_WORDS = [
     ("The big new feature of Tandem version 3 is", "A big feature of Tandem is"),
 ]
+# Names that are iTerm2's, not Tandem's controls (checked by tips::tip_paths_are_real_menus_and_settings).
+NAME_FIXES = [
+    ("turn that on in \u201cSettings > Advanced.\u201d", "turn that on in \u201cSettings > Profiles > Terminal > Notifications.\u201d"),
+    ("Settings > Profiles > Keys > Customize Hotkey Window", "Settings > Profiles > Keys > Hotkey Window"),
+    ("View > Disable transparency in key window", "View > Disable Transparency for Active Window"),
+    (" > Smart Selection > Edit Actions.", " > Smart Selection."),
+]
 NEW_IN = re.compile(r"New in [0-9.]+: ")
 
 
@@ -92,6 +100,8 @@ def translate(s):
     for a, b in RELEASE_WORDS:
         s = s.replace(a, b)
     s = NEW_IN.sub("", s)
+    for a, b in NAME_FIXES:
+        s = s.replace(a, b)
     for g in LEFT_OVER:
         assert g not in s, f"{g!r} remains in {s!r}"
     return s

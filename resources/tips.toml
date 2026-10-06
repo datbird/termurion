@@ -179,13 +179,13 @@ url = "https://www.iterm2.com/smartselection.html"
 [[tip]]
 key = "0031"
 title = "Smart Selection Actions"
-body = "Assign an action to a Smart Selection rule in \u201CSettings > Profiles > Advanced > Smart Selection > Edit Actions.\u201D They go in the context menu and override semantic history on Win+click."
+body = "Assign an action to a Smart Selection rule in \u201CSettings > Profiles > Advanced > Smart Selection.\u201D They go in the context menu and override semantic history on Win+click."
 url = "https://www.iterm2.com/smartselection.html"
 
 [[tip]]
 key = "0032"
 title = "Visual Bell"
-body = "If you want the visual bell to flash the whole screen instead of show a bell icon, you can turn that on in \u201CSettings > Advanced.\u201D"
+body = "If you want the visual bell to flash the whole screen instead of show a bell icon, you can turn that on in \u201CSettings > Profiles > Terminal > Notifications.\u201D"
 
 [[tip]]
 key = "0033"
@@ -289,11 +289,6 @@ title = "Minimum Contrast"
 body = "Adjust \u201CMinimum Contrast\u201D in \u201CSettings > Profiles > Colors\u201D to ensure text is always legible regardless of text/background color combination."
 
 [[tip]]
-key = "0052"
-title = "Tabs"
-body = "Normally, new tabs appear at the end of the tab bar. There\u2019s a setting in \u201CSettings > Advanced\u201D to place them next to your current tab."
-
-[[tip]]
 key = "0053"
 title = "Base Conversion"
 body = "Right-click on a number and the context menu shows it converted to hex or decimal as appropriate."
@@ -374,7 +369,7 @@ body = "You can have multiple hotkey windows. Each profile can have one or more 
 [[tip]]
 key = "0070"
 title = "Double-Tap Hotkey"
-body = "You can configure a hotkey window to open on double-tap of a modifier in \u201CSettings > Profiles > Keys > Customize Hotkey Window.\u201D"
+body = "You can configure a hotkey window to open on double-tap of a modifier in \u201CSettings > Profiles > Keys > Hotkey Window.\u201D"
 
 [[tip]]
 key = "0071"
@@ -467,7 +462,7 @@ body = "You can assign specific fonts to Unicode ranges. Use 'Settings > Profile
 [[tip]]
 key = "0089"
 title = "Disable Transparency"
-body = "Maintain clarity in your active window while enjoying transparency in background windows by using 'View > Disable transparency in key window'."
+body = "Maintain clarity in your active window while enjoying transparency in background windows by using 'View > Disable Transparency for Active Window'."
 
 [[tip]]
 key = "0090"

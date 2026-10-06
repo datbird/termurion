@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn tips_load_and_translate() {
         let all = all();
-        assert_eq!(all.len(), 121);
+        assert_eq!(all.len(), 120);
         assert!(all.windows(2).all(|w| w[0].key.as_bytes() < w[1].key.as_bytes()), "sorted by key");
         let first = &all[0];
         assert_eq!(first.key, "000");
@@ -453,6 +453,72 @@ mod tests {
         assert_eq!(by("0000").map(|t| t.body.as_str()), Some("A big feature of Tandem is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details."));
         assert!(by("0068").is_none());
         assert!(by("0069").is_some_and(|t| t.body.starts_with("You can have multiple hotkey windows.")));
+    }
+
+    /// The quoted "A > B > C" paths of a tip's text (curly or straight quotes).
+    fn quoted_paths(text: &str) -> Vec<Vec<String>> {
+        let re = regex::Regex::new("\u{201c}([^\u{201d}]*)\u{201d}|'([^']*)'").unwrap();
+        re.captures_iter(text)
+            .filter_map(|c| c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()))
+            .filter(|s| s.contains(" > "))
+            .map(|s| s.trim_end_matches(['.', ',']).split(" > ").map(|p| p.trim().trim_end_matches('.').to_string()).collect())
+            .collect()
+    }
+
+    /// Review fix 2 (class): every menu path and Settings path a tip quotes exists in Tandem. A
+    /// menu path is an item of `schema/menus.toml` (iTerm2's trailing "..." left off, a placeholder
+    /// for the person's own session allowed); a Settings path is a global or profile tab and then
+    /// a section or a setting's label in it.
+    #[test]
+    fn tip_paths_are_real_menus_and_settings() {
+        use crate::schema;
+        let strip = |s: &str| s.trim_end_matches("...").trim_end_matches('\u{2026}').to_string();
+        let menu_paths: Vec<Vec<String>> = crate::menus::items().iter().filter(|i| !i.separator).map(|i| i.path.iter().map(|p| strip(&crate::menus::shown_label(p))).collect()).collect();
+        let roots: std::collections::HashSet<&str> = menu_paths.iter().map(|p| p[0].as_str()).collect();
+        // "Your session" stands for whatever session the person buried.
+        const PLACEHOLDERS: [&str; 1] = ["Your session"];
+        let mut checked = 0;
+        for tip in all() {
+            for path in quoted_paths(&format!("{} {}", tip.title, tip.body)) {
+                let first = path[0].as_str();
+                if first == "Settings" {
+                    let (rows, rest): (Vec<&schema::Setting>, &[String]) = match path.get(1).map(String::as_str) {
+                        Some("Profiles") => (schema::profile().iter().filter(|s| path.get(2).is_some_and(|t| &s.tab == t)).collect(), path.get(3..).unwrap_or(&[])),
+                        Some(tab) => (schema::global().iter().filter(|s| s.tab == tab).collect(), &path[2..]),
+                        None => (Vec::new(), &[]),
+                    };
+                    assert!(!rows.is_empty(), "tip {}: {path:?} names no Settings tab", tip.key);
+                    for part in rest {
+                        let p = part.to_lowercase();
+                        assert!(rows.iter().any(|s| s.section.to_lowercase() == p || s.label.to_lowercase().contains(&p)), "tip {}: {path:?} names {part:?}, which is no section or setting there", tip.key);
+                    }
+                } else if roots.contains(first) {
+                    let ok = menu_paths.iter().any(|m| m.as_slice() == path.iter().map(|p| strip(p)).collect::<Vec<_>>().as_slice())
+                        || path.last().is_some_and(|l| PLACEHOLDERS.contains(&l.as_str()) && menu_paths.iter().any(|m| m.as_slice() == &path.iter().map(|p| strip(p)).collect::<Vec<_>>()[..path.len() - 1]));
+                    assert!(ok, "tip {}: {path:?} is not a Tandem menu item", tip.key);
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 40, "only {checked} paths checked: the scan is broken");
+    }
+
+    /// Review fix 2: a tip that points at "Settings > Advanced" (or the bell) names a control that
+    /// exists, and the two tips that named controls Tandem lacks are reworded or gone.
+    #[test]
+    fn tips_name_controls_that_exist() {
+        use crate::schema;
+        let by = |k: &str| all().iter().find(|t| t.key == k);
+        assert!(schema::find_global("CopyWithStylesByDefault").is_some_and(|s| s.tab == "Advanced"), "0006");
+        assert!(schema::find_global("TimeBetweenBlinks").is_some_and(|s| s.tab == "Advanced"), "0023");
+        // The bell is a profile setting, not an Advanced one (0032).
+        assert!(schema::find("Flashing Bell").is_some_and(|s| s.tab == "Terminal" && s.section == "Notifications"));
+        assert!(by("0032").is_some_and(|t| t.body.contains("Settings > Profiles > Terminal > Notifications")));
+        // Tandem has no setting to open every new tab next to the current one (0052).
+        assert!(by("0052").is_none());
+        // The hotkey double-tap lives in the profile's Keys tab, section Hotkey Window (0070).
+        assert!(by("0070").is_some_and(|t| t.body.contains("Settings > Profiles > Keys > Hotkey Window")));
+        assert!(by("0089").is_some_and(|t| t.body.contains("View > Disable Transparency for Active Window")));
     }
 
 }
