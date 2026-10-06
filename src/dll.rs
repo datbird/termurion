@@ -67,29 +67,52 @@ mod tests {
         }
     }
 
-    /// Every runtime load of a DLL passes a search-path flag: no bare `LoadLibraryW` or
-    /// `LoadLibraryA` call remains in the tree, and a file that calls `LoadLibraryExW` names
-    /// `LOAD_LIBRARY_SEARCH_SYSTEM32`.
+    /// Every runtime load of a DLL passes a search-path flag: no `LoadLibraryW`, `LoadLibraryA`,
+    /// `LoadLibraryExA` or `LoadPackagedLibrary` token (an alias import counts) and no `libloading`
+    /// remains outside comments; `LoadLibraryExW` appears only in this file and the vendored
+    /// conpty, and each call there names `LOAD_LIBRARY_SEARCH_SYSTEM32` within its own text
+    /// (a call may span lines).
     #[test]
     fn no_dll_loads_from_the_exe_or_current_folder() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
-        sources(&root.join("src"), &mut files);
-        sources(&root.join("crates"), &mut files);
-        let bare = ["LoadLibrary".to_string() + "W(", "LoadLibrary".to_string() + "A(", "LoadLibraryEx".to_string() + "A("];
-        let ex = "LoadLibraryEx".to_string() + "W(";
+        for dir in ["src", "crates", "tests", "examples"] {
+            if root.join(dir).is_dir() {
+                sources(&root.join(dir), &mut files);
+            }
+        }
+        for f in ["build.rs"] {
+            if root.join(f).is_file() {
+                files.push(root.join(f));
+            }
+        }
+        let bare: Vec<String> = ["LoadLibraryW", "LoadLibraryA", "LoadLibraryExA", "LoadPackagedLibrary", "libloading"].iter().map(|t| t.to_string()).collect();
+        let ex = "LoadLibraryEx".to_string() + "W";
         let flag = "LOAD_LIBRARY_SEARCH_".to_string() + "SYSTEM32";
+        let allowed = [root.join("src").join("dll.rs"), root.join("crates").join("alacritty_terminal").join("src").join("tty").join("windows").join("conpty.rs")];
+        let this = root.join("src").join("dll.rs");
         let mut bad = Vec::new();
         for f in files {
             let text = std::fs::read_to_string(&f).unwrap();
-            for (n, line) in text.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
-                if bare.iter().any(|b| code.contains(b.as_str())) {
-                    bad.push(format!("{}:{}: bare load", f.display(), n + 1));
+            // This file's own tests hold the tokens as data and its docs name them.
+            let code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+            let code = if f == this { code.split("#[cfg(test)]").next().unwrap_or("").to_string() } else { code };
+            for b in &bare {
+                if code.contains(b.as_str()) {
+                    bad.push(format!("{}: names {b}", f.display()));
                 }
             }
-            if text.contains(&ex) && !text.contains(&flag) {
-                bad.push(format!("{}: LoadLibraryExW without {flag}", f.display()));
+            for (at, _) in code.match_indices(ex.as_str()) {
+                if !allowed.contains(&f) {
+                    bad.push(format!("{}: LoadLibraryExW outside the two allowed files", f.display()));
+                    break;
+                }
+                let call = &code[at..(at + 200).min(code.len())];
+                // An import names it without calling it; an error message may quote it.
+                let in_text = code[..at].ends_with('"');
+                if !in_text && call[ex.len()..].starts_with('(') && !call.contains(&flag) {
+                    bad.push(format!("{}: a LoadLibraryExW call without {flag}", f.display()));
+                }
             }
         }
         assert!(bad.is_empty(), "{bad:#?}");

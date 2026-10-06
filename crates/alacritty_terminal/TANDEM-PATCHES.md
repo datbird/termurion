@@ -176,5 +176,9 @@ test data) is left out. Changes:
     a reset (iTerm2 `terminalDidReset`).
 30. `term/mod.rs`: `Term.history_clears` counts scrollback clears (`ClearMode::Saved` with history), so
     Tandem's extra selections, numbered by buffer row, can drop when a clear renumbers the rows.
+31. `term/mod.rs`: `Term::is_tab_stop(column)`, so the copy text model can tell a tab's blanks from
+    typed spaces (13s Task 3).
+32. `tty/windows/conpty.rs`: `LoadLibraryExW("conpty.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32)`
+    instead of a bare load, so no conpty.dll beside the exe or in the current folder loads.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
