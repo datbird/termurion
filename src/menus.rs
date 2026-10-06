@@ -79,6 +79,8 @@ pub fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
     match selector {
         "captureNextMetalFrame:" => !debug_build,
         "debugCheckSettingsControlTruncation:" => true,
+        // The browser toolbar's Debug Autofill Fields (`iTermBrowserToolbar.swift:370-378`, `#if DEBUG`).
+        "debugAutofillMenuItemSelected:" => !debug_build,
         _ => false,
     }
 }

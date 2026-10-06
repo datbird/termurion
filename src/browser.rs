@@ -492,7 +492,23 @@ pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool) -> Vec<Option
         out.push(None);
     }
     out.push(Some(("Settings", false)));
+    // The one menu filter (13w): an item this build removes is never shown, here as in every
+    // other menu copy (iTerm2's own toolbar menu has a debug-build-only item).
+    out.retain(|i| i.is_none_or(|(label, _)| !crate::menus::hidden_in_menu(menu_selector(label), cfg!(debug_assertions))));
     out
+}
+
+/// The iTerm2 action of a toolbar menu item (`iTermBrowserToolbar.swift:347-412`), the name the
+/// one menu filter (`menus::hidden_in_menu`) reads.
+pub fn menu_selector(label: &str) -> &'static str {
+    match label {
+        "Add Bookmark" | "Remove Bookmark" => "bookmarkMenuItemSelected:",
+        "Manage Bookmarks" => "manageBookmarksMenuItemSelected:",
+        "History" => "historyMenuItemSelected:",
+        "Settings" => "settingsMenuItemSelected:",
+        "Debug Autofill Fields" => "debugAutofillMenuItemSelected:",
+        _ => "",
+    }
 }
 
 /// The lines of a Back or Forward history menu: the title, else the URL (`BT:520-560`).
@@ -1132,6 +1148,23 @@ mod tests {
     /// shows (titles, the URL bar, suggestions, history items, the popover's Open in name, a
     /// page title cleaned before posting) goes through `inert_files::display_text`, so the sets
     /// cannot drift; the browser's wider set was folded into `is_hidden`.
+    /// The 13w merge: the toolbar menu goes through the one `hidden_in_menu` filter, and the
+    /// filter knows iTerm2's debug-build-only toolbar item.
+    #[test]
+    fn browser_menu_follows_the_one_menu_filter() {
+        assert!(crate::menus::hidden_in_menu(menu_selector("Debug Autofill Fields"), false), "debug builds only (iTermBrowserToolbar.swift:370-378)");
+        assert!(!crate::menus::hidden_in_menu(menu_selector("Debug Autofill Fields"), true));
+        for dev_null in [false, true] {
+            for (label, _) in menu_items(false, true, dev_null).into_iter().flatten() {
+                assert!(!menu_selector(label).is_empty(), "{label} has its iTerm2 action");
+                assert!(!crate::menus::hidden_in_menu(menu_selector(label), false), "{label} shows in release");
+            }
+        }
+        let live = include_str!("browser.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        let body = &live[live.find("pub fn menu_items(").unwrap()..];
+        assert!(body[..body.find("\n}\n").unwrap()].contains("crate::menus::hidden_in_menu(menu_selector(label), cfg!(debug_assertions))"));
+    }
+
     #[test]
     fn browser_display_text_uses_the_one_sanitizer() {
         // The browser's former extras are hidden everywhere now.
