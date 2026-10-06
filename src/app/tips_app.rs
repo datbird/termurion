@@ -57,15 +57,10 @@ pub(super) fn launch_step(g: &mut Globals, now: f64, automatic_checks_on: bool) 
     }
 }
 
-/// Seconds until the next try after a `Wait` or a shown tip: the gap from the last tip when the
-/// last tip is the reason, the whole gap while a card is open (`performSelector:afterDelay:`).
-pub(super) fn retry_in(now: f64, last: f64, between: f64, showing: bool) -> f64 {
-    let gap = tips::between_clamped(between);
-    if showing {
-        gap
-    } else {
-        (tips::next_try_at(last, between) - now).clamp(1.0, gap)
-    }
+/// Seconds until the next try after a `Wait` or a shown tip: a full gap from now, as iTerm2's
+/// `performSelector:afterDelay:` does, never `last + gap` (past when a card stays open).
+pub(super) fn retry_in(between: f64) -> f64 {
+    tips::between_clamped(between)
 }
 
 pub(super) fn permission_ask() -> Ask {
@@ -158,12 +153,12 @@ impl App {
         match verdict {
             // Not due to anyone now: the next activation tries again, so an idle Tandem is not woken.
             Try::Never => {}
-            Try::Wait => self.arm_tip(retry_in(now, last, between, showing)),
+            Try::Wait => self.arm_tip(retry_in(between)),
             Try::Show => {
                 let seen = tips::seen_of(&self.globals);
                 if let Some(key) = tips::next_key(tips::all(), None, &seen) {
                     self.show_tip(event_loop, &key);
-                    self.arm_tip(between);
+                    self.arm_tip(retry_in(between));
                 }
             }
         }
@@ -352,13 +347,24 @@ mod tests {
         assert!(g.raw(tips::ELIGIBILITY_KEY).is_none());
     }
 
+    /// A wait is always a full gap from now (`performSelector:afterDelay:`): a card left open
+    /// for longer than the gap leaves `last + gap` in the past, and a deadline there would wake an
+    /// idle app in a loop. Counts the wakes a simulated hour of waiting costs.
     #[test]
     fn retries_never_busy_loop() {
         let day = tips::DAY;
-        assert_eq!(retry_in(100.0, 100.0 - 60.0, day, false), day - 60.0);
-        assert_eq!(retry_in(100.0, 100.0 - day - 5.0, day, false), 1.0);
-        assert_eq!(retry_in(100.0, 0.0, day, true), day);
-        assert_eq!(retry_in(100.0, 0.0, f64::NAN, true), day);
+        assert_eq!(retry_in(day), day);
+        assert_eq!(retry_in(f64::NAN), day);
+        assert_eq!(retry_in(0.0), tips::MIN_BETWEEN);
+        // A card open for three days with a one-day gap: every wait is a day, so 3 wakes, not a flood.
+        let (mut now, mut wakes) = (0.0, 0);
+        while now < 3.0 * day {
+            now += retry_in(day);
+            wakes += 1;
+        }
+        assert_eq!(wakes, 3);
+        // And a short gap is the clamped minimum, never zero.
+        assert!(retry_in(-5.0) >= tips::MIN_BETWEEN);
     }
 
     #[test]
