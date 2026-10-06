@@ -101,8 +101,26 @@ const LINK_HOPS: usize = 8;
 
 /// Where a chain of symbolic links or junctions from `start` ends, reading each hop with
 /// `read_link` (None: not a link). None when a hop names a network path (it is never followed)
-/// or the chain is longer than `LINK_HOPS`; `start` itself when it is no link.
+/// or the chain is longer than `LINK_HOPS`; `start` itself when it is no link. Text rule only;
+/// `link_chain_end_on` also refuses a hop onto a mapped drive.
 pub fn link_chain_end(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Option<PathBuf> {
+    link_chain_end_on(start, read_link, &crate::netpath::LocalDrives)
+}
+
+/// The drive letter of a path as `X:\`, through a `\\?\` or `\??\` prefix.
+fn drive_root(text: &str) -> Option<String> {
+    let b = text.as_bytes();
+    let at = if b.len() >= 4 && matches!(b[0], b'\\' | b'/') && b[2] == b'?' && matches!(b[3], b'\\' | b'/') { 4 } else { 0 };
+    (b.len() >= at + 2 && b[at].is_ascii_alphabetic() && b[at + 1] == b':').then(|| format!("{}:\\", b[at] as char))
+}
+
+/// Whether `path` is on a mapped network drive (`GetDriveTypeW`, no network I/O).
+fn on_remote_drive(path: &Path, drives: &dyn crate::netpath::Drives) -> bool {
+    drive_root(&path.to_string_lossy()).is_some_and(|root| drives.is_remote(&root))
+}
+
+/// `link_chain_end` that also refuses a hop landing on a mapped drive.
+pub fn link_chain_end_on(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn crate::netpath::Drives) -> Option<PathBuf> {
     let mut at = start.to_path_buf();
     for _ in 0..LINK_HOPS {
         let Some(target) = read_link(&at) else {
@@ -113,7 +131,7 @@ pub fn link_chain_end(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>
             Some(parent) if target.is_relative() => parent.join(target),
             _ => target,
         };
-        if is_network_path(&target.to_string_lossy()) {
+        if is_network_path(&target.to_string_lossy()) || on_remote_drive(&target, drives) {
             return None;
         }
         at = target;
@@ -127,17 +145,35 @@ fn link_is_local_folder(link: &Path) -> bool {
     link_chain_end(link, &read_link).is_some_and(|end| end.is_dir())
 }
 
-/// Whether `path` is safe to touch as a file without a person asking: not a network path,
-/// and not a link whose chain reaches one (or never ends). Reads only the links themselves.
+/// Whether `path` is safe to touch as a file without a person asking: not a network path, not
+/// on a mapped drive, and no folder from the root down (nor the file) a link whose chain reaches
+/// a network path or a mapped drive (or never ends). Reads only the links themselves.
 pub fn stays_local(path: &Path) -> bool {
-    !is_network_path(&path.to_string_lossy()) && link_chain_end(path, &read_link).is_some()
+    stays_local_with(path, &read_link, &*crate::netpath::real_drives())
+}
+
+/// `stays_local` with the link reader and the drive types given (the real ones, or a test's).
+pub fn stays_local_with(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn crate::netpath::Drives) -> bool {
+    ancestors_stay_local_with(path, read_link, drives)
 }
 
 /// Whether a folder can be listed without a person asking: `stays_local` for it and for
 /// every folder above it, since any of them may be a link or junction to a network path
 /// (a Scripts folder, or `%APPDATA%` itself, redirected to a share). Reads only the links.
 pub fn ancestors_stay_local(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> bool {
-    !is_network_path(&path.to_string_lossy()) && path.ancestors().filter(|a| !a.as_os_str().is_empty()).all(|a| link_chain_end(a, read_link).is_some())
+    ancestors_stay_local_with(path, read_link, &*crate::netpath::real_drives())
+}
+
+/// The one local-path rule: the text rule and the drive type first (nothing is read for a path
+/// that fails them), then every folder ROOT FIRST, so a junction is read before anything goes
+/// through it (a read of `C:\j\f` with `C:\j` a junction to a share would reach the share).
+pub fn ancestors_stay_local_with(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn crate::netpath::Drives) -> bool {
+    if is_network_path(&path.to_string_lossy()) || on_remote_drive(path, drives) {
+        return false;
+    }
+    let mut chain: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
+    chain.reverse();
+    chain.into_iter().all(|a| link_chain_end_on(a, read_link, drives).is_some())
 }
 
 /// Logged in the app-wide entry when AutoLaunch is skipped because its folder is reached
@@ -618,6 +654,47 @@ mod tests {
         assert!(local(r"C:\S5"));
         assert!(!ancestors_stay_local(Path::new(r"\\server\s\AutoLaunch"), &|_| panic!("a network path is never read")));
         assert_eq!(autolaunch_not_local(Path::new(r"C:\S1\AutoLaunch")), "AutoLaunch skipped: C:\\S1\\AutoLaunch is reached through a link to a network path.\n");
+    }
+
+    /// Review fix: the ONE rule also refuses a mapped drive and a junction anywhere above the file
+    /// that lands on a share or a mapped drive, reading root first so nothing is read through it.
+    /// The drive types and links are injected; the rule itself runs for real.
+    struct Remote(&'static [char]);
+    impl crate::netpath::Drives for Remote {
+        fn is_remote(&self, root: &str) -> bool {
+            root.chars().next().is_some_and(|c| self.0.contains(&c.to_ascii_uppercase()))
+        }
+    }
+
+    #[test]
+    fn the_one_rule_refuses_mapped_drives_and_ancestor_links() {
+        let drives = Remote(&['Z']);
+        let none = |_: &Path| None;
+        assert!(stays_local_with(Path::new(r"C:\a\s.ps1"), &none, &drives));
+        for p in [r"Z:\a.ps1", r"z:\a\b.ps1", r"\\?\Z:\a.ps1", r"\??\Z:\a.ps1"] {
+            assert!(!stays_local_with(Path::new(p), &none, &drives), "{p}");
+            assert!(!ancestors_stay_local_with(Path::new(p), &none, &drives), "{p}");
+        }
+        // A junction above the file to a share, to a mapped drive, or through a chain to one.
+        let links: std::collections::HashMap<PathBuf, PathBuf> =
+            [(r"C:\j", r"\\attacker\share"), (r"C:\m", r"Z:\x"), (r"C:\c", r"C:\hop"), (r"C:\hop", r"\\?\UNC\h\s"), (r"C:\ok", r"D:\real")].into_iter().map(|(a, b)| (PathBuf::from(a), PathBuf::from(b))).collect();
+        let reads = std::cell::RefCell::new(Vec::new());
+        let read = |p: &Path| {
+            reads.borrow_mut().push(p.to_path_buf());
+            links.get(p).cloned()
+        };
+        for p in [r"C:\j\s.ps1", r"C:\j\deep\er\s.ps1", r"C:\m\s.ps1", r"C:\c\s.ps1"] {
+            reads.borrow_mut().clear();
+            assert!(!stays_local_with(Path::new(p), &read, &drives), "{p}");
+            assert!(!reads.borrow().iter().any(|r| r.to_string_lossy().ends_with("s.ps1")), "{p}: the file was read through the link: {:?}", reads.borrow());
+            assert!(!ancestors_stay_local_with(Path::new(p), &read, &drives), "{p}");
+        }
+        assert!(stays_local_with(Path::new(r"C:\ok\s.ps1"), &read, &drives), "a junction to a local folder is fine");
+        // A relative link target is joined to its folder before the check.
+        let rel = |p: &Path| (p == Path::new(r"C:\r")).then(|| PathBuf::from(r"..\..\x"));
+        assert!(stays_local_with(Path::new(r"C:\r\f"), &rel, &drives));
+        // The wrappers used by every caller ask the real drive types, no network I/O.
+        assert!(stays_local(Path::new(r"C:\Windows\notepad.exe")));
     }
 
     #[test]
