@@ -254,6 +254,25 @@ mod tests {
         dir.join("settings.toml")
     }
 
+    /// The 13v2 x 13w seam in `Globals::set`: 13w's bounds apply before 13v2's `KEPT_WHEN_DEFAULT`
+    /// check. A bounded key's refused value becomes the default and is removed (not stored), while
+    /// a kept key at its default stays present (`raw` sees it); neither table changes the other.
+    #[test]
+    fn bounds_and_kept_when_default_compose() {
+        let mut g = Globals::empty(&scratch("bounds-kept"));
+        g.set("FakeFullyQualifiedDomainName", Value::String("a b".to_string()));
+        assert!(g.raw("FakeFullyQualifiedDomainName").is_none(), "a refused bounded value is the default, removed");
+        g.set("FakeFullyQualifiedDomainName", Value::String("ok.host".to_string()));
+        assert_eq!(g.raw("FakeFullyQualifiedDomainName").and_then(|v| v.as_str()), Some("ok.host"));
+        let auto = crate::update::AUTOMATIC_KEY;
+        let def = default_of(auto).expect("SUEnableAutomaticChecks has a default");
+        g.set(auto, def.clone());
+        assert_eq!(g.raw(auto), Some(&def), "a kept key at its default stays present");
+        for (key, _) in BOUNDS {
+            assert!(!KEPT_WHEN_DEFAULT.contains(key), "{key}: a bounded key is never kept at its default");
+        }
+    }
+
     /// B4: the fake identity texts are bounded at the one write point (`set`) and at `load`.
     #[test]
     fn globals_bounds_clamp_every_13w_key() {
