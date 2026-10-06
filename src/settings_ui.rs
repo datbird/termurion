@@ -708,7 +708,9 @@ impl SettingsWindow {
                         child.data_mut(|d| d.insert_temp(id, drag));
                         if let Some((key, c)) = moved {
                             if let Some(s) = schema::find(&key) {
-                                profile.set(&edit_key(profile, s, dark), value_of_rgb([c.r, c.g, c.b]));
+                                let key = edit_key(profile, s, dark);
+                                profile.set(&key, value_of_rgb([c.r, c.g, c.b]));
+                                crate::bindings::drop_for_write(profile, &key);
                                 edit = Edit::Changed(selected.clone());
                             }
                         }
@@ -1572,6 +1574,10 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     });
     if let Some(v) = changed {
         profile.set(&key, v);
+        // A color picked in the well wins over a palette-owned binding (`PCP:555-569`).
+        if s.kind == Kind::Color {
+            crate::bindings::drop_for_write(profile, &key);
+        }
     }
     match bind_action {
         Some(BindAction::Remove) => {

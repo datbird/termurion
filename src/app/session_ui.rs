@@ -27,30 +27,10 @@ impl App {
         Some(fresh)
     }
 
-    /// Sets or removes (None) values on the pane's own copy of its profile, and redraws. A
-    /// concrete color drops the palette-owned binding of its base key (Settings and the escape
-    /// codes override a color this way); a binding's own answers use `write_session_values`.
+    /// Sets or removes (None) values on the pane's own copy of its profile, and redraws. It never
+    /// drops a palette-owned binding (`PS:8384-8394`); the Settings color writers do
+    /// (`bindings::drop_for_write`).
     pub(super) fn set_session_values(&mut self, pane: PaneId, values: &[(String, Option<toml::Value>)]) {
-        let mut values = values.to_vec();
-        if let Some(copy) = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)) {
-            if !values.iter().any(|(k, _)| k == crate::bindings::KEY) {
-                let mut probe = crate::profile::Profile { values: copy.values.clone() };
-                let mut dropped = false;
-                for (k, v) in &values {
-                    if v.is_some() && crate::bindings::is_color_key(k) {
-                        dropped |= crate::bindings::drop_palette_in(&mut probe, crate::bindings::base_key(k));
-                    }
-                }
-                if dropped {
-                    values.push((crate::bindings::KEY.to_string(), probe.values.get(crate::bindings::KEY).cloned()));
-                }
-            }
-        }
-        self.write_session_values(pane, &values);
-    }
-
-    /// `set_session_values` without the palette-binding rule.
-    pub(super) fn write_session_values(&mut self, pane: PaneId, values: &[(String, Option<toml::Value>)]) {
         let Some(guid) = self.divorce(pane) else { return };
         self.store.set_session(&guid, values);
         self.refresh_panes();

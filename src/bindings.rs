@@ -136,6 +136,14 @@ pub fn drop_palette_in(profile: &mut Profile, base: &str) -> bool {
     any
 }
 
+/// A concrete color picked for `key` by the person (the Settings well or wheel) drops the
+/// palette-owned binding of its base key, or the binding's next answer would overwrite the pick
+/// (`clearPaletteBindingForColorKey:`, `PCP:555-569`); a user-authored binding stays. Not for
+/// propagating writes (`PS:8384-8394`). Whether anything went.
+pub fn drop_for_write(profile: &mut Profile, key: &str) -> bool {
+    is_color_key(key) && drop_palette_in(profile, base_key(key))
+}
+
 /// Whether a binding may name `key`: the color wells and checkboxes (the schema's color and
 /// checkbox rows and their Light and Dark variants), never a path, command, Guid or Name key
 /// (a profile's Bindings can come from an import or a script).
@@ -469,5 +477,15 @@ mod tests {
         let long = "x".repeat(MAX_EXPRESSION + 1);
         assert!(bound(&with(&[("Foreground Color", s(&long))])).is_empty());
         assert_eq!(bound(&with(&[("Foreground Color", s(&"x".repeat(MAX_EXPRESSION)))])).len(), 1);
+    }
+
+    #[test]
+    fn a_picked_color_drops_only_the_palette_binding() {
+        let mut p = with(&[("Foreground Color (Dark)", tbl("i:3", "palette")), ("Foreground Color", s("user.fg")), ("Blur", s("user.b"))]);
+        assert!(!drop_for_write(&mut p, "Blur"), "not a color");
+        assert!(drop_for_write(&mut p, "Foreground Color"), "the base key drops its mode variants too");
+        let keys: Vec<String> = get(&p).into_keys().collect();
+        assert_eq!(keys, ["Blur", "Foreground Color"], "a user-authored binding stays");
+        assert!(!drop_for_write(&mut p, "Foreground Color"));
     }
 }

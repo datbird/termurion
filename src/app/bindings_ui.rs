@@ -195,7 +195,7 @@ impl App {
 
     /// A bound key's new value (`boundVariableDidChange:value:`). Nothing when the profile no
     /// longer binds the key. The write does not drop a palette-owned binding: that is for the
-    /// writers that override a color, and a binding must not delete itself.
+    /// writers that override a color, and a binding must not delete itself (`set_session_values` never drops one).
     pub(super) fn binding_answer(&mut self, pane: PaneId, key: &str, value: Result<serde_json::Value, String>) {
         let Some(p) = self.panes.get(&pane) else { return };
         let guid = p.profile.clone();
@@ -205,7 +205,7 @@ impl App {
         let shared = self.store.shared_guid(&guid);
         let restore = self.store.profiles.iter().find(|q| q.guid() == shared).and_then(|q| q.values.get(key));
         match answer(key, &value, restore) {
-            Answer::Write(v) => self.write_session_values(pane, &[(key.to_string(), v)]),
+            Answer::Write(v) => self.set_session_values(pane, &[(key.to_string(), v)]),
             Answer::Log(line) => self.script_log(None, line.trim_end_matches('\n').to_string()),
             Answer::Nothing => {}
         }
@@ -311,8 +311,12 @@ mod tests {
         let src = include_str!("bindings_ui.rs");
         let body = &src[src.find("pub(super) fn binding_answer").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
-        assert!(body.contains("self.write_session_values("));
-        assert!(!body.contains("self.set_session_values("));
+        assert!(!body.contains("drop_palette"), "a binding's answer must not drop palette bindings");
+        // The generic write never drops them (P11, PS:8384-8394): only the Settings color writers do.
+        let ui = include_str!("session_ui.rs");
+        let write = &ui[ui.find("fn set_session_values").unwrap()..];
+        let write = &write[..write.find("\n    }\n").unwrap()];
+        assert!(!write.contains("drop_palette") && !write.contains("bindings::"), "{write}");
         let mut p = crate::profile::Profile::default();
         let mut t = toml::Table::new();
         let mut e = toml::Table::new();
@@ -320,8 +324,8 @@ mod tests {
         e.insert("owner".into(), "palette".into());
         t.insert("Foreground Color".into(), toml::Value::Table(e));
         p.set(bindings::KEY, toml::Value::Table(t));
-        // A concrete write by Settings or an escape code drops it.
-        assert!(bindings::drop_palette_in(&mut p, "Foreground Color"));
+        // A color picked in Settings drops it.
+        assert!(bindings::drop_for_write(&mut p, "Foreground Color"));
         assert!(bindings::get(&p).is_empty());
     }
 }
