@@ -253,13 +253,20 @@ mod tests {
 
     #[test]
     fn find_urls_pattern_is_bounded() {
-        // A pattern that backtracks hard over a long line gives up instead of hanging.
+        // A lookahead needs fancy_regex's backtracking VM: over a long line it gives up at the
+        // backtrack limit with an error, which ends the scan with no hits (and no hang).
         let mut g = Globals::empty(std::path::Path::new("unused.toml"));
-        g.set("FindUrlsRegex", toml::Value::String("(a*)*b".into()));
+        g.set("FindUrlsRegex", toml::Value::String("(a+)+(?=c)".into()));
         let text = "a".repeat(100_000);
+        let re = find_urls_regex(&g).expect("pattern");
         let start = std::time::Instant::now();
-        let _ = urls(&g, &text);
+        let hits = url_hits(&re, &text, 0..text.len());
+        assert!(hits.is_empty(), "the scan ended at the first error");
+        assert!(re.find(&text).is_err(), "the limit is hit, not skipped");
         assert!(start.elapsed().as_secs() < 5);
+        // An over-large pattern is refused at compile time (the size limits).
+        g.set("FindUrlsRegex", toml::Value::String("(?:(?:a{500}){500}){10}".into()));
+        assert!(find_urls_regex(&g).is_none());
     }
 
     #[test]

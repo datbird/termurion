@@ -298,6 +298,30 @@ pub(super) fn select_all_matches(screen: &mut crate::screen::Screen, matches: &[
     Some(screen.set_subs(subs))
 }
 
+/// One search of `p` for `f`'s query (`search_as`'s body, apart from the redraw): a fresh one
+/// replaces the results (quiet: no select, no scroll, no current match), a repeat updates them.
+fn search_pane(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, fresh: bool, quiet: bool) {
+    match find::find_all(&p.screen, &find::pattern(&f.query, mode)) {
+        Err(e) => {
+            f.error = Some(e);
+            f.results = Results::default();
+        }
+        Ok(matches) if fresh => {
+            f.error = None;
+            let from = f.results.current.and_then(|i| f.results.matches.get(i)).map_or_else(|| view_bottom(&p.screen), |m| m.start);
+            fresh_results(p, &mut f.results, matches, from, quiet);
+        }
+        Ok(matches) => {
+            f.error = None;
+            // The selection moves with the text, so it finds the current match again
+            // after lines drop off the top of a full scrollback.
+            let term = p.screen.term();
+            let anchor = f.results.current.and(term.selection.as_ref().and_then(|s| s.to_range(term))).map(|r| to_pos(&p.screen, r.start));
+            f.results.update(matches, anchor);
+        }
+    }
+}
+
 /// The results of a fresh search. A loud one (the person's own typing, Enter, Find...) makes the
 /// nearest match at or above `from` current and selects and shows it; a quiet one (B5: the
 /// shared query, auto search) keeps the matches and highlights only, so no match is current (the
@@ -482,25 +506,7 @@ impl App {
     fn search_as(&mut self, id: PaneId, fresh: bool, quiet: bool) {
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
-        match find::find_all(&p.screen, &find::pattern(&f.query, mode)) {
-            Err(e) => {
-                f.error = Some(e);
-                f.results = Results::default();
-            }
-            Ok(matches) if fresh => {
-                f.error = None;
-                let from = f.results.current.and_then(|i| f.results.matches.get(i)).map_or_else(|| view_bottom(&p.screen), |m| m.start);
-                fresh_results(p, &mut f.results, matches, from, quiet);
-            }
-            Ok(matches) => {
-                f.error = None;
-                // The selection moves with the text, so it finds the current match again
-                // after lines drop off the top of a full scrollback.
-                let term = p.screen.term();
-                let anchor = f.results.current.and(term.selection.as_ref().and_then(|s| s.to_range(term))).map(|r| to_pos(&p.screen, r.start));
-                f.results.update(matches, anchor);
-            }
-        }
+        search_pane(p, f, mode, fresh, quiet);
         self.redraw();
     }
 
@@ -1119,6 +1125,21 @@ mod tests {
         assert_eq!(results.label(true), "3");
         fresh_results(&mut p, &mut results, matches, bottom, false);
         assert_eq!(results.current, Some(2));
+        assert_eq!(selection_start(&p), Pos { row: 1, col: 0 }, "a loud search selects the match");
+    }
+
+    /// B5 through the search itself (the flag `search_as` passes), not only `fresh_results`.
+    #[test]
+    fn search_pane_honors_the_quiet_flag() {
+        let (mut p, _) = selected_pane();
+        let before = selection_start(&p);
+        let mut f = typed("abc", Instant::now());
+        search_pane(&mut p, &mut f, find::Mode::SmartCase, true, true);
+        assert_eq!(f.results.matches.len(), 3);
+        assert_eq!(f.results.current, None, "a quiet search has no current match");
+        assert_eq!(selection_start(&p), before, "and leaves the selection");
+        search_pane(&mut p, &mut f, find::Mode::SmartCase, true, false);
+        assert_eq!(f.results.current, Some(2));
         assert_eq!(selection_start(&p), Pos { row: 1, col: 0 }, "a loud search selects the match");
     }
 

@@ -254,7 +254,9 @@ fn url_in(before: &str, after: &str, require_slash: bool) -> Option<(String, std
     if s.starts_with("mailto:") && s.len() > 7 {
         return Some((s.clone(), range(0)));
     }
-    if !s.contains(':') && !looks_like_url(&s, require_slash) {
+    // With the slash rule on a colon string (a port, a line number) is refused like any bare
+    // host; with it off the domain check below still reads the port (13r's `guess`).
+    if (require_slash || !s.contains(':')) && !looks_like_url(&s, require_slash) {
         return None;
     }
     let host = s.split(['/', '?', '#']).next().unwrap_or_default();
@@ -579,6 +581,20 @@ mod tests {
         assert_eq!(url_like(&b, &a, true), None);
     }
 
+    /// R3, 02:839: a bare host with a port or a line number is not a URL while the slash rule is on
+    /// (13r's `guess` refuses a colon string unless it has a scheme); with the key off the port
+    /// form still resolves.
+    #[test]
+    fn colon_strings_need_the_slash_too() {
+        for text in ["see exam|ple.com:8080 now", "at main|.py:42", "x ex|ample.org:443"] {
+            let (b, a) = click(text);
+            assert_eq!(url_like(&b, &a, true), None, "{text}");
+        }
+        let (b, a) = click("see exam|ple.com:8080/x now");
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("https://example.com:8080/x"));
+        let (b, a) = click("see exam|ple.com:8080 now");
+        assert_eq!(url_like(&b, &a, false).as_deref(), Some("https://example.com:8080"));
+    }
 
     #[test]
     fn looks_like_url_follows_iterm2() {
