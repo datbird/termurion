@@ -491,13 +491,16 @@ pub struct Loaded {
     pub errors: Vec<(String, String)>,
 }
 
-/// The two judges a folder passes before anything in it is read: `local` is the one network
-/// judge, `trusted` the owner and writers check (13v2's ruling: Command and the rest of a dynamic
-/// profile are honored as iTerm2 honors them only from a folder and files the person owns and
-/// others cannot write). `trusted` says why when it refuses.
+pub use crate::dynamic_profiles_trust::Opened;
+
+/// What a folder passes before anything in it is read: `local` is the one network judge on the
+/// path, `open` opens ONE object once without following a link and answers from that handle
+/// alone (its type, its verdict, its bytes): so what is judged is what is read (13v2's ruling:
+/// Command and the rest of a dynamic profile are honored as iTerm2 honors them only from files
+/// the person owns, others cannot write, that are no link and carry no Mark of the Web).
 pub struct Gate<'a> {
     pub local: &'a dyn Fn(&Path) -> bool,
-    pub trusted: &'a dyn Fn(&Path) -> Result<(), String>,
+    pub open: &'a dyn Fn(&Path) -> Result<Opened, String>,
 }
 
 /// The network judge as the app uses it: the path and every folder above it, no link leading
@@ -506,46 +509,49 @@ pub fn system_local(path: &Path) -> bool {
     crate::scripts::ancestors_stay_local(path, &crate::scripts::read_link)
 }
 
-/// The trust check as the app uses it (owner is the person, no one else may write).
-#[cfg(windows)]
-pub fn system_trusted(path: &Path) -> Result<(), String> {
-    crate::dynamic_profiles_trust::check(path)
+/// The open as the app uses it (`dynamic_profiles_trust::open`, at most `MAX_FILE` bytes).
+pub fn system_open(path: &Path) -> Result<Opened, String> {
+    crate::dynamic_profiles_trust::open(path, MAX_FILE)
 }
 
-#[cfg(not(windows))]
-pub fn system_trusted(_path: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-/// `load_gated` with the network judge and no trust check: for the pure tests only. The ruling
-/// is that an ungated load must not exist for app code: it is compiled in tests alone, and a
-/// source test (`app_code_never_loads_without_the_gate`) fails if a non-test caller appears. The
-/// app loads through `load_gated` with `system_local` and `system_trusted`.
+/// `load_gated` over a fake disk with the network judge and every object trusted: for the pure
+/// tests only. The ruling is that an ungated load must not exist for app code: it is compiled in
+/// tests alone, and a source test (`app_code_never_loads_without_the_gate`) fails if a non-test
+/// caller appears. The app loads through `load_gated` with `system_local` and `system_open`.
 #[cfg(test)]
 pub fn load(folder: &Path, read: &dyn Fn(&Path) -> Result<Vec<u8>, String>, list: &dyn Fn(&Path) -> Vec<String>, saved_guids: &dyn Fn(&str) -> bool) -> Loaded {
-    load_gated(folder, read, list, saved_guids, &Gate { local: &|p: &Path| crate::scripts::stays_local(p), trusted: &|_: &Path| Ok(()) })
+    let open = |p: &Path| Ok(if p == folder { Opened { dir: true, trust: Ok(()), bytes: Err("not a file".into()) } } else { Opened { dir: false, trust: Ok(()), bytes: read(p) } });
+    load_gated(folder, list, saved_guids, &Gate { local: &|p: &Path| crate::scripts::stays_local(p), open: &open })
 }
 
 /// Every profile in the folder (`reallyReloadDynamicProfiles`, `DP:278-340`, `:458-481`). `list`
-/// gives every entry below the folder, subfolders included, as "/" paths (a subfolder's own name
-/// fails to read and is reported as iTerm2 reports it); `read` gives a file's bytes (at most
-/// `MAX_FILE`: `bounded_read`). A Guid already taken by an earlier file is refused.
-pub fn load_gated(
-    folder: &Path,
-    read: &dyn Fn(&Path) -> Result<Vec<u8>, String>,
-    list: &dyn Fn(&Path) -> Vec<String>,
-    saved_guids: &dyn Fn(&str) -> bool,
-    gate: &Gate,
-) -> Loaded {
+/// gives every entry below the folder, subfolders included, as "/" paths. Each object is opened
+/// once through `gate.open`: a folder or file that is a link, is not trusted or cannot be read is
+/// refused and a refused subfolder's contents are never opened; a trusted subfolder's own name
+/// fails to read and is reported as iTerm2 reports it. A Guid already taken by an earlier file
+/// is refused.
+pub fn load_gated(folder: &Path, list: &dyn Fn(&Path) -> Vec<String>, saved_guids: &dyn Fn(&str) -> bool, gate: &Gate) -> Loaded {
     let mut got = Loaded::default();
     let folder_text = folder.display().to_string();
     if !(gate.local)(folder) {
         got.errors.push((folder_text.clone(), format!("Dynamic Profiles folder {folder_text} was not read: it is on a network path or reached through a link to one.")));
         return got;
     }
-    if let Err(why) = (gate.trusted)(folder) {
-        got.errors.push((folder_text.clone(), format!("Dynamic Profiles folder {folder_text} was not loaded: {why}.")));
-        return got;
+    match (gate.open)(folder) {
+        Err(e) => {
+            got.errors.push((folder_text.clone(), format!("Dynamic Profiles folder {folder_text} was not loaded: {e}.")));
+            return got;
+        }
+        Ok(o) => {
+            if let Err(why) = o.trust {
+                got.errors.push((folder_text.clone(), format!("Dynamic Profiles folder {folder_text} was not loaded: {why}.")));
+                return got;
+            }
+            if !o.dir {
+                got.errors.push((folder_text.clone(), format!("Dynamic Profiles folder {folder_text} was not loaded: it is not a folder.")));
+                return got;
+            }
+        }
     }
     let all = list(folder);
     if all.len() > MAX_ENTRIES {
@@ -553,7 +559,12 @@ pub fn load_gated(
         return got;
     }
     let mut guids: HashSet<String> = HashSet::new();
+    // Subfolders refused so far, as "name/": everything below one is skipped unopened.
+    let mut refused: Vec<String> = Vec::new();
     for name in files(&all) {
+        if refused.iter().any(|r| name.starts_with(r.as_str())) {
+            continue;
+        }
         let full = folder.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
         let text = full.display().to_string();
         let fail = |got: &mut Loaded, message: String| got.errors.push((text.clone(), message));
@@ -569,13 +580,31 @@ pub fn load_gated(
             fail(&mut got, format!("Dynamic Profiles file {text} was not read: it is on a network path or reached through a link to one."));
             continue;
         }
-        if let Err(why) = (gate.trusted)(&full) {
-            fail(&mut got, format!("Dynamic Profiles file {text} was not loaded: {why}."));
+        let opened = match (gate.open)(&full) {
+            Ok(o) => o,
+            Err(e) => {
+                fail(&mut got, format!("Could not read Dynamic Profile from file {text}: {e}"));
+                fail(&mut got, ignoring_text(&text));
+                continue;
+            }
+        };
+        if let Err(why) = &opened.trust {
+            if opened.dir {
+                refused.push(format!("{name}/"));
+                fail(&mut got, format!("Dynamic Profiles folder {text} was not loaded: {why}."));
+            } else {
+                fail(&mut got, format!("Dynamic Profiles file {text} was not loaded: {why}."));
+            }
             continue;
         }
-        let bytes = match read(&full) {
-            Ok(b) => b,
-            Err(e) => {
+        let bytes = match (opened.dir, opened.bytes) {
+            (false, Ok(b)) => b,
+            (true, _) => {
+                fail(&mut got, format!("Could not read Dynamic Profile from file {text}: not a file"));
+                fail(&mut got, ignoring_text(&text));
+                continue;
+            }
+            (false, Err(e)) => {
                 fail(&mut got, format!("Could not read Dynamic Profile from file {text}: {e}"));
                 fail(&mut got, ignoring_text(&text));
                 continue;
@@ -1243,39 +1272,97 @@ mod tests {
     fn dynamic_folder_uses_the_one_network_judge() {
         let folder = PathBuf::from("C:\\dp");
         let list = |_: &Path| names(&["CON.json", "a.json", "link.json", "sub/b.json"]);
-        let read = |_: &Path| Ok(file_of(&[("A", "a")]));
+        let read = |_: &Path| Ok::<_, String>(file_of(&[("A", "a")]));
         // The judge is the scripts one: a junction or link that reaches a share is not read.
         let remote = |p: &Path| !p.ends_with("link.json");
-        let gate = Gate { local: &remote, trusted: &|_: &Path| Ok(()) };
-        let got = load_gated(&folder, &read, &list, &none_saved, &gate);
+        let open = |p: &Path| if p == folder { opened(true, Ok(()), Vec::new()) } else { opened(false, Ok(()), read(p).unwrap()) };
+        let gate = Gate { local: &remote, open: &open };
+        let got = load_gated(&folder, &list, &none_saved, &gate);
         let loaded: Vec<_> = got.profiles.iter().map(|(_, f)| Path::new(f).file_name().unwrap().to_string_lossy().to_string()).collect();
         assert_eq!(loaded, vec!["a.json"], "CON.json is a device name, link.json is not local, sub/b.json repeats Guid A: {:?}", got.errors);
         assert!(got.errors.iter().any(|(f, _)| f.ends_with("CON.json")));
         assert!(got.errors.iter().any(|(f, _)| f.ends_with("link.json")));
         // A folder that is not local loads nothing and says why.
         let nowhere = |_: &Path| false;
-        let gate = Gate { local: &nowhere, trusted: &|_: &Path| Ok(()) };
-        let got = load_gated(&folder, &read, &list, &none_saved, &gate);
+        let gate = Gate { local: &nowhere, open: &open };
+        let got = load_gated(&folder, &list, &none_saved, &gate);
         assert!(got.profiles.is_empty() && got.errors.len() == 1, "{:?}", got.errors);
         // The real judge: a UNC folder and a link chain.
         assert!(!crate::scripts::stays_local(Path::new("\\\\host\\share\\dp")));
         assert!(crate::scripts::stays_local(Path::new("C:\\dp\\a.json")));
     }
 
+    fn opened(dir: bool, trust: Result<(), &str>, bytes: Vec<u8>) -> Result<Opened, String> {
+        Ok(Opened { dir, trust: trust.map_err(str::to_string), bytes: if dir { Err("not a file".into()) } else { Ok(bytes) } })
+    }
+
     #[test]
     fn dynamic_trust_is_a_gate_on_the_folder_and_each_file() {
         let folder = PathBuf::from("C:\\dp");
         let list = |_: &Path| names(&["mine.json", "theirs.json"]);
-        let read = |p: &Path| Ok(file_of(&[(if p.ends_with("mine.json") { "A" } else { "B" }, "n")]));
         let local = |_: &Path| true;
-        let trusted = |p: &Path| if p.ends_with("theirs.json") { Err("owned by another user".to_string()) } else { Ok(()) };
-        let got = load_gated(&folder, &read, &list, &none_saved, &Gate { local: &local, trusted: &trusted });
+        let open = |p: &Path| {
+            if p == folder {
+                return opened(true, Ok(()), Vec::new());
+            }
+            let guid = if p.ends_with("mine.json") { "A" } else { "B" };
+            opened(false, if p.ends_with("theirs.json") { Err("owned by another user") } else { Ok(()) }, file_of(&[(guid, "n")]))
+        };
+        let got = load_gated(&folder, &list, &none_saved, &Gate { local: &local, open: &open });
         assert_eq!(got.profiles.len(), 1, "an untrusted file loads nothing");
         assert!(got.errors.iter().any(|(f, e)| f.ends_with("theirs.json") && e.contains("not loaded") && e.contains("owned by another user")), "{:?}", got.errors);
         // An untrusted folder loads no file at all.
-        let strict = |p: &Path| if p == folder { Err("writable by other users".to_string()) } else { Ok(()) };
-        let got = load_gated(&folder, &read, &list, &none_saved, &Gate { local: &local, trusted: &strict });
+        let strict = |p: &Path| if p == folder { opened(true, Err("writable by other users"), Vec::new()) } else { opened(false, Ok(()), file_of(&[("A", "n")])) };
+        let got = load_gated(&folder, &list, &none_saved, &Gate { local: &local, open: &strict });
         assert!(got.profiles.is_empty() && got.errors.len() == 1, "{:?}", got.errors);
+    }
+
+    /// The finding "one handle": a link at the root, in a subfolder or at a file is refused as
+    /// the open reports it, and nothing below a refused subfolder is ever opened.
+    #[test]
+    fn dynamic_loader_follows_what_the_handle_says() {
+        let folder = PathBuf::from("C:\\dp");
+        let local = |_: &Path| true;
+        // A root that is a junction: refused before anything is listed.
+        let root_link = |_: &Path| opened(true, Err("it is a link"), Vec::new());
+        let never = |_: &Path| -> Vec<String> { panic!("listed a refused folder") };
+        let got = load_gated(&folder, &never, &none_saved, &Gate { local: &local, open: &root_link });
+        assert!(got.profiles.is_empty() && got.errors.len() == 1 && got.errors[0].1.contains("it is a link"), "{:?}", got.errors);
+        // A subfolder that is refused: its files are never opened, one error says so.
+        let list = |_: &Path| names(&["a.json", "evil", "evil/b.json", "evil/deep/c.json", "good", "good/d.json"]);
+        let open = |p: &Path| {
+            let text = p.display().to_string();
+            assert!(!text.contains("evil\\b") && !text.contains("evil\\deep"), "opened {text} under a refused folder");
+            if p == folder {
+                opened(true, Ok(()), Vec::new())
+            } else if p.ends_with("evil") {
+                opened(true, Err("it is a link"), Vec::new())
+            } else if p.ends_with("good") {
+                opened(true, Ok(()), Vec::new())
+            } else {
+                let g = p.file_stem().unwrap().to_string_lossy().to_uppercase();
+                opened(false, Ok(()), file_of(&[(g.as_str(), "n")]))
+            }
+        };
+        let got = load_gated(&folder, &list, &none_saved, &Gate { local: &local, open: &open });
+        let loaded: Vec<_> = got.profiles.iter().map(|(e, _)| e["Guid"].as_str().unwrap().to_string()).collect();
+        assert_eq!(loaded, ["A", "D"], "{:?}", got.errors);
+        assert_eq!(got.errors.iter().filter(|(f, e)| f.ends_with("evil") && e.contains("it is a link")).count(), 1, "{:?}", got.errors);
+        // A file that is a link is refused, and a file that cannot be opened is a read error.
+        let list = |_: &Path| names(&["link.json", "gone.json"]);
+        let open = |p: &Path| {
+            if p == folder {
+                opened(true, Ok(()), Vec::new())
+            } else if p.ends_with("link.json") {
+                opened(false, Err("it is a link"), Vec::new())
+            } else {
+                Err("access denied".to_string())
+            }
+        };
+        let got = load_gated(&folder, &list, &none_saved, &Gate { local: &local, open: &open });
+        assert!(got.profiles.is_empty());
+        assert!(got.errors.iter().any(|(f, e)| f.ends_with("link.json") && e.contains("not loaded") && e.contains("it is a link")), "{:?}", got.errors);
+        assert!(got.errors.iter().any(|(f, e)| f.ends_with("gone.json") && e.contains("Could not read Dynamic Profile") && e.contains("access denied")), "{:?}", got.errors);
     }
 
     #[test]

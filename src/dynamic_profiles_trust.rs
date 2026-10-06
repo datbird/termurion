@@ -19,10 +19,56 @@ pub struct Ace {
 /// ownership, generic write and generic all.
 const WRITE_RIGHTS: u32 = 0x2 | 0x4 | 0x10 | 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x4000_0000 | 0x1000_0000;
 
+/// The Windows Modules Installer service (TrustedInstaller), the one service account that may
+/// write: any other service SID is an ordinary account.
+const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+
 /// Accounts that may always write: the creator-owner placeholder, the system, the
-/// Administrators group and the installer service.
+/// Administrators group and TrustedInstaller.
 fn always_trusted(sid: &str) -> bool {
-    matches!(sid, "S-1-3-0" | "S-1-5-18" | "S-1-5-32-544") || sid.starts_with("S-1-5-80-")
+    matches!(sid, "S-1-3-0" | "S-1-5-18" | "S-1-5-32-544") || sid == TRUSTED_INSTALLER
+}
+
+/// What one open handle says about the object it opened: the one source of every fact judged
+/// (never a second look at the path, which could name something else by then).
+#[derive(Clone, Debug)]
+pub struct Facts {
+    /// A symbolic link or junction (the handle was opened without following it).
+    pub reparse: bool,
+    pub dir: bool,
+    /// How many names the file has.
+    pub links: u32,
+    pub owner: String,
+    pub dacl: Option<Vec<Ace>>,
+    /// The ZoneId in the file's Zone.Identifier stream (the Mark of the Web), when it has one.
+    pub zone: Option<u32>,
+}
+
+/// What opening one object once found: whether it is a folder, the verdict, and the bytes read
+/// from the same handle (only for a trusted file; an error says why not).
+#[derive(Clone, Debug)]
+pub struct Opened {
+    pub dir: bool,
+    pub trust: Result<(), String>,
+    pub bytes: Result<Vec<u8>, String>,
+}
+
+/// The verdict on `facts` for the user `me`: no link of any kind (a folder or file that is one is
+/// judged by the target it names, which is no part of what was asked), no second name for a file
+/// another user owns, the owner and writers rule of `judge`, and no Mark of the Web (zone 3 or 4:
+/// a file saved from a browser is read without a question, so it must be unblocked first).
+pub fn judge_facts(f: &Facts, me: &str) -> Result<(), String> {
+    if f.reparse {
+        return Err("it is a link (a symbolic link or junction), which Tandem does not follow".into());
+    }
+    if !f.dir && f.links > 1 && f.owner != me && f.owner != "S-1-5-32-544" {
+        return Err("it has more than one name and is not yours".into());
+    }
+    judge(&f.owner, me, f.dacl.as_deref())?;
+    if matches!(f.zone, Some(3 | 4)) {
+        return Err("it came from the internet or another computer: unblock the file first (Properties, Unblock)".into());
+    }
+    Ok(())
 }
 
 /// Ok when `owner` is `me` (or the Administrators group) and the access list (None: no list, which lets everyone write) grants
@@ -41,64 +87,113 @@ pub fn judge(owner: &str, me: &str, dacl: Option<&[Ace]>) -> Result<(), String> 
     Ok(())
 }
 
-/// `judge` for a file or folder on disk: its owner and access list as Windows reports them.
-/// Unreadable means not trusted. The object is opened without following a link.
+/// Opens `path` ONCE, without following a link, and answers from that handle alone: the
+/// type, the link count, the owner and access list (`GetSecurityInfo`), and, for a file that
+/// passes `judge_facts`, its bytes (at most `limit`). A file is opened with a read-only share
+/// mode, so it cannot be swapped between the judgment and the read. Unreadable is an error.
 #[cfg(windows)]
-pub fn check(path: &std::path::Path) -> Result<(), String> {
+pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
+    use std::io::Read;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use std::ptr::null_mut;
     use windows_sys::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, GetAce, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL};
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, READ_CONTROL};
 
-    let file = std::fs::OpenOptions::new()
-        .access_mode(READ_CONTROL)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+    // A folder is opened with every share right (an editor keeps working in it); a file with
+    // read only, so nobody writes it under the read.
+    let is_dir = std::fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+    let share = if is_dir { FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE } else { FILE_SHARE_READ };
+    let mut file = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA)
+        .share_mode(share)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(|e| format!("its owner could not be read ({e})"))?;
+        .map_err(|e| e.to_string())?;
     let me = crate::winpipe::user_sid().map_err(|e| format!("the current user is unknown ({e})"))?;
     let handle = file.as_raw_handle() as HANDLE;
-    unsafe {
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the handle is open for the call and `info` is a plain out structure.
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(format!("it could not be examined ({})", std::io::Error::last_os_error()));
+    }
+    let (reparse, dir) = (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0, info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0);
+    let facts = unsafe {
         let (mut owner, mut dacl): (PSID, *mut ACL) = (null_mut(), null_mut());
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         let err = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &mut owner, null_mut(), &mut dacl, null_mut(), &mut sd);
         if err != 0 {
-            return Err(format!("its owner could not be read ({})", std::io::Error::from_raw_os_error(err as i32)));
+            return Ok(Opened { dir, trust: Err(format!("its owner could not be read ({})", std::io::Error::from_raw_os_error(err as i32))), bytes: Err("not read".into()) });
         }
-        let result = (|| {
+        let read_acl = || -> Result<(String, Option<Vec<Ace>>), String> {
             let owner_text = if owner.is_null() { return Err("it has no owner".to_string()) } else { crate::winpipe::sid_text(owner)? };
-            let aces = if dacl.is_null() {
-                None
-            } else {
-                let mut aces = Vec::new();
-                for i in 0..(*dacl).AceCount as u32 {
-                    let mut ace: *mut core::ffi::c_void = null_mut();
-                    if GetAce(dacl, i, &mut ace) == 0 || ace.is_null() {
-                        return Err("its access list could not be read".to_string());
-                    }
-                    // ACE_HEADER { type, flags, size } then, for the allow and deny forms, the
-                    // mask and the SID.
-                    let bytes = ace as *const u8;
-                    let (kind, flags) = (*bytes, *bytes.add(1));
-                    let allow = match kind {
-                        0 | 9 => true,
-                        1 | 10 => false,
-                        _ => continue,
-                    };
-                    let mask = (bytes.add(4) as *const u32).read_unaligned();
-                    let sid = crate::winpipe::sid_text(bytes.add(8) as PSID)?;
-                    aces.push(Ace { sid, mask, allow, inherit_only: flags & 0x08 != 0 });
+            if dacl.is_null() {
+                return Ok((owner_text, None));
+            }
+            let mut aces = Vec::new();
+            for i in 0..(*dacl).AceCount as u32 {
+                let mut ace: *mut core::ffi::c_void = null_mut();
+                if GetAce(dacl, i, &mut ace) == 0 || ace.is_null() {
+                    return Err("its access list could not be read".to_string());
                 }
-                Some(aces)
-            };
-            judge(&owner_text, &me, aces.as_deref())
-        })();
+                // ACE_HEADER { type, flags, size } then, for the allow and deny forms, the mask
+                // and the SID.
+                let bytes = ace as *const u8;
+                let (kind, flags) = (*bytes, *bytes.add(1));
+                let allow = match kind {
+                    0 | 9 => true,
+                    1 | 10 => false,
+                    _ => continue,
+                };
+                let mask = (bytes.add(4) as *const u32).read_unaligned();
+                let sid = crate::winpipe::sid_text(bytes.add(8) as PSID)?;
+                aces.push(Ace { sid, mask, allow, inherit_only: flags & 0x08 != 0 });
+            }
+            Ok((owner_text, Some(aces)))
+        };
+        let got = read_acl();
         LocalFree(sd as HLOCAL);
-        result
+        got
+    };
+    let (owner, dacl) = match facts {
+        Ok(f) => f,
+        Err(why) => return Ok(Opened { dir, trust: Err(why), bytes: Err("not read".into()) }),
+    };
+    let zone = if dir || reparse { None } else { zone_id(path) };
+    let trust = judge_facts(&Facts { reparse, dir, links: info.nNumberOfLinks, owner, dacl, zone }, &me);
+    if dir || reparse || trust.is_err() {
+        return Ok(Opened { dir, trust, bytes: Err("not read".into()) });
     }
+    let size = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
+    let bytes = if size > limit as u64 {
+        Err(format!("file too large (the limit is {limit} bytes)"))
+    } else {
+        let mut out = Vec::new();
+        match (&mut file).take(limit as u64 + 1).read_to_end(&mut out) {
+            Ok(_) if out.len() > limit => Err(format!("file too large (the limit is {limit} bytes)")),
+            Ok(_) => Ok(out),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    Ok(Opened { dir, trust, bytes })
+}
+
+#[cfg(not(windows))]
+pub fn open(_path: &std::path::Path, _limit: usize) -> Result<Opened, String> {
+    Err("Dynamic Profiles are read on Windows only".into())
+}
+
+/// The ZoneId in a file's Zone.Identifier stream (`inert_files::zone_of` reads the text).
+#[cfg(windows)]
+fn zone_id(path: &std::path::Path) -> Option<u32> {
+    use std::io::Read;
+    let mut stream = path.as_os_str().to_os_string();
+    stream.push(":Zone.Identifier");
+    let mut text = String::new();
+    std::fs::File::open(stream).ok()?.take(4096).read_to_string(&mut text).ok()?;
+    crate::inert_files::zone_of(&text)
 }
 #[cfg(test)]
 mod tests {
@@ -138,6 +233,82 @@ mod tests {
         assert_eq!(judge(ME, ME, Some(&[ace(ME, FULL), ace("S-1-3-0", FULL)])), Ok(()));
     }
 
+    fn facts(owner: &str) -> Facts {
+        Facts { reparse: false, dir: false, links: 1, owner: owner.into(), dacl: Some(vec![ace(owner, FULL)]), zone: None }
+    }
+
+    /// What one open handle says is what is judged: a link of any kind, a second name for a file
+    /// that is not the person's, and a Mark of the Web (zone 3 or 4) each refuse.
+    #[test]
+    fn dynamic_trust_judges_the_handle() {
+        assert_eq!(judge_facts(&facts(ME), ME), Ok(()));
+        let link = Facts { reparse: true, ..facts(ME) };
+        assert!(judge_facts(&link, ME).unwrap_err().contains("link"));
+        let junction = Facts { reparse: true, dir: true, ..facts(ME) };
+        assert!(judge_facts(&junction, ME).unwrap_err().contains("link"));
+        // Two names: fine for the person's own file, refused when another user owns it.
+        let two = Facts { links: 2, ..facts(ME) };
+        assert_eq!(judge_facts(&two, ME), Ok(()));
+        let theirs = Facts { links: 2, ..facts("S-1-5-32-544") };
+        assert_eq!(judge_facts(&theirs, ME), Ok(()), "Administrators-owned is as trusted as before");
+        let other = Facts { links: 2, ..facts("S-1-5-21-9-9-9-500") };
+        assert!(judge_facts(&other, ME).is_err());
+        // A folder's link count means nothing.
+        assert_eq!(judge_facts(&Facts { dir: true, links: 5, ..facts(ME) }, ME), Ok(()));
+        for zone in [3, 4] {
+            let marked = Facts { zone: Some(zone), ..facts(ME) };
+            assert!(judge_facts(&marked, ME).unwrap_err().contains("unblock the file first"), "zone {zone}");
+        }
+        for zone in [0, 1, 2] {
+            assert_eq!(judge_facts(&Facts { zone: Some(zone), ..facts(ME) }, ME), Ok(()), "zone {zone}");
+        }
+        // The owner and writer rules still apply.
+        assert!(judge_facts(&Facts { dacl: None, ..facts(ME) }, ME).is_err());
+    }
+
+    /// Only the TrustedInstaller service may write, not any service account.
+    #[test]
+    fn only_trusted_installer_is_a_trusted_service() {
+        let ti = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+        assert_eq!(judge(ME, ME, Some(&[ace(ME, FULL), ace(ti, FULL)])), Ok(()));
+        assert!(judge(ME, ME, Some(&[ace(ME, FULL), ace("S-1-5-80-1-2-3-4-5", FULL)])).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dynamic_open_reads_through_one_handle() {
+        let base = std::path::PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA"));
+        let dir = base.join(format!("tandem-dp-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.json");
+        std::fs::write(&file, b"{\"Profiles\": []}").unwrap();
+        let got = open(&file, 1 << 20).unwrap();
+        assert!(!got.dir && got.trust.is_ok(), "{:?}", got.trust);
+        assert_eq!(got.bytes.unwrap(), b"{\"Profiles\": []}");
+        let d = open(&dir, 1 << 20).unwrap();
+        assert!(d.dir && d.trust.is_ok());
+        // The bytes are not read from a file that is refused.
+        crate::inert_files::mark(&file);
+        let marked = open(&file, 1 << 20).unwrap();
+        assert!(marked.trust.unwrap_err().contains("unblock the file first"));
+        assert!(marked.bytes.is_err(), "a refused file is not read");
+        // A junction is refused as the link it is, and is not followed.
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("b.json"), b"{}").unwrap();
+        let junction = dir.join("junc");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&target).output().unwrap();
+        assert!(made.status.success(), "mklink: {}", String::from_utf8_lossy(&made.stdout));
+        let j = open(&junction, 1 << 20).unwrap();
+        assert!(j.trust.unwrap_err().contains("link"));
+        // A file larger than the limit is an error, not a partial read.
+        std::fs::write(dir.join("big.json"), vec![b' '; 2000]).unwrap();
+        assert!(open(&dir.join("big.json"), 1000).unwrap().bytes.is_err());
+        let _ = std::process::Command::new("cmd").args(["/C", "rmdir"]).arg(&junction).output();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(windows)]
     #[test]
     fn a_folder_the_person_just_made_is_trusted() {
@@ -149,11 +320,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.json");
         std::fs::write(&file, b"{}").unwrap();
-        assert_eq!(check(&dir), Ok(()), "the person's own folder");
-        assert_eq!(check(&file), Ok(()));
-        assert!(check(&dir.join("missing.json")).is_err(), "unreadable means not trusted");
+        assert_eq!(open(&dir, 1 << 20).unwrap().trust, Ok(()), "the person's own folder");
+        assert_eq!(open(&file, 1 << 20).unwrap().trust, Ok(()));
+        assert!(open(&dir.join("missing.json"), 1 << 20).is_err(), "unreadable means not trusted");
         // C:\Users\Public is writable by everyone.
-        assert!(check(std::path::Path::new("C:\\Users\\Public")).is_err());
+        assert!(open(std::path::Path::new("C:\\Users\\Public"), 1 << 20).unwrap().trust.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

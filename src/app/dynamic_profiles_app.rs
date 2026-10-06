@@ -288,15 +288,19 @@ impl App {
         let stamps: std::cell::RefCell<HashMap<String, Stamp>> = Default::default();
         let loaded = {
             let store = &self.store;
-            let read = |p: &Path| {
+            // The one open of each object answers its type, its verdict and its bytes; a file's
+            // bytes are stamped here for a later write-back.
+            let open = |p: &Path| {
                 let mtime = mtime_of(p);
-                let bytes = dp::bounded_read(p, dp::MAX_FILE)?;
-                stamps.borrow_mut().insert(p.display().to_string(), Stamp::new(&bytes, mtime));
-                Ok(bytes)
+                let o = dp::system_open(p)?;
+                if let Ok(bytes) = &o.bytes {
+                    stamps.borrow_mut().insert(p.display().to_string(), Stamp::new(bytes, mtime));
+                }
+                Ok(o)
             };
             let list = |f: &Path| dp::list_dir(f, &dp::system_local, dp::MAX_ENTRIES);
             let saved = |g: &str| store.profiles.iter().any(|p| p.guid() == g && !is_dynamic(p));
-            dp::load_gated(&folder, &read, &list, &saved, &Gate { local: &dp::system_local, trusted: &dp::system_trusted })
+            dp::load_gated(&folder, &list, &saved, &Gate { local: &dp::system_local, open: &open })
         };
         // A removed profile's running sessions keep their settings on a copy of their own.
         let now: Vec<String> = loaded.profiles.iter().filter_map(|(e, _)| e.get("Guid").and_then(Json::as_str).map(str::to_string)).collect();
@@ -700,7 +704,7 @@ mod tests {
         let src = include_str!("dynamic_profiles_app.rs");
         let body = src.split("#[cfg(test)]").next().unwrap();
         assert!(body.contains("load_gated("));
-        assert!(body.contains("system_local") && body.contains("system_trusted"));
+        assert!(body.contains("system_local") && body.contains("system_open"));
         assert!(!body.contains("dynamic_profiles::load("), "an ungated load");
     }
 }
