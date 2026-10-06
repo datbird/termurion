@@ -45,8 +45,8 @@ zeno = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 # Windows Hello for the password manager's gate (UserConsentVerifier); both are already in the
-# tree (through wgpu), only these features are new.
-windows = { version = "0.62", features = ["Security_Credentials_UI", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_System_WinRT", "Win32_UI_Shell"] }
+# tree (through wgpu), only these features are new. Win32_System_Variant and Win32_UI_Accessibility are the UI Automation provider (uia_win), each named here on purpose.
+windows = { version = "0.62", features = ["Security_Credentials_UI", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_System_Variant", "Win32_System_WinRT", "Win32_UI_Accessibility", "Win32_UI_Shell"] }
 windows-core = "0.62"
 windows-future = "0.3"
 windows-sys = { version = "0.59", features = [
