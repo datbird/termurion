@@ -999,9 +999,17 @@ pub fn encode_url_chars(s: &str) -> String {
 }
 
 /// What `shell_open` hands ShellExecute: a web or mail URL is percent-encoded (`encode_url_chars`),
-/// anything else (a path, a folder) is passed as written.
+/// anything else (a settings page, another scheme) is passed as written.
 pub fn shell_target(target: &str) -> String {
     if web_link(target) { encode_url_chars(target) } else { target.to_string() }
+}
+
+/// The URL sink's input (judge round 5): `target` as `shell_target` gives it, only when it is a
+/// URL: a scheme of two or more letters that is not `file:`, and no network path. A path, a drive
+/// path or a file link is None (a file opens only as a judged `LocalPath`, `localfs::open_with_shell`).
+pub fn shell_url(target: &str) -> Option<String> {
+    let url = scheme(target).is_some_and(|s| s != "file") && !crate::scripts::is_network_path(target);
+    url.then(|| shell_target(target))
 }
 
 /// Percent-encodes everything but letters, digits, and "-._~".
@@ -1107,11 +1115,38 @@ mod tests {
         assert_eq!(shell_target("https://a.b/p%20q"), "https://a.b/p%20q");
         assert_eq!(shell_target("C:\\My Docs\\a b.txt"), "C:\\My Docs\\a b.txt", "a path is not a URL");
         let sink = include_str!("app/semantic_ui.rs");
-        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, cwd").unwrap()..];
-        assert!(body[..body.find("ShellExecuteW(std").unwrap()].contains("crate::semantic::shell_target(target)"), "shell_open encodes through shell_target");
+        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, background: bool)").unwrap()..];
+        assert!(body[..body.find("ShellExecuteW(std").unwrap()].contains("crate::semantic::shell_url(target)"), "shell_open encodes through shell_url (shell_target)");
         let porthole = include_str!("app/porthole_ui.rs");
         let f = &porthole[porthole.find("fn open_link_target").unwrap()..];
-        assert!(f[..f.find("pub(super) fn porthole_link_bar").unwrap()].contains("shell_open("), "Porthole links open through shell_open");
+        assert!(f[..f.find("pub(super) fn porthole_link_bar").unwrap()].contains("shell_open("), "Porthole web links open through shell_open");
+    }
+
+    /// Judge round 5, item 3: the shell sink takes URLs only. A path, a drive path, a network path
+    /// or a file: link is refused there (a file goes through `localfs::open_with_shell`, which
+    /// takes a judged `LocalPath`), so no caller can hand ShellExecute an unjudged file.
+    #[test]
+    fn the_shell_sink_opens_only_urls() {
+        assert_eq!(shell_url("https://a.b/x y").as_deref(), Some("https://a.b/x%20y"));
+        assert_eq!(shell_url("mailto:a@b.c").as_deref(), Some("mailto:a@b.c"));
+        assert_eq!(shell_url("ms-settings:defaultapps").as_deref(), Some("ms-settings:defaultapps"));
+        for bad in [r"C:\x.txt", "c:/x.txt", r"Z:\share\x.pdf", r"\\host\s\x", "//host/s/x", r"\\?\C:\x", "file:///C:/x.txt", "FILE://host/s/x", "x.txt", r"..\x", ""] {
+            assert_eq!(shell_url(bad), None, "{bad}");
+        }
+        let sink = include_str!("app/semantic_ui.rs");
+        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, background: bool)").unwrap()..];
+        let body = &body[..body.find("ShellExecuteW(std").unwrap()];
+        assert!(body.contains("crate::semantic::shell_url(target)"), "the sink refuses anything but a URL first");
+        let porthole = include_str!("app/porthole_ui.rs");
+        let f = &porthole[porthole.find("fn open_link_target").unwrap()..];
+        let f = &f[..f.find("pub(super) fn porthole_link_bar").unwrap()];
+        let judged = f.find("LocalPath::judge(").expect("a document's file link is judged");
+        assert!(judged < f.find("reveal_in_explorer(").unwrap() && judged < f.find("open_with_shell(").unwrap(), "judged before Explorer or the shell sees it");
+        assert!(!include_str!("porthole/mod.rs").contains("local_path_ok"), "the text check is no gate for document links");
+        let ui = include_str!("app/semantic_ui.rs");
+        let open = &ui[ui.find("Run::Open(target) => {").unwrap()..];
+        let open = &open[..open.find("Run::Command(line)").unwrap()];
+        assert!(open.contains("LocalPath::semantic(") && open.contains("open_with_shell("), "a Semantic History file opens as a judged LocalPath");
     }
 
     #[test]

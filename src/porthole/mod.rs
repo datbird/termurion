@@ -12,15 +12,15 @@ pub enum LinkTarget {
 }
 
 /// A markdown link's target: web and mail links; `file://` URLs, drive paths, and paths
-/// relative to the porthole's folder when they are local Windows paths (never a network
-/// path: opening one sends the NTLM hash). Other schemes are refused.
+/// relative to the porthole's folder, when they are written as a drive path. Other schemes are
+/// refused. This only sorts the text: a file target is opened only after `LocalPath::judge`
+/// (porthole_ui `open_link_target`), the one gate that refuses mapped drives and links to shares.
 pub fn link_target(link: &str, base_dir: Option<&str>) -> Option<LinkTarget> {
-    use crate::prompted::local_path_ok;
     let link = link.trim();
     let windows = |p: &str| p.replace('/', "\\");
     if let Some(rest) = link.get(..7).filter(|p| p.eq_ignore_ascii_case("file://")).map(|_| &link[7..]) {
         let path = windows(rest.trim_start_matches('/'));
-        return local_path_ok(&path).then_some(LinkTarget::File(path));
+        return drive_path(&path).then_some(LinkTarget::File(path));
     }
     if let Some((scheme, rest)) = link.split_once(':') {
         if scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
@@ -29,15 +29,22 @@ pub fn link_target(link: &str, base_dir: Option<&str>) -> Option<LinkTarget> {
         }
     }
     let path = windows(link);
-    if local_path_ok(&path) {
+    if drive_path(&path) {
         return Some(LinkTarget::File(path));
     }
     if path.starts_with('\\') {
         return None;
     }
-    let base = base_dir.filter(|b| local_path_ok(b))?;
+    let base = base_dir.filter(|b| drive_path(b))?;
     let joined = format!("{}\\{}", base.trim_end_matches(['\\', '/']), path);
-    local_path_ok(&joined).then_some(LinkTarget::File(joined))
+    drive_path(&joined).then_some(LinkTarget::File(joined))
+}
+
+/// A path written from a drive letter (`C:\...`, `c:/...`) that is no network spelling: the
+/// shape of a file link, not a judgement of where it leads.
+fn drive_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') && !crate::scripts::is_network_path(path)
 }
 
 /// What a link click does: open it, or, for a file Windows would run (a program, a

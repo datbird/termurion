@@ -404,7 +404,7 @@ impl App {
             Err(e) => {
                 // Windows keeps the person's own choice (a UserChoice a program cannot set): Tandem's
                 // page in Default apps is where they pick Tandem.
-                let opened = e == crate::url_schemes::protected(scheme) && super::semantic_ui::shell_open(crate::url_schemes::DEFAULT_APPS_URI, None, false).is_err();
+                let opened = e == crate::url_schemes::protected(scheme) && super::semantic_ui::shell_open(crate::url_schemes::DEFAULT_APPS_URI, false).is_err();
                 self.banners.set("url-schemes", if opened { format!("{e} Windows could not open Default apps; open it from Settings.") } else { e })
             }
         }

@@ -382,8 +382,22 @@ impl App {
             Run::Open(target) => {
                 if semantic::handler_applies(&Run::Open(target.clone()), from_file) && self.url_handler(id, &target, cwd, background) {
                     // The handler took it, or said why not.
-                } else if let Err(e) = shell_open(&target, cwd, background) {
-                    self.banners.set("action", format!("Could not open {target}: {e}"));
+                } else if crate::semantic::shell_url(&target).is_some() {
+                    if let Err(e) = shell_open(&target, background) {
+                        self.banners.set("action", format!("Could not open {target}: {e}"));
+                    }
+                } else {
+                    // A file Semantic History found: judged again here with its own rule (the ignore
+                    // list and the network-mounts setting), and opened only as that LocalPath.
+                    let dir = cwd.and_then(crate::localfs::LocalPath::judge);
+                    match crate::localfs::LocalPath::semantic(&target, &self.path_probe()) {
+                        Some(file) => {
+                            if let Err(e) = crate::localfs::open_with_shell(&file, dir.as_ref(), background) {
+                                self.banners.set("action", format!("Could not open {target}: {e}"));
+                            }
+                        }
+                        None => self.banners.set("action", crate::localfs::refused().to_string()),
+                    }
                 }
             }
             Run::Command(line) => {
@@ -889,25 +903,24 @@ fn has_code() -> bool {
     })
 }
 
-/// Opens a file, folder, or URL with its default app. `background` asks the app not to
-/// take the focus.
+/// Opens a URL with its default app. Only a URL (`semantic::shell_url`): a path, a drive path or a
+/// file link is refused here, so no caller hands the shell an unjudged file; a file opens through
+/// `localfs::open_with_shell` with a judged `LocalPath`. `background` asks the app not to take the focus.
 #[cfg(windows)]
-pub(super) fn shell_open(target: &str, cwd: Option<&std::path::Path>, background: bool) -> Result<(), String> {
+pub(super) fn shell_open(target: &str, background: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
+    let Some(url) = crate::semantic::shell_url(target) else { return Err("Tandem opens only links here, not paths.".to_string()) };
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let (verb, file) = (wide("open"), wide(&crate::semantic::shell_target(target)));
-    let dir = cwd.map(|d| wide(&d.to_string_lossy()));
+    let (verb, file) = (wide("open"), wide(&url));
     let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
-    let r = unsafe {
-        ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()), show)
-    };
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), show) };
     // Values of 32 or less are errors (SE_ERR_*).
     if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
 }
 
 #[cfg(not(windows))]
-pub(super) fn shell_open(target: &str, _cwd: Option<&std::path::Path>, _background: bool) -> Result<(), String> {
+pub(super) fn shell_open(target: &str, _background: bool) -> Result<(), String> {
     Err(format!("opening {target} needs Windows"))
 }
 
@@ -1035,6 +1048,7 @@ mod tests {
         "semantic::plan(",
         "guard_open(",
         "shell_open(",
+        "open_with_shell(",
         "start_coprocess(",
         "start_coprocess_titled(",
         "reveal_in_explorer(",
@@ -1052,6 +1066,7 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("localfs.rs", "open_with_shell", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("app/scripts_alerts.rs", "bind_scheme_confirmed", "opens the constant Default apps page (url_schemes::DEFAULT_APPS_URI), never text from a pane or a link"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "spawn_direct", "the sink itself; execute's callers are checked"),

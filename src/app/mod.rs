@@ -6900,7 +6900,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.reveal_in_explorer(&path);
                     }
                     if let Some(url) = url {
-                        if let Err(e) = semantic_ui::shell_open(&url, None, false) {
+                        if let Err(e) = semantic_ui::shell_open(&url, false) {
                             self.banners.set("window", format!("Could not open {url}: {e}"));
                         }
                     }

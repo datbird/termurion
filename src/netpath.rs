@@ -479,21 +479,26 @@ fn local_chain(path: &Path, r: &Rule, read_link: &dyn Fn(&Path) -> Option<PathBu
             }
         }
     }
-    // 4. Every folder root first, each one's reparse data before anything below it. The walk is on
-    // the path as Windows resolves it: after a link, a relative target is joined onto the parent as
-    // already redirected, and the rest of the path continues on the resolved target.
+    // 4. Every folder root first, each one's reparse data before anything below it. Win32 collapses
+    // `.` and `..` lexically before any link is resolved (RtlGetFullPathName_U), so the walk runs on
+    // the collapsed path; a verbatim path is not collapsed by Win32, so a step there is refused.
+    // After a link, a relative target is joined onto the parent as already redirected, and the rest
+    // of the path (no `..` left in it) continues below the resolved target: no component of a
+    // redirected path is ever popped.
+    let steps = path.components().any(|c| matches!(c, std::path::Component::CurDir | std::path::Component::ParentDir));
+    if steps && p.len() != text.len() {
+        return false;
+    }
+    let collapsed = normalize(path);
     let mut resolved = PathBuf::new();
-    for comp in path.components() {
+    for comp in collapsed.components() {
         match comp {
             std::path::Component::Prefix(_) => {
                 resolved.push(comp.as_os_str());
                 continue;
             }
-            std::path::Component::CurDir => continue,
-            std::path::Component::ParentDir => {
-                resolved.pop();
-                continue;
-            }
+            // `normalize` left none of these.
+            std::path::Component::CurDir | std::path::Component::ParentDir => return false,
             _ => resolved.push(comp.as_os_str()),
         }
         let at = resolved.clone();
@@ -766,6 +771,35 @@ mod tests {
         let rl = links(map, &seen);
         assert!(judge(Path::new(r"C:\r\d\l\f"), &rl, &Subst::new()));
         assert!(seen.borrow().iter().any(|r| r == r"c:\r\x\z\f"), "{:?}", seen.borrow());
+    }
+
+    /// Judge round 5, item 2: Win32 collapses `.` and `..` lexically before any link is resolved
+    /// (RtlGetFullPathName_U), so the judge does too, then walks the collapsed path; it never pops a
+    /// component of a path a link redirected. With C:\r\d -> x\y, `C:\r\d\..\f` is C:\r\f (not the
+    /// redirected C:\r\x\f), and `C:\r\d\..\..\f` is C:\f. A link there to a share is found.
+    #[test]
+    fn a_parent_step_is_collapsed_before_any_link_is_read() {
+        let map: &'static [(&str, &str)] = &[(r"c:\r\d", r"x\y"), (r"c:\r\f", r"\\attacker\share"), (r"c:\f", r"\\attacker\share")];
+        for (path, real, never) in [(r"C:\r\d\..\f", r"c:\r\f", r"c:\r\x\f"), (r"C:\r\d\..\..\f", r"c:\f", r"c:\r\f"), (r"C:\r\.\d\..\f", r"c:\r\f", r"c:\r\x\f")] {
+            let seen = RefCell::new(Vec::new());
+            let rl = links(map, &seen);
+            assert!(!judge(Path::new(path), &rl, &Subst::new()), "{path} is {real}, a link to a share");
+            let reads = seen.borrow().clone();
+            assert!(reads.iter().any(|r| r == real), "{path}: the real place was read: {reads:?}");
+            assert!(!reads.iter().any(|r| r == never), "{path}: a popped redirected path was read: {reads:?}");
+        }
+        // A link and a parent step after it: `C:\r\d\l\..\g` is C:\r\d\g, below the link's target.
+        let seen = RefCell::new(Vec::new());
+        let rl = links(map, &seen);
+        assert!(judge(Path::new(r"C:\r\d\l\..\g"), &rl, &Subst::new()));
+        assert!(seen.borrow().iter().any(|r| r == r"c:\r\x\y\g"), "{:?}", seen.borrow());
+        assert!(!seen.borrow().iter().any(|r| r.ends_with(r"\l")), "the collapsed step is never read: {:?}", seen.borrow());
+        // A verbatim path is not collapsed by Win32: a parent or current step in it is refused unread.
+        for path in [r"\\?\C:\r\d\..\f", r"\\?\C:\r\.\f"] {
+            let seen = RefCell::new(Vec::new());
+            assert!(!judge(Path::new(path), &links(map, &seen), &Subst::new()), "{path}");
+            assert!(seen.borrow().is_empty(), "{path}: {:?}", seen.borrow());
+        }
     }
 
     /// Judge rulings r3, item 2: FIXED, REMOVABLE, CDROM and RAMDISK are local while the device is

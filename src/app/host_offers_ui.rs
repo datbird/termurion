@@ -124,7 +124,7 @@ impl App {
             self.turn_off(pane, o);
         }
         if o == Offer::Paste && button == Some("Help") {
-            if let Err(e) = super::semantic_ui::shell_open(PASTE_HELP_URL, None, false) {
+            if let Err(e) = super::semantic_ui::shell_open(PASTE_HELP_URL, false) {
                 self.banners.set("action", format!("Could not open {PASTE_HELP_URL}: {e}"));
             }
         }

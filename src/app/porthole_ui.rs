@@ -458,6 +458,12 @@ impl App {
         let Some(target) = crate::porthole::link_target(link, base) else {
             return self.banners.set("link", format!("Tandem opens web and mail links and local files only, not {link:?}."));
         };
+        // The judge before the question: a link it refuses is not asked about (and is judged again at the answer).
+        if let crate::porthole::LinkTarget::File(f) = &target {
+            if crate::localfs::LocalPath::judge(f).is_none() {
+                return self.banners.set("link", crate::localfs::refused().to_string());
+            }
+        }
         let (text, key) = crate::porthole::link_prompt(&target);
         if self.globals.bool(key) {
             return self.open_link_target(pane, &target);
@@ -476,11 +482,22 @@ impl App {
         if self.remote_text(pane) && !web {
             return self.banners.set("link", format!("Tandem opens only web and mail links from a remote document, not {t:?}."));
         }
+        let crate::porthole::LinkTarget::File(_) = target else {
+            if let Err(e) = super::semantic_ui::shell_open(&t, false) {
+                self.banners.set("link", format!("Could not open {t}: {e}"));
+            }
+            return;
+        };
+        // A document's file link is outside text (judge round 5): the judge is the gate, here at
+        // the answer, before Explorer or the shell sees it (a mapped drive or a link to a share is refused).
+        let Some(file) = crate::localfs::LocalPath::judge(&t) else {
+            return self.banners.set("link", crate::localfs::refused().to_string());
+        };
         // A program or script a document links to is shown in Explorer, never run.
         if crate::porthole::link_action(target) == crate::porthole::LinkAction::Reveal {
-            return self.reveal_in_explorer(&t);
+            return self.reveal_in_explorer(&file.path().to_string_lossy());
         }
-        if let Err(e) = super::semantic_ui::shell_open(&t, None, false) {
+        if let Err(e) = crate::localfs::open_with_shell(&file, None, false) {
             self.banners.set("link", format!("Could not open {t}: {e}"));
         }
     }

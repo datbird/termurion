@@ -415,21 +415,29 @@ impl App {
         }
     }
 
-    /// Session > Log > Import Recording (`RC:23-135`): the open dialog for `.itr` files
-    /// unless `path` names one. A file that does not load shows its warning. One that does
-    /// opens in a new tab at the front of the current window, with a session-local copy
+    /// Session > Log > Import Recording: the open dialog for `.itr` files; the person's own pick
+    /// at this moment (judge rulings r3, item 1).
+    pub(super) fn import_recording_dialog(&mut self) {
+        let mut d = rfd::FileDialog::new().add_filter(recording::FILTER, &[recording::EXTENSION]);
+        if let Some(home) = home_folder() {
+            d = d.set_directory(home);
+        }
+        let Some(path) = d.pick_file() else { return };
+        self.import_recording(crate::localfs::picked(&path));
+    }
+
+    /// A recording from outside (Explorer, the launch pipe, the command line): judged again here,
+    /// at the read, never taken as the person's pick (judge round 5).
+    pub(super) fn import_recording_at(&mut self, path: &std::path::Path) {
+        self.import_recording(crate::localfs::judge_io(path));
+    }
+
+    /// Import Recording (`RC:23-135`), for a file already judged or picked. A file that does not
+    /// load shows its warning. One that does opens in a new tab at the front of the current window, with a session-local copy
     /// of its profile, in a pane with no shell at its first frame's size, holding the
     /// read-only recorder; replay starts on the next pass (`RC:124-126`).
-    pub(super) fn import_recording(&mut self, path: Option<std::path::PathBuf>) {
-        let path = path.or_else(|| {
-            let mut d = rfd::FileDialog::new().add_filter(recording::FILTER, &[recording::EXTENSION]);
-            if let Some(home) = home_folder() {
-                d = d.set_directory(home);
-            }
-            d.pick_file()
-        });
-        let Some(path) = path else { return };
-        let loaded = crate::localfs::picked(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
+    pub(super) fn import_recording(&mut self, file: std::io::Result<crate::localfs::LocalPath>) {
+        let loaded = file.and_then(|p| crate::localfs::read(&p)).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
         let (dvr, values) = match loaded {
             Ok(l) => l,
             Err(e) => {

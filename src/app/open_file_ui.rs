@@ -184,7 +184,7 @@ impl App {
             // Not user-initiated: no AutoLaunch offer. A signed archive is refused by the importer.
             Kind::ScriptArchive => self.import_path(f.path, false),
             Kind::Recording => {
-                self.import_recording(Some(f.path));
+                self.import_recording_at(&f.path);
                 self.bring_forward();
             }
             Kind::Arrangement => {

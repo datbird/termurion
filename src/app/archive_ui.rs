@@ -374,8 +374,9 @@ mod tests {
         let arrange = include_str!("arrange_ui.rs");
         let shared = body(arrange, "    pub(super) fn open_arrangement_windows(");
         assert!(shared.contains("has_mark_of_the_web") && shared.contains("trust_text"));
-        let load = body(arrange, "    pub(super) fn load_arrangement_path(");
+        let load = body(arrange, "    fn load_arrangement_from(");
         assert!(load.contains("open_arrangement_windows("), "Load Arrangement uses the same gate");
+        assert!(body(arrange, "    pub(super) fn load_arrangement_path(").contains("self.load_arrangement_from("), "from outside too");
         let read = restore.find("read_bounded(").unwrap();
         let pick = restore.find("pick_file").unwrap();
         assert!(pick < read, "the dialog returns the path before anything reads it");

@@ -48,3 +48,13 @@ installed. Note the pair first: `reg query "HKCU\Console\%%Startup"`.
 | 16 | The handoff class follows a moved exe (item 3): make Tandem the default, quit, move the release folder to `D:\T3` and start `D:\T3\tandem.exe`; `LocalServer32` now names `D:\T3\tandem.exe`. With the old folder back in place and a second copy started, the value stays on the copy that wrote it. | |
 | 17 | An idle `-Embedding` start keeps the person's requests (item 4): with Tandem closed and the default set, run `tandem.exe -Embedding`, then within 15 s run `tandem.exe --new-window` and `tandem.exe --url ssh://localhost`: a Tandem window opens at once with both. Run `tandem.exe -Embedding` alone: it ends after about 15 s; a `tandem.exe` started right after that opens its own window normally. | |
 | 18 | The reference handle (review, cannot verify): the first real handoff passes the signal and reference handle checks (`GetFileType` on the ConDrv reference handle is not FILE_TYPE_UNKNOWN with an error). If row 9 fails and `host.log` names a refused handle, that check is wrong. | |
+
+## The network-path judge, round 5
+
+Same setup and capture as rows 1-5.
+
+| # | Check | Result |
+|---|---|---|
+| 19 | A recording or arrangement from Explorer on a share: right-click `Z:\x.itr` (and `C:\t\share\x.itermarrangement`, row 3's link) > Open with > Tandem: refused with the network banner, no SMB. Session > Log > Import Recording and Load Arrangement from File picking the same files in the dialog do open them (the person's own pick). | |
+| 20 | A parent step after a link: `mkdir C:\r\x\y`, `mklink /D C:\r\d x\y`, `mklink /D C:\r\f \\server\share`. Open `C:\r\d\..\f\notes.txt` with Tandem (and click it printed in a pane): refused, no SMB. | |
+| 21 | A Markdown document (Porthole) with links `[a](Z:\notes.txt)` and `[b](C:\t\share\notes.txt)`: clicking either shows the network banner and asks nothing, no SMB; with "Always" set earlier, still refused. A link to a local `.txt` asks and opens it. | |

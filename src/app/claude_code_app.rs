@@ -155,7 +155,7 @@ impl App {
             match act {
                 OnboardAct::DoIt(step) => self.claude_do_step(step),
                 OnboardAct::Learn => {
-                    if let Err(e) = super::semantic_ui::shell_open(cc::HELP_URL, None, false) {
+                    if let Err(e) = super::semantic_ui::shell_open(cc::HELP_URL, false) {
                         self.banners.set("action", format!("Could not open {}: {e}", cc::HELP_URL));
                     }
                 }

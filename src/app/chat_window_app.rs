@@ -936,7 +936,7 @@ impl App {
     /// already refuses the rest, and this is the second check.
     fn chat_open_url(&mut self, url: &str) {
         let Some(url) = chat_view::web_link(url) else { return };
-        if let Err(e) = super::semantic_ui::shell_open(&url, None, false) {
+        if let Err(e) = super::semantic_ui::shell_open(&url, false) {
             self.banners.set("action", format!("Could not open {url}: {e}"));
         }
     }
@@ -991,7 +991,9 @@ impl App {
             Ok((path, name)) => {
                 let text = path.to_string_lossy().to_string();
                 if open && chat_view::openable(&name) {
-                    if let Err(e) = super::semantic_ui::shell_open(&text, None, false) {
+                    // Tandem's own attachment file, still opened only as a judged path.
+                    let opened = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::open_with_shell(&p, None, false));
+                    if let Err(e) = opened {
                         self.banners.set("action", format!("Could not open {text}: {e}"));
                     }
                 } else {

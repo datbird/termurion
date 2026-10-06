@@ -1246,7 +1246,7 @@ impl App {
 
     /// A "More Info" page in the browser.
     fn open_link(&mut self, url: &str) {
-        if let Err(e) = super::semantic_ui::shell_open(url, None, false) {
+        if let Err(e) = super::semantic_ui::shell_open(url, false) {
             self.banners.set("action", format!("Could not open {url}: {e}"));
         }
     }

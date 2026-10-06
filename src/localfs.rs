@@ -45,8 +45,9 @@ impl LocalPath {
 
     /// A path the person picked in a file dialog at this moment (judge rulings r3, item 1): their
     /// own choice, so it may be on a share (Windows authenticates as it does for every app). Made
-    /// only by dialog code; every other path is judged. A guard test enforces who calls it.
-    pub fn person_picked(p: &Path) -> LocalPath {
+    /// only through `picked`, from a file dialog's own result; every other path is judged. A guard
+    /// test enforces who calls it, per function.
+    fn person_picked(p: &Path) -> LocalPath {
         LocalPath(p.to_path_buf())
     }
 
@@ -154,12 +155,38 @@ pub fn judge_io(p: impl AsRef<Path>) -> io::Result<LocalPath> {
 }
 
 /// A path a file dialog just returned, as an `io::Result` for the callers that go on to read or
-/// write it: the person's own pick is not judged (`LocalPath::person_picked`). Dialog code only.
+/// write it: the person's own pick is not judged (`LocalPath::person_picked`). Called only in the
+/// function that opened the dialog, on its result (a guard test, per function); a path from
+/// Explorer, the launch pipe or the command line is judged instead.
 pub fn picked(p: &Path) -> io::Result<LocalPath> {
     if p.as_os_str().is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no path was picked"));
     }
     Ok(LocalPath::person_picked(p))
+}
+
+/// Opens a judged file or folder with its default app (ShellExecute "open"), with a judged working
+/// folder; `background` asks the app not to take the focus. The one way a file from outside reaches
+/// the shell: `semantic_ui::shell_open` takes URLs only.
+#[cfg(windows)]
+pub fn open_with_shell(p: &LocalPath, cwd: Option<&LocalPath>, background: bool) -> io::Result<()> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
+    let wide = |s: &std::ffi::OsStr| {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide().chain(Some(0)).collect::<Vec<u16>>()
+    };
+    let (verb, file) = (wide("open".as_ref()), wide(p.0.as_os_str()));
+    let dir = cwd.map(|d| wide(d.0.as_os_str()));
+    let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()), show) };
+    // Values of 32 or less are errors (SE_ERR_*).
+    if r as isize > 32 { Ok(()) } else { Err(io::Error::other(format!("ShellExecute error {}", r as isize))) }
+}
+
+#[cfg(not(windows))]
+pub fn open_with_shell(p: &LocalPath, _cwd: Option<&LocalPath>, _background: bool) -> io::Result<()> {
+    Err(io::Error::other(format!("opening {} needs Windows", p.0.display())))
 }
 
 /// Judge, then `is_dir` (a refused path is no folder).
@@ -676,7 +703,7 @@ mod tests {
         ("utilities.rs", "ensure", 5, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("utilities.rs", "refresh", 6, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("app/scripts_app.rs", "edit_new_script", 1, "opens the new script's file in Tandem's own Scripts folder (a custom folder is judged by scripts_folder on every call)"),
-        ("app/semantic_ui.rs", "shell_open", 1, "hands the shell a URL, or a path Semantic History already judged (semantic::open_local_result); no path of its own. The final review confirms each caller's gate"),
+        ("app/semantic_ui.rs", "shell_open", 1, "URL targets only: semantic::shell_url refuses a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
         ("utilities.rs", "stamp", 1, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("winpipe.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
@@ -873,22 +900,78 @@ mod tests {
         assert!(LocalPath::person_picked(Path::new(r"Z:\x")).path().ends_with("x"));
     }
 
-    #[test]
-    fn only_dialog_code_makes_a_picked_path() {
-        let mut makers = Vec::new();
-        for (file, text) in sources() {
-            if file == "localfs.rs" {
-                continue;
+    /// Each function of one file's live code as (name, signature, body): a function runs from its
+    /// `fn` line to the next one; its signature is the text up to its first `{`.
+    fn functions_of(text: &str) -> Vec<(String, String, String)> {
+        let live = live_code(text);
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for line in live.lines() {
+            let code = blank_strings(line);
+            if let Some(name) = fn_name(&code) {
+                out.push((name, String::new(), String::new()));
             }
-            let live = live_code(&text);
-            if (live.contains("localfs::picked(") || live.contains("person_picked(")) && !live.contains("rfd::FileDialog") {
-                makers.push(file);
+            if let Some((_, sig, body)) = out.last_mut() {
+                if !body.contains('{') {
+                    sig.push_str(code.split('{').next().unwrap_or(""));
+                    sig.push(' ');
+                }
+                body.push_str(&code);
+                body.push('\n');
             }
         }
-        assert!(makers.is_empty(), "these make a picked path but open no dialog: {makers:?}");
+        out
+    }
+
+    /// The functions of one file that make a person-picked path outside a file dialog's own
+    /// result: `person_picked` anywhere but `localfs::picked`, or `picked` in a function that does
+    /// not open the `rfd::FileDialog` itself or that takes a path from its caller.
+    fn picked_outside_dialogs(file: &str, text: &str) -> Vec<String> {
+        let mut wrong = Vec::new();
+        // `picked` is only ever called by its full name, so each call is seen.
+        if live_code(text).lines().any(|l| l.trim_start().starts_with("use ") && l.contains("localfs") && l.contains("picked")) {
+            wrong.push(format!("{file}: imports localfs::picked"));
+        }
+        for (name, sig, body) in functions_of(text) {
+            if body.contains("person_picked(") && !(file == "localfs.rs" && (name == "picked" || name == "person_picked")) {
+                wrong.push(format!("{file} {name}: makes a LocalPath::person_picked"));
+            }
+            let calls = body.contains("localfs::picked(");
+            if file != "localfs.rs" && calls && (!body.contains("rfd::FileDialog") || sig.contains("Path")) {
+                wrong.push(format!("{file} {name}: calls localfs::picked without opening the dialog itself, or with a path from its caller"));
+            }
+        }
+        wrong
+    }
+
+    /// Judge round 5, item 1: a person-picked path is made ONLY from a file dialog's own result.
+    /// Per function: the function that calls `localfs::picked` opens the `rfd::FileDialog` itself
+    /// and takes no path from its caller; the outside entry points (Explorer, the launch pipe, the
+    /// command line) judge. The guard is proven on planted texts first.
+    #[test]
+    fn only_dialog_code_makes_a_picked_path() {
+        let planted: &[(&str, &str)] = &[
+            ("a dialog in another function", "fn pick() {\n    let p = rfd::FileDialog::new().pick_file();\n}\nfn load(p: &Path) {\n    let _ = crate::localfs::picked(p);\n}\n"),
+            ("a dialog fallback for a path from outside", "fn import(path: Option<PathBuf>) {\n    let path = path.or_else(|| rfd::FileDialog::new().pick_file());\n    let _ = crate::localfs::picked(&path.unwrap());\n}\n"),
+            ("person_picked outside localfs", "fn f() {\n    let p = rfd::FileDialog::new().pick_file().unwrap();\n    let _ = LocalPath::person_picked(&p);\n}\n"),
+            ("a picked path in a file with no dialog", "fn f(p: &str) {\n    let _ = crate::localfs::picked(Path::new(p));\n}\n"),
+            ("an imported picked", "use crate::localfs::{picked, read};\nfn f() {\n    let p = rfd::FileDialog::new().pick_file().unwrap();\n    let _ = picked(&p);\n}\n"),
+        ];
+        let missed: Vec<&str> = planted.iter().filter(|(_, t)| picked_outside_dialogs("planted.rs", t).is_empty()).map(|(w, _)| *w).collect();
+        assert!(missed.is_empty(), "the guard missed: {missed:?}");
+        let clean = "fn save(&mut self, name: &str) {\n    if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {\n        let _ = crate::localfs::picked(&path);\n    }\n}\nfn other(p: &Path) -> bool {\n    self.picked_rows(p)\n}\n";
+        assert_eq!(picked_outside_dialogs("planted.rs", clean), Vec::<String>::new());
+        let wrong: Vec<String> = sources().iter().flat_map(|(f, t)| picked_outside_dialogs(f, t)).collect();
+        assert!(wrong.is_empty(), "person-picked paths outside a dialog:\n{}", wrong.join("\n"));
         // The dialogs that probe what they picked use it (and not the judge, which would refuse a share).
         let uses = sources().into_iter().filter(|(f, t)| f != "localfs.rs" && live_code(t).contains("localfs::picked(")).count();
         assert!(uses >= 6, "{uses} dialog files use localfs::picked");
+        // The outside entry points judge what they were given.
+        let fns = |f: &str| functions_of(&sources().into_iter().find(|(n, _)| n == f).unwrap().1);
+        let body = |f: &str, name: &str| fns(f).into_iter().find(|(n, _, _)| n == name).unwrap_or_else(|| panic!("{f} {name}")).2;
+        assert!(body("app/arrange_ui.rs", "load_arrangement_path").contains("judge_io("), "an arrangement from outside is judged");
+        assert!(body("app/replay_ui.rs", "import_recording_at").contains("judge_io("), "a recording from outside is judged");
+        let opened = body("app/open_file_ui.rs", "opened");
+        assert!(opened.contains("self.import_recording_at(") && opened.contains("self.load_arrangement_path("), "Explorer, the pipe and the command line use the judged entry points");
     }
 
     /// There is one device-name rule (`inert_files::is_device_name`; `scripts::is_device_name` and

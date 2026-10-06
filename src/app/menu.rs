@@ -966,7 +966,7 @@ impl App {
             "gpuRendererAvailability:" => self.gpu_renderer_availability(),
             "clearInstantReplay:" => self.clear_instant_replay(),
             "exportRecording:" => self.export_recording_menu(),
-            "loadRecording:" => self.import_recording(None),
+            "loadRecording:" => self.import_recording_dialog(),
             // Window > Password Manager: no account, the window's current session
             // (`openPasswordManager:`, `AD:2815-2819`).
             "openPasswordManager:" => self.open_password_manager(None, None),
