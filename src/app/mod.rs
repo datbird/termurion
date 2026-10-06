@@ -254,7 +254,9 @@ enum Drag {
     None,
     /// `anchor` is Some for a character drag, whose press the selection holds as a visual
     /// position (`Selection::set_visual_anchor`, moved with scrolling output).
-    Select { pane: PaneId, anchor: Option<(i32, usize, bool)> },
+    Select { pane: PaneId, anchor: Option<(i32, usize, bool)>, scroll: Option<selection_ui::SelScroll>, scroll_off: bool },
+    /// A press on the selection waiting to become a drag of its text out of the window.
+    Out(selection_ui::DragOut),
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
     /// The thumb of a pane's scrollbar, held this far below its top (pixels).
     Scrollbar { pane: PaneId, grab: f32 },
@@ -5069,6 +5071,12 @@ impl App {
                 if mods.cmd {
                     crate::winkeys::mask_start_menu();
                 }
+                // A press on the selection waits for a drag of its text (R3, `MH:379-391`).
+                let on_selection = count == 1 && !mods.shift && !self.first_mouse_down && self.cell_is_selected(id, point);
+                if selection_ui::drag_decision(on_selection, self.globals.bool("RequireCmdForDraggingText"), mods.cmd) == selection_ui::PressKind::MaybeDrag {
+                    self.drag = Drag::Out(selection_ui::DragOut { pane: id, from: (x, y), win: mods.cmd });
+                    return self.redraw();
+                }
                 let carried = self.commit_live_selection(id, append, count > 1);
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
@@ -5101,7 +5109,7 @@ impl App {
                 self.clear_porthole_selections();
                 // A Smart Selection is whole; moving the pointer does not reshape it. The
                 // click that activated the window never extends or copies one (`MH:778-782`).
-                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor } } else { Drag::None };
+                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor, scroll: None, scroll_off: false } } else { Drag::None };
                 self.alt_click = follow.alt_click.then_some((id, (col, row)));
                 self.key_click = (count == 1 && !mods.shift).then_some(id);
             }
@@ -5221,6 +5229,15 @@ impl App {
                     }
                 }
             }
+            // A click on the selection with no drag clears it (R3, `MH:692-700`); a drag that
+            // started cleared `Drag::Out` before it ran, so its release never gets here.
+            Drag::Out(d) => {
+                if selection_ui::release_clears_selection(selection_ui::PressKind::MaybeDrag, false) {
+                    if let Some(p) = self.panes.get_mut(&d.pane) {
+                        p.clear_selection();
+                    }
+                }
+            }
             // A scrollbar drag ends with the press; the view stays where the thumb left it.
             Drag::Scrollbar { .. } => {}
             _ => {}
@@ -5278,20 +5295,14 @@ impl App {
                 let (pane, grab) = (*pane, *grab);
                 self.scroll_drag_to(pane, grab, y);
             }
-            Drag::Select { pane, anchor } => {
-                let (pane, visual) = (*pane, anchor.is_some());
-                let Some(rect) = self.pane_rect(pane) else { return };
-                let (col, row, side) = self.cell_at(pane, rect, x, y);
-                let point = self.grid_point(pane, col, row);
-                let end = visual.then(|| self.visual_pos(pane, rect, x, y));
-                self.extend_live_to(pane, point, side);
-                // On a bidi row the drag is the cells swept on screen (iTerm2's live visual range).
-                if let Some(b) = end {
-                    if let Some(p) = self.panes.get_mut(&pane) {
-                        p.screen.drag_visual_to(b);
-                    }
-                }
-                self.redraw();
+            Drag::Select { pane, .. } => {
+                let pane = *pane;
+                self.sel_scroll_update(pane, x, y);
+                self.select_drag_to(pane, x, y);
+            }
+            Drag::Out(d) => {
+                let d = *d;
+                self.drag_out_move(d, x, y);
             }
             Drag::Divider { path, axis, parent } => {
                 let ratio = match axis {
@@ -6186,6 +6197,7 @@ impl ApplicationHandler<UserEvent> for App {
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let cursor_due = self.tick_cursor();
+        let sel_scroll_due = self.sel_scroll_tick();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
@@ -6195,7 +6207,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.log_tick();
         self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
-        let wake = [ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

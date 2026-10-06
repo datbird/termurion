@@ -232,7 +232,7 @@ impl App {
         match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
             Some(cmd) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
             None => {
-                let text = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
+                let text = coprocess::drop_text(&files, self.globals.bool("WrapDroppedFilenamesInQuotesWhenPasting"));
                 self.user_paste(pane, &text, crate::broadcast::Write::Drop);
             }
         }

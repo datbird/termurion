@@ -184,6 +184,17 @@ pub fn drop_command(template: &str, files: &[String]) -> Option<String> {
     Some(t.replace("\\(filenames)", &names))
 }
 
+/// Dropped filenames as text for the shell prompt (`NSPasteboard+iTerm.m:31-35`): every name
+/// in double quotes with `always_quote`, else only a name holding whitespace or a character
+/// cmd or PowerShell treats specially (R10, 13s-u ruling); backslash stays (it separates
+/// paths) and a Windows path cannot hold `"`, so nothing is escaped. Typed text for the
+/// person's shell: never a coprocess command (S13).
+pub fn drop_text(files: &[String], always_quote: bool) -> String {
+    const SPECIAL: &str = "&()[]{}^=;!'+,`~%";
+    let quote = |f: &String| always_quote || f.is_empty() || f.contains(|c: char| c.is_whitespace() || SPECIAL.contains(c));
+    files.iter().map(|f| if quote(f) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ")
+}
+
 /// The banner when a coprocess ends with stderr output.
 pub fn stderr_banner(command: &str) -> String {
     format!("Coprocess \u{201c}{command}\u{201d} terminated with output on stderr.")
@@ -192,6 +203,18 @@ pub fn stderr_banner(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_names_follow_the_key() {
+        let two = ["C:\\a b\\c.txt".to_string(), "D:\\x".to_string()];
+        assert_eq!(drop_text(&two, false), "\"C:\\a b\\c.txt\" D:\\x");
+        assert_eq!(drop_text(&two, true), "\"C:\\a b\\c.txt\" \"D:\\x\"");
+        for c in ['&', '(', ')', ';', '^', '%', '!', ',', '[', '=', '`'] {
+            let name = format!("D:\\a{c}b");
+            assert_eq!(drop_text(&[name.clone()], false), format!("\"{name}\""), "{c}");
+        }
+        assert_eq!(drop_text(&[], false), "");
+    }
 
     #[test]
     fn mru_keeps_twenty() {
