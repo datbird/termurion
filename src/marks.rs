@@ -22,6 +22,13 @@ pub enum Kind {
     Manual,
 }
 
+/// Most rows a prompt may span for its paths to be looked at (`MS:4786-4789`).
+const MAX_PROMPT_ROWS: i64 = 5;
+/// Most path candidates kept per prompt (B4).
+const MAX_PATH_CANDIDATES: usize = 4;
+/// Most path marks kept per pane.
+const MAX_PATH_MARKS: usize = 64;
+
 /// A place in the text, relative to a marked row: whole lines after the mark's line, then
 /// cells into that line. Reflow moves rows but keeps lines and cells, so this survives a
 /// resize.
@@ -160,6 +167,13 @@ pub struct Marks {
     /// The prompt start (set with the range at A) and the command start (at B) as anchors,
     /// which survive reflow: the range is derived from them again when rows move.
     prompt_anchors: (Option<Anchor>, Option<Anchor>),
+    /// Path-shaped text in the newest prompt, waiting for the app to ask the disk (B4): text
+    /// only, nothing here probes anything.
+    path_candidates: Vec<crate::pathnav::PathCandidate>,
+    /// The prompt mark whose paths were recorded (one record per mark).
+    path_for: Option<u32>,
+    /// Folders in prompts a click opens the navigator on, anchored so reflow keeps them.
+    pub path_marks: Vec<crate::pathnav::PathMark>,
 }
 
 /// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
@@ -293,6 +307,94 @@ impl Marks {
     pub(crate) fn program_ended(&mut self) {
         self.in_command = false;
         self.running = false;
+        // An ended or restarted pane's old prompt must not offer a cd into the new shell (S5).
+        self.path_candidates.clear();
+        self.path_marks.clear();
+        self.path_for = None;
+    }
+}
+
+impl Screen {
+    /// The candidates recorded at the newest prompt's end, once (B4).
+    pub fn take_path_candidates(&mut self) -> Vec<crate::pathnav::PathCandidate> {
+        std::mem::take(&mut self.marks.path_candidates)
+    }
+
+    /// Whether `take_path_candidates` has anything.
+    pub fn has_path_candidates(&self) -> bool {
+        !self.marks.path_candidates.is_empty()
+    }
+
+    /// Records the path-shaped text of the prompt that just ended (133;B), text only: at most
+    /// five rows (`MS:4786-4789`), at most `MAX_PATH_CANDIDATES` paths, one record per prompt
+    /// mark. Nothing here asks a disk or a drive (B4); the app does, off the UI thread.
+    fn record_path_candidates(&mut self, start: (i64, usize), end: (i64, usize)) {
+        let Some(mark) = self.marks.current else { return };
+        if self.marks.path_for == Some(mark) {
+            return;
+        }
+        self.marks.path_for = Some(mark);
+        self.marks.path_candidates.clear();
+        let g = self.term.primary_grid();
+        let (off, cols) = (g.scrolled_off() as i64, g.columns());
+        let ((sl, sc), (el, ec)) = (start, end);
+        if el < sl || el - sl + 1 > MAX_PROMPT_ROWS {
+            return;
+        }
+        let (top, bottom) = (-(g.history_size() as i64), g.screen_lines() as i64 - 1);
+        let mut found = Vec::new();
+        'rows: for abs in sl..=el {
+            let line = abs - off;
+            if line < top || line > bottom {
+                continue;
+            }
+            let row = &g[Line(line as i32)];
+            let first = if abs == sl { sc } else { 0 };
+            let last = if abs == el { ec.min(cols) } else { cols };
+            let chars: Vec<char> = (0..cols)
+                .map(|c| {
+                    let cell = &row[Column(c)];
+                    let spacer = cell.flags.intersects(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER);
+                    if c < first || c >= last || spacer { ' ' } else { cell.c }
+                })
+                .collect();
+            for cand in crate::pathnav::candidates(&chars) {
+                if found.len() >= MAX_PATH_CANDIDATES {
+                    break 'rows;
+                }
+                if let Some(anchor) = self.anchor_at(mark, Point::new(Line(line as i32), Column(cand.start))) {
+                    found.push(crate::pathnav::PathCandidate { anchor, start: cand.start, end: cand.end, text: cand.text });
+                }
+            }
+        }
+        self.marks.path_candidates = found;
+    }
+
+    /// The folders the app found among the candidates. Newest last, at most `MAX_PATH_MARKS`.
+    pub fn add_path_marks(&mut self, found: Vec<crate::pathnav::PathMark>) {
+        let marks = &mut self.marks;
+        marks.path_marks.extend(found.into_iter().filter(|m| marks.records.contains_key(&m.row_anchor.mark)));
+        let extra = marks.path_marks.len().saturating_sub(MAX_PATH_MARKS);
+        marks.path_marks.drain(..extra);
+    }
+
+    /// Drops the path marks whose prompt mark left the buffer.
+    fn prune_path_marks(&mut self) {
+        let records = &self.marks.records;
+        self.marks.path_marks.retain(|m| records.contains_key(&m.row_anchor.mark));
+    }
+
+    /// The path marks, newest last.
+    pub fn path_marks(&self) -> &[crate::pathnav::PathMark] {
+        &self.marks.path_marks
+    }
+
+    /// The path mark under a cell (its index and a copy).
+    pub fn path_mark_at(&self, p: Point) -> Option<(usize, crate::pathnav::PathMark)> {
+        self.marks.path_marks.iter().enumerate().find_map(|(i, m)| {
+            let at = self.resolve(m.row_anchor)?;
+            (at.line == p.line && p.column.0 >= at.column.0 && p.column.0 < at.column.0 + (m.end - m.start)).then(|| (i, m.clone()))
+        })
     }
 }
 
@@ -710,6 +812,7 @@ impl Screen {
     pub fn prune_marks(&mut self) {
         let live: std::collections::HashSet<u32> = self.row_marks().into_iter().map(|(_, id)| id).collect();
         self.marks.records.retain(|id, _| live.contains(id));
+        self.prune_path_marks();
     }
 
     /// The prompt marks in the buffer as the offscreen command line's rules read them, oldest
@@ -771,6 +874,7 @@ impl Screen {
         let rows = self.row_marks();
         let live: std::collections::HashSet<u32> = rows.iter().map(|(_, id)| *id).collect();
         self.marks.records.retain(|id, _| live.contains(id));
+        self.prune_path_marks();
         rows.into_iter().filter_map(|(l, id)| Some((l, self.marks.records.get(&id)?.clone()))).collect()
     }
 
@@ -1165,7 +1269,9 @@ impl Screen {
                 }
                 self.composer_from = Some(self.abs_cursor());
                 // The prompt is captured unless its range did not change (`MS:4749-4777`).
-                let range = crate::prompt_state::prompt_range(self.marks.prompt_range.0, self.abs_cursor());
+                // The prompt's real extent, before the range is cut for a long prompt.
+                let raw = (self.marks.prompt_range.0, self.abs_cursor());
+                let range = crate::prompt_state::prompt_range(raw.0, raw.1);
                 if range != self.marks.prompt_range {
                     self.marks.prompt_range = range;
                     self.marks.prompt_anchors.1 = self.marks.command_start;
@@ -1173,6 +1279,7 @@ impl Screen {
                     let events = self.prompt_state.captured(rows, text);
                     self.composer_events.extend(events);
                 }
+                self.record_path_candidates(raw.0, raw.1);
                 // The API's PROMPT, at the prompt's end (`PS:16709-16726`).
                 if self.api_watch {
                     self.api_events.push(crate::api_notify::ApiEvent::Prompt(self.marks.current));
@@ -1629,6 +1736,83 @@ mod tests {
         assert_eq!(s.term().bounds_to_string(a, b).trim_end(), "output");
         let (a, b) = s.last_command_range().unwrap();
         assert_eq!(s.term().bounds_to_string(a, b).trim_end(), "echo hi");
+    }
+
+    fn drain(s: &mut Screen) -> Vec<(String, usize, usize)> {
+        s.take_path_candidates().into_iter().map(|c| (c.text, c.start, c.end)).collect()
+    }
+
+    #[test]
+    fn prompt_paths_are_recorded_as_text() {
+        let mut s = Screen::new(80, 10);
+        s.feed(b"\x1b]133;A\x07PS C:\\Users\\rob> \x1b]133;B\x07");
+        assert!(s.has_path_candidates());
+        let got = s.take_path_candidates();
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].text.as_str(), got[0].start, got[0].end), ("C:\\Users\\rob", 3, 15));
+        assert_eq!(s.resolve(got[0].anchor), Some(Point::new(Line(0), Column(3))), "the anchor names the first cell");
+        assert!(drain(&mut s).is_empty(), "taken once");
+        assert!(!s.has_path_candidates());
+        // A redrawn prompt (a second 133;B on the same mark) records nothing new.
+        s.feed(b"\x1b]133;B\x07");
+        assert!(drain(&mut s).is_empty());
+        // The next prompt records its own.
+        s.feed(b"\r\n\x1b]133;A\x07rob@box:~/src$ \x1b]133;B\x07");
+        assert_eq!(drain(&mut s), [("~/src".to_string(), 8, 13)]);
+    }
+
+    #[test]
+    fn a_prompt_of_six_rows_records_none() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07/a\r\n/b\r\n/c\r\n/d\r\n/e\r\n/f> \x1b]133;B\x07");
+        assert!(drain(&mut s).is_empty(), "MS:4786-4789: a long prompt is not looked at");
+        let mut five = Screen::new(40, 12);
+        five.feed(b"\x1b]133;A\x07/a\r\n/b\r\n/c\r\n/d\r\n/e> \x1b]133;B\x07");
+        assert_eq!(drain(&mut five).len(), 4, "five rows are looked at, four paths kept");
+    }
+
+    #[test]
+    fn sniff_never_probes_on_the_parse_path() {
+        struct Panics;
+        impl crate::netpath::Drives for Panics {
+            fn is_remote(&self, _: &str) -> bool {
+                panic!("the parse path asked a drive");
+            }
+        }
+        let mut s = Screen::new(80, 10);
+        s.set_path_probe(crate::netpath::Probe { drives: std::sync::Arc::new(Panics), ..crate::netpath::Probe::default() });
+        for i in 0..10_000 {
+            s.feed(b"\x1b]133;A\x07PS /a /b /c /d /e> \x1b]133;B\x07\r\n");
+            if i % 997 == 0 {
+                assert!(s.take_path_candidates().len() <= 4);
+            }
+        }
+        let last = s.take_path_candidates();
+        assert_eq!(last.len(), 4, "at most four per prompt, and only the newest prompt waits");
+        assert!(s.marks.path_marks.is_empty(), "nothing became a mark: the app resolves them");
+    }
+
+    #[test]
+    fn path_marks_move_with_rows_and_end_with_the_program() {
+        let mut s = Screen::new(80, 5);
+        s.feed(b"\x1b]133;A\x07PS C:\\Users\\rob> \x1b]133;B\x07");
+        let c = s.take_path_candidates().remove(0);
+        s.add_path_marks(vec![crate::pathnav::PathMark { row_anchor: c.anchor, start: c.start, end: c.end, path: c.text.clone() }]);
+        let at = |line: i32, col: usize| Point::new(Line(line), Column(col));
+        assert_eq!(s.path_mark_at(at(0, 3)).map(|(i, m)| (i, m.path)), Some((0, "C:\\Users\\rob".to_string())));
+        assert_eq!(s.path_mark_at(at(0, 14)).map(|(i, _)| i), Some(0));
+        for p in [at(0, 2), at(0, 15), at(1, 3)] {
+            assert_eq!(s.path_mark_at(p), None, "{p:?}");
+        }
+        // Rows scrolling up keep the mark: the anchor follows its prompt mark.
+        for _ in 0..5 {
+            s.feed(b"\r\n");
+        }
+        assert_eq!(s.path_mark_at(Point::new(Line(-1), Column(4))).map(|(i, _)| i), Some(0));
+        assert_eq!(s.path_marks().len(), 1);
+        s.program_ended();
+        assert!(s.path_marks().is_empty(), "S5: an ended program's old prompt offers no cd");
+        assert!(!s.has_path_candidates());
     }
 
     #[test]

@@ -10,10 +10,10 @@ use crate::cmdinfo::{self, Info};
 use crate::cmdinfo_ui::{Act, CmdInfoEvent, CmdInfoWindow};
 
 /// The banner for a session that cannot take text (`13q`: an ended pane takes no input).
-const ENDED: &str = "The session has ended.";
+pub(super) const ENDED: &str = "The session has ended.";
 
 /// The banner for a session waiting at a password prompt.
-const PASSWORD_PROMPT: &str = "Tandem did not write this text: the session is at a password prompt.";
+pub(super) const PASSWORD_PROMPT: &str = "Tandem did not write this text: the session is at a password prompt.";
 
 impl App {
     /// Win-click on a prompt's command: the Command Info window at the click (`at`, window
@@ -153,7 +153,7 @@ impl App {
     /// the program the local session launched; a remote pane that named none is read as a POSIX
     /// shell (a remote host is mostly one). None leaves the shell unknown, which refuses any
     /// path a shell might read.
-    fn composer_shell(&self, pane: PaneId) -> Option<String> {
+    pub(super) fn composer_shell(&self, pane: PaneId) -> Option<String> {
         let p = self.panes.get(&pane)?;
         let remote = self.remote_text(pane) || p.own().shell.host.as_deref().is_some_and(|h| !self.host_is_this_machine(h));
         let launch = Some(p.command.as_str()).filter(|c| !c.is_empty()).and_then(|c| c.split_whitespace().next());

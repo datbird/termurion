@@ -66,6 +66,7 @@ mod snippets_ui;
 mod clippings_ui;
 mod inline_chat_ui;
 mod completion_ui;
+mod pathnav_ui;
 mod composer_ui;
 mod annotations_ui;
 mod activity_ui;
@@ -803,6 +804,11 @@ pub struct App {
     /// saved answer.
     /// The Command Info window of a Win-clicked command line; one at a time, app-wide.
     cmdinfo: Option<crate::cmdinfo_ui::CmdInfoWindow>,
+    /// The prompt path navigator's workers (app-wide), the click waiting out the double-click
+    /// time (when, pane, index of the path mark) and the path mark a press landed on.
+    pathnav: pathnav_ui::PathNav,
+    pathnav_due: Option<(Instant, PaneId, usize)>,
+    pathnav_press: Option<(PaneId, usize)>,
     jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
     jobs_popover_closed: Option<Instant>,
     jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest, Option<String>)>,
@@ -1651,6 +1657,7 @@ pub fn run() {
     // Discovered Ollama models from the last run resolve at once while a refresh runs.
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
+    let pathnav = pathnav_ui::PathNav::new(notify.clone());
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
@@ -1883,6 +1890,9 @@ pub fn run() {
         jobs_tree_seen: 0,
         jobs_watch_at: None,
         cmdinfo: None,
+        pathnav,
+        pathnav_due: None,
+        pathnav_press: None,
         jobs_popover: None,
         jobs_popover_closed: None,
         jobs_confirm: None,
@@ -4258,6 +4268,10 @@ impl App {
         self.deps_command_ended(id);
         // Its Command Info window goes with it.
         self.cmd_button_hits.retain(|(p, ..)| *p != id);
+        if self.pathnav_due.is_some_and(|(_, p, _)| p == id) {
+            self.pathnav_due = None;
+        }
+        self.pathnav_press = self.pathnav_press.filter(|(p, _)| *p != id);
         if self.cmdinfo.as_ref().is_some_and(|w| w.pane == id) {
             self.cmdinfo = None;
         }
@@ -4897,6 +4911,10 @@ impl App {
         // last click's hold ends; the terminal part applies it after every UI hit test (B6).
         let first = self.first_mouse();
         self.first_mouse_down = false;
+        // Any press ends a navigator click waiting out the double-click time: a second click
+        // cancels it (`TV:7924-7933`).
+        self.pathnav_due = None;
+        self.pathnav_press = None;
         self.hide_tab_tip();
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
@@ -4952,6 +4970,9 @@ impl App {
         }
         // Other buttons in a panel do nothing (the terminal is not under it).
         if self.clip_split_hit(x, y) || self.inline_split_hit(x, y) {
+            return;
+        }
+        if button == MouseButton::Left && self.navigator_press(x, y) {
             return;
         }
         if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y) || self.cmd_button_press(x, y, event_loop)) {
@@ -5075,6 +5096,8 @@ impl App {
                 if count == 1 && plain && (self.click_unfold(id, point) || self.click_note(id, point, event_loop)) {
                     return;
                 }
+                // The path mark under a plain single click: the release decides (no drag).
+                self.pathnav_press = if count == 1 && plain { self.path_mark_index(id, point).map(|i| (id, i)) } else { None };
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
                 // A character drag on a bidi row is visual: remember where it began on screen.
@@ -5144,6 +5167,7 @@ impl App {
             return;
         }
         let b = button_number(button);
+        let nav_press = self.pathnav_press.take();
         if let Some(pd) = self.pointer_down.take() {
             if pd.button == b {
                 let modes = self.modes(pd.pane);
@@ -5185,6 +5209,11 @@ impl App {
                     }
                     if let Some((p, cell)) = alt_click.filter(|(p, _)| *p == pane) {
                         self.alt_click_moves_cursor(p, cell);
+                    }
+                    // A click with no drag on a path in the prompt opens the navigator after the
+                    // double-click time, ahead of the command selection (`TV:7897-7934`).
+                    if let Some((p, i)) = nav_press.filter(|(p, _)| *p == pane) {
+                        self.start_navigator_click(p, i);
                     }
                     // A click (no drag) that comes up on the key cursor opens the password
                     // manager.
@@ -6203,7 +6232,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
         let cmdinfo_due = self.cmdinfo_tick();
-        let wake = [cmdinfo_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let pathnav_due = self.pathnav_tick();
+        let wake = [cmdinfo_due, pathnav_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

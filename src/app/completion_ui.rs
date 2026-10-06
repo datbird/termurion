@@ -132,6 +132,11 @@ impl App {
                 self.user_write(pane, format!("{text}\r").as_bytes(), Write::SendText);
                 true
             }
+            Reply::Navigate(path) => {
+                self.completion = None;
+                self.navigator_chosen(pane, &path);
+                true
+            }
             Reply::Search => {
                 self.autocomplete_search(false);
                 true
@@ -197,7 +202,7 @@ impl App {
     /// The list's rows and box in `pane`'s rectangle `rect` (the pane's whole rectangle; the
     /// text sits inside its inset): the rows, the selection, the footer, where the box goes and
     /// the bounds it is kept in. The draw and the hit rectangle both come from here.
-    fn completion_box(&self, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(Vec<String>, usize, Option<&'static str>, (f32, f32), Rect)> {
+    pub(super) fn completion_box(&self, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(Vec<String>, usize, Option<&'static str>, (f32, f32), Rect)> {
         let rect = self.text_rect(pane, rect);
         let (p, list) = self.completion.as_ref().filter(|(p, _)| *p == pane)?;
         let s = self.panes.get(p).map(|x| x.own())?;
