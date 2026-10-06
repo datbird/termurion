@@ -827,7 +827,7 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
         let (user, redirect) = (bool_out(|b| unsafe { args.IsUserInitiated(b) }), bool_out(|b| unsafe { args.IsRedirected(b) }));
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
-        let (guard, allowed, by_tandem) = {
+        let (policy, by_tandem) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
             i.nav_uris.push_back((nav, capped));
@@ -848,21 +848,14 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
                 i.tandem_data = false;
                 by_tandem = true;
             }
-            (i.setup.guard_local_schemes, i.setup.allowed_schemes.clone(), by_tandem)
+            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone() }, by_tandem)
         };
-        if let Some(list) = &allowed {
-            if !by_tandem && !webhost::scheme_ok(&uri, list) {
-                let _ = unsafe { args.SetCancel(true) };
-                return Ok(());
-            }
-        }
-        if guard {
-            let source = sender.as_ref().and_then(source_of);
-            let file_ok = webhost::file_url_local(&uri, &local_judge);
-            if !webhost::navigation_allowed(source.as_deref(), &uri, user, redirect, by_tandem, file_ok) {
-                let _ = unsafe { args.SetCancel(true) };
-                return Ok(());
-            }
+        // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
+        let source = sender.as_ref().and_then(source_of);
+        let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };
+        if !webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge)) {
+            let _ = unsafe { args.SetCancel(true) };
+            return Ok(());
         }
         let i = inner.borrow();
         i.poster.post(Event::Loading(i.id, true));
@@ -1143,6 +1136,15 @@ mod tests {
         assert!(guard(|| Ok(())).is_ok());
     }
 
+    /// Item 3: the NavigationStarting handler asks `webhost::nav_verdict` and nothing else decides.
+    #[test]
+    fn the_navigation_handler_asks_the_one_verdict() {
+        let this = include_str!("webhost_win.rs");
+        let code = this.split("#[cfg(test)]").next().unwrap_or("");
+        assert_eq!(code.matches("webhost::nav_verdict(").count(), 1);
+        assert!(!code.contains("navigation_allowed("), "the handler judges through nav_verdict only");
+    }
+
     /// Later plans add fields to `ViewSetup`: it is only ever built with `..Default::default()`.
     #[test]
     fn view_setup_is_built_with_defaults() {
@@ -1293,7 +1295,7 @@ mod tests {
         assert!(title.is_some(), "Title");
         view.execute_script("1+1", 7);
         assert_eq!(pump_until(&rx, 10, |e| matches!(e, Event::ScriptDone { token: 7, .. })), Some(Event::ScriptDone { view: 1, token: 7, json: Ok("2".into()) }));
-        // A page that tries to leave for a file: URL is cancelled by the guard.
+        // A page that tries to leave for a file: URL goes nowhere (Chromium may refuse it before the guard; the guard itself is proved by `webhost::nav_verdict_guard_cancels_local_navigations_from_a_page`).
         view.execute_script("location.href = 'file:///C:/Windows/'; 0", 8);
         assert!(pump_until(&rx, 5, |e| matches!(e, Event::Navigated { url, .. } if url.starts_with("file:"))).is_none(), "no navigation to file:");
         // A navigation answered from memory finishes with its URL and a non-zero id.

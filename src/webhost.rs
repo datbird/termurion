@@ -608,6 +608,43 @@ pub fn physical_bounds(r: Rect) -> (i32, i32, i32, i32) {
     (left, top, n(r.x + r.w).max(left), n(r.y + r.h).max(top))
 }
 
+/// What one NavigationStarting asks (the synchronous verdict, preflight stable interfaces).
+#[derive(Clone, Copy, Debug)]
+pub struct NavInfo<'a> {
+    pub target: &'a str,
+    /// The URL of the page that started the navigation, when WebView2 says.
+    pub source: Option<&'a str>,
+    pub user: bool,
+    pub redirect: bool,
+    /// Tandem's own load (`navigate_tandem`, `navigate_to_string`).
+    pub by_tandem: bool,
+}
+
+/// The view's navigation policy, from its `ViewSetup`.
+#[derive(Clone, Debug, Default)]
+pub struct NavPolicy {
+    /// Every navigation passes `navigation_allowed` (every view sets it, preflight B4c).
+    pub guard_local_schemes: bool,
+    /// Only these schemes may load (a Tandem load is exempt); None allows any the guard allows.
+    pub allowed_schemes: Option<Vec<String>>,
+}
+
+/// The whole decision of the one NavigationStarting handler: true lets the navigation go, false
+/// cancels it. `file_ok` judges a `file:` target (the one path judge); it runs only when the guard
+/// asks, since it touches the disk.
+pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) -> bool) -> bool {
+    if let Some(list) = &policy.allowed_schemes {
+        if !info.by_tandem && !scheme_ok(info.target, list) {
+            return false;
+        }
+    }
+    if !policy.guard_local_schemes {
+        return true;
+    }
+    let file_ok = scheme_of(info.target) == "file" && file_ok(info.target);
+    navigation_allowed(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok)
+}
+
 // --- Focus (Task 1a) ---
 
 /// What a `WindowEvent::Focused` means while web views exist. A click into a web view moves
@@ -985,5 +1022,32 @@ mod tests {
         assert_eq!(pane_focus_reports(Some((1, false)), Some((3, false))), Vec::<(u64, bool)>::new());
         assert_eq!(pane_focus_reports(Some((2, true)), Some((4, true))), Vec::<(u64, bool)>::new());
         assert_eq!(pane_focus_reports(None, Some((1, false))), Vec::<(u64, bool)>::new());
+    }
+
+    /// Final review round 1, item 3: the policy function itself cancels a page's navigation into a
+    /// local scheme. Called with the guard off it lets the same navigation through, so the test
+    /// fails when the guard is removed.
+    #[test]
+    fn nav_verdict_guard_cancels_local_navigations_from_a_page() {
+        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false };
+        let yes = |_: &str| true;
+        let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+        let open = NavPolicy::default();
+        for target in ["file:///C:/Windows/", "iterm2-file:///x", "iterm2-ssh:host"] {
+            assert!(!nav_verdict(&from_page(target), &guarded, &yes), "{target} from a web page");
+            assert!(nav_verdict(&from_page(target), &open, &yes), "{target} passes with no guard (the guard is what cancels)");
+        }
+        assert!(nav_verdict(&from_page("https://example.test/next"), &guarded, &yes));
+        // A file target that the path judge refuses is cancelled even for a person's click.
+        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false };
+        assert!(!nav_verdict(&click, &guarded, &|_| false));
+        // A redirect into a local scheme is cancelled even for Tandem's own load.
+        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true };
+        assert!(!nav_verdict(&redirected, &guarded, &yes));
+        // The scheme list cancels what it does not name, except Tandem's own load.
+        let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]) };
+        assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
+        let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true };
+        assert!(nav_verdict(&own, &only_https, &yes));
     }
 }
