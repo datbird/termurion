@@ -162,8 +162,13 @@ pub enum Handed {
 /// user, same elevation and integrity, no AppContainer or restricted token: `api_peer::judge`)
 /// and its image is this Tandem's own program (case ignored). Anything else, an unreadable image
 /// included, is not Tandem and is sent nothing.
-pub fn server_verdict(theirs: &crate::api_peer::Token, mine: &crate::api_peer::Token, their_image: Option<&str>, my_image: &str) -> Result<(), String> {
+pub fn server_verdict(theirs: &crate::api_peer::Token, mine: &crate::api_peer::Token, their_image: Option<&str>, their_session: Option<u32>, my_session: Option<u32>, my_image: &str) -> Result<(), String> {
     crate::api_peer::judge(theirs, mine)?;
+    // The same Windows session (a same-user Tandem of another session never takes a request).
+    match (their_session, my_session) {
+        (Some(a), Some(b)) if a == b => {}
+        _ => return Err("the launch pipe is held by a program of another session".into()),
+    }
     match their_image {
         Some(i) if i.eq_ignore_ascii_case(my_image) => Ok(()),
         Some(_) => Err("the launch pipe is held by a program that is not this Tandem".into()),
@@ -239,7 +244,7 @@ mod pipe {
     /// `server_verdict` for the process `pid` serving the pipe.
     fn verify_server(pid: u32) -> Result<(), String> {
         let mine = std::env::current_exe().map_err(|e| e.to_string())?;
-        server_verdict(&winpipe::process_token_facts(pid)?, &winpipe::own_token_facts()?, winpipe::process_image(pid).as_deref(), &mine.to_string_lossy())
+        server_verdict(&winpipe::process_token_facts(pid)?, &winpipe::own_token_facts()?, winpipe::process_image(pid).as_deref(), winpipe::session_of(pid), winpipe::session_of(std::process::id()), &mine.to_string_lossy())
     }
 
     /// `hand_request_on` with the server check given: a holder `verify` refuses gets nothing, and
@@ -467,18 +472,24 @@ mod tests {
     /// and its image is this Tandem's own program.
     #[test]
     fn the_server_must_be_tandem() {
+        const S: Option<u32> = Some(1);
         use crate::api_peer::{Token, HIGH_RID, LOW_RID, MEDIUM_RID};
         let mine = Token { sid: "S-1-5-21-1".into(), elevated: false, integrity: MEDIUM_RID, app_container: false, restricted: false };
         let exe = r"C:\Tandem\tandem.exe";
-        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TANDEM.EXE"), exe), Ok(()), "same token, same image, case ignored");
+        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TANDEM.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
         let low = Token { integrity: LOW_RID, ..mine.clone() };
-        assert!(server_verdict(&low, &mine, Some(exe), exe).is_err(), "a low-integrity squatter");
+        assert!(server_verdict(&low, &mine, Some(exe), S, S, exe).is_err(), "a low-integrity squatter");
         let high = Token { integrity: HIGH_RID, elevated: true, ..mine.clone() };
-        assert!(server_verdict(&high, &mine, Some(exe), exe).is_err());
-        assert!(server_verdict(&Token { app_container: true, ..mine.clone() }, &mine, Some(exe), exe).is_err());
-        assert!(server_verdict(&Token { sid: "S-1-5-21-2".into(), ..mine.clone() }, &mine, Some(exe), exe).is_err());
-        assert!(server_verdict(&mine, &mine, Some(r"C:\Temp\evil.exe"), exe).is_err(), "another image");
-        assert!(server_verdict(&mine, &mine, None, exe).is_err(), "an unreadable image is refused");
+        assert!(server_verdict(&high, &mine, Some(exe), S, S, exe).is_err());
+        assert!(server_verdict(&Token { app_container: true, ..mine.clone() }, &mine, Some(exe), S, S, exe).is_err());
+        assert!(server_verdict(&Token { sid: "S-1-5-21-2".into(), ..mine.clone() }, &mine, Some(exe), S, S, exe).is_err());
+        assert!(server_verdict(&mine, &mine, Some(r"C:\Temp\evil.exe"), S, S, exe).is_err(), "another image");
+        assert!(server_verdict(&mine, &mine, None, S, S, exe).is_err(), "an unreadable image is refused");
+        // Review r1 residual: the server must run in this process's session.
+        assert!(server_verdict(&mine, &mine, Some(exe), Some(2), Some(1), exe).is_err(), "a same-user Tandem of another session");
+        assert!(server_verdict(&mine, &mine, Some(exe), None, Some(1), exe).is_err(), "an unreadable session is refused");
+        assert!(server_verdict(&mine, &mine, Some(exe), Some(1), None, exe).is_err());
+        assert_eq!(server_verdict(&mine, &mine, Some(exe), Some(3), Some(3), exe), Ok(()));
     }
 
     #[cfg(windows)]

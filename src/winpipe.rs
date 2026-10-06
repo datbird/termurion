@@ -257,6 +257,14 @@ pub fn process_image(pid: u32) -> Option<String> {
     }
 }
 
+/// The Windows session id of process `pid` (`ProcessIdToSessionId`), when it can be read.
+pub fn session_of(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    let mut session = 0u32;
+    // SAFETY: `session` is a valid out pointer for the call.
+    (unsafe { ProcessIdToSessionId(pid, &mut session) } != 0).then_some(session)
+}
+
 /// The peer check's facts about this process's token.
 pub fn own_token_facts() -> Result<crate::api_peer::Token, String> {
     unsafe {
