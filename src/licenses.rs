@@ -1,6 +1,6 @@
 //! The Open Source Licenses list (`AD:3735-3741`; iTerm2's `ThirdParty/Licenses.txt` is each
 //! package's `name/FILE` header followed by the text). `build.rs` gathers the license files of
-//! every crate in Cargo.lock, the three path crates and the ConPTY package into
+//! every crate in Cargo.lock, the three path crates and every notice file under resources/ (iTerm2, tab icons, terminfo, ConPTY) into
 //! `OUT_DIR/licenses.txt` at build time; nothing is fetched at run time.
 
 /// One list entry: "{crate} {version}/{file}", the text, and a blank line.
@@ -86,6 +86,112 @@ mod tests {
         assert!(!all.is_empty());
         assert!(all.contains("alacritty_terminal"), "the vendored terminal crate is listed");
         assert!(all.contains("glyphon") && all.contains("vte "), "the other path crates are listed");
-        assert!(all.contains("Microsoft.Windows.Console.ConPTY"), "the shipped ConPTY files are covered");
+        assert!(all.contains("resources/conpty/LICENSE") && all.contains("resources/conpty/NOTICE.md"), "the shipped ConPTY files are covered");
+    }
+
+    /// How a bundled file under `resources/` is covered.
+    enum Cover {
+        /// A license file in the file's own folder (or one above it, below `resources/`).
+        Folder,
+        /// A notice at the top of `resources/`, which says which files it covers.
+        Root,
+        /// Tandem's own file.
+        Own(&'static str),
+    }
+
+    const RESOURCES: &[(&str, Cover)] = &[
+        ("ssh/", Cover::Folder),
+        ("utilities/", Cover::Folder),
+        ("tab_icons/", Cover::Folder),
+        ("terminfo/", Cover::Folder),
+        ("conpty/", Cover::Folder),
+        ("ai/", Cover::Root),
+        ("scripts/", Cover::Root),
+        ("ColorPresets.plist", Cover::Root),
+        ("tips.toml", Cover::Root),
+        ("shell_integration/tandem_shell_integration.ps1", Cover::Own("Tandem's own PowerShell script")),
+    ];
+
+    fn is_notice(name: &str) -> bool {
+        let n = name.to_ascii_uppercase();
+        ["LICENSE", "LICENCE", "COPYING", "NOTICE"].iter().any(|p| n.starts_with(p))
+    }
+
+    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, base, out);
+            } else {
+                out.push(p.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    /// The class rule (m13v2 Task 7 fix): every file bundled from `resources/` is covered by a
+    /// notice that the list carries, or is declared Tandem's own. A new file with neither fails.
+    #[test]
+    fn every_bundled_file_has_a_notice() {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
+        let mut files = Vec::new();
+        walk(&base, &base, &mut files);
+        assert!(files.len() > 100, "the walk found {} files", files.len());
+        let all = text();
+        let mut bad = Vec::new();
+        for f in &files {
+            let name = f.rsplit('/').next().unwrap();
+            if is_notice(name) {
+                continue;
+            }
+            let Some((_, cover)) = RESOURCES.iter().find(|(p, _)| f.starts_with(p)) else {
+                bad.push(format!("{f}: no rule"));
+                continue;
+            };
+            let dir: Vec<&str> = f.split('/').collect();
+            let notices: Vec<String> = match cover {
+                Cover::Own(why) => {
+                    assert!(!why.is_empty());
+                    continue;
+                }
+                Cover::Root => (0..1).flat_map(|_| ["LICENSE", "COPYING-iTerm2", "LICENSE-iTerm2"]).map(String::from).collect(),
+                Cover::Folder => (1..dir.len())
+                    .rev()
+                    .flat_map(|n| {
+                        let folder = dir[..n].join("/");
+                        std::fs::read_dir(base.join(&folder)).unwrap().flatten().filter_map(move |e| e.file_name().into_string().ok()).filter(|n| is_notice(n)).map(move |n| format!("{folder}/{n}"))
+                    })
+                    .collect(),
+            };
+            if notices.is_empty() {
+                bad.push(format!("{f}: no notice file covers it"));
+            }
+            for n in notices {
+                let path = format!("resources/{n}");
+                if !base.join(&n).is_file() {
+                    bad.push(format!("{f}: {n} is missing"));
+                } else if !all.contains(&path) {
+                    bad.push(format!("{f}: {path} is not in the list"));
+                }
+            }
+        }
+        bad.sort();
+        bad.dedup();
+        assert!(bad.is_empty(), "bundled files without a notice in the list:\n{}", bad.join("\n"));
+    }
+
+    /// The files the installer copies are Tandem's own binaries or the ConPTY pair, whose notice is in the list.
+    #[test]
+    fn every_installed_file_has_a_notice() {
+        let ps = include_str!("../scripts/install-extreme.ps1");
+        let line = ps.lines().find(|l| l.starts_with("$files = ")).expect("the file list");
+        let names: Vec<&str> = line.trim_start_matches("$files = ").split(',').map(|n| n.trim().trim_matches('\'')).collect();
+        assert!(names.len() >= 7, "{names:?}");
+        for n in names {
+            match n {
+                "tandem.exe" | "tandem-host.exe" | "tandem-git.exe" | "tandem-utils.exe" | "cc-status.exe" => {}
+                "conpty.dll" | "OpenConsole.exe" => assert!(text().contains("resources/conpty/NOTICE.md"), "{n}"),
+                other => panic!("{other} is installed with no notice: add it to the list or declare it Tandem's own"),
+            }
+        }
     }
 }

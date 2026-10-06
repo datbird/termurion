@@ -27,14 +27,40 @@ fn main() {
     write_licenses(&out);
 }
 
-/// The Windows Terminal / ConPTY package's own notice (MIT, Microsoft): conpty.dll and
-/// OpenConsole.exe ship next to the exe, so the list carries it even when the package's folder
-/// holds no license file.
-const CONPTY_NOTICE: &str = "MIT License\n\nCopyright (c) Microsoft Corporation. All rights reserved.\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.";
-
 /// One list entry, as `licenses::entry` writes it ("crate version/FILE", then the text).
 fn entry(name: &str, version: &str, file: &str, text: &str) -> String {
     format!("{name} {version}/{file}\n{text}\n\n")
+}
+
+/// Every notice file under `resources/` (LICENSE*, LICENCE*, COPYING*, NOTICE*, in any folder), by
+/// path ("resources/ssh/COPYING-iTerm2"); files with the same text share one entry that names
+/// them all. These cover the iTerm2 files, the tab icons, the terminfo entries and the ConPTY pair.
+fn resource_notices(root: &Path) -> String {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(read) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| ["LICENSE", "LICENCE", "COPYING", "NOTICE"].iter().any(|x| n.to_ascii_uppercase().starts_with(x))) {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(root, &mut files);
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for f in files {
+        let Some(bytes) = std::fs::read(&f).ok().filter(|b| b.len() <= 256 * 1024) else { continue };
+        let body = String::from_utf8_lossy(&bytes).trim().to_string();
+        let name = f.to_string_lossy().replace('\\', "/");
+        match groups.iter_mut().find(|(b, _)| *b == body) {
+            Some((_, names)) => names.push(name),
+            None => groups.push((body, vec![name])),
+        }
+    }
+    groups.iter().map(|(body, names)| format!("{}\n{body}\n\n", names.join(", "))).collect()
 }
 
 /// The (name, version, from the registry) of every package in Cargo.lock's text.
@@ -103,11 +129,12 @@ fn registry_roots() -> Vec<PathBuf> {
 }
 
 /// Gathers the list. Reads only Cargo.lock, the registry sources, the path crates under crates/
-/// and vendor/conpty; a crate whose folder is absent (a dependency for another target that cargo
+/// and resources/; a crate whose folder is absent (a dependency for another target that cargo
 /// never downloaded here) is skipped without an error.
 fn write_licenses(out: &Path) {
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=crates");
+    println!("cargo:rerun-if-changed=resources");
     println!("cargo:rerun-if-env-changed=CARGO_HOME");
     let lock = std::fs::read_to_string("Cargo.lock").unwrap_or_default();
     let roots = registry_roots();
@@ -132,12 +159,6 @@ fn write_licenses(out: &Path) {
             text.push_str(&entry(&name, &version, &file, &body));
         }
     }
-    let (conpty, version) = (license_files(Path::new("vendor/conpty")), "(conpty.dll, OpenConsole.exe)");
-    if conpty.is_empty() {
-        text.push_str(&entry("Microsoft.Windows.Console.ConPTY", version, "LICENSE", CONPTY_NOTICE));
-    }
-    for (file, body) in conpty {
-        text.push_str(&entry("Microsoft.Windows.Console.ConPTY", version, &file, &body));
-    }
+    text.push_str(&resource_notices(Path::new("resources")));
     std::fs::write(out.join("licenses.txt"), text).unwrap();
 }
