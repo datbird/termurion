@@ -101,9 +101,11 @@ impl App {
         self.session_hotkeys.pane_gone(pane);
         self.session_hotkey_seen.remove(&pane);
         self.session_hotkeys_dirty = true;
+        // Edit Session stops with its pane (13t's `edit_session_after_close`), and the row with it.
         if let Some(s) = self.settings.as_mut().filter(|s| s.edit_session == Some(pane)) {
-            s.edit_session = None;
+            s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, pane);
             s.session_hotkey = None;
+            s.session_hotkey_waiting = false;
         }
     }
 

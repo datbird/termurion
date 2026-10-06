@@ -3618,6 +3618,11 @@ impl App {
         self.bindings.retain(|(p, _), _| *p != id);
         if let Some(s) = self.settings.as_mut() {
             s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, id);
+            // The Session Hotkey row (13u) goes with the session it showed.
+            if s.edit_session.is_none() {
+                s.session_hotkey = None;
+                s.session_hotkey_waiting = false;
+            }
         }
         if self.edit_follow_seen == Some(id) {
             self.edit_follow_seen = None;

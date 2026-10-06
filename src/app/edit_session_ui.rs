@@ -16,6 +16,13 @@ impl App {
             // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
             s.set_tmux_session(tmux);
         }
+        // The Session Hotkey row (13u) shows the pane Edit Session now points at, so a follow or
+        // a re-point moves the row with it; Settings alone has no row and no value.
+        if s.edit_session.is_none() {
+            s.session_hotkey = None;
+            s.session_hotkey_waiting = false;
+        }
+        self.sync_session_hotkey_row();
     }
 
     /// Edit Session follows the newly active session unless Pin Edit Session is on (R3). Called
@@ -43,5 +50,34 @@ impl App {
         self.save_due = Some(Instant::now() + SAVE_DELAY);
         self.menus_dirty = true;
         self.redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn body(src: &'static str, name: &str) -> &'static str {
+        let start = src.find(name).unwrap_or_else(|| panic!("{name}"));
+        let rest = &src[start..];
+        &rest[..rest.find("\n    }\n").expect("end of fn")]
+    }
+
+    /// S3 (13t x 13u): the Session Hotkey row shows the pane Edit Session points at. Every way
+    /// the pane changes (opened from the Session menu, followed to the active session, its pane
+    /// closed) moves or clears the row in the same block.
+    #[test]
+    fn session_hotkey_row_follows_edit_session() {
+        let point = body(include_str!("edit_session_ui.rs"), "fn point_edit_session(");
+        assert!(point.contains("self.sync_session_hotkey_row();"), "a re-point reads the new pane's hotkey");
+        assert!(point.contains("s.session_hotkey = None;"), "Settings alone shows no session value");
+        // Follow goes through point_edit_session, so it moves the row too.
+        assert!(body(include_str!("edit_session_ui.rs"), "fn follow_edit_session(").contains("self.point_edit_session(Some(pane));"));
+        // The Session menu's Edit Session is point_edit_session (13t's), not a second copy.
+        let menu = body(include_str!("menu.rs"), "fn edit_session(&mut self");
+        assert!(menu.contains("self.point_edit_session(pane);") && !menu.contains("s.edit_session ="));
+        // A closed pane: both drop paths clear the field and the row through 13t's rule.
+        let gone = body(include_str!("mod.rs"), "fn pane_gone(&mut self");
+        assert!(gone.contains("edit_session_after_close") && gone.contains("s.session_hotkey = None;"));
+        let hk = body(include_str!("session_hotkey_ui.rs"), "fn session_hotkey_pane_gone(");
+        assert!(hk.contains("edit_session_after_close") && hk.contains("s.session_hotkey_waiting = false;"));
     }
 }
