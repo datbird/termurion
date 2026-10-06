@@ -12,9 +12,31 @@ pub const NAME: &str = "Name";
 /// The Windows stand-in for iTerm2's default Monaco 12.
 pub const WINDOWS_FONT: &str = "Cascadia Mono 12";
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Profile {
     pub values: BTreeMap<String, Value>,
+    /// Renewed by every write of a key the Profiles menu shows (Name, Tags, Shortcut) and by
+    /// `from_values`, so the menu is rebuilt only when one moved (`profile_menu::MenuCache`).
+    menu_stamp: u64,
+}
+
+/// Two profiles are equal when their values are; the stamp is bookkeeping.
+impl PartialEq for Profile {
+    fn eq(&self, other: &Profile) -> bool {
+        self.values == other.values
+    }
+}
+
+/// The source of `Profile::menu_stamp` values (each one is used once).
+static MENU_STAMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_menu_stamp() -> u64 {
+    MENU_STAMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The keys the Profiles menu shows.
+fn shown_in_menu(key: &str) -> bool {
+    matches!(key, NAME | TAGS_KEY | "Shortcut")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -123,13 +145,16 @@ impl Profile {
                 values.insert(TAGS_KEY.to_string(), t);
             }
         }
-        Profile { values }
+        Profile { values, menu_stamp: next_menu_stamp() }
     }
 
     /// The one write: the Settings window, the API, an arrangement's session copy and the
     /// escape codes all land here. "Bindings" is cleaned once, so every reader sees at most
     /// `bindings::MAX_TABLE` bindable entries, and "Tags" the same way (`profile_list::clean_tags`).
     pub fn set(&mut self, key: &str, value: Value) {
+        if shown_in_menu(key) {
+            self.menu_stamp = next_menu_stamp();
+        }
         if key == crate::bindings::KEY {
             match crate::bindings::clean(value) {
                 Some(b) => self.values.insert(key.to_string(), b),
@@ -145,6 +170,19 @@ impl Profile {
             return;
         }
         self.values.insert(key.to_string(), value);
+    }
+
+    /// Removes a key's own value (the schema default reads again).
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        if shown_in_menu(key) {
+            self.menu_stamp = next_menu_stamp();
+        }
+        self.values.remove(key)
+    }
+
+    /// Changes whenever a value the Profiles menu shows was written.
+    pub fn menu_stamp(&self) -> u64 {
+        self.menu_stamp
     }
 
     pub fn bool(&self, key: &str) -> bool {

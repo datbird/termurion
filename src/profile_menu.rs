@@ -23,6 +23,42 @@ pub const MAX_WORK: usize = 16 * 1024;
 /// Profiles read into the tree at most (the rows are built before it).
 pub const MAX_PROFILES: usize = 2048;
 
+/// The Profiles menu's rows for `profiles` (the first `MAX_PROFILES`): guid, cleaned name, tags
+/// and stored shortcut key.
+pub fn menu_rows(profiles: &[Profile]) -> Vec<(String, String, Vec<String>, Option<char>)> {
+    let shown = &profiles[..profiles.len().min(MAX_PROFILES)];
+    crate::profile_list::rows(shown).into_iter().zip(shown).map(|((guid, name, tags, _), p)| (guid, name, tags, stored_key(&p.string("Shortcut")))).collect()
+}
+
+/// What the menu shows of `profiles`, as one number: their count, order and each one's
+/// `menu_stamp` (one read per profile, no allocation).
+pub fn generation(profiles: &[Profile]) -> u64 {
+    let shown = &profiles[..profiles.len().min(MAX_PROFILES)];
+    shown.iter().fold(shown.len() as u64, |h, p| (h.rotate_left(5) ^ p.menu_stamp()).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+/// The Profiles menu tree kept until a profile it shows changes (P18): the menu is synced per
+/// output batch and focus change, but rows and tree are built only when `generation` moved.
+#[derive(Default)]
+pub struct MenuCache {
+    generation: Option<u64>,
+    /// How many times the tree was built (the tests count it).
+    pub builds: usize,
+}
+
+impl MenuCache {
+    /// The new tree when a shown profile changed since the last call, else None.
+    pub fn rebuild(&mut self, profiles: &[Profile]) -> Option<Vec<Node>> {
+        let g = generation(profiles);
+        if self.generation == Some(g) {
+            return None;
+        }
+        self.generation = Some(g);
+        self.builds += 1;
+        Some(tree(&menu_rows(profiles)))
+    }
+}
+
 /// One menu while the tree is built: its folders in the order they were made (found by lowercase
 /// name through `index`), and its profiles (found by guid through `guids`).
 #[derive(Default)]
@@ -230,11 +266,11 @@ pub fn take_shortcut(profiles: &mut [Profile], guid: &str, key: Option<char>) {
             match key {
                 Some(k) => p.set("Shortcut", toml::Value::String(k.to_ascii_uppercase().to_string())),
                 None => {
-                    p.values.remove("Shortcut");
+                    p.remove("Shortcut");
                 }
             }
         } else if key.is_some() && stored_key(&p.string("Shortcut")) == key.map(|k| k.to_ascii_uppercase()) {
-            p.values.remove("Shortcut");
+            p.remove("Shortcut");
         }
     }
 }
@@ -246,6 +282,42 @@ mod tests {
     fn p(guid: &str, tags: &[&str]) -> (String, String, Vec<String>, Option<char>) {
         (guid.to_string(), guid.to_string(), tags.iter().map(|t| t.to_string()).collect(), None)
     }
+    #[test]
+    fn menu_tree_is_built_only_when_a_shown_profile_changes() {
+        let mut profiles = vec![Profile::new("a"), Profile::new("b")];
+        let mut cache = MenuCache::default();
+        assert!(cache.rebuild(&profiles).is_some());
+        // Output batches and focus changes call it again and again: nothing is built.
+        for _ in 0..100 {
+            assert!(cache.rebuild(&profiles).is_none());
+        }
+        assert_eq!(cache.builds, 1);
+        // A key the menu does not show changes nothing.
+        profiles[0].set("Badge Text", toml::Value::String("x".into()));
+        assert!(cache.rebuild(&profiles).is_none());
+        // Name, Tags and Shortcut, the order and the count do.
+        profiles[0].set("Name", toml::Value::String("c".into()));
+        assert!(cache.rebuild(&profiles).is_some());
+        profiles[1].set("Tags", toml::Value::Array(vec![toml::Value::String("work".into())]));
+        assert!(cache.rebuild(&profiles).is_some());
+        let guid = profiles[1].guid();
+        take_shortcut(&mut profiles, &guid, Some('q'));
+        assert!(cache.rebuild(&profiles).is_some());
+        take_shortcut(&mut profiles, &guid, None);
+        assert!(cache.rebuild(&profiles).is_some(), "a removed shortcut");
+        profiles.swap(0, 1);
+        assert!(cache.rebuild(&profiles).is_some());
+        profiles.push(Profile::from_values(Profile::new("d").values));
+        assert!(cache.rebuild(&profiles).is_some());
+        profiles.pop();
+        assert!(cache.rebuild(&profiles).is_some());
+        assert_eq!(cache.builds, 8);
+        // A clone of the same profiles is the same menu.
+        let same = profiles.clone();
+        assert!(cache.rebuild(&same).is_none());
+        assert_eq!(cache.builds, 8);
+    }
+
     fn leaf(guid: &str) -> Node {
         Node::Profile { guid: guid.into(), name: guid.into(), shortcut: None }
     }
