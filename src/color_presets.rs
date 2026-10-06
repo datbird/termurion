@@ -338,11 +338,8 @@ pub fn apply(p: &Preset, profile: &mut Profile, from: Modes, to: Modes, update_u
         }
         let value = preset_value(p, &key);
         for s in &set {
-            // Reading both modes into both keeps each mode's own colors; iTerm2 fans every key out
-            // to every written suffix, so the dark value ends up in both (Decision, see report).
-            if uses_modes && from == Modes::BOTH && !suffix.is_empty() && suffix != *s {
-                continue;
-            }
+            // iTerm2 fans every key out to every written suffix: with both modes read into both,
+            // the later (dark) key's value is the one left in each.
             let target = format!("{base}{s}");
             match &value {
                 Some(v) => profile.set(&target, v.clone()),
@@ -546,14 +543,17 @@ pub fn duplicate_of(g: &Globals, p: &Preset) -> Option<String> {
 }
 
 /// `addColorPreset:withColors:`: stores the preset; a name already taken becomes "Name (2)", "(3)"...
-/// Returns the name used. The name is cleaned to what `custom` will show (callers keep the stored
-/// count under `MAX_CUSTOM`).
-pub fn add_custom(g: &mut Globals, name: &str, p: Preset) -> String {
+/// Returns the name used, or an error text when `MAX_CUSTOM` presets are stored. The name is
+/// cleaned to what `custom` will show.
+pub fn add_custom(g: &mut Globals, name: &str, p: Preset) -> Result<String, String> {
     let mut base: String = name.chars().filter(|c| name_ok(&c.to_string())).take(MAX_NAME - 6).collect();
     if base.is_empty() {
         base = "Untitled".into();
     }
     let mut stored = g.table(CUSTOM_KEY);
+    if stored.len() >= MAX_CUSTOM {
+        return Err(format!("At most {MAX_CUSTOM} custom color presets can be kept."));
+    }
     let mut used = base.clone();
     let mut i = 1;
     while stored.contains_key(&used) {
@@ -563,7 +563,7 @@ pub fn add_custom(g: &mut Globals, name: &str, p: Preset) -> String {
     let t: toml::Table = p.iter().filter(|(k, _)| is_preset_key(k)).map(|(k, c)| (k.clone(), value_of(c))).collect();
     stored.insert(used.clone(), Value::Table(t));
     g.set(CUSTOM_KEY, Value::Table(stored));
-    used
+    Ok(used)
 }
 
 pub fn delete_custom(g: &mut Globals, name: &str) {
@@ -640,10 +640,12 @@ mod tests {
             assert_eq!(profile.values[&key], crate::import::preset_color_to_value(&solarized[&key]), "{key}");
         }
         assert_eq!(profile.values["Use Separate Colors for Light and Dark Mode"], Value::Boolean(true));
-        // Each mode keeps its own color (Solarized's light and dark foregrounds differ).
+        // iTerm2's loop fans every key out to every written suffix, so reading both modes into
+        // both leaves the dark value in each (the Colors tab avoids it by loading one mode at a time).
         assert_ne!(solarized["Foreground Color (Light)"], solarized["Foreground Color (Dark)"]);
-        assert_eq!(profile.values["Foreground Color (Light)"], crate::import::preset_color_to_value(&solarized["Foreground Color (Light)"]));
-        assert_eq!(profile.values["Foreground Color (Dark)"], crate::import::preset_color_to_value(&solarized["Foreground Color (Dark)"]));
+        let dark_fg = crate::import::preset_color_to_value(&solarized["Foreground Color (Dark)"]);
+        assert_eq!(profile.values["Foreground Color (Light)"], dark_fg);
+        assert_eq!(profile.values["Foreground Color (Dark)"], dark_fg);
 
         let mut only_dark = Profile::new("t");
         let before = only_dark.values.clone();
@@ -683,9 +685,9 @@ mod tests {
         let mut g = globals();
         let profile = Profile::new("t");
         let p = current(&profile, false);
-        assert_eq!(add_custom(&mut g, "Mine", p.clone()), "Mine");
-        assert_eq!(add_custom(&mut g, "Mine", p.clone()), "Mine (2)");
-        assert_eq!(add_custom(&mut g, "Mine", p.clone()), "Mine (3)");
+        assert_eq!(add_custom(&mut g, "Mine", p.clone()).unwrap(), "Mine");
+        assert_eq!(add_custom(&mut g, "Mine", p.clone()).unwrap(), "Mine (2)");
+        assert_eq!(add_custom(&mut g, "Mine", p.clone()).unwrap(), "Mine (3)");
         assert_eq!(duplicate_of(&g, &p).as_deref(), Some("Mine"));
         delete_custom(&mut g, "Mine (2)");
         let names: Vec<String> = custom(&g).into_iter().map(|(n, _)| n).collect();
@@ -694,7 +696,7 @@ mod tests {
         other.insert("Foreground Color".into(), color(0.1, 0.2, 0.3));
         assert_eq!(duplicate_of(&g, &other), None);
         // Built-ins win a name clash, and the merged list names a clash once.
-        add_custom(&mut g, "Regular", other);
+        add_custom(&mut g, "Regular", other).unwrap();
         assert_eq!(find(&g, "Regular"), Some(named("Regular")));
         assert_eq!(all_names(&g).iter().filter(|n| *n == "Regular").count(), 1);
         assert_eq!(find(&g, "Mine"), Some(p));
@@ -724,7 +726,9 @@ mod tests {
     fn current_and_matches_follow_iterm2() {
         let mut profile = Profile::new("t");
         let solarized = named("Solarized");
-        apply_whole(&solarized, &mut profile);
+        // As the Colors tab loads a preset with modes: light into light, then dark into dark.
+        apply(&solarized, &mut profile, Modes::LIGHT_ONLY, Modes::LIGHT_ONLY, true);
+        apply(&solarized, &mut profile, Modes::DARK_ONLY, Modes::DARK_ONLY, true);
         let shown_dark = current(&profile, true);
         assert_eq!(shown_dark["Foreground Color"].r, solarized["Foreground Color (Dark)"].r);
         assert_eq!(current(&profile, false)["Foreground Color"].r, solarized["Foreground Color (Light)"].r);
@@ -742,6 +746,17 @@ mod tests {
         let shown_dark = current(&profile, true);
         // Exported with separate colors, the current dictionary survives a file.
         assert_eq!(read_itermcolors(&write_itermcolors(&shown_dark)), Some(shown_dark));
+    }
+
+    #[test]
+    fn add_custom_stops_at_the_cap() {
+        let mut g = globals();
+        let p = current(&Profile::new("t"), false);
+        for i in 0..MAX_CUSTOM {
+            add_custom(&mut g, &format!("P{i}"), p.clone()).unwrap();
+        }
+        assert!(add_custom(&mut g, "One more", p.clone()).is_err());
+        assert_eq!(g.table(CUSTOM_KEY).len(), MAX_CUSTOM);
     }
 
     #[test]
@@ -843,7 +858,7 @@ mod tests {
         // The stored form reads back through the same path: no space, profile-form floats.
         let mut g2 = globals();
         let p = current(&Profile::new("t"), false);
-        add_custom(&mut g2, "Mine", p.clone());
+        add_custom(&mut g2, "Mine", p.clone()).unwrap();
         assert_eq!(find(&g2, "Mine"), Some(p));
     }
 
