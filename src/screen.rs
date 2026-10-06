@@ -1826,6 +1826,11 @@ impl Screen {
         self.answerback_cp = cp;
     }
 
+    /// DECSET 1036 (a program asks Alt to send Esc+) is set.
+    pub fn meta_sends_escape(&self) -> bool {
+        self.term.mode().contains(TermMode::META_SENDS_ESCAPE)
+    }
+
     /// DEC mode 2048 (in-band resize reports) is set.
     pub fn resize_reports(&self) -> bool {
         self.term.resize_reports
@@ -4273,6 +4278,25 @@ mod tests {
         s.set_answerback("\u{e9}".repeat(200));
         let r = s.feed(b"\x05");
         assert!(r.len() <= 256 && String::from_utf8(r).is_ok(), "cut on a character");
+    }
+
+    /// 13u Task 2 (Review Focus 2): DECSET 1036 follows xterm.
+    #[test]
+    fn meta_sends_escape_mode_follows_xterm() {
+        let mut s = Screen::new(20, 3);
+        assert!(!s.meta_sends_escape());
+        assert_eq!(s.feed(b"\x1b[?1036$p"), b"\x1b[?1036;2$y");
+        assert_eq!(s.feed(b"\x1b[?1036h"), b"", "no report on enabling");
+        assert!(s.meta_sends_escape());
+        assert_eq!(s.feed(b"\x1b[?1036$p"), b"\x1b[?1036;1$y");
+        s.feed(b"\x1b[?1036l");
+        assert!(!s.meta_sends_escape());
+        assert_eq!(s.feed(b"\x1b[?1036$p"), b"\x1b[?1036;2$y");
+        s.feed(b"\x1b[?1036h\x1bc");
+        assert!(!s.meta_sends_escape(), "RIS");
+        s.feed(b"\x1b[?1;1036h");
+        assert!(s.meta_sends_escape(), "inside a parameter list");
+        assert!(s.term().mode().contains(TermMode::APP_CURSOR), "other modes untouched");
     }
 
     /// 13o Task 6 (Review Focus 10, R8): DEC mode 2048.

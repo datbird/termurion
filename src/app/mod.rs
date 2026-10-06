@@ -4758,7 +4758,11 @@ impl App {
         let t = self.tabs.get(self.active)?;
         let pane = self.panes.get(&t.focused)?;
         let mode = *pane.own().term().mode();
-        let opts = self.store.get(&pane.profile).map_or(KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false }, KeyOptions::from_profile);
+        let opts = self.store.get(&pane.profile).map_or(KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false, left_changeable: true, right_changeable: false }, KeyOptions::from_profile);
+        // DECSET 1036 (Advanced SupportDecsetMetaSendsEscape): a program may switch a changeable side to Esc+.
+        let support = self.globals.bool("SupportDecsetMetaSendsEscape");
+        let meta = mode.contains(TermMode::META_SENDS_ESCAPE);
+        let opts = KeyOptions { left_option: opts.effective(AltSide::Left, meta, support), right_option: opts.effective(AltSide::Right, meta, support), ..opts };
         keys::press_bytes_with(key, base, text, self.mods, self.alt_side, mode.contains(TermMode::APP_CURSOR), mode.contains(TermMode::APP_KEYPAD), keypad, &opts)
     }
 
