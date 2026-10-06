@@ -24,6 +24,16 @@ pub const PARENT_NAME_KEY: &str = "Dynamic Profile Parent Name";
 pub const PARENT_GUID_KEY: &str = "Dynamic Profile Parent GUID";
 pub const REWRITABLE_KEY: &str = "Rewritable";
 pub const DYNAMIC_KEY: &str = "Is Dynamic Profile";
+
+/// The profile keys that belong to the Dynamic Profiles loader alone: no program, API call,
+/// import, remote setting or saved file may set them (the mark keeps a profile out of
+/// profiles.toml, and a reload removes a profile whose file is gone).
+pub const INTERNAL_KEYS: [&str; 5] = [DYNAMIC_KEY, REWRITABLE_KEY, PARENT_NAME_KEY, PARENT_GUID_KEY, FILENAME_KEY];
+
+/// Whether `key` is one of the loader's own.
+pub fn is_internal(key: &str) -> bool {
+    INTERNAL_KEYS.contains(&key)
+}
 const SEPARATE_COLORS_KEY: &str = "Use Separate Colors for Light and Dark Mode";
 const DEFAULT_BOOKMARK_KEY: &str = "Default Bookmark";
 
@@ -654,7 +664,7 @@ pub fn merge(child: &Entry, parent: &Profile, add_tag: bool) -> Profile {
     }
     let mut values: BTreeMap<String, Value> = child
         .iter()
-        .filter(|(k, _)| k.as_str() != DEFAULT_BOOKMARK_KEY && k.as_str() != DYNAMIC_KEY)
+        .filter(|(k, _)| k.as_str() != DEFAULT_BOOKMARK_KEY && k.as_str() != DYNAMIC_KEY && k.as_str() != crate::session_profile::ORIGINAL_GUID)
         .filter_map(|(k, v)| Some((k.clone(), crate::import::from_json(v)?)))
         .collect();
     crate::start_dir::scrub_map(&mut values);
@@ -940,6 +950,8 @@ mod tests {
         assert_eq!(merged.values.get("Font"), Some(&s("Consolas 12")), "the child's key wins");
         assert_eq!(merged.values.get("Columns"), Some(&toml::Value::Integer(100)), "the parent supplies the rest");
         assert!(merged.values.get("Default Bookmark").is_none(), "never inherited, never taken from the child");
+        let linked = obj(json!({"Guid": "D1", "Name": "Dev", "Original Guid": "Z"}));
+        assert!(merge(&linked, &parent, false).values.get("Original Guid").is_none(), "a session link is never taken from a file");
         assert_eq!(merged.guid(), "D1");
         assert_eq!(merged.values.get(DYNAMIC_KEY), Some(&toml::Value::Boolean(true)));
         assert!(merged.values.get("Tags").is_none());

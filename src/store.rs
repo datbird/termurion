@@ -59,7 +59,11 @@ impl Store {
         let mut profiles: Vec<Profile> = file
             .profile
             .into_iter()
-            .map(Profile::from_values)
+            // profiles.toml never holds a dynamic profile: the loader's marks are dropped.
+            .map(|mut values| {
+                values.retain(|k, _| !crate::dynamic_profiles::is_internal(k));
+                Profile::from_values(values)
+            })
             .collect();
         ensure_unique_guids(&mut profiles);
         if profiles.is_empty() {
@@ -513,5 +517,25 @@ mod tests {
         assert!(!s.unsaved(&copy));
         assert!(s.get(&copy).unwrap().values.get("Dynamic Profile Parent Name").is_none());
         assert_eq!(s.file_profiles().len(), 2);
+    }
+
+    /// profiles.toml never holds a dynamic profile, so a file that carries the marks (an older
+    /// import, a hand edit, remote settings) loads them as ordinary saved profiles and writes
+    /// them back whole.
+    #[test]
+    fn a_file_with_the_dynamic_marks_loads_as_saved_profiles() {
+        let path = scratch("marks");
+        std::fs::write(
+            &path,
+            "default = \"A\"\n[[profile]]\nGuid = \"A\"\nName = \"one\"\n\"Is Dynamic Profile\" = true\nRewritable = true\n\"Dynamic Profile Filename\" = \"x.json\"\n[[profile]]\nGuid = \"B\"\nName = \"two\"\n",
+        )
+        .unwrap();
+        let s = Store::load(&path).unwrap();
+        assert!(s.dynamic_guids().is_empty());
+        assert!(!s.unsaved("A"));
+        assert!(s.profiles[0].values.keys().all(|k| !["Is Dynamic Profile", "Rewritable", "Dynamic Profile Filename"].contains(&k.as_str())));
+        s.save().unwrap();
+        let back = Store::load(&path).unwrap();
+        assert_eq!(back.profiles.len(), 2, "both are written back");
     }
 }

@@ -561,4 +561,13 @@ mod tests {
         let ok = vec![("AWDS Pane Directory".to_string(), serde_json::json!("D:\\ok"))];
         assert_eq!(legal(&ok), Some(vec![("AWDS Pane Directory".to_string(), Value::String("D:\\ok".into()))]));
     }
+
+    /// SetProfileProperty refuses the dynamic marks.
+    #[test]
+    fn legal_refuses_the_dynamic_marks() {
+        for key in ["Is Dynamic Profile", "Rewritable", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename"] {
+            let v = if key == "Is Dynamic Profile" || key == "Rewritable" { serde_json::json!(true) } else { serde_json::json!("x") };
+            assert_eq!(legal(&[(key.to_string(), v)]), None, "{key}");
+        }
+    }
 }
