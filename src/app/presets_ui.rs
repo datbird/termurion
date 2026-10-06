@@ -58,6 +58,38 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// Merge seam S7 (13s): the command outline and shade read the pane's palette on every frame,
+    /// so a preset loaded through the profile (key action 40, Open Quickly, the Colors menu) or the
+    /// escape code (SetColors preset=) shows in the next frame's outline.
+    #[test]
+    fn command_outline_follows_a_loaded_preset() {
+        use crate::cmdsel::{outline_colors, shade_color};
+        let (_, preset) = crate::color_presets::built_in().iter().find(|(n, _)| n == "Solarized Dark").unwrap();
+        // The escape-code path: the pane's own palette.
+        let mut s = crate::screen::Screen::new(20, 4);
+        let before = (outline_colors(s.palette.selection, s.palette.bg), shade_color(s.palette.bg, 0.25));
+        s.apply_escape_preset(preset);
+        let after = (outline_colors(s.palette.selection, s.palette.bg), shade_color(s.palette.bg, 0.25));
+        assert_ne!(before.0, after.0, "the outline follows the preset's selection and background");
+        assert_eq!(after.0[0], s.palette.selection);
+        // The shade flips with the background's lightness: a light preset turns it black.
+        let (_, light) = crate::color_presets::built_in().iter().find(|(n, _)| n == "Light Background").unwrap();
+        s.apply_escape_preset(light);
+        assert_ne!(after.1, shade_color(s.palette.bg, 0.25), "the shade follows the preset's background");
+        // The profile path: refresh_panes rebuilds the palette from the profile.
+        let mut profile = crate::profile::Profile::new("t");
+        let old = crate::palette::Palette::from_profile(&profile, true);
+        crate::color_presets::apply_whole(preset, &mut profile);
+        let new = crate::palette::Palette::from_profile(&profile, true);
+        assert_ne!(outline_colors(old.selection, old.bg), outline_colors(new.selection, new.bg));
+        // The draw site reads the live palette, not a copy kept across frames.
+        let src = include_str!("mod.rs");
+        let draw = &src[src.find("let hl = scene::Highlights {").unwrap()..];
+        let draw = &draw[..draw.find('\n').unwrap()];
+        assert!(draw.contains("outline: crate::cmdsel::outline_colors(p.screen.palette.selection, p.screen.palette.bg)"), "{draw}");
+        assert!(draw.contains("crate::cmdsel::shade_color(p.screen.palette.bg,"), "{draw}");
+    }
+
     #[test]
     fn load_color_preset_action_follows_iterm2() {
         use crate::color_presets::action_plan;
