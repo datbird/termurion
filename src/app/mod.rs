@@ -7610,6 +7610,14 @@ impl App {
         if a.hotkey_hide && self.hotkey.is_some() {
             self.hotkey_focus_lost();
         }
+        // Focus reporting (DECSET 1004), before the password manager's hold ends below: tell the app the window gained or lost focus.
+        if let Some(gained) = a.report {
+            if let Some(p) = self.focused_pane() {
+                if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
+                    p.focus_report(gained);
+                }
+            }
+        }
         if a.gain_stamps {
             self.last_window = Some(id);
             self.stamp_focus();
@@ -7626,14 +7634,6 @@ impl App {
         if a.drop_leader && self.leader_on {
             self.leader_on = false;
             self.refresh_route();
-        }
-        // Focus reporting (DECSET 1004): tell the app the window gained or lost focus.
-        if let Some(gained) = a.report {
-            if let Some(p) = self.focused_pane() {
-                if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
-                    p.focus_report(gained);
-                }
-            }
         }
         self.redraw();
     }
@@ -7761,6 +7761,16 @@ mod tests {
                 assert!(body.contains(&format!("a.{field}")), "apply_focus never reads a.{field}");
             }
         }
+    }
+
+    /// 13x Task 1a fix: the DECSET 1004 report runs BEFORE the password manager's hold is released
+    /// (`pwm_focus_gained`), as the old arm did, so a gain the hold swallows is never reported.
+    #[test]
+    fn the_focus_report_runs_before_the_password_hold_ends() {
+        let (body, _) = focus_source();
+        let report = body.find("p.focus_report(").expect("the report");
+        let hold = body.find("self.pwm_focus_gained()").expect("the hold release");
+        assert!(report < hold, "report at {report}, pwm_focus_gained at {hold}");
     }
 
     #[test]
