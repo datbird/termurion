@@ -137,10 +137,20 @@ pub(super) struct FindState {
     /// The bar is Filter's: the query picks the lines the pane shows.
     pub filter: bool,
     /// The lines the Filter view shows.
-    pub shown: Vec<String>,
+    pub shown: Vec<crate::synthetic::Styled>,
     /// The pending search comes from the shared query, not the person's typing: it fills the
     /// results and highlights but selects nothing and scrolls nowhere (B5).
     pub quiet: bool,
+    /// Filter reads a big buffer a chunk at a time: the run under way (P7).
+    pub run: Option<crate::synthetic::Chunked>,
+    /// The run's fraction read, for the bar's progress line; None when no run is under way.
+    pub progress: Option<f32>,
+    /// When the run reads its next chunk (`FAST_GAP` after the last).
+    pub next_chunk: Option<Instant>,
+    /// The run started for a new query, so its result replaces the view instead of extending it.
+    pub run_fresh: bool,
+    /// Output arrived during the run: it ends with one more pass (new output does not restart it).
+    pub catch_up: bool,
 }
 
 impl FindState {
@@ -234,6 +244,10 @@ impl FindState {
         self.typing = false;
         self.filter = false;
         self.shown.clear();
+        self.run = None;
+        self.progress = None;
+        self.next_chunk = None;
+        self.catch_up = false;
         self.pending = false;
         self.error = None;
         self.results = Results::default();
@@ -338,6 +352,86 @@ fn fresh_results(pane: &mut crate::pane::Pane, results: &mut Results, matches: V
     results.start_at(from);
     if let Some(m) = results.current.and_then(|i| results.matches.get(i)).copied() {
         reveal(pane, &m);
+    }
+}
+
+/// Filter's start (`refilter`'s body): an empty query shows the pane's own screen; a new query
+/// starts a run; new output during a run only asks it for a last pass (P7). The first chunk is
+/// read at once, so a small buffer is done before this returns.
+fn filter_start(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, fresh: bool, now: Instant) {
+    // Make Screenshot's frozen copy is not filtered, nor a replay's frame.
+    if p.frozen || p.replay.is_some() {
+        return;
+    }
+    if f.query.is_empty() {
+        f.error = None;
+        f.run = None;
+        f.progress = None;
+        f.shown.clear();
+        p.end_view();
+        return;
+    }
+    if f.run.is_some() && !fresh {
+        f.catch_up = true;
+        return;
+    }
+    let region = p.search_region();
+    match crate::synthetic::Chunked::start_in(p.own(), &find::pattern(&f.query, mode), region) {
+        Err(e) => {
+            f.error = Some(e);
+            f.run = None;
+            f.progress = None;
+        }
+        Ok(run) => {
+            f.error = None;
+            f.run = Some(run);
+            f.run_fresh = fresh;
+            f.catch_up = false;
+            filter_step(p, f, now);
+        }
+    }
+}
+
+/// One chunk of Filter's run. At its end the lines go to the view: a repeat that only grew adds
+/// its new lines to it (which keeps its scroll position and selection), anything else replaces it.
+pub(super) fn filter_step(p: &mut crate::pane::Pane, f: &mut FindState, now: Instant) {
+    let Some(run) = f.run.as_mut() else { return };
+    let Some(lines) = run.step(p.own()) else {
+        f.progress = Some(run.progress());
+        f.next_chunk = Some(now + crate::cadence::FAST_GAP);
+        return;
+    };
+    let pattern = run.pattern().to_string();
+    f.run = None;
+    f.progress = None;
+    f.next_chunk = None;
+    let tail = (!f.run_fresh && p.live.is_some()).then(|| crate::synthetic::appended(&f.shown, &lines)).flatten();
+    match tail {
+        Some(tail) => {
+            let mut bytes = String::new();
+            for (i, l) in tail.iter().enumerate() {
+                if i > 0 || !f.shown.is_empty() {
+                    bytes.push_str("\r\n");
+                }
+                bytes.push_str(&l.sgr);
+            }
+            p.screen.feed(bytes.as_bytes());
+        }
+        None => {
+            let view = crate::synthetic::view(&lines, p.own());
+            p.show_view(view);
+        }
+    }
+    f.shown = lines;
+    if std::mem::take(&mut f.catch_up) {
+        // Output came while it ran: one more pass, a chunk later.
+        f.run_fresh = false;
+        let region = p.search_region();
+        if let Ok(run) = crate::synthetic::Chunked::start_in(p.own(), &pattern, region) {
+            f.run = Some(run);
+            f.next_chunk = Some(now + crate::cadence::FAST_GAP);
+            f.progress = Some(0.0);
+        }
     }
 }
 
@@ -495,7 +589,18 @@ impl App {
                 self.search_as(id, fresh, quiet);
             }
         }
-        self.finds.values().filter_map(|f| f.due(delay)).min()
+        // Filter's chunks: one per `FAST_GAP` while a run is under way, no wake when none is.
+        let runs: Vec<PaneId> = self.finds.iter().filter(|(_, f)| f.run.is_some() && f.next_chunk.is_some_and(|t| now >= t)).map(|(id, _)| *id).collect();
+        for id in runs {
+            if let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) {
+                filter_step(p, f, now);
+            } else if let Some(f) = self.finds.get_mut(&id) {
+                f.run = None;
+                f.progress = None;
+            }
+            self.redraw();
+        }
+        self.finds.values().flat_map(|f| [f.due(delay), f.run.as_ref().and(f.next_chunk)]).flatten().min()
     }
 
     /// Searches a pane for its query. A new query makes the nearest match at or above the
@@ -519,41 +624,7 @@ impl App {
     fn refilter(&mut self, id: PaneId, fresh: bool) {
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
-        // Make Screenshot's frozen copy is not filtered, nor a replay's frame.
-        if p.frozen || p.replay.is_some() {
-            return;
-        }
-        if f.query.is_empty() {
-            f.error = None;
-            f.shown.clear();
-            p.end_view();
-            return self.redraw();
-        }
-        let region = p.search_region();
-        match crate::synthetic::filter_lines_in(p.own(), &find::pattern(&f.query, mode), region) {
-            Err(e) => f.error = Some(e),
-            Ok(lines) => {
-                f.error = None;
-                let tail = (!fresh && p.live.is_some()).then(|| crate::synthetic::appended(&f.shown, &lines)).flatten();
-                match tail {
-                    Some(tail) => {
-                        let mut bytes = String::new();
-                        for (i, l) in tail.iter().enumerate() {
-                            if i > 0 || !f.shown.is_empty() {
-                                bytes.push_str("\r\n");
-                            }
-                            bytes.push_str(l);
-                        }
-                        p.screen.feed(bytes.as_bytes());
-                    }
-                    None => {
-                        let view = crate::synthetic::view(&lines, p.own());
-                        p.show_view(view);
-                    }
-                }
-                f.shown = lines;
-            }
-        }
+        filter_start(p, f, mode, fresh, Instant::now());
         self.redraw();
     }
 
@@ -1154,7 +1225,7 @@ mod tests {
         assert!(menu.contains("crate::cmdsel::select_all_lines(region, "));
         // Filter shows only the region's matching lines.
         let region = p.search_region();
-        assert_eq!(crate::synthetic::filter_lines_in(p.own(), "abc", region).unwrap(), ["abc"]);
+        assert_eq!(crate::synthetic::filter_lines_in(p.own(), "abc", region).unwrap().iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["abc"]);
         assert_eq!(crate::synthetic::filter_lines(p.own(), "abc").unwrap().len(), 3);
         // Deselecting restores all three.
         p.selected_command = None;
@@ -1168,7 +1239,8 @@ mod tests {
     fn a_view_is_never_restricted() {
         let mut p = commands_pane();
         p.selected_command = p.screen.prompt_at_or_before(4);
-        let view = crate::synthetic::view(&["abc".to_string(), "abc".to_string()], p.own());
+        let line = crate::synthetic::Styled { text: "abc".into(), sgr: "abc".into() };
+        let view = crate::synthetic::view(&[line.clone(), line], p.own());
         p.show_view(view);
         assert_eq!(p.selected_region(), None);
         let mut f = typed("abc", Instant::now());
@@ -1270,6 +1342,65 @@ mod tests {
         let mut none = FindState::default();
         none.output_changed(t);
         assert_eq!(none.due(ONE), None);
+    }
+
+    /// iTerm2's `setFilterProgress:`: the bar shows how much of a big filter is read, and nothing
+    /// once it is done; new output during the run does not restart it (P7).
+    #[test]
+    fn filter_progress_shows() {
+        let mut p = crate::pane::Pane::recording(1, 40, 24);
+        p.screen = crate::screen::Screen::with_scrollback(40, 24, 50_100);
+        let mut text = String::new();
+        for i in 0..50_000 {
+            text.push_str(&format!("line {i}{}\r\n", if i % 10_000 == 5 { " needle" } else { "" }));
+        }
+        p.screen.feed(text.as_bytes());
+        let t = Instant::now();
+        let mut f = typed("needle", t);
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, true, t);
+        assert!(f.run.is_some(), "a 50 000 line buffer takes several chunks");
+        let first = f.progress.expect("the bar shows the run");
+        assert!((first - 0.4).abs() < 0.02, "{first}");
+        assert!(p.live.is_none(), "nothing replaces the view before the run ends");
+        // The wake is a chunk away; with no run there is none.
+        assert_eq!(f.run.as_ref().and(f.next_chunk), Some(t + crate::cadence::FAST_GAP));
+        // Output during the run asks for one more pass and does not restart it.
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        assert!(f.catch_up);
+        assert_eq!(f.progress, Some(first));
+        filter_step(&mut p, &mut f, t);
+        assert!((f.progress.unwrap() - 0.8).abs() < 0.02);
+        filter_step(&mut p, &mut f, t);
+        // Done: the lines show, with their colors' codes fed; the catch-up pass has begun.
+        assert!(p.live.is_some());
+        assert_eq!(f.shown.len(), 5);
+        assert_eq!(f.progress, Some(0.0));
+        for _ in 0..5 {
+            filter_step(&mut p, &mut f, t);
+        }
+        assert_eq!((f.run.is_none(), f.progress, f.next_chunk), (true, None, None));
+        // A closed bar holds no run.
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, true, t);
+        f.close();
+        assert_eq!((f.run.is_none(), f.progress), (true, None));
+    }
+
+    /// The bar draws the run's fraction as a line in the selection color, and none when done.
+    #[test]
+    fn filter_progress_draws() {
+        let pal = crate::palette::Palette::default();
+        let bar = |progress| scene::FindBar { query: "q", count: "Filter", mode: "Smart Case", error: false, notice: None, progress, selection: pal.selection };
+        let area = Rect { x: 0.0, y: 0.0, w: 600.0, h: 300.0 };
+        let mut none = scene::Frame::default();
+        scene::find_bar(&mut none, &bar(None), area, (10.0, 20.0));
+        let mut half = scene::Frame::default();
+        scene::find_bar(&mut half, &bar(Some(0.5)), area, (10.0, 20.0));
+        assert_eq!(half.quads.len(), none.quads.len() + 1);
+        let line = &half.quads[1];
+        let box_ = &half.quads[0].rect;
+        assert_eq!((line.rect.h, line.color), (2.0, scene::rgba(pal.selection, 1.0)));
+        assert!((line.rect.w - box_.w * 0.5).abs() < 0.01);
+        assert!((line.rect.y - (box_.y + box_.h - 2.0)).abs() < 0.01);
     }
 
     #[test]

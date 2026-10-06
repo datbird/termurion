@@ -386,20 +386,26 @@ pub fn sgr_restorable(screen: &Screen) -> (String, (usize, usize)) {
     let top = -(g.history_size() as i32);
     let spans: Vec<_> = (top..g.screen_lines() as i32).map(|l| (l, 0, g.columns() - 1)).collect();
     let at = g.cursor.point;
-    (sgr_grid(g, &spans, crate::encoding::Form::None), (at.line.0.max(0) as usize, at.column.0))
+    (sgr_grid(g, &spans, crate::encoding::Form::None, false), (at.line.0.max(0) as usize, at.column.0))
 }
 
 pub fn sgr_text(screen: &Screen) -> String {
     sgr_over(screen, &spans(screen))
 }
 
-fn sgr_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
-    sgr_grid(screen.term().grid(), spans, screen.normalization)
+pub(crate) fn sgr_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
+    sgr_grid(screen.term().grid(), spans, screen.normalization, false)
+}
+
+/// `sgr_over` for text that is fed to a parser: a control character in a cell (C0, DEL, C1) is
+/// left out, so only the codes written here are sequences (Filter and Zoom, P7).
+pub(crate) fn sgr_over_clean(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
+    sgr_grid(screen.term().grid(), spans, screen.normalization, true)
 }
 
 /// The cells' text in `form`: Copy with Control Sequences normalizes; session restoration (None)
 /// keeps what the program wrote.
-fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)], form: crate::encoding::Form) -> String {
+fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)], form: crate::encoding::Form, clean: bool) -> String {
     let mut out = String::new();
     let mut last: Option<Vec<String>> = None;
     for (i, (line, from, to)) in spans.iter().enumerate() {
@@ -417,6 +423,9 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
                 text.extend(extra);
             }
             crate::encoding::normalize_in_place(&mut text, form);
+            if clean {
+                text.retain(|c| !c.is_control());
+            }
             out.push_str(&text);
         }
         if hard_end && !more && i + 1 < spans.len() {

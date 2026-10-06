@@ -5765,9 +5765,11 @@ impl App {
                 let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();
                 let restricted = self.panes.get_mut(&tab.focused).is_some_and(|p| p.search_region().is_some());
-                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE) };
+                let palette_selection = self.panes.get(&tab.focused).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
+                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE), progress: f.progress, selection: palette_selection };
+                let first_quad = frame.quads.len();
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
-                self.find_bar_rect = frame.quads.last().map(|q| q.rect);
+                self.find_bar_rect = frame.quads.get(first_quad).map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
             }
         }

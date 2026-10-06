@@ -4150,7 +4150,7 @@ mod tests {
     fn a_view_keeps_the_panes_own_modes_and_style() {
         let mut p = start("cmd.exe");
         p.own_mut().feed(b"\x1b[?2004h");
-        let view = crate::synthetic::view(&["x".to_string()], p.own());
+        let view = crate::synthetic::view(&[crate::synthetic::Styled { text: "x".into(), sgr: "x".into() }], p.own());
         p.show_view(view);
         assert!(p.paste_payload("a\nb").starts_with(b"\x1b[200~"));
         let mut red = crate::palette::Palette::default();

@@ -192,6 +192,11 @@ pub fn visible_rows(screen: &Screen) -> std::ops::RangeInclusive<usize> {
 
 /// The text of the logical lines over buffer rows `first..=last`, widened to whole lines.
 pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<String> {
+    lines_over(screen, first, last).into_iter().map(|(text, _, _)| text).collect()
+}
+
+/// `logical_texts_over` with each line's first and last grid line.
+pub(crate) fn lines_over(screen: &Screen, first: usize, last: usize) -> Vec<(String, i32, i32)> {
     use alacritty_terminal::grid::Dimensions;
     let grid = screen.term().grid();
     let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
@@ -203,7 +208,7 @@ pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<Str
     while b < bottom && wraps(screen, b) {
         b += 1;
     }
-    texts_between(screen, a, b)
+    lines_between(screen, a, b)
 }
 
 /// One cell's text as it is shown: its characters in the profile's normalization form, so a
@@ -222,6 +227,12 @@ fn push_cell_text(out: &mut String, screen: &Screen, cell: &alacritty_terminal::
 }
 
 fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
+    lines_between(screen, top, bottom).into_iter().map(|(text, _, _)| text).collect()
+}
+
+/// The text of the logical lines over grid lines `top..=bottom` (which must start a logical
+/// line), each with its first and last grid line.
+pub(crate) fn lines_between(screen: &Screen, top: i32, bottom: i32) -> Vec<(String, i32, i32)> {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::cell::Flags;
@@ -229,6 +240,7 @@ fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
     let cols = grid.columns();
     let mut out = Vec::new();
     let mut cur = String::new();
+    let mut first = top;
     for l in top..=bottom {
         let row = &grid[Line(l)];
         let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
@@ -242,10 +254,32 @@ fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
         if !wrapped || l == bottom {
             let kept = cur.trim_end_matches(' ').len();
             cur.truncate(kept);
-            out.push(std::mem::take(&mut cur));
+            out.push((std::mem::take(&mut cur), first, l));
+            first = l + 1;
         }
     }
     out
+}
+
+/// Where a chunk that starts at grid line `start` (a logical line's first) ends: the last row
+/// of the `max_lines`th logical line, or of the first line that takes the chunk past
+/// `max_cells` cells, or `end`. A line is never split, so a chunk can pass `max_cells` by one.
+pub(crate) fn chunk_end(screen: &Screen, start: i32, end: i32, max_lines: usize, max_cells: usize) -> i32 {
+    use alacritty_terminal::grid::Dimensions;
+    let cols = screen.term().columns();
+    let (mut l, mut lines, mut cells) = (start, 0usize, 0usize);
+    loop {
+        while l < end && wraps(screen, l) {
+            l += 1;
+            cells += cols;
+        }
+        lines += 1;
+        cells += cols;
+        if l >= end || lines >= max_lines || cells >= max_cells {
+            return l.min(end);
+        }
+        l += 1;
+    }
 }
 
 /// Logical lines over grid lines `top..=bottom`, which must start a logical line.
@@ -440,6 +474,20 @@ impl Results {
 
 #[cfg(test)]
 mod tests {
+    /// A chunk ends on a logical line's last row, at the line budget or the cell budget (P7).
+    #[test]
+    fn chunks_end_on_whole_lines() {
+        let mut s = Screen::with_scrollback(10, 4, 100);
+        // Rows 0 to 2 are one logical line (25 characters), then "a" and "b".
+        s.feed(format!("{}\r\na\r\nb", "x".repeat(25)).as_bytes());
+        use alacritty_terminal::grid::Dimensions;
+        let top = -(s.term().grid().history_size() as i32);
+        assert_eq!(chunk_end(&s, top, top + 4, 1, usize::MAX), top + 2, "the budget in lines");
+        assert_eq!(chunk_end(&s, top, top + 4, 2, usize::MAX), top + 3);
+        assert_eq!(chunk_end(&s, top, top + 4, usize::MAX, 10), top + 2, "a line is never split by the cell budget");
+        assert_eq!(chunk_end(&s, top, top + 4, usize::MAX, usize::MAX), top + 4, "no budget reads to the end");
+    }
+
     use super::*;
 
     #[test]

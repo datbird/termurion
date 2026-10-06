@@ -98,9 +98,7 @@ const NOT_APPLICABLE: &[(&str, &str)] = &[(
 
 /// Commands that work with a known difference for now.
 const PARTIAL: &[(&str, &str)] = &[
-    ("filter:", "Shows the matching lines without their colors."),
     ("toggleSelectionRespectsSoftBoundaries:", "Double-click and Smart Selection stop at pane dividers; a drag still crosses them."),
-    ("zoomOnSelection:", "Shows the selected lines without their colors."),
 ];
 
 /// A "selector" or "selector|Label" entry names this item.

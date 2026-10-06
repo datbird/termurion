@@ -560,6 +560,11 @@ pub struct FindBar<'a> {
     pub error: bool,
     /// A line under the field while a selected command restricts the search (`cmdsel::NOTICE`).
     pub notice: Option<&'a str>,
+    /// How much of a chunked Filter has been read (`setFilterProgress:`): a 2-pixel line along
+    /// the bar's bottom edge at that fraction, in `selection`; None while no run is under way.
+    pub progress: Option<f32>,
+    /// The pane's selection color.
+    pub selection: Rgb,
 }
 
 /// Draws one pane's visible screen into `rect`.
@@ -613,6 +618,10 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     let w = (chars as f32 * cw).min(pane.w);
     let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: if bar.notice.is_some() { 2.0 * ch + 8.0 } else { ch + 8.0 } };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    if let Some(p) = bar.progress {
+        let w = (r.w * p.clamp(0.0, 1.0)).max(0.0);
+        frame.quads.push(Quad { rect: Rect { x: r.x, y: r.y + r.h - 2.0, w, h: 2.0 }, color: rgba(bar.selection, 1.0) });
+    }
     // The pane's text under the bar is cut off where the bar starts.
     cut_rows_from(frame, r, ch);
     // The end of a long query stays in view, with a caret after it.
@@ -5354,9 +5363,9 @@ mod tests {
     fn the_find_bar_shows_its_notice() {
         let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 480.0 };
         let mut plain = Frame::default();
-        find_bar(&mut plain, &FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None }, area, (10.0, 20.0));
+        find_bar(&mut plain, &FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None, progress: None, selection: rgb(0, 0, 0) }, area, (10.0, 20.0));
         let mut noted = Frame::default();
-        find_bar(&mut noted, &FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: Some(crate::cmdsel::NOTICE) }, area, (10.0, 20.0));
+        find_bar(&mut noted, &FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: Some(crate::cmdsel::NOTICE), progress: None, selection: rgb(0, 0, 0) }, area, (10.0, 20.0));
         let (a, b) = (plain.quads.last().unwrap().rect, noted.quads.last().unwrap().rect);
         assert_eq!(b.h, a.h + 20.0, "one line taller");
         assert!(noted.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
@@ -7511,7 +7520,7 @@ mod tests {
         let s = screen(b"a long line of text that runs under the find bar");
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
-        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None, progress: None, selection: rgb(0, 0, 0) };
         let mode = find_bar(&mut f, &bar, RECT, CELL);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.contains("abc") && t.contains("2/5")), "{texts:?}");
@@ -7665,7 +7674,7 @@ mod tests {
         let r = banner(&mut f, "oops", RECT, CELL);
         assert!(!hits(&f, r), "banner {r:?}");
         let mut f = fresh();
-        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None, progress: None, selection: rgb(0, 0, 0) };
         let mode = find_bar(&mut f, &bar, RECT, CELL);
         let r = Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 };
         assert!(!hits(&f, r), "find bar {r:?}");
@@ -7698,7 +7707,7 @@ mod tests {
         let r = toast(&mut f, "saved", RECT, CELL);
         assert!(!hits(&f, r), "toast {r:?}");
         let mut f = fresh();
-        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None, progress: None, selection: rgb(0, 0, 0) };
         let mode = find_bar(&mut f, &bar, RECT, CELL);
         assert!(!hits(&f, Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 }), "find bar");
     }
