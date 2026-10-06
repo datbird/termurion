@@ -4474,6 +4474,9 @@ impl App {
     /// (iTerm2 guards user tab creation through menu validation, `PT:13832`, and its API
     /// handler has no lock check, `H:2465-2588`).
     fn add_tab(&mut self, guid: Option<&str>) {
+        if self.wake_from_resident(resident_ui::Wake::Window(guid)) {
+            return;
+        }
         if self.new_tab_opens_window(guid) {
             self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
             return self.redraw();
@@ -6592,8 +6595,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.handoff_banner_tick();
-        // A hidden resident window that got a tab by any route is a window again (B11).
-        self.wake_from_resident();
         // Timers (blink, bells, activity, marks, animations) act for the window the person
         // uses; the window that drew last may be another one.
         if let Some(w) = self.last_window {

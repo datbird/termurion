@@ -11,6 +11,14 @@ const QUIT_KEY: &str = "QuitWhenAllWindowsClosed";
 const MIN_RUNNING_KEY: &str = "MinRunningTime";
 const UNTITLED_KEY: &str = "OpenUntitledFile";
 
+/// How an entry point wakes a resident window (`wake_from_resident`).
+pub(super) enum Wake<'a> {
+    /// A new tab of this profile (None: the default).
+    Window(Option<&'a str>),
+    /// The caller makes its own tab in the awake window.
+    InPlace,
+}
+
 impl App {
     /// The person did something that counts against the grace period: a key in a session, Close,
     /// or closing a window themselves (`PTYTextView.m:7505-7509`, `PT:2728`, `PT:4775`).
@@ -70,6 +78,9 @@ impl App {
             return;
         }
         self.save_window_frame();
+        if self.win_style != crate::frames::NORMAL {
+            self.apply_window_style(crate::frames::NORMAL, false);
+        }
         self.forget_window(k);
         let (Some(gpu), kind, menu) = (self.gpu.take(), self.win_alpha_surface, self.menu_bar.take()) else { return };
         let mut fresh = windows_ui::WinSlot::new(gpu);
@@ -81,17 +92,17 @@ impl App {
         self.resident = true;
         if let Some(g) = &self.gpu {
             use winit::platform::windows::WindowExtWindows;
+            // The window the next tab wakes is a plain one, not the last window's full screen,
+            // maximized or Compact look (its slot starts fresh: style NORMAL).
+            g.window.set_fullscreen(None);
+            g.window.set_maximized(false);
             g.window.set_skip_taskbar(true);
             g.window.set_visible(false);
         }
     }
 
-    /// The resident window is a window again: back in the window list and the taskbar (the caller
-    /// shows it once it holds a tab). The state is not touched: saves ran all along (B7).
-    pub(super) fn leave_resident(&mut self) {
-        self.leave_resident_for(false);
-    }
-
+    /// The resident window is a window again: back in the window list and the taskbar (the state is
+    /// not touched: saves ran all along, B7).
     /// `hotkey`: the window becomes a hotkey window, which has no taskbar button.
     pub(super) fn leave_resident_for(&mut self, hotkey: bool) {
         if !self.resident {
@@ -119,16 +130,45 @@ impl App {
         self.relayout();
     }
 
-    /// B11: a resident window that holds a tab (a link, a menu command, a script or the API made
-    /// one) is a window again. Runs first in every loop pass, so no entry point leaves a tab in a
-    /// hidden window. True when it woke.
-    pub(super) fn wake_from_resident(&mut self) -> bool {
-        if !self.resident || self.tabs.is_empty() {
+    /// B11, ONE function: every entry point that makes a tab while resident calls it FIRST. A tab of
+    /// a profile (`Wake::Window`) is queued as a profile window, which `open_window_with` makes from the
+    /// hidden one with all its steps (size, place, style, profile, transparency, space); anything else
+    /// (`Wake::InPlace`: arrangement tabs, a recording, a buried session) wakes the window with the
+    /// default profile's steps. True when the caller must stop (its tab is the window's to make).
+    pub(super) fn wake_from_resident(&mut self, how: Wake) -> bool {
+        if !self.resident {
             return false;
         }
-        self.leave_resident();
+        match how {
+            Wake::Window(guid) => {
+                self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
+                let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
+                true
+            }
+            Wake::InPlace => {
+                self.wake_in_place();
+                false
+            }
+        }
+    }
+
+    /// The hidden window is a window again, with a fresh state, placed, sized, styled and shown as a
+    /// new window with the default profile is (`open_window_with`'s steps for a window that is not
+    /// an arrangement); the caller makes its tab next.
+    fn wake_in_place(&mut self) {
+        self.leave_resident_for(false);
+        let initial = crate::transparency::initial_use(None, self.store.default_profile());
+        self.win_transparency = crate::transparency::WinTransparency::new(initial);
+        self.apply_fonts();
+        self.size_window(None);
+        self.place_window();
+        let (space, style) = (self.store.default_profile().int("Space"), self.store.default_profile().int("Window Type"));
+        self.apply_space(space);
+        if style != crate::frames::NORMAL {
+            self.apply_window_style(style, false);
+        }
+        self.apply_window_profile(None);
         self.show_awake_window();
-        true
     }
 
     /// iTerm2's reopen (`AD:944-951`, `AD:1132-1153`): with no window on screen and
@@ -240,24 +280,74 @@ mod tests {
         assert!(!leave.contains("save_") && !leave.contains("state"), "leaving resident changes no state");
     }
 
-    /// B11: every way a tab or a window is made while resident ends in one visible window: the
-    /// window-making entries reuse the hidden window, a tab made by any route wakes it at the next
-    /// pass, and a reopen never focuses a hidden empty window.
+    /// B11, as ruled: ONE function wakes a resident window, and every entry point that makes a tab while
+    /// resident (links, Jump List, launch, tray New Tab, API CreateTab, file opens, handoff, all through
+    /// `add_tab`; arrangements as tabs, recordings and buried sessions on their own) calls it FIRST. It runs
+    /// `open_window_with`'s steps on a fresh window state; nothing polls for it.
     #[test]
-    fn resident_entry_points_wake_one_window() {
-        let tick = body(production(MOD), "about_to_wait");
-        let wake = tick.find("self.wake_from_resident();").expect("the pass wakes a resident window with a tab");
-        assert!(wake < tick.find("self.sync_pane_activity();").unwrap() && wake < tick.find("self.tick_hotkeys()").unwrap(), "first, before any timer");
-        let wake_body = body(production(OWN), "wake_from_resident");
-        assert!(wake_body.contains("!self.resident || self.tabs.is_empty()"), "only a resident window that holds a tab wakes");
+    fn every_tab_entry_wakes_a_resident_window_first() {
+        let wake = body(production(OWN), "wake_from_resident");
+        assert!(wake.contains("!self.resident") && wake.contains("NewWindow::Profile(") && wake.contains("self.wake_in_place()"), "a profile tab opens through open_window_with, anything else wakes in place");
+        let place = body(production(OWN), "wake_in_place");
+        for step in ["leave_resident_for(false)", "WinTransparency::new", "apply_fonts()", "size_window(", "place_window()", "apply_space(", "apply_window_style(", "apply_window_profile(", "show_awake_window()"] {
+            assert!(place.contains(step), "the in-place wake runs {step}");
+        }
+        let go = body(production(OWN), "go_resident");
+        assert!(go.contains("set_fullscreen(None)") && go.contains("set_maximized(false)") && go.contains("frames::NORMAL"), "the hidden window leaves the last window's full screen, maximized or Compact look");
+        assert!(!body(production(MOD), "about_to_wait").contains("wake_from_resident"), "nothing polls for the wake");
+        for (src, name) in [(MOD, "add_tab"), (include_str!("arrange_ui.rs"), "restore_arrangement"), (include_str!("replay_ui.rs"), "import_recording"), (include_str!("bury_ui.rs"), "disinter")] {
+            let b = body(production(src), name);
+            let at = b.find("wake_from_resident(").unwrap_or_else(|| panic!("{name} wakes a resident window"));
+            assert!(!b[..at].contains("self.tabs") && !b[..at].contains("start_pane") && !b[..at].contains("install_pane"), "{name} wakes before it makes anything");
+        }
         let open = body(production(WINDOWS), "open_window_with");
         assert!(open.contains("let reused = self.resident;") && open.contains("leave_resident_for(hotkey)"), "a new window is the hidden one");
-        assert!(open.contains("if reused && !hotkey") && open.contains("show_awake_window()"), "a regular window shows when it holds its tab");
         let reopen = body(production(OWN), "reopen");
         let resident_branch = reopen.split("if self.resident {").nth(1).unwrap().split("match crate::presence::reopen_target").next().unwrap();
         assert!(resident_branch.contains("return;") && !resident_branch.contains("reopen_target"), "a hidden window is never focused");
         let presence = production(PRESENCE);
         assert!(presence.contains("presence::DockClick::Unhandled => self.reopen(event_loop)") && !presence.contains("Reopen::Focus(w) => self.focus_terminal_window(w)"), "the tray's click is the one reopen");
+    }
+
+    /// The class guard: a new place that pushes a tab onto the window is looked at by a person. Each file
+    /// below was checked: it only moves tabs between existing windows, restores into a window that is
+    /// already awake, or is an entry point of the previous test.
+    #[test]
+    fn tab_making_sites_are_all_classified() {
+        let known: [(&str, usize); 13] = [
+            ("api_requests.rs", 3),
+            ("arrange_ui.rs", 2),
+            ("bury_ui.rs", 2),
+            ("mod.rs", 1),
+            ("pane_move_ui.rs", 1),
+            ("replay_ui.rs", 1),
+            ("restore_ui.rs", 1),
+            ("tab_drag_ui.rs", 4),
+            ("tab_groups_ui.rs", 1),
+            ("tmux_tabs_ui.rs", 1),
+            ("undo_ui.rs", 2),
+            ("windows_ui.rs", 7),
+            ("resident_ui.rs", 0),
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
+        let mut seen = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text.split("\n#[cfg(test)]").next().unwrap();
+            let n = ["self.tabs.push(", "self.tabs.insert(", "self.tabs.extend("].iter().map(|k| code.matches(k).count()).sum::<usize>();
+            if n > 0 {
+                seen.push((name, n));
+            }
+        }
+        for (name, n) in &seen {
+            let want = known.iter().find(|(k, _)| k == name).map(|(_, c)| *c);
+            assert_eq!(want, Some(*n), "{name} makes tabs in {n} places: classify them (wake_from_resident first, or prove the window is awake)");
+        }
     }
 
     /// `AD:1132-1153`: the icon's click opens a window only with `OpenUntitledFile` on, and only

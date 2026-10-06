@@ -445,6 +445,8 @@ impl App {
                 return self.recording_warning(heading, text);
             }
         };
+        // A recording opens a tab: a resident window wakes first.
+        self.wake_from_resident(super::resident_ui::Wake::InPlace);
         // Keys the file lacks read their defaults. A fresh Guid keeps two imports of one
         // file apart.
         let mut profile = crate::profile::Profile::default();

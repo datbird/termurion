@@ -62,6 +62,8 @@ impl App {
     /// Restores a buried session where it was (iTerm2's restoreSession).
     pub(super) fn disinter(&mut self, id: PaneId) {
         let Some(b) = self.buried.take(id) else { return };
+        // A buried session comes back as a tab or a window: a resident window wakes first.
+        self.wake_from_resident(super::resident_ui::Wake::InPlace);
         self.menus_dirty = true;
         self.refresh_buried_menu();
         let window = self.window_id_of_key(b.window);
