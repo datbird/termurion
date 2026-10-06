@@ -2355,7 +2355,7 @@ impl Screen {
         // The person's Reset ends a print job that is collecting; it must reach the parser.
         self.print_capture = None;
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
-            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
+            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b[?1036l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
         // DECSTBM (the `r`) homes the cursor; a soft reset leaves it where it was.
         let c = self.term.grid().cursor.point;
@@ -3535,8 +3535,10 @@ mod tests {
     #[test]
     fn soft_reset_keeps_the_text_and_drops_the_modes() {
         let mut s = Screen::new(20, 5);
-        s.feed(b"keep me\r\n\x1b[?1002h\x1b[?1006h\x1b[?25l\x1b[?2004h\x1b[1;31m");
+        s.feed(b"keep me\r\n\x1b[?1002h\x1b[?1006h\x1b[?25l\x1b[?2004h\x1b[?1036h\x1b[1;31m");
+        assert!(s.meta_sends_escape());
         s.soft_reset();
+        assert!(!s.meta_sends_escape(), "DECSTR clears 1036 (VT100Terminal softReset)");
         assert!(s.all_text().contains("keep me"));
         assert_eq!(s.mouse_modes(), Modes { tracking: Tracking::Off, sgr: false });
         let mode = *s.term().mode();

@@ -1167,10 +1167,6 @@ pub fn sheet_warning(ctx: &egui::Context, g: &mut Globals, w: &mut SheetWarning,
     Some(SheetAnswer { spec: w.spec.clone(), index, automatic: false })
 }
 
-/// Whether a global row takes input: the Python API's authentication popup only while the API
-/// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
-/// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
-/// is on (`GP:2210-2212`); every other row always.
 /// The longest keyboard locale id the field keeps (an HKL id is 8 hex digits).
 pub const KEYBOARD_LOCALE_LIMIT: usize = 64;
 
@@ -1179,6 +1175,10 @@ pub fn limit_locale(s: &str) -> String {
     s.chars().take(KEYBOARD_LOCALE_LIMIT).collect()
 }
 
+/// Whether a global row takes input: the Python API's authentication popup only while the API
+/// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
+/// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
+/// is on (`GP:2210-2212`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
     row_enabled_with(g, key, crate::power::both_gpu_kinds_known())
 }

@@ -182,6 +182,6 @@ test data) is left out. Changes:
     instead of a bare load, so no conpty.dll beside the exe or in the current folder loads.
 33. `term/mod.rs`: `TermMode::META_SENDS_ESCAPE` (bit 23), DEC mode 1036 (xterm metaSendsEscape). DECSET and
     DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset, RIS clears it
-    (`mode &= VI`). DECSTR leaves it, as iTerm2 does. Tandem reads it in `KeyOptions::effective`.
+    (`mode &= VI`). DECSTR clears it too (Tandem's byte list in `Screen::soft_reset` sends `?1036l`, as iTerm2's softReset does). Tandem reads it in `KeyOptions::effective`.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -1841,7 +1841,6 @@ pub fn contrasting(c: Rgb) -> Rgb {
 
 /// A pinned tab's mark (Segoe Fluent Icons "Pin"; iTerm2's SF Symbol "pin.fill").
 pub const PIN_GLYPH: char = '\u{E718}';
-/// The pinned hotkey window indicator's hover text (`IH:392`).
 /// The hover text of the indicator under (`x`, `y`) among a frame's indicator rectangles
 /// (`IH:392`); None off every indicator and on those with no text.
 pub fn indicator_tip<T>(hits: &[(T, Rect, IndicatorKind)], x: f32, y: f32) -> Option<&'static str> {
@@ -1851,6 +1850,7 @@ pub fn indicator_tip<T>(hits: &[(T, Rect, IndicatorKind)], x: f32, y: f32) -> Op
     }
 }
 
+/// The pinned hotkey window indicator's hover text (`IH:392`).
 pub const PIN_HOVER: &str = "This Hotkey Window is pinned.";
 /// `PinnedTabWidth`'s default in points (`AS:321`); the drawn width comes from the key.
 pub const PINNED_TAB_WIDTH: f32 = 64.0;
