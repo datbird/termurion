@@ -1864,8 +1864,8 @@ pub fn run() {
     // "Load settings from a custom folder or URL": the location's settings replace the local
     // ones before anything reads them; its questions and failures show with the first window.
     // Read once at launch (its help says a restart is needed).
-    let trigger_pool_width = globals.int("MaximumNumberOfTriggerCommands");
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    let trigger_pool_width = globals.int("MaximumNumberOfTriggerCommands");
     // iTerm2 drops bindings whose profile is gone when it loads them (P11).
     if crate::url_schemes::prune_globals(&mut globals, &store) {
         if let Err(e) = globals.save() {
@@ -7635,6 +7635,16 @@ mod tests {
     fn fn_body<'a>(src: &'a str, name: &str, indent: &str) -> &'a str {
         let rest = src.split(name).nth(1).unwrap_or_else(|| panic!("{name}"));
         rest.split(&format!("\n{indent}}}\n")).next().unwrap()
+    }
+
+    /// Review 3: the trigger pool's width is read after "Load settings from a custom folder or
+    /// URL" replaced the globals, so that location's MaximumNumberOfTriggerCommands counts.
+    #[test]
+    fn the_pool_width_is_read_after_the_custom_settings_load() {
+        let src = include_str!("mod.rs");
+        let load = src.find("prefs_ui::load_at_start(&mut globals").expect("the load");
+        let read = src.find("let trigger_pool_width = globals.int(").expect("the read");
+        assert!(read > load, "the pool width is read after load_at_start");
     }
 
     #[test]
