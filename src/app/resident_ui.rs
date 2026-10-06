@@ -11,10 +11,17 @@ const QUIT_KEY: &str = "QuitWhenAllWindowsClosed";
 const MIN_RUNNING_KEY: &str = "MinRunningTime";
 const UNTITLED_KEY: &str = "OpenUntitledFile";
 
+/// The banners of requests from outside that opened nothing (launch, files, the Jump List): raised
+/// while resident they go to the notification area instead (`outside_note`), and the ones left from
+/// before are cleared when a window wakes (final review item 10).
+const OUTSIDE_KEYS: &[&str] = &["launch", "launch-ignored", "open-ignored", "open-file", "jump-list"];
+
 /// How an entry point wakes a resident window (`wake_from_resident`).
 pub(super) enum Wake<'a> {
     /// A new tab of this profile (None: the default).
     Window(Option<&'a str>),
+    /// Tabs that exist already (a buried session restored): the hidden window opens with them.
+    Tabs(Vec<Tab>),
     /// The caller makes its own tab in the awake window.
     InPlace,
 }
@@ -70,7 +77,8 @@ impl App {
     /// window and GPU, it leaves the window list, the taskbar and the screen.
     pub(super) fn go_resident(&mut self) {
         let Some(k) = self.windows.current() else { return };
-        if self.resident {
+        // Checked before anything changes (item 12): a window without its GPU stays as it is.
+        if self.resident || self.gpu.is_none() {
             return;
         }
         self.save_window_frame();
@@ -106,6 +114,9 @@ impl App {
         }
         self.resident = false;
         self.pending_wake = None;
+        for key in OUTSIDE_KEYS {
+            self.banners.clear(key);
+        }
         if let Some(id) = self.current_window() {
             self.registry.open(windows_ui::key(id));
             self.refresh_window_list();
@@ -144,6 +155,11 @@ impl App {
                 if first {
                     let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
                 }
+                true
+            }
+            Wake::Tabs(tabs) => {
+                self.pending_windows.push(windows_ui::NewWindow::Tabs(tabs));
+                let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
                 true
             }
             Wake::InPlace => {
@@ -358,6 +374,57 @@ mod tests {
         let restore = body(production(include_str!("arrange_ui.rs")), "restore_arrangement");
         let nothing = restore.find("if !has_tabs {").expect("nothing to restore is decided first");
         assert!(nothing < restore.find("wake_from_resident(").unwrap());
+    }
+
+    /// Final review item 10: a launch, file or Jump List request that opens nothing while resident tells
+    /// the person through the notification area (no window would show a banner), and the refusal
+    /// banners left from before are cleared when a window wakes.
+    #[test]
+    fn notes_while_resident_reach_the_person() {
+        let note = body(production(include_str!("launch_ui.rs")), "outside_note");
+        assert!(note.contains("if self.resident") && note.contains("crate::notify::show_with(") && note.contains("self.banners.set(key, text)"));
+        let launch = production(include_str!("launch_ui.rs")).replace(note, "");
+        assert!(!launch.contains("self.banners.set("), "launch_ui: every banner goes through outside_note");
+        assert_eq!(launch.matches("self.outside_note(").count(), 3, "ignored, arrangement gone, profile gone");
+        let open = production(include_str!("open_file_ui.rs"));
+        assert!(body(open, "open_files_ignored").contains("self.outside_note(") && body(open, "open_file_banner").contains("self.outside_note("));
+        let jump = production(include_str!("jumplist_ui.rs"));
+        for f in ["open_profile_tab", "open_recent_profile"] {
+            let b = body(jump, f);
+            assert!(!b.contains("self.banners.set(") && b.contains("self.outside_note("), "{f}");
+        }
+        let leave = body(production(OWN), "leave_resident_for");
+        assert!(leave.contains("for key in OUTSIDE_KEYS") && leave.contains("self.banners.clear(key)"), "stale refusals go on wake");
+    }
+
+    /// Final review item 11 (iTerm2's bury, `PTYSession.m:15145`): with "Quit when all windows are
+    /// closed" off, burying the last session hides the last window and Tandem stays resident with the
+    /// session buried; with it on, the banner says why it stays. A buried session restored while
+    /// resident comes back as the hidden window's tab.
+    #[test]
+    fn burying_the_last_session_goes_resident() {
+        let bury = production(include_str!("bury_ui.rs"));
+        let b = body(bury, "bury_pane");
+        let gate = &b[b.find("if only && ").unwrap()..];
+        assert!(gate.contains("self.globals.bool(QUIT_KEY)") && gate.contains("Tandem quits when its last window closes"), "the banner only when the key is on");
+        assert!(b.contains("if only {\n                self.go_resident();"), "the last window goes resident with the session buried");
+        let dis = body(bury, "disinter");
+        assert!(dis.contains("Wake::Tabs(vec![tab])"), "while resident the session comes back as the hidden window's tab");
+        let wake = body(production(OWN), "wake_from_resident");
+        assert!(wake.contains("Wake::Tabs(tabs) =>") && wake.contains("NewWindow::Tabs(tabs)"));
+        let help = include_str!("../../schema/global.toml");
+        let quit = &help[help.find("key = \"QuitWhenAllWindowsClosed\"").unwrap()..];
+        let quit = &quit[..quit.find("[[setting]]").unwrap()];
+        assert!(quit.contains("OpenUntitledFile") || quit.contains("Open a new window when the icon is clicked"), "the click opens a window only with that setting");
+    }
+
+    /// Final review item 12: `go_resident` checks the GPU before anything changes, so a bail-out
+    /// leaves the window as it was.
+    #[test]
+    fn go_resident_checks_before_it_changes_anything() {
+        let go = body(production(OWN), "go_resident");
+        let check = go.find("if self.resident || self.gpu.is_none() {").expect("checked first");
+        assert!(check < go.find("self.save_window_frame()").unwrap() && check < go.find("self.forget_window(k)").unwrap());
     }
 
     /// The class guard: a new place that pushes a tab onto the window is looked at by a person. Each file

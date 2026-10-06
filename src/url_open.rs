@@ -69,12 +69,18 @@ pub fn ftp_change(text: &str, url: &SshUrl, s: &Settings) -> Result<Change, UrlE
     if !hostname_ok(host) {
         return Err(UrlError::BadHostname);
     }
-    if url.path.chars().any(|c| c != ' ' && crate::ssh_url::is_hostile_char(c)) {
+    if url.path.chars().any(|c| c != ' ' && crate::ssh_url::is_hostile_char(c)) || still_encoded(&url.path) {
         return Err(UrlError::NoHost);
     }
     let mut line = String::new();
     word(&crate::semantic::encode_url_chars(&without_password(text)), &mut line);
     Ok(Change { custom_command: "Yes", command: format!("{} {line}", program(&s.ftp_path, DEFAULT_FTP)), login_shell: None })
+}
+
+/// A path that still holds a percent escape after its one decode (`%250A` became `%0A`): a URL-aware
+/// ftp client decodes it again, so what was checked is not what runs.
+fn still_encoded(path: &str) -> bool {
+    path.as_bytes().windows(3).any(|w| w[0] == b'%' && w[1].is_ascii_hexdigit() && w[2].is_ascii_hexdigit())
 }
 
 /// The URL without the password of its userinfo (`scheme://user:pw@host` becomes
@@ -128,6 +134,17 @@ mod tests {
 
     fn command(url: &str) -> Result<String, UrlError> {
         change_for(url, &settings()).map(|c| c.expect("a telnet or ftp url").command)
+    }
+
+    /// Final review item 15: the path is checked after one decode, so a path whose decoded form still
+    /// holds an escape (`%250A` decodes to `%0A`) is refused: a URL-aware ftp client would decode it to LF.
+    #[test]
+    fn a_double_encoded_ftp_path_is_refused() {
+        for bad in ["ftp://h/%250A", "ftp://h/a%250d%250ab", "ftp://h/%2500"] {
+            assert_eq!(command(bad), Err(UrlError::NoHost), "{bad}");
+        }
+        assert_eq!(command("ftp://h/100%25").as_deref(), Ok("ftp ftp://h/100%25"), "a lone percent stays");
+        assert_eq!(command("ftp://h/a%20b").as_deref(), Ok("ftp ftp://h/a%20b"));
     }
 
     #[test]

@@ -858,7 +858,7 @@ section = "Closing"
 label = "Quit when all windows are closed"
 type = "bool"
 default = false
-help = "Tandem ends when its last window closes. When this is off, Tandem keeps running with its notification area icon and a click on the icon opens a window."
+help = "Tandem ends when its last window closes. When this is off, Tandem keeps running with its icon in the notification area; a click on the icon opens a window when Advanced > General > Open a new window when you click the notification area icon (OpenUntitledFile) is on."
 
 [[setting]]
 key = "NeverBlockSystemShutdown"

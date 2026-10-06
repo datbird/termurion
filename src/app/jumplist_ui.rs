@@ -20,9 +20,18 @@ const LIST_FILE: &str = "recents.json";
 /// The Jump List items the person removed (`jumplist::Removed`), next to the recents list.
 const REMOVED_FILE: &str = "removed.json";
 
-/// `%APPDATA%\Tandem\Recents`.
-fn recents_dir() -> PathBuf {
-    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("Recents")
+/// `%APPDATA%\Tandem\Recents`, judged first (final review item 16): a redirected AppData or a
+/// junction to a share is never read or made; the recents are skipped then, with one log line.
+fn recents_dir() -> Option<PathBuf> {
+    let dir = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("Recents");
+    let judged = crate::localfs::judge(&dir).map(crate::localfs::LocalPath::into_path_buf);
+    if judged.is_none() {
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            crate::host::log(&format!("jump list: the Recents folder {} is not a local folder; recent profiles are skipped", dir.display()));
+        }
+    }
+    judged
 }
 
 /// A list file of the folder, read at most one byte past its limit (so an oversized one is
@@ -111,7 +120,10 @@ impl App {
         if std::mem::replace(&mut self.jump_sync.started, true) {
             return;
         }
-        let dir = recents_dir();
+        let Some(dir) = recents_dir() else {
+            self.jump_list_due = true;
+            return;
+        };
         self.recents = load_recents(&dir);
         self.jump_sync.removed = load_removed(&dir);
         if !self.globals.bool(KEY) {
@@ -140,8 +152,10 @@ impl App {
         if !self.jump_list_due {
             return None;
         }
-        let dir = recents_dir();
-        let recents: Vec<Recent> = self.recents.list.iter().map(|r| Recent { file: dir.join(&r.file).to_string_lossy().into_owned(), ..r.clone() }).collect();
+        let recents: Vec<Recent> = match recents_dir() {
+            Some(dir) => self.recents.list.iter().map(|r| Recent { file: dir.join(&r.file).to_string_lossy().into_owned(), ..r.clone() }).collect(),
+            None => Vec::new(),
+        };
         let arrangements: Vec<String> = self.arrangements().names().into_iter().map(str::to_string).collect();
         let built = jumplist::model(&self.jump_profiles(), &self.store.default_guid, &arrangements, &recents, key);
         let Ok(exe) = std::env::current_exe() else {
@@ -153,8 +167,8 @@ impl App {
             self.banners.set(BANNER, e);
             self.redraw();
         }
-        if tick.save_removed {
-            if let Err(e) = store_removed(&recents_dir(), &self.jump_sync.removed) {
+        if let (true, Some(dir)) = (tick.save_removed, recents_dir()) {
+            if let Err(e) = store_removed(&dir, &self.jump_sync.removed) {
                 self.banners.set(BANNER, format!("Tandem could not save the removed Jump List items: {e}"));
                 self.redraw();
             }
@@ -172,7 +186,7 @@ impl App {
         if !self.recents.add(guid, name, &|| format!("{}.itermtab", uuid::Uuid::new_v4())) {
             return;
         }
-        let dir = recents_dir();
+        let Some(dir) = recents_dir() else { return };
         match store_recents(&dir, &self.recents) {
             Ok(()) => delete_orphans(&dir, &self.recents),
             Err(e) => {
@@ -188,9 +202,10 @@ impl App {
     pub(super) fn remove_recent_profiles(&mut self) {
         self.recents_ready();
         self.recents.clear();
-        let dir = recents_dir();
-        let _ = store_recents(&dir, &self.recents);
-        delete_orphans(&dir, &self.recents);
+        if let Some(dir) = recents_dir() {
+            let _ = store_recents(&dir, &self.recents);
+            delete_orphans(&dir, &self.recents);
+        }
         if let Err(e) = clear_destinations() {
             self.banners.set(BANNER, e);
             self.redraw();
@@ -204,18 +219,14 @@ impl App {
     pub(super) fn open_profile_tab(&mut self, path: &Path) {
         let shown = crate::inert_files::shown_name(&path.to_string_lossy());
         let Some((guid, name)) = read_tab_file(path).and_then(|t| jumplist::parse_tab_file(&t)).filter(|(g, n)| g.chars().count() <= crate::launch::MAX_GUID && n.chars().count() <= crate::launch::MAX_NAME) else {
-            self.banners.set(BANNER, format!("Tandem could not read \u{201c}{shown}\u{201d} as a profile shortcut."));
-            return self.redraw();
+            return self.outside_note(BANNER, format!("Tandem could not read \u{201c}{shown}\u{201d} as a profile shortcut."));
         };
         let profiles = &self.store.profiles;
         let name_of = |g: &str| profiles.iter().find(|p| p.guid() == g).map(|p| p.name());
         let guid_of = |n: &str| profiles.iter().find(|p| p.name() == n).map(|p| p.guid());
         match jumplist::tab_open(&guid, &name, &name_of, &guid_of) {
             TabOpen::Guid(g) => self.open_recent_profile(&g),
-            TabOpen::Missing => {
-                self.banners.set(BANNER, format!("The profile \u{201c}{}\u{201d} no longer exists.", crate::inert_files::shown_name(&name)));
-                self.redraw();
-            }
+            TabOpen::Missing => self.outside_note(BANNER, format!("The profile \u{201c}{}\u{201d} no longer exists.", crate::inert_files::shown_name(&name))),
             TabOpen::Ask { by_guid, by_name, old, new } => {
                 let (old, new) = (crate::inert_files::shown_name(&old), crate::inert_files::shown_name(&new));
                 let labels = [jumplist::open_name(&old), jumplist::open_name(&new), crate::api_auth::CANCEL.to_string()];
@@ -239,8 +250,7 @@ impl App {
     /// (`launchBookmark:inTerminal:respectTabbingMode:NO`); a profile that is gone opens nothing.
     fn open_recent_profile(&mut self, guid: &str) {
         if !self.store.profiles.iter().any(|p| p.guid() == guid) {
-            self.banners.set(BANNER, "That profile no longer exists.".to_string());
-            return self.redraw();
+            return self.outside_note(BANNER, "That profile no longer exists.".to_string());
         }
         if self.gpu.is_none() {
             return;
@@ -256,5 +266,24 @@ impl App {
         }
         self.bring_forward();
         self.redraw();
+    }
+}
+
+#[cfg(test)]
+mod judged_tests {
+    /// Final review item 16 (Task 6 M7, M1): the Recents folder is judged before it is read or made
+    /// (a junction to a share is never probed), and each COM start of the Jump List is balanced.
+    #[test]
+    fn the_recents_folder_is_judged_and_com_is_balanced() {
+        let me = include_str!("jumplist_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        let dir = me.split("fn recents_dir()").nth(1).unwrap().split("\n}\n").next().unwrap();
+        assert!(dir.contains("crate::localfs::judge(") && dir.contains("-> Option<PathBuf>"), "judged");
+        assert!(!me.contains("let dir = recents_dir();\n"), "every use handles a refused folder");
+        let win = include_str!("../jumplist_win.rs");
+        for f in ["pub fn commit(", "pub fn clear_recent_destinations("] {
+            let b = win.split(f).nth(1).unwrap().split("\n}\n").next().unwrap();
+            assert!(b.contains("let _com = ComInit::new();"), "{f}: CoInitializeEx is balanced");
+        }
+        assert!(win.contains("CoUninitialize()"));
     }
 }

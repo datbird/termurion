@@ -82,13 +82,11 @@ impl App {
     /// Files that were not opened, from any layer: ONE banner whose count adds up.
     pub(super) fn open_files_ignored(&mut self, n: usize) {
         let total = self.open_ignored.add(Instant::now(), n);
-        self.banners.set("open-ignored", open_file::ignored_banner(total));
-        self.redraw();
+        self.outside_note("open-ignored", open_file::ignored_banner(total));
     }
 
     fn open_file_banner(&mut self, text: String) {
-        self.banners.set(BANNER, text);
-        self.redraw();
+        self.outside_note(BANNER, text);
     }
 
     fn open_keys(&self) -> open_file::OpenKeys {

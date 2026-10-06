@@ -196,6 +196,16 @@ fn wait_idle(calls: &AtomicUsize, limit: std::time::Duration) -> bool {
     true
 }
 
+/// What a COM entry point returns when it panicked.
+const E_UNEXPECTED: i32 = 0x8000_FFFFu32 as i32;
+
+/// Runs a COM entry point's body; a panic becomes `E_UNEXPECTED` for the caller instead of unwinding
+/// into COM, which would abort Tandem with every session (final review item 13, 13u's rule for
+/// callbacks on foreign threads).
+fn unwind_safe<T>(body: impl FnOnce() -> Result<T, i32>) -> Result<T, i32> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(Err(E_UNEXPECTED))
+}
+
 /// Set once Tandem is ending: a handoff after that is refused with `E_ABORT`.
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
@@ -284,7 +294,7 @@ struct Handler {
 impl ITerminalHandoff3_Impl for Handler_Impl {
     unsafe fn EstablishPtyHandoff(&self, input: *mut HANDLE, output: *mut HANDLE, signal: HANDLE, reference: HANDLE, server: HANDLE, client: HANDLE, startup: *const TerminalStartupInfo) -> HRESULT {
         let _call = InFlight::enter(&self.shared.inflight);
-        match unsafe { establish(&self.shared, input, output, signal, reference, server, client, startup) } {
+        match unwind_safe(|| unsafe { establish(&self.shared, input, output, signal, reference, server, client, startup) }) {
             Ok(()) => HRESULT(0),
             Err(hr) => HRESULT(hr),
         }
@@ -298,15 +308,18 @@ struct Factory {
 
 impl IClassFactory_Impl for Factory_Impl {
     fn CreateInstance(&self, outer: Ref<IUnknown>, iid: *const GUID, object: *mut *mut c_void) -> windows::core::Result<()> {
-        if !outer.is_null() {
-            return Err(windows::Win32::Foundation::CLASS_E_NOAGGREGATION.into());
-        }
-        let unknown: IUnknown = Handler { shared: self.shared.clone() }.into();
-        unsafe { unknown.query(iid, object).ok() }
+        let made = unwind_safe(|| {
+            if !outer.is_null() {
+                return Err(windows::Win32::Foundation::CLASS_E_NOAGGREGATION.0);
+            }
+            let unknown: IUnknown = Handler { shared: self.shared.clone() }.into();
+            unsafe { unknown.query(iid, object) }.ok().map_err(|e| e.code().0)
+        });
+        made.map_err(|hr| HRESULT(hr).into())
     }
 
     fn LockServer(&self, _lock: BOOL) -> windows::core::Result<()> {
-        Ok(())
+        unwind_safe(|| Ok(())).map_err(|hr: i32| HRESULT(hr).into())
     }
 }
 
@@ -399,6 +412,20 @@ mod tests {
         let drop = &src[src.find("impl Drop for Server").unwrap()..];
         let drop = &drop[..drop.find("\n}\n").unwrap()];
         assert!(drop.find("t.join()").unwrap() < drop.find("wait_idle(&self.shared.inflight, INFLIGHT_LIMIT)").expect("waits for the calls in flight"), "after the revoke");
+    }
+
+    /// Final review item 13 (13u: a callback on a foreign thread never panics through it): a panic in a
+    /// COM entry point is E_UNEXPECTED to the caller, never an abort of Tandem with every session.
+    #[test]
+    fn a_panic_in_a_com_entry_point_is_an_error() {
+        assert_eq!(unwind_safe(|| -> Result<(), i32> { panic!("boom") }), Err(E_UNEXPECTED));
+        assert_eq!(unwind_safe(|| -> Result<u8, i32> { Ok(7) }), Ok(7));
+        let src = production();
+        for f in ["unsafe fn EstablishPtyHandoff(", "fn CreateInstance(", "fn LockServer("] {
+            let b = &src[src.find(f).unwrap_or_else(|| panic!("{f}"))..];
+            let b = &b[..b.find("\n    }\n").unwrap()];
+            assert!(b.contains("unwind_safe("), "{f} catches a panic");
+        }
     }
 
     /// The wait itself: it ends when the last call in flight leaves, and is bounded.

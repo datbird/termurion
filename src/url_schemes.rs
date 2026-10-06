@@ -57,10 +57,11 @@ pub fn command_argument_shape(command: &str) -> Option<String> {
     (tail == " --url \"%1\"" && !program.is_empty()).then(|| program.to_string())
 }
 
-/// A path that may sit inside the quoted command: absolute, no quote, no control character.
+/// A path that may sit inside the quoted command: absolute, no quote, no control character, and no
+/// `%` (the shell substitutes `%1` anywhere in the command, the program part included).
 fn exe_ok(exe: &Path) -> bool {
     let s = exe.to_string_lossy();
-    exe.is_absolute() && !s.contains('"') && !s.chars().any(char::is_control)
+    exe.is_absolute() && !s.contains(['"', '%']) && !s.chars().any(char::is_control)
 }
 
 fn progid(scheme: &str) -> String {
@@ -550,6 +551,17 @@ impl SchemeRegistry for WinRegistry {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+
+    /// Final review item 14: a `%` in the exe path is refused (the shell would substitute `%1` inside
+    /// the program part of the registered command).
+    #[test]
+    fn an_exe_path_with_a_percent_is_refused() {
+        assert!(exe_ok(Path::new(r"C:\T\tandem.exe")));
+        for bad in [r"C:\a%1b\tandem.exe", r"C:\%USERPROFILE%\tandem.exe", r"C:\T\tan%dem.exe"] {
+            assert!(!exe_ok(Path::new(bad)), "{bad}");
+        }
+    }
 
     #[derive(Default)]
     struct Fake {

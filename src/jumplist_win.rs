@@ -8,7 +8,7 @@ use std::path::Path;
 
 use windows::Win32::Storage::EnhancedStorage::PKEY_Title;
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemAlloc};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemAlloc, CoUninitialize};
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::UI::Shell::Common::{IObjectArray, IObjectCollection};
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
@@ -83,8 +83,9 @@ fn removed_args(removed: &IObjectArray) -> Vec<Vec<String>> {
 /// per category, `CommitList`; `AbortList` on every failure after `BeginList`. Returns the args
 /// of the items the person had removed, which the caller keeps out of every later list.
 pub fn commit(m: &Model, exe: &Path) -> Result<Vec<Vec<String>>, String> {
-    // The UI thread is already an apartment (winit's OLE); this is for any other caller.
-    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    // The UI thread is already an apartment (winit's OLE); this is for any other caller. Declared
+    // first, so the COM objects below are released before the apartment reference goes.
+    let _com = ComInit::new();
     let list: ICustomDestinationList = unsafe { CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER) }.map_err(|e| format!("Jump List: {e}"))?;
     let mut slots = 0u32;
     let removed_items: IObjectArray = unsafe { list.BeginList(&mut slots) }.map_err(|e| format!("Jump List: {e}"))?;
@@ -110,9 +111,27 @@ pub fn commit(m: &Model, exe: &Path) -> Result<Vec<Vec<String>>, String> {
     }
 }
 
+/// One CoInitializeEx, balanced by CoUninitialize when it succeeded (S_OK or S_FALSE both count;
+/// final review item 16, Task 6 M1: one apartment reference leaked per commit before).
+struct ComInit(bool);
+
+impl ComInit {
+    fn new() -> ComInit {
+        ComInit(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok())
+    }
+}
+
+impl Drop for ComInit {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
 /// Clears the destinations Windows keeps for Tandem (`IApplicationDestinations`).
 pub fn clear_recent_destinations() -> Result<(), String> {
-    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let _com = ComInit::new();
     let all: IApplicationDestinations = unsafe { CoCreateInstance(&ApplicationDestinations, None, CLSCTX_INPROC_SERVER) }.map_err(|e| format!("Jump List: {e}"))?;
     unsafe { all.RemoveAllDestinations() }.map_err(|e| format!("Jump List: {e}"))
 }

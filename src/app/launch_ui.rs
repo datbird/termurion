@@ -46,8 +46,7 @@ impl App {
     fn ignored_launch_banner(&mut self) {
         let n = self.launch_flood.ignored();
         if n > 0 {
-            self.banners.set("launch-ignored", crate::launch::ignored_banner(n));
-            self.redraw();
+            self.outside_note("launch-ignored", crate::launch::ignored_banner(n));
         }
     }
 
@@ -77,8 +76,7 @@ impl App {
             }
             Request::Arrangement { name } => {
                 if self.arrangements().get(&name).is_none() {
-                    self.banners.set("launch", format!("The arrangement \u{201c}{}\u{201d} no longer exists.", crate::inert_files::shown_name(&name)));
-                    return self.redraw();
+                    return self.outside_note("launch", format!("The arrangement \u{201c}{}\u{201d} no longer exists.", crate::inert_files::shown_name(&name)));
                 }
                 if let Some(w) = self.last_window {
                     self.enter(w);
@@ -92,6 +90,19 @@ impl App {
         }
     }
 
+    /// A request from outside that opened nothing says why: a banner on the window, or while resident
+    /// (no window shows) a notification, so it is neither lost nor stale when a window next opens.
+    pub(super) fn outside_note(&mut self, key: &'static str, text: String) {
+        if self.resident {
+            if let Err(e) = crate::notify::show_with("Tandem", &text, true) {
+                crate::host::log(&format!("{key}: {text} (no notification: {e})"));
+            }
+            return;
+        }
+        self.banners.set(key, text);
+        self.redraw();
+    }
+
     /// A profile named by a request exists in Tandem's own store (none named is the default
     /// profile); an unknown guid shows a banner and opens nothing, never the default silently (P22).
     fn known_profile(&mut self, guid: Option<&str>) -> bool {
@@ -99,8 +110,7 @@ impl App {
         if self.store.get(g).is_some() {
             return true;
         }
-        self.banners.set("launch", format!("The profile \u{201c}{}\u{201d} no longer exists.", crate::inert_files::shown_name(g)));
-        self.redraw();
+        self.outside_note("launch", format!("The profile \u{201c}{}\u{201d} no longer exists.", crate::inert_files::shown_name(g)));
         false
     }
 }
