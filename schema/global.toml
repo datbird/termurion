@@ -3193,6 +3193,25 @@ type = "bool"
 default = false
 help = "Add Bonjour hosts to Profiles"
 
+# 13v2 Task 1: Software Update (the stored-only SU keys have no row, as NoSync keys are read).
+[[setting]]
+key = "SUEnableAutomaticChecks"
+tab = "General"
+section = "Software Update"
+label = "Check for updates automatically"
+type = "bool"
+default = true
+help = "Tandem checks its GitHub releases once a day and tells you about a newer one. It never downloads or installs anything."
+
+[[setting]]
+key = "CheckTestRelease"
+tab = "General"
+section = "Software Update"
+label = "Update to Beta test releases"
+type = "bool"
+default = false
+help = "Beta releases (GitHub prereleases) are offered too."
+
 [[setting]]
 key = "Bidi"
 tab = "General"

@@ -2099,6 +2099,25 @@ mod tests {
         assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
     }
 
+    /// m13v2 Task 1: the Software Update rows (`IP:50`, `IP:51`, `IP:716`).
+    #[test]
+    fn update_rows_follow_iterm2() {
+        for (key, default, label) in [
+            ("SUEnableAutomaticChecks", true, "Check for updates automatically"),
+            ("CheckTestRelease", false, "Update to Beta test releases"),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("General", "Software Update", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert!(!s.help.is_empty(), "{key}");
+        }
+        // The stored-only keys have no row.
+        for key in ["SUScheduledCheckInterval", "SULastCheckTime", "SUHasLaunchedBefore", "SUSkippedVersion"] {
+            assert!(schema::find_global(key).is_none(), "{key}");
+        }
+    }
+
     /// m13i Task 1: the pane navigation rows (`AS:311`, `:510`, `:667`, `:715`, `:716`, `:881`).
     #[test]
     fn navigation_rows_follow_iterm2() {
