@@ -1094,6 +1094,7 @@ mod tests {
         ("script_proc.rs", "start", "a local Python API script"),
         ("script_provision.rs", "run_watched", "the scripts' Python setup steps"),
         ("update_fetch_win.rs", "fetch", "curl.exe from System32 with Tandem's own fixed arguments (update::fetch_args), https only"),
+        ("app/tips_app.rs", "tip_learn_more", "a URL from the static tips, a fixed https page, through guard_open"),
         ("app/update_app.rs", "learn_more_target", "the pinned releases page (update::release_url) through guard_open"),
         ("app/update_app.rs", "learn_more", "opens what learn_more_target settled, the pinned releases page"),
         ("util_console.rs", "run_command", "tandem-utils' program runner, run by the user at a prompt"),

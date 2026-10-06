@@ -91,6 +91,8 @@ pub(super) struct MenuBar {
     /// Edit > Explain Output with AI, enabled with a selection or a command mark in the focused
     /// pane (`PTA:172-174`; `sync_checks`).
     pub(super) explain_ai: Option<MenuItem>,
+    /// iTerm2 > Show Tip of the Day, disabled while a tip shows (`AD:523-524`; `sync_checks`).
+    pub(super) tip_item: Option<MenuItem>,
     /// Shell > ssh > Disconnect, retitled and enabled for the focused session (`refresh_ssh_menu`).
     pub(super) ssh_disconnect: Option<MenuItem>,
     /// Shell > ssh > Download Files, enabled while any host is connected (`refresh_download_files_menu`, P21).
@@ -137,6 +139,7 @@ impl App {
         let mut install_runtime = None;
         let mut engage_ai = None;
         let mut explain_ai = None;
+        let mut tip_item = None;
         let mut ssh_disconnect = None;
         let mut ssh_download_files = None;
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
@@ -168,6 +171,9 @@ impl App {
                     }
                     if item.selector == "explainOutputWithAI:" {
                         explain_ai = Some(m.clone());
+                    }
+                    if item.selector == "showTipOfTheDay:" {
+                        tip_item = Some(m.clone());
                     }
                     if item.selector == "sshDisconnect:" {
                         ssh_disconnect = Some(m.clone());
@@ -249,7 +255,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -525,12 +531,16 @@ impl App {
         // Explain Output follows the focused pane's selection and command marks, not the gate.
         let can_explain = self.can_explain();
         self.explain_shown = Some(can_explain);
+        let tip_showing = self.tip_window.is_some();
         for bar in self.menu_bars_mut() {
             if let Some(item) = &bar.engage_ai {
                 item.set_enabled(ai_allowed);
             }
             if let Some(item) = &bar.explain_ai {
                 item.set_enabled(can_explain);
+            }
+            if let Some(item) = &bar.tip_item {
+                item.set_enabled(!tip_showing);
             }
         }
         let mode = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| *p.screen.term().mode());
@@ -690,6 +700,7 @@ impl App {
             "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", env!("CARGO_PKG_VERSION"))),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
             "checkForUpdatesFromMenu:" => self.check_for_updates(true),
+            "showTipOfTheDay:" => self.show_tip_from_menu(event_loop),
             "makeScreenshot:" => self.make_screenshot(event_loop),
             "renderSelection:" => self.render_selection(),
             "findGlobally:" => self.open_global_find(event_loop),

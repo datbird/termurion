@@ -33,7 +33,7 @@ pub const DISABLED_UNDER_UV: &[&str] = &["installAlreadyDownloadedPythonRuntime:
 
 /// Commands that work now. "selector|Label" names one item of a shared selector.
 pub const DONE: &[&str] = &[
-    "showAbout:", "showPrefWindow:", "checkForUpdatesFromMenu:", "terminate:", "hide:", "newSession:", "newSessionAlternate:",
+    "showAbout:", "showPrefWindow:", "checkForUpdatesFromMenu:", "showTipOfTheDay:", "terminate:", "hide:", "newSession:", "newSessionAlternate:",
     "newSessionWithSameProfile:", "duplicateTab:", "splitHorizontally:", "splitVertically:",
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
