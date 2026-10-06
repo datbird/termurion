@@ -93,7 +93,7 @@ pub struct CellGlyph {
 }
 
 /// Draw order: `quads`, then `images`, then `rows`, then `underlines` and `strikes`, then `overlay`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     pub clear: [f32; 4],
     /// Background images, drawn before everything else.
@@ -121,6 +121,30 @@ pub struct Frame {
     /// what `cut_out` and `cut_rows_from` measure a pane row by, since a zoomed pane's rows are
     /// taller than the chrome's line.
     pub face_heights: Vec<(u16, f32)>,
+    /// The whole drawn target's opacity, 1.0 unless a hotkey window fades on an alpha surface
+    /// (the renderer's last pass scales the premultiplied target by it).
+    pub fade: f32,
+}
+
+impl Default for Frame {
+    fn default() -> Frame {
+        Frame {
+            clear: [0.0; 4],
+            backgrounds: Vec::new(),
+            quads: Vec::new(),
+            images: Vec::new(),
+            rows: Vec::new(),
+            glyphs: Vec::new(),
+            overlay: Vec::new(),
+            underlines: Vec::new(),
+            strikes: Vec::new(),
+            gap_underlines: false,
+            popups: Vec::new(),
+            scrollbars: Vec::new(),
+            face_heights: Vec::new(),
+            fade: 1.0,
+        }
+    }
 }
 
 /// A row's height for the cuts: its own face's line (times its scale) for a pane's row, else the

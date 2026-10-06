@@ -1469,6 +1469,8 @@ pub struct App {
     transparency_banner: bool,
     /// The frame just built has a see-through pane (the surface wants a premultiplied mode).
     frame_alpha: bool,
+    /// A present failed during a hotkey window's fade: fades are off for the rest of the run (app-wide).
+    fade_failed: bool,
     /// The custom folder's location as typed at launch; None once it was edited this session,
     /// which skips the quit step (`customFolderChanged`).
     prefs_launch_folder: Option<String>,
@@ -2262,6 +2264,7 @@ pub fn run() {
         alpha_pending: Vec::new(),
         transparency_banner: false,
         frame_alpha: false,
+        fade_failed: false,
         prefs_launch_folder,
         relaunch_on_exit: false,
         relaunch_due: false,
@@ -5561,6 +5564,13 @@ impl App {
         scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale())
     }
 
+    /// This window draws see-through now (as `build_frame` decides it): an alpha surface, with a pane
+    /// whose profile has Transparency.
+    pub(super) fn see_through_now(&self) -> bool {
+        let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
+        self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>())
+    }
+
     fn build_frame(&mut self) -> Frame {
         let mut attention: Option<Instant> = None;
         // Every pane's face is measured before the frame (`pane_cell` only reads).
@@ -5576,6 +5586,8 @@ impl App {
         self.warn_transparency_unavailable(&alphas);
         if see_through {
             frame.clear = [0.0; 4];
+            // A hotkey window fading on the alpha surface: the renderer scales the whole target.
+            frame.fade = self.hotkey.as_ref().filter(|h| h.fading()).map_or(1.0, |h| h.fade);
         }
         self.note_tab_changes();
         // A Minimal or Compact window's caption strip is under the tab bar and the sessions.
@@ -5976,6 +5988,10 @@ impl App {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
+                // A fade running now stops, and fades stay off for the run.
+                if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                    self.fade_failed = true;
+                }
                 match gpu.render_instance().create_surface(gpu.window.clone()) {
                     Ok(s) => gpu.surface = s,
                     Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
@@ -5987,6 +6003,9 @@ impl App {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
+                if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                    self.fade_failed = true;
+                }
                 self.banners.set("gpu", "GPU validation error");
                 return;
             }
@@ -5994,6 +6013,9 @@ impl App {
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (gpu.config.width, gpu.config.height);
         if let Err(e) = gpu.renderer.draw(&frame, &view, w, h) {
+            if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                self.fade_failed = true;
+            }
             self.banners.set("gpu", e);
         }
         if let Some(gpu) = self.gpu.as_ref() {

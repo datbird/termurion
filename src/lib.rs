@@ -102,6 +102,8 @@ pub mod shell_version;
 pub mod script_statusbar;
 pub mod script_provision;
 pub mod script_runtime;
+#[cfg(all(test, windows))]
+mod fade_probe;
 pub mod script_history;
 pub mod script_launch;
 pub mod script_new;

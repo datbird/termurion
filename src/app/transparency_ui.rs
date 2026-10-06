@@ -348,6 +348,8 @@ impl App {
         let (old_id, new_id) = (old.id(), window.id());
         let old_gpu = self.gpu.replace(gpu);
         self.win_alpha_surface = SurfaceKind::Alpha;
+        // A hotkey window that was fading shows at once on its new window.
+        self.end_fade_on_recreate();
         // The new handle has no backdrop yet.
         self.blur_applied = false;
         self.look_seen = None;
