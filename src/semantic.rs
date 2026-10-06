@@ -807,6 +807,9 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
             Some(p) if crate::scripts::stays_local(Path::new(&p)) => file_open(&p, None, None, has_code),
             _ => Run::Blocked(format!("Tandem does not open network file links: {target}")),
         },
+        // An ssh: link a bound handler would have opened never gets here; an unbound one is not
+        // handed to whatever the system registered (14e's Decision).
+        Some("ssh") => Run::Blocked("Tandem opens ssh: links when ssh is set to open in Tandem (Settings > Profiles > General > URL schemes).".into()),
         Some(s) => Run::Blocked(format!("Tandem opens only http, https, mailto, and ftp links, not {s}: links.")),
     }
 }
@@ -1028,6 +1031,14 @@ pub fn needs_live_session(run: &Run) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unbound_ssh_link_says_how_to_open_it() {
+        let Run::Blocked(why) = guard_open("ssh://host", false) else { panic!("refused") };
+        assert!(why.contains("Tandem opens ssh: links when ssh is set to open in Tandem"), "{why}");
+        let Run::Blocked(other) = guard_open("ms-msdt:x", false) else { panic!("refused") };
+        assert!(other.contains("not ms-msdt: links"), "{other}");
+    }
+
     use super::*;
     use crate::netpath::{Drives, Probe};
     use std::sync::Arc;

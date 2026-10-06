@@ -546,6 +546,13 @@ impl App {
         if key != self.hover_key {
             self.hover_key = key;
             let found = at.and_then(|(id, point)| self.target_at(id, point).map(|(c, target, cells)| (id, c, cells, target)));
+            // An ssh: link the click would refuse shows no underline and no hand.
+            let found = found.filter(|(id, _, _, t)| match t {
+                Target::Link(u) | Target::Url(u) if super::ssh_url_app::is_ssh(u) => {
+                    super::ssh_url_app::hover_open(self.remote_text(*id), u, self.bound_ssh_profile().as_deref())
+                }
+                _ => true,
+            });
             // A link's text can differ from where it goes, so the URL shows while hovering.
             let text = found.as_ref().and_then(|(id, c, _, t)| {
                 semantic::preview_text(t, self.smart_open_url(*id, c, t).as_deref(), preview)
