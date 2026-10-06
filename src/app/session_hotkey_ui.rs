@@ -41,13 +41,12 @@ impl App {
         self.session_hotkeys_dirty = true;
         let Some((pane, s, origin)) = ask else { return };
         // A chord that could never register is not worth a question.
-        if session_hotkeys::check(&s, &[]).is_err() {
-            return;
-        }
+        let Ok(chord) = session_hotkeys::check(&s, &[]) else { return };
         if self.alert_waits(|t| matches!(t, Then::SessionHotkey { pane: p, shortcut, .. } if *p == pane && *shortcut == s)) {
             return;
         }
-        let text = session_hotkeys::consent_text(&origin, &crate::settings_hotkey::label(&s));
+        // The question names the chord that would register, never the shortcut's own characters.
+        let text = session_hotkeys::consent_text(&origin, &session_hotkeys::chord_label(&chord));
         let ask = scripts_alerts::ask("Register a hotkey?", &text, &[REGISTER, IGNORE], Some(ASK_ID), Kind::Permanent, Then::SessionHotkey { pane, shortcut: s });
         self.ask_scripts(ask);
     }

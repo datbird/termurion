@@ -171,6 +171,81 @@ pub enum Origin {
     Tmux(String),
 }
 
+/// How a chord reads ("Ctrl+Alt+1"): its modifiers, then its key (the key at that scan code's place on
+/// a U.S. keyboard). The one place a chord is named for the person, so the consent question can only
+/// show what would register.
+pub fn chord_label(c: &Chord) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (bit, name) in [(hotkey::MOD_WIN, "Win"), (hotkey::MOD_CONTROL, "Ctrl"), (hotkey::MOD_ALT, "Alt"), (hotkey::MOD_SHIFT, "Shift")] {
+        if c.mods & bit != 0 {
+            parts.push(name.into());
+        }
+    }
+    parts.push(match c.key {
+        hotkey::ChordKey::Char(ch) => ch.to_uppercase().to_string(),
+        hotkey::ChordKey::Scan(scan) => scan_name(scan),
+    });
+    parts.join("+")
+}
+
+/// The name of the key at a scan code's place on a U.S. keyboard.
+fn scan_name(scan: u32) -> String {
+    let row = |first: u32, keys: &str| keys.chars().nth(scan.wrapping_sub(first) as usize).filter(|_| scan >= first).map(|c| c.to_string());
+    let fixed = match scan {
+        0x01 => "Esc",
+        0x0E => "Backspace",
+        0x0F => "Tab",
+        0x1C => "Enter",
+        0x39 => "Space",
+        0x57 => "F11",
+        0x58 => "F12",
+        0xE047 => "Home",
+        0xE048 => "Up",
+        0xE049 => "PgUp",
+        0xE04B => "Left",
+        0xE04D => "Right",
+        0xE04F => "End",
+        0xE050 => "Down",
+        0xE051 => "PgDn",
+        0xE052 => "Insert",
+        0xE053 => "Delete",
+        _ => "",
+    };
+    if !fixed.is_empty() {
+        return fixed.into();
+    }
+    if (0x3B..=0x44).contains(&scan) {
+        return format!("F{}", scan - 0x3A);
+    }
+    let named = match scan {
+        0x02..=0x0B => row(0x02, "1234567890"),
+        0x0C => Some("-".into()),
+        0x0D => Some("=".into()),
+        0x10..=0x19 => row(0x10, "QWERTYUIOP"),
+        0x1A => Some("[".into()),
+        0x1B => Some("]".into()),
+        0x1E..=0x26 => row(0x1E, "ASDFGHJKL"),
+        0x27 => Some(";".into()),
+        0x28 => Some("'".into()),
+        0x29 => Some("`".into()),
+        0x2B => Some("\\".into()),
+        0x2C..=0x32 => row(0x2C, "ZXCVBNM"),
+        0x33 => Some(",".into()),
+        0x34 => Some(".".into()),
+        0x35 => Some("/".into()),
+        _ => None,
+    };
+    named.unwrap_or_else(|| format!("Key 0x{scan:X}"))
+}
+
+/// The chord a shortcut registers as and how it reads, from the same `hotkey::chord` that registers
+/// it (the keycode wins over the characters, and flags beyond the four modifiers are ignored).
+pub fn chord_and_label(s: &Shortcut) -> Option<(Chord, String)> {
+    let c = hotkey::chord(s)?;
+    let label = chord_label(&c);
+    Some((c, label))
+}
+
 /// The question text of a program-supplied session hotkey (`label` is the chord, "Ctrl+Alt+1").
 pub fn consent_text(origin: &Origin, label: &str) -> String {
     let who = match origin {
@@ -365,6 +440,22 @@ mod tests {
         assert!(r.tail_applies());
         assert!(route(&[0, u32::MAX]).tail_applies(), "the app and Open Quickly ids are not session ids");
         assert!(!is_session_id(SESSION_HOTKEY_BASE - 1));
+    }
+
+    #[test]
+    fn consent_shows_the_chord_that_registers() {
+        // The characters say Q, the keycode (18) is the key 1: Ctrl+Alt+1 is what registers.
+        let tricky = Shortcut { keycode: 18, flags: CTRL_ALT | crate::keystroke::LEADER | crate::keystroke::NUMPAD, chars: "q".into(), chars_ignoring: "q".into() };
+        let (chord, label) = chord_and_label(&tricky).unwrap();
+        assert_eq!(label, "Ctrl+Alt+1");
+        assert_eq!(chord, check(&tricky, &[]).unwrap(), "the label names the chord `check` and registration use");
+        // No keycode of its own: the character is the key.
+        let by_char = Shortcut { keycode: 0xFFFF, flags: COMMAND | crate::keystroke::SHIFT, chars: "x".into(), chars_ignoring: "x".into() };
+        assert_eq!(chord_and_label(&by_char).unwrap().1, "Win+Shift+X");
+        for (code, flags, want) in [(0x7Au16, CONTROL, "Ctrl+F1"), (0x31, OPTION, "Alt+Space"), (0x7B, COMMAND, "Win+Left"), (0x24, CTRL_ALT, "Ctrl+Alt+Enter"), (0x00, CONTROL, "Ctrl+A")] {
+            let s = Shortcut { keycode: code, flags, chars: "z".into(), chars_ignoring: "z".into() };
+            assert_eq!(chord_and_label(&s).unwrap().1, want);
+        }
     }
 
     #[test]
