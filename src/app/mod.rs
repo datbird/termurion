@@ -1565,6 +1565,9 @@ pub struct App {
     text_popover: Option<(PaneId, crate::status_popover_ui::TextPopover)>,
     /// The HTML popover or Quick Look open now (app-wide, one at a time) and the session whose scope its bridge runs in (13x Task 3).
     web_popover: Option<(Option<PaneId>, crate::web_popover::WebPopover)>,
+    /// Chat icon generations by chat id (app-wide, 13x Task 4): coalescing state, and the candidates being rendered.
+    icon_requests: HashMap<String, crate::svg_icon::Request>,
+    icon_jobs: HashMap<String, chat_window_app::IconJob>,
     /// The session title providers, as of the registry revision they were listed at.
     script_title_providers: Option<(u64, std::rc::Rc<Vec<crate::script_fn::TitleProvider>>)>,
     /// `alert` and `get_string` dialogs waiting to open, and the one showing.
@@ -2519,6 +2522,8 @@ pub fn run() {
         script_titles: HashMap::new(),
         text_popover: None,
         web_popover: None,
+        icon_requests: HashMap::new(),
+        icon_jobs: HashMap::new(),
         script_title_providers: None,
         script_dialogs: VecDeque::new(),
         script_dialog: None,
@@ -6835,6 +6840,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.access_tick();
         // What WebView2 views posted (before the wake times below are worked out).
         self.web_tick(event_loop);
+        self.icon_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);

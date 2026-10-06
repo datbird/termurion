@@ -61,6 +61,9 @@ pub mod dll;
 pub mod webhost;
 #[cfg(windows)]
 pub mod webhost_win;
+pub mod svg_icon;
+#[cfg(windows)]
+pub mod svg_raster_win;
 pub mod seltext;
 pub mod wordsel;
 pub mod netpath;

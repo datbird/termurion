@@ -19,12 +19,14 @@ pub(super) enum Owner {
     Engage,
     Complete { pane: PaneId, generation: u64 },
     Codecierge(String),
+    /// A chat's list icon (13x Task 4): the chat id. Asked silently, as iTerm2's gatekeeper check (`CIG:60`).
+    ChatIcon(String),
 }
 
 impl Owner {
     /// Composer suggestions ask the gate silently (`AC:16-95`); everything else shows its alerts.
     pub(super) fn silent(&self) -> bool {
-        matches!(self, Owner::Complete { .. })
+        matches!(self, Owner::Complete { .. } | Owner::ChatIcon(_))
     }
 }
 
@@ -45,11 +47,12 @@ pub(super) enum Entry {
     ComposerSuggest,
     CodeciergeStart,
     CodeciergeSend,
+    ChatIcon,
 }
 
 #[allow(dead_code)]
 impl Entry {
-    pub(super) const ALL: [Entry; 6] = [Entry::EngageTerminal, Entry::EngageComposer, Entry::EngageStatusBar, Entry::ComposerSuggest, Entry::CodeciergeStart, Entry::CodeciergeSend];
+    pub(super) const ALL: [Entry; 7] = [Entry::EngageTerminal, Entry::EngageComposer, Entry::EngageStatusBar, Entry::ComposerSuggest, Entry::CodeciergeStart, Entry::CodeciergeSend, Entry::ChatIcon];
 
     /// The owner this entry point's runs have (a test value for each).
     pub(super) fn owner(self) -> Owner {
@@ -57,6 +60,7 @@ impl Entry {
             Entry::EngageTerminal | Entry::EngageComposer | Entry::EngageStatusBar => Owner::Engage,
             Entry::ComposerSuggest => Owner::Complete { pane: 1, generation: 1 },
             Entry::CodeciergeStart | Entry::CodeciergeSend => Owner::Codecierge("G".into()),
+            Entry::ChatIcon => Owner::ChatIcon("C".into()),
         }
     }
 }
@@ -66,7 +70,7 @@ impl Entry {
 /// key is an error with no sheet (`AIConversation.swift:310-323`) and the files show. A prompt
 /// per typing pause would also queue one window per pause.
 pub(super) fn asks_for_key(owner: &Owner) -> bool {
-    !matches!(owner, Owner::Complete { .. })
+    !matches!(owner, Owner::Complete { .. } | Owner::ChatIcon(_))
 }
 
 /// How a run ended.
@@ -329,6 +333,7 @@ impl App {
             Owner::Engage => self.engage_done(id, done),
             Owner::Complete { pane, generation } => self.composer_ai_done(pane, generation, done),
             Owner::Codecierge(guid) => self.codecierge_done(&guid, id, done),
+            Owner::ChatIcon(chat) => self.icon_done(chat, done),
         }
     }
 }
@@ -392,6 +397,8 @@ mod tests {
         assert!(!asks_for_key(&Owner::Complete { pane: 1, generation: 1 }));
         assert!(asks_for_key(&Owner::Engage));
         assert!(asks_for_key(&Owner::Codecierge("G".into())));
+        // A chat's icon is background work: a missing key never opens a prompt.
+        assert!(!asks_for_key(&Owner::ChatIcon("C".into())));
     }
 
     #[test]
@@ -408,6 +415,7 @@ mod tests {
         assert!(Owner::Complete { pane: 1, generation: 1 }.silent());
         assert!(!Owner::Engage.silent());
         assert!(!Owner::Codecierge("G".into()).silent());
+        assert!(Owner::ChatIcon("C".into()).silent());
     }
 
     #[test]

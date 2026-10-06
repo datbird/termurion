@@ -27,6 +27,26 @@ pub(super) fn update_chat_in(store: &mut Store, id: &str, f: impl FnOnce(&mut Ch
     store.update_chat(&row).is_ok()
 }
 
+/// How long a candidate waits for the WebView2 environment before the request is given up.
+const ICON_ENV_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A chat icon whose model reply is being drawn: the candidates still to try, the one rendering,
+/// and since when it has waited for the environment.
+pub(super) struct IconJob {
+    queue: VecDeque<String>,
+    rast: Option<crate::svg_raster_win::Rasterizer>,
+    waiting: Option<Instant>,
+}
+
+/// How a generation ends.
+enum IconEnd {
+    Png(Vec<u8>),
+    /// A failure: the stored icon is cleared.
+    Clear,
+    /// Nothing to store (no runtime): the icon stays as it is.
+    Skip,
+}
+
 /// One broker update applied to the shown chat's kept messages; whether the rows must be built
 /// again. A chunk, an attached file or a commit (`Append`, `AppendAttachment`, `Commit`) names a
 /// stored message whose row the broker already changed, so `reload` reads that row again; a
@@ -1577,9 +1597,148 @@ impl App {
         if !self.chat_db.as_ref().is_some_and(|db| db.chat(chat).ok().flatten().is_some()) {
             return;
         }
-        let m = Message::new(chat, Participant::Agent, Content::RenameChat(title), super::warnings_app::unix_now());
+        let m = Message::new(chat, Participant::Agent, Content::RenameChat(title.clone()), super::warnings_app::unix_now());
         if let Err(e) = self.chat_publish(chat, m, false) {
             crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("renameChat failed: {e}"));
+            return;
+        }
+        // Only after the rename actually landed (`ChatAgent.swift:1895-1900`): an icon for a title
+        // that was never applied would bill a model call and sit next to the wrong title.
+        if self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten()).is_some_and(|c| c.title == title) {
+            self.request_chat_icon(chat, &title);
+        }
+    }
+
+    /// A chat's list icon for a freshly minted title (`ChatIconGenerator.requestIcon`, `CIG:47-73`).
+    /// A running request parks the newest title; the AI gate (asked silently) and a blank title drop
+    /// it; else the model is asked for an SVG.
+    pub(super) fn request_chat_icon(&mut self, chat: &str, title: &str) {
+        let allowed = self.ai_check(true);
+        if let crate::svg_icon::Step::Start(subject) = crate::svg_icon::request(&mut self.icon_requests, chat, title, allowed) {
+            self.icon_start(chat, &subject);
+        }
+    }
+
+    /// Evaluates the "AI Prompt for Chat Icon" template with `ai.subject` and asks for the SVG with
+    /// thinking off (`CIG:77-89`). Without the WebView2 Runtime nothing could draw it, so no model call
+    /// is spent and nothing is stored.
+    fn icon_start(&mut self, chat: &str, subject: &str) {
+        if self.web_runtime() == crate::webhost::Runtime::Missing {
+            return self.icon_end(chat, IconEnd::Skip);
+        }
+        let template = self.globals.string(crate::ai_prompts::Prompt::ChatIcon.key());
+        let prompt = crate::ai_prompts::evaluate(&template, &[("subject", subject)], &|_| None).unwrap_or_default();
+        if prompt.is_empty() {
+            return self.icon_end(chat, IconEnd::Clear);
+        }
+        // None: the owner has already been answered (no model, a closed gate, or an instant finish).
+        let _ = self.ai_one_shot_thinking(prompt, super::ai_runs::Owner::ChatIcon(chat.to_string()), Some(false));
+    }
+
+    /// The model's answer: every balanced SVG is tried in order until one renders (`CIG:105-131`);
+    /// a failed or canceled request clears the icon (`CD:1911-1920`).
+    pub(super) fn icon_done(&mut self, chat: String, finished: super::ai_runs::Finished) {
+        use super::ai_runs::Finished;
+        let Finished::Choice(reply) = finished else { return self.icon_end(&chat, IconEnd::Clear) };
+        let mut queue = VecDeque::new();
+        for svg in crate::svg_icon::candidates(&reply) {
+            match crate::svg_icon::check(&svg) {
+                Ok(()) => queue.push_back(svg),
+                // Never the model's text (13x B8): only that one candidate was refused.
+                Err(_) => crate::host::log("chat icon: a candidate was refused by the SVG check"),
+            }
+        }
+        if queue.is_empty() {
+            return self.icon_end(&chat, IconEnd::Clear);
+        }
+        self.icon_jobs.insert(chat.clone(), IconJob { queue, rast: None, waiting: None });
+        self.icon_next(&chat);
+    }
+
+    /// Starts the next candidate in a rasterizer, or ends the request when none is left. While the
+    /// environment is still being made the candidate waits (`icon_tick` retries).
+    fn icon_next(&mut self, chat: &str) {
+        let Some(mut job) = self.icon_jobs.remove(chat) else { return };
+        job.rast = None;
+        while let Some(svg) = job.queue.pop_front() {
+            let id = self.next_view_id();
+            let sink = self.web_envs.sink();
+            let Some(env) = self.web_env(crate::webhost::Store::Default) else {
+                job.queue.push_front(svg);
+                let since = *job.waiting.get_or_insert_with(Instant::now);
+                if since.elapsed() > ICON_ENV_WAIT {
+                    return self.icon_end(chat, IconEnd::Skip);
+                }
+                self.icon_jobs.insert(chat.to_string(), job);
+                return;
+            };
+            job.waiting = None;
+            match crate::svg_raster_win::Rasterizer::start(env, &svg, id, sink) {
+                Ok(r) => {
+                    job.rast = Some(r);
+                    self.icon_jobs.insert(chat.to_string(), job);
+                    return;
+                }
+                Err(_) => crate::host::log("chat icon: a candidate could not be started"),
+            }
+        }
+        self.icon_end(chat, IconEnd::Clear);
+    }
+
+    /// A rasterizer's view event. True when the view is one of the icon renderers'.
+    pub(super) fn icon_view_event(&mut self, event: &crate::webhost::Event) -> bool {
+        let view = event.view();
+        if view == 0 {
+            return false;
+        }
+        let Some(chat) = self.icon_jobs.iter().find(|(_, j)| j.rast.as_ref().is_some_and(|r| r.id() == view)).map(|(c, _)| c.clone()) else { return false };
+        let answer = self.icon_jobs.get_mut(&chat).and_then(|j| j.rast.as_mut()).and_then(|r| r.on_event(event));
+        self.icon_answered(&chat, answer);
+        true
+    }
+
+    fn icon_answered(&mut self, chat: &str, answer: Option<Result<Vec<u8>, ()>>) {
+        match answer {
+            None => {}
+            Some(Ok(png)) => self.icon_end(chat, IconEnd::Png(png)),
+            Some(Err(())) => self.icon_next(chat),
+        }
+    }
+
+    /// Time limits and candidates waiting for the environment (`about_to_wait`).
+    pub(super) fn icon_tick(&mut self) {
+        let chats: Vec<String> = self.icon_jobs.keys().cloned().collect();
+        for chat in chats {
+            let running = self.icon_jobs.get(&chat).map(|j| j.rast.is_some());
+            match running {
+                Some(true) => {
+                    let answer = self.icon_jobs.get_mut(&chat).and_then(|j| j.rast.as_mut()).and_then(|r| r.limit());
+                    self.icon_answered(&chat, answer);
+                }
+                Some(false) => self.icon_next(&chat),
+                None => {}
+            }
+        }
+    }
+
+    /// The generation ended. A newer title that arrived meanwhile runs instead and this result is
+    /// dropped (`CIG:131-143`); else the icon is stored: the PNG, or None for a failure (iTerm2 clears
+    /// the icon, `CD:1911-1920`; the list then draws its default). A chat deleted meanwhile stores
+    /// nothing.
+    fn icon_end(&mut self, chat: &str, end: IconEnd) {
+        self.icon_jobs.remove(chat);
+        if let Some(title) = crate::svg_icon::finish(&mut self.icon_requests, chat) {
+            return self.request_chat_icon(chat, &title);
+        }
+        let icon = match end {
+            IconEnd::Skip => return,
+            IconEnd::Png(png) => Some(png),
+            IconEnd::Clear => None,
+        };
+        let Some(db) = self.chat_db() else { return };
+        if update_chat_in(db, chat, |c| c.icon = icon) {
+            self.chat_rows_dirty = true;
+            self.chat_window_refresh();
         }
     }
 
@@ -1619,6 +1778,34 @@ fn find_seed(text: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::menus::{Chord, ChordKey};
+
+    /// Task 4: the icon is asked for only after the rename landed, its result is dropped for a newer
+    /// title, a failure clears the icon through the row-merging writer, a chat deleted meanwhile
+    /// stores nothing, and the model is asked with thinking off and a silent gate.
+    #[test]
+    fn chat_icons_follow_iterm2_order() {
+        let me = include_str!("chat_window_app.rs");
+        let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
+        let done = &prod[prod.find("fn title_done(").unwrap()..];
+        let done = &done[..done.find("pub(super) fn request_chat_icon").unwrap()];
+        assert!(done.find("chat_publish(").unwrap() < done.find("request_chat_icon(").unwrap());
+        assert!(done.contains("c.title == title"), "after the rename is in the store");
+        let end = &prod[prod.find("fn icon_end(").unwrap()..];
+        let end = &end[..end.find("\n    }\n").unwrap()];
+        assert!(end.find("svg_icon::finish(").unwrap() < end.find("update_chat_in(").unwrap(), "a parked title runs instead of storing");
+        assert!(end.contains("c.icon = icon") && end.contains("IconEnd::Skip => return"));
+        let start = &prod[prod.find("fn icon_start(").unwrap()..];
+        let start = &start[..start.find("\n    }\n").unwrap()];
+        assert!(start.contains("Some(false)") && start.contains("Owner::ChatIcon("));
+        let req = &prod[prod.find("fn request_chat_icon(").unwrap()..];
+        assert!(req[..req.find("\n    }\n").unwrap()].contains("self.ai_check(true)"));
+        // Every candidate passes the pre-check before a view is made.
+        let d = &prod[prod.find("fn icon_done(").unwrap()..];
+        assert!(d.find("svg_icon::check(").unwrap() < d.find("Rasterizer").unwrap_or(usize::MAX).min(d.find("icon_next(").unwrap()));
+        // The icon renderers' state is app-wide, never swapped per window.
+        let swap = include_str!("windows_ui.rs");
+        assert!(!swap.contains("icon_requests") && !swap.contains("icon_jobs"));
+    }
 
     #[test]
     fn use_selection_seeds_the_bar_with_the_text_as_it_is() {

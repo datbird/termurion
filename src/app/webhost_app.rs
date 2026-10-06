@@ -291,6 +291,9 @@ impl App {
         if self.tool_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
             return;
         }
+        if self.icon_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+            return;
+        }
         if self.web_popover_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
             return;
         }
