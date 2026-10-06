@@ -709,6 +709,14 @@ argument per variable and refuses shells and forwarders; Command Info and the na
 syntax, or anything into a password prompt or an ended pane. Rulings and deferred minors are in `docs/superpowers/rulings/m13r-rulings.txt`; what a
 person must see on screen is in `docs/acceptance/m13r-checklist.md`. Nothing of 13r was checked on screen during the build. Open: ssh:// text underlines
 and then the guard refuses (milestone 14e's handler owns it), and 13s's command-selection click must call the path-mark check first.
+On the m13s branch, main (13r) merged into 13s's Tasks 1-8 (2026-10-05): 13s changes no parity row before its docs task, so the union is
+13r's (01: 316 rows, 272 have, 33 partial, 11 missing; 02: 820, 598, 52, 170; 03: 647, 566, 43, 38; 1,783 rows, 1,436 have, 128 partial,
+219 missing). Seams wired at the merge: 13r's URL guess is the one copy (13s's slash rule and colon strings run through it, and
+RequireSlashInURLGuess sits in 13r's Semantic History section); Smart Selection reads SmartSelectionRadius lines each way; Semantic History's
+soft-boundary window is word selection's; the command region (buffer rows) is defined once over 13r's grid-line helper for 13s Task 9 to
+select commands with (showButtonsForSelectedCommand stays partial until then, and that click calls the path-mark check first); dropped file
+names typed into the shell pass 13r's one guard for terminal writes (control characters, the union refusal, the network rule) and are quoted
+for the reported shell; 13r adds no runtime DLL load, so 13s's DLL hardening covers it.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
