@@ -117,6 +117,28 @@ pub fn icon_text(label: &str) -> String {
     }
 }
 
+/// What the taskbar label does this pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BadgeStep {
+    /// Nothing to do and nothing to wait for.
+    Idle,
+    /// Push the label now.
+    Push,
+    /// The label changed inside the throttle window: push it, and wake, then.
+    Wait(std::time::Instant),
+}
+
+/// The throttle (`every` between pushes) without ever leaving a changed label unpushed: a
+/// change held back by it comes with the moment to come back at.
+pub fn badge_step(pushed: Option<(&str, std::time::Instant)>, label: &str, now: std::time::Instant, every: std::time::Duration) -> BadgeStep {
+    match pushed {
+        None => BadgeStep::Push,
+        Some((l, _)) if l == label => BadgeStep::Idle,
+        Some((_, t)) if now.saturating_duration_since(t) >= every => BadgeStep::Push,
+        Some((_, t)) => BadgeStep::Wait(t + every),
+    }
+}
+
 /// A sound that passed the judge: only this type reaches `PlaySoundW`. Its field is private,
 /// so only `resolve` can make one (B2 by type, as `LocalPath`).
 #[derive(Debug)]
@@ -202,6 +224,21 @@ pub fn accept_file(p: &Path) -> Option<LocalPath> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 6 fix r1 item 1: a label that changes inside the throttle window is held until the
+    /// window ends, with a wake at that moment, so the taskbar number is never left stale.
+    #[test]
+    fn a_held_back_badge_change_schedules_its_push() {
+        use std::time::{Duration, Instant};
+        let (t0, every) = (Instant::now(), Duration::from_millis(250));
+        let ms = Duration::from_millis;
+        assert_eq!(badge_step(None, "1", t0, every), BadgeStep::Push, "nothing pushed yet");
+        assert_eq!(badge_step(Some(("1", t0)), "1", t0 + ms(10), every), BadgeStep::Idle, "unchanged: no wake");
+        assert_eq!(badge_step(Some(("1", t0)), "2", t0 + ms(100), every), BadgeStep::Wait(t0 + every), "changed inside the window: wake at its end");
+        assert_eq!(badge_step(Some(("1", t0)), "", t0 + ms(100), every), BadgeStep::Wait(t0 + every), "a clear is held the same short time");
+        assert_eq!(badge_step(Some(("1", t0)), "2", t0 + every, every), BadgeStep::Push);
+        assert_eq!(badge_step(Some(("1", t0)), "2", t0 + ms(900), every), BadgeStep::Push);
+    }
+
     /// Task 6 fix r1 item 2 (B2 by type): a `Sound` is built in `resolve` and nowhere else, so
     /// no unjudged string can reach `PlaySoundW`; no other file names its variants.
     #[test]

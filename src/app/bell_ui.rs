@@ -153,11 +153,14 @@ impl App {
 
     /// The count goes onto every terminal window's taskbar button when it changed (one badge per
     /// app in iTerm2; Windows has a button per window). Queued, never waited for.
-    pub(super) fn tick_badge(&mut self) {
+    /// When to come back: a change the throttle held back is pushed then.
+    pub(super) fn tick_badge(&mut self) -> Option<Instant> {
         let label = self.bell_badge.label();
         let now = Instant::now();
-        if self.badge_pushed.as_ref().is_some_and(|(l, t)| *l == label || now.saturating_duration_since(*t) < BADGE_EVERY) {
-            return;
+        match crate::bell_badge::badge_step(self.badge_pushed.as_ref().map(|(l, t)| (l.as_str(), *t)), &label, now, BADGE_EVERY) {
+            crate::bell_badge::BadgeStep::Idle => return None,
+            crate::bell_badge::BadgeStep::Wait(at) => return Some(at),
+            crate::bell_badge::BadgeStep::Push => {}
         }
         let hwnds: Vec<isize> = self.hwnd().into_iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().and_then(|g| super::menu::hwnd_of(&g.window)))).collect();
         #[cfg(windows)]
@@ -168,6 +171,7 @@ impl App {
         #[cfg(not(windows))]
         let _ = hwnds;
         self.badge_pushed = Some((label, now));
+        None
     }
 
     /// A window's taskbar button hears `TaskbarButtonCreated`, and the next pass sets its badge.
@@ -199,6 +203,7 @@ mod tests {
             assert!(include_str!("mod.rs").contains("taskbar_watch") && (f == "mod.rs" || std::fs::read_to_string(format!("{}/src/app/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap().contains("self.taskbar_watch(h)")), "{f}");
         }
         let m = include_str!("mod.rs");
+        assert!(m.contains("let badge_due = self.tick_badge();") && m.contains("self.attention_due, badge_due,"), "a held-back badge change wakes the loop");
         assert!(body(m, "pub(crate) fn teardown_process()", "\n}\n").contains("taskbar_win::clear_all"));
         assert!(body(m, "pub(super) fn select_tab", "\n    }\n").contains("tab_selected"));
         assert!(body(m, "let active = hotkey_ui::tandem_in_front();", "self.hotkey_reactivated()").contains("became_active"));
