@@ -34,6 +34,24 @@ pub fn from_srgb(c: Rgb) -> OkLab {
 }
 
 impl OkLab {
+    /// The color of a Display P3 color (gamma encoded, 0 to 1), through XYZ as iTerm2 does.
+    pub fn from_p3(r: f64, g: f64, b: f64) -> OkLab {
+        let lin = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let (r, g, b) = (lin(r), lin(g), lin(b));
+        // Linear Display P3 to XYZ (D65), then iTerm2's XYZ to LMS and LMS' to Lab matrices.
+        let x = 0.486_570_948_6 * r + 0.265_667_693_2 * g + 0.198_217_285_2 * b;
+        let y = 0.228_974_564_1 * r + 0.691_738_521_8 * g + 0.079_286_914_1 * b;
+        let z = 0.045_113_381_9 * g + 1.043_944_368_9 * b;
+        let l = (0.8189330101 * x + 0.3618667424 * y - 0.1288597137 * z).cbrt();
+        let m = (0.0329845436 * x + 0.9293118715 * y + 0.0361456387 * z).cbrt();
+        let s = (0.0482003018 * x + 0.2643662691 * y + 0.6338517070 * z).cbrt();
+        OkLab {
+            l: (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s) as f32,
+            a: (1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s) as f32,
+            b: (0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s) as f32,
+        }
+    }
+
     /// The sRGB color, or None when it lies outside the sRGB gamut.
     pub fn to_srgb(&self) -> Option<Rgb> {
         let l = (self.l + 0.396_337_78 * self.a + 0.215_803_76 * self.b).powi(3);
@@ -84,6 +102,14 @@ mod tests {
         let out = OkLab { l: 0.5, a: 0.4, b: 0.0 };
         assert_eq!(out.to_srgb(), None);
         assert!((out.chroma() - 0.4).abs() < 1e-6 && out.hue().abs() < 1e-6);
+        // iTerm2 places colors through Display P3: the same OKLab as the direct sRGB path.
+        for c in [rgb(0, 0, 0), rgb(255, 255, 255), rgb(12, 200, 99), rgb(255, 0, 0), rgb(7, 7, 250)] {
+            let (r, g, b) = crate::import::srgb_to_p3(c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0);
+            let (p, d) = (OkLab::from_p3(r, g, b), from_srgb(c));
+            assert!((p.l - d.l).abs() < 2e-3 && (p.a - d.a).abs() < 2e-3 && (p.b - d.b).abs() < 2e-3, "{c:?} {p:?} {d:?}");
+        }
+        // Pure P3 green is wider than sRGB: more chroma than sRGB green.
+        assert!(OkLab::from_p3(0.0, 1.0, 0.0).chroma() > from_srgb(rgb(0, 255, 0)).chroma());
         assert_eq!(distance(white, white), 0.0);
         let d = distance(OkLab { l: 0.0, a: 0.0, b: 0.0 }, OkLab { l: 0.3, a: 0.4, b: 0.0 });
         assert!((d - 0.5).abs() < 1e-6, "{d}");

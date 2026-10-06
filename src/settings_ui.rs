@@ -38,6 +38,9 @@ pub fn value_of_rgb(c: [u8; 3]) -> Value {
     profile::color_value(crate::palette::rgb(c[0], c[1], c[2]))
 }
 
+/// The side of the Colors tab's hue and chroma wheel.
+const HUE_WHEEL_SIZE: f32 = 180.0;
+
 pub enum Edit {
     None,
     Changed(String),
@@ -692,6 +695,24 @@ impl SettingsWindow {
                     }
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    // The hue and chroma wheel sits at the right of the ANSI wells (it takes no
+                    // room from them); a drag writes the key as a color well does.
+                    if colors {
+                        let size = HUE_WHEEL_SIZE.min(ui.available_width() / 2.0);
+                        let top_left = egui::pos2(ui.max_rect().right() - size, ui.cursor().top());
+                        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(top_left, egui::vec2(size, size))));
+                        let id = egui::Id::new("hue_wheel_drag");
+                        let mut drag = child.data(|d| d.get_temp::<Option<(String, (f32, f32), (f32, f32))>>(id)).flatten();
+                        let points: Vec<(String, crate::palette::Rgb)> = crate::hue_wheel_ui::KEYS.iter().map(|k| ((*k).to_string(), profile.color_for(k, dark))).collect();
+                        let moved = crate::hue_wheel_ui::wheel(&mut child, &points, &mut drag);
+                        child.data_mut(|d| d.insert_temp(id, drag));
+                        if let Some((key, c)) = moved {
+                            if let Some(s) = schema::find(&key) {
+                                profile.set(&edit_key(profile, s, dark), value_of_rgb([c.r, c.g, c.b]));
+                                edit = Edit::Changed(selected.clone());
+                            }
+                        }
+                    }
                     for (section, list) in sections(schema::TABS[tab]) {
                         if !section.is_empty() && section != "Key Mappings" {
                             ui.add_space(8.0);
