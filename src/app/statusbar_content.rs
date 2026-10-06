@@ -339,10 +339,13 @@ pub(super) fn local_names() -> Vec<String> {
     crate::host_identity::local_names(&crate::host_identity::fakes().0, computer, dns)
 }
 
-/// `session.isLocalhost`: a session with no reported host is on this computer (iTerm2
-/// starts every session with the local host).
-pub(super) fn is_localhost(host: Option<&str>) -> bool {
-    host.is_none_or(|h| sbt::is_local_host(h, &local_names()))
+/// The one answer to "is this session on this computer" (`VT100RemoteHost.isLocalhost`, the
+/// locality iTerm2 freezes at the report): the machine token decides when it is known (a WSL or
+/// container script that sends `1:` is Remote whatever its host name says), else the host name,
+/// and a session with no reported host is on this computer (iTerm2 starts every session with
+/// the local host). Callers that gate an open or a run still ask `remote_text` first (P7).
+pub(super) fn is_this_machine(host: Option<&str>, token: Option<&str>) -> bool {
+    crate::host_identity::is_local_session(host, token, &local_names(), crate::host_identity::current_ours().as_deref())
 }
 
 /// The local time, broken down.
@@ -453,7 +456,7 @@ impl App {
             // `VAR:169-202`: the replacement alone on this computer, else the host's
             // variants. The local host name stands in before shell integration reports one.
             Kind::HostName => {
-                let local = is_localhost(reported_host.as_deref());
+                let local = is_this_machine(reported_host.as_deref(), shell.and_then(|s| s.machine_id.as_deref()));
                 let host = reported_host.unwrap_or_else(super::aps_ui::local_host);
                 let replacement = knob_str(c, kind, ABBREVIATE_LOCALHOST_KEY).unwrap_or_default();
                 if !replacement.is_empty() && local { Content::text(vec![replacement]) } else { Content::text(sbt::host_variants(&host)) }
@@ -962,6 +965,42 @@ mod above {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R3: iTerm2 has one answer to "is this session on this computer" (the token-aware frozen
+    /// locality). No production code outside the one function reads a host name alone.
+    #[test]
+    fn one_token_aware_is_this_machine() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        assert!(files.len() > 100);
+        // (needle, files allowed to hold it: the definition, the pure matchers under it, and the screen policy feed that is_local_session reads with the token)
+        let rules: [(&str, &[&str]); 5] = [
+            ("is_localhost(", &[]),
+            ("host_is_this_machine(", &[]),
+            ("shell_is_local(", &[]),
+            ("is_local_host(", &["statusbar_text.rs", "statusbar_content.rs"]),
+            ("local_names(", &["host_identity.rs", "statusbar_content.rs", "host_offers_ui.rs"]),
+        ];
+        for f in files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            let src = std::fs::read_to_string(&f).unwrap();
+            let code = src.split("\n#[cfg(test)]").next().unwrap();
+            for (needle, allowed) in rules {
+                assert!(allowed.contains(&name.as_str()) || !code.contains(needle), "{name} uses {needle}: route it through is_this_machine");
+            }
+        }
+        assert!(include_str!("statusbar_content.rs").contains("fn is_this_machine("));
+    }
 
     /// `JOB:109-149` on the chain the job watcher really produces (`proctree`): the job's
     /// own name, its parents, then the shell; the shell alone at the prompt; nothing before

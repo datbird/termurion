@@ -14,7 +14,7 @@
 //! `iTermStatusBarGitComponent.m`, `GP` = `iTermGitPoller.m`, `GPW` = `iTermGitPollWorker.m`,
 //! `GSM` = `iTermGitStringMaker.m`).
 
-use super::statusbar_content::{Content, MenuAt, is_localhost, shown_path};
+use super::statusbar_content::{Content, MenuAt, is_this_machine, shown_path};
 use super::statusbar_ui::{Click, StatusMenu};
 use super::*;
 use crate::broadcast::Write;
@@ -499,7 +499,7 @@ impl App {
             let Some(p) = self.panes.get(&id) else { continue };
             let shell = &p.own().shell;
             let last_command = shell.history.last().map(|c| c.command.clone());
-            let local = is_localhost(shell.host.as_deref());
+            let local = is_this_machine(shell.host.as_deref(), shell.machine_id.as_deref());
             let enabled = local || gs::remote_state(&shell.vars).is_some();
             let dir = self.git_directory(id);
             let bar_shown = on_screen.contains(&id);
@@ -580,7 +580,7 @@ impl App {
     /// the poller, a remote host's from its `user.git*` variables.
     pub(super) fn git_content(&self, pane: PaneId, _c: &Component) -> Content {
         let shell = self.panes.get(&pane).map(|p| &p.own().shell);
-        let local = is_localhost(shell.and_then(|s| s.host.as_deref()));
+        let local = shell.is_none_or(|s| is_this_machine(s.host.as_deref(), s.machine_id.as_deref()));
         let gp = self.git.get(&pane);
         let enabled = gp.is_some_and(|g| g.poller.enabled);
         let state = if local { gp.and_then(|g| g.poller.state.clone()) } else { shell.and_then(|s| gs::remote_state(&s.vars)) };
@@ -605,7 +605,7 @@ impl App {
 
     /// The pane's session is on this computer.
     fn git_local(&self, pane: PaneId) -> bool {
-        is_localhost(self.panes.get(&pane).and_then(|p| p.own().shell.host.as_deref()))
+        self.panes.get(&pane).is_none_or(|p| is_this_machine(p.own().shell.host.as_deref(), p.own().shell.machine_id.as_deref()))
     }
 
     /// What the component shows the state of: the poller's here, the variables' remotely.

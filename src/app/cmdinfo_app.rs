@@ -48,7 +48,7 @@ impl App {
         let m = p.screen.command_mark(mark)?;
         let (code, end, running) = self.command_state(pane, mark)?;
         let (output_bytes, output_lines) = cmdinfo::output_stats(p.screen.output_text(mark).as_deref());
-        let local = !self.remote_text(pane) && m.host.as_deref().is_none_or(|h| self.host_is_this_machine(h));
+        let local = !self.remote_text(pane) && super::statusbar_content::is_this_machine(m.host.as_deref(), p.own().shell.machine_id.as_deref().filter(|_| p.own().shell.host == m.host));
         let info = Info {
             mark,
             command: m.command.clone(),
@@ -157,7 +157,7 @@ impl App {
     /// syntax: the union refusal holds for every shell (`pathnav::quote_for`).
     pub(super) fn composer_shell(&self, pane: PaneId) -> Option<String> {
         let p = self.panes.get(&pane)?;
-        let remote = self.remote_text(pane) || p.own().shell.host.as_deref().is_some_and(|h| !self.host_is_this_machine(h));
+        let remote = self.remote_text(pane) || !super::statusbar_content::is_this_machine(p.own().shell.host.as_deref(), p.own().shell.machine_id.as_deref());
         let launch = crate::pathnav::launch_program(&p.command);
         crate::ai_terminal::detected_shell(p.own().shell.shell.as_deref(), launch, !remote).or_else(|| remote.then(|| "sh".to_string()))
     }

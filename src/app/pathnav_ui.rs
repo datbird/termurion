@@ -79,7 +79,7 @@ impl App {
     /// archived or replayed one has no shell to `cd`; B4).
     fn navigator_pane_ok(&self, pane: PaneId) -> bool {
         let Some(p) = self.panes.get(&pane) else { return false };
-        let local = !self.remote_text(pane) && self.shell_is_local(&p.own().shell);
+        let local = !self.remote_text(pane) && super::statusbar_content::is_this_machine(p.own().shell.host.as_deref(), p.own().shell.machine_id.as_deref());
         local && !p.archived && !p.ended && p.exited.is_none() && p.replay.is_none() && self.profile_of(pane).is_some_and(|prof| prof.bool(KEY))
     }
 
@@ -330,7 +330,7 @@ mod tests {
         assert!(sniff.contains("thread::Builder") && sniff.contains("crate::pathnav::sniff("));
         assert!(sniff.find("navigator_pane_ok").unwrap() < sniff.find("thread::Builder").unwrap());
         let ok = &CODE[CODE.find("fn navigator_pane_ok").unwrap()..CODE.find("fn path_mark_index").unwrap()];
-        for needle in ["remote_text(", "shell_is_local(", "p.archived", "p.ended", "p.exited"] {
+        for needle in ["remote_text(", "is_this_machine(", "p.archived", "p.ended", "p.exited"] {
             assert!(ok.contains(needle), "{needle}");
         }
         let marks = include_str!("../marks.rs");

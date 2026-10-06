@@ -351,7 +351,7 @@ impl App {
             v.session.insert("hostname", h.clone());
         }
         // Whether the session is on this computer (no reported host yet counts).
-        let local = super::statusbar_content::is_localhost(s.shell.host.as_deref());
+        let local = super::statusbar_content::is_this_machine(s.shell.host.as_deref(), s.shell.machine_id.as_deref());
         v.session.insert("isLocalhost", if local { "1" } else { "0" }.to_string());
         // Ruling I-1: the one detector of the session's shell. The launch program is the
         // shell's own process once the window has seen it, else the pane's command line.
