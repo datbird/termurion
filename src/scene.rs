@@ -4357,9 +4357,10 @@ pub fn bell_indicator(frame: &mut Frame, pane: Rect, dark_background: bool, alph
     // The glyph fades by moving toward the fill (text has no alpha).
     let color = blend(fill, glyph, alpha);
     let span = Span { text: BELL_GLYPH.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-    // The icon is one cell wide; scaled so its cell is 22 points tall, then centered in the box.
+    // Scaled so its line is 22 points tall; the icon font's glyph is its em wide (the line over
+    // 1.2, as the key glyph is sized), not one cell, and it is centered by that width.
     let glyph_scale = if cell.1 > 0.0 { 22.0 * scale / cell.1 } else { 1.0 };
-    let (gw, gh) = (cell.0 * glyph_scale, cell.1 * glyph_scale);
+    let (gw, gh) = (cell.1 * glyph_scale / 1.2, cell.1 * glyph_scale);
     frame.rows.push(TextRow { x: r.x + (side - gw) / 2.0, y: r.y + (side - gh) / 2.0, spans: vec![span], clip: r, scale: glyph_scale, face: crate::render::DEFAULT_FACE });
 }
 
@@ -8900,7 +8901,8 @@ mod drawn_overlay_tests {
         assert!(row.spans[0].icon && row.spans[0].text == "\u{EA8F}");
         assert!(row.x >= 87.0 && row.x < 113.0 && row.y >= 37.0 && row.y < 63.0, "the glyph sits on the box");
         // Centered, about 22 points tall (`iTermIndicatorsHelper.m:211`): the glyph cell's center is the box's center.
-        let center = |row: &TextRow, cell: (f32, f32), at: (f32, f32)| ((row.x + cell.0 * row.scale / 2.0 - at.0).abs(), (row.y + cell.1 * row.scale / 2.0 - at.1).abs());
+        // The icon font's glyph is its em wide, the line height over 1.2 (see the key glyph), not one cell.
+        let center = |row: &TextRow, cell: (f32, f32), at: (f32, f32)| ((row.x + cell.1 * row.scale / 1.2 / 2.0 - at.0).abs(), (row.y + cell.1 * row.scale / 2.0 - at.1).abs());
         let (dx, dy) = center(row, (9.0, 18.0), (100.0, 50.0));
         assert!(dx <= 1.0 && dy <= 1.0, "glyph centered in the box at 1x: off by ({dx}, {dy})");
         assert!((18.0 * row.scale - 22.0).abs() < 0.5, "the glyph is 22 points tall, not the terminal font's size");
