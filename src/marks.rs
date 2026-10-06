@@ -1015,6 +1015,13 @@ impl Screen {
         Some(lines[..end].join("\n"))
     }
 
+    /// The fold sitting on the row where command `id`'s output begins: the row `fold` puts its
+    /// summary on and the only one the Unfold button looks at (iTerm2 reads the button's line).
+    pub fn command_fold(&self, id: u32) -> Option<u32> {
+        let (first, _) = self.output_range_of(id)?;
+        self.fold_at(first.line.0)
+    }
+
     /// The grid lines of command `id`'s region: its prompt's line through the line before the next
     /// prompt mark, else the last screen line (`PTYSession.m` command region). None when the mark
     /// is gone or is not a prompt.
@@ -1924,6 +1931,26 @@ mod tests {
         assert!(fold.is_some(), "the Unfold button finds the fold in the region");
         assert!(s.unfold(fold.unwrap()));
         assert!((first..=s.command_grid_lines(id).unwrap().1).all(|l| s.fold_at(l).is_none()));
+    }
+
+    /// Final wave minor 12: a fold elsewhere in the region is not the command's own.
+    #[test]
+    fn unfold_looks_only_at_the_row_the_fold_summary_is_on() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\nl3\r\nl4\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two");
+        let id = s.marks_in_order().iter().map(|(_, m)| m.id).next().unwrap();
+        let (a, b) = s.output_range_of(id).unwrap();
+        assert_eq!(s.command_fold(id), None, "nothing folded");
+        assert!(s.fold(a.line.0 + 2, b.line.0).is_some(), "the tail of the output");
+        assert_eq!(s.command_fold(id), None, "a fold below the output's first row is not asked about");
+        let mut t = Screen::new(40, 12);
+        t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\nl3\r\n\x1b]133;D;0\x07");
+        t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two");
+        let id = t.marks_in_order().iter().map(|(_, m)| m.id).next().unwrap();
+        let (a, b) = t.output_range_of(id).unwrap();
+        let fold = t.fold(a.line.0, b.line.0).unwrap();
+        assert_eq!(t.command_fold(id), Some(fold), "the fold on the output's first row is found");
     }
 
     #[test]

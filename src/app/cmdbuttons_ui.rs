@@ -17,8 +17,7 @@ impl App {
         if p.screen.fold_count() == 0 {
             return None;
         }
-        let (first, last) = p.screen.command_grid_lines(mark)?;
-        (first..=last).find_map(|l| p.screen.fold_at(l))
+        p.screen.command_fold(mark)
     }
 
     /// Draws the buttons for the pane's selected command and answers their hit rectangles.
