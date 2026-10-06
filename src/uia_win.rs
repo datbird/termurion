@@ -31,7 +31,7 @@ use windows::Win32::System::Ole::{SafeArrayCreateVector, SafeArrayDestroy, SafeA
 use windows::Win32::System::Variant::{VARENUM, VARIANT, VT_I4, VT_R8, VT_UNKNOWN};
 use windows::Win32::UI::Accessibility::*;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows_sys::Win32::UI::WindowsAndMessaging::WM_GETOBJECT;
+use windows_sys::Win32::UI::WindowsAndMessaging::{WM_DESTROY, WM_GETOBJECT, WM_NCDESTROY};
 
 use crate::access::{self, Unit};
 
@@ -302,6 +302,8 @@ struct Shared {
     /// The window is closed: every object a client still holds answers
     /// UIA_E_ELEMENTNOTAVAILABLE and the snapshot is gone.
     closed: AtomicBool,
+    /// The subclass is already removed (by WM_NCDESTROY): `Host::drop` must not touch the handle.
+    unhooked: AtomicBool,
 }
 
 /// The vtable of `RangeProvider`'s interface, recorded when the first range is made: a range a
@@ -882,6 +884,18 @@ unsafe extern "system" fn proc(hwnd: windows_sys::Win32::Foundation::HWND, msg: 
             return v;
         }
     }
+    if msg == WM_DESTROY || msg == WM_NCDESTROY {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: data is the Arc<Shared> the Host keeps alive for as long as this subclass is installed.
+            let shared = unsafe { &*(data as *const Shared) };
+            // The window is going: nothing a client holds may outlive it, whoever drops the Host when.
+            shared.close();
+            if msg == WM_NCDESTROY && !shared.unhooked.swap(true, Ordering::SeqCst) {
+                // SAFETY: removing this subclass from inside its own proc is the documented way.
+                unsafe { RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID) };
+            }
+        }));
+    }
     // SAFETY: forwarding to the next handler.
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
@@ -890,7 +904,7 @@ impl Host {
     /// Subclasses `hwnd`: `WM_GETOBJECT` for `UiaRootObjectId` returns the root provider.
     /// `send` is called on UI Automation's threads and must only post.
     pub fn install(hwnd: isize, send: Box<dyn Fn(Request) + Send + Sync>) -> std::result::Result<Host, String> {
-        let shared = Arc::new(Shared { hwnd, snap: Mutex::new(Arc::default()), send, root: Mutex::new(None), panes: Mutex::new(HashMap::new()), closed: AtomicBool::new(false) });
+        let shared = Arc::new(Shared { hwnd, snap: Mutex::new(Arc::default()), send, root: Mutex::new(None), panes: Mutex::new(HashMap::new()), closed: AtomicBool::new(false), unhooked: AtomicBool::new(false) });
         let root: IRawElementProviderSimple = RootProvider { shared: shared.clone() }.into();
         *lock(&shared.root) = Some(root);
         // SAFETY: hwnd is a live window of this thread; the refdata outlives the subclass (Drop removes it first).
@@ -978,8 +992,11 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         self.shared.close();
-        // SAFETY: removing the subclass this host installed.
-        unsafe { RemoveWindowSubclass(self.shared.hwnd as _, Some(proc), SUBCLASS_ID) };
+        // A destroyed window removed it already; its handle may belong to another window by now.
+        if !self.shared.unhooked.swap(true, Ordering::SeqCst) {
+            // SAFETY: removing the subclass this host installed.
+            unsafe { RemoveWindowSubclass(self.shared.hwnd as _, Some(proc), SUBCLASS_ID) };
+        }
     }
 }
 
@@ -1370,6 +1387,28 @@ mod tests {
                 assert_eq!(*e, Some(UIA_E_ELEMENTNOTAVAILABLE), "call {i} on a closed window");
             }
         }
+    }
+
+    /// The window's own destruction disconnects the providers and removes the subclass inside
+    /// the subclass proc, whatever order the owner drops the Host in; the Host dropped after
+    /// the window touches nothing.
+    #[test]
+    fn destroying_the_window_disconnects_in_the_subclass() {
+        let w = Win::new();
+        let (h, _s) = host(&w, win_snap(vec![pane(7, &["secret"])]));
+        let root = h.root_provider();
+        let tp = text_provider(&root);
+        // SAFETY: plain COM calls; the window is this test's own.
+        unsafe {
+            let doc = tp.DocumentRange().unwrap();
+            assert!(doc.GetText(-1).is_ok());
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(w.0 as _);
+            // Before the Host is dropped: already closed by WM_DESTROY.
+            assert_eq!(doc.GetText(-1).err().map(|e| e.code().0 as u32), Some(UIA_E_ELEMENTNOTAVAILABLE));
+            assert_eq!(root.GetPropertyValue(UIA_NamePropertyId).err().map(|e| e.code().0 as u32), Some(UIA_E_ELEMENTNOTAVAILABLE));
+        }
+        assert!(h.shared.unhooked.load(Ordering::SeqCst), "the subclass removed itself");
+        drop(h);
     }
 
     fn first_pane_err(root: &IRawElementProviderSimple) -> Option<u32> {
