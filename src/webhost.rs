@@ -350,14 +350,12 @@ pub const MAX_QUEUED_BYTES: usize = 1024 * 1024;
 pub const NEW_WINDOWS_PER_SECOND: usize = 4;
 pub const MAX_PENDING_NEW_WINDOWS: usize = 8;
 
-fn bidi_format(c: char) -> bool {
-    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-}
-
-/// A page's title made safe to show: control characters become a space, bidi format characters
-/// are removed, at most 1024 characters.
+/// A page's title made safe to show: control characters become a space, then THE display
+/// sanitizer (`inert_files::display_text`, the 13w ruling) removes every other hidden character
+/// (bidi, zero width, separators); at most 1024 characters.
 pub fn clean_title(t: &str) -> String {
-    t.chars().filter(|c| !bidi_format(*c)).map(|c| if c.is_control() { ' ' } else { c }).take(MAX_TITLE).collect()
+    let spaced: String = t.chars().take(MAX_TITLE.saturating_mul(4)).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    crate::inert_files::display_text(&spaced, MAX_TITLE, false)
 }
 
 /// A URL a page gave, cut to 8192 bytes at a character boundary; the flag says it was cut (a cut

@@ -56,7 +56,7 @@ pub enum Act {
 /// "Open in <name>", else "Open in Default Browser" (`WVW:53`, `:98`). The name comes from the
 /// registry: shown without control or bidi characters, at most 64 characters.
 pub fn open_in_title(browser: Option<&str>) -> String {
-    let name: String = browser.map(webhost::clean_title).unwrap_or_default().trim().chars().take(64).collect();
+    let name: String = browser.map(|b| crate::inert_files::display_text(b, 64, false)).unwrap_or_default().trim().to_string();
     if name.is_empty() { "Open in Default Browser".to_string() } else { format!("Open in {name}") }
 }
 
@@ -69,7 +69,7 @@ pub fn quick_look_scheme_ok(url: &str) -> bool {
 /// no white space, control or bidi characters. None otherwise.
 pub fn quick_look_target(text: &str) -> Option<String> {
     let t = text.trim();
-    let clean = !t.is_empty() && webhost::clean_title(t) == t && !t.chars().any(char::is_whitespace);
+    let clean = !t.is_empty() && crate::inert_files::display_text(t, usize::MAX, false) == t && !t.chars().any(char::is_whitespace);
     (clean && quick_look_scheme_ok(t) && crate::toolbelt::url_host(t).is_some()).then(|| t.to_string())
 }
 

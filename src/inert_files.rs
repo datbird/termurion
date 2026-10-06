@@ -47,11 +47,15 @@ pub fn is_device_name(name: &str) -> bool {
 pub const ZONE_MARK: &str = "[ZoneTransfer]\r\nZoneId=3\r\n";
 
 /// A character no shown name keeps: control, bidirectional formatting, line and paragraph
-/// separator and zero-width characters (one place, so every label drops the same set).
+/// separator and zero-width characters (one place, so every label drops the same set). The 13w x
+/// 13x merge folded the browser's set in: the soft hyphen, the prepended concatenation marks
+/// (U+0600-0605, U+06DD, U+070F), every U+2060-206F format character, the interlinear
+/// annotation marks, the musical formatting controls and the tag characters.
 pub fn is_hidden(c: char) -> bool {
     let bidi = matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    let unseen = matches!(c, '\u{2028}' | '\u{2029}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{2064}' | '\u{feff}');
-    c.is_control() || bidi || unseen
+    let unseen = matches!(c, '\u{2028}' | '\u{2029}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{206f}' | '\u{feff}');
+    let format = matches!(c, '\u{ad}' | '\u{600}'..='\u{605}' | '\u{6dd}' | '\u{70f}' | '\u{fff9}'..='\u{fffb}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0000}'..='\u{e007f}');
+    c.is_control() || bidi || unseen || format
 }
 
 /// THE sanitizer for text a program supplied and Tandem shows (badge text, alert text, host

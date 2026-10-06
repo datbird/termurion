@@ -101,8 +101,7 @@ pub fn component_hidden(tag: u32, browser: bool, selected: u32) -> bool {
 /// A page's title as a session name: another party's text, so control, bidirectional and
 /// zero-width characters go and the length is bounded.
 pub fn shown_title(title: &str) -> String {
-    let clean: Vec<char> = crate::inert_files::clean_name(title).chars().collect();
-    if clean.len() <= TITLE_CHARS { clean.into_iter().collect() } else { clean[..TITLE_CHARS].iter().chain(['\u{2026}'].iter()).collect() }
+    display_title_in(title, TITLE_CHARS)
 }
 
 /// A browser profile's window in cells: its points, one point to the cell (`TWSH:170-176`).
@@ -272,7 +271,7 @@ fn is_valid_domain_or_ip(t: &str) -> bool {
 /// `MAX_URL`; anything else is not a URL.
 pub fn normalize_url(text: &str) -> Option<String> {
     let t = text.trim();
-    if t.is_empty() || t.len() > MAX_URL || t.chars().any(|c| c.is_control() || is_invisible(c)) {
+    if t.is_empty() || t.len() > MAX_URL || t.chars().any(crate::inert_files::is_hidden) {
         return None;
     }
     if has_valid_scheme(t) {
@@ -503,15 +502,10 @@ pub fn history_menu(items: &[(String, String)]) -> Vec<String> {
 
 // --- What the person sees of a page's address ---
 
-/// A character that draws nothing or reorders what is around it: controls, line and paragraph
-/// separators, bidirectional controls and marks, zero width and joining controls, tags.
-fn is_invisible(c: char) -> bool {
-    c.is_control()
-        || matches!(c, '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E007F}')
-}
-
+/// Another party's text through THE display sanitizer (`inert_files::display_text`, the 13w
+/// ruling), at most `limit` characters and an ellipsis past them.
 fn display_title_in(t: &str, limit: usize) -> String {
-    let clean: Vec<char> = t.chars().filter(|c| !is_invisible(*c)).collect();
+    let clean: Vec<char> = crate::inert_files::display_text(t, limit.saturating_add(1), false).chars().collect();
     if clean.len() <= limit { clean.into_iter().collect() } else { clean[..limit].iter().chain(['\u{2026}'].iter()).collect() }
 }
 
@@ -590,7 +584,7 @@ fn ascii_host(host: &str) -> String {
 /// character, the real host (punycode for a non-ASCII one), the user information in front of it
 /// when the URL has some (never hidden), at most `MAX_URL` characters.
 pub fn display_url(url: &str) -> String {
-    let clean: String = url.chars().filter(|c| !is_invisible(*c)).collect();
+    let clean = crate::inert_files::display_text(url, usize::MAX, false);
     let shown = match clean.split_once("://") {
         Some((scheme, rest)) if !scheme.is_empty() && !scheme.contains('/') => {
             let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -1132,6 +1126,35 @@ mod tests {
         assert_eq!(saved_url(&format!("https://a.test/{}", "x".repeat(MAX_URL))), None);
         assert_eq!(saved_url(""), None);
         assert_eq!(saved_url("about:blank").as_deref(), Some("about:blank"));
+    }
+
+    /// The 13w merge (Important 2 ruling): every text a page or program supplies that the browser
+    /// shows (titles, the URL bar, suggestions, history items, the popover's Open in name, a
+    /// page title cleaned before posting) goes through `inert_files::display_text`, so the sets
+    /// cannot drift; the browser's wider set was folded into `is_hidden`.
+    #[test]
+    fn browser_display_text_uses_the_one_sanitizer() {
+        // The browser's former extras are hidden everywhere now.
+        for c in ['\u{ad}', '\u{600}', '\u{6dd}', '\u{70f}', '\u{206a}', '\u{fff9}', '\u{1d173}', '\u{e0041}'] {
+            assert!(crate::inert_files::is_hidden(c), "{c:?}");
+            assert_eq!(crate::inert_files::display_text(&format!("a{c}b"), 10, false), "ab");
+        }
+        assert_eq!(display_title("a\u{ad}b\u{e0041}c"), "abc");
+        assert_eq!(shown_title("x\u{2029}y\u{180e}z"), "xyz");
+        // Zero width in a posted title and in a registry name: removed (RED before the merge).
+        assert_eq!(crate::webhost::clean_title("a\u{200b}b\u{2060}c\td"), "abc d");
+        assert_eq!(crate::web_popover::open_in_title(Some("Br\u{200b}owser")), "Open in Browser");
+        assert_eq!(crate::web_popover::quick_look_target("https://a.test/\u{2060}x"), None);
+        // No own removal set is left in the browser's display code.
+        for (f, src) in [("browser.rs", include_str!("browser.rs")), ("webhost.rs", include_str!("webhost.rs")), ("web_popover.rs", include_str!("web_popover.rs")), ("app/browser_app.rs", include_str!("app/browser_app.rs"))] {
+            let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+            for own in ["fn is_invisible", "fn bidi_format", "\\u{202e}", "\\u{202E}", "\\u{200b}", "\\u{200B}"] {
+                assert!(!live.contains(own), "{f}: an own display set ({own}); use inert_files::display_text");
+            }
+        }
+        for f in [include_str!("browser.rs"), include_str!("webhost.rs"), include_str!("web_popover.rs"), include_str!("app/browser_app.rs")] {
+            assert!(f.contains("inert_files::display_text("));
+        }
     }
 
     #[test]

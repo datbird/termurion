@@ -69,9 +69,10 @@ fn text_w(t: &str, cw: f32) -> f32 {
     unicode_width::UnicodeWidthStr::width(t) as f32 * cw
 }
 
-/// One line of printable characters from pasted text.
+/// One line of printable characters from pasted text (THE display sanitizer: controls, bidi and
+/// zero width characters go).
 fn one_line(t: &str) -> String {
-    t.chars().filter(|c| !c.is_control()).collect()
+    crate::inert_files::display_text(t, usize::MAX, false)
 }
 
 /// The favicon's pixels, or None (a page's file is untrusted: decoded by `image`, bounded).
