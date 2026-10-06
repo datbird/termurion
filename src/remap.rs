@@ -77,9 +77,10 @@ pub fn targets(tag: i64) -> Vec<u16> {
 /// Win key remapped to something else is not a Win for Tandem's menu chords (it reaches the window
 /// and is read as its target, `APP:252-285`), so only a Win side still acting as Win counts.
 pub fn win_chord_held(tags: &Tags, global: bool, lwin: bool, rwin: bool) -> bool {
-    // A side counts while it still acts as the Win key (its tag is the identity one).
-    let acts = |held: bool, tag: i64, own: i64| held && (global || tag == own);
-    acts(lwin, tags.left_command, 7) || acts(rwin, tags.right_command, 8)
+    // A side counts while it still acts as a Win key: its tag targets Left or Right Win (the
+    // identity, either Command, or the other Win side).
+    let acts = |held: bool, tag: i64| held && (global || targets(tag).iter().any(|v| *v == LWIN || *v == RWIN));
+    acts(lwin, tags.left_command) || acts(rwin, tags.right_command)
 }
 
 /// What Tandem itself reads when Remap modifiers globally is off (`iTermApplication.m:252-285`):
@@ -339,6 +340,11 @@ mod tests {
         // Nothing remapped: unchanged either way.
         assert!(win_chord_held(&identity, false, true, false));
         assert!(!win_chord_held(&identity, false, false, false));
+        // Either Command (tag 4) and a side swapped to the other Win still act as Win.
+        assert!(win_chord_held(&Tags { left_command: 4, ..identity }, false, true, false));
+        assert!(win_chord_held(&Tags { left_command: 8, ..identity }, false, true, false));
+        assert!(win_chord_held(&Tags { right_command: 7, ..identity }, false, false, true));
+        assert!(win_chord_held(&Tags { right_command: 4, ..identity }, false, false, true));
     }
 
     #[test]
