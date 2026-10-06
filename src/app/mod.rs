@@ -4060,11 +4060,29 @@ impl App {
     fn save_now(&mut self) {
         self.save_due = None;
         self.tools_changed();
-        match self.store.save() {
+        match self.save_store() {
             Ok(()) => self.banners.clear("save"),
             Err(e) => self.banners.set("save", format!("Could not save settings: {e}")),
         }
         self.prefs_changed();
+    }
+
+    /// The one save of the profile store: a color preview still live in either settings window is
+    /// put back first (the panes show the profile again), so nothing writes previewed colors (B2).
+    pub(super) fn save_store(&mut self) -> Result<(), String> {
+        let (settings, profiles_win) = (&mut self.settings, &mut self.profiles_win);
+        let (restored, saved) = crate::settings_ui::save_restored(&mut self.store, &mut |store| {
+            let mut any = false;
+            for w in [settings.as_mut(), profiles_win.as_mut()].into_iter().flatten() {
+                any |= w.restore_preview(store);
+            }
+            any
+        });
+        if restored {
+            self.refresh_panes();
+            self.redraw();
+        }
+        saved
     }
 
     /// Takes the renderer's fonts from the default profile. A font that is not

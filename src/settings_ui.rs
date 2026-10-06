@@ -69,11 +69,19 @@ pub enum Edit {
 /// or a preview, which only redraws). Any other edit first puts a stale preview back through
 /// `restore`, so the previewed colors are never in the store when it is saved.
 pub fn gate_edit(edit: &Edit, restore: &mut dyn FnMut()) -> bool {
-    if matches!(edit, Edit::None | Edit::Preview) {
+    if !edit_arms_save(edit) {
         return false;
     }
     restore();
     true
+}
+
+/// The one save of the profile store (`App::save_store`): a live color preview is put back first
+/// (through `restore`, which says whether a profile changed), so no save path writes previewed
+/// colors, whether or not an edit led to it. Whether the colors were put back, and the save's result.
+pub fn save_restored(store: &mut Store, restore: &mut dyn FnMut(&mut Store) -> bool) -> (bool, Result<(), String>) {
+    let restored = restore(store);
+    (restored, store.save())
 }
 
 /// Whether an edit starts the pause before the profiles are saved: a preview never does.
@@ -2226,5 +2234,32 @@ mod tests {
         // Another edit (a tab away, then any change) restores before it is applied.
         assert!(run(&Edit::Changed("g".into()), &mut store));
         assert_eq!(store.get(&guid).unwrap().values, before);
+    }
+
+    /// B2: every save writes the profile without a live preview, whatever led to it (focus loss,
+    /// a trigger, a key action, a direct save), not only the saves an edit starts.
+    #[test]
+    fn a_save_with_a_live_preview_writes_the_original_colors() {
+        let path = std::env::temp_dir().join(format!("tandem-save-{}.toml", std::process::id()));
+        let mut store = Store::fresh(&path);
+        let guid = store.default_guid.clone();
+        let before = store.get(&guid).unwrap().values.clone();
+        let mut st = crate::settings_presets::State::new(false);
+        let p = store.get_mut(&guid).unwrap();
+        st.preview = Some(crate::settings_presets::Preview::begin(p, &guid, false, "Solarized"));
+        crate::settings_presets::load(&crate::color_presets::built_in()[0].1, p, false, false, false);
+        assert_ne!(store.get(&guid).unwrap().values, before);
+        let (restored, saved) = save_restored(&mut store, &mut |s| st.restore(s));
+        assert!(restored && saved.is_ok());
+        assert!(st.preview.is_none());
+        let on_disk = Store::load(&path).unwrap();
+        assert_eq!(on_disk.get(&guid).unwrap().color_for("Foreground Color", true), store.get(&guid).unwrap().color_for("Foreground Color", true));
+        assert_eq!(store.get(&guid).unwrap().values, before, "the store holds the original colors again");
+        assert_eq!(on_disk.file_profiles(), store.file_profiles(), "and so does the file");
+        let _ = std::fs::remove_file(&path);
+        // No save path of the app writes the store around `save_store`.
+        for (name, src) in [("mod.rs", include_str!("app/mod.rs")), ("emu_ui.rs", include_str!("app/emu_ui.rs")), ("hotkey_ui.rs", include_str!("app/hotkey_ui.rs")), ("tmux_tabs_ui.rs", include_str!("app/tmux_tabs_ui.rs"))] {
+            assert!(!src.contains("self.store.save()"), "{name} saves the store around save_store");
+        }
     }
 }
