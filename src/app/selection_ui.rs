@@ -225,6 +225,8 @@ pub(super) struct DragOut {
     pub pane: PaneId,
     pub from: (f32, f32),
     pub win: bool,
+    /// The press was a plain single click, so its release may select a command (`TV:7870-7970`).
+    pub command: bool,
 }
 
 /// What a plain left press does.
@@ -256,14 +258,180 @@ pub(super) fn release_clears_selection(kind: PressKind, dragged: bool) -> bool {
     kind == PressKind::MaybeDrag && !dragged
 }
 
+/// When a single click on a command selects it (`PTYTextView.m:7940-7962`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ClickPlan {
+    /// At once.
+    Now,
+    /// Never: the click removed a selection (`PTYTextView.m:7959`).
+    Nothing,
+    /// After the double-click time, unless a second click comes first.
+    After(Duration),
+}
+
+/// What a single click that came up on a command does: with `UseDoubleClickDelayForCommandSelection`
+/// a click on a command that is not the selected one waits the double-click time; else it selects
+/// at once unless its press removed a selection.
+pub(super) fn command_click_plan(delay_key: bool, same_as_selected: bool, removed_selection: bool) -> ClickPlan {
+    if delay_key && !same_as_selected {
+        ClickPlan::After(Duration::from_millis(super::clippings_ui::double_click_ms() as u64))
+    } else if removed_selection {
+        ClickPlan::Nothing
+    } else {
+        ClickPlan::Now
+    }
+}
+
+/// The first-selection notice on show: the pane, where the click was (pixels) and the rectangles
+/// the last frame drew for it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CommandInfo {
+    pub pane: PaneId,
+    pub at: (f32, f32),
+    pub rect: Option<Rect>,
+    pub link: Option<Rect>,
+}
+
+/// The key that records the notice was shown (`NoSyncUserHasSelectedCommand`).
+const INFO_SHOWN_KEY: &str = "NoSyncUserHasSelectedCommand";
+
 impl App {
     /// The selected command's region in buffer rows, inclusive (S6, P15): what Find, Filter
     /// and Select All search inside and what 13r's buttons sit on. None with no command selected.
-    #[allow(dead_code)] // 13s Task 9 (command selection) is its first caller.
+    #[allow(dead_code)] // The pane's own `selected_region` is what the frame and Find read.
     pub(super) fn command_region(&mut self, id: PaneId) -> Option<(usize, usize)> {
-        let p = self.panes.get_mut(&id)?;
-        let mark = p.selected_command?;
-        p.screen.command_region(mark)
+        self.panes.get_mut(&id)?.selected_region()
+    }
+
+    /// The buffer row (counting from the oldest primary row) of the cell a click at `point` hit.
+    /// The alternate screen's rows map onto the primary screen's, as iTerm2's absolute lines do.
+    fn command_row(&self, id: PaneId, point: Point) -> Option<usize> {
+        let p = self.panes.get(&id)?;
+        let history = p.screen.term().primary_grid().history_size() as i32;
+        Some((history + point.line.0).max(0) as usize)
+    }
+
+    /// A single click came up with no drag and no other input taking it (`TV:7940-7962`): select
+    /// the command under it now, later or not at all. 13r's order holds: a path mark under the
+    /// click takes it first (`click_taker`), so the command is never selected by that click.
+    pub(super) fn click_after_release(&mut self, pane: PaneId, removed_selection: bool) {
+        let Some(rect) = self.pane_rect(pane) else { return };
+        let (x, y) = self.cursor;
+        let (col, row, _) = self.cell_at(pane, rect, x, y);
+        let point = self.grid_point(pane, col, row);
+        let path_mark = self.path_mark_index(pane, point).is_some();
+        if super::pathnav_ui::click_taker(false, false, false, path_mark) != super::pathnav_ui::Taker::CommandSelection {
+            return;
+        }
+        self.command_click = None;
+        let Some(buffer_row) = self.command_row(pane, point) else { return };
+        let Some(p) = self.panes.get(&pane) else { return };
+        let history = p.screen.term().primary_grid().history_size() as i32;
+        let same = p.screen.prompt_at_or_before(buffer_row as i32 - history) == p.selected_command;
+        match command_click_plan(self.globals.bool("UseDoubleClickDelayForCommandSelection"), same, removed_selection) {
+            ClickPlan::Now => self.select_command_at(pane, buffer_row, (x, y)),
+            ClickPlan::Nothing => {}
+            ClickPlan::After(wait) => self.command_click = Some((Instant::now() + wait, pane, buffer_row)),
+        }
+    }
+
+    /// The pending command click, when it is due (`about_to_wait`); None when none waits.
+    pub(super) fn command_click_tick(&mut self) -> Option<Instant> {
+        // The key turned off (Settings): no command stays selected (`textViewReloadSelectedCommand`).
+        if !self.globals.bool("ClickToSelectCommand") && self.panes.values().any(|p| p.selected_command.is_some()) {
+            for p in self.panes.values_mut() {
+                p.selected_command = None;
+            }
+            self.redraw();
+        }
+        let (due, pane, row) = self.command_click?;
+        if Instant::now() < due {
+            return Some(due);
+        }
+        self.command_click = None;
+        let at = self.cursor;
+        self.select_command_at(pane, row, at);
+        None
+    }
+
+    /// Selects the command whose prompt is at or before buffer row `row` of `id`'s pane, or
+    /// deselects it (`textViewSelectCommandRegionAtCoord:`, `PS:21613-21648`). `at` is where the
+    /// first-time notice appears.
+    pub(super) fn select_command_at(&mut self, id: PaneId, row: usize, at: (f32, f32)) {
+        let allowed = self.globals.bool("ClickToSelectCommand");
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        // A Filter or Zoom view has no marks; the pane's own screen is not the one shown.
+        if p.live.is_some() {
+            return;
+        }
+        let history = p.screen.term().primary_grid().history_size() as i32;
+        let clicked = p.screen.prompt_at_or_before(row as i32 - history);
+        let next = crate::cmdsel::toggle(clicked, p.selected_command, allowed);
+        if let Some(mark) = next {
+            let region = p.screen.command_region(mark);
+            let lines = p.screen.term().primary_grid().screen_lines();
+            let screen_rows = (history as usize, history as usize + lines.saturating_sub(1));
+            if region.is_none_or(|r| crate::cmdsel::refused(r, p.screen.alt_screen(), screen_rows)) {
+                return;
+            }
+        }
+        if p.selected_command == next {
+            return;
+        }
+        p.selected_command = next;
+        let first = next.is_some() && allowed && !self.globals.bool(INFO_SHOWN_KEY);
+        if first {
+            self.globals.set(INFO_SHOWN_KEY, toml::Value::Boolean(true));
+            self.save_globals();
+            self.command_info = Some(CommandInfo { pane: id, at, rect: None, link: None });
+        }
+        self.find_range_changed(id);
+        self.redraw();
+    }
+
+    /// "Click here to disable this feature.", and the Disable Command Selection menu item: the
+    /// key goes off and no pane keeps a selected command (P16).
+    pub(super) fn disable_command_selection(&mut self) {
+        self.globals.set("ClickToSelectCommand", toml::Value::Boolean(false));
+        self.save_globals();
+        for p in self.panes.values_mut() {
+            p.selected_command = None;
+        }
+        self.command_info = None;
+        self.redraw();
+    }
+
+    /// A press while the notice shows: the link turns the feature off; a press on the notice
+    /// itself is swallowed; any other press closes it and goes on. True when the press is taken.
+    pub(super) fn command_info_press(&mut self, button: MouseButton) -> bool {
+        let Some(info) = self.command_info else { return false };
+        let (x, y) = self.cursor;
+        if button == MouseButton::Left && info.link.is_some_and(|r| r.contains(x, y)) {
+            self.disable_command_selection();
+            return true;
+        }
+        if info.rect.is_some_and(|r| r.contains(x, y)) {
+            return true;
+        }
+        self.command_info = None;
+        self.redraw();
+        false
+    }
+
+    /// Draws the notice over the window, and answers its rectangle for the overlay list.
+    pub(super) fn draw_command_info(&mut self, frame: &mut Frame, area: Rect, cell: (f32, f32)) -> Option<Rect> {
+        let info = self.command_info?;
+        // The notice goes with its pane (closed, or no longer a prompt-marked command's).
+        if !self.panes.contains_key(&info.pane) {
+            self.command_info = None;
+            return None;
+        }
+        let (rect, link) = scene::command_info(frame, crate::cmdsel::INFO, crate::cmdsel::DISABLE_LINK, info.at, area, cell);
+        if let Some(i) = self.command_info.as_mut() {
+            i.rect = Some(rect);
+            i.link = Some(link);
+        }
+        Some(rect)
     }
 
     /// Whether the cell at `point` is inside any selection of `id`'s pane (`containsAbsCoord:`).
@@ -837,5 +1005,97 @@ mod tests {
         // Nothing clears.
         assert!(!s.set_subs(Vec::new()));
         assert!(s.subs().is_empty());
+    }
+
+    /// `PTYTextView.m:7940-7962` through the pure plan.
+    #[test]
+    fn double_click_delay_follows_the_key() {
+        let wait = Duration::from_millis(super::super::clippings_ui::double_click_ms() as u64);
+        assert_eq!(command_click_plan(false, false, false), ClickPlan::Now);
+        assert_eq!(command_click_plan(false, true, false), ClickPlan::Now);
+        assert_eq!(command_click_plan(false, false, true), ClickPlan::Nothing, "a click that removed a selection selects nothing");
+        assert_eq!(command_click_plan(false, true, true), ClickPlan::Nothing);
+        assert_eq!(command_click_plan(true, false, false), ClickPlan::After(wait));
+        assert_eq!(command_click_plan(true, false, true), ClickPlan::After(wait));
+        assert_eq!(command_click_plan(true, true, false), ClickPlan::Now, "the selected command deselects at once");
+    }
+
+    /// 13s S6: the click asks 13r's taker (a path mark first) before it selects, and runs last in
+    /// the release's empty-selection branch, after the key cursor.
+    #[test]
+    fn the_command_click_asks_13r_first() {
+        let body = include_str!("selection_ui.rs");
+        let click = &body[body.find("fn click_after_release").unwrap()..];
+        let (taker, select) = (click.find("click_taker(").expect("asks 13r's taker"), click.find("select_command_at(").unwrap());
+        assert!(click.contains("path_mark_index(") && taker < select);
+        let m = include_str!("mod.rs");
+        let release = &m[m.find("fn mouse_release").unwrap()..];
+        let (cursor, command) = (release.find("open_password_manager(None, Some(pane))").unwrap(), release.find("self.click_after_release(pane, removed)").unwrap());
+        assert!(cursor < command, "the key cursor takes its click first");
+        // A click the first-mouse activation made never selects; the press records it only for a plain single click.
+        assert!(m.contains("command: (count == 1 && plain && !self.first_mouse_down).then_some(removed_selection)"));
+    }
+
+    /// The window keeps the timer and the notice (B7): swapped with the window, cancelled with
+    /// the focus and the pane.
+    #[test]
+    fn command_click_state_is_per_window() {
+        let w = include_str!("windows_ui.rs");
+        assert!(w.contains("swap(&mut self.command_click, &mut s.command_click)") && w.contains("swap(&mut self.command_info, &mut s.command_info)"));
+        assert!(w.matches("command_click: None").count() >= 2, "WinSlot::new and new_empty");
+        let m = include_str!("mod.rs");
+        assert!(m.contains("self.command_click = None;"));
+        assert!(m.contains("let command_due = self.command_click_tick();") && m.contains("pathnav_due, command_due,"));
+    }
+
+    /// Selecting needs a prompt mark, toggles on a second click and refuses the alternate screen's
+    /// mutable part; the key off deselects.
+    #[test]
+    fn a_click_selects_the_command_at_or_before_the_row() {
+        let mut s = Screen::new(30, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07o1\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07t1\r\nt2\r\n\x1b]133;D;0\x07");
+        let ids: Vec<u32> = s.marks_in_order().iter().filter(|(_, m)| m.kind == crate::marks::Kind::Prompt).map(|(_, m)| m.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(s.prompt_at_or_before(0), Some(ids[0]));
+        assert_eq!(s.prompt_at_or_before(1), Some(ids[0]), "the output belongs to its command");
+        assert_eq!(s.prompt_at_or_before(2), Some(ids[1]));
+        assert_eq!(s.prompt_at_or_before(4), Some(ids[1]));
+        assert_eq!(s.command_region(ids[1]), Some((2, 11)));
+        // A manual mark is no command.
+        s.feed(b"\x1b]1337;SetMark\x07");
+        let manual_line = s.marks_in_order().iter().find(|(_, m)| m.kind != crate::marks::Kind::Prompt).map(|(l, _)| *l).unwrap();
+        assert_eq!(s.prompt_at_or_before(manual_line), Some(ids[1]));
+        assert_eq!(s.prompt_at_or_before(-1), None, "above the first prompt");
+    }
+
+    /// The notice shows once (the key is set before it shows), its link and the buttons' menu item
+    /// share one way to turn the feature off, and a press anywhere else closes it.
+    #[test]
+    fn the_notice_shows_once_and_the_link_disables() {
+        let src = include_str!("selection_ui.rs");
+        let select = &src[src.find("pub(super) fn select_command_at").unwrap()..src.find("pub(super) fn disable_command_selection").unwrap()];
+        let (key_read, key_set, shown) = (select.find("!self.globals.bool(INFO_SHOWN_KEY)").unwrap(), select.find("self.globals.set(INFO_SHOWN_KEY").unwrap(), select.find("self.command_info = Some(").unwrap());
+        assert!(key_read < key_set && key_set < shown);
+        assert_eq!(INFO_SHOWN_KEY, "NoSyncUserHasSelectedCommand");
+        let off = &src[src.find("pub(super) fn disable_command_selection").unwrap()..src.find("pub(super) fn command_info_press").unwrap()];
+        assert!(off.contains("\"ClickToSelectCommand\"") && off.contains("p.selected_command = None") && off.contains("self.command_info = None"));
+        assert!(include_str!("cmdbuttons_ui.rs").contains("cmdbuttons::DISABLE_SELECTION => self.disable_command_selection(),"));
+        let press = &src[src.find("pub(super) fn command_info_press").unwrap()..src.find("pub(super) fn draw_command_info").unwrap()];
+        assert!(press.contains("link.is_some_and(|r| r.contains(x, y))") && press.contains("self.command_info = None"));
+        // The press comes first in mouse_press, before any hit test can take it.
+        let m = include_str!("mod.rs");
+        let p = &m[m.find("fn mouse_press").unwrap()..];
+        assert!(p.find("self.command_info_press(button)").unwrap() < p.find("self.composer_press(").unwrap());
+        // Drawn in the window pass, recorded for the overlay list.
+        assert!(m.contains("(mouse::Overlay::CommandInfo, r)"));
+    }
+
+    /// The key off drops every selected command (P16).
+    #[test]
+    fn the_key_off_drops_the_selection() {
+        let src = include_str!("selection_ui.rs");
+        let tick = &src[src.find("pub(super) fn command_click_tick").unwrap()..src.find("pub(super) fn select_command_at").unwrap()];
+        assert!(tick.contains("!self.globals.bool(\"ClickToSelectCommand\")") && tick.contains("p.selected_command = None"));
     }
 }

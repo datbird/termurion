@@ -2213,6 +2213,39 @@ impl Pane {
         self.password_input && self.live.is_none() && self.replay.is_none()
     }
 
+    /// The selected command's region in the pane's own screen, in buffer rows, inclusive (13s
+    /// P15). None with no command selected and while the alternate screen shows. A mark that is
+    /// gone ends the selection.
+    pub fn own_region(&mut self) -> Option<(usize, usize)> {
+        let mark = self.selected_command?;
+        let own = self.own_mut();
+        if own.alt_screen() {
+            return None;
+        }
+        let region = own.command_region(mark);
+        if region.is_none() {
+            self.selected_command = None;
+        }
+        region
+    }
+
+    /// `own_region` for what the pane shows: None in a Filter or Zoom view, whose rows are not
+    /// the buffer's.
+    pub fn selected_region(&mut self) -> Option<(usize, usize)> {
+        if self.live.is_some() {
+            return None;
+        }
+        self.own_region()
+    }
+
+    /// The rows Find, Filter and Select All work in (`updateSearchRange`, `PS:21819-21834`): the
+    /// region, one row higher for a line-style mark. In a view the own screen's rows.
+    pub fn search_region(&mut self) -> Option<(usize, usize)> {
+        let (first, last) = self.own_region()?;
+        let line_style = self.selected_command.and_then(|m| self.screen.command_record(m)).is_some_and(|m| m.line_style);
+        Some((if line_style { first.saturating_sub(1) } else { first }, last))
+    }
+
     /// The pane's own screen, also while a view shows.
     pub fn own(&self) -> &Screen {
         self.live.as_ref().unwrap_or(&self.screen)

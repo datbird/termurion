@@ -335,17 +335,50 @@ pub fn find_all(screen: &Screen, pattern: &str) -> Result<Vec<Match>, String> {
     Ok(find_hits(screen, pattern)?.into_iter().map(|(m, _, _)| m).collect())
 }
 
+/// `find_all` over buffer rows `rows` (first, last inclusive) only, the selected command's
+/// (`updateSearchRange`, `PS:21819-21834`): a match counts when it starts on one of them. None
+/// searches the whole buffer.
+pub fn find_all_in(screen: &Screen, pattern: &str, rows: Option<(usize, usize)>) -> Result<Vec<Match>, String> {
+    Ok(find_hits_in(screen, pattern, rows)?.into_iter().map(|(m, _, _)| m).collect())
+}
+
 /// Like `find_all`, with each match's logical line and its byte range there.
 pub fn find_hits(screen: &Screen, pattern: &str) -> Result<Vec<(Match, String, std::ops::Range<usize>)>, String> {
+    find_hits_in(screen, pattern, None)
+}
+
+/// `find_hits` restricted to the matches that start on buffer rows `rows`; only the logical lines
+/// over those rows are read.
+pub fn find_hits_in(screen: &Screen, pattern: &str, rows: Option<(usize, usize)>) -> Result<Vec<(Match, String, std::ops::Range<usize>)>, String> {
+    use alacritty_terminal::grid::Dimensions;
     if pattern.is_empty() {
         return Ok(Vec::new());
     }
     let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for line in logical_lines(screen) {
+    let lines = match rows {
+        None => logical_lines(screen),
+        Some((first, last)) => {
+            let grid = screen.term().grid();
+            let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+            let (a, b) = ((first as i32 + top).clamp(top, bottom), (last as i32 + top).clamp(top, bottom));
+            let (mut a, mut b) = (a, b);
+            while a > top && wraps(screen, a - 1) {
+                a -= 1;
+            }
+            while b < bottom && wraps(screen, b) {
+                b += 1;
+            }
+            logical_between(screen, a, b)
+        }
+    };
+    for line in lines {
         let found: Vec<_> = re.find_iter(&line.text).filter(|m| !m.is_empty()).map(|m| m.range()).collect();
         for r in found {
             let m = Match { start: line.pos_before(r.start), end: line.pos_before(r.end - 1) };
+            if rows.is_some_and(|(first, last)| m.start.row < first || m.start.row > last) {
+                continue;
+            }
             out.push((m, line.text.clone(), r));
         }
     }

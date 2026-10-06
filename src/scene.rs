@@ -202,6 +202,8 @@ const FIND_BAR: Rgb = rgb(0x2b, 0x2b, 0x2b);
 const LABEL_BG: Rgb = rgb(0xff, 0xd7, 0x00);
 const NOTE: Rgb = rgb(0xff, 0xff, 0x00);
 const STAMP_BG: Rgb = rgb(0x20, 0x20, 0x20);
+/// The notice's link (a light blue that reads on the dark box).
+const COMMAND_INFO_LINK: Rgb = rgb(0x6c, 0xb6, 0xff);
 const NOTE_BG: Rgb = rgb(0xff, 0xf8, 0xc4);
 const BAR_BUTTON: Rgb = rgb(0xff, 0xff, 0xff);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
@@ -535,6 +537,13 @@ pub struct Highlights<'a> {
     /// The selections beside the live one (Win-drag, Select Matches), as buffer rows; the live
     /// one is alacritty's and draws from `term.selection`.
     pub selections: &'a [crate::seltext::Sub],
+    /// The selected command's rows (buffer rows, inclusive) when one shows: everything else is
+    /// shaded and the region outlined (`drawShadeOverNonSelectedCommands:`, 13s Task 9).
+    pub command_region: Option<(usize, usize)>,
+    /// The shade over the rest of the pane (`cmdsel::shade_color`); None draws none.
+    pub shade: Option<[f32; 4]>,
+    /// The outline's two frame colors, outer first (`cmdsel::outline_colors`).
+    pub outline: [Rgb; 2],
 }
 
 /// Whether `sub` covers the cell at buffer `row`, `col` on a `width`-column screen.
@@ -549,6 +558,8 @@ pub struct FindBar<'a> {
     pub mode: &'a str,
     /// The query is not a valid regular expression.
     pub error: bool,
+    /// A line under the field while a selected command restricts the search (`cmdsel::NOTICE`).
+    pub notice: Option<&'a str>,
 }
 
 /// Draws one pane's visible screen into `rect`.
@@ -598,9 +609,9 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     const FIELD: usize = 24;
     let (cw, ch) = cell;
     let mode = format!("[{}]", bar.mode);
-    let chars = 1 + FIELD + 2 + bar.count.chars().count() + 2 + mode.chars().count() + 1;
+    let chars = (1 + FIELD + 2 + bar.count.chars().count() + 2 + mode.chars().count() + 1).max(bar.notice.map_or(0, |n| n.chars().count() + 2));
     let w = (chars as f32 * cw).min(pane.w);
-    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: ch + 8.0 };
+    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: if bar.notice.is_some() { 2.0 * ch + 8.0 } else { ch + 8.0 } };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     // The pane's text under the bar is cut off where the bar starts.
     cut_rows_from(frame, r, ch);
@@ -621,6 +632,9 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         scale: 1.0,
         face: crate::render::DEFAULT_FACE,
     });
+    if let Some(notice) = bar.notice {
+        frame.rows.push(TextRow { x: r.x + cw, y: y + ch, spans: vec![span(notice.to_string(), TAB_TEXT_DIM)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    }
     let mode_x = r.x + (1 + FIELD + 2 + bar.count.chars().count() + 2) as f32 * cw;
     let mode_rect = Rect { x: mode_x, y: r.y, w: mode.chars().count() as f32 * cw, h: r.h };
     frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
@@ -1281,6 +1295,19 @@ pub fn pane_with(
         if d.caret.0 < lines {
             let caret = (d.caret.0, visual_col(d.caret.0, d.caret.1));
             frame.overlay.push(Quad { rect: crate::ime::caret_rect(caret, (rect.x, rect.y), cell, look.geometry.base_cell.1, cols, look.geometry.scale), color: rgba(d.caret_color, 1.0) });
+        }
+    }
+
+    // The selected command: the two-frame outline, then the shade over everything outside it, in
+    // the overlay so they lie over the text and inside the pane's slice (13s P17).
+    if let Some((region, shade)) = highlights.and_then(|h| h.command_region.zip(h.shade).map(|(r, s)| (r, (s, h.outline)))) {
+        let (shade, outline) = shade;
+        let grid = Rect { x: rect.x, y: rect.y, w: cols as f32 * cw, h: lines as f32 * ch };
+        for r in crate::cmdsel::shade_rects(grid, ch, first_row, lines, region, look.geometry.scale) {
+            frame.overlay.push(Quad { rect: r, color: shade });
+        }
+        for (layer, r) in crate::cmdsel::outline_edges(grid, ch, first_row, lines, region, look.geometry.scale) {
+            frame.overlay.push(Quad { rect: r, color: rgba(outline[layer], 1.0) });
         }
     }
 
@@ -4228,6 +4255,44 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rec
     r
 }
 
+/// The characters of the first-selection notice's longest line.
+const COMMAND_INFO_COLUMNS: usize = 52;
+
+/// `text` broken at spaces into lines of at most `width` characters.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.chars().count() + 1 + word.chars().count() <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+}
+
+/// The command-selection notice (`showCommandSelectionInfo`): `text` wrapped in a dark box at
+/// `at`, then `link` on its own line in the link color. Its box goes in `popups` with the text
+/// under it cut out; answers the box and the link's rectangle.
+pub fn command_info(frame: &mut Frame, text: &str, link: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) -> (Rect, Rect) {
+    let lines = wrap_words(text, COMMAND_INFO_COLUMNS);
+    let cols = lines.iter().map(|l| l.chars().count()).chain(std::iter::once(link.chars().count())).max().unwrap_or(0);
+    let (w, h) = (((cols + 2) as f32 * cell.0).min(area.w), (lines.len() as f32 + 1.0) * cell.1 + 16.0);
+    let r = Rect { x: at.0.min(area.x + area.w - w).max(area.x), y: (at.1 + cell.1).min(area.y + area.h - h).max(area.y), w, h };
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
+    let span = |text: &str, color: Rgb| Span { text: text.to_string(), color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    for (i, l) in lines.iter().enumerate() {
+        frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 8.0 + i as f32 * cell.1, spans: vec![span(l, TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    }
+    let link_rect = Rect { x: r.x + cell.0, y: r.y + 8.0 + lines.len() as f32 * cell.1, w: link.chars().count() as f32 * cell.0, h: cell.1 };
+    frame.rows.push(TextRow { x: link_rect.x, y: link_rect.y, spans: vec![span(link, COMMAND_INFO_LINK)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    frame.popups.push(Quad { rect: Rect { y: link_rect.y + cell.1 - 2.0, h: 1.0, ..link_rect }, color: rgba(COMMAND_INFO_LINK, 1.0) });
+    (r, link_rect)
+}
+
 /// The error bar's box.
 pub fn banner_rect(area: Rect, cell: (f32, f32)) -> Rect {
     Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 }
@@ -5241,6 +5306,63 @@ mod tests {
         assert!(!line_mark_hidden(5, None));
     }
 
+    /// 13s Task 9 (`TDH:986-1060`): with a command selected the pane's overlay holds the shade over
+    /// the rest and the two outline frames; with none it holds neither. The app passes the region
+    /// to `line_mark_hidden` in view rows (13m hand-over).
+    #[test]
+    fn the_selected_command_is_outlined_and_the_rest_shaded() {
+        let mut s = Screen::new(10, 10);
+        s.feed(b"x");
+        let shade = crate::cmdsel::shade_color(rgb(0, 0, 0), 0.25);
+        let (lit, plain) = (rgb(10, 20, 30), rgb(0, 0, 0));
+        let draw = |hl: &Highlights| {
+            let mut f = Frame::default();
+            pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(hl), crate::render::DEFAULT_FACE);
+            f
+        };
+        let base = draw(&see_through(1.0, false)).overlay.len();
+        let hl = Highlights { command_region: Some((3, 5)), shade: Some(shade), outline: [lit, plain], ..see_through(1.0, false) };
+        let f = draw(&hl);
+        let shaded: Vec<Rect> = f.overlay.iter().filter(|q| q.color == shade).map(|q| q.rect).collect();
+        // Cell height 20: the region is y 60 to 120; the shade stops 2 short on each side and takes the pane's 10 columns.
+        assert_eq!(shaded, vec![Rect { x: 0.0, y: 0.0, w: 100.0, h: 58.0 }, Rect { x: 0.0, y: 122.0, w: 100.0, h: 78.0 }]);
+        assert_eq!(f.overlay.iter().filter(|q| q.color == rgba(lit, 1.0)).count(), 4, "the outer frame");
+        assert_eq!(f.overlay.len(), base + 2 + 8);
+        // No region, no shade; a region without a shade colour draws nothing either.
+        assert_eq!(draw(&Highlights { shade: Some(shade), ..see_through(1.0, false) }).overlay.len(), base);
+        assert_eq!(draw(&Highlights { command_region: Some((3, 5)), ..see_through(1.0, false) }).overlay.len(), base);
+        // A region scrolled out of view shades the whole pane and outlines nothing.
+        let off = draw(&Highlights { command_region: Some((50, 60)), shade: Some(shade), outline: [lit, plain], ..see_through(1.0, false) });
+        assert_eq!(off.overlay.iter().filter(|q| q.color == shade).count(), 1);
+        assert_eq!(off.overlay.len(), base + 1);
+    }
+
+    #[test]
+    fn the_command_notice_cuts_its_box_and_marks_the_link() {
+        let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 480.0 };
+        let mut f = Frame::default();
+        let (r, link) = command_info(&mut f, crate::cmdsel::INFO, crate::cmdsel::DISABLE_LINK, (700.0, 460.0), area, (10.0, 20.0));
+        assert!(r.x + r.w <= area.w && r.y + r.h <= area.h, "kept inside the window: {r:?}");
+        assert!(link.x >= r.x && link.x + link.w <= r.x + r.w && link.y + link.h <= r.y + r.h, "the link sits inside the box");
+        assert_eq!(link.w, crate::cmdsel::DISABLE_LINK.chars().count() as f32 * 10.0);
+        assert!(f.popups.iter().any(|q| q.rect == r), "the box goes in popups");
+        let text: String = f.rows.iter().flat_map(|row| row.spans.iter().map(|s| s.text.clone())).collect::<Vec<_>>().join(" ");
+        assert!(text.contains("restricts Find, Filter, and Select All") && text.ends_with(crate::cmdsel::DISABLE_LINK));
+    }
+
+    #[test]
+    fn the_find_bar_shows_its_notice() {
+        let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 480.0 };
+        let mut plain = Frame::default();
+        find_bar(&mut plain, &FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None }, area, (10.0, 20.0));
+        let mut noted = Frame::default();
+        find_bar(&mut noted, &FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: Some(crate::cmdsel::NOTICE) }, area, (10.0, 20.0));
+        let (a, b) = (plain.quads.last().unwrap().rect, noted.quads.last().unwrap().rect);
+        assert_eq!(b.h, a.h + 20.0, "one line taller");
+        assert!(noted.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
+        assert!(!plain.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
+    }
+
     #[test]
     fn mark_bars_sit_in_the_left_padding() {
         let mut f = Frame::default();
@@ -5739,7 +5861,7 @@ mod tests {
     }
 
     fn see_through(bg_alpha: f32, opaque_colors: bool) -> Highlights<'static> {
-        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors, text_blink_on: true, selections: &[] }
+        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] }
     }
 
     /// "X" on red, then a selected "a", then a plain "b".
@@ -5761,7 +5883,7 @@ mod tests {
         let mut s = Screen::new(10, 3);
         s.feed(b"hello \xe4\xb8\xad world");
         let mut f = Frame::default();
-        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), 7);
         assert!(f.rows.len() >= 3, "{:?}", f.rows);
         assert!(f.rows.iter().all(|r| r.face == 7), "{:?}", f.rows.iter().map(|r| r.face).collect::<Vec<_>>());
@@ -6460,7 +6582,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(200, 200, 0);
-        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
         assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
@@ -7375,7 +7497,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] }), crate::render::DEFAULT_FACE);
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] }), crate::render::DEFAULT_FACE);
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -7389,7 +7511,7 @@ mod tests {
         let s = screen(b"a long line of text that runs under the find bar");
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false));
-        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None };
         let mode = find_bar(&mut f, &bar, RECT, CELL);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.contains("abc") && t.contains("2/5")), "{texts:?}");
@@ -7543,7 +7665,7 @@ mod tests {
         let r = banner(&mut f, "oops", RECT, CELL);
         assert!(!hits(&f, r), "banner {r:?}");
         let mut f = fresh();
-        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None };
         let mode = find_bar(&mut f, &bar, RECT, CELL);
         let r = Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 };
         assert!(!hits(&f, r), "find bar {r:?}");
@@ -7576,7 +7698,7 @@ mod tests {
         let r = toast(&mut f, "saved", RECT, CELL);
         assert!(!hits(&f, r), "toast {r:?}");
         let mut f = fresh();
-        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None };
         let mode = find_bar(&mut f, &bar, RECT, CELL);
         assert!(!hits(&f, Rect { x: mode.x, y: 0.0, w: 10.0, h: CELL.1 }), "find bar");
     }
@@ -7627,7 +7749,7 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
@@ -7638,7 +7760,7 @@ mod tests {
     /// The row "ab " + aleph + bet draws the aleph (logical column 3) at visual column 4 and the
     /// bet (logical 4) at visual column 3. Everything placed by a logical column follows.
     fn hl_with<'a>(matches: &'a [crate::find::Match], labels: &'a [(crate::find::Pos, String)], notes: &'a [(crate::find::Match, Option<String>)]) -> Highlights<'a> {
-        Highlights { matches, color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels, notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] }
+        Highlights { matches, color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels, notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] }
     }
 
     fn at(col: usize) -> crate::find::Pos {
@@ -7703,7 +7825,7 @@ mod tests {
         let s = screen(b"see https://x.y now");
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
@@ -7735,7 +7857,7 @@ mod tests {
         let mut f = Frame::default();
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
@@ -7840,7 +7962,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 16 }, end: crate::find::Pos { row: 1_000_000, col: 19 } };
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
@@ -7925,7 +8047,7 @@ mod tests {
     #[test]
     fn a_background_window_keeps_a_hollow_cursor() {
         let s = screen(b"ab");
-        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         let mut f = Frame::default();
         pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
@@ -7935,7 +8057,7 @@ mod tests {
     #[test]
     fn dim_quads_follow_the_dim() {
         let s = screen(b"ab");
-        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
         // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
         let mut f = Frame::default();
@@ -7968,7 +8090,7 @@ mod tests {
     #[test]
     fn a_password_prompt_draws_the_key_for_the_cursor() {
         let key = crate::pwm_prompt::KEY_GLYPH.to_string();
-        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
+        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [rgb(0, 0, 0); 2] };
         let key_row = |f: &Frame| f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == key)).cloned();
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);

@@ -6,8 +6,17 @@ use crate::screen::{Look, Screen};
 
 /// The logical lines that match `pattern`, oldest first. An empty pattern keeps them all.
 pub fn filter_lines(screen: &Screen, pattern: &str) -> Result<Vec<String>, String> {
+    filter_lines_in(screen, pattern, None)
+}
+
+/// `filter_lines` over buffer rows `rows` only (the selected command's); None reads them all.
+pub fn filter_lines_in(screen: &Screen, pattern: &str, rows: Option<(usize, usize)>) -> Result<Vec<String>, String> {
     let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
-    Ok(find::logical_texts(screen).into_iter().filter(|l| pattern.is_empty() || re.is_match(l)).collect())
+    let texts = match rows {
+        Some((first, last)) => find::logical_texts_over(screen, first, last),
+        None => find::logical_texts(screen),
+    };
+    Ok(texts.into_iter().filter(|l| pattern.is_empty() || re.is_match(l)).collect())
 }
 
 /// The logical lines over buffer rows `first..=last`.

@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn tandem_ui_at_reads_every_overlay_list() {
         let b = body(UI, "ui_rects");
-        let recorded = [crate::mouse::Overlay::InfoBar, crate::mouse::Overlay::Completion, crate::mouse::Overlay::Composer, crate::mouse::Overlay::ComposerPopup, crate::mouse::Overlay::Toast, crate::mouse::Overlay::Banner, crate::mouse::Overlay::PaneMove];
+        let recorded = [crate::mouse::Overlay::InfoBar, crate::mouse::Overlay::Completion, crate::mouse::Overlay::Composer, crate::mouse::Overlay::ComposerPopup, crate::mouse::Overlay::Toast, crate::mouse::Overlay::Banner, crate::mouse::Overlay::PaneMove, crate::mouse::Overlay::CommandInfo];
         let frame = body(MOD, "build_frame");
         for kind in crate::mouse::Overlay::ALL {
             let name = format!("Overlay::{kind:?}");

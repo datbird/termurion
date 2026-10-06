@@ -257,8 +257,10 @@ struct PointerDown {
 enum Drag {
     None,
     /// `anchor` is Some for a character drag, whose press the selection holds as a visual
-    /// position (`Selection::set_visual_anchor`, moved with scrolling output).
-    Select { pane: PaneId, anchor: Option<(i32, usize, bool)>, scroll: Option<selection_ui::SelScroll>, scroll_off: bool },
+    /// position (`Selection::set_visual_anchor`, moved with scrolling output). `command` is Some
+    /// for a plain single click, whether its press removed a selection: the release may select a
+    /// command (13s Task 9).
+    Select { pane: PaneId, anchor: Option<(i32, usize, bool)>, scroll: Option<selection_ui::SelScroll>, scroll_off: bool, command: Option<bool> },
     /// A press on the selection waiting to become a drag of its text out of the window.
     Out(selection_ui::DragOut),
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
@@ -417,6 +419,8 @@ pub struct App {
     hover_hand: bool,
     /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
     hover_key: Option<(PaneId, i32, usize, bool, bool)>,
+    command_click: Option<(Instant, PaneId, usize)>,
+    command_info: Option<selection_ui::CommandInfo>,
     /// The annotation or session note window: its pane and note (None for the session note).
     note_win: Option<(crate::note_ui::NoteWindow, PaneId, Option<u32>)>,
     /// Annotation navigation: the row each pane is at.
@@ -1719,6 +1723,8 @@ pub fn run() {
         hover: None,
         hover_hand: false,
         hover_key: None,
+        command_click: None,
+        command_info: None,
         popup_menu: None,
         color_pick: None,
         shortcuts: None,
@@ -4284,6 +4290,12 @@ impl App {
         if self.pathnav_due.is_some_and(|(_, p, _)| p == id) {
             self.pathnav_due = None;
         }
+        if self.command_click.is_some_and(|(_, p, _)| p == id) {
+            self.command_click = None;
+        }
+        if self.command_info.is_some_and(|i| i.pane == id) {
+            self.command_info = None;
+        }
         self.pathnav_press = self.pathnav_press.filter(|(p, _)| *p != id);
         if self.cmdinfo.as_ref().is_some_and(|w| w.pane == id) {
             self.cmdinfo = None;
@@ -4941,6 +4953,12 @@ impl App {
         // cancels it (`TV:7924-7933`).
         self.pathnav_due = None;
         self.pathnav_press = None;
+        // A second click cancels a command click waiting out the double-click time
+        // (`mouseHandlerCancelSingleClick:`), and a press ends the first-selection notice.
+        self.command_click = None;
+        if self.command_info_press(button) {
+            return;
+        }
         self.hide_tab_tip();
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
@@ -5136,9 +5154,11 @@ impl App {
                 // A press on the selection waits for a drag of its text (R3, `MH:379-391`).
                 let on_selection = count == 1 && !mods.shift && !self.first_mouse_down && self.cell_is_selected(id, point);
                 if selection_ui::drag_decision(on_selection, self.globals.bool("RequireCmdForDraggingText"), mods.cmd) == selection_ui::PressKind::MaybeDrag {
-                    self.drag = Drag::Out(selection_ui::DragOut { pane: id, from: (x, y), win: mods.cmd });
+                    self.drag = Drag::Out(selection_ui::DragOut { pane: id, from: (x, y), win: mods.cmd, command: plain && !self.first_mouse_down });
                     return self.redraw();
                 }
+                // Whether this press removes a selection: a single click off it (`MH:337-350`).
+                let removed_selection = count == 1 && !mods.shift && !append && self.panes.get(&id).is_some_and(|p| !p.screen.subs().is_empty());
                 let carried = self.commit_live_selection(id, append, count > 1);
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
@@ -5171,7 +5191,7 @@ impl App {
                 self.clear_porthole_selections();
                 // A Smart Selection is whole; moving the pointer does not reshape it. The
                 // click that activated the window never extends or copies one (`MH:778-782`).
-                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor, scroll: None, scroll_off: false } } else { Drag::None };
+                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor, scroll: None, scroll_off: false, command: (count == 1 && plain && !self.first_mouse_down).then_some(removed_selection) } } else { Drag::None };
                 self.alt_click = follow.alt_click.then_some((id, (col, row)));
                 self.key_click = (count == 1 && !mods.shift).then_some(id);
             }
@@ -5246,7 +5266,7 @@ impl App {
             }
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
-            Drag::Select { pane, .. } => {
+            Drag::Select { pane, command, .. } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
                 // A Win-click with no drag (B11): the selection it held comes back as the live one.
                 let kept = self.panes.get(&pane).filter(|p| p.screen.live_is_empty()).map(|p| p.screen.extra_subs()).filter(|k| !k.is_empty());
@@ -5268,6 +5288,9 @@ impl App {
                     // manager.
                     if key_click == Some(pane) && self.released_on_key_cursor(pane) {
                         self.open_password_manager(None, Some(pane));
+                    } else if let Some(removed) = command {
+                        // Last (`TV:7940-7962`): no fold, note, key cursor or path mark took the click.
+                        self.click_after_release(pane, removed);
                     }
                 } else {
                     self.selection_ended(pane);
@@ -5304,6 +5327,10 @@ impl App {
                     if let Some(p) = self.panes.get_mut(&d.pane) {
                         p.clear_selection();
                     }
+                }
+                // The press did not remove a selection (it was on one), so the click selects the command too.
+                if d.command {
+                    self.click_after_release(d.pane, false);
                 }
             }
             // A scrollbar drag ends with the press; the view stays where the thumb left it.
@@ -5570,6 +5597,8 @@ impl App {
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
                     scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
                 }
+                // The selected command's rows (None in a view and in the alternate screen).
+                let command_region = self.panes.get_mut(&id).and_then(|p| p.selected_region());
                 self.draw_badge(&mut frame, id, rect);
                 // The badge sizes itself in pixels against the default font and keeps the default
                 // face; the rows from here on are laid out in the pane's cell and take its face.
@@ -5586,7 +5615,7 @@ impl App {
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
                     let dim = self.pane_dim(tab, id, &bview);
                     let selections = p.screen.extra_subs();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused, selections: &selections };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused, selections: &selections, command_region, shade: command_region.map(|_| crate::cmdsel::shade_color(p.screen.palette.bg, self.globals.number("AlphaForDeselectedCommandShade").map_or(0.25, |a| (a as f32).clamp(0.0, 1.0)))), outline: crate::cmdsel::outline_colors(p.screen.palette.selection, p.screen.palette.bg) };
                     // The margins, one layer per pixel and the only margin painter: the pane's
                     // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
                     {
@@ -5683,6 +5712,9 @@ impl App {
                     let off = g.display_offset() as i32;
                     let folded = |row: usize| g[alacritty_terminal::index::Line(row as i32 - off)].fold() != 0;
                     let (cols, inner) = (g.columns(), self.text_rect(id, rect));
+                    // The selected command's rows on screen: a line-style mark inside it is not drawn (13m hand-over).
+                    let top = g.history_size().saturating_sub(g.display_offset());
+                    let view_region = command_region.filter(|(_, last)| *last >= top).map(|(first, last)| (first.saturating_sub(top), last - top));
                     let pad = self.margins().0;
                     let mut bars: Vec<(usize, crate::marks::MarkColor)> = Vec::new();
                     for (row, m) in p.screen.visible_marks() {
@@ -5692,7 +5724,7 @@ impl App {
                         let color = crate::marks::color(&m, self.globals.bool("ShowYellowMarkForJobStoppedBySignal"));
                         // A line-style mark draws a line, and no bar unless its row is folded.
                         if m.line_style {
-                            if !scene::line_mark_hidden(row, None) {
+                            if !scene::line_mark_hidden(row, view_region) {
                                 let line = scene::line_mark_color(scene::mark_color(color, &p.screen.palette, theme), p.screen.palette.bg);
                                 scene::line_mark(&mut frame, inner, row, cell, line, !m.command.is_empty(), cols);
                             }
@@ -5732,7 +5764,8 @@ impl App {
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
                 let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();
-                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some() };
+                let restricted = self.panes.get_mut(&tab.focused).is_some_and(|p| p.search_region().is_some());
+                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE) };
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
                 self.find_bar_rect = frame.quads.last().map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
@@ -5764,6 +5797,8 @@ impl App {
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             overlay_drawn.push((mouse::Overlay::Toast, scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell)));
         }
+        // The first-selection notice of a clicked command (13s Task 9), over the panes and the toast.
+        overlay_drawn.extend(self.draw_command_info(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell).map(|r| (mouse::Overlay::CommandInfo, r)));
         // The tab tooltip over everything but the banner, under the pointer (a pointer's
         // height below it).
         if let Some(text) = self.tab_tip_shown().and_then(|i| self.tab_tip_text(i)) {
@@ -6286,7 +6321,8 @@ impl ApplicationHandler<UserEvent> for App {
         let sleep_due = self.recompute_sleep(Instant::now());
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
-        let wake = [cmdinfo_due, pathnav_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let command_due = self.command_click_tick();
+        let wake = [cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6523,6 +6559,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.tmux_drag_cancel();
                     // A title bar drag ends with nothing moved.
                     self.title_drag_lost(pane_move_ui::DragLost::FocusLost);
+                    // A command click waiting out the double-click time does not outlive the focus (B7).
+                    self.command_click = None;
                     // So does a press on the tab bar (a held close button lets go).
                     if self.tab_press.take().is_some() {
                         self.redraw();

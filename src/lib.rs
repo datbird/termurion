@@ -73,6 +73,7 @@ pub mod kitty;
 pub mod stamps;
 pub mod cmdbuttons;
 pub mod cmdinfo;
+pub mod cmdsel;
 pub mod pathnav;
 pub mod session_log;
 pub mod archive;

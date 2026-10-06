@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 316 | 272 | 33 | 11 |
-| `02-global-settings.md` | 820 | 598 | 52 | 170 |
+| `02-global-settings.md` | 820 | 600 | 51 | 169 |
 | `03-features-and-menus.md` | 647 | 566 | 43 | 38 |
-| Total | 1,783 | 1,436 | 128 | 219 |
+| Total | 1,783 | 1,438 | 127 | 218 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -717,6 +717,7 @@ soft-boundary window is word selection's; the command region (buffer rows) is de
 select commands with (showButtonsForSelectedCommand stays partial until then, and that click calls the path-mark check first); dropped file
 names typed into the shell pass 13r's one guard for terminal writes (control characters, the union refusal, the network rule) and are quoted
 for the reported shell; 13r adds no runtime DLL load, so 13s's DLL hardening covers it.
+13s Task 9 (clicking a command selects it, 2026-10-05): 02: ClickToSelectCommand from missing to have and showButtonsForSelectedCommand from partial to have (02: 820, 600, 51, 169; 1,783 rows, 1,438 have, 127 partial, 218 missing). The click asks 13r's path-mark check first; Find, Filter and Select All work inside the selected command and the shade and outline follow iTerm2.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

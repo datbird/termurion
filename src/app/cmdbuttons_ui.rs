@@ -87,13 +87,7 @@ impl App {
         let command = m.command.clone();
         let Some(&label) = cmdbuttons::menu(button, &command).get(n) else { return true };
         match label {
-            cmdbuttons::DISABLE_SELECTION => {
-                self.globals.set("ClickToSelectCommand", toml::Value::Boolean(false));
-                self.save_globals();
-                for p in self.panes.values_mut() {
-                    p.selected_command = None;
-                }
-            }
+            cmdbuttons::DISABLE_SELECTION => self.disable_command_selection(),
             cmdbuttons::HELP => menu::info_box(cmdbuttons::HELP_TEXT),
             cmdbuttons::COPY_COMMAND => {
                 self.cmdinfo_copy(command);

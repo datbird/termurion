@@ -927,9 +927,12 @@ impl App {
             }
             "selectAll:" => {
                 if let Some(p) = self.focused_pane() {
+                    // A selected command restricts Select All to its rows (`TV:3793-3814`).
+                    let region = if p.live.is_none() { p.search_region() } else { None };
                     let term = p.screen.term();
-                    let top = Point::new(Line(-(term.grid().history_size() as i32)), Column(0));
-                    let bottom = Point::new(Line(term.screen_lines() as i32 - 1), Column(term.columns() - 1));
+                    let (first, last) = crate::cmdsel::select_all_lines(region, term.grid().history_size(), term.screen_lines());
+                    let top = Point::new(Line(first), Column(0));
+                    let bottom = Point::new(Line(last), Column(term.columns() - 1));
                     let mut sel = Selection::new(SelectionType::Lines, top, Side::Left);
                     sel.update(bottom, Side::Right);
                     p.set_selection(Some(sel), crate::seltext::Mode::Line);

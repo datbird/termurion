@@ -301,7 +301,10 @@ pub(super) fn select_all_matches(screen: &mut crate::screen::Screen, matches: &[
 /// One search of `p` for `f`'s query (`search_as`'s body, apart from the redraw): a fresh one
 /// replaces the results (quiet: no select, no scroll, no current match), a repeat updates them.
 fn search_pane(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, fresh: bool, quiet: bool) {
-    match find::find_all(&p.screen, &find::pattern(&f.query, mode)) {
+    // A selected command restricts the search to its rows, in the pane's own screen only (a Filter
+    // or Zoom view has other rows).
+    let region = if p.live.is_none() { p.search_region() } else { None };
+    match find::find_all_in(&p.screen, &find::pattern(&f.query, mode), region) {
         Err(e) => {
             f.error = Some(e);
             f.results = Results::default();
@@ -526,7 +529,8 @@ impl App {
             p.end_view();
             return self.redraw();
         }
-        match crate::synthetic::filter_lines(p.own(), &find::pattern(&f.query, mode)) {
+        let region = p.search_region();
+        match crate::synthetic::filter_lines_in(p.own(), &find::pattern(&f.query, mode), region) {
             Err(e) => f.error = Some(e),
             Ok(lines) => {
                 f.error = None;
@@ -551,6 +555,17 @@ impl App {
             }
         }
         self.redraw();
+    }
+
+    /// The selected command changed (`updateSearchRange`): an open bar looks in the new rows. A
+    /// search is quiet, so the selection the click made stays.
+    pub(super) fn find_range_changed(&mut self, id: PaneId) {
+        let Some(filter) = self.finds.get(&id).filter(|f| f.open).map(|f| f.filter) else { return };
+        if filter {
+            self.refilter(id, true);
+        } else {
+            self.search_as(id, true, true);
+        }
     }
 
     /// Back to the pane's own screen from Filter or Zoom.
@@ -1103,6 +1118,92 @@ mod tests {
         let matches = find::find_all(&p.screen, "abc").unwrap();
         assert_eq!(matches.len(), 3);
         (p, matches)
+    }
+
+    /// Review Focus 8: three commands, "abc" on rows 1, 4 and 8; the second command's region is
+    /// rows 3 to 6.
+    fn commands_pane() -> crate::pane::Pane {
+        let mut p = crate::pane::Pane::recording(1, 30, 12);
+        p.screen.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07abc\r\nxx\r\n\x1b]133;D;0\x07");
+        p.screen.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07abc\r\nyy\r\nzz\r\n\x1b]133;D;0\x07");
+        p.screen.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07three\r\n\x1b]133;C\x07abc");
+        p
+    }
+
+    /// `PS:21819-21834`, `TV:3793-3814`: with a command selected the search, Select All and Filter
+    /// work inside its rows; the bar says so; deselecting brings the rest back.
+    #[test]
+    fn restricted_find_follows_iterm2() {
+        let mut p = commands_pane();
+        let rows = |p: &crate::pane::Pane, region| find::find_all_in(&p.screen, "abc", region).unwrap().iter().map(|m| m.start.row).collect::<Vec<_>>();
+        assert_eq!(rows(&p, None), [1, 4, 8]);
+        let second = p.screen.prompt_at_or_before(4);
+        assert!(second.is_some());
+        p.selected_command = second;
+        assert_eq!(p.search_region(), Some((3, 6)));
+        // The bar finds only row 4.
+        let mut f = typed("abc", Instant::now());
+        search_pane(&mut p, &mut f, find::Mode::SmartCase, true, true);
+        assert_eq!(f.results.matches.iter().map(|m| m.start.row).collect::<Vec<_>>(), [4]);
+        assert_eq!(crate::cmdsel::NOTICE, "Searching only selected command");
+        let m = include_str!("mod.rs");
+        assert!(m.contains("notice: restricted.then_some(crate::cmdsel::NOTICE)"));
+        // Select All takes rows 3 to 6.
+        assert_eq!(crate::cmdsel::select_all_lines(p.search_region(), 0, 12), (3, 6));
+        let menu = include_str!("menu.rs");
+        assert!(menu.contains("crate::cmdsel::select_all_lines(region, "));
+        // Filter shows only the region's matching lines.
+        let region = p.search_region();
+        assert_eq!(crate::synthetic::filter_lines_in(p.own(), "abc", region).unwrap(), ["abc"]);
+        assert_eq!(crate::synthetic::filter_lines(p.own(), "abc").unwrap().len(), 3);
+        // Deselecting restores all three.
+        p.selected_command = None;
+        assert_eq!(p.search_region(), None);
+        search_pane(&mut p, &mut f, find::Mode::SmartCase, true, true);
+        assert_eq!(f.results.matches.len(), 3);
+    }
+
+    /// A Filter or Zoom view has no marks: its search is not restricted, and the bar says nothing.
+    #[test]
+    fn a_view_is_never_restricted() {
+        let mut p = commands_pane();
+        p.selected_command = p.screen.prompt_at_or_before(4);
+        let view = crate::synthetic::view(&["abc".to_string(), "abc".to_string()], p.own());
+        p.show_view(view);
+        assert_eq!(p.selected_region(), None);
+        let mut f = typed("abc", Instant::now());
+        search_pane(&mut p, &mut f, find::Mode::SmartCase, true, true);
+        assert_eq!(f.results.matches.len(), 2, "the view's own lines, unrestricted");
+        // Filter reads the own screen, so the region still applies to it.
+        assert_eq!(p.search_region(), Some((3, 6)));
+    }
+
+    /// The alternate screen shows no command's rows: no restriction while it does; a vanished mark
+    /// ends the selection.
+    #[test]
+    fn the_region_ends_with_the_alternate_screen_and_the_mark() {
+        let mut p = commands_pane();
+        p.selected_command = p.screen.prompt_at_or_before(4);
+        assert!(p.selected_region().is_some());
+        p.screen.feed(b"\x1b[?1049h");
+        assert_eq!(p.selected_region(), None);
+        assert!(p.selected_command.is_some(), "the selection waits for the main screen");
+        p.screen.feed(b"\x1b[?1049l");
+        assert_eq!(p.selected_region(), Some((3, 6)));
+        p.selected_command = Some(9999);
+        assert_eq!(p.selected_region(), None);
+        assert_eq!(p.selected_command, None, "a mark that is gone ends it");
+    }
+
+    /// A line-style mark starts the search range one row higher (`PS:21826-21829`).
+    #[test]
+    fn a_line_style_mark_searches_one_row_higher() {
+        let mut p = crate::pane::Pane::recording(1, 30, 12);
+        p.screen.line_style_marks = true;
+        p.screen.feed(b"x\r\n\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07abc");
+        p.selected_command = p.screen.prompt_at_or_before(2);
+        assert_eq!(p.selected_region(), Some((1, 11)));
+        assert_eq!(p.search_region(), Some((0, 11)));
     }
 
     fn selection_start(p: &crate::pane::Pane) -> Pos {

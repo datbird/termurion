@@ -1039,9 +1039,24 @@ impl Screen {
     /// P15). One rule with `command_grid_lines`, which 13r's buttons read in grid lines. `&mut`
     /// is the frozen contract (S6, S9: the region may be cached off `tick_digest`).
     pub fn command_region(&mut self, id: u32) -> Option<(usize, usize)> {
-        let (first, last) = self.command_grid_lines(id)?;
-        let history = self.term.primary_grid().history_size() as i32;
-        Some(((first + history).max(0) as usize, (last + history).max(0) as usize))
+        let digest = self.tick_digest();
+        if let Some((d, m, r)) = self.region_cache {
+            if d == digest && m == id {
+                return r;
+            }
+        }
+        let region = self.command_grid_lines(id).map(|(first, last)| {
+            let history = self.term.primary_grid().history_size() as i32;
+            ((first + history).max(0) as usize, (last + history).max(0) as usize)
+        });
+        self.region_cache = Some((digest, id, region));
+        region
+    }
+
+    /// The prompt mark of the command a click on grid `line` is in (`commandMarkAtOrBeforeLine:`):
+    /// the nearest prompt mark on that line or above it. A manual mark is no command.
+    pub fn prompt_at_or_before(&self, line: i32) -> Option<u32> {
+        self.row_marks().into_iter().filter(|(l, id)| *l <= line && self.marks.records.get(id).is_some_and(|r| r.kind == Kind::Prompt)).max_by_key(|(l, _)| *l).map(|(_, id)| id)
     }
 
     /// The command being typed, else the last command's text (Select Current Command).
@@ -1951,6 +1966,19 @@ mod tests {
         let h = { use alacritty_terminal::grid::Dimensions; s.term().grid().history_size() };
         assert!(h > 0);
         assert_eq!(s.command_region(prompts[0].1), Some((2, 5)));
+    }
+
+    /// P15: the region is asked once per grid change, not scanned per frame, and follows new output.
+    #[test]
+    fn the_region_is_cached_per_grid_generation() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one");
+        let id = s.marks_in_order().iter().find(|(_, m)| m.kind == Kind::Prompt).map(|(_, m)| m.id).unwrap();
+        assert_eq!(s.command_region(id), Some((0, 11)));
+        assert!(s.region_cache.is_some_and(|(_, m, r)| m == id && r == Some((0, 11))));
+        // A second prompt ends the first region: the digest moved, so the answer did too.
+        s.feed(b"\r\n\x1b]133;A\x07$ \x1b]133;B\x07two");
+        assert_eq!(s.command_region(id), Some((0, 0)));
     }
 
     #[test]

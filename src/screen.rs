@@ -289,6 +289,8 @@ pub struct Screen {
     pub(crate) saw_location_code: bool,
     /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
     tick_gen: u64,
+    /// The selected command's region by (tick digest, mark): one scan per grid change (13s P15).
+    pub(crate) region_cache: Option<(u64, u32, Option<(usize, usize)>)>,
     /// `offscreen_facts`' answer for the tick digest it was made at.
     pub(crate) offscreen_cache: Option<(u64, Vec<crate::offscreen::PromptFacts>)>,
     /// Key reporting chosen in the menu (on top of the program's requests).
@@ -628,6 +630,7 @@ impl Screen {
             term_name: "xterm-256color".to_string(),
             saw_location_code: false,
             tick_gen: 0,
+            region_cache: None,
             offscreen_cache: None,
             keys: KeyState::new(look.csi_u),
             trusted: true,
