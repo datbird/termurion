@@ -4263,4 +4263,23 @@ mod tests {
         assert!(row.help.ends_with("Off by default; turn on only while reproducing an issue."));
         assert!(!row.optional_bool());
     }
+
+    /// 13w Task 3 (`AS` rows, `02:632`, `02:636`, `02:857`): the three debug tool rows.
+    #[test]
+    fn debug_tool_rows_follow_iterm2() {
+        let rows: Vec<(&str, &str, &str)> = vec![
+            ("LogDrawingPerformance", "Debugging", "Log stats about text drawing performance to the debug output.\nUsed for performance testing."),
+            ("LogRestorableStateSize", "Debugging", "Log restorable state size info to %TEMP%\\statesize.*.txt."),
+            ("DebugShowPromptMarkRangesInLegacyRenderer", "Terminal", "Debug: highlight prompt mark prompt/command/excluded ranges.\nWhen enabled, the renderer overlays a blue outline around each visible prompt mark\u{2019}s prompt range (OSC 133 A to B), a green outline around its command range (B to C), and a red outline around each excluded subrange (PS2 prefixes and right-prompt regions recorded via OSC 133 k=). Intended for development and bug reports; leave off in normal use."),
+        ];
+        for (key, section, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
 }

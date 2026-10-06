@@ -215,7 +215,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/clipboard_ui.rs", 1),
     ("app/hotkey_ui.rs", 2),
     ("app/menu.rs", 2),
-    ("app/mod.rs", 3),
+    ("app/mod.rs", 4),
     ("app/restore_ui.rs", 1),
     ("app/session_end_ui.rs", 1),
     ("app/tmux_ui.rs", 2),
@@ -695,6 +695,31 @@ pub fn save_in_capped(dir: &localfs::LocalPath, header: &str, body: &str, footer
     Ok(file.path().to_path_buf())
 }
 
+/// A small owner-only file in the first log folder that takes it (the state size files): a
+/// plain `name`, replaced when it exists, never written through a link. The file's path.
+#[cfg(windows)]
+pub fn save_private(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let mut first_error = None;
+    for dir in log_dirs() {
+        let Some(file) = dir.unfollowed(name) else { continue };
+        let made = match localfs::remove_unfollowed(&file) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+        .and_then(|()| localfs::create_owner_only(&file))
+        .and_then(|mut f| f.write_all(bytes));
+        match made {
+            Ok(()) => return Ok(file.path().to_path_buf()),
+            Err(e) => {
+                first_error.get_or_insert(e.to_string());
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| could_not_open(Path::new(name))))
+}
+
 /// Saves into the first folder that takes it (iTerm2 reports the failure of its one folder).
 #[cfg(windows)]
 pub fn save(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
@@ -981,6 +1006,23 @@ mod tests {
         counts.sort();
         let want: Vec<(String, usize)> = CALL_SITES.iter().map(|(f, n)| (f.to_string(), *n)).collect();
         assert_eq!(counts, want, "a new dlog!/rlog! call site needs a line in CALL_SITES after a secrets review");
+    }
+
+    /// B3: the state size files are made by the same owner-only helper: replaced when present,
+    /// one allow entry for the user.
+    #[cfg(windows)]
+    #[test]
+    fn private_files_are_owner_only_and_replaced() {
+        let name = format!("statesize.test-{}.txt", std::process::id());
+        let first = save_private(&name, b"first\n").unwrap();
+        let second = save_private(&name, b"2\n").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "2\n", "replaced, not appended");
+        let dir = log_dirs().into_iter().find(|d| second.starts_with(d.path())).unwrap();
+        let sddl = localfs::dacl_sddl(&dir.unfollowed(&name).unwrap()).unwrap();
+        assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+        let _ = localfs::remove_unfollowed(&dir.unfollowed(&name).unwrap());
+        assert!(save_private("..\\x.txt", b"x").is_err() || !Path::new("..\\x.txt").exists());
     }
 
     /// The scrub and the ring (`DL:288-366`): keystroke fields are redacted, and secret shapes

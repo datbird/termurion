@@ -4284,6 +4284,45 @@ pub fn buffering_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
     }
 }
 
+/// `TV:1743`: the prompt range (OSC 133 A to B) in blue, the command range (B to C) in green and
+/// excluded subranges in red.
+pub const PROMPT_RANGE_BLUE: Rgb = rgb(0x40, 0x80, 0xff);
+pub const PROMPT_RANGE_GREEN: Rgb = rgb(0x40, 0xd0, 0x40);
+pub const PROMPT_RANGE_RED: Rgb = rgb(0xff, 0x40, 0x40);
+
+/// DebugShowPromptMarkRangesInLegacyRenderer: a 1-pixel outline per rect (kind 0 prompt, 1 command,
+/// 2 excluded), in `frame.overlay`. No text, so it may sit in the overlay.
+pub fn prompt_range_outlines(frame: &mut Frame, rects: &[(Rect, u8)]) {
+    for (r, kind) in rects {
+        let color = rgba([PROMPT_RANGE_BLUE, PROMPT_RANGE_GREEN, PROMPT_RANGE_RED][(*kind).min(2) as usize], 1.0);
+        let (w, h) = (r.w.max(1.0), r.h.max(1.0));
+        for rect in [
+            Rect { x: r.x, y: r.y, w, h: 1.0 },
+            Rect { x: r.x, y: r.y + h - 1.0, w, h: 1.0 },
+            Rect { x: r.x, y: r.y, w: 1.0, h },
+            Rect { x: r.x + w - 1.0, y: r.y, w: 1.0, h },
+        ] {
+            frame.overlay.push(Quad { rect, color });
+        }
+    }
+}
+
+/// Cell ranges `(kind, (row, col) start, (row, col) end exclusive)`, rows counted from the top of
+/// the view (negative or past `rows`: out of view), as one rect per row in view.
+pub fn prompt_span_rects(spans: &[(u8, (i32, usize), (i32, usize))], inner: Rect, cell: (f32, f32), cols: usize, rows: usize) -> Vec<(Rect, u8)> {
+    let mut out = Vec::new();
+    for &(kind, (r0, c0), (r1, c1)) in spans {
+        for row in r0.max(0)..=r1.min(rows as i32 - 1) {
+            let from = if row == r0 { c0 } else { 0 };
+            let to = if row == r1 { c1 } else { cols };
+            if to > from {
+                out.push((Rect { x: inner.x + from as f32 * cell.0, y: inner.y + row as f32 * cell.1, w: (to - from) as f32 * cell.0, h: cell.1 }, kind));
+            }
+        }
+    }
+    out
+}
+
 /// RequestAttention=flash: the pane goes white and fades back (`strength` 1 to 0).
 pub fn pane_flash(frame: &mut Frame, pane: Rect, strength: f32) {
     frame.overlay.push(Quad { rect: pane, color: rgba(rgb(0xff, 0xff, 0xff), 0.6 * strength.clamp(0.0, 1.0)) });
@@ -5457,6 +5496,38 @@ mod tests {
         assert_eq!(b.h, a.h + 20.0, "one line taller");
         assert!(noted.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
         assert!(!plain.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
+    }
+
+    /// `TV:1743`: blue prompt, green command, red excluded ranges, each a 1-pixel outline of four
+    /// overlay quads (Tandem records no excluded range, so the red kind is only drawn when given).
+    #[test]
+    fn prompt_outlines_follow_iterm2() {
+        let mut f = Frame::default();
+        let r = |x| Rect { x, y: 10.0, w: 40.0, h: 16.0 };
+        prompt_range_outlines(&mut f, &[(r(0.0), 0), (r(50.0), 1), (r(100.0), 2)]);
+        assert_eq!(f.overlay.len(), 12);
+        assert!(f.quads.is_empty() && f.rows.is_empty(), "outlines only, no text");
+        let colors: Vec<[f32; 4]> = f.overlay.chunks(4).map(|c| c[0].color).collect();
+        assert_eq!(colors, [rgba(PROMPT_RANGE_BLUE, 1.0), rgba(PROMPT_RANGE_GREEN, 1.0), rgba(PROMPT_RANGE_RED, 1.0)]);
+        assert!(PROMPT_RANGE_BLUE.b > PROMPT_RANGE_BLUE.r && PROMPT_RANGE_GREEN.g > PROMPT_RANGE_GREEN.r && PROMPT_RANGE_RED.r > PROMPT_RANGE_RED.g);
+        let first = &f.overlay[..4];
+        assert!(first.iter().all(|q| q.rect.w == 1.0 || q.rect.h == 1.0), "1 pixel lines");
+        let (x0, x1) = (first.iter().map(|q| q.rect.x).fold(f32::MAX, f32::min), first.iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max));
+        assert_eq!((x0, x1), (0.0, 40.0), "inside the rect");
+    }
+
+    /// A range of cells over several rows is one rect per row, clipped to the rows in view.
+    #[test]
+    fn prompt_spans_become_row_rects() {
+        let inner = Rect { x: 10.0, y: 20.0, w: 100.0, h: 80.0 };
+        let cell = (10.0, 16.0);
+        let one = prompt_span_rects(&[(0, (1, 2), (1, 7))], inner, cell, 10, 5);
+        assert_eq!(one, vec![(Rect { x: 30.0, y: 36.0, w: 50.0, h: 16.0 }, 0)]);
+        let many = prompt_span_rects(&[(1, (-3, 8), (1, 3))], inner, cell, 10, 5);
+        assert_eq!(many.len(), 2, "only rows 0 and 1 are in view: {many:?}");
+        assert_eq!(many[0].0, Rect { x: 10.0, y: 20.0, w: 100.0, h: 16.0 });
+        assert_eq!(many[1].0, Rect { x: 10.0, y: 36.0, w: 30.0, h: 16.0 });
+        assert!(prompt_span_rects(&[(0, (9, 0), (9, 4))], inner, cell, 10, 5).is_empty(), "below the view");
     }
 
     #[test]

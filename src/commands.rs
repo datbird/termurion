@@ -91,10 +91,20 @@ pub const DONE: &[&str] = &[
 ];
 
 /// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).
-const NOT_APPLICABLE: &[(&str, &str)] = &[(
-    "toggleRemoteHostCanControlIterm2:",
-    "Milestone 11 did not port the it2 command tree, so there is nothing for a remote host to control.",
-)];
+const NOT_APPLICABLE: &[(&str, &str)] = &[
+    (
+        "toggleRemoteHostCanControlIterm2:",
+        "Milestone 11 did not port the it2 command tree, so there is nothing for a remote host to control.",
+    ),
+    (
+        "debugCheckSettingsControlTruncation:",
+        "iTerm2 builds this only for development, and Tandem's Settings wrap their text rather than truncating it.",
+    ),
+];
+
+/// Capture GPU Frame exists only in debug builds (`AD:402-419`); a release build does not have it.
+#[cfg(not(debug_assertions))]
+const RELEASE_NOT_APPLICABLE: (&str, &str) = ("captureNextMetalFrame:", "Tandem builds this only for development; iTerm2's release builds remove it.");
 
 /// Commands that work with a known difference for now.
 const PARTIAL: &[(&str, &str)] = &[
@@ -199,6 +209,14 @@ pub fn status(item: &Item) -> Status {
     if let Some((_, why)) = NOT_APPLICABLE.iter().find(|(entry, _)| names(entry, item)) {
         return Status::NotApplicable(why);
     }
+    #[cfg(not(debug_assertions))]
+    if item.selector == RELEASE_NOT_APPLICABLE.0 {
+        return Status::NotApplicable(RELEASE_NOT_APPLICABLE.1);
+    }
+    #[cfg(debug_assertions)]
+    if item.selector == "captureNextMetalFrame:" {
+        return Status::Done;
+    }
     if in_list(DONE, item) {
         return Status::Done;
     }
@@ -208,6 +226,47 @@ pub fn status(item: &Item) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B8: GPU capture is debug-build code; a release build reports it not applicable and leaves
+    /// its chord to Windows. Check Settings Control Truncation is never built (R5).
+    #[test]
+    fn release_has_no_gpu_capture() {
+        let capture = items().iter().find(|i| i.selector == "captureNextMetalFrame:").unwrap();
+        let truncation = items().iter().find(|i| i.selector == "debugCheckSettingsControlTruncation:").unwrap();
+        assert!(matches!(status(truncation), Status::NotApplicable(why) if why.contains("development")));
+        let chord = crate::menus::Chord { key: crate::menus::ChordKey::Char('g'), cmd: true, alt: true, shift: true, ctrl: true };
+        if cfg!(debug_assertions) {
+            assert_eq!(status(capture), Status::Done);
+        } else {
+            assert!(matches!(status(capture), Status::NotApplicable(_)));
+            assert!(command_for_chord(&chord).is_none(), "the chord is left to Windows in a release build");
+        }
+        // The wgpu call is made in one debug-only file, inside a debug-only item.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![root.clone()];
+        let mut found = Vec::new();
+        while let Some(d) = files.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    files.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let t = std::fs::read_to_string(&p).unwrap();
+                    for (i, line) in t.lines().enumerate() {
+                        if line.contains("start_graphics_debugger_capture") && !line.trim_start().starts_with("//") && !p.ends_with("commands.rs") {
+                            found.push((p.clone(), t.lines().take(i).collect::<Vec<_>>().join("\n")));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(found.len(), 1, "one call site: {:?}", found.iter().map(|f| &f.0).collect::<Vec<_>>());
+        let (path, before) = &found[0];
+        assert!(path.ends_with("gpu_capture.rs"), "{path:?}");
+        let item_start = before.rfind("\nfn ").or_else(|| before.rfind("\npub fn ")).or_else(|| before.rfind("\npub(super) fn ")).expect("inside a function");
+        let head: Vec<&str> = before[..item_start].lines().rev().take(3).collect();
+        assert!(head.iter().any(|l| l.trim() == "#[cfg(debug_assertions)]"), "the function is debug-only: {head:?}");
+    }
 
     #[test]
     fn move_pane_is_done() {

@@ -820,6 +820,28 @@ impl Screen {
             .collect()
     }
 
+    /// The prompt and command ranges of the prompt marks in view, as (kind, start, end) in cells
+    /// from the top of the view: kind 0 the prompt (the mark's row start to `prompt_end`), 1 the
+    /// command (`command_range`). Tandem records no excluded subranges. Debug overlay only.
+    pub fn prompt_range_spans(&self) -> Vec<(u8, (i32, usize), (i32, usize))> {
+        let offset = self.term.grid().display_offset() as i32;
+        let view = |p: Point| (p.line.0 + offset, p.column.0);
+        let mut out = Vec::new();
+        for (row, m) in self.visible_marks().into_iter().filter(|(_, m)| m.kind == Kind::Prompt) {
+            let base = row as i32 - offset;
+            let at = |a: Anchor| self.resolve_from(base, a).map(view);
+            if let Some(end) = m.prompt_end.and_then(at) {
+                out.push((0, (row as i32, 0), end));
+            }
+            if let Some((a, b)) = m.command_range
+                && let (Some(a), Some(b)) = (at(a), at(b))
+            {
+                out.push((1, a, b));
+            }
+        }
+        out
+    }
+
     /// The named marks still in the buffer, top first: id and name. Reads the rows, not the
     /// records, so a mark whose row was cleared or trimmed from the scrollback is gone at once
     /// (the Named Marks tool keys its list on this).

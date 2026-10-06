@@ -150,6 +150,10 @@ impl App {
             if item.selector == "removeRecentProfilesFromDockMenu:" && !self.globals.bool(super::jumplist_ui::KEY) {
                 continue;
             }
+            // Debug-only items are never built into a release menu (`AD:402-419`).
+            if hidden_in_menu(&item.selector, cfg!(debug_assertions)) {
+                continue;
+            }
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
             } else if item.submenu {
@@ -926,6 +930,8 @@ impl App {
             "startStopLogging:" => self.start_stop_logging(),
             "debugLogging:" => self.toggle_debug_logging(),
             "saveRetrospectiveDebugLogs:" => self.save_retrospective_logs(),
+            #[cfg(debug_assertions)]
+            "captureNextMetalFrame:" => super::gpu_capture::arm(),
             "saveArchive:" => self.save_archive_menu(),
             "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),
@@ -1212,6 +1218,17 @@ pub(super) fn context_layout(extra: usize, providers: usize, tab_has_many: bool)
 pub(super) enum ColorTarget {
     Tab(u64),
     Group(String),
+}
+
+/// Items iTerm2 removes from the menu (`AD:402-419`): Capture GPU Frame in release builds, and
+/// Check Settings Control Truncation unless built for development (Tandem's Settings wrap text,
+/// so it is never built, R5).
+pub(super) fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
+    match selector {
+        "captureNextMetalFrame:" => !debug_build,
+        "debugCheckSettingsControlTruncation:" => true,
+        _ => false,
+    }
 }
 
 /// A context menu entry as a muda item: a check item when it has a check mark, a submenu with
@@ -1616,6 +1633,18 @@ mod tests {
         }
         assert!(super::tray_window_items(&[], None, false, 0).is_empty());
     }
+    /// `AD:402-419`: release builds remove Capture GPU Frame; builds without `ITERM_DEBUG` (every
+    /// Tandem build) remove Check Settings Control Truncation.
+    #[test]
+    fn debug_items_follow_iterm2() {
+        assert!(super::hidden_in_menu("captureNextMetalFrame:", false));
+        assert!(!super::hidden_in_menu("captureNextMetalFrame:", true));
+        assert!(super::hidden_in_menu("debugCheckSettingsControlTruncation:", false));
+        assert!(super::hidden_in_menu("debugCheckSettingsControlTruncation:", true));
+        assert!(!super::hidden_in_menu("debugLogging:", false));
+        assert!(!super::hidden_in_menu("copyPerformanceStats:", true));
+    }
+
     use crate::warnings::{Kind, checkbox_label};
 
     /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which

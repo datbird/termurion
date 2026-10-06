@@ -59,6 +59,7 @@ const WHEEL_LINES: f32 = 3.0;
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod gpu_capture;
 mod paste_ui;
 mod edit_session_ui;
 mod history_ui;
@@ -861,6 +862,8 @@ pub struct App {
     perf: crate::perf_stats::Logs,
     /// Each window's frame counters, by window number (app-wide).
     perf_frames: std::collections::BTreeMap<usize, crate::perf_stats::FrameStats>,
+    /// The drawing statistics `LogDrawingPerformance` logs (app-wide, every window).
+    draw_timers: crate::perf::Timers,
     /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
     last_keystroke: Option<Instant>,
     /// The power line (13l Task 3): app-wide, sampled when the output path asks, at most once a second.
@@ -2112,6 +2115,7 @@ pub fn run() {
         frame_number: 0,
         perf: Default::default(),
         perf_frames: Default::default(),
+        draw_timers: crate::perf::Timers::new(&["frame", "scene", "draw", "present"]),
         last_keystroke: None,
         power: crate::power::Poll::default(),
         last_status: HashMap::new(),
@@ -6127,6 +6131,10 @@ impl App {
                         bars.push((row, color));
                     }
                     scene::mark_bars(&mut frame, &bars, inner, cell.1, pad, &p.screen.palette, theme);
+                    if self.globals.bool("DebugShowPromptMarkRangesInLegacyRenderer") {
+                        let spans = p.screen.prompt_range_spans();
+                        scene::prompt_range_outlines(&mut frame, &scene::prompt_span_rects(&spans, inner, cell, cols, g.screen_lines()));
+                    }
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
@@ -6250,6 +6258,22 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Nothing is measured while LogDrawingPerformance is off.
+        let timing = self.globals.bool("LogDrawingPerformance");
+        let started = timing.then(Instant::now);
+        self.render_frame(timing);
+        if let Some(started) = started {
+            self.draw_timers.stats[0].add(started.elapsed().as_secs_f64(), 1);
+            if self.draw_timers.due(Instant::now(), crate::perf::DRAW_EVERY) {
+                // iTerm2's console (`PTM:176-192`) and the debug log: the numeric table only.
+                let table = crate::perf::log_table("render", &mut self.draw_timers.stats);
+                crate::dlog::debug_output(table.as_str());
+                crate::dlog!("{}", table);
+            }
+        }
+    }
+
+    fn render_frame(&mut self, timing: bool) {
         // Recorded first: a frame that finds no surface still ends the wait for one.
         let now = Instant::now();
         let before = self.pacer.last();
@@ -6260,7 +6284,11 @@ impl App {
         self.sync_menu_hidden();
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
+        let scene_start = timing.then(Instant::now);
         let frame = self.build_frame();
+        if let Some(t) = scene_start {
+            self.draw_timers.stats[1].add(t.elapsed().as_secs_f64(), 1);
+        }
         // The caption's hit tests answer from what this frame drew.
         self.publish_caption();
         let (title, menu_text) = self.caption_text();
@@ -6321,14 +6349,29 @@ impl App {
         let (w, h) = (gpu.config.width, gpu.config.height);
         // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
         let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
-        if let Err(e) = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h) {
+        #[cfg(debug_assertions)]
+        let capturing = gpu_capture::begin(gpu.render_device());
+        let draw_start = timing.then(Instant::now);
+        let drawn = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h);
+        if let Some(t) = draw_start {
+            self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
+        }
+        if let Err(e) = drawn {
             if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                 self.fade_failed = true;
             }
             self.banners.set("gpu", e);
         }
+        let present_start = timing.then(Instant::now);
         if let Some(gpu) = self.gpu.as_ref() {
             gpu.render_queue().present(texture);
+            #[cfg(debug_assertions)]
+            if capturing {
+                gpu_capture::end(gpu.render_device());
+            }
+        }
+        if let Some(t) = present_start {
+            self.draw_timers.stats[3].add(t.elapsed().as_secs_f64(), 1);
         }
     }
 }
