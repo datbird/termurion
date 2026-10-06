@@ -391,6 +391,29 @@ fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // A panic must never unwind out of this callback (that aborts the process with a remapped key
+    // still down): the key goes on to Windows and every key held for a remap is released.
+    guarded(|| unsafe { hook_body(code, wparam, lparam) }, || {
+        release_remapped();
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    })
+}
+
+/// Runs `body`; a panic in it runs `recover` instead.
+fn guarded(body: impl FnOnce() -> LRESULT, recover: impl FnOnce() -> LRESULT) -> LRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| recover())
+}
+
+/// Hands back every key the hook holds down for a remapped modifier (a poisoned lock is read
+/// anyway: this runs after a panic).
+fn release_remapped() {
+    if let Some(h) = HOOK.get() {
+        let keys = h.remapper.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        inject(&keys);
+    }
+}
+
+unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         if let Some(h) = HOOK.get() {
             let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
@@ -952,6 +975,19 @@ mod tests {
             let h = HChord { key: HKey::Scan(scan), mods: MOD_WIN };
             assert_eq!(shell_owned_chord(&chord(key, false, false, false)), shell_owned(h));
         }
+    }
+
+    #[test]
+    fn a_hook_panic_passes_the_key_on_and_releases_remapped_keys() {
+        // A body that completes returns its own answer and recovers nothing.
+        let mut recovered = false;
+        assert_eq!(guarded(|| 7, || { recovered = true; 9 }), 7);
+        assert!(!recovered);
+        // A panic in the body never unwinds out: the recovery's answer (the key passed on) stands.
+        let released = std::cell::Cell::new(false);
+        let r = guarded(|| panic!("forced panic in the hook body"), || { released.set(true); 9 });
+        assert_eq!(r, 9);
+        assert!(released.get(), "the held remapped keys are released");
     }
 
     #[test]
