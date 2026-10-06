@@ -47,6 +47,7 @@ impl App {
         let Some(at) = self.store.profiles.iter().position(|p| p.guid() == destination) else { return };
         let copy = crate::settings_ui::copied_profile(&source, &self.store.profiles[at]);
         self.store.profiles[at] = copy;
+        self.dynamic_edited(destination);
         self.store.merge_sessions();
         self.refresh_panes();
         self.save_due = Some(Instant::now() + SAVE_DELAY);
@@ -92,5 +93,12 @@ mod tests {
         assert!(at("snapshot.respect_system =") < at("*self.route_snapshot.write()"));
         assert!(at("snapshot.profile_shortcuts = keyroute::claimed_shortcuts(") < at("*self.route_snapshot.write()"));
         assert!(at("*self.remap_tags.write()") < at("self.follow_edit_session();"));
+    }
+
+    /// Final review 1: Copy to Profile queues the write-back of a rewritable dynamic destination.
+    #[test]
+    fn copy_to_profile_queues_the_dynamic_write_back() {
+        let copy = body(include_str!("edit_session_ui.rs"), "pub(super) fn copy_to_profile(");
+        assert!(copy.contains("self.dynamic_edited(destination);"), "the destination's file is written back");
     }
 }

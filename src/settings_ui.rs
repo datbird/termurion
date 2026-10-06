@@ -253,16 +253,17 @@ pub fn copy_confirmed(index: usize) -> bool {
 
 /// Copy to Profile (`ProfilePreferencesViewController.m:765-812`): the session's values with the
 /// destination's guid and name; the original guid, the session hotkey and the keys that make a
-/// profile transient or dynamic are removed (P4), each trigger's performance entry is dropped,
-/// and the one network-path filter runs over it (P3).
+/// profile transient or dynamic are removed (P4; the destination keeps its own loader marks),
+/// each trigger's performance entry is dropped, and the one network-path filter runs over it (P3).
 pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
     let mut values = session.values.clone();
     for key in [profile::GUID, profile::NAME, "Shortcut"] {
         values.remove(key);
     }
-    for key in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename", "Is Dynamic Profile", "Rewritable", "Bonjour Service Address"] {
+    for key in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Bonjour Service Address"] {
         values.remove(key);
     }
+    crate::dynamic_profiles::strip_internal(&mut values);
     for key in [profile::GUID, profile::NAME, "Shortcut"] {
         if let Some(v) = destination.values.get(key) {
             values.insert(key.to_string(), v.clone());
@@ -277,7 +278,15 @@ pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
         }
     }
     crate::start_dir::scrub_map(&mut values);
-    Profile::from_values(values)
+    let mut copy = Profile::from_values(values);
+    // The destination keeps its own loader marks: a dynamic profile stays dynamic (and out of
+    // profiles.toml). `from_values` strips them from outside values, so they go back by `set`.
+    for key in crate::dynamic_profiles::INTERNAL_KEYS {
+        if let Some(v) = destination.values.get(key) {
+            copy.set(key, v.clone());
+        }
+    }
+    copy
 }
 
 /// Opening more than this many sessions at once asks first (P6).
@@ -2910,6 +2919,34 @@ mod tests {
         let q = settings_keys::replace_profile_spec("Work");
         assert_eq!((q.id.as_deref(), q.labels.clone()), (Some("NoSyncReplaceProfileWarning"), vec!["Replace".to_string(), "Cancel".into()]));
         assert!(copy_confirmed(0) && !copy_confirmed(1));
+    }
+
+    /// Final review 1: copying a session into a dynamic profile keeps the destination's own
+    /// loader marks (it stays dynamic and out of profiles.toml); the source's marks still go.
+    #[test]
+    fn copy_into_a_dynamic_profile_keeps_it_dynamic() {
+        let mut session = Profile::new("S");
+        session.set("Ansi 1 Color", Value::String("changed".into()));
+        let mut dest = Profile::new("Dyn");
+        dest.set("Guid", Value::String("d".into()));
+        for (key, v) in [("Is Dynamic Profile", Value::Boolean(true)), ("Rewritable", Value::Boolean(true)), ("Dynamic Profile Filename", Value::String("f.json".into()))] {
+            dest.set(key, v);
+        }
+        let c = copied_profile(&session, &dest);
+        assert_eq!(c.string("Ansi 1 Color"), "changed");
+        for key in ["Is Dynamic Profile", "Rewritable", "Dynamic Profile Filename"] {
+            assert_eq!(c.values.get(key), dest.values.get(key), "{key} stays the destination's");
+        }
+        let mut store = crate::store::Store::fresh(std::path::Path::new("x.toml"));
+        store.profiles.push(c);
+        assert!(store.unsaved("d"));
+        assert!(!store.file_profiles().iter().any(|p| p.get("Guid").and_then(|g| g.as_str()) == Some("d")));
+        // The source's marks never carry over into a saved destination.
+        let mut marked = Profile::new("M");
+        marked.set("Is Dynamic Profile", Value::Boolean(true));
+        let mut plain = Profile::new("P");
+        plain.set("Guid", Value::String("p".into()));
+        assert!(copied_profile(&marked, &plain).values.get("Is Dynamic Profile").is_none());
     }
 }
 

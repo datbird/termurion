@@ -230,7 +230,7 @@ impl Store {
         // A copy of a dynamic profile is an ordinary saved profile (`duplicateProfile:` removes the
         // marks, `PPV:860-876`): without them it would not be written to the file.
         if copy.values.get(DYNAMIC_KEY).and_then(|v| v.as_bool()) == Some(true) {
-            for key in [DYNAMIC_KEY, "Rewritable", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename"] {
+            for key in crate::dynamic_profiles::INTERNAL_KEYS {
                 copy.values.remove(key);
             }
             let tags: Vec<Value> = copy.get("Tags").and_then(|t| t.as_array().cloned()).map(|a| a.into_iter().filter(|t| t.as_str() != Some("Dynamic")).collect()).unwrap_or_default();
