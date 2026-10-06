@@ -321,7 +321,9 @@ mod tests {
     fn a_launch_with_no_window_starts_resident() {
         let run = body(production(MOD), "resumed");
         assert!(run.contains("let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none()"));
-        assert!(run.contains("(!early.window || !untitled)") && run.contains("hotkey_profiles.is_empty() && !early.restore"));
+        // iTerm2's launch path never reads openUntitledFile (AD:2463-2470): only the plan decides.
+        assert!(run.contains("hotkey_profiles.is_empty() && !early.restore && !early.window;"), "only the launch plan decides");
+        assert!(!run.contains("untitled") && !run.contains("OpenUntitledFile"), "OpenUntitledFile never decides a launch window");
         assert!(run.contains("if startup_hotkey.is_some() || resident_start {"), "the window is made hidden and off the taskbar");
         assert!(run.contains("None if resident_start => {}"), "no tab is made");
         assert!(run.contains("self.resident = true;"));

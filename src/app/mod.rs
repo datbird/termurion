@@ -6384,8 +6384,8 @@ impl ApplicationHandler<UserEvent> for App {
         let startup_hotkey = if quiet && !self.state_frozen && self.start_handoff.is_none() { hotkey_profiles.first().cloned() } else { None };
         // R3: when the plan opens no window (and no hotkey window comes up), Tandem starts resident, as
         // iTerm2 runs with no window: the first window is made hidden and empty, the icon is the way in.
-        let untitled = self.globals.bool("OpenUntitledFile");
-        let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && (!early.window || !untitled);
+        // The icon-click key never decides a launch window (`AD:2463-2470`): only the plan does.
+        let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && !early.window;
         let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
         if startup_hotkey.is_some() || resident_start {
             use winit::platform::windows::WindowAttributesExtWindows;
