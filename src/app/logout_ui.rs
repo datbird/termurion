@@ -1,4 +1,4 @@
-//! WM_ENDSESSION on a terminal window (`iTermController.m:1746-1751`): a logoff, restart or
+//! WM_QUERYENDSESSION and WM_ENDSESSION on a terminal window (`iTermController.m:1746-1751`): a logoff, restart or
 //! shut down ends the hosted shells before Windows ends the process. A window subclass runs
 //! the closure inside the window procedure, so the work is done before the process can end.
 //! HWND_MESSAGE windows get no broadcast; the subclass goes on every terminal window, and the
@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::Shutdown::ShutdownBlockReasonDestroy;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_ENDSESSION, WM_NCDESTROY};
+use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_ENDSESSION, WM_NCDESTROY, WM_QUERYENDSESSION};
 
 const SUBCLASS_ID: usize = 0x7464_6C67;
 
@@ -21,6 +22,21 @@ const SUBCLASS_ID: usize = 0x7464_6C67;
 pub(super) const LOGOFF_LIMIT: Duration = Duration::from_secs(6);
 
 type OnEnd = Arc<dyn Fn() + Send + Sync>;
+
+
+/// What a WM_QUERYENDSESSION asks: true when Windows may end the session now.
+type QueryFn = Arc<dyn Fn(isize) -> bool + Send + Sync>;
+
+/// The time a shutdown query gives the app thread to decide (a timeout means "ask first").
+pub(super) const QUERY_LIMIT: Duration = Duration::from_secs(1);
+
+/// Asks the app whether the session may end now: `post` hands over the done flag and the
+/// answer flag (true = end now). An app that does not answer in `limit` counts as "ask".
+pub(super) fn ask_or_end(post: impl FnOnce(Arc<AtomicBool>, Arc<AtomicBool>), limit: Duration) -> bool {
+    let answer = Arc::new(AtomicBool::new(false));
+    let mine = answer.clone();
+    run_on_app(move |done| post(done, mine), limit) && answer.load(Ordering::Acquire)
+}
 
 /// What a logoff runs: set while the keys ask for it, None otherwise. One for the whole app.
 fn armed() -> &'static Mutex<Option<OnEnd>> {
@@ -37,6 +53,19 @@ fn windows() -> &'static Mutex<HashSet<isize>> {
 /// True from the first window's WM_ENDSESSION until a cancelled logoff: every window gets the
 /// message, the work is done once.
 static RAN: AtomicBool = AtomicBool::new(false);
+
+/// What a shutdown query asks: set once by the app.
+fn query() -> &'static Mutex<Option<QueryFn>> {
+    static Q: OnceLock<Mutex<Option<QueryFn>>> = OnceLock::new();
+    Q.get_or_init(Default::default)
+}
+
+/// Sets (or clears) what a shutdown query asks.
+pub(super) fn arm_query(q: Option<QueryFn>) {
+    if let Ok(mut s) = query().lock() {
+        *s = q;
+    }
+}
 
 /// Sets (or, with None, clears) what a logoff runs, for every window.
 pub(super) fn arm(on_end: Option<OnEnd>) {
@@ -91,45 +120,64 @@ pub(super) fn run_on_app(post: impl FnOnce(Arc<AtomicBool>), limit: Duration) ->
 }
 
 impl super::App {
-    /// Keeps the app-wide logoff watch in step with the settings: with `KillSessionsOnLogout` and
-    /// `runJobsInServers` on and a host running, WM_ENDSESSION flushes the logs and archives and
-    /// ends every hosted shell (`killRestorableSessions`, `IC:1463-1472`; iTerm2 runs its normal
-    /// quit at power-off); otherwise it does nothing. The setting changes only when the keys
-    /// do; a window only gets the subclass.
+    /// Keeps the app-wide end-of-session watch in step with the settings. The watch is always
+    /// on (a shutdown asks as a quit would, and WM_ENDSESSION saves the state, Task 8); what it
+    /// does to the shells follows the keys: with `KillSessionsOnLogout` and `runJobsInServers` on
+    /// and a host running, WM_ENDSESSION also ends every hosted shell (`killRestorableSessions`,
+    /// `IC:1463-1472`), otherwise the shells are left as Quit leaves them. A window only gets the
+    /// subclass (`watch`, from where its display watch goes on).
     pub(super) fn tick_logout(&mut self) {
         let want = self.host.is_some() && crate::session_end::kill_on_logout(self.globals.bool("KillSessionsOnLogout"), self.globals.bool("runJobsInServers"), true);
-        if want != self.logout_armed {
+        if want != self.logout_armed || !self.logout_set {
             self.logout_armed = want;
-            arm(match (&self.host, want) {
-                (Some(host), true) => {
-                    let (host, proxy) = (host.clone(), self.proxy.clone());
-                    Some(Arc::new(move || {
-                        let sent = |done| {
-                            let _ = proxy.lock().map(|p| p.send_event(super::UserEvent::Logoff(done)));
-                        };
-                        if !run_on_app(sent, LOGOFF_LIMIT) {
-                            // The app thread was busy: the shells still end.
-                            host.kill_all_and_wait(Duration::from_secs(2));
-                        }
-                    }) as OnEnd)
+            self.logout_set = true;
+            let host = if want { self.host.clone() } else { None };
+            let proxy = self.proxy.clone();
+            arm(Some(Arc::new(move || {
+                let sent = |done| {
+                    let _ = proxy.lock().map(|p| p.send_event(super::UserEvent::Logoff(done)));
+                };
+                if !run_on_app(sent, LOGOFF_LIMIT) {
+                    // The app thread was busy: the shells still end when the keys say so.
+                    if let Some(host) = &host {
+                        host.kill_all_and_wait(Duration::from_secs(2));
+                    }
                 }
-                _ => None,
-            });
+            }) as OnEnd));
         }
-        if want {
-            if let Some(hwnd) = self.hwnd() {
-                watch(hwnd);
-            }
+        if !self.query_set {
+            self.query_set = true;
+            let proxy = self.proxy.clone();
+            arm_query(Some(Arc::new(move |hwnd| {
+                let post = |done, answer| {
+                    let _ = proxy.lock().map(|p| p.send_event(super::UserEvent::ShutdownQuery { done, end_now: answer, hwnd }));
+                };
+                ask_or_end(post, QUERY_LIMIT)
+            })));
         }
     }
 
-    /// The app's part of a logoff (`UserEvent::Logoff`): what Quit writes out, then the shells
-    /// end, the whole of it bounded to fit Windows' end-session time limit.
+    /// The app's part of a session end (`UserEvent::Logoff`, the one end-of-session event): what
+    /// Quit writes out (settings, state, notes, window frames, logs and archives), the block
+    /// reason removed, then the shells end when the keys say so and are left as Quit leaves them
+    /// otherwise; the whole of it bounded to fit Windows' end-session time limit. Nothing is asked.
     pub(super) fn logoff_now(&mut self, done: &AtomicBool) {
-        self.finish_archives(true, Duration::from_secs(2));
-        self.close_all_logs();
-        if let Some(host) = &self.host {
-            host.kill_all_and_wait(Duration::from_secs(2));
+        self.save_pending_settings();
+        self.save_state_for_quit();
+        self.flush_notes();
+        let keep = !self.logout_armed && self.keep_jobs_on_quit();
+        self.save_all_window_frames();
+        self.destroy_block_reason();
+        if self.logout_armed {
+            self.finish_archives(true, Duration::from_secs(2));
+            self.close_all_logs();
+            if let Some(host) = &self.host {
+                host.kill_all_and_wait(Duration::from_secs(2));
+            }
+        } else {
+            self.finish_archives(!keep, Duration::from_secs(2));
+            self.close_all_logs();
+            self.leave_host(keep);
         }
         super::teardown_process();
         done.store(true, Ordering::Release);
@@ -137,7 +185,15 @@ impl super::App {
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    if msg == WM_ENDSESSION && wparam != 0 {
+    if msg == WM_QUERYENDSESSION {
+        // A new attempt. The app decides (a pure read, bounded by `QUERY_LIMIT`); the question
+        // itself is shown after this returns, never inside the procedure.
+        RAN.store(false, Ordering::SeqCst);
+        let q = query().lock().ok().and_then(|q| q.clone());
+        if let Some(q) = q {
+            return LRESULT::from(q(hwnd as isize));
+        }
+    } else if msg == WM_ENDSESSION && wparam != 0 {
         // Run it here: Windows may end the process as soon as this returns. The lock is not held
         // while it runs.
         let on_end = armed().lock().ok().and_then(|a| a.clone());
@@ -147,9 +203,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
         }
     } else if msg == WM_ENDSESSION {
-        // A cancelled logoff: the next one runs again.
+        // A cancelled logoff: the next one runs again, and no block reason stays standing.
         RAN.store(false, Ordering::SeqCst);
+        // SAFETY: idempotent; fails harmlessly when this window has no reason standing.
+        unsafe { ShutdownBlockReasonDestroy(hwnd) };
     } else if msg == WM_NCDESTROY {
+        // SAFETY: as above; a reason never outlives its window.
+        unsafe { ShutdownBlockReasonDestroy(hwnd) };
         // SAFETY: removing the subclass this proc was installed as.
         unsafe { RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID) };
         if let Ok(mut w) = windows().lock() {
@@ -274,6 +334,77 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(2), "and the wait is bounded");
         arm(None);
         unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// A shutdown query the app does not answer in time is a question, never a silent end.
+    #[test]
+    fn query_endsession_times_out_to_ask() {
+        let t = Instant::now();
+        assert!(!ask_or_end(|_done, _end| {}, Duration::from_millis(100)), "no answer: ask first");
+        assert!(t.elapsed() < Duration::from_secs(2), "bounded");
+        let say = |end: bool| {
+            move |done: Arc<AtomicBool>, answer: Arc<AtomicBool>| {
+                answer.store(end, Ordering::SeqCst);
+                done.store(true, Ordering::Release);
+            }
+        };
+        assert!(ask_or_end(say(true), Duration::from_secs(1)), "the app said end now");
+        assert!(!ask_or_end(say(false), Duration::from_secs(1)), "the app said ask first");
+        // The window procedure returns the answer (FALSE blocks the shutdown).
+        let _g = serial();
+        let hwnd = message_window();
+        watch(hwnd as isize);
+        arm_query(Some(Arc::new(|_| false)));
+        assert_eq!(unsafe { SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0) }, 0, "ask first returns FALSE");
+        arm_query(Some(Arc::new(|_| true)));
+        assert_eq!(unsafe { SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0) }, 1, "end now returns TRUE");
+        arm_query(None);
+        assert_eq!(unsafe { SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0) }, 1, "no watch: Windows' default");
+        unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// B8: the resident window and a second window share the one subclass; one logoff, one run,
+    /// and the query never runs the end-of-session work.
+    #[test]
+    fn logoff_runs_once_with_resident_and_a_second_window() {
+        let _g = serial();
+        let (resident, other) = (message_window(), message_window());
+        let (calls, on_end) = counter();
+        arm(Some(on_end));
+        arm_query(Some(Arc::new(|_| true)));
+        watch(resident as isize);
+        watch(other as isize);
+        unsafe {
+            SendMessageW(resident, WM_QUERYENDSESSION, 0, 0);
+            SendMessageW(other, WM_QUERYENDSESSION, 0, 0);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "a query ends nothing");
+        unsafe {
+            SendMessageW(resident, WM_ENDSESSION, 1, 0);
+            SendMessageW(other, WM_ENDSESSION, 1, 0);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one logoff, one run");
+        // The app side has one end-of-session event: no second subclass, no ShutdownEnded.
+        let whole = include_str!("mod.rs");
+        assert!(!whole.contains("ShutdownEnded") && !whole.contains("install_shutdown_hook"), "one subclass, one Logoff event (B8)");
+        arm(None);
+        arm_query(None);
+        unsafe {
+            DestroyWindow(resident);
+            DestroyWindow(other);
+        }
+    }
+
+    /// Every window that is watched for the display is watched for the end of the session, the
+    /// hidden resident one included (a source check: the watch no longer waits for the keys).
+    #[test]
+    fn every_window_gets_the_session_watch() {
+        for (name, src) in [("mod.rs", include_str!("mod.rs")), ("transparency_ui.rs", include_str!("transparency_ui.rs")), ("windows_ui.rs", include_str!("windows_ui.rs"))] {
+            let code = src;
+            let displays = code.matches("display_watch::watch(").count();
+            let sessions = code.matches("logout_ui::watch(").count();
+            assert!(displays > 0 && sessions >= displays, "{name}: {displays} display watches, {sessions} session watches");
+        }
     }
 
     /// The app's part of a logoff does what Quit does before it ends the shells, in that order

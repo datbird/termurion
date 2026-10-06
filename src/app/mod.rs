@@ -237,6 +237,11 @@ pub enum UserEvent {
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
+    /// Windows asks whether the session may end (WM_QUERYENDSESSION on window `hwnd`): the app sets
+    /// `end_now` (true = nothing to ask) and then `done` (`logout_ui`, `resident_ui::shutdown_decide`).
+    ShutdownQuery { done: Arc<std::sync::atomic::AtomicBool>, end_now: Arc<std::sync::atomic::AtomicBool>, hwnd: isize },
+    /// The shutdown was held for the quit question: ask it now, after the window procedure returned.
+    ShutdownAsk,
 }
 
 #[derive(Clone)]
@@ -1051,6 +1056,12 @@ pub struct App {
     save_due: Option<Instant>,
     /// The logoff watch is on (`logout_ui`): one setting for every window.
     logout_armed: bool,
+    /// The end-of-session watch has been armed once (`logout_ui::tick_logout`).
+    logout_set: bool,
+    /// The shutdown query has been armed once.
+    query_set: bool,
+    /// The window a shutdown block reason stands on (`resident_ui::shutdown_decide`).
+    shutdown_block: Option<isize>,
     /// Session restoration: when to save the windows, whether saving is over (quit, or the
     /// last window closed), and a focus loss waiting to be saved.
     state_debounce: crate::restore_state::Debounce,
@@ -1707,15 +1718,6 @@ pub fn run() {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
 
-    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
-    // launch's other housekeeping (P24), off the launch path.
-    std::thread::spawn(|| {
-        let now = std::time::SystemTime::now();
-        if let Some(d) = files_ui::downloads_dir() {
-            crate::ssh_local::sweep_stale(&d, now);
-        }
-        crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
-    });
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
     if let Some(text) = pipe_problem {
@@ -1785,6 +1787,16 @@ pub fn run() {
     }
     // Tandem's own scheme registrations follow the exe when it moved (only schemes the person bound).
     crate::url_schemes::repair_at_start(&globals);
+    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
+    // launch's other housekeeping (P24), off the launch path.
+    let downloads_setting = globals.string("DownloadsDirectory");
+    std::thread::spawn(move || {
+        let now = std::time::SystemTime::now();
+        if let Some(d) = files_ui::downloads_dir(&downloads_setting) {
+            crate::ssh_local::sweep_stale(&d, now);
+        }
+        crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
+    });
     // So does the default-terminal handoff class (P11), under the same rule.
     crate::default_term::repair_at_start();
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
@@ -2183,6 +2195,9 @@ pub fn run() {
         settings: None,
         save_due: None,
         logout_armed: false,
+        logout_set: false,
+        query_set: false,
+        shutdown_block: None,
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
@@ -6406,7 +6421,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(h) = self.hwnd() {
                     crate::display_watch::watch(h);
                     #[cfg(windows)]
-                    crate::firstmouse_win::watch(h);
+                    {
+                        crate::firstmouse_win::watch(h);
+                        logout_ui::watch(h);
+                    }
                 }
                 self.refresh_caption_frame();
                 self.apply_corners();
@@ -6811,6 +6829,15 @@ impl ApplicationHandler<UserEvent> for App {
                 done.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
+            UserEvent::ShutdownQuery { done, end_now, hwnd } => {
+                #[cfg(windows)]
+                self.shutdown_decide(hwnd, &end_now);
+                #[cfg(not(windows))]
+                let _ = (hwnd, end_now);
+                done.store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            UserEvent::ShutdownAsk => return self.shutdown_query(event_loop),
             UserEvent::Wake => {}
         }
         let mut changed = false;

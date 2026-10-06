@@ -76,3 +76,13 @@ Same setup and capture as rows 1-5.
 | 27 | OpenUntitledFile off, resident: a left click on the icon opens nothing (right-click > Main Menu > Shell > New Window still does). Start Tandem with the key off and "Open a new window at startup" on: it starts resident, no window. | |
 | 28 | Resident, a Jump List item, `tandem.exe` again, or an ssh link: one window shows, with only the requested tab (a bare second start follows OpenUntitledFile). A global hotkey of a profile's hotkey window brings that window while resident. | |
 | 29 | Resident, a Windows sign out or shutdown with Tandem running: it ends with the logoff, nothing hangs, the keyboard layout is not left forced after it. | |
+
+## Shutdown and Downloads (task 8)
+
+| # | Check | Result |
+|---|---|---|
+| 30 | NeverBlockSystemShutdown off, a shell running a program (for example `ping -t localhost`) and Prompt Before Closing asking: start a Windows shutdown. Windows' "apps are keeping Windows from shutting down" screen names Tandem with "Tandem is asking whether to quit.". Press Cancel: Tandem shows the quit question; Cancel keeps it running, and the screen's reason is gone. Start the shutdown again and choose "Shut down anyway": Tandem's windows and state are saved and Windows ends. | |
+| 31 | Same with an idle shell and no Confirm Quit: the shutdown does not wait for Tandem and nothing is asked. With NeverBlockSystemShutdown on and a running program: no question, the state is saved, Windows ends. After signing in, Restore returns the windows. | |
+| 32 | Settings > Advanced > Downloads folder: set a local folder, then `imgcat`-style download (OSC 1337 File) and an ssh download: the file lands there. Empty it: it lands in the Windows Downloads folder. Set a UNC path or a mapped share: the banner says the folder is not used and the file lands in the Windows Downloads folder. A downloaded file keeps its Mark of the Web. | |
+| 33 | Settings > Advanced shows "Downloads folder." and "Overlay the suite name on the taskbar icon when launched with -suite.", the latter with no effect. | |
+

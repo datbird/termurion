@@ -149,6 +149,55 @@ impl App {
             crate::presence::Reopen::NewWindow | crate::presence::Reopen::Nothing => {}
         }
     }
+    /// WM_QUERYENDSESSION (`UserEvent::ShutdownQuery`, decided inside the window procedure's
+    /// bounded wait): a shutdown asks exactly when a quit would (`AD:993-1036`, R3). `end_now` is
+    /// set true when nothing needs asking. Otherwise Windows is told why it must wait (a block
+    /// reason on the window that was asked, which may be the hidden resident one) and the question
+    /// is posted to be shown after the procedure returned FALSE. Reads only; no dialog here.
+    #[cfg(windows)]
+    pub(super) fn shutdown_decide(&mut self, hwnd: isize, end_now: &std::sync::atomic::AtomicBool) {
+        use std::sync::atomic::Ordering;
+        let never = self.globals.bool("NeverBlockSystemShutdown");
+        // A second window's query while the question is already standing: still held.
+        if self.shutdown_block.is_some() {
+            end_now.store(false, Ordering::Release);
+            return;
+        }
+        let has_reasons = resident::reasons_collected(true, never) && !self.quit_reasons_now().is_empty();
+        match resident::on_shutdown(never, has_reasons) {
+            resident::ShutdownAnswer::EndNow => end_now.store(true, Ordering::Release),
+            resident::ShutdownAnswer::AskFirst => {
+                end_now.store(false, Ordering::Release);
+                let reason: Vec<u16> = resident::BLOCK_REASON.encode_utf16().chain(Some(0)).collect();
+                // SAFETY: `hwnd` is a top-level window of this process; `reason` is NUL-terminated.
+                if unsafe { windows_sys::Win32::System::Shutdown::ShutdownBlockReasonCreate(hwnd as _, reason.as_ptr()) } != 0 {
+                    self.shutdown_block = Some(hwnd);
+                }
+                let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAsk));
+            }
+        }
+    }
+
+    /// Takes the block reason down (every path: OK, Cancel, the end of the session). Idempotent.
+    pub(super) fn destroy_block_reason(&mut self) {
+        #[cfg(windows)]
+        if let Some(hwnd) = self.shutdown_block.take() {
+            // SAFETY: the window the reason was created on; fails harmlessly if it is gone.
+            unsafe { windows_sys::Win32::System::Shutdown::ShutdownBlockReasonDestroy(hwnd as _) };
+        }
+    }
+
+    /// The quit question for a held shutdown (`UserEvent::ShutdownAsk`): OK takes the reason down
+    /// and quits as Quit does, without asking again; Cancel takes it down and Tandem keeps running
+    /// (Windows does not retry: the person starts the shutdown again, Decision).
+    pub(super) fn shutdown_query(&mut self, event_loop: &ActiveEventLoop) {
+        if self.confirm_close(close_ui::Closing::Shutdown) {
+            self.destroy_block_reason();
+            self.quit_confirmed(event_loop);
+        } else {
+            self.destroy_block_reason();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +335,22 @@ mod tests {
         assert!(notify.contains("RegisterWindowMessageW") && notify.contains("if RESIDENT.load(Ordering::SeqCst)") && notify.contains("add_resident(hwnd)"));
         assert!(production(PRESENCE).contains("crate::resident::icon_wanted(presence::tray_wanted("));
         assert!(production(PRESENCE).contains("crate::notify::set_resident(want)"));
+    }
+
+    /// A shutdown asks as a quit does, through the one subclass; the block reason stands only
+    /// while there is something to ask and comes down on every path (a source check).
+    #[test]
+    fn a_shutdown_asks_through_the_block_reason_and_lets_it_go() {
+        let src = include_str!("resident_ui.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        let decide = &src[src.find("fn shutdown_decide(").unwrap()..src.find("fn destroy_block_reason(").unwrap()];
+        assert!(decide.contains("on_shutdown(never, has_reasons)") && decide.contains("quit_reasons_now()"), "the decision is the pure table over the quit reasons");
+        let create = decide.find("ShutdownBlockReasonCreate").unwrap();
+        assert!(create > decide.find("AskFirst").unwrap(), "a reason is made only for AskFirst");
+        assert!(!decide.contains("confirm"), "no dialog inside the query");
+        let ask = &src[src.find("fn shutdown_query(").unwrap()..];
+        assert_eq!(ask.matches("destroy_block_reason()").count(), 2, "OK and Cancel both take it down");
+        assert!(ask.contains("Closing::Shutdown") && ask.contains("quit_confirmed"), "OK quits without asking again");
+        let logoff = include_str!("logout_ui.rs");
+        assert!(logoff.contains("self.destroy_block_reason()"), "the session end takes it down");
     }
 }

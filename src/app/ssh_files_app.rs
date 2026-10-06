@@ -272,7 +272,7 @@ impl App {
         if let Some(why) = local::refused_name(&l.short_name) {
             return fail(&l, why);
         }
-        let Some(dir) = super::files_ui::downloads_dir() else { return fail(&l, local::NO_DOWNLOADS) };
+        let Some(dir) = self.downloads_folder() else { return fail(&l, local::NO_DOWNLOADS) };
         let temp = dir.join(local::temp_name(&uuid::Uuid::new_v4().to_string().to_uppercase()));
         if let Err(e) = crate::localfs::judge_io(&temp).and_then(|t| crate::localfs::open_custom(&t, |o| { o.write(true).create_new(true); })) {
             return fail(&l, &e.to_string());

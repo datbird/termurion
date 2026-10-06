@@ -5145,6 +5145,24 @@ default = 10.0
 help = "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period."
 
 [[setting]]
+key = "DownloadsDirectory"
+tab = "Advanced"
+section = "General"
+label = "Downloads folder."
+type = "string"
+default = ""
+help = "Downloads folder.\nIf set, downloaded files go to this location instead of the user\u2019s Downloads folder."
+
+[[setting]]
+key = "ShowSuiteNameInDockIcon"
+tab = "Advanced"
+section = "General"
+label = "Overlay the suite name on the taskbar icon when launched with -suite."
+type = "bool"
+default = true
+help = "Overlay the suite name on the taskbar icon when launched with -suite.\nWhen you run an isolated instance with the -suite argument, its name is drawn across the lower third of the taskbar icon so you can tell instances apart."
+
+[[setting]]
 key = "OpenUntitledFile"
 tab = "Advanced"
 section = "General"

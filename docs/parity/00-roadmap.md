@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 316 | 291 | 23 | 2 |
-| `02-global-settings.md` | 820 | 645 | 35 | 140 |
+| `02-global-settings.md` | 820 | 647 | 35 | 138 |
 | `03-features-and-menus.md` | 648 | 584 | 35 | 29 |
-| Total | 1,784 | 1,520 | 93 | 171 |
+| Total | 1,784 | 1,522 | 94 | 168 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -840,3 +840,5 @@ the command system, or shows up in a menu, so those come first.
 - Each milestone updates the status column of the rows it closes, so the table above stays true.
 
 Milestone 13v1 Task 7 built staying resident (2026-10-06; 02: 3 rows to have, 2 from missing (minRunningTime, openUntitledFile) and QuitWhenAllWindowsClosed from partial): closing the last window keeps Tandem running with its notification area icon unless the key is on (R3), and a launch that plans no window starts resident (R3). Per file: 02 820 rows, 645 have, 35 partial, 140 missing; total 1,784 rows, 1,520 have, 93 partial, 171 missing (counted as the change from the 13u union). Rulings: docs/superpowers/rulings/m13v1-rulings.txt; checklist rows 23 to 29 of docs/acceptance/m13v1-checklist.md.
+
+Milestone 13v1 Task 8 built the Windows shutdown question and the Downloads folder (2026-10-06; 02: NeverBlockSystemShutdown from partial and downloadsDirectory from missing to have, showSuiteNameInDockIcon from missing to partial): one end-of-session subclass, shutdown asks as a quit would, `DownloadsDirectory` joins Windows' Downloads folder under the path judge.

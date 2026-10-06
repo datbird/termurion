@@ -2845,6 +2845,22 @@ mod tests {
         assert!(quit.help.contains("notification area icon"), "{}", quit.help);
     }
 
+    #[test]
+    fn downloads_rows_follow_iterm2() {
+        let d = schema::find_global("DownloadsDirectory").expect("DownloadsDirectory");
+        assert_eq!((d.tab.as_str(), d.section.as_str(), d.kind, d.default.clone()), ("Advanced", "General", Kind::String, Some(Value::String(String::new()))));
+        assert_eq!(d.label, "Downloads folder.");
+        assert_eq!(d.help, "Downloads folder.\nIf set, downloaded files go to this location instead of the user\u{2019}s Downloads folder.");
+        let s = schema::find_global("ShowSuiteNameInDockIcon").expect("ShowSuiteNameInDockIcon");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind, s.default.clone()), ("Advanced", "General", Kind::Bool, Some(Value::Boolean(true))));
+        assert_eq!(s.label, "Overlay the suite name on the taskbar icon when launched with -suite.");
+        assert_eq!(s.help, "Overlay the suite name on the taskbar icon when launched with -suite.\nWhen you run an isolated instance with the -suite argument, its name is drawn across the lower third of the taskbar icon so you can tell instances apart.");
+        for key in ["DownloadsDirectory", "ShowSuiteNameInDockIcon"] {
+            assert!(page_rows("Advanced").iter().any(|r| r.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|r| r.key == key).count(), 1, "{key}");
+        }
+    }
+
     /// `AS:853-885`: the five open-file rows (Task 2): tab, section, kind, default, label and help.
     #[test]
     fn open_file_rows_follow_iterm2() {

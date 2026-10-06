@@ -656,7 +656,10 @@ impl App {
         if let (Some(h), true) = (self.hwnd(), new_slot.is_some()) {
             crate::display_watch::watch(h);
             #[cfg(windows)]
-            crate::firstmouse_win::watch(h);
+            {
+                crate::firstmouse_win::watch(h);
+                super::logout_ui::watch(h);
+            }
         }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
