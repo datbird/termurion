@@ -88,13 +88,13 @@ impl Table {
 }
 
 /// `log_string` for the log: the same table, as a value `dlog!` accepts.
-pub fn log_table(identifier: &str, stats: &mut [Stat]) -> Table {
+pub fn log_table(identifier: &'static str, stats: &mut [Stat]) -> Table {
     Table(log_string(identifier, stats))
 }
 
 /// `PTM:194-264`, the form without histograms: iTerm2's duration emoji is left out and its en dash
 /// is written "-" (Decision). A stat with no samples prints nothing; every stat is reset.
-pub fn log_string(identifier: &str, stats: &mut [Stat]) -> String {
+pub fn log_string(identifier: &'static str, stats: &mut [Stat]) -> String {
     let mut log = format!("-- Precise Timers for {identifier} --\n");
     for s in stats.iter_mut() {
         if s.n > 0 {

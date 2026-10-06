@@ -1003,6 +1003,42 @@ mod tests {
         assert_eq!(names(&["claude".to_string(), "a b\"c".to_string()]).to_string(), "[\"claude\", \"a b?c\"]", "sanitized, in iTerm2's list spelling");
     }
 
+    /// The class (Task 2 round 2): no public function that returns a log-safe type takes a runtime
+    /// string, whatever it is called. Only `name`, `names` and `program` may (they sanitize and bound; `program` keeps one file name); every other
+    /// constructor takes `&'static str`, numbers or other log-safe values.
+    #[test]
+    fn every_log_safe_constructor_refuses_runtime_strings() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let sig = regex::Regex::new(r"(?s)pub(?:\([a-z]+\))? fn (\w+)\s*(?:<[^>]*>)?\(([^)]*)\)\s*->\s*([^{;]+)").unwrap();
+        let ret = regex::Regex::new(r"\b(Name|Names|Table|Box<dyn LogSafe>|impl LogSafe)\b").unwrap();
+        let runtime = regex::Regex::new(r"&\s*(?:'[a-z]+\s+)?(?:mut\s+)?str\b|\bString\b|AsRef<|Into<|Display|ToString|\bimpl\b|\bT\b|&\[\s*String").unwrap();
+        let (mut checked, mut dirs) = (Vec::new(), vec![src]);
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let t = std::fs::read_to_string(&p).unwrap();
+                    let live = t.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+                    for c in sig.captures_iter(live) {
+                        // `Table` is perf's log-safe table; other files' `Table` types are not ours.
+                        let ours = ret.captures(&c[3]).is_some_and(|m| &m[1] != "Table" || p.ends_with("perf.rs"));
+                        if !ours {
+                            continue;
+                        }
+                        checked.push(c[1].to_string());
+                        let args = c[2].replace("&'static str", "");
+                        let allowed = matches!(&c[1], "name" | "names" | "program");
+                        assert!(allowed || !runtime.is_match(&args), "{p:?}: `{}` returns a log-safe value from a runtime string ({})", &c[1], &c[2]);
+                    }
+                }
+            }
+        }
+        checked.sort();
+        assert_eq!(checked, ["log_table", "name", "names", "program"], "the log-safe constructors");
+    }
+
     /// Every live `dlog!` and `rlog!` call: (file, macro, format string, argument text).
     fn live_sites() -> Vec<(String, &'static str, String, String)> {
         let call = regex::Regex::new(r"\b(dlog|rlog)!\s*[(\[{]").unwrap();
