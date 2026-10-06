@@ -208,8 +208,25 @@ pub enum Refusal {
     Count,
 }
 
-/// Elements that run, embed or load something.
-const REFUSED_ELEMENTS: &[&str] = &["script", "foreignobject", "iframe", "frame", "frameset", "object", "embed", "applet", "link", "meta", "base", "audio", "video", "canvas", "source", "track", "handler", "listener", "html", "body", "head"];
+/// The elements an icon may hold (SVG 1.1 and 2 graphics, painting and filter elements): anything
+/// else, including every element of another namespace (XHTML `a`, `img`, `form`), is refused. The
+/// check fails closed: a name nobody listed is not allowed. `script`, `foreignObject`, `iframe`,
+/// `animate`'s href and the like are not here or are judged below.
+const ALLOWED_ELEMENTS: &[&str] = &[
+    "svg", "g", "defs", "symbol", "use", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "textpath", "lineargradient", "radialgradient", "stop", "clippath", "mask", "pattern", "filter", "style", "title", "desc", "metadata", "marker", "image", "a", "switch", "animate", "animatemotion", "animatetransform", "set", "mpath", "view", "feblend", "fecolormatrix", "fecomponenttransfer", "fecomposite", "feconvolvematrix", "fediffuselighting", "fedisplacementmap", "fedistantlight", "fedropshadow", "feflood", "fefunca", "fefuncb", "fefuncg", "fefuncr", "fegaussianblur", "feimage", "femerge", "femergenode", "femorphology", "feoffset", "fepointlight", "fespecularlighting", "fespotlight", "fetile", "feturbulence",
+];
+
+/// The attributes an icon may carry (geometry, painting, text, gradients, filters, animation timing,
+/// ids and classes). The local name is compared in lower case after the namespace prefix; `xmlns`
+/// declarations are allowed by name. Anything else (`srcset`, `ping`, `background`, `poster`, `data`,
+/// `target`, `download`, `autofocus`, `contenteditable` ...) is refused: the check fails closed.
+const ALLOWED_ATTRIBUTES: &[&str] = &[
+    "id", "class", "style", "lang", "space", "version", "baseprofile", "role", "tabindex", "x", "y", "x1", "x2", "y1", "y2", "z", "cx", "cy", "r", "rx", "ry", "fx", "fy", "fr", "width", "height", "viewbox", "preserveaspectratio", "d", "points", "pathlength", "transform", "transform-origin", "transform-box", "patterntransform", "gradienttransform", "gradientunits", "spreadmethod", "patternunits", "patterncontentunits", "clippathunits", "maskunits", "maskcontentunits", "markerunits", "markerwidth", "markerheight", "refx", "refy", "orient", "offset", "href", "dx", "dy", "rotate", "textlength", "lengthadjust", "startoffset", "method", "spacing", "side", "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "opacity", "color", "color-interpolation", "color-interpolation-filters", "color-rendering", "stop-color", "stop-opacity", "flood-color", "flood-opacity", "lighting-color", "clip", "clip-path", "clip-rule", "mask", "mask-type", "filter", "marker-start", "marker-mid", "marker-end", "paint-order", "vector-effect", "shape-rendering", "image-rendering", "text-rendering", "display", "visibility", "overflow", "isolation", "mix-blend-mode", "font-family", "font-size", "font-size-adjust", "font-stretch", "font-style", "font-variant", "font-weight", "letter-spacing", "word-spacing", "text-anchor", "text-decoration", "dominant-baseline", "alignment-baseline", "baseline-shift", "direction", "unicode-bidi", "writing-mode", "glyph-orientation-vertical", "kerning", "xmlns", "in", "in2", "result", "type", "values", "mode", "operator", "k1", "k2", "k3", "k4", "stddeviation", "edgemode", "kernelmatrix", "kernelunitlength", "divisor", "bias", "targetx", "targety", "order", "preservealpha", "radius", "scale", "xchannelselector", "ychannelselector", "basefrequency", "numoctaves", "seed", "stitchtiles", "surfacescale", "diffuseconstant", "specularconstant", "specularexponent", "limitingconeangle", "pointsatx", "pointsaty", "pointsatz", "azimuth", "elevation", "slope", "intercept", "amplitude", "exponent", "tablevalues", "filterunits", "primitiveunits", "attributename", "attributetype", "from", "to", "by", "begin", "end", "dur", "min", "max", "restart", "repeatcount", "repeatdur", "calcmode", "keytimes", "keysplines", "keypoints", "accumulate", "additive", "path", "origin", "systemlanguage", "requiredfeatures", "requiredextensions", "zoomandpan", "viewtarget", "media", "title", "contentstyletype", "externalresourcesrequired",
+];
+
+fn attribute_allowed(local: &str, full: &str) -> bool {
+    full.to_ascii_lowercase().starts_with("xmlns") || ALLOWED_ATTRIBUTES.contains(&local)
+}
 
 fn name_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b':')
@@ -379,7 +396,7 @@ fn start_tag(svg: &str, at: usize, stack: &mut Vec<String>, elements: &mut usize
     }
     let name = &svg[first..j];
     let local = local_name(name);
-    let mut attrs: Vec<(String, String)> = Vec::new();
+    let mut attrs: Vec<(String, String, String)> = Vec::new();
     let self_closed;
     loop {
         while j < b.len() && b[j].is_ascii_whitespace() {
@@ -430,7 +447,7 @@ fn start_tag(svg: &str, at: usize, stack: &mut Vec<String>, elements: &mut usize
         if raw.contains('<') {
             return Err(Refusal::Malformed);
         }
-        attrs.push((local_name(aname), decode_entities(raw)?));
+        attrs.push((local_name(aname), aname.to_string(), decode_entities(raw)?));
         j += len + 1;
     }
     if stack.is_empty() {
@@ -439,7 +456,7 @@ fn start_tag(svg: &str, at: usize, stack: &mut Vec<String>, elements: &mut usize
             return Err(Refusal::Malformed);
         }
     }
-    if REFUSED_ELEMENTS.contains(&local.as_str()) {
+    if !ALLOWED_ELEMENTS.contains(&local.as_str()) {
         return Err(Refusal::Element(local));
     }
     *elements += 1;
@@ -456,9 +473,12 @@ fn start_tag(svg: &str, at: usize, stack: &mut Vec<String>, elements: &mut usize
         return Err(Refusal::Depth);
     }
     let animates = matches!(local.as_str(), "animate" | "set" | "animatemotion" | "animatetransform");
-    for (an, av) in &attrs {
+    for (an, full, av) in &attrs {
         if an.starts_with("on") {
             return Err(Refusal::EventAttribute(an.clone()));
+        }
+        if !attribute_allowed(an, full) {
+            return Err(Refusal::External(an.clone()));
         }
         match an.as_str() {
             "href" if !href_ok(av) => return Err(Refusal::External(an.clone())),
@@ -636,6 +656,30 @@ mod tests {
     }
 
     const GOOD: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 64 64\"><defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#08f\"/><stop offset=\"1\" stop-color=\"#f80\"/></linearGradient><circle id=\"dot\" r=\"4\"/><style>.a{fill:url(#g);stroke:none}</style></defs><rect width=\"64\" height=\"64\" fill=\"url(#g)\"/><use xlink:href=\"#dot\" x=\"10\" y=\"10\" class=\"a\"/><use href=\"#dot\" x=\"20\" y=\"20\" style=\"fill:url('#g')\"/><!-- a comment with <script> in it --><path d=\"M4 4L60 60\" stroke=\"white\"/><text>a &amp; b &#169; &#x41;</text></svg>";
+
+    /// Review fix (Task 4, Minor 1): the check is an allowlist of SVG elements and attributes, so a
+    /// name nobody listed fails closed.
+    #[test]
+    fn the_check_is_an_allowlist() {
+        let x = |inner: &str| format!("<svg xmlns='http://www.w3.org/2000/svg'>{inner}</svg>");
+        for bad in [
+            "<h:img xmlns:h='http://www.w3.org/1999/xhtml' srcset='http://x 1x'/>",
+            "<h:a xmlns:h='http://www.w3.org/1999/xhtml' ping='http://x'>t</h:a>",
+            "<h:form xmlns:h='http://www.w3.org/1999/xhtml' action='http://x'/>",
+            "<video poster='x'/>",
+            "<rect width='1' height='1' background='http://x'/>",
+            "<rect width='1' height='1' poster='http://x'/>",
+            "<rect width='1' height='1' data='http://x'/>",
+            "<a href='#a' target='_blank' ping='http://x'><rect/></a>",
+            "<rect width='1' height='1' autofocus=''/>",
+            "<custom-element/>",
+        ] {
+            assert!(check(&x(bad)).is_err(), "{bad}");
+        }
+        for ok in ["<rect width='1' height='1' fill='red' stroke-width='2'/>", "<g opacity='.5'><circle cx='1' cy='1' r='1'/></g>", "<defs><linearGradient id='g'><stop offset='0' stop-color='#fff'/></linearGradient></defs>", "<filter id='f'><feGaussianBlur stdDeviation='2'/></filter>", "<text x='1' y='1' font-family='a' text-anchor='middle'>t</text>"] {
+            assert_eq!(check(&x(ok)), Ok(()), "{ok}");
+        }
+    }
 
     #[test]
     fn a_plain_icon_is_accepted() {
