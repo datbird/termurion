@@ -426,7 +426,7 @@ impl App {
         }
         let windows = self.snapshots(what, Contents::Plain);
         let Some(path) = rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"]).save_file() else { return };
-        match arrangement::to_plist(&windows).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
+        match arrangement::to_plist(&windows).and_then(|b| crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, b)).map_err(|e| e.to_string())) {
             Ok(()) => self.banners.clear("arrangement"),
             Err(e) => self.banners.set("arrangement", format!("Could not save {}: {e}", path.display())),
         }
@@ -603,7 +603,7 @@ impl App {
             let ssh = crate::profile::is_ssh(&self.profile(guid.as_deref()));
             let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             // An archive starts no shell, so its folder is never checked.
-            let notice = if archive { FolderNotice::Nothing } else { folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| crate::localfs::is_dir(p)) };
+            let notice = if archive { FolderNotice::Nothing } else { folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| crate::localfs::is_local_dir(p)) };
             self.start_dir_override = Some(match notice {
                 FolderNotice::Unavailable => arrangement::Folder::Forced(crate::profile::home().to_string_lossy().into_owned()),
                 _ => arrangement::folder_for(&session, ssh),
@@ -967,7 +967,7 @@ impl App {
     /// first (`open_arrangement_windows`). The caller has checked the path is local.
     pub(super) fn load_arrangement_path(&mut self, path: &std::path::Path) {
         let path = path.to_path_buf();
-        let windows = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| arrangement::from_plist(&b)) {
+        let windows = match crate::localfs::judge_io(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| e.to_string()).and_then(|b| arrangement::from_plist(&b)) {
             Ok(w) => w,
             Err(e) => {
                 self.banners.set("arrangement", format!("Could not load {}: {e}", super::files_ui::shown_name(&path.display().to_string())));

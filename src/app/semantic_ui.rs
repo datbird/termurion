@@ -394,8 +394,8 @@ impl App {
                     // CREATE_NO_WINDOW: the command's own windows still show.
                     cmd.raw_arg(semantic::cmd_args(&line)).creation_flags(0x0800_0000);
                 }
-                if let Some(d) = cwd.filter(|d| crate::localfs::is_dir(d)) {
-                    cmd.current_dir(d);
+                if let Some(d) = cwd.and_then(crate::localfs::LocalPath::judge).filter(crate::localfs::is_dir) {
+                    crate::localfs::set_cwd(&mut cmd, &d);
                 }
                 if let Err(e) = cmd.spawn() {
                     self.banners.set("action", format!("Could not run {line}: {e}"));
@@ -445,8 +445,8 @@ impl App {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        if let Some(d) = cwd.filter(|d| crate::localfs::is_dir(d)) {
-            cmd.current_dir(d);
+        if let Some(d) = cwd.and_then(crate::localfs::LocalPath::judge).filter(crate::localfs::is_dir) {
+            crate::localfs::set_cwd(&mut cmd, &d);
         }
         if let Err(e) = cmd.spawn() {
             self.banners.set("action", format!("Could not start {}: {e}", exe.display()));
@@ -462,7 +462,7 @@ impl App {
         let probe = self.path_probe();
         let dir = cwd
             .map(|d| d.to_string_lossy().to_string())
-            .filter(|d| d.as_bytes().get(1) == Some(&b':') && crate::netpath::may_probe(d, &probe) && std::path::Path::new(d).is_dir());
+            .filter(|d| d.as_bytes().get(1) == Some(&b':') && crate::localfs::LocalPath::semantic(d, &probe).is_some_and(|d| crate::localfs::is_dir(&d)));
         match self.open_single_use_window(event_loop, command, dir) {
             Some(new) => {
                 let end = self.store.default_profile().int(crate::session_end::END_ACTION_KEY);
@@ -884,7 +884,7 @@ fn has_code() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
         std::env::var_os("PATH").is_some_and(|path| {
-            std::env::split_paths(&path).any(|d| ["code.cmd", "code.exe"].iter().any(|f| d.join(f).is_file()))
+            std::env::split_paths(&path).any(|d| ["code.cmd", "code.exe"].iter().any(|f| crate::localfs::is_local_file(&d.join(f))))
         })
     })
 }

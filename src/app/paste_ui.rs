@@ -296,7 +296,7 @@ impl App {
         let Some(path) = crate::winclip::first_file() else {
             return self.banners.set("paste", "The clipboard holds no file.".to_string());
         };
-        match std::fs::read(&path) {
+        match crate::localfs::judge_io(&path).and_then(|p| crate::localfs::read(&p)) {
             Ok(bytes) => self.user_paste(id, &paste::base64_lines(&bytes), Write::Paste),
             Err(e) => self.banners.set("paste", format!("Could not read {}: {e}", path.display())),
         }

@@ -1,37 +1,65 @@
-//! Which paths Semantic History may probe (`NFM:17-70`, `SHC:86`). A file on a slow
-//! network drive can freeze the app, so a path under an ignored folder or on a mapped drive
-//! is never touched unless `EnableSemanticHistoryOnNetworkMounts` says so. A network path
-//! (`\\host\share` in any spelling) is never touched at all: the one rule is
-//! `scripts::is_network_path` (with `scripts::stays_local` for links), not a copy of it here.
+//! THE judge of every path from outside before Tandem probes it, and which paths Semantic History
+//! may probe (`NFM:17-70`, `SHC:86`). Any probe of a path on a share (`is_dir`, `metadata`, an open,
+//! a folder listing) connects to it and sends the person's NTLM hash, so a path is judged with no
+//! I/O on the network, in this order:
+//! 1. text: a UNC or device-namespace path (`\\host`, `//host`, `\\?\UNC`, `\\.\`), a DOS device
+//!    name (CON, NUL, COM1: a device may be redirected to a share), a relative path;
+//! 2. the drive letter's device-map target (`QueryDosDeviceW`, an object-manager query): a SUBST
+//!    letter (`\??\C:\dir`) is replaced by its target and judged again; ANY other target that is not
+//!    a local volume (`\??\UNC\..`, `\Device\Mup\..`, `\Device\LanmanRedirector\..`, anything not
+//!    `\Device\HarddiskVolume*`, `\Device\CdRom*` or `\Device\Floppy*`) is network;
+//! 3. `GetDriveTypeW`, asked only for a letter step 2 found to be a local volume (it opens the root,
+//!    so it is never asked for a SUBST or redirected letter);
+//! 4. every folder from the root down, then the leaf, reads its reparse DATA with the reparse
+//!    point itself opened (`FILE_FLAG_OPEN_REPARSE_POINT`, nothing followed) on components already
+//!    found local; a link's target is judged again from step 1 (root first) before anything below
+//!    the link is read, and a reparse point Tandem cannot read is refused.
+//! Semantic History's ignore list and `EnableSemanticHistoryOnNetworkMounts` add to this (mapped
+//! drives allowed only when the setting says so); a UNC path is never touched at all.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Answers whether a drive root (`Z:\`) is a mapped network drive.
+/// The drive letters' device map and drive types.
 pub trait Drives {
-    fn is_remote(&self, root: &str) -> bool;
-    /// Where a SUBST or `DefineDosDevice` drive letter points (`\??\C:\dir`, `\??\UNC\h\s`),
-    /// None for a letter that is a real volume or network drive. An object-manager query: no I/O.
-    fn subst_target(&self, _root: &str) -> Option<String> {
-        None
-    }
+    /// `QueryDosDeviceW("X:")`: the letter's current target (`\Device\HarddiskVolume3`, `\??\C:\dir`
+    /// for a SUBST, `\Device\LanmanRedirector\;Z:..\h\s` for a mapped drive); None when the letter is
+    /// not defined. An object-manager query: no I/O.
+    fn dos_device(&self, letter: char) -> Option<String>;
+    /// `GetDriveTypeW("X:\")`. Asked only for a letter whose device is a local volume.
+    fn drive_type(&self, letter: char) -> u32;
 }
 
-/// Every drive is local: the non-Windows and default answer.
+/// Every drive is a local volume: the non-Windows and default answer.
 pub struct LocalDrives;
 
 impl Drives for LocalDrives {
-    fn is_remote(&self, _root: &str) -> bool {
-        false
+    fn dos_device(&self, _letter: char) -> Option<String> {
+        Some(r"\Device\HarddiskVolume1".to_string())
+    }
+    fn drive_type(&self, _letter: char) -> u32 {
+        DRIVE_FIXED
+    }
+}
+
+/// Tests: the letters given are mapped network drives, every other letter a local volume.
+#[cfg(test)]
+pub struct MappedLetters(pub &'static [char]);
+
+#[cfg(test)]
+impl Drives for MappedLetters {
+    fn dos_device(&self, letter: char) -> Option<String> {
+        Some(if self.0.contains(&letter.to_ascii_uppercase()) { format!(r"\Device\LanmanRedirector\;{letter}:0000000000012345\srv\share") } else { r"\Device\HarddiskVolume1".to_string() })
+    }
+    fn drive_type(&self, letter: char) -> u32 {
+        if self.0.contains(&letter.to_ascii_uppercase()) { DRIVE_REMOTE } else { DRIVE_FIXED }
     }
 }
 
 /// `GetDriveTypeW`'s `DRIVE_FIXED`, which is NOT kept: a USB disk reports it, and once unplugged its
 /// letter can be `net use`d, so a fixed answer is asked again on every call (the call is cheap).
-#[cfg(test)]
 const DRIVE_FIXED: u32 = 3;
 /// `DRIVE_REMOTE`.
-#[cfg(any(windows, test))]
 const DRIVE_REMOTE: u32 = 4;
 
 /// Whether drive `letter` (0 for A) is a network drive. Only a REMOTE answer is kept for the run (the
@@ -50,43 +78,51 @@ fn remote_answer(cache: &std::sync::Mutex<[Option<bool>; 26]>, letter: usize, as
     remote
 }
 
-/// `GetDriveTypeW` per drive letter, the stable answers kept for the run (`remote_answer`).
+/// `QueryDosDeviceW` and `GetDriveTypeW`.
 #[cfg(windows)]
 pub struct RealDrives;
 
 #[cfg(windows)]
 impl Drives for RealDrives {
-    fn is_remote(&self, root: &str) -> bool {
+    fn dos_device(&self, letter: char) -> Option<String> {
+        use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+        if !letter.is_ascii_alphabetic() {
+            return None;
+        }
+        let name: Vec<u16> = format!("{letter}:").encode_utf16().chain(Some(0)).collect();
+        // The answer is a list of strings, the first the current mapping; a SUBST target can be a
+        // long path, so a short buffer is retried once with the largest one.
+        for len in [1024usize, 32 * 1024] {
+            let mut buf = vec![0u16; len];
+            // SAFETY: `name` is NUL-terminated and `buf` is writable for its length.
+            let n = unsafe { QueryDosDeviceW(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            if n == 0 {
+                if std::io::Error::last_os_error().raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER as i32) {
+                    continue;
+                }
+                return None;
+            }
+            let n = n.min(buf.len());
+            let end = buf[..n].iter().position(|&c| c == 0).unwrap_or(n);
+            return Some(String::from_utf16_lossy(&buf[..end]));
+        }
+        None
+    }
+
+    fn drive_type(&self, letter: char) -> u32 {
         use std::sync::Mutex;
         use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
         static CACHE: Mutex<[Option<bool>; 26]> = Mutex::new([None; 26]);
-        let letter = match root.as_bytes().first() {
-            Some(c) if c.is_ascii_alphabetic() => (c.to_ascii_uppercase() - b'A') as usize,
-            _ => return false,
-        };
-        remote_answer(&CACHE, letter, || {
-            let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+        if !letter.is_ascii_alphabetic() {
+            return 0;
+        }
+        let index = (letter.to_ascii_uppercase() as u8 - b'A') as usize;
+        let remote = remote_answer(&CACHE, index, || {
+            let wide: Vec<u16> = format!("{letter}:\\").encode_utf16().chain(Some(0)).collect();
             // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
             unsafe { GetDriveTypeW(wide.as_ptr()) }
-        })
-    }
-
-    fn subst_target(&self, root: &str) -> Option<String> {
-        use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
-        let b = root.as_bytes();
-        if !b.first().is_some_and(u8::is_ascii_alphabetic) {
-            return None;
-        }
-        let name: Vec<u16> = format!("{}:", b[0] as char).encode_utf16().chain(Some(0)).collect();
-        let mut buf = vec![0u16; 1024];
-        // SAFETY: `name` is NUL-terminated and `buf` is writable for its length.
-        let n = unsafe { QueryDosDeviceW(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
-        if n == 0 {
-            return None;
-        }
-        let end = buf[..n.min(buf.len())].iter().position(|&c| c == 0).unwrap_or(n.min(buf.len()));
-        let target = String::from_utf16_lossy(&buf[..end]);
-        target.starts_with("\\??\\").then_some(target)
+        });
+        if remote { DRIVE_REMOTE } else { DRIVE_FIXED }
     }
 }
 
@@ -100,6 +136,145 @@ pub fn real_drives() -> Arc<dyn Drives + Send + Sync> {
     {
         Arc::new(LocalDrives)
     }
+}
+
+/// What a reparse point Tandem cannot read, or one whose tag may send an open elsewhere (HSM, DFS,
+/// a third-party filter), is answered as: a link to a network path, so the judge refuses it.
+pub const UNREADABLE_LINK: &str = r"\\?\UNC\unreadable-reparse-point";
+
+/// `p`'s own reparse data, read with the reparse point itself opened (`FILE_FLAG_OPEN_REPARSE_POINT`
+/// with no data access, so nothing is followed): None when `p` is not a reparse point (or does not
+/// exist), the target of a symbolic link or junction (relative as stored), `UNREADABLE_LINK` for a
+/// tag that may redirect elsewhere or any failure to read. Called only on a path whose every folder
+/// the judge has found local.
+#[cfg(windows)]
+pub fn read_reparse(p: &Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, GetLastError, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FileAttributeTagInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    /// `FSCTL_GET_REPARSE_POINT` (winioctl.h).
+    const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is NUL-terminated; no security attributes or template.
+    let h = unsafe {
+        CreateFileW(wide.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, std::ptr::null_mut())
+    };
+    if h == INVALID_HANDLE_VALUE {
+        // SAFETY: reads the calling thread's last error.
+        let e = unsafe { GetLastError() };
+        // Nothing there: nothing to follow (the probe after the judge finds nothing either).
+        return if e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND { None } else { Some(PathBuf::from(UNREADABLE_LINK)) };
+    }
+    let answer = (|| {
+        let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
+        // SAFETY: `h` is open and `info` is writable for its size.
+        if unsafe { GetFileInformationByHandleEx(h, FileAttributeTagInfo, &mut info as *mut _ as *mut _, std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32) } == 0 {
+            return Some(PathBuf::from(UNREADABLE_LINK));
+        }
+        if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            return None;
+        }
+        match reparse_kind(info.ReparseTag) {
+            Reparse::Inert => return None,
+            Reparse::Opaque => return Some(PathBuf::from(UNREADABLE_LINK)),
+            Reparse::Link => {}
+        }
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut got = 0u32;
+        // SAFETY: `h` is open; `buf` is writable for its length; no overlapped I/O.
+        let ok = unsafe { DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, std::ptr::null(), 0, buf.as_mut_ptr().cast(), buf.len() as u32, &mut got, std::ptr::null_mut()) };
+        if ok == 0 {
+            return Some(PathBuf::from(UNREADABLE_LINK));
+        }
+        Some(link_target(&buf[..(got as usize).min(buf.len())]).unwrap_or_else(|| PathBuf::from(UNREADABLE_LINK)))
+    })();
+    // SAFETY: `h` was opened above and is closed once.
+    unsafe { CloseHandle(h) };
+    answer
+}
+
+/// Off Windows: the standard link read.
+#[cfg(not(windows))]
+pub fn read_reparse(p: &Path) -> Option<PathBuf> {
+    std::fs::read_link(p).ok()
+}
+
+/// `IO_REPARSE_TAG_MOUNT_POINT` (a junction or a volume mount point).
+const TAG_MOUNT_POINT: u32 = 0xA000_0003;
+/// `IO_REPARSE_TAG_SYMLINK`.
+const TAG_SYMLINK: u32 = 0xA000_000C;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Reparse {
+    /// A symbolic link or junction: its target is read and judged.
+    Link,
+    /// A tag whose filter keeps the data on this machine (or that Win32 never follows).
+    Inert,
+    /// Anything else: its filter may fetch the file from elsewhere (HSM, DFS, a third-party tag).
+    Opaque,
+}
+
+/// The reparse tags Tandem knows: the two link tags, and the ones whose data stays local (dedup,
+/// compression, cloud placeholders and their sync root, app execution aliases, projected folders,
+/// container layers, WSL special files). Every other tag is opaque.
+fn reparse_kind(tag: u32) -> Reparse {
+    const INERT: &[u32] = &[
+        0x8000_0013, // DEDUP
+        0x8000_0017, // WOF
+        0x8000_0018, // WCI
+        0x9000_1018, // WCI_1
+        0xA000_001F, // WCI_TOMBSTONE
+        0xA000_0027, // WCI_LINK
+        0x8000_001B, // APPEXECLINK
+        0x9000_001C, // PROJFS
+        0xA000_001D, // LX_SYMLINK (Win32 never follows it)
+        0x8000_0021, // ONEDRIVE
+        0x8000_0023, // AF_UNIX
+        0x8000_0024, // LX_FIFO
+        0x8000_0025, // LX_CHR
+        0x8000_0026, // LX_BLK
+    ];
+    match tag {
+        TAG_SYMLINK | TAG_MOUNT_POINT => Reparse::Link,
+        // IO_REPARSE_TAG_CLOUD and CLOUD_1..F (the high nibble of the low word varies).
+        t if t & 0xFFFF_0FFF == 0x9000_001A => Reparse::Inert,
+        t if INERT.contains(&t) => Reparse::Inert,
+        _ => Reparse::Opaque,
+    }
+}
+
+/// The substitute name of a symbolic link's or junction's `REPARSE_DATA_BUFFER`: `\??\` written as
+/// `\\?\` (so a path reads as Win32 does), a relative symbolic link's target as stored. None for a
+/// buffer that does not parse.
+fn link_target(buf: &[u8]) -> Option<PathBuf> {
+    let u16_at = |i: usize| buf.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    let u32_at = |i: usize| buf.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let tag = u32_at(0)?;
+    // Header (8 bytes), then SubstituteNameOffset, SubstituteNameLength, PrintNameOffset,
+    // PrintNameLength (2 bytes each), then a symbolic link's Flags (4), then the path buffer.
+    let (offset, len) = (u16_at(8)?, u16_at(10)?);
+    let (path_buffer, relative) = match tag {
+        TAG_SYMLINK => (20, u32_at(16)? & 1 == 1),
+        TAG_MOUNT_POINT => (16, false),
+        _ => return None,
+    };
+    let bytes = buf.get(path_buffer + offset..path_buffer + offset + len)?;
+    let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let name = String::from_utf16(&wide).ok()?;
+    if name.is_empty() {
+        return None;
+    }
+    if relative {
+        return Some(PathBuf::from(name));
+    }
+    Some(PathBuf::from(match name.strip_prefix(r"\??\") {
+        Some(rest) => format!(r"\\?\{rest}"),
+        None => name,
+    }))
 }
 
 /// What Semantic History may probe: the settings `PathsToIgnore` and
@@ -198,62 +373,91 @@ struct Rule<'a> {
     drives: &'a dyn Drives,
 }
 
-/// The cheap lexical checks, no I/O: not a network path, not a DOS device name (CON, NUL, COM1, LPT1:
-/// a device may be redirected to a share), and (unless network mounts are allowed, `NFM:20-23`) not
-/// under an ignored folder and not on a mapped network drive (`NFM:17-37`).
-fn lexically_local(path: &str, r: &Rule) -> bool {
+/// Step 1, text only: not a network or device-namespace path, not a DOS device name, absolute
+/// (a relative path is read against a working folder that may itself be a share), and (unless network
+/// mounts are allowed, `NFM:20-23`) not under an ignored folder.
+fn text_local(path: &str, r: &Rule) -> bool {
     if crate::scripts::is_network_path(path) || crate::scripts::is_device_name(Path::new(path)) {
         return false;
     }
-    if r.allow_network {
-        return true;
-    }
-    let path = without_long_prefix(path);
-    if has_ignored_prefix(path, r.ignore) {
-        return false;
-    }
-    let b = path.as_bytes();
-    !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && r.drives.is_remote(&format!("{}:\\", b[0] as char)))
-}
-
-/// `path` with a SUBST letter replaced by what it points at, None when the letter is a real drive.
-fn subst_resolved(path: &str, r: &Rule) -> Option<std::path::PathBuf> {
     let p = without_long_prefix(path);
     let b = p.as_bytes();
-    if !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
-        return None;
-    }
-    let target = r.drives.subst_target(&format!("{}:\\", b[0] as char))?;
-    let rest = p[2..].trim_start_matches(['\\', '/']);
-    let base = without_long_prefix(&target).trim_end_matches('\\');
-    Some(std::path::PathBuf::from(if rest.is_empty() { base.to_string() } else { format!("{base}\\{rest}") }))
+    let absolute = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    #[cfg(not(windows))]
+    let absolute = absolute || b.first() == Some(&b'/');
+    absolute && (r.allow_network || !has_ignored_prefix(p, r.ignore))
 }
 
-/// Whether a path may be probed on disk. Never a network path or one reached through a link
-/// to one (the repo's one rule). The lexical checks run first, with no I/O; then the folders
-/// are read root-first, each one's link before anything below it, every hop checked the same
-/// way, and every read taken from `budget` (B2: a folder that is a link to a share).
-pub fn may_probe_with(path: &str, p: &Probe, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget) -> bool {
-    local_chain(Path::new(path), &Rule { ignore: &p.ignore, allow_network: p.allow_network, drives: &*p.drives }, read_link, budget, 0)
+/// What a drive letter is, from its device-map target alone.
+#[derive(Debug, PartialEq, Eq)]
+enum Letter {
+    /// A local volume (`\Device\HarddiskVolume*`, `\Device\CdRom*`, `\Device\Floppy*`).
+    Volume,
+    /// A SUBST letter onto this path on another letter.
+    Subst(String),
+    /// A mapped network drive, or any other redirector or device.
+    Network,
+    /// A SUBST or raw `DefineDosDevice` target that is not a drive-letter path (`\??\UNC\..`).
+    Elsewhere,
+    /// No such letter.
+    Missing,
+}
+
+fn letter_kind(target: Option<String>) -> Letter {
+    let Some(t) = target else { return Letter::Missing };
+    if let Some(rest) = t.strip_prefix(r"\??\") {
+        let b = rest.as_bytes();
+        let plain = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\');
+        return if plain { Letter::Subst(rest.to_string()) } else { Letter::Elsewhere };
+    }
+    let volume = [r"\Device\HarddiskVolume", r"\Device\CdRom", r"\Device\Floppy"].iter().any(|prefix| {
+        t.len() > prefix.len() && t.is_char_boundary(prefix.len()) && t[..prefix.len()].eq_ignore_ascii_case(prefix) && t[prefix.len()..].bytes().all(|c| c.is_ascii_digit())
+    });
+    if volume { Letter::Volume } else { Letter::Network }
 }
 
 /// THE judge of every path that comes from outside (a file or folder another program named, a
 /// document, saved state, a setting) before Tandem calls `is_dir`, `exists`, `metadata` or opens it
-/// (even `is_dir` on a share path connects to it). Network and device paths, mapped and SUBST drives
-/// that lead to a share, and every folder from the root down and every link target's own folders
-/// (again root first) are checked; nothing is read below a link before the link itself.
-pub fn judge(path: &Path, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, drives: &dyn Drives) -> bool {
+/// (even `is_dir` on a share path connects to it). Steps 1-4 of the module comment; nothing is read
+/// on the network and nothing below a link is read before the link itself.
+pub fn judge(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn Drives) -> bool {
     local_chain(path, &Rule { ignore: &[], allow_network: false, drives }, read_link, &Budget::new(PROBE_LIMIT), 0)
 }
 
-fn local_chain(path: &Path, r: &Rule, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget, depth: usize) -> bool {
+/// Whether a path may be probed on disk by Semantic History: the judge with the ignore list and the
+/// network-mounts setting, every read taken from `budget` (B2: a folder that is a link to a share).
+pub fn may_probe_with(path: &str, p: &Probe, read_link: &dyn Fn(&Path) -> Option<PathBuf>, budget: &Budget) -> bool {
+    local_chain(Path::new(path), &Rule { ignore: &p.ignore, allow_network: p.allow_network, drives: &*p.drives }, read_link, budget, 0)
+}
+
+fn local_chain(path: &Path, r: &Rule, read_link: &dyn Fn(&Path) -> Option<PathBuf>, budget: &Budget, depth: usize) -> bool {
     const HOPS: usize = 8;
-    if depth > HOPS || !lexically_local(&path.to_string_lossy(), r) {
+    let text = path.to_string_lossy();
+    // 1. Text.
+    if depth > HOPS || !text_local(&text, r) {
         return false;
     }
-    if let Some(real) = subst_resolved(&path.to_string_lossy(), r) {
-        return local_chain(&real, r, read_link, budget, depth + 1);
+    // 2. The letter's device map, before anything is asked of the drive itself.
+    let p = without_long_prefix(&text);
+    let letter = p.as_bytes()[0] as char;
+    match letter_kind(r.drives.dos_device(letter)) {
+        Letter::Subst(target) => {
+            let rest = p[2..].trim_start_matches(['\\', '/']);
+            let base = target.trim_end_matches('\\');
+            let real = if rest.is_empty() { format!("{base}\\") } else { format!("{base}\\{rest}") };
+            return local_chain(Path::new(&real), r, read_link, budget, depth + 1);
+        }
+        Letter::Elsewhere | Letter::Missing => return false,
+        Letter::Network if !r.allow_network => return false,
+        Letter::Network => {}
+        // 3. The drive type, only for a local volume.
+        Letter::Volume => {
+            if !r.allow_network && r.drives.drive_type(letter) == DRIVE_REMOTE {
+                return false;
+            }
+        }
     }
+    // 4. Every folder root first, each one's reparse data before anything below it.
     let mut chain: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
     chain.reverse();
     for at in chain {
@@ -279,7 +483,7 @@ fn local_chain(path: &Path, r: &Rule, read_link: &dyn Fn(&Path) -> Option<std::p
 
 /// `may_probe_with` over the real links with a budget of its own.
 pub fn may_probe(path: &str, p: &Probe) -> bool {
-    may_probe_with(path, p, &crate::scripts::read_link, &Budget::new(PROBE_LIMIT))
+    may_probe_with(path, p, &read_reparse, &Budget::new(PROBE_LIMIT))
 }
 
 /// Reads a lone caller (no click budget) may spend on one path.
@@ -290,12 +494,8 @@ mod tests {
     use super::*;
 
     /// `Z:\` is a mapped network drive.
-    pub struct FakeDrives;
-    impl Drives for FakeDrives {
-        fn is_remote(&self, root: &str) -> bool {
-            root.eq_ignore_ascii_case("Z:\\")
-        }
-    }
+    #[allow(non_upper_case_globals)]
+    const FakeDrives: MappedLetters = MappedLetters(&['Z']);
 
     fn local() -> Arc<dyn Drives + Send + Sync> {
         Arc::new(LocalDrives)
@@ -425,39 +625,57 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn real_drives_answer() {
-        assert!(!RealDrives.is_remote(r"C:\"));
+        let c = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).chars().next().unwrap();
+        assert_eq!(letter_kind(RealDrives.dos_device(c)), Letter::Volume, "{:?}", RealDrives.dos_device(c));
+        assert_ne!(RealDrives.drive_type(c), DRIVE_REMOTE);
     }
 
     /// Task 3 fix round 2, item 2: a SUBST letter is resolved (QueryDosDeviceW) and its target judged,
     /// every folder of a link target is walked root first, the leaf never read through a link.
-    struct Subst;
-    impl Drives for Subst {
-        fn is_remote(&self, root: &str) -> bool {
-            root.eq_ignore_ascii_case("Z:\\")
+    /// Every drive-type question is recorded (round 3: never asked before the letter is resolved).
+    struct Subst(std::cell::RefCell<Vec<char>>);
+    impl Subst {
+        fn new() -> Subst {
+            Subst(Default::default())
         }
-        fn subst_target(&self, root: &str) -> Option<String> {
-            match root.to_ascii_uppercase().as_str() {
-                "Y:\\" => Some(r"\??\UNC\h\s".to_string()),
-                "X:\\" => Some(r"\??\C:\ok".to_string()),
-                "W:\\" => Some(r"\??\Z:\x".to_string()),
-                "V:\\" => Some(r"\??\V:\loop".to_string()),
-                "U:\\" => Some(r"\??\C:\j".to_string()),
-                _ => None,
-            }
+    }
+    impl Drives for Subst {
+        fn dos_device(&self, letter: char) -> Option<String> {
+            Some(match letter.to_ascii_uppercase() {
+                'Z' => r"\Device\LanmanRedirector\;Z:0000000000012345\srv\share",
+                'Y' => r"\??\UNC\h\s",
+                'X' => r"\??\C:\ok",
+                'W' => r"\??\Z:\x",
+                'V' => r"\??\V:\loop",
+                'U' => r"\??\C:\j",
+                'M' => r"\Device\Mup\h\s",
+                'L' => r"\Device\LanmanRedirector\h\s",
+                'K' => r"\Device\VBoxMiniRdr\;K:\vboxsvr\s",
+                'Q' => r"\??\Volume{0b1c2d3e-0000-0000-0000-100000000000}\",
+                'R' => r"\??\GLOBALROOT\Device\Mup\h\s",
+                'N' => return None,
+                'E' => r"\Device\CdRom0",
+                _ => r"\Device\HarddiskVolume3",
+            }.to_string())
+        }
+        fn drive_type(&self, letter: char) -> u32 {
+            self.0.borrow_mut().push(letter.to_ascii_uppercase());
+            DRIVE_FIXED
         }
     }
 
     #[test]
     fn subst_letters_are_resolved_and_judged() {
         let none = |_: &Path| None;
-        assert!(judge(Path::new(r"C:\a\f"), &none, &Subst));
-        assert!(!judge(Path::new(r"Y:\a\f"), &none, &Subst), "a letter onto a UNC target");
-        assert!(judge(Path::new(r"X:\a\f"), &none, &Subst), "a letter onto a local folder");
-        assert!(!judge(Path::new(r"W:\a"), &none, &Subst), "a letter onto a mapped drive");
-        assert!(!judge(Path::new(r"V:\a"), &none, &Subst), "a loop ends");
+        let d = Subst::new();
+        assert!(judge(Path::new(r"C:\a\f"), &none, &d));
+        assert!(!judge(Path::new(r"Y:\a\f"), &none, &d), "a letter onto a UNC target");
+        assert!(judge(Path::new(r"X:\a\f"), &none, &d), "a letter onto a local folder");
+        assert!(!judge(Path::new(r"W:\a"), &none, &d), "a letter onto a mapped drive");
+        assert!(!judge(Path::new(r"V:\a"), &none, &d), "a loop ends");
         // The target is itself judged for links: U: is C:\j, a junction to a share.
         let read = |p: &Path| (p == Path::new(r"C:\j")).then(|| PathBuf::from(r"\\attacker\share"));
-        assert!(!judge(Path::new(r"U:\f"), &read, &Subst));
+        assert!(!judge(Path::new(r"U:\f"), &read, &d));
     }
 
     #[test]
@@ -466,10 +684,115 @@ mod tests {
         let seen = RefCell::new(Vec::new());
         let map: &'static [(&str, &str)] = &[(r"c:\j", r"D:\x\y"), (r"d:\x", r"\\attacker\share")];
         let rl = links(map, &seen);
-        assert!(!judge(Path::new(r"C:\j\f.txt"), &rl, &Subst));
+        assert!(!judge(Path::new(r"C:\j\f.txt"), &rl, &Subst::new()));
         let reads = seen.borrow().clone();
         let x = reads.iter().position(|r| r == r"d:\x").expect("the folder D: x was read");
         assert!(reads.iter().position(|r| r == r"d:\x\y").is_none_or(|y| x < y), "root first: {reads:?}");
         assert!(!reads.iter().any(|r| r.ends_with("f.txt")), "{reads:?}");
+    }
+
+    /// Round 3, item 2a: the judge itself never touches the network. A letter's device map is read
+    /// first; GetDriveTypeW (which opens the root) is asked only for a letter whose target is a local
+    /// volume, never for a SUBST letter, a mapped drive or any other redirected device, and no
+    /// reparse data is read on such a letter.
+    #[test]
+    fn the_drive_type_is_asked_only_for_a_local_volume() {
+        let d = Subst::new();
+        let seen = RefCell::new(Vec::new());
+        let rl = links(&[], &seen);
+        for p in [r"Y:\a", r"Z:\a", r"W:\a", r"M:\a", r"L:\a", r"K:\a", r"Q:\a", r"R:\a", r"N:\a", r"\\?\M:\a", r"\??\Y:\a"] {
+            assert!(!judge(Path::new(p), &rl, &d), "{p}");
+        }
+        assert!(d.0.borrow().is_empty(), "GetDriveTypeW asked for {:?}", d.0.borrow());
+        assert!(seen.borrow().is_empty(), "reparse data read on {:?}", seen.borrow());
+        // A SUBST letter onto a local folder: only the resolved letter's type is asked.
+        assert!(judge(Path::new(r"X:\a"), &rl, &d));
+        assert_eq!(d.0.borrow().as_slice(), ['C']);
+        assert!(!seen.borrow().iter().any(|r| r.starts_with("x:")), "the SUBST letter itself is never read: {:?}", seen.borrow());
+        assert!(judge(Path::new(r"E:\a"), &rl, &d), "a CD drive is a local volume");
+    }
+
+    #[test]
+    fn device_map_targets_are_classified() {
+        let k = |t: &str| letter_kind(Some(t.to_string()));
+        assert_eq!(k(r"\Device\HarddiskVolume12"), Letter::Volume);
+        assert_eq!(k(r"\device\harddiskvolume1"), Letter::Volume);
+        assert_eq!(k(r"\Device\Floppy0"), Letter::Volume);
+        assert_eq!(k(r"\??\C:\dir"), Letter::Subst(r"C:\dir".into()));
+        assert_eq!(k(r"\??\C:"), Letter::Subst(r"C:".into()));
+        for t in [r"\??\UNC\h\s", r"\??\Volume{x}\", r"\??\GLOBALROOT\Device\Mup\h", r"\??\CC:\x"] {
+            assert_eq!(k(t), Letter::Elsewhere, "{t}");
+        }
+        for t in [r"\Device\Mup\h\s", r"\Device\LanmanRedirector\;Z:0\h\s", r"\Device\WebDavRedirector\h", r"\Device\HarddiskVolume", r"\Device\HarddiskVolume1\..\Mup", r"\Device\RdpDr\;T:1\tsclient\c", ""] {
+            assert_eq!(k(t), Letter::Network, "{t}");
+        }
+        assert_eq!(letter_kind(None), Letter::Missing);
+    }
+
+    #[test]
+    fn a_relative_path_is_never_judged_local() {
+        let none = |_: &Path| None;
+        for p in ["a.txt", r"a\b", r"\a\b", "C:a", "C:", ".", ""] {
+            assert!(!judge(Path::new(p), &none, &LocalDrives), "{p:?}");
+        }
+    }
+
+    /// The reparse reader's parts: which tags are followed, ignored or refused, and how a symbolic
+    /// link's and a junction's data reads.
+    #[test]
+    fn reparse_data_is_read_and_unknown_tags_are_refused() {
+        assert_eq!(reparse_kind(TAG_SYMLINK), Reparse::Link);
+        assert_eq!(reparse_kind(TAG_MOUNT_POINT), Reparse::Link);
+        for t in [0x9000_001A, 0x9000_F01A, 0x8000_0013, 0x8000_001B] {
+            assert_eq!(reparse_kind(t), Reparse::Inert, "{t:#x}");
+        }
+        // DFS, DFSR, HSM, NFS, Azure File Sync, an unknown third-party tag.
+        for t in [0x8000_000A, 0x8000_0012, 0xC000_0004, 0x8000_0014, 0x8000_001E, 0x0000_1234] {
+            assert_eq!(reparse_kind(t), Reparse::Opaque, "{t:#x}");
+        }
+        fn buffer(tag: u32, name: &str, flags: Option<u32>) -> Vec<u8> {
+            let w: Vec<u8> = name.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+            let mut b = tag.to_le_bytes().to_vec();
+            b.extend([0u8; 4]);
+            b.extend(0u16.to_le_bytes());
+            b.extend((w.len() as u16).to_le_bytes());
+            b.extend((w.len() as u16).to_le_bytes());
+            b.extend(0u16.to_le_bytes());
+            if let Some(f) = flags {
+                b.extend(f.to_le_bytes());
+            }
+            b.extend(&w);
+            b
+        }
+        assert_eq!(link_target(&buffer(TAG_MOUNT_POINT, r"\??\UNC\h\s", None)), Some(PathBuf::from(r"\\?\UNC\h\s")));
+        assert_eq!(link_target(&buffer(TAG_MOUNT_POINT, r"\??\C:\t", None)), Some(PathBuf::from(r"\\?\C:\t")));
+        assert_eq!(link_target(&buffer(TAG_SYMLINK, r"\??\D:\x", Some(0))), Some(PathBuf::from(r"\\?\D:\x")));
+        assert_eq!(link_target(&buffer(TAG_SYMLINK, r"..\x", Some(1))), Some(PathBuf::from(r"..\x")));
+        assert_eq!(link_target(&buffer(TAG_SYMLINK, r"\??\x", Some(0))[..12]), None, "a short buffer");
+        // Every spelling of a link target onto a share is refused by the judge.
+        for t in [r"\\?\UNC\h\s", r"\\?\Volume{x}\", UNREADABLE_LINK] {
+            let read = |p: &Path| (p == Path::new(r"C:\j")).then(|| PathBuf::from(t));
+            assert!(!judge(Path::new(r"C:\j\f"), &read, &LocalDrives), "{t}");
+        }
+    }
+
+    /// The real reader on this machine: a plain folder and a missing path are not links; a junction
+    /// made in the temp folder (onto another local folder, never a share) reads its target.
+    #[cfg(windows)]
+    #[test]
+    fn the_real_reader_reads_a_junction_without_following_it() {
+        let base = std::env::temp_dir().join(format!("tandem-reparse-{}", std::process::id()));
+        let target = base.join("target");
+        let link = base.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        assert_eq!(read_reparse(&target), None);
+        assert_eq!(read_reparse(&base.join("missing").join("x")), None);
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&target).output().unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let read = read_reparse(&link).expect("a junction");
+        assert!(read.to_string_lossy().to_lowercase().ends_with(&target.to_string_lossy().to_lowercase()[2..]), "{read:?}");
+        assert!(judge(&link.join("f.txt"), &read_reparse, &RealDrives));
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

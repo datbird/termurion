@@ -41,7 +41,7 @@ impl App {
                 return self.redraw();
             }
         }
-        let cwd = self.pane_dir(pane).filter(|d| crate::localfs::is_dir(d)).or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)).unwrap_or_else(std::env::temp_dir);
+        let cwd = self.pane_dir(pane).filter(|d| crate::localfs::is_local_dir(d)).or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)).unwrap_or_else(std::env::temp_dir);
         let notify = self.notify.clone();
         let Some(p) = self.panes.get_mut(&pane) else { return };
         match p.run_coprocess(command, mute, &cwd, notify) {

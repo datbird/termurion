@@ -1086,7 +1086,7 @@ impl App {
         let Some(text) = text.filter(|t| !t.is_empty()) else { return };
         let name = if selection_only { "selection.txt" } else { "session.txt" };
         if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-            match std::fs::write(&path, text) {
+            match crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, text)) {
                 Ok(()) => self.banners.clear("save-text"),
                 Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", path.display())),
             }

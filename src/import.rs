@@ -184,7 +184,7 @@ pub fn defaults_key(key: &str) -> String {
 /// request (`ai_settings::guards_consent`) never come, even from a hand-edited plist: a person
 /// opts in again on Windows (Review Focus 3, ruling I5).
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
-    let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let root = plist_file(path)?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
     Ok(crate::schema::global()
         .iter()
@@ -216,7 +216,7 @@ pub struct Legacy {
 
 /// The legacy keys in a com.googlecode.iterm2.plist, with iTerm2's defaults for those absent.
 pub fn legacy_from_file(path: &Path) -> Result<Legacy, String> {
-    let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let root = plist_file(path)?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
     let value = |k: &str| dict.get(k).and_then(from_plist);
     let int = |v: &Value| v.as_integer().or_else(|| v.as_float().map(|f| f as i64)).or_else(|| v.as_bool().map(i64::from));
@@ -295,8 +295,19 @@ pub fn migrate_legacy(values: &mut Vec<(String, Value)>, legacy: &Legacy, profil
     put(values, "HotkeyMigratedFromSingleToMulti", Value::Boolean(true));
 }
 
+/// A settings file's bytes: the path comes from the person or an imported folder, so it is judged
+/// before it is read.
+fn read_judged(path: &Path) -> Result<Vec<u8>, String> {
+    crate::localfs::judge_io(path).and_then(|p| crate::localfs::read(&p)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A plist file, judged before it is read.
+fn plist_file(path: &Path) -> Result<plist::Value, String> {
+    plist::Value::from_reader(std::io::Cursor::new(read_judged(path)?)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = read_judged(path)?;
     match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
         Some("json") => from_dynamic_json(&String::from_utf8_lossy(&bytes)),
         _ => from_plist_bytes(&bytes),

@@ -272,33 +272,33 @@ fn client_point(screen: (i32, i32), origin: (i32, i32)) -> (f32, f32) {
 /// The entry's own metadata (never a link's target) when it is a plain local one: not a network
 /// path, not a device name, not a symbolic link, junction or other reparse point. A link may
 /// point at `\\host\share` or at a device, and nothing of that is probed (invariant 5).
-fn plain_meta(path: &std::path::Path) -> Option<std::fs::Metadata> {
+fn plain_meta(path: &std::path::Path) -> Option<(crate::localfs::LocalPath, crate::localfs::Stat)> {
     // The one judge first (network and device paths, mapped drives, links to shares), then the entry.
-    let m = crate::localfs::symlink_metadata(path).ok()?;
-    #[cfg(windows)]
-    let reparse = std::os::windows::fs::MetadataExt::file_attributes(&m) & 0x400 != 0;
-    #[cfg(not(windows))]
-    let reparse = false;
-    (!m.file_type().is_symlink() && !reparse).then_some(m)
+    let path = crate::localfs::LocalPath::judge(path)?;
+    let m = crate::localfs::lstat(&path).ok()?;
+    (!m.is_reparse).then_some((path, m))
 }
 
 /// A dropped folder: a plain local directory.
 fn is_plain_dir(path: &std::path::Path) -> bool {
-    plain_meta(path).filter(std::fs::Metadata::is_dir).is_some()
+    plain_meta(path).is_some_and(|(_, m)| m.is_dir)
 }
 
 /// A dropped file's size for the budget; None when it is not a plain local file.
 fn dropped_size(path: &std::path::Path) -> Option<u64> {
-    plain_meta(path).filter(std::fs::Metadata::is_file).map(|m| m.len())
+    plain_meta(path).filter(|(_, m)| m.is_file).map(|(_, m)| m.len)
 }
 
 /// A dropped file's bytes for an OSC 72 reader: a plain local file, at most the size the
 /// protocol serves plus one byte (so the controller can tell a file that is too big).
 fn read_dropped(path: &std::path::Path) -> Option<Vec<u8>> {
     use std::io::Read;
-    dropped_size(path)?;
+    let (path, m) = plain_meta(path)?;
+    if !m.is_file {
+        return None;
+    }
     let mut bytes = Vec::new();
-    crate::localfs::open(path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
+    crate::localfs::open(&path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
 }
 

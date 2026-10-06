@@ -37,7 +37,7 @@ const OUTPUT_PER_PASS: usize = 64 * 1024;
 
 /// A script's first line (`L:677-723` reads it with `fgetln`).
 pub(super) fn first_line(p: &Path) -> Option<String> {
-    let file = crate::localfs::open(p).ok()?;
+    let file = crate::localfs::open(&crate::localfs::LocalPath::judge(p)?).ok()?;
     let mut line = Vec::new();
     std::io::BufReader::new(file.take(FIRST_LINE_LIMIT)).read_until(b'\n', &mut line).ok()?;
     (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
@@ -385,7 +385,7 @@ impl App {
     /// environment, or one that needs rebuilding. A path reached through a link to a network
     /// path is never probed.
     pub(super) fn could_launch(path: &Path) -> bool {
-        crate::scripts::ancestors_stay_local(path, &crate::scripts::read_link) && matches!(sl::classify(path, &crate::scripts::RealFs, &first_line), Kind::Basic { .. } | Kind::Full { .. } | Kind::NeedsRebuild { .. })
+        crate::scripts::ancestors_stay_local(path, &crate::netpath::read_reparse) && matches!(sl::classify(path, &crate::scripts::RealFs, &first_line), Kind::Basic { .. } | Kind::Full { .. } | Kind::NeedsRebuild { .. })
     }
 
     /// Selects `path` in Explorer; nothing runs it.
@@ -480,7 +480,7 @@ impl App {
         }
         let folder = crate::scripts::autolaunch_folder(&self.scripts_folder());
         // The folder, or one above it, may be a link to a share: nothing there is probed.
-        if !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+        if !crate::scripts::ancestors_stay_local(&folder, &crate::netpath::read_reparse) {
             return self.script_log_app(crate::scripts::autolaunch_not_local(&folder));
         }
         if !should_autolaunch(ran, folder.is_dir()) {
@@ -790,7 +790,8 @@ pub(super) use sa::stage_entries;
 /// another hard link; the script's name must be safe; and a full environment's hidden
 /// entries (`.venv`, its build and swap folders) are removed, so provisioning starts clean.
 fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
-    let bytes = std::fs::read(zip).map_err(|e| sa::unzip_failed(&e.to_string()))?;
+    // The archive came from outside: judged before it is read.
+    let bytes = crate::localfs::judge_io(zip).and_then(|z| crate::localfs::read(&z)).map_err(|e| sa::unzip_failed(&e.to_string()))?;
     crate::zip_check::check(&bytes).map_err(|e| sa::unzip_failed(&e))?;
     std::fs::create_dir_all(to).map_err(|e| sa::unzip_failed(&e.to_string()))?;
     run_tar(sa::extract_tar_args(zip, to)).map_err(|e| sa::unzip_failed(&e))?;
@@ -822,12 +823,12 @@ fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
 /// with `setup.cfg`, an environment (the marker, or iTerm2's legacy `iterm2env`) and its
 /// `<name>\<name>.py` (full). None when neither.
 fn export_kind(path: &Path) -> Option<bool> {
-    if crate::localfs::is_file(path) && path.extension().is_some_and(|e| e == "py") {
+    if crate::localfs::is_local_file(path) && path.extension().is_some_and(|e| e == "py") {
         return Some(false);
     }
     let name = path.file_name()?.to_string_lossy().into_owned();
-    let runtime = crate::localfs::exists(&path.join(rt::MARKER)) || crate::localfs::exists(&path.join("iterm2env"));
-    (crate::localfs::is_dir(path) && crate::localfs::exists(&path.join(sa::SETUP_CFG)) && runtime && crate::localfs::exists(&path.join(&name).join(format!("{name}.py")))).then_some(true)
+    let runtime = crate::localfs::local_exists(&path.join(rt::MARKER)) || crate::localfs::local_exists(&path.join("iterm2env"));
+    (crate::localfs::is_local_dir(path) && crate::localfs::local_exists(&path.join(sa::SETUP_CFG)) && runtime && crate::localfs::local_exists(&path.join(&name).join(format!("{name}.py")))).then_some(true)
 }
 
 /// Writes `zip` from `<parent>\<name>`'s `setup.cfg` and inner folder (`EX:102-150`); a
@@ -1023,7 +1024,7 @@ impl App {
             Some("py") => {
                 let to = scripts.join(path.file_name().unwrap_or_default());
                 // `copyItemAtURL:` never overwrites: an existing script is an error.
-                let copied = crate::localfs::open(&path).and_then(|mut from| {
+                let copied = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::open(&p)).and_then(|mut from| {
                     let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&to)?;
                     std::io::copy(&mut from, &mut out).map(|_| ())
                 });
@@ -1102,7 +1103,7 @@ impl App {
             _ => self.scripts_folder(),
         };
         // An AutoLaunch folder reached through a link to a network path is never probed.
-        if quiet == Some(true) && !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+        if quiet == Some(true) && !crate::scripts::ancestors_stay_local(&folder, &crate::netpath::read_reparse) {
             return self.import_finish(Err(crate::scripts::autolaunch_not_local(&folder).trim_end().to_string()));
         }
         let _ = std::fs::create_dir_all(&folder);
@@ -1265,7 +1266,7 @@ impl App {
     /// put right (iTerm2 runs `recoverStaleReplaceBackups` at launch, `IM:476-527`); one
     /// listing and a few renames.
     pub(super) fn recover_imports(&mut self) {
-        recover_in(&self.scripts_folder(), &crate::scripts::read_link);
+        recover_in(&self.scripts_folder(), &crate::netpath::read_reparse);
     }
 
     /// Scripts > Manage > Export (`chooseAndExportScript`, `M:683-714`): the chooser.

@@ -300,7 +300,7 @@ impl App {
         if !self.claude_health_done && self.globals.bool(cc::COMPLETED_KEY) && !self.claude_alert_busy() {
             self.claude_health_done = true;
             if let Ok((_, file)) = self.claude_paths() {
-                let text = cc::read_settings(std::fs::read(&file), &file).ok().flatten();
+                let text = cc::read_settings(crate::localfs::judge_io(&file).and_then(|f| crate::localfs::read(&f)), &file).ok().flatten();
                 if !cc::healthy(text.as_deref(), &cc::runnable_path) {
                     self.ask_scripts(repair_ask(&file));
                 }

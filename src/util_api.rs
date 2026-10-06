@@ -72,7 +72,7 @@ pub fn no_script(dir: &Path) -> String {
 /// it, its streams shared, and returns its exit code. Ctrl+C is left to the script.
 pub fn it2api(args: &[String], io: &mut Io) -> i32 {
     let own_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
-    let is_file = |p: &Path| p.is_absolute() && crate::util_cli::may_open(p) && p.is_file();
+    let is_file = |p: &Path| p.is_absolute() && crate::localfs::is_local_file(p);
     launch(args, io, &own_dir, &is_file)
 }
 

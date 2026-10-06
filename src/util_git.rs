@@ -138,7 +138,7 @@ fn git_env() -> Vec<(String, Option<String>)> {
 pub fn it2git(_args: &[String], io: &mut Io) -> i32 {
     use crate::git_state::{NO_LAZY_FETCH_VERSION, find_git, guarded_args, parse_git_version, vet_repo};
     let path = (io.env)("PATH").unwrap_or_default();
-    let program = find_git(&path, &|p| p.is_file());
+    let program = find_git(&path, &crate::localfs::is_file);
     // A verbatim local folder (`\\?\C:\...`) is vetted and used in its plain form.
     let cwd = std::path::PathBuf::from(crate::util_cli::local_form(&io.cwd.to_string_lossy()));
     let vet = program.as_ref().and_then(|_| vet_repo(&cwd));
@@ -335,7 +335,7 @@ mod tests {
     fn repository_programs_never_run() {
         use std::process::{Command, Stdio};
         let path = std::env::var("PATH").unwrap_or_default();
-        let Some(git) = crate::git_state::find_git(&path, &|p| p.is_file()) else {
+        let Some(git) = crate::git_state::find_git(&path, &crate::localfs::is_file) else {
             eprintln!("MEASURED: no git on PATH; it2git_follows_the_script pins the guarded lines");
             return;
         };
@@ -397,7 +397,7 @@ mod tests {
     fn submodule_programs_never_run() {
         use std::process::{Command, Stdio};
         let path = std::env::var("PATH").unwrap_or_default();
-        let Some(git) = crate::git_state::find_git(&path, &|p| p.is_file()) else {
+        let Some(git) = crate::git_state::find_git(&path, &crate::localfs::is_file) else {
             eprintln!("MEASURED: no git on PATH; it2git_follows_the_script pins the diff line");
             return;
         };

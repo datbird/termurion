@@ -170,15 +170,15 @@ fn under_home(text: &str, home: &Path) -> Option<PathBuf> {
 ///
 /// Text a program could have steered (the custom text after a `\(` expanded it) is held to a
 /// local drive path or `~`, with no control character, never `\\host`, `//host` or a device
-/// path, and an existing folder; anything else starts in home with the banner. A UNC path the
-/// person typed into the profile is theirs: used as written, never probed.
+/// path, and an existing folder; anything else starts in home with the banner. A typed folder the
+/// judge refuses (a UNC path, a mapped or SUBST drive onto a share, a link to one) starts in home
+/// with `network_text` (round 3: CreateProcess opens the working folder).
 pub fn resolve(mode: &Mode, previous: Option<&Path>, home: &Path, expand: &dyn Fn(&str) -> String, is_dir: &dyn Fn(&Path) -> bool) -> (PathBuf, Option<String>) {
     resolve_with(mode, previous, home, expand, is_dir, &crate::scripts::stays_local)
 }
 
-/// `resolve` with the judge given: every folder is judged before `is_dir` is asked of it. A typed
-/// path the judge refuses (a mapped drive, a link to a share) is the person's own: used as written,
-/// never probed, as a typed UNC path is.
+/// `resolve` with the judge given: every folder is judged before `is_dir` is asked of it, and one
+/// the judge refuses is never used.
 pub fn resolve_with(mode: &Mode, previous: Option<&Path>, home: &Path, expand: &dyn Fn(&str) -> String, is_dir: &dyn Fn(&Path) -> bool, judge: &dyn Fn(&Path) -> bool) -> (PathBuf, Option<String>) {
     let probe_ok = |d: &Path, is_dir: &dyn Fn(&Path) -> bool| probe_ok_with(d, is_dir, judge);
     let home_with = |warning: Option<String>| (home.to_path_buf(), warning);
@@ -211,12 +211,14 @@ pub fn resolve_with(mode: &Mode, previous: Option<&Path>, home: &Path, expand: &
                     None => home_with(Some(unavailable_text(shown))),
                 };
             }
+            // A folder the judge refuses is never used: CreateProcess opens the working folder, so a
+            // share there (typed, or reached through a mapped or SUBST drive or a link) would connect.
             if crate::prompted::network_path(result) {
-                return (PathBuf::from(result), None);
+                return home_with(Some(network_text(result)));
             }
             let dir = under_home(result, home).unwrap_or_else(|| PathBuf::from(result));
             if !judge(&dir) {
-                return (dir, None);
+                return home_with(Some(if dir.is_absolute() { network_text(result) } else { unavailable_text(result) }));
             }
             if is_dir(&dir) {
                 (dir, None)
@@ -240,6 +242,12 @@ pub fn previous_for(object: Object, focused_here: Option<PathBuf>, previous_wind
 /// `PS:3623`.
 pub fn unavailable_text(dir: &str) -> String {
     format!("The directory \u{201c}{dir}\u{201d} is unavailable. Started in home directory instead.")
+}
+
+/// Tandem's: a start folder on a network location (or reached through a link or a drive letter onto
+/// one) is never handed to CreateProcess, which would open it.
+pub fn network_text(dir: &str) -> String {
+    format!("The directory \u{201c}{dir}\u{201d} is on a network location. Started in home directory instead.")
 }
 
 #[cfg(test)]
@@ -318,7 +326,9 @@ mod tests {
         assert_eq!(resolve_with(&Mode::Recycle, Some(Path::new(r"Z:\prev")), &h, &id, &is_dir, &refuse), (h.clone(), None));
         let expand = |_: &str| r"Z:\x".to_string();
         assert_eq!(resolve_with(&Mode::Custom(r"\(x)".into()), None, &h, &expand, &is_dir, &refuse).0, h);
-        assert_eq!(resolve_with(&Mode::Custom(r"Z:\typed".into()), None, &h, &id, &is_dir, &refuse), (PathBuf::from(r"Z:\typed"), None), "typed by the person: used as written, never probed");
+        // Round 3: a typed folder the judge refuses is never handed to CreateProcess (which opens
+        // it): the session starts in home and the banner says why.
+        assert_eq!(resolve_with(&Mode::Custom(r"Z:\typed".into()), None, &h, &id, &is_dir, &refuse), (h.clone(), Some(network_text(r"Z:\typed"))), "typed, refused: home with the banner, never probed");
         assert!(asked.borrow().is_empty(), "a refused folder is never asked about: {:?}", asked.borrow());
     }
 
@@ -369,20 +379,22 @@ mod tests {
     fn a_unc_path_is_never_probed() {
         let h = home();
         let never = |p: &Path| -> bool { panic!("probed {p:?}") };
-        // A UNC path the person typed is theirs: used as written.
-        assert_eq!(resolve_t(&Mode::Custom(r"\\srv\share".into()), None, &h, &id, &never), (PathBuf::from(r"\\srv\share"), None));
+        // A UNC path the person typed starts in home with the banner (round 3: CreateProcess
+        // opens its working folder, so a share there would connect).
+        assert_eq!(resolve_t(&Mode::Custom(r"\\srv\share".into()), None, &h, &id, &never), (h.clone(), Some(network_text(r"\\srv\share"))));
         // A previous UNC folder never reaches a probe and starts in home.
         assert_eq!(resolve_t(&Mode::Recycle, Some(Path::new(r"\\srv\s\d")), &h, &id, &never), (h.clone(), None));
     }
 
     #[test]
-    fn literal_unc_directory_is_kept() {
+    fn literal_unc_directory_starts_in_home_with_the_banner() {
         let h = home();
         let never = |p: &Path| -> bool { panic!("probed {p:?}") };
         for t in [r"\\srv\share", "//srv/share"] {
             let (d, w) = resolve_t(&Mode::Custom(t.into()), None, &h, &id, &never);
-            assert_eq!((d, w), (PathBuf::from(t), None));
+            assert_eq!((d, w), (h.clone(), Some(network_text(t))));
         }
+        assert_eq!(network_text(r"\\srv\s"), "The directory \u{201c}\\\\srv\\s\u{201d} is on a network location. Started in home directory instead.");
     }
 
     #[test]
@@ -420,8 +432,8 @@ mod tests {
         let (d, w) = resolve_t(&Mode::Custom(r"D:\\(session.name)".into()), None, &h, &id, &exists);
         assert_eq!(d, h);
         assert!(w.is_some());
-        let (d, _) = resolve_t(&Mode::Custom(r"\\(session.name)".into()), None, &h, &id, &|_| panic!("a UNC-looking text is never probed"));
-        assert_eq!(d, PathBuf::from(r"\\(session.name)"));
+        let (d, w) = resolve_t(&Mode::Custom(r"\\(session.name)".into()), None, &h, &id, &|_| panic!("a UNC-looking text is never probed"));
+        assert_eq!((d, w), (h.clone(), Some(network_text(r"\\(session.name)"))), "a UNC-looking text is never used (round 3)");
     }
 
     #[test]

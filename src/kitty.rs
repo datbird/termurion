@@ -82,26 +82,24 @@ fn bad_file() -> String {
 /// name, deleted after reading.
 fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
     let path = std::str::from_utf8(raw).ok()?;
-    // The one network rule (13p's filter), and no link out to a share.
-    if crate::scripts::is_network_path(path) || !crate::scripts::stays_local(std::path::Path::new(path)) {
-        return None;
-    }
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
+    // The one judge (network and device paths, mapped and SUBST drives, links to shares).
+    let path = crate::localfs::LocalPath::judge(path)?;
+    let meta = crate::localfs::stat(&path).ok()?;
+    if !meta.is_file || meta.len > MAX_BYTES {
         return None;
     }
     if temporary {
-        let tmp = std::fs::canonicalize(std::env::temp_dir()).ok()?;
-        let real = std::fs::canonicalize(path).ok()?;
-        let named = real.file_name()?.to_string_lossy().contains("tty-graphics-protocol");
-        if !real.starts_with(&tmp) || !named {
+        let tmp = crate::localfs::canonicalize(&crate::localfs::LocalPath::judge(std::env::temp_dir())?)?;
+        let real = crate::localfs::canonicalize(&path)?;
+        let named = real.path().file_name()?.to_string_lossy().contains("tty-graphics-protocol");
+        if !real.path().starts_with(tmp.path()) || !named {
             return None;
         }
-        let bytes = std::fs::read(&real).ok();
-        let _ = std::fs::remove_file(&real);
+        let bytes = crate::localfs::read(&real).ok();
+        let _ = crate::localfs::remove_file(&real);
         return bytes;
     }
-    std::fs::read(path).ok()
+    crate::localfs::read(&path).ok()
 }
 
 /// The picture a transmit or query carries: width, height, RGBA.

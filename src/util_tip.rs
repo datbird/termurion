@@ -2,7 +2,7 @@
 //! Python script). The script ships byte for byte in `resources/utilities/it2tip`; its tip
 //! list is read from there at run time. Pure apart from the index file.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::util_cli::{self, Io};
 
@@ -112,15 +112,11 @@ pub fn rc_path(env: &dyn Fn(&str) -> Option<String>) -> PathBuf {
     PathBuf::from(expand_user(format!("{home}{sep}.it2totd"), env))
 }
 
-/// A network path (or one through a link to one) is never read or written.
-fn local(p: &Path) -> bool {
-    util_cli::may_open(p)
-}
-
 /// `it2tip [-w]`: the next tip, and its index saved.
 pub fn it2tip(args: &[String], io: &mut Io) -> i32 {
     let path = util_cli::join_local(&io.cwd, &rc_path(io.env).to_string_lossy());
-    let saved = if local(&path) { std::fs::read(&path).ok().and_then(|b| String::from_utf8(b).ok()) } else { None };
+    let judged = crate::localfs::LocalPath::judge(&path);
+    let saved = judged.as_ref().and_then(|p| crate::localfs::read(p).ok()).and_then(|b| String::from_utf8(b).ok());
     let tips = tips();
     let wrap = args.first().is_some_and(|a| a == "-w");
     let Some(i) = next_index(saved.as_deref(), wrap, tips.len()) else { return 0 };
@@ -128,7 +124,10 @@ pub fn it2tip(args: &[String], io: &mut Io) -> i32 {
     let _ = io.out.write_all(tip_text(term.as_deref(), &tips[i]).as_bytes());
     let _ = io.out.flush();
     // `save_index`: the number without a newline; a failure ends the script with a traceback.
-    let written = if local(&path) { std::fs::write(&path, i.to_string()).map_err(|e| e.to_string()) } else { Err("network path".to_string()) };
+    let written = match &judged {
+        Some(p) => crate::localfs::write(p, i.to_string()).map_err(|e| e.to_string()),
+        None => Err("network path".to_string()),
+    };
     if let Err(e) = written {
         let _ = io.err.write_all(format!("it2tip: {}: {e}\n", path.display()).as_bytes());
         return 1;

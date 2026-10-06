@@ -280,7 +280,8 @@ pub fn load_theme(path: &str, palette: &Palette, dark: bool) -> (Theme, Option<S
     if path.trim().is_empty() {
         return (Theme::builtin(palette, dark), None);
     }
-    match std::fs::read_to_string(path) {
+    // A setting (saved, importable): judged before it is read.
+    match crate::localfs::judge_io(path).and_then(|p| crate::localfs::read_to_string(&p)) {
         Ok(css) => (Theme::from_css(&css, palette), None),
         Err(e) => (Theme::builtin(palette, dark), Some(format!("Could not read the highlight theme {path}: {e}"))),
     }

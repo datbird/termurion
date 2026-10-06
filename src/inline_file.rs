@@ -128,13 +128,13 @@ pub fn clean_name(name: &str) -> String {
 pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let clean = clean_name(name);
     let first = dir.join(&clean);
-    if !first.exists() {
+    if !crate::localfs::local_exists(&first) {
         return first;
     }
     let p = std::path::Path::new(&clean);
     let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    (1..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|c| !c.exists()).unwrap_or(first)
+    (1..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|c| !crate::localfs::local_exists(c)).unwrap_or(first)
 }
 
 /// Saves a download in `dir` under a free name, marked as coming from the internet (the

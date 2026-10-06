@@ -123,7 +123,7 @@ pub fn it2copy(args: &[String], io: &mut Io) -> i32 {
         }
         let source = match locate(&io.cwd, a) {
             Some((_, true)) => Some(Source::Dir),
-            Some((p, false)) => std::fs::File::open(p).ok().map(Source::File),
+            Some((p, false)) => crate::localfs::open(&p).ok().map(Source::File),
             None => None,
         };
         let Some(source) = source else {

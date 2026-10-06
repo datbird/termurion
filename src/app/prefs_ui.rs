@@ -149,11 +149,11 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
     if rp::is_unc(&text) || !rp::local_folder(Path::new(&location), read_link) {
         return Start::Ask(failed_folder(&text));
     }
-    let file = rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_file(p));
+    let file = rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_local_file(p));
     if !rp::local_folder(&file, read_link) {
         return Start::Ask(failed_folder(&text));
     }
-    match std::fs::read_to_string(&file).ok().and_then(|t| Snapshot::parse(&t)) {
+    match crate::localfs::judge_io(&file).and_then(|f| crate::localfs::read_to_string(&f)).ok().and_then(|t| Snapshot::parse(&t)) {
         Some(snap) => Start::Loaded(snap),
         None => Start::Ask(failed_folder(&text)),
     }
@@ -184,7 +184,7 @@ pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store
 /// the local ones. Returns the snapshot loaded (iTerm2's `savedRemotePrefs`) and the questions
 /// or failures to show after the first window opens.
 pub(super) fn load_at_start(g: &mut Globals, store: &mut Store, fetch: &dyn Fn(&str, Option<f64>) -> Fetched) -> (Option<Snapshot>, Vec<Ask>) {
-    match start(g, &home(), &crate::scripts::read_link, fetch) {
+    match start(g, &home(), &crate::netpath::read_reparse, fetch) {
         Start::Off => (None, Vec::new()),
         Start::Ask(ask) => (None, vec![ask]),
         Start::Loaded(snap) => {
@@ -221,9 +221,10 @@ fn write_snapshot(snap: &Snapshot, file: &Path, read_link: &dyn Fn(&Path) -> Opt
     }
     let mut tmp = file.as_os_str().to_owned();
     tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, snap.to_toml()).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, file).map_err(|e| format!("{}: {e}", file.display()))
+    let judged = |p: &Path| crate::localfs::judge_io(p).map_err(|e| format!("{}: {e}", p.display()));
+    let (tmp, file) = (judged(&PathBuf::from(tmp))?, judged(file)?);
+    crate::localfs::write(&tmp, snap.to_toml()).map_err(|e| format!("{}: {e}", tmp.path().display()))?;
+    crate::localfs::rename(&tmp, &file).map_err(|e| format!("{}: {e}", file.path().display()))
 }
 
 impl App {
@@ -238,11 +239,11 @@ impl App {
     /// folder or file reached through a link to one, which are never touched as files.
     fn prefs_file(&self) -> Option<PathBuf> {
         let (text, location) = self.prefs_location();
-        let read_link = crate::scripts::read_link;
+        let read_link = crate::netpath::read_reparse;
         if rp::is_url(&location) || text.trim().is_empty() || rp::is_unc(&text) || !rp::local_folder(Path::new(&location), &read_link) {
             return None;
         }
-        Some(rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_file(p))).filter(|file| rp::local_folder(file, &read_link))
+        Some(rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_local_file(p))).filter(|file| rp::local_folder(file, &read_link))
     }
 
     /// The local settings as the folder would hold them.
@@ -284,7 +285,7 @@ impl App {
     fn prefs_autosave(&mut self) {
         let Some(file) = self.prefs_file() else { return };
         let snap = self.prefs_local();
-        if write_snapshot(&snap, &file, &crate::scripts::read_link).is_ok() {
+        if write_snapshot(&snap, &file, &crate::netpath::read_reparse).is_ok() {
             self.prefs_saved = Some(snap);
         }
     }
@@ -294,7 +295,7 @@ impl App {
         let snap = self.prefs_local();
         let file = self.prefs_file();
         if let Some(f) = &file {
-            if write_snapshot(&snap, f, &crate::scripts::read_link).is_ok() {
+            if write_snapshot(&snap, f, &crate::netpath::read_reparse).is_ok() {
                 self.prefs_saved = Some(snap);
                 return;
             }
@@ -307,7 +308,7 @@ impl App {
     /// loaded or last written. False when nothing was.
     fn prefs_remote_changed(&self) -> bool {
         let (Some(saved), Some(file)) = (&self.prefs_saved, self.prefs_file()) else { return false };
-        let fresh = std::fs::read_to_string(file).ok().and_then(|t| Snapshot::parse(&t));
+        let fresh = crate::localfs::judge_io(file).and_then(|f| crate::localfs::read_to_string(&f)).ok().and_then(|t| Snapshot::parse(&t));
         fresh.as_ref() != Some(saved)
     }
 

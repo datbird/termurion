@@ -320,10 +320,14 @@ fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budge
         // folder that may not be probed hides every relative candidate under it), and only
         // through folders and links that stay local, outside ignored folders and mapped
         // drives (`netpath::may_probe`, `IPF:fileExistsAtPathLocally`). Never a probe first.
-        if budget.left() == 0 || !crate::netpath::may_probe_with(&p.to_string_lossy(), probe, &crate::scripts::read_link, budget) || !budget.spend() {
+        if budget.left() == 0 {
             return None;
         }
-        p.exists().then_some(p)
+        let local = crate::localfs::LocalPath::semantic_with(&p.to_string_lossy(), probe, budget)?;
+        if !budget.spend() {
+            return None;
+        }
+        crate::localfs::exists(&local).then_some(p)
     })
 }
 
@@ -555,7 +559,7 @@ pub fn resolve_program(name: &str, path_var: &str, pathext: &str, exists: &dyn F
 pub fn resolve_on_path(name: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let name = name.to_string_lossy();
     let path_var = path.map(|p| std::env::split_paths(p).map(|d| d.to_string_lossy().to_string()).collect::<Vec<_>>().join(";")).unwrap_or_default();
-    resolve_program(&name, &path_var, ".COM;.EXE;.BAT;.CMD", &|p| p.is_file())
+    resolve_program(&name, &path_var, ".COM;.EXE;.BAT;.CMD", &|p| crate::localfs::is_local_file(p))
 }
 
 /// Whether a program's arguments are parsed by cmd.exe: a batch file, or cmd.exe itself.
@@ -1560,8 +1564,11 @@ mod tests {
     /// Every drive is a mapped network drive.
     struct AllRemote;
     impl Drives for AllRemote {
-        fn is_remote(&self, _root: &str) -> bool {
-            true
+        fn dos_device(&self, letter: char) -> Option<String> {
+            Some(format!(r"\Device\LanmanRedirector\;{letter}:0000000000012345\srv\share"))
+        }
+        fn drive_type(&self, _letter: char) -> u32 {
+            4
         }
     }
 
@@ -1661,13 +1668,7 @@ mod tests {
     /// and the existence test is not made where the link is planned (the UI thread).
     #[test]
     fn local_opens_obey_the_probe_rule_and_never_probe_when_planned() {
-        struct Z;
-        impl crate::netpath::Drives for Z {
-            fn is_remote(&self, root: &str) -> bool {
-                root.eq_ignore_ascii_case("Z:\\")
-            }
-        }
-        let probe = crate::netpath::Probe::from_settings("D:\\slow", false, std::sync::Arc::new(Z));
+        let probe = crate::netpath::Probe::from_settings("D:\\slow", false, std::sync::Arc::new(crate::netpath::MappedLetters(&['Z'])));
         let asked = std::cell::Cell::new(0);
         let exists = |_: &str| {
             asked.set(asked.get() + 1);
@@ -1677,7 +1678,7 @@ mod tests {
             assert!(matches!(open_local_result(p, false, &probe, &exists), Run::Blocked(_)), "{p}");
         }
         assert_eq!(asked.get(), 0, "nothing was probed on a mapped drive or an ignored folder");
-        let allowed = crate::netpath::Probe::from_settings("D:\\slow", true, std::sync::Arc::new(Z));
+        let allowed = crate::netpath::Probe::from_settings("D:\\slow", true, std::sync::Arc::new(crate::netpath::MappedLetters(&['Z'])));
         assert_eq!(open_local_result("Z:\\x\\a.txt", false, &allowed, &exists), Run::Open("Z:\\x\\a.txt".into()), "EnableSemanticHistoryOnNetworkMounts allows it");
         assert_eq!(asked.get(), 1);
         // Planning touches no disk: a link and an openFile: give the marker and ask nothing.

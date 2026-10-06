@@ -169,7 +169,7 @@ pub fn repair_at_start(globals: &crate::globals::Globals) {
         return;
     }
     let mut reg = system();
-    repair(&table, reg.as_mut(), &exe, &|p| crate::localfs::judged(p) && !crate::localfs::exists(p));
+    repair(&table, reg.as_mut(), &exe, &|p| crate::localfs::judged(p) && !crate::localfs::local_exists(p));
 }
 
 /// The items of the "Select URL Schemes..." popup: the title unchecked, then each scheme checked

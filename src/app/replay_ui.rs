@@ -410,7 +410,7 @@ impl App {
         };
         let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
         let bytes = recording::encode(dvr, recording::redact(&profile, &guid));
-        if let Err(e) = std::fs::write(&path, bytes) {
+        if let Err(e) = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, bytes)) {
             self.recording_warning(recording::SAVE_FAILED, e.to_string());
         }
     }
@@ -429,7 +429,7 @@ impl App {
             d.pick_file()
         });
         let Some(path) = path else { return };
-        let loaded = std::fs::read(&path).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
+        let loaded = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::read(&p)).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
         let (dvr, values) = match loaded {
             Ok(l) => l,
             Err(e) => {

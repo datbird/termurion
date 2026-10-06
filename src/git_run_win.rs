@@ -49,7 +49,7 @@ impl GitRun for WinGitRun {
 fn program(git: &Path) -> Option<PathBuf> {
     if git == Path::new("git") {
         let path = std::env::var("PATH").unwrap_or_default();
-        return find_git(&path, &|p| p.is_file());
+        return find_git(&path, &crate::localfs::is_file);
     }
     local_path_ok(git.to_str()?).then(|| git.to_path_buf())
 }

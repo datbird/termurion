@@ -74,7 +74,7 @@ pub(super) fn import_color_preset(g: &mut Globals, path: &Path, bytes: &[u8], ad
 fn read_color_file(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    crate::localfs::open(path).ok()?.take(crate::color_presets::MAX_ITERMCOLORS as u64 + 1).read_to_end(&mut bytes).ok()?;
+    crate::localfs::open(&crate::localfs::LocalPath::judge(path)?).ok()?.take(crate::color_presets::MAX_ITERMCOLORS as u64 + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
 }
 

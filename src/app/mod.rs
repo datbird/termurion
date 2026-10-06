@@ -3766,7 +3766,7 @@ impl App {
         };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
-            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| crate::localfs::is_dir(d)) => (PathBuf::from(d), None),
+            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| crate::localfs::is_local_dir(d)) => (PathBuf::from(d), None),
             // A git command's window runs only in its folder, never the profile's.
             Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
                 return Err(format!("The folder {d} no longer exists, so git did not run."));
@@ -3778,7 +3778,7 @@ impl App {
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
             // A restart reuses the folder the shell first started in, never OSC 7 or the focused
             // pane (`PS:4890-4896`, P13).
-            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| crate::localfs::is_dir(d)),
+            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| crate::localfs::is_local_dir(d)),
             _ => self.profile_start_dir(&p),
         };
         match warning {
@@ -3972,7 +3972,7 @@ impl App {
             None => text.to_string(),
         };
         let mode = crate::start_dir::mode(p, self.start_object);
-        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| crate::localfs::is_dir(d))
+        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| crate::localfs::is_local_dir(d))
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine
@@ -4151,7 +4151,7 @@ impl App {
         let folder = self.scripts_folder();
         // Reached through a link to a network path: the scanner refuses it (an empty tree,
         // nothing made, watched or polled), and the app-wide entry says why once.
-        if !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+        if !crate::scripts::ancestors_stay_local(&folder, &crate::netpath::read_reparse) {
             self.script_log_app(crate::scripts::scripts_folder_not_local(&folder));
         }
         // The old scanner's thread ends on its own; a scan it is in finishes first.

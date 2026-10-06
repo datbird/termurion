@@ -410,7 +410,7 @@ impl App {
         let Some(backend) = pip_backend(container) else { return };
         let venv = container.join(rt::VENV_DIR);
         let (program, args, env) = sd::pip_command(&backend, &venv, &pip_args);
-        let exists = |p: &Path| !crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link) || crate::localfs::is_file(p);
+        let exists = |p: &Path| !crate::scripts::ancestors_stay_local(p, &crate::netpath::read_reparse) || crate::localfs::is_local_file(p);
         let index = sd::configured_index(&backend, &venv, &window_env(&env), &exists);
         let text = sd::confirm_text(&program, &args, index.as_deref());
         let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL];
@@ -522,7 +522,7 @@ impl App {
     /// dependencies (asking before any download), then the script moves in.
     fn deps_upgrade(&mut self, script: &Path) {
         let folder = sd::upgrade_folder(script);
-        if crate::localfs::exists(&folder) {
+        if crate::localfs::local_exists(&folder) {
             // Persistent in iTerm2: never silenced.
             return self.deps_alert(sd::ERROR, sd::folder_exists(&folder));
         }

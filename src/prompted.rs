@@ -274,9 +274,12 @@ pub fn upload_archive(paths: &[std::path::PathBuf]) -> Result<Vec<u8>, String> {
     if paths.is_empty() {
         return Err("nothing chosen".into());
     }
+    // Every chosen path is judged before anything is asked of it.
+    let local: Vec<crate::localfs::LocalPath> = paths.iter().map(|p| crate::localfs::LocalPath::judge(p).ok_or_else(|| format!("{}: {}", p.display(), crate::localfs::refused()))).collect::<Result<_, _>>()?;
+    let is_dir: Vec<bool> = local.iter().map(crate::localfs::is_dir).collect();
     // Files count as their folder; folders as themselves.
-    let homes: Vec<PathBuf> = paths.iter().map(|p| if p.is_dir() { p.clone() } else { p.parent().map(Path::to_path_buf).unwrap_or_default() }).collect();
-    let base = if paths.len() == 1 && paths[0].is_dir() {
+    let homes: Vec<PathBuf> = paths.iter().zip(&is_dir).map(|(p, d)| if *d { p.clone() } else { p.parent().map(Path::to_path_buf).unwrap_or_default() }).collect();
+    let base = if paths.len() == 1 && is_dir[0] {
         paths[0].parent().map(Path::to_path_buf).unwrap_or_default()
     } else {
         let mut base = homes[0].clone();
@@ -291,12 +294,10 @@ pub fn upload_archive(paths: &[std::path::PathBuf]) -> Result<Vec<u8>, String> {
     };
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut tar = tar::Builder::new(gz);
-    tar.follow_symlinks(false);
-    for p in paths {
+    for (p, l) in paths.iter().zip(&local) {
         let rel = p.strip_prefix(&base).map_err(|_| format!("{} is outside {}", p.display(), base.display()))?;
         let name = Path::new(".").join(rel);
-        let result = if p.is_dir() { tar.append_dir_all(&name, p) } else { tar.append_path_with_name(p, &name) };
-        result.map_err(|e| format!("{}: {e}", p.display()))?;
+        crate::localfs::append_to_tar(&mut tar, &name, l).map_err(|e| format!("{}: {e}", p.display()))?;
     }
     let gz = tar.into_inner().map_err(|e| e.to_string())?;
     gz.finish().map_err(|e| e.to_string())

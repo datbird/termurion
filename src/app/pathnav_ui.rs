@@ -165,7 +165,7 @@ impl App {
             let guard = Idle(idle.clone());
             let started = std::thread::Builder::new().name("pathnav".into()).spawn(move || {
                 let _idle = guard;
-                let found = crate::pathnav::sniff(&cands, &home, &probe, &|p| std::path::Path::new(p).is_dir());
+                let found = crate::pathnav::sniff(&cands, &home, &probe, &|p| crate::localfs::LocalPath::semantic(p, &probe).is_some_and(|p| crate::localfs::is_dir(&p)));
                 if !found.is_empty() && tx.send(Reply::Marks(id, found)).is_ok() {
                     notify();
                 }
@@ -183,7 +183,7 @@ impl App {
     pub(super) fn open_local(&mut self, pane: PaneId, path: String, has_code: bool, background: bool) {
         let (probe, tx, notify) = (self.path_probe(), self.pathnav.tx.clone(), self.pathnav.notify.clone());
         let started = std::thread::Builder::new().name("open-local".into()).spawn(move || {
-            let run = crate::semantic::open_local_result(&path, has_code, &probe, &|p| std::path::Path::new(p).exists());
+            let run = crate::semantic::open_local_result(&path, has_code, &probe, &|p| crate::localfs::LocalPath::semantic(p, &probe).is_some_and(|p| crate::localfs::exists(&p)));
             if tx.send(Reply::Opened(pane, run, background)).is_ok() {
                 notify();
             }
@@ -295,8 +295,8 @@ impl App {
 
 /// The subfolders of `dir` by name (at most 4096 entries read; names are disk text).
 fn subfolders(dir: &str) -> Vec<String> {
-    let Ok(rd) = crate::localfs::read_dir(std::path::Path::new(dir)) else { return Vec::new() };
-    rd.flatten().take(4096).filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect()
+    let Some(Ok(entries)) = crate::localfs::LocalPath::judge(dir).map(|d| crate::localfs::entries_upto(&d, 4096)) else { return Vec::new() };
+    entries.into_iter().filter(|e| e.stat.is_dir).map(|e| e.name.to_string_lossy().into_owned()).collect()
 }
 
 #[cfg(test)]

@@ -262,8 +262,12 @@ impl Window {
 
     /// Reads a picked file for Import.
     fn import_file(&mut self, path: &std::path::Path) {
-        match std::fs::metadata(path) {
-            Ok(m) if m.len() <= MAX_FILE => match std::fs::read_to_string(path) {
+        let path = match crate::localfs::judge_io(path) {
+            Ok(p) => p,
+            Err(e) => return self.message = Some(e.to_string()),
+        };
+        match crate::localfs::stat(&path) {
+            Ok(m) if m.len <= MAX_FILE => match crate::localfs::read_to_string(&path) {
                 Ok(text) => self.import_text(&text),
                 Err(e) => self.message = Some(e.to_string()),
             },
@@ -274,7 +278,7 @@ impl Window {
 
     /// Writes a picked file for Export.
     fn export_file(&mut self, path: &std::path::Path) {
-        if let Err(e) = std::fs::write(path, self.export_text()) {
+        if let Err(e) = crate::localfs::judge_io(path).and_then(|p| crate::localfs::write(&p, self.export_text())) {
             self.message = Some(e.to_string());
         }
     }

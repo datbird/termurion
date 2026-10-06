@@ -97,12 +97,12 @@ pub struct Loaded {
 /// Decodes an image, downscaled to `MAX_SIDE`. None when it is missing or does not decode.
 pub fn load(path: &Path) -> Option<Loaded> {
     use std::hash::{Hash, Hasher};
-    // Never touch a network path: opening one sends the user's credentials to its server.
-    if !crate::prompted::local_path_ok(&path.to_string_lossy()) {
-        return None;
-    }
-    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
-    let mut img = image::open(path).ok()?.to_rgba8();
+    // The location is a profile setting (saved, importable): judged before anything touches it, as
+    // opening a share path sends the person's credentials to its server.
+    let local = crate::localfs::LocalPath::judge(path)?;
+    let modified = crate::localfs::stat(&local).ok()?.modified?;
+    let file = std::io::BufReader::new(crate::localfs::open(&local).ok()?);
+    let mut img = image::ImageReader::new(file).with_guessed_format().ok()?.decode().ok()?.to_rgba8();
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
         return None;
@@ -171,15 +171,12 @@ impl Deck {
 
 /// The image files directly in a folder, by name (hidden files skipped).
 pub fn folder_images(folder: &Path) -> Vec<PathBuf> {
-    if !crate::prompted::local_path_ok(&folder.to_string_lossy()) {
-        return Vec::new();
-    }
     const EXT: [&str; 9] = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "ico"];
-    let Ok(dir) = std::fs::read_dir(folder) else { return Vec::new() };
+    let Some(Ok(dir)) = crate::localfs::LocalPath::judge(folder).map(|f| crate::localfs::entries(&f)) else { return Vec::new() };
     let mut out: Vec<PathBuf> = dir
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .map(|e| e.path())
+        .into_iter()
+        .filter(|e| e.stat.is_file)
+        .map(|e| e.path().to_path_buf())
         .filter(|p| {
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();

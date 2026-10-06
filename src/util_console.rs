@@ -264,7 +264,9 @@ pub fn run_command(c: &Cmd) -> Result<Output, String> {
     let mut cmd = Command::new(&c.program);
     cmd.args(&c.args);
     if let Some(dir) = &c.cwd {
-        cmd.current_dir(dir);
+        // CreateProcess opens the working folder: judged first.
+        let dir = crate::localfs::judge_io(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        crate::localfs::set_cwd(&mut cmd, &dir);
     }
     for (name, value) in &c.env {
         match value {
@@ -326,7 +328,7 @@ pub fn on_path(program: &str) -> bool {
     let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let path = std::env::var("PATH").unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_default();
-    util_cli::found_on_path(program, &path, &exts, &cwd, &|p: &Path| p.is_file())
+    util_cli::found_on_path(program, &path, &exts, &cwd, &|p: &Path| crate::localfs::is_local_file(p))
 }
 
 /// `$RANDOM`: 0 to 32767, from the standard library's per-process random hash keys.

@@ -731,8 +731,8 @@ impl Ls<'_, '_> {
 #[cfg(windows)]
 pub struct WinFs {
     cwd: PathBuf,
-    /// Folders whose way from the root holds no link to a network path.
-    checked: RefCell<HashSet<PathBuf>>,
+    /// Folders the judge passed, by path.
+    checked: RefCell<HashMap<PathBuf, crate::localfs::LocalPath>>,
     /// Account names by SID string, for this run.
     names: RefCell<HashMap<String, String>>,
 }
@@ -743,10 +743,29 @@ impl WinFs {
         WinFs { cwd, checked: RefCell::default(), names: RefCell::default() }
     }
 
-    /// `path` against `cwd`, when it may be opened: not a network path (as given or joined),
-    /// no link on the way to its folder leading to one (each folder checked once), and with
-    /// `follow` (the open follows `path` itself) not a link to one either.
-    fn full(&self, path: &str, follow: bool) -> Option<PathBuf> {
+    /// `path` against `cwd`, when the judge passes it: its folder judged once (kept for the run),
+    /// then the entry itself (its own link read, a link judged whole).
+    fn full(&self, path: &str) -> Option<crate::localfs::LocalPath> {
+        match self.folder_of(path)? {
+            Ok((folder, name)) => folder.child(name),
+            Err(whole) => crate::localfs::LocalPath::judge(whole),
+        }
+    }
+
+    /// `full` for an open that never follows the entry itself (`lstat`, the owners): only its
+    /// folder is judged, so a link to a share is shown as the link it is.
+    fn unfollowed(&self, path: &str) -> Option<crate::localfs::Unfollowed> {
+        match self.folder_of(path)? {
+            Ok((folder, name)) => folder.unfollowed(name),
+            Err(whole) => crate::localfs::LocalPath::judge(whole).map(crate::localfs::Unfollowed::from),
+        }
+    }
+
+    /// The judged folder of `path` against `cwd` (kept for the run) and the entry's name; Err with
+    /// the whole path when it ends in no plain name (a drive root, `..`), for the judge to take whole.
+    #[allow(clippy::type_complexity)]
+    fn folder_of(&self, path: &str) -> Option<Result<(crate::localfs::LocalPath, std::ffi::OsString), PathBuf>> {
+        use crate::localfs::LocalPath;
         if network_path(crate::util_cli::local_form(path)) {
             return None;
         }
@@ -754,20 +773,19 @@ impl WinFs {
         if network_path(&p.to_string_lossy()) {
             return None;
         }
-        if let Some(parent) = p.parent() {
-            let known = self.checked.borrow().contains(parent);
-            if !known {
-                if !crate::git_state::program_links_local(parent) {
-                    return None;
-                }
-                self.checked.borrow_mut().insert(parent.to_path_buf());
+        let ends_plain = matches!(p.components().next_back(), Some(std::path::Component::Normal(_)));
+        let (Some(parent), Some(name), true) = (p.parent().filter(|d| !d.as_os_str().is_empty()), p.file_name(), ends_plain) else { return Some(Err(p)) };
+        let name = name.to_os_string();
+        let known = self.checked.borrow().get(parent).cloned();
+        let folder = match known {
+            Some(f) => f,
+            None => {
+                let f = LocalPath::judge(parent)?;
+                self.checked.borrow_mut().insert(parent.to_path_buf(), f.clone());
+                f
             }
-        }
-        let link = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
-        if follow && link && !crate::git_state::program_links_local(&p) {
-            return None;
-        }
-        Some(p)
+        };
+        Some(Ok((folder, name)))
     }
 }
 
@@ -819,20 +837,16 @@ mod win {
     /// Owner and group SID strings of a file and, with `names`, their account names (looked
     /// up once per SID in `cache`); "?" each when unreadable. The file is opened without
     /// following a link.
-    pub fn owners(path: &std::path::Path, names: bool, cache: &RefCell<HashMap<String, String>>) -> Owners {
+    pub fn owners(path: &crate::localfs::Unfollowed, names: bool, cache: &RefCell<HashMap<String, String>>) -> Owners {
         use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            READ_CONTROL,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
         };
         let unknown = || Owners { owner: "?".into(), group: "?".into(), owner_id: "?".into(), group_id: "?".into() };
-        let Ok(file) = std::fs::OpenOptions::new()
-            .access_mode(READ_CONTROL)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-        else {
+        let Ok(file) = crate::localfs::open_unfollowed(path, |o| {
+            o.access_mode(READ_CONTROL).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        }) else {
             return unknown();
         };
         let h = file.as_raw_handle() as HANDLE;
@@ -872,19 +886,17 @@ mod win {
     }
 
     /// `lstat` of a file opened with backup semantics and without following a reparse point.
-    pub fn lstat(path: &std::path::Path) -> Option<Entry> {
+    pub fn lstat(local: &crate::localfs::Unfollowed) -> Option<Entry> {
         use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
         };
-        let file = std::fs::OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-            .ok()?;
+        let path = local.path();
+        let file = crate::localfs::open_unfollowed(local, |o| {
+            o.access_mode(FILE_READ_ATTRIBUTES).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        })
+        .ok()?;
         let h = file.as_raw_handle() as HANDLE;
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         if unsafe { GetFileInformationByHandle(h, &mut info) } == 0 {
@@ -951,28 +963,29 @@ fn errno_text(e: &std::io::Error) -> String {
 #[cfg(windows)]
 impl Fs for WinFs {
     fn lstat(&self, path: &str) -> Option<Entry> {
-        win::lstat(&self.full(path, false)?)
+        win::lstat(&self.unfollowed(path)?)
     }
     fn exists(&self, path: &str) -> bool {
-        self.full(path, true).is_some_and(|p| std::fs::metadata(p).is_ok())
+        self.full(path).is_some_and(|p| crate::localfs::stat(&p).is_ok())
     }
     fn owners(&self, path: &str, names: bool) -> Owners {
-        match self.full(path, false) {
+        match self.unfollowed(path) {
             Some(p) => win::owners(&p, names, &self.names),
             None => Owners { owner: "?".into(), group: "?".into(), owner_id: "?".into(), group_id: "?".into() },
         }
     }
     fn list(&self, dir: &str) -> Result<Vec<String>, String> {
-        let full = self.full(dir, true).ok_or_else(|| "No such file or directory".to_string())?;
-        let rd = std::fs::read_dir(full).map_err(|e| errno_text(&e))?;
-        Ok(rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        let full = self.full(dir).ok_or_else(|| "No such file or directory".to_string())?;
+        let entries = crate::localfs::entries(&full).map_err(|e| errno_text(&e))?;
+        Ok(entries.into_iter().map(|e| e.name.to_string_lossy().into_owned()).collect())
     }
     fn open(&self, path: &str) -> Option<Box<dyn std::io::Read + '_>> {
-        let f = std::fs::File::open(self.full(path, true)?).ok()?;
+        let f = crate::localfs::open(&self.full(path)?).ok()?;
         Some(Box::new(f))
     }
     fn dims(&self, path: &str) -> Option<(u32, u32)> {
-        image::image_dimensions(self.full(path, true)?).ok()
+        let f = std::io::BufReader::new(crate::localfs::open(&self.full(path)?).ok()?);
+        image::ImageReader::new(f).with_guessed_format().ok()?.into_dimensions().ok()
     }
 }
 

@@ -63,37 +63,28 @@ pub struct RealFs;
 
 impl Fs for RealFs {
     fn list(&self, dir: &Path) -> Vec<(String, bool)> {
-        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        let Some(Ok(entries)) = crate::localfs::LocalPath::judge(dir).map(|d| crate::localfs::entries(&d)) else { return Vec::new() };
         entries
-            .flatten()
+            .into_iter()
             .map(|e| {
-                let folder = match e.file_type() {
-                    Ok(t) if t.is_symlink() => link_is_local_folder(&e.path()),
-                    Ok(t) => t.is_dir(),
-                    Err(_) => false,
-                };
-                (e.file_name().to_string_lossy().into_owned(), folder)
+                // A link counts as a folder only when the judge passes it and it leads to one.
+                let folder = if e.stat.is_reparse { e.local().is_some_and(|l| crate::localfs::is_dir(&l)) } else { e.stat.is_dir };
+                (e.name.to_string_lossy().into_owned(), folder)
             })
             .collect()
     }
     fn is_file(&self, p: &Path) -> bool {
-        p.is_file()
+        crate::localfs::is_local_file(p)
     }
     fn is_dir(&self, p: &Path) -> bool {
-        p.is_dir()
+        crate::localfs::is_local_dir(p)
     }
     fn canonical(&self, dir: &Path) -> Option<PathBuf> {
-        std::fs::canonicalize(dir).ok()
+        crate::localfs::LocalPath::judge(dir).and_then(|d| crate::localfs::canonicalize(&d)).map(crate::localfs::LocalPath::into_path_buf)
     }
     fn read_link(&self, p: &Path) -> Option<PathBuf> {
-        read_link(p)
+        crate::netpath::read_reparse(p)
     }
-}
-
-/// Where a symbolic link or junction points, read from the local link itself; None when `p`
-/// is no link.
-pub fn read_link(p: &Path) -> Option<PathBuf> {
-    std::fs::read_link(p).ok()
 }
 
 /// Whether any folder or the file of `path` is a Win32 DOS device name (CON, PRN, AUX, NUL, CONIN$,
@@ -103,17 +94,12 @@ pub fn is_device_name(path: &Path) -> bool {
     path.components().any(|c| matches!(c, std::path::Component::Normal(name) if crate::inert_files::is_device_name(&name.to_string_lossy())))
 }
 
-/// Whether a symbolic link or junction leads to a local folder: the one judge (every folder from the
-/// root down, the link's target and the target's own folders), then the folder test.
-fn link_is_local_folder(link: &Path) -> bool {
-    stays_local(link) && link.is_dir()
-}
 
 /// Whether `path` is safe to touch as a file without a person asking: not a network path, not
 /// on a mapped drive, and no folder from the root down (nor the file) a link whose chain reaches
 /// a network path or a mapped drive (or never ends). Reads only the links themselves.
 pub fn stays_local(path: &Path) -> bool {
-    stays_local_with(path, &read_link, &*crate::netpath::real_drives())
+    stays_local_with(path, &crate::netpath::read_reparse, &*crate::netpath::real_drives())
 }
 
 /// `stays_local` with the link reader and the drive types given (the real ones, or a test's).
@@ -619,12 +605,7 @@ mod tests {
     /// Review fix: the ONE rule also refuses a mapped drive and a junction anywhere above the file
     /// that lands on a share or a mapped drive, reading root first so nothing is read through it.
     /// The drive types and links are injected; the rule itself runs for real.
-    struct Remote(&'static [char]);
-    impl crate::netpath::Drives for Remote {
-        fn is_remote(&self, root: &str) -> bool {
-            root.chars().next().is_some_and(|c| self.0.contains(&c.to_ascii_uppercase()))
-        }
-    }
+    use crate::netpath::MappedLetters as Remote;
 
     #[test]
     fn the_one_rule_refuses_mapped_drives_and_ancestor_links() {

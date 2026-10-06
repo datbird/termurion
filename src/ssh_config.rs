@@ -131,7 +131,7 @@ pub fn ok_path(text: &str) -> Option<String> {
 /// refused.
 pub fn browse_ok(path: &std::path::Path) -> Result<(), &'static str> {
     let exe = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"));
-    if path.is_dir() || !exe { Err(NOT_EXECUTABLE) } else { Ok(()) }
+    if crate::localfs::is_local_dir(path) || !exe { Err(NOT_EXECUTABLE) } else { Ok(()) }
 }
 
 /// What is enabled (`SC:117-123`): the variables field and files table follow SSH

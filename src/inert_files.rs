@@ -88,19 +88,24 @@ pub fn zone_text(host_url: Option<&str>) -> String {
 /// file (writing a stream would create it), or a drive that keeps no streams (FAT). For a
 /// download that must not land unmarked; `write_marked` stays lenient for inline files (12d).
 pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
-    if !std::fs::symlink_metadata(path)?.is_file() {
+    if !crate::localfs::lstat(&crate::localfs::judge_io(path)?)?.is_file {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
     }
+    crate::localfs::write(&zone_stream(path)?, zone_text(host_url))
+}
+
+/// `path`'s Zone.Identifier stream, judged.
+fn zone_stream(path: &Path) -> std::io::Result<crate::localfs::LocalPath> {
     let mut stream = path.as_os_str().to_os_string();
     stream.push(":Zone.Identifier");
-    std::fs::write(stream, zone_text(host_url))
+    crate::localfs::judge_io(std::path::PathBuf::from(stream))
 }
 
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
 /// unmarked.
 pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)?;
+    crate::localfs::write(&crate::localfs::judge_io(path)?, bytes)?;
     mark(path);
     Ok(())
 }
@@ -108,9 +113,7 @@ pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// The Zone.Identifier stream alone, for a writer that wrote the file through its own handle
 /// (a failure is ignored: a drive without streams keeps the file unmarked).
 pub fn mark(path: &Path) {
-    let mut stream = path.as_os_str().to_os_string();
-    stream.push(":Zone.Identifier");
-    let _ = std::fs::write(stream, ZONE_MARK);
+    let _ = zone_stream(path).and_then(|s| crate::localfs::write(&s, ZONE_MARK));
 }
 
 /// `write_marked` for a name someone else chose that is not yet checked: refused with an error

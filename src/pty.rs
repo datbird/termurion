@@ -359,9 +359,17 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
     }
 }
 
-/// `cwd` as a null-terminated wide string for CreateProcessW.
+/// The working folder CreateProcessW opens for the child: judged like any probe. One the judge
+/// refuses (a share, a mapped or SUBST drive onto one, a link to one) is replaced by the home
+/// folder when that passes, else the child inherits Tandem's own.
+fn working_folder(cwd: Option<&std::path::Path>) -> Option<crate::localfs::LocalPath> {
+    let cwd = cwd?;
+    crate::localfs::LocalPath::judge(cwd).or_else(|| std::env::var_os("USERPROFILE").and_then(crate::localfs::LocalPath::judge))
+}
+
+/// A judged working folder as a null-terminated wide string for CreateProcessW.
 fn wide_dir(cwd: Option<&std::path::Path>) -> Option<Vec<u16>> {
-    cwd.map(|d| d.as_os_str().encode_wide().chain(Some(0)).collect())
+    working_folder(cwd).map(|d| d.path().as_os_str().encode_wide().chain(Some(0)).collect())
 }
 
 /// The null environment (inherit ours) unless there is something to add. Never logged: it can
@@ -735,6 +743,20 @@ impl Drop for Pty {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// Round 3: CreateProcessW opens the working folder, so a share or a path the judge refuses
+    /// never becomes one (the home folder takes its place when it passes).
+    #[test]
+    fn a_refused_working_folder_is_never_handed_to_create_process() {
+        for d in [r"\\attacker\share", r"\\?\UNC\h\s\x", "relative"] {
+            let got = super::working_folder(Some(std::path::Path::new(d)));
+            assert!(got.as_ref().is_none_or(|g| !g.path().to_string_lossy().eq_ignore_ascii_case(d)), "{d}: {got:?}");
+        }
+        let temp = std::env::temp_dir();
+        assert_eq!(super::working_folder(Some(&temp)).map(|g| g.into_path_buf()), Some(temp));
+        assert_eq!(super::working_folder(None), None);
+    }
+
     use super::*;
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;

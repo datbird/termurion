@@ -1555,7 +1555,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         }
     }
     let on = g.bool(rp::LOAD_KEY);
-    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::scripts::read_link, &rp::writable) {
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::netpath::read_reparse, &rp::writable) {
         action = PrefsAction::CopyNow;
     }
     let mut text = g.string(rp::FOLDER_KEY);
@@ -1582,7 +1582,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         valid = match cached {
             Some((checked, valid)) if checked == text => valid,
             _ => {
-                let valid = rp::location_valid(&text, home, &crate::scripts::read_link, &rp::writable);
+                let valid = rp::location_valid(&text, home, &crate::netpath::read_reparse, &rp::writable);
                 ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
                 valid
             }

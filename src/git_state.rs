@@ -13,8 +13,8 @@
 //! `../pidinfo/iTermGitClient.m`.
 //!
 //! Security. Opening a network path (`\\host\share`) sends the user's Windows credentials to
-//! that host, so nothing here opens, or lets git open, a path that fails
-//! `prompted::local_path_ok`: the session directory, symbolic links on the way to it, every
+//! that host, so nothing here opens, or lets git open, a path the one judge refuses
+//! (`localfs::LocalPath`, `netpath::judge`: mapped and SUBST drives, links to shares): the session directory, symbolic links on the way to it, every
 //! `.git` git could find above it, a `.git` file's `gitdir:`, a worktree's `commondir`,
 //! `objects/info/alternates`, every path-like value in the repository's own config and the
 //! files it includes, and the git directory `rev-parse` reports. A repository's own config
@@ -36,6 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::localfs::{self, LocalPath};
 use crate::prompted::{local_path_ok, network_path};
 
 /// The repository operation in progress (libgit2's `git_repository_state`, folded as
@@ -160,12 +161,12 @@ pub fn parse_porcelain(z: &[u8]) -> Option<GitState> {
 }
 
 /// The operation in progress, from files in the git directory in libgit2's
-/// `git_repository_state` order. The caller has checked `git_dir` with `local_path_ok`.
+/// `git_repository_state` order, in a judged git directory.
 /// Links are not followed: a link is neither a file nor a folder here.
-pub fn repo_state(git_dir: &Path) -> RepoState {
-    let meta = |p: &str| std::fs::symlink_metadata(git_dir.join(p)).ok();
-    let file = |p: &str| meta(p).is_some_and(|m| m.is_file());
-    let dir = |p: &str| meta(p).is_some_and(|m| m.is_dir());
+pub fn repo_state(git_dir: &LocalPath) -> RepoState {
+    let meta = |p: &str| git_dir.join(p).and_then(|p| localfs::lstat(&p).ok());
+    let file = |p: &str| meta(p).is_some_and(|m| m.is_file);
+    let dir = |p: &str| meta(p).is_some_and(|m| m.is_dir);
     if file("rebase-merge/interactive") || dir("rebase-merge") || file("rebase-apply/rebasing") {
         RepoState::Rebase
     } else if file("rebase-apply/applying") || dir("rebase-apply") {
@@ -335,7 +336,7 @@ pub const MENU_BRANCHES: usize = 7;
 
 /// The git the status bar runs, from `gitSearchPath`: empty is `git` from PATH (see
 /// `find_git`), else the first `;`-separated folder's `git.exe`; a folder that fails
-/// `local_path_ok`, or with a link on the way to a network path, is no git.
+/// `local_path_ok`, or that the judge refuses (a link to a share, a mapped drive), is no git.
 pub fn git_program(search_path: &str) -> Option<PathBuf> {
     git_program_named(search_path).filter(|p| p == Path::new("git") || program_links_local(p))
 }
@@ -351,17 +352,18 @@ pub fn git_program_named(search_path: &str) -> Option<PathBuf> {
     local_path_ok(first).then(|| exe_in(first))
 }
 
-/// No symbolic link or junction on the way to `program` leads to a network path.
+/// The judge passes `program` (no link on the way to it leads to a network path, and no mapped or
+/// SUBST drive onto a share).
 pub fn program_links_local(program: &Path) -> bool {
-    links_local(program, 0)
+    localfs::judged(program)
 }
 
 /// `git.exe` in the first `util_cli::path_dirs` folder that has it, with no link on the way
 /// to a network path. Network and relative folders, and folders reached through a link to a
 /// network path, are skipped without being looked in (a UNC entry probed on every poll would
 /// leak).
-pub fn find_git(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
-    crate::util_cli::path_dirs(path_var).map(|d| d.join("git.exe")).find(|p| links_local(p, 0) && is_file(p))
+pub fn find_git(path_var: &str, is_file: &dyn Fn(&LocalPath) -> bool) -> Option<PathBuf> {
+    crate::util_cli::path_dirs(path_var).filter_map(|d| LocalPath::judge(d.join("git.exe"))).find(|p| is_file(p)).map(LocalPath::into_path_buf)
 }
 
 /// A PATH entry trimmed, its surrounding double quotes removed.
@@ -405,33 +407,32 @@ pub struct Vetted {
 /// (see the module comment). `None` refuses: git does not run and the component is empty,
 /// as for a folder outside any repository.
 pub fn vet_repo(dir: &Path) -> Option<Vetted> {
-    if !local_path_ok(dir.to_str()?) || !links_local(dir, 0) {
+    if !local_path_ok(dir.to_str()?) {
         return None;
     }
+    let dir = LocalPath::judge(dir)?;
     let mut filters = BTreeSet::new();
     let mut partial_clone = false;
     let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone };
-    for a in dir.ancestors() {
-        let dotgit = a.join(".git");
-        if std::fs::symlink_metadata(&dotgit).is_ok() {
-            if !link_ok(&dotgit, 0) {
-                return None;
-            }
-            if dotgit.is_dir() {
-                vet_git_dir(&dotgit, a, &mut v)?;
-            } else if dotgit.is_file() {
-                vet_git_dir(&gitdir_target(&dotgit)?, a, &mut v)?;
+    let mut at = Some(dir);
+    while let Some(a) = at {
+        // Each name is judged (its link read, the target walked) before it is looked at.
+        let dotgit = a.join(".git")?;
+        if localfs::lstat(&dotgit).is_ok() {
+            let kind = localfs::stat(&dotgit).ok();
+            if kind.is_some_and(|k| k.is_dir) {
+                vet_git_dir(&dotgit, a.path(), &mut v)?;
+            } else if kind.is_some_and(|k| k.is_file) {
+                vet_git_dir(&gitdir_target(&dotgit)?, a.path(), &mut v)?;
             }
         }
         // A bare repository here: `safe.bareRepository=explicit` refuses it, but git reads
-        // its config first. `is_file` follows links, so each name's link is checked first.
-        let (head, config) = (a.join("HEAD"), a.join("config"));
-        if !link_ok(&head, 0) || !link_ok(&config, 0) {
-            return None;
+        // its config first.
+        let (head, config) = (a.join("HEAD")?, a.join("config")?);
+        if localfs::is_file(&head) && localfs::is_file(&config) {
+            vet_git_dir(&a, a.path(), &mut v)?;
         }
-        if head.is_file() && config.is_file() {
-            vet_git_dir(a, a, &mut v)?;
-        }
+        at = a.parent();
     }
     Some(Vetted { args: filter_args(&filters), partial_clone })
 }
@@ -443,15 +444,15 @@ struct Vet<'a> {
 }
 
 /// A `.git` file's `gitdir:` (a worktree or submodule), when it is relative or local.
-fn gitdir_target(dotgit: &Path) -> Option<PathBuf> {
+fn gitdir_target(dotgit: &LocalPath) -> Option<LocalPath> {
     let text = read_small(dotgit)?;
     let p = text.lines().next()?.strip_prefix("gitdir:")?.trim();
-    local_target(dotgit.parent()?, p)
+    local_target(dotgit.parent()?.path(), p)
 }
 
-/// `p` resolved against `base` when relative; an absolute `p` must be local. Either way no
-/// link on the way leaves this computer.
-fn local_target(base: &Path, p: &str) -> Option<PathBuf> {
+/// `p` resolved against `base` when relative; an absolute `p` must be a drive path. Either way
+/// the judge passes it (no link on the way leaves this computer).
+fn local_target(base: &Path, p: &str) -> Option<LocalPath> {
     if p.is_empty() || network_path(p) {
         return None;
     }
@@ -462,7 +463,7 @@ fn local_target(base: &Path, p: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    links_local(&path, 0).then_some(path)
+    LocalPath::judge(path)
 }
 
 /// Relative on Windows: not rooted (`\x`, `/x`, `\\host`) and no drive (`C:x`).
@@ -478,39 +479,33 @@ const LISTED: &[&str] = &["", "objects", "objects/info", "objects/pack", "info",
 
 /// Every entry of `dir` is not a link, or a link to a local path. A folder that is not
 /// there has nothing to check.
-fn entries_local(dir: &Path) -> bool {
-    let Ok(rd) = std::fs::read_dir(dir) else { return true };
-    for e in rd {
-        let Ok(e) = e else { return false };
-        let Ok(ft) = e.file_type() else { return false };
-        if ft.is_symlink() && !link_ok(&e.path(), 0) {
-            return false;
-        }
-    }
-    true
+fn entries_local(dir: Option<LocalPath>) -> bool {
+    let Some(dir) = dir else { return false };
+    let Ok(entries) = localfs::entries(&dir) else { return true };
+    entries.iter().all(|e| e.local().is_some())
 }
 
 /// A git directory's own files: no link inside it to a network path, its config (and a
 /// worktree's), its common directory's, and the object alternates. `root` is the working
 /// tree folder git would run in, for relative config paths.
-fn vet_git_dir(git_dir: &Path, root: &Path, v: &mut Vet) -> Option<()> {
-    let mut dirs = vec![git_dir.to_path_buf()];
-    if !entries_local(git_dir) {
+fn vet_git_dir(git_dir: &LocalPath, root: &Path, v: &mut Vet) -> Option<()> {
+    let mut dirs = vec![git_dir.clone()];
+    if !entries_local(Some(git_dir.clone())) {
         return None;
     }
-    if let Some(text) = read_optional(&git_dir.join("commondir"))? {
-        dirs.push(local_target(git_dir, text.trim())?);
+    if let Some(text) = read_optional(&git_dir.join("commondir")?)? {
+        dirs.push(local_target(git_dir.path(), text.trim())?);
     }
     for d in &dirs {
-        if !LISTED.iter().all(|sub| entries_local(&d.join(sub))) {
+        if !LISTED.iter().all(|sub| entries_local(d.join(sub))) {
             return None;
         }
-        vet_config(&d.join("config"), root, v, 0)?;
-        vet_config(&d.join("config.worktree"), root, v, 0)?;
-        let objects = d.join("objects");
-        if let Some(text) = read_optional(&objects.join("info").join("alternates"))? {
+        vet_config(&d.join("config")?, root, v, 0)?;
+        vet_config(&d.join("config.worktree")?, root, v, 0)?;
+        let objects = d.join("objects")?;
+        if let Some(text) = read_optional(&objects.join("info")?.join("alternates")?)? {
             for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-                local_target(&objects, line.trim_matches('"'))?;
+                local_target(objects.path(), line.trim_matches('"'))?;
             }
         }
     }
@@ -519,7 +514,7 @@ fn vet_git_dir(git_dir: &Path, root: &Path, v: &mut Vet) -> Option<()> {
 
 /// A path value from a config file, as git resolves it: `~/` is the user's folder, a
 /// relative path is against `base`. `%(prefix)` and `~user` are refused.
-fn config_path(v: &str, base: &Path) -> Option<PathBuf> {
+fn config_path(v: &str, base: &Path) -> Option<LocalPath> {
     if let Some(rest) = v.strip_prefix("~/").or_else(|| v.strip_prefix("~\\")) {
         let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
         local_target(Path::new(&home), rest)
@@ -534,12 +529,13 @@ fn config_path(v: &str, base: &Path) -> Option<PathBuf> {
 /// one, filter driver names `-c` can carry, no git-lfs extension (the trusted global lfs
 /// filter would run its command), whether it is a partial clone, and each included file
 /// checked the same way.
-fn vet_config(file: &Path, root: &Path, v: &mut Vet, depth: usize) -> Option<()> {
+fn vet_config(file: &LocalPath, root: &Path, v: &mut Vet, depth: usize) -> Option<()> {
     if depth > MAX_DEPTH {
         return None;
     }
     let Some(text) = read_optional(file)? else { return Some(()) };
-    let here = file.parent()?;
+    let parent = file.parent()?;
+    let here = parent.path();
     for e in config_entries(&text)? {
         let val = e.value.trim();
         if network_path(val) {
@@ -585,47 +581,17 @@ fn filter_args(names: &BTreeSet<String>) -> Vec<String> {
 }
 
 /// A small text file's contents; `None` when it cannot be read.
-fn read_small(p: &Path) -> Option<String> {
-    let bytes = std::fs::read(p).ok()?;
+fn read_small(p: &LocalPath) -> Option<String> {
+    let bytes = localfs::read(p).ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// `Some(None)` when the file is not there, `None` when it is there but unreadable.
-fn read_optional(p: &Path) -> Option<Option<String>> {
-    match std::fs::read(p) {
+fn read_optional(p: &LocalPath) -> Option<Option<String>> {
+    match localfs::read(p) {
         Ok(bytes) => Some(Some(String::from_utf8_lossy(&bytes).into_owned())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
         Err(_) => None,
-    }
-}
-
-/// Every symbolic link or junction on the way to `path` points at a local path.
-fn links_local(path: &Path, depth: usize) -> bool {
-    let mut prefixes: Vec<&Path> = path.ancestors().collect();
-    prefixes.reverse();
-    prefixes.into_iter().all(|p| link_ok(p, depth))
-}
-
-/// `p` itself is not a link, or is one to a local path (followed, up to `MAX_DEPTH`).
-fn link_ok(p: &Path, depth: usize) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(p) else { return true };
-    if !meta.file_type().is_symlink() {
-        return true;
-    }
-    if depth >= MAX_DEPTH {
-        return false;
-    }
-    let Ok(target) = std::fs::read_link(p) else { return false };
-    let Some(t) = target.to_str() else { return false };
-    // `read_link` gives `\\?\C:\x` for an absolute target.
-    let t = t.strip_prefix(r"\\?\").or_else(|| t.strip_prefix(r"\??\")).filter(|r| local_path_ok(r)).unwrap_or(t);
-    if network_path(t) {
-        return false;
-    }
-    if is_relative(t) {
-        p.parent().is_some_and(|base| links_local(&base.join(t), depth + 1))
-    } else {
-        local_path_ok(t) && links_local(Path::new(t), depth + 1)
     }
 }
 
@@ -792,8 +758,8 @@ pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) 
     match run.run(git, dir, &with_extra(GIT_DIR_ARGS, &vet.args), left(), Some(SMALL_CAP)) {
         RunResult::Exit { code: 0, stdout, capped: false } => {
             let d = String::from_utf8_lossy(&stdout).trim().to_string();
-            if local_path_ok(&d) && links_local(Path::new(&d), 0) {
-                state.repo_state = repo_state(Path::new(&d));
+            if let Some(d) = Some(d).filter(|d| local_path_ok(d)).and_then(LocalPath::judge) {
+                state.repo_state = repo_state(&d);
             }
         }
         RunResult::TimedOut => return timed_out,
@@ -1545,7 +1511,7 @@ mod tests {
         let case = |name: &str, make: &dyn Fn(&Path)| {
             let g = temp(&format!("state-{name}"));
             make(&g);
-            let got = repo_state(&g);
+            let got = repo_state(&LocalPath::judge(&g).unwrap());
             fs::remove_dir_all(&g).unwrap();
             got
         };
@@ -1629,9 +1595,9 @@ mod tests {
 
         // Finding git on PATH never looks in a network folder.
         let looked = Mutex::new(Vec::new());
-        let is_file = |p: &Path| {
-            looked.lock().unwrap().push(p.to_path_buf());
-            p == Path::new("D:\\Git\\cmd\\git.exe")
+        let is_file = |p: &LocalPath| {
+            looked.lock().unwrap().push(p.path().to_path_buf());
+            p.path() == Path::new("D:\\Git\\cmd\\git.exe")
         };
         assert_eq!(find_git("\\\\server\\bin;relative;C:\\none;\"D:\\Git\\cmd\"", &is_file), Some(PathBuf::from("D:\\Git\\cmd\\git.exe")));
         assert_eq!(*looked.lock().unwrap(), vec![PathBuf::from("C:\\none\\git.exe"), PathBuf::from("D:\\Git\\cmd\\git.exe")]);

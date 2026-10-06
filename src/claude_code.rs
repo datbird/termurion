@@ -169,8 +169,9 @@ impl CookieState {
 /// substitute drive or a short name included), else by absolute path with the same separators,
 /// no trailing separator and no case (Windows ignores case).
 pub fn same_path(a: &Path, b: &Path) -> bool {
-    if let (Ok(x), Ok(y)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        return lexical(&x) == lexical(&y);
+    let real = |p: &Path| crate::localfs::LocalPath::judge(p).and_then(|p| crate::localfs::canonicalize(&p));
+    if let (Some(x), Some(y)) = (real(a), real(b)) {
+        return lexical(x.path()) == lexical(y.path());
     }
     lexical(a) == lexical(b)
 }
@@ -400,7 +401,7 @@ pub fn any_hook(text: Option<&str>) -> bool {
 
 /// Whether a hook's program exists as a file. A network path is never probed.
 pub fn runnable_path(path: &str) -> bool {
-    !is_network(path) && Path::new(path).is_file()
+    !is_network(path) && crate::localfs::is_local_file(Path::new(path))
 }
 
 /// "Known" (`MC:24-39`): the hooks cache or the completed flag says the integration is in.
@@ -444,36 +445,43 @@ fn backup_path(path: &Path) -> PathBuf {
 /// `backup`, the file being replaced is copied aside first. The temp file never outlives a
 /// failure.
 fn write_replacing(path: &Path, text: &str, backup: bool) -> std::io::Result<()> {
+    use crate::localfs::{self, judge_io};
     use std::io::Write;
+    let local = judge_io(path)?;
     if backup {
-        std::fs::copy(path, backup_path(path))?;
+        localfs::copy(&local, &judge_io(backup_path(path))?)?;
     }
     let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(format!(".tandem-{}.tmp", std::process::id()));
-    let temp = path.with_file_name(name);
+    let temp = judge_io(path.with_file_name(name))?;
     let written = (|| {
-        let mut f = std::fs::File::create(&temp)?;
+        let mut f = localfs::create(&temp)?;
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
         drop(f);
-        std::fs::rename(&temp, path)
+        localfs::rename(&temp, &local)
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        let _ = localfs::remove_file(&temp);
     }
     written
+}
+
+/// The settings file's bytes, judged before it is read (the folder may be a stored one, P17).
+fn read_judged(path: &Path) -> std::io::Result<Vec<u8>> {
+    crate::localfs::judge_io(path).and_then(|p| crate::localfs::read(&p))
 }
 
 /// Adds the hook to the settings file at `path`, creating the folder and file when missing.
 /// Returns whether the file changed. Every failure is one text and leaves the file as it was.
 pub fn install_to(path: &Path, command: &str) -> Result<bool, String> {
-    let existing = read_settings(std::fs::read(path), path)?;
+    let existing = read_settings(read_judged(path), path)?;
     let merged = merge(existing.as_deref(), command).map_err(|_| not_json(path))?;
     if existing.as_deref() == Some(merged.as_str()) {
         return Ok(false);
     }
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| write_failed(path, e))?;
+        crate::localfs::judge_io(dir).and_then(|d| crate::localfs::create_dir_all(&d)).map_err(|e| write_failed(path, e))?;
     }
     write_replacing(path, &merged, existing.is_some()).map_err(|e| write_failed(path, e))?;
     Ok(true)
@@ -481,7 +489,7 @@ pub fn install_to(path: &Path, command: &str) -> Result<bool, String> {
 
 /// Removes the hook from the settings file at `path`; a missing file is success.
 pub fn uninstall_from(path: &Path) -> Result<(), StripError> {
-    let text = match read_settings(std::fs::read(path), path) {
+    let text = match read_settings(read_judged(path), path) {
         Ok(None) => return Ok(()),
         Ok(Some(t)) => t,
         Err(e) => return Err(StripError::Unreadable(e)),
@@ -502,7 +510,7 @@ pub fn old_folder_settings(stored: &str, current: &Path) -> Option<PathBuf> {
         return None;
     }
     let dir = PathBuf::from(s);
-    if !dir.is_absolute() || dir.components().any(|c| matches!(c, std::path::Component::ParentDir)) || !dir.is_dir() {
+    if !dir.is_absolute() || dir.components().any(|c| matches!(c, std::path::Component::ParentDir)) || !crate::localfs::is_local_dir(&dir) {
         return None;
     }
     // The folders are compared, never the raw text: a stored "C:/cc" is the folder "C:\cc\settings.json" is in.

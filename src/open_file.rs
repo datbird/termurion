@@ -234,8 +234,8 @@ impl FileProbe for RealProbe {
         crate::scripts::stays_local(path)
     }
     fn stat(&self, path: &Path) -> Option<Stat> {
-        let m = std::fs::metadata(path).ok()?;
-        Some(Stat { is_dir: m.is_dir(), is_file: m.is_file(), len: m.len() })
+        let m = crate::localfs::stat(&crate::localfs::LocalPath::judge(path)?).ok()?;
+        Some(Stat { is_dir: m.is_dir, is_file: m.is_file, len: m.len })
     }
     fn marked(&self, path: &Path) -> bool {
         crate::arrangement::has_mark_of_the_web(path)

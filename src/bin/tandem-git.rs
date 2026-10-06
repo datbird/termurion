@@ -36,22 +36,23 @@ fn main() {
 /// on PATH without looking in network folders, and any other program (the `gitSearchPath`
 /// folder's `git.exe`) must be on a local drive with no link on the way to a share.
 fn run(program: &Path, cwd: &Path, args: &[OsString]) -> bool {
-    if !tandem::prompted::local_path_ok(&cwd.to_string_lossy()) {
+    use tandem::localfs::{self, LocalPath};
+    let Some(cwd) = Some(cwd).filter(|c| tandem::prompted::local_path_ok(&c.to_string_lossy())).and_then(LocalPath::judge) else {
         eprintln!("git does not run in a network folder.\r");
         return false;
-    }
+    };
     let git = if program == Path::new("git") {
-        gs::find_git(&std::env::var("PATH").unwrap_or_default(), &|p: &Path| p.is_file())
+        gs::find_git(&std::env::var("PATH").unwrap_or_default(), &localfs::is_file)
     } else {
-        let local = tandem::prompted::local_path_ok(&program.to_string_lossy()) && gs::program_links_local(program);
-        (local && program.is_file()).then(|| program.to_path_buf())
+        Some(program).filter(|p| tandem::prompted::local_path_ok(&p.to_string_lossy())).and_then(LocalPath::judge).filter(localfs::is_file).map(LocalPath::into_path_buf)
     };
     let Some(git) = git else {
         eprintln!("git.exe was not found in a folder on this computer.\r");
         return false;
     };
     let mut cmd = std::process::Command::new(git);
-    cmd.args(args).current_dir(cwd);
+    cmd.args(args);
+    localfs::set_cwd(&mut cmd, &cwd);
     for k in gs::GIT_ENV_REMOVED {
         cmd.env_remove(k);
     }

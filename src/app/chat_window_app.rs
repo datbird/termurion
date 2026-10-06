@@ -1302,7 +1302,7 @@ impl App {
         let Some(chat) = self.view_chat(view) else { return };
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
-        let (ok, no) = chat_input::split_by_model(paths, &chat_input::links_to_network, &|p| crate::localfs::is_dir(p), &accepts);
+        let (ok, no) = chat_input::split_by_model(paths, &chat_input::links_to_network, &|p| crate::localfs::is_local_dir(p), &accepts);
         if !no.is_empty() {
             let names: Vec<String> = no.iter().map(|p| chat_input::file_name(p)).collect();
             let provider = model.as_ref().map(|m| crate::ai_model::display_name(m));
@@ -1325,7 +1325,7 @@ impl App {
         let Some(chat) = self.chat_shown.clone() else { return false };
         let model = self.chat_input_model(&chat);
         let accepts = |name: &str| model.as_ref().is_some_and(|m| crate::ai_model::accepts(m, crate::ai_files::upload_mime(name)));
-        let (supported, _) = chat_input::split_by_model(&paths, &chat_input::links_to_network, &|p| crate::localfs::is_dir(p), &accepts);
+        let (supported, _) = chat_input::split_by_model(&paths, &chat_input::links_to_network, &|p| crate::localfs::is_local_dir(p), &accepts);
         if supported.is_empty() {
             self.chat_input.insert(&chat_input::inserted_paths(&paths));
             self.chat_window_refresh();
