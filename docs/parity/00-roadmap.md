@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 272 | 33 | 11 |
-| `02-global-settings.md` | 820 | 600 | 51 | 169 |
-| `03-features-and-menus.md` | 647 | 566 | 43 | 38 |
-| Total | 1,783 | 1,438 | 127 | 218 |
+| `01-profile-settings.md` | 316 | 273 | 32 | 11 |
+| `02-global-settings.md` | 820 | 624 | 41 | 155 |
+| `03-features-and-menus.md` | 648 | 570 | 40 | 38 |
+| Total | 1,784 | 1,467 | 113 | 204 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -798,6 +798,8 @@ window-style click and a
 local mode set in the same output chunk as the restore. Nothing of 14e was checked on screen during the
 build. Every kept quirk is listed in `docs/acceptance/m14e-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14e-rulings.txt`.
+
+Milestone 13s parity close (2026-10-05): 28 existing rows to have and one new row: 02 CopySelection (already have; the key is CopySelection, the row named SelectionCopiesText), CopyLastNewline, WordSelectionMode, WordCharacters, WordSelectionRegexPattern, TripleClickSelectsFullWrappedLines, WrapDroppedFilenamesInQuotesWhenPasting, fractionOfCharacterSelectingNextNeighbor, useDoubleClickDelayForCommandSelection, findUrlsRegex, findURLsRespectsSoftBoundaries, requireCmdForDraggingText, findDelaySeconds, swapFindNextPrevious, synchronizeQueryWithFindPasteboard, smartSelectionRadius, alphaForDeselectedCommandShade, requireSlashInURLGuess, trimWhitespaceOnCopy, copyWithStylesByDefault, copyBackgroundColor, disallowCopyEmptyString, typingClearsSelection, excludeBackgroundColorsFromCopiedStyle and autoSearch; 01 Drag to Scroll in Alternate Screen Mode Disabled; 03 Selection Respects Soft Boundaries, Select Matches (two rows), and the new row Multiple selections. Per file: 01 316 rows, 273 have, 32 partial, 11 missing; 02 820, 624, 41, 155; 03 648, 570, 40, 38; total 1,784 rows, 1,467 have, 113 partial, 204 missing. Still partial, because Filter and Zoom In on Selection still show plain text (colors and the chunked filter with its progress line are not built at this point): 03 Filter, Filter mode and Zoom In on Selection. Tandem's security work in this milestone: every runtime DLL load names a search path (src/dll.rs), every program restricts the process's DLL search first thing, the C runtime is linked statically and every import loads from System32 only (build.rs keeps both), copied HTML links are web or mailto only, and dropped names pass 13r's one guard. The rulings are docs/superpowers/rulings/m13s-rulings.txt and the checklist docs/acceptance/m13s-checklist.md.
 
 ## Order
 
