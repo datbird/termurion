@@ -631,6 +631,13 @@ pub fn tab_color(p: &Preset, dark: bool) -> Option<crate::palette::Rgb> {
     rgb_of(p, "Tab Color", dark)
 }
 
+/// The tab color an escape-code preset leaves on a pane: the preset's when it has one, else
+/// the pane's own (`setColorsFromPresetNamed:` writes only the keys the preset has,
+/// `PS:5570-5583`).
+pub fn escape_tab_color(p: &Preset, dark: bool, current: Option<crate::palette::Rgb>) -> Option<crate::palette::Rgb> {
+    tab_color(p, dark).or(current)
+}
+
 /// An Open Quickly row's swatch: the preset's foreground and background for one appearance (iTerm2's
 /// fallbacks, 0.75 and 0.25 gray, `OQM:629-630`).
 pub fn swatch(p: &Preset, dark: bool) -> (crate::palette::Rgb, crate::palette::Rgb) {
@@ -659,6 +666,20 @@ pub fn remembered_names() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A program-set tab color survives a preset that has no "Tab Color" (every built-in).
+    #[test]
+    fn escape_preset_keeps_a_program_tab_color() {
+        let own = crate::palette::Rgb { r: 1, g: 2, b: 3 };
+        let tango = built_in().iter().find(|(n, _)| n == "Tango Dark").unwrap().1.clone();
+        assert_eq!(tab_color(&tango, true), None);
+        assert_eq!(escape_tab_color(&tango, true, Some(own)), Some(own));
+        assert_eq!(escape_tab_color(&tango, true, None), None);
+        let mut with = tango.clone();
+        with.insert("Tab Color".into(), PresetColor { r: 0.5, g: 0.5, b: 0.5, a: None, space: None });
+        assert_eq!(escape_tab_color(&with, true, Some(own)), tab_color(&with, true));
+        assert!(escape_tab_color(&with, true, Some(own)).is_some());
+    }
+
     use super::*;
     use crate::profile::Profile;
     use std::path::Path;

@@ -47,11 +47,11 @@ impl App {
         let Some(preset) = crate::color_presets::find(&self.globals, name) else { return };
         let Some(p) = self.panes.get_mut(&pane) else { return };
         let dark = p.screen.is_dark();
-        p.screen.set_named_colors(&crate::color_presets::named_colors(&preset, dark));
-        match crate::color_presets::tab_color(&preset, dark) {
-            Some(c) => self.tab_colors.insert(pane, c),
-            None => self.tab_colors.remove(&pane),
-        };
+        p.screen.apply_escape_preset(&preset);
+        let current = self.tab_colors.get(&pane).copied();
+        if let Some(c) = crate::color_presets::escape_tab_color(&preset, dark, current) {
+            self.tab_colors.insert(pane, c);
+        }
         self.redraw();
     }
 }

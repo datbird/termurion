@@ -471,6 +471,8 @@ pub enum Request {
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
     /// SetColors `preset=Name`: load the named color preset into this pane.
     ColorPreset(String),
+    /// A SetColors named color that came after a pending preset: applied in order after it.
+    NamedColor(String, crate::osc1337::Color),
     /// A trigger's action the window runs.
     Trigger(crate::trigger_eval::TriggerRequest),
     /// BEL.
@@ -1418,6 +1420,23 @@ impl Screen {
                 self.color_sets.push((name.to_string(), *c));
             }
         }
+    }
+
+    /// One program-set named color after a preset (stream order); false for an unknown name.
+    pub(crate) fn set_named_color(&mut self, name: &str, c: crate::osc1337::Color) -> bool {
+        if !self.apply_color(name, c) {
+            return false;
+        }
+        self.color_sets.retain(|(n, _)| n != name);
+        self.color_sets.push((name.to_string(), c));
+        true
+    }
+
+    /// An escape-code preset's named colors, program-set; the tab color it carries, if any.
+    pub(crate) fn apply_escape_preset(&mut self, preset: &crate::color_presets::Preset) -> Option<alacritty_terminal::vte::ansi::Rgb> {
+        let dark = self.is_dark();
+        self.set_named_colors(&crate::color_presets::named_colors(preset, dark));
+        crate::color_presets::tab_color(preset, dark)
     }
 
     /// SetColors: one named color on the pane's palette. False for an unknown name.

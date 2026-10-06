@@ -1574,7 +1574,11 @@ impl Screen {
                     for (name, v) in crate::osc1337::set_colors(&value) {
                         match (name.as_str(), crate::osc1337::color(&v)) {
                             ("preset", _) => {
-                                self.requests.retain(|r| !matches!(r, Request::ColorPreset(_)));
+                                // A loop of the sequence leaves one load pending; one with colors
+                                // between them keeps its order.
+                                if matches!(self.requests.last(), Some(Request::ColorPreset(_))) {
+                                    self.requests.pop();
+                                }
                                 self.requests.push(Request::ColorPreset(v));
                             }
                             ("tab", _) if v == "default" => self.requests.push(Request::TabColor(None)),
@@ -1582,6 +1586,11 @@ impl Screen {
                             ("tab", Some(crate::osc1337::Color::Index(i))) => {
                                 let c = self.palette.indexed(i);
                                 self.requests.push(Request::TabColor(Some(c)));
+                            }
+                            // iTerm2 pauses the stream for a preset: colors after a pending one apply
+                            // after it, in order (the window's handler).
+                            (_, Some(c)) if self.requests.iter().any(|r| matches!(r, Request::ColorPreset(_))) => {
+                                self.requests.push(Request::NamedColor(name, c));
                             }
                             (_, Some(c)) => {
                                 if self.apply_color(&name, c) {
@@ -1751,6 +1760,40 @@ mod tests {
 
     fn built_in(name: &str) -> crate::color_presets::Preset {
         crate::color_presets::built_in().iter().find(|(n, _)| n == name).unwrap().1.clone()
+    }
+
+    /// What the window's request handler does with the color requests, in order.
+    fn run_color_requests(s: &mut Screen, preset: &str) {
+        for r in s.take_requests() {
+            match r {
+                Request::ColorPreset(_) => {
+                    s.apply_escape_preset(&built_in(preset));
+                }
+                Request::NamedColor(n, c) => {
+                    s.set_named_color(&n, c);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// iTerm2 pauses the stream for a preset, so SetColors after it (in the same payload or the
+    /// next one) apply after it and are never overwritten by it.
+    #[test]
+    fn osc_preset_keeps_stream_order() {
+        let red = alacritty_terminal::vte::ansi::Rgb { r: 255, g: 0, b: 0 };
+        for feed in [&b"\x1b]1337;SetColors=preset=Tango Dark,fg=ff0000\x07"[..], &b"\x1b]1337;SetColors=preset=Tango Dark\x07\x1b]1337;SetColors=fg=ff0000\x07"[..]] {
+            let mut s = Screen::new(40, 10);
+            s.feed(feed);
+            run_color_requests(&mut s, "Tango Dark");
+            assert_eq!(s.palette.fg, red);
+            assert_eq!(s.palette.bg, crate::color_presets::swatch(&built_in("Tango Dark"), true).1, "the preset's other colors still loaded");
+        }
+        // A color set BEFORE the preset is the preset's to overwrite.
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;SetColors=fg=ff0000\x07\x1b]1337;SetColors=preset=Tango Dark\x07");
+        run_color_requests(&mut s, "Tango Dark");
+        assert_eq!(s.palette.fg, crate::color_presets::swatch(&built_in("Tango Dark"), true).0);
     }
 
     #[test]
