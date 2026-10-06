@@ -1434,6 +1434,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     let mut commit = false;
     // The widget that takes the value, and whether it is enabled, for the non-default bar.
     let mut widget: Option<(egui::Rect, bool)> = None;
+    // A color well or a checkbox can be bound to an expression (`ExpressionBindableView`).
+    let bound_expression = matches!(s.kind, Kind::Bool | Kind::Color).then(|| crate::bindings::get(profile).get(&key).map(|b| b.expression().to_string())).flatten();
+    let mut bind_action = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {
             let enabled = ui.is_enabled();
@@ -1446,6 +1449,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                         commit = true;
                     }
                     widget = Some((r.rect, enabled));
+                    bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Int => {
                     ui.label(&s.label);
@@ -1501,6 +1505,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                         commit = true;
                     }
                     widget = Some((r.rect, enabled));
+                    bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Enum => {
                     ui.label(&s.label);
@@ -1539,10 +1544,118 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     if let Some(v) = changed {
         profile.set(&key, v);
     }
+    match bind_action {
+        Some(BindAction::Remove) => {
+            crate::bindings::set(profile, &key, None);
+            commit = true;
+        }
+        Some(BindAction::Edit) => binding_dialog_open(ui.ctx(), &profile.guid(), &key, bound_expression.as_deref().unwrap_or("")),
+        None => {}
+    }
+    if let Some(text) = binding_dialog(ui, &profile.guid(), &key) {
+        crate::bindings::set(profile, &key, Some(&text));
+        commit = true;
+    }
     if let Some((rect, enabled)) = widget.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &key)) {
         settings_keys::non_default_bar(ui, rect, enabled);
     }
     commit
+}
+
+/// What a right click on a bindable control chose.
+enum BindAction {
+    Edit,
+    Remove,
+}
+
+/// The link glyph (Segoe Fluent Icons) a bound control shows at its right.
+const LINK_GLYPH: char = '\u{E71B}';
+
+/// The right-click menu of a color well or checkbox (`EBV:22-45`) and the glyph a bound one shows.
+fn binding_menu(ui: &mut egui::Ui, r: &egui::Response, bound: Option<&str>) -> Option<BindAction> {
+    let mut action = None;
+    r.context_menu(|ui| {
+        if ui.button(if bound.is_some() { crate::bindings::MENU_EDIT } else { crate::bindings::MENU_BIND }).clicked() {
+            action = Some(BindAction::Edit);
+            ui.close();
+        }
+        if bound.is_some() && ui.button(crate::bindings::MENU_REMOVE).clicked() {
+            action = Some(BindAction::Remove);
+            ui.close();
+        }
+    });
+    if let Some(e) = bound {
+        let tip = format!("Bound to the expression {e}");
+        match settings_keys::icon_text(ui.ctx(), LINK_GLYPH) {
+            Some(g) => ui.label(g).on_hover_text(tip),
+            None => ui.label("(bound)").on_hover_text(tip),
+        };
+    }
+    action
+}
+
+/// The bind dialog's state: which control it is for, its text and whether the help shows.
+#[derive(Clone)]
+struct BindDialog {
+    guid: String,
+    key: String,
+    text: String,
+    help: bool,
+}
+
+fn binding_dialog_id() -> egui::Id {
+    egui::Id::new("tandem-binding-dialog")
+}
+
+fn binding_dialog_open(ctx: &egui::Context, guid: &str, key: &str, text: &str) {
+    ctx.data_mut(|d| d.insert_temp(binding_dialog_id(), BindDialog { guid: guid.into(), key: key.into(), text: text.into(), help: false }));
+}
+
+/// "Bind Expression to Setting" (`EBV:59-101`), shown by the control it is for. The text to
+/// store (empty clears the binding) after OK.
+fn binding_dialog(ui: &egui::Ui, guid: &str, key: &str) -> Option<String> {
+    let ctx = ui.ctx();
+    let mut d = ctx.data(|d| d.get_temp::<BindDialog>(binding_dialog_id())).filter(|d| d.guid == guid && d.key == key)?;
+    let mut done = None;
+    let mut open = true;
+    egui::Window::new(crate::bindings::TITLE).collapsible(false).resizable(false).default_width(420.0).open(&mut open).show(ctx, |ui| {
+        ui.label(crate::bindings::INFO);
+        let r = ui.add(egui::TextEdit::singleline(&mut d.text).hint_text(crate::bindings::placeholder(key)).desired_width(380.0));
+        if !d.help {
+            r.request_focus();
+        }
+        ui.horizontal(|ui| {
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("OK").clicked() || enter {
+                done = Some(Some(d.text.clone()));
+            }
+            if ui.button("Cancel").clicked() {
+                done = Some(None);
+            }
+            if ui.button("?").clicked() {
+                d.help = !d.help;
+            }
+        });
+        if d.help {
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                ui.label(crate::bindings::help_text(key));
+            });
+        }
+    });
+    if !open {
+        done = Some(None);
+    }
+    match done {
+        Some(result) => {
+            ctx.data_mut(|m| m.remove::<BindDialog>(binding_dialog_id()));
+            result
+        }
+        None => {
+            ctx.data_mut(|m| m.insert_temp(binding_dialog_id(), d));
+            None
+        }
+    }
 }
 
 /// Whether this mode, page and AI sub-tab show the discovered models.

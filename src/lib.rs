@@ -161,6 +161,7 @@ pub mod jobtitle;
 pub mod profile;
 pub mod color_presets;
 pub mod oklab;
+pub mod bindings;
 pub mod prompted;
 pub mod schema;
 pub mod scene;

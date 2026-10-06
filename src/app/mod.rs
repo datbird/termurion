@@ -147,6 +147,7 @@ mod toolbelt_more_ui;
 mod pane_nav_ui;
 mod open_quickly_app;
 mod presets_ui;
+mod bindings_ui;
 mod replay_ui;
 mod pwm_app;
 mod api_ui;
@@ -1125,6 +1126,8 @@ pub struct App {
     /// call token, and the run each started call's token belongs to.
     script_runs: BTreeMap<u64, script_ui::Run>,
     script_next: u64,
+    /// Expression bindings per pane and bound key (`bindings_ui`); app-wide, so no `swap_live`.
+    bindings: HashMap<(PaneId, String), bindings_ui::Bound>,
     script_tokens: HashMap<u64, u64>,
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
     /// in the remembered mode).
@@ -2043,6 +2046,7 @@ pub fn run() {
         api_hooks: HashMap::new(),
         script_runs: BTreeMap::new(),
         script_next: 1,
+        bindings: HashMap::new(),
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
@@ -3528,6 +3532,7 @@ impl App {
         self.orch_held.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
+        self.bindings.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
@@ -6254,9 +6259,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.log_tick();
         self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
+        let bindings_due = self.tick_bindings();
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
-        let wake = [cmdinfo_due, pathnav_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [bindings_due, cmdinfo_due, pathnav_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

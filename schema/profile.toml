@@ -3010,3 +3010,14 @@ default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); this 
 help = "Ordered regex rules that classify what a double or triple click selects, each with a precision level (low, normal, high, very_high) and optional actions."
 light_dark = false
 macos_only = false
+
+[[setting]]
+key = "Bindings"
+tab = ""
+section = ""
+label = "Variable bindings"
+type = "dict"
+default = {}
+help = "Expressions bound to color wells and checkboxes (a right click on one binds it); never drawn."
+light_dark = false
+macos_only = false
