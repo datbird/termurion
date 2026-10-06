@@ -49,7 +49,14 @@ impl Store {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let file: FileFormat = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut profiles: Vec<Profile> = file.profile.into_iter().map(|values| Profile { values }).collect();
+        let mut profiles: Vec<Profile> = file
+            .profile
+            .into_iter()
+            .map(|mut values| {
+                crate::bindings::cap_table(&mut values);
+                Profile { values }
+            })
+            .collect();
         ensure_unique_guids(&mut profiles);
         if profiles.is_empty() {
             return Err(format!("{}: no profiles", path.display()));

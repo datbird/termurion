@@ -162,7 +162,48 @@ pub fn bindable(key: &str) -> bool {
 /// The bindings the app evaluates: bindable keys only, at most `MAX_BINDINGS`, as (key,
 /// expression).
 pub fn bound(profile: &Profile) -> Vec<(String, String)> {
-    get(profile).into_iter().filter(|(k, _)| bindable(k)).take(MAX_BINDINGS).map(|(k, b)| (k, b.expression().to_string())).collect()
+    match table(profile) {
+        Some(t) => bound_from(t.iter()),
+        None => Vec::new(),
+    }
+}
+
+/// `bound` over any walk of entries. Pulls entries one at a time and stops at `MAX_BINDINGS`;
+/// only an entry that passes the cheap key check is cloned.
+pub fn bound_from<'a>(entries: impl Iterator<Item = (&'a String, &'a toml::Value)>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (k, v) in entries {
+        if out.len() >= MAX_BINDINGS {
+            break;
+        }
+        if !bindable(k) {
+            continue;
+        }
+        if let Some(b) = BindingValue::from_value(v).filter(|b| b.expression().chars().count() <= MAX_EXPRESSION) {
+            out.push((k.clone(), b.expression().to_string()));
+        }
+    }
+    out
+}
+
+/// Whether the profile binds `key` (a bindable key with a readable expression): one lookup, not
+/// the whole table.
+pub fn is_bound(profile: &Profile, key: &str) -> bool {
+    bindable(key) && table(profile).and_then(|t| t.get(key)).and_then(BindingValue::from_value).is_some_and(|b| b.expression().chars().count() <= MAX_EXPRESSION)
+}
+
+/// The most entries a profile's "Bindings" table keeps when it comes in from a file (an import,
+/// the profiles file): bindable keys first. Nothing legitimate is near it (`MAX_BINDINGS` are read).
+pub const MAX_TABLE: usize = 256;
+
+/// Caps an incoming profile's "Bindings" table at `MAX_TABLE` entries, keeping the bindable ones.
+pub fn cap_table(values: &mut BTreeMap<String, toml::Value>) {
+    let Some(toml::Value::Table(t)) = values.get_mut(KEY) else { return };
+    if t.len() <= MAX_TABLE {
+        return;
+    }
+    let keep: std::collections::BTreeSet<String> = t.keys().filter(|k| bindable(k)).take(MAX_TABLE).cloned().collect();
+    t.retain(|k, _| keep.contains(k));
 }
 
 /// iTerm2's descriptions of the mode color keys, for the failed-color log line
@@ -487,5 +528,47 @@ mod tests {
         let keys: Vec<String> = get(&p).into_keys().collect();
         assert_eq!(keys, ["Blur", "Foreground Color"], "a user-authored binding stays");
         assert!(!drop_for_write(&mut p, "Foreground Color"));
+    }
+
+    #[test]
+    fn the_bindings_walk_is_bounded() {
+        // A hostile table: 48 good entries, then 100k more. The walk stops at the limit.
+        let good: Vec<(String, toml::Value)> = (0..16).map(|i| format!("Ansi {i} Color")).chain((0..16).map(|i| format!("Ansi {i} Color (Dark)"))).chain((0..16).map(|i| format!("Ansi {i} Color (Light)"))).map(|k| (k, s("user.x"))).collect();
+        let rest: Vec<(String, toml::Value)> = (0..100_000).map(|i| (format!("junk {i}"), s("user.x"))).collect();
+        let all: Vec<(String, toml::Value)> = good.into_iter().chain(rest).collect();
+        let pulled = std::cell::Cell::new(0usize);
+        let walk = all.iter().map(|(k, v)| {
+            pulled.set(pulled.get() + 1);
+            (k, v)
+        });
+        let b = bound_from(walk);
+        assert_eq!(b.len(), MAX_BINDINGS);
+        assert!(pulled.get() <= MAX_BINDINGS + 1, "pulled {}", pulled.get());
+        // The same table through a profile.
+        let refs: Vec<(&str, toml::Value)> = all.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        assert_eq!(bound(&with(&refs)).len(), MAX_BINDINGS);
+    }
+
+    #[test]
+    fn an_incoming_bindings_table_is_capped() {
+        let mut t = toml::Table::new();
+        for i in 0..100_000 {
+            t.insert(format!("junk {i}"), s("user.x"));
+        }
+        t.insert("Foreground Color".into(), s("user.fg"));
+        t.insert("Blur".into(), s("user.b"));
+        let mut values = BTreeMap::new();
+        values.insert(KEY.to_string(), toml::Value::Table(t));
+        values.insert("Name".to_string(), s("kept"));
+        cap_table(&mut values);
+        let t = values[KEY].as_table().unwrap();
+        assert!(t.len() <= MAX_TABLE, "{}", t.len());
+        assert!(t.contains_key("Foreground Color") && t.contains_key("Blur"), "bindable entries stay");
+        assert_eq!(values["Name"], s("kept"));
+        // A small table is untouched.
+        let mut small = BTreeMap::new();
+        small.insert(KEY.to_string(), toml::Value::Table(toml::Table::from_iter([("junk".to_string(), s("x"))])));
+        cap_table(&mut small);
+        assert_eq!(small[KEY].as_table().unwrap().len(), 1);
     }
 }

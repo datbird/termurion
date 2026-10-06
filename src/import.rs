@@ -144,6 +144,7 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
 fn scrubbed(t: toml::Table) -> Profile {
     let mut values: std::collections::BTreeMap<String, Value> = t.into_iter().collect();
     crate::start_dir::scrub_map(&mut values);
+    crate::bindings::cap_table(&mut values);
     Profile { values }
 }
 

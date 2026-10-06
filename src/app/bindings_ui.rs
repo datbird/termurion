@@ -199,7 +199,7 @@ impl App {
     pub(super) fn binding_answer(&mut self, pane: PaneId, key: &str, value: Result<serde_json::Value, String>) {
         let Some(p) = self.panes.get(&pane) else { return };
         let guid = p.profile.clone();
-        if !self.store.get(&guid).is_some_and(|profile| bindings::bound(profile).iter().any(|(k, _)| k == key)) {
+        if !self.store.get(&guid).is_some_and(|profile| bindings::is_bound(profile, key)) {
             return;
         }
         let shared = self.store.shared_guid(&guid);
