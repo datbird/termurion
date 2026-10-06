@@ -51,4 +51,4 @@ Build a release binary (`scripts/xt build --release`), close any open Tandem win
 | S45 | Idle with the find bar open: no CPU wake (the frame counter holds steady). | |
 | S46 | A cell holding an escape sequence (print a string with ESC and BEL, then Filter it): the view shows no effect of it (title, colors, cursor unchanged). | |
 | S47 | Filter while a program keeps printing (for example a loop printing lines): the filter finishes, the window stays responsive, and the lines that arrived late appear at the end. | |
-| S48 | Drop a file onto a coprocess pane: a name holding $, ; or ' is refused (the ruling says refused; not yet built at d436ac2, so run it when it lands). | |
+| S48 | Drop a file onto a coprocess pane: a name holding $, ; or ' is refused (built in the final wave: the union banner shows and nothing runs). | |
