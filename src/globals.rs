@@ -53,10 +53,15 @@ pub struct Globals {
 enum Bound {
     /// Text of at most `max` characters, each accepted by `ok`; anything else is the default.
     Text { max: usize, ok: fn(char) -> bool },
+    /// A finite number clamped into `min..=max`; anything else is the default.
+    Number { min: f64, max: f64 },
 }
 
 /// The bounded keys. Later 13w tasks add their numbers here.
 const BOUNDS: &[(&str, Bound)] = &[
+    // B6: never below the beep floor (`bell::BELL_FLOOR`), and a flash alpha is an alpha.
+    ("BellRateLimit", Bound::Number { min: 0.05, max: 60.0 }),
+    ("IndicatorFlashInitialAlpha", Bound::Number { min: 0.0, max: 1.0 }),
     ("FakeFullyQualifiedDomainName", Bound::Text { max: 255, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') }),
     ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
 ];
@@ -68,6 +73,10 @@ fn bounded(key: &str, value: &Value) -> Option<Value> {
         Bound::Text { max, ok } => {
             let text = value.as_str()?;
             (text.chars().count() <= *max && text.chars().all(ok)).then(|| value.clone())
+        }
+        Bound::Number { min, max } => {
+            let n = value.as_float().or_else(|| value.as_integer().map(|i| i as f64)).filter(|n| n.is_finite())?;
+            Some(if (*min..=*max).contains(&n) { value.clone() } else { Value::Float(n.clamp(*min, *max)) })
         }
     }
 }
@@ -296,6 +305,28 @@ mod tests {
         let g = Globals::load(&path).unwrap();
         assert_eq!(g.string("FakeFullyQualifiedDomainName"), "");
         assert_eq!(g.string("FakeBootSessionUUID"), "ok-1");
+    }
+
+    /// B4/B6: the bell numbers are clamped at the one write point: the rate limit never below
+    /// 0.05 s, the flash alpha within 0..=1, anything that is not a finite number is the default.
+    #[test]
+    fn globals_bounds_clamp_the_bell_numbers() {
+        let mut g = Globals::empty(&scratch("bounds-bell"));
+        for (key, low, high) in [("BellRateLimit", 0.05, 60.0), ("IndicatorFlashInitialAlpha", 0.0, 1.0)] {
+            g.set(key, Value::Float(-3.0));
+            assert_eq!(g.number(key), Some(low), "{key} below");
+            g.set(key, Value::Float(1.0e9));
+            assert_eq!(g.number(key), Some(high), "{key} above");
+            g.set(key, Value::Float(0.5));
+            assert_eq!(g.number(key), Some(0.5), "{key} inside");
+            g.set(key, Value::Integer(1));
+            assert_eq!(g.number(key), Some(1.0), "{key} integer");
+            for bad in [Value::Float(f64::NAN), Value::Float(f64::INFINITY), Value::String("x".into()), Value::Boolean(true)] {
+                g.set(key, Value::Float(0.5));
+                g.set(key, bad.clone());
+                assert_eq!(g.number(key), if key == "BellRateLimit" { Some(0.1) } else { Some(0.5) }, "{key} refuses {bad:?}: back to the default");
+            }
+        }
     }
 
     #[test]

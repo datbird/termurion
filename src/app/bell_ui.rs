@@ -1,7 +1,7 @@
 //! The bell in the window: the beep, the tab's bell icon, the flash, and the offer to
 //! silence a bell that rings too often.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::*;
 use crate::bell::{Answer, BellPrefs};
@@ -20,7 +20,36 @@ impl App {
             flash: b("Flashing Bell"),
             offer: !self.globals.bool(SUPPRESS_OFFER),
             auto_silence: self.globals.bool(SILENCE_AUTOMATICALLY),
+            // Bounded at `Globals::set` (finite, at least the beep floor).
+            limit: Duration::try_from_secs_f64(self.globals.number("BellRateLimit").unwrap_or(0.1)).unwrap_or(crate::bell::DEFAULT_LIMIT).max(crate::bell::BELL_FLOOR),
         }
+    }
+
+    /// Whether Windows plays animations ("Show animations in Windows"; off for reduced motion).
+    fn animations_on() -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+        let mut on: i32 = 1;
+        // A failed query leaves the default: animations on.
+        unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
+        on != 0
+    }
+
+    /// The one entry for every pane flash (a bell's, RequestAttention's): it passes the visual
+    /// floor (3 a second whatever `BellRateLimit` says, WCAG 2.3.1), becomes the fixed centered
+    /// icon when Windows animations are off, and records the start in the map the drawing reads.
+    pub(super) fn start_flash(&mut self, pane: PaneId, visual: crate::bell::Visual, now: Instant) {
+        if !self.bell_limiter.visual(now) {
+            return;
+        }
+        match crate::bell::shown_visual(visual, Self::animations_on()) {
+            (crate::bell::Visual::FullFlash, _) => {
+                self.flashes.insert(pane, now);
+            }
+            (crate::bell::Visual::Indicator, fades) => {
+                self.bell_indicators.insert(pane, (now, fades));
+            }
+        }
+        self.redraw();
     }
 
     /// Whether the user is looking at this pane (Tandem in front, its tab shown, focused).
@@ -28,15 +57,15 @@ impl App {
         self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane)
     }
 
-    /// A bell from a program or a Ring Bell trigger.
-    pub(super) fn ring_bell(&mut self, pane: PaneId) {
+    /// A bell from a program (`count` BELs of one burst) or a Ring Bell trigger (1).
+    pub(super) fn ring_bell(&mut self, pane: PaneId, count: u32) {
         let prefs = self.bell_prefs(pane);
         let now = Instant::now();
         let ring = self.bells.entry(pane).or_default().ring(now, prefs);
-        crate::dlog!("bell in pane {}: effects shown {}", pane, ring.effects.is_some());
+        crate::dlog!("bell in pane {}: {} bells, effects shown {}", pane, count, ring.effects.is_some());
         if let Some(e) = ring.effects {
             crate::dlog!("bell effects: beep {} icon {} flash {}", e.beep, e.icon, e.flash);
-            if e.beep {
+            if e.beep && self.bell_limiter.beep(now) {
                 unsafe {
                     windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
                 }
@@ -46,7 +75,8 @@ impl App {
                 self.post_alert(pane, crate::alerts::AlertKind::Bell);
             }
             if e.flash {
-                self.flashes.insert(pane, now);
+                let traditional = self.globals.bool("TraditionalVisualBell");
+                self.start_flash(pane, crate::bell::visual(traditional), now);
             }
             self.redraw();
         }

@@ -4323,9 +4323,40 @@ pub fn prompt_span_rects(spans: &[(u8, (i32, usize), (i32, usize))], inner: Rect
     out
 }
 
-/// RequestAttention=flash: the pane goes white and fades back (`strength` 1 to 0).
-pub fn pane_flash(frame: &mut Frame, pane: Rect, strength: f32) {
-    frame.overlay.push(Quad { rect: pane, color: rgba(rgb(0xff, 0xff, 0xff), 0.6 * strength.clamp(0.0, 1.0)) });
+/// The whole-pane flash (a traditional visual bell, RequestAttention=flash): the pane in the
+/// default text color at `alpha` (`bell::flash_alpha`; `PTYTextView.m:6505-6507`).
+pub fn pane_flash(frame: &mut Frame, pane: Rect, color: Rgb, alpha: f32) {
+    frame.overlay.push(Quad { rect: pane, color: rgba(color, alpha.clamp(0.0, 1.0)) });
+}
+
+/// The bell indicator's edge on a dark background (`NSColor lightGrayColor`) and on a light one
+/// (`darkGrayColor`), `iTermIndicatorsHelper.m:202-203`.
+pub const BELL_EDGE_ON_DARK: Rgb = rgb(170, 170, 170);
+pub const BELL_EDGE_ON_LIGHT: Rgb = rgb(85, 85, 85);
+/// Segoe Fluent Icons "Ringer".
+pub const BELL_GLYPH: char = '\u{EA8F}';
+
+/// The centered bell indicator (`iTermIndicatorsHelper.m:141-203`, `:414-429`): a 26 point
+/// rounded square (corner radius a sixth of its side) at the pane's center, black with a light
+/// gray edge on a dark background and white with a dark gray one on a light background, the bell
+/// glyph on it, all at `alpha`. A popup box (it holds text): the text under it is cut out.
+pub fn bell_indicator(frame: &mut Frame, pane: Rect, dark_background: bool, alpha: f32, scale: f32) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let side = 26.0 * scale;
+    let r = Rect { x: pane.x + (pane.w - side) / 2.0, y: pane.y + (pane.h - side) / 2.0, w: side, h: side };
+    let (fill, edge, glyph) = if dark_background { (rgb(0, 0, 0), BELL_EDGE_ON_DARK, rgb(0xff, 0xff, 0xff)) } else { (rgb(0xff, 0xff, 0xff), BELL_EDGE_ON_LIGHT, rgb(0, 0, 0)) };
+    // The pane rows are measured by the default line height; a tall line only widens the cut.
+    cut_out(frame, r, 20.0 * scale);
+    rounded_box(&mut frame.popups, r, side / 6.0, rgba(edge, alpha));
+    let inner = Rect { x: r.x + 1.0, y: r.y + 1.0, w: r.w - 2.0, h: r.h - 2.0 };
+    rounded_box(&mut frame.popups, inner, (side / 6.0 - 1.0).max(0.0), rgba(fill, alpha));
+    // The glyph fades by moving toward the fill (text has no alpha).
+    let color = blend(fill, glyph, alpha);
+    let span = Span { text: BELL_GLYPH.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x + 2.0 * scale, y: r.y + 2.0 * scale, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
 }
 
 /// RequestAttention=fireworks: bursts of colored sparks around `center`, `t` from 0 to 1.
@@ -8842,5 +8873,38 @@ mod drawn_overlay_tests {
         assert_eq!(filler_color(rgb(100, 100, 100), true, false), rgb(116, 116, 116));
         // Dark is brightness (the largest component) under one half.
         assert!(filler_dark(rgb(127, 0, 0)) && !filler_dark(rgb(128, 0, 0)) && filler_dark(rgb(0, 0, 0)));
+    }
+
+    /// `iTermIndicatorsHelper.m:141-203`, `:414-429`: a 26 point rounded square at the pane's
+    /// center, black with a light edge on a dark background, white on a light one, the bell
+    /// glyph on it; a flash is one quad of the given color at the given alpha.
+    #[test]
+    fn bell_indicator_follows_iterm2() {
+        let pane = Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
+        let bounds = |f: &Frame| {
+            let (x0, y0) = f.popups.iter().fold((f32::MAX, f32::MAX), |a, q| (a.0.min(q.rect.x), a.1.min(q.rect.y)));
+            let (x1, y1) = f.popups.iter().fold((f32::MIN, f32::MIN), |a, q| (a.0.max(q.rect.x + q.rect.w), a.1.max(q.rect.y + q.rect.h)));
+            (x0, y0, x1 - x0, y1 - y0)
+        };
+        let mut f = Frame::default();
+        bell_indicator(&mut f, pane, true, 1.0, 1.0);
+        assert_eq!(bounds(&f), (87.0, 37.0, 26.0, 26.0));
+        assert!(f.popups.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0)), "black fill");
+        assert!(f.popups.iter().any(|q| q.color == rgba(BELL_EDGE_ON_DARK, 1.0)), "light gray edge");
+        assert_eq!(f.rows.len(), 1);
+        let row = &f.rows[0];
+        assert!(row.spans[0].icon && row.spans[0].text == "\u{EA8F}");
+        assert!(row.x >= 87.0 && row.x < 113.0 && row.y >= 37.0 && row.y < 63.0, "the glyph sits on the box");
+        let mut f = Frame::default();
+        bell_indicator(&mut f, pane, false, 0.5, 1.0);
+        assert!(f.popups.iter().any(|q| q.color == rgba(rgb(0xff, 0xff, 0xff), 0.5)), "white fill at the fade's alpha");
+        let mut f = Frame::default();
+        bell_indicator(&mut f, pane, true, 1.0, 2.0);
+        assert_eq!(bounds(&f), (74.0, 24.0, 52.0, 52.0), "26 points scale with the display");
+        let mut f = Frame::default();
+        pane_flash(&mut f, pane, rgb(10, 20, 30), 0.25);
+        assert_eq!(f.overlay.len(), 1);
+        assert_eq!(f.overlay[0].color, rgba(rgb(10, 20, 30), 0.25));
+        assert_eq!(f.overlay[0].rect, pane);
     }
 }

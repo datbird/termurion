@@ -771,6 +771,12 @@ pub struct App {
     pending_title_restores: HashMap<PaneId, Option<String>>,
     /// RequestAttention: pane flashes and fireworks (start time, and the cursor cell).
     flashes: HashMap<PaneId, Instant>,
+    /// The centered bell indicator's start per pane, and whether it fades (it does not when
+    /// Windows animations are off, P13).
+    bell_indicators: HashMap<PaneId, (Instant, bool)>,
+    /// The floors under every beep, flash and taskbar flash (B6). App-wide on purpose: three
+    /// flashes a second is a limit of the person's eyes, not of one pane.
+    bell_limiter: crate::bell::Limiter,
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
@@ -2229,6 +2235,8 @@ pub fn run() {
         scroll_series: Default::default(),
         text_blinking: false,
         flashes: HashMap::new(),
+        bell_indicators: HashMap::new(),
+        bell_limiter: crate::bell::Limiter::default(),
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
         tmux_geometry: HashMap::new(),
@@ -4762,6 +4770,7 @@ impl App {
         self.uploads.remove(&id);
         self.pending_background.remove(&id);
         self.flashes.remove(&id);
+        self.bell_indicators.remove(&id);
         self.fireworks.remove(&id);
         self.tab_colors.remove(&id);
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {

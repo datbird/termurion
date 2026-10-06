@@ -60,7 +60,7 @@ impl App {
                 }
             }
             TriggerRequest::Notify(text) => self.post_alert(pane, crate::alerts::AlertKind::Trigger(text)),
-            TriggerRequest::Bell => self.ring_bell(pane),
+            TriggerRequest::Bell => self.ring_bell(pane, 1),
             TriggerRequest::Bounce { until_active } => self.flash_taskbar(until_active),
             // The live session's own write: it reaches the shell during a replay too.
             TriggerRequest::SendText(text) => {
@@ -149,18 +149,22 @@ impl App {
     }
 
     /// Bounce Dock Icon: the taskbar button flashes until Tandem is in front, or once.
-    fn flash_taskbar(&self, until_active: bool) {
+    fn flash_taskbar(&mut self, until_active: bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY};
+        if until_active { self.flash_taskbar_raw(FLASHW_TRAY | FLASHW_TIMERNOFG, 0) } else { self.flash_taskbar_raw(FLASHW_ALL, 1) }
+    }
+
+    /// The one `FlashWindowEx` call (B6): every taskbar flash (this trigger, RequestAttention)
+    /// goes through the per-window floor; only `FLASHW_STOP` is never held back.
+    pub(super) fn flash_taskbar_raw(&mut self, flags: u32, count: u32) {
         #[cfg(windows)]
         {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{FlashWindowEx, FLASHWINFO, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_STOP, FLASHWINFO, FlashWindowEx};
             let Some(hwnd) = self.hwnd() else { return };
-            let info = FLASHWINFO {
-                cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
-                hwnd: hwnd as _,
-                dwFlags: if until_active { FLASHW_TRAY | FLASHW_TIMERNOFG } else { FLASHW_ALL },
-                uCount: if until_active { 0 } else { 1 },
-                dwTimeout: 0,
-            };
+            if flags != FLASHW_STOP && !self.bell_limiter.taskbar(hwnd, std::time::Instant::now()) {
+                return;
+            }
+            let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: flags, uCount: count, dwTimeout: 0 };
             unsafe { FlashWindowEx(&info) };
         }
     }

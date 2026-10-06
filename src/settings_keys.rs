@@ -4480,4 +4480,24 @@ mod tests {
             assert!(!row.optional_bool(), "{key}");
         }
     }
+
+    /// 13w Task 5 (`AS` `traditionalVisualBell`, `indicatorFlashInitialAlpha`, `bellRateLimit`):
+    /// Advanced > Terminal, iTerm2's defaults and text.
+    #[test]
+    fn bell_rows_follow_iterm2() {
+        let rows = [
+            ("TraditionalVisualBell", Kind::Bool, Value::Boolean(false), "Visual bell flashes the whole screen, not just a bell icon."),
+            ("IndicatorFlashInitialAlpha", Kind::Float, Value::Float(0.5), "Initial alpha value when flashing the visual bell or search wraparound indicator"),
+            ("BellRateLimit", Kind::Float, Value::Float(0.1), "Minimum time between beeping or flashing screen on bell, in seconds.\nIf the time interval between bells is less than this amount of time, it will be ignored."),
+        ];
+        for (key, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Terminal"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
 }

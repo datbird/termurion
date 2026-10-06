@@ -5427,3 +5427,32 @@ label = "Debug: highlight prompt mark prompt/command/excluded ranges."
 type = "bool"
 default = false
 help = "Debug: highlight prompt mark prompt/command/excluded ranges.\nWhen enabled, the renderer overlays a blue outline around each visible prompt mark\u2019s prompt range (OSC 133 A to B), a green outline around its command range (B to C), and a red outline around each excluded subrange (PS2 prefixes and right-prompt regions recorded via OSC 133 k=). Intended for development and bug reports; leave off in normal use."
+
+# Bell and flash (13w)
+
+[[setting]]
+key = "TraditionalVisualBell"
+tab = "Advanced"
+section = "Terminal"
+label = "Visual bell flashes the whole screen, not just a bell icon."
+type = "bool"
+default = false
+help = "Visual bell flashes the whole screen, not just a bell icon."
+
+[[setting]]
+key = "IndicatorFlashInitialAlpha"
+tab = "Advanced"
+section = "Terminal"
+label = "Initial alpha value when flashing the visual bell or search wraparound indicator"
+type = "float"
+default = 0.5
+help = "Initial alpha value when flashing the visual bell or search wraparound indicator"
+
+[[setting]]
+key = "BellRateLimit"
+tab = "Advanced"
+section = "Terminal"
+label = "Minimum time between beeping or flashing screen on bell, in seconds."
+type = "float"
+default = 0.1
+help = "Minimum time between beeping or flashing screen on bell, in seconds.\nIf the time interval between bells is less than this amount of time, it will be ignored."
