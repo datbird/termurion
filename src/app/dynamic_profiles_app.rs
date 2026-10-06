@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use serde_json::Value as Json;
 
@@ -83,33 +83,35 @@ pub(super) fn error_ask(errors: &[(String, String)], reveal: Option<PathBuf>) ->
 
 // ---- Writing back (B7) -----------------------------------------------------------------------
 
-/// What a file looked like when it was read: its size, its modified time and an FNV-1a hash of
-/// its bytes. A write-back goes ahead only when the file still matches.
+/// What a file looked like when it was read: its bytes (size and an FNV-1a hash), its last write
+/// time and its identity (volume and file index), all from the one handle the loader opened it
+/// with. A write-back goes ahead only when the file still matches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Stamp {
     len: usize,
     hash: u64,
-    mtime: Option<SystemTime>,
+    stat: dp::Stat,
 }
 
 impl Stamp {
-    pub(super) fn new(bytes: &[u8], mtime: Option<SystemTime>) -> Stamp {
+    pub(super) fn new(bytes: &[u8], stat: dp::Stat) -> Stamp {
         let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3));
-        Stamp { len: bytes.len(), hash, mtime }
+        Stamp { len: bytes.len(), hash, stat: dp::Stat { links: 0, ..stat } }
     }
 }
 
-/// What a write-back touches, so the tests can stand in for the disk.
+/// What a write-back touches, so the tests can stand in for the disk. Every judgment of an object
+/// comes from `open`, the loader's own one no-follow handle (`dynamic_profiles_trust::open`): a
+/// link, a second name, another owner, a writer that is not the person and the Mark of the Web
+/// are refused the same way in both.
 pub(super) struct Fs<'a> {
     pub local: &'a dyn Fn(&Path) -> bool,
-    pub read_link: &'a dyn Fn(&Path) -> Option<PathBuf>,
-    /// The number of names the file has (hard links).
-    pub links: &'a dyn Fn(&Path) -> u32,
-    pub mtime: &'a dyn Fn(&Path) -> Option<SystemTime>,
-    pub read: &'a dyn Fn(&Path) -> Result<Vec<u8>, String>,
+    pub open: &'a dyn Fn(&Path) -> Result<dp::Opened, String>,
     /// Makes a new file (it must not exist) holding the bytes.
     pub write_new: &'a dyn Fn(&Path, &[u8]) -> std::io::Result<()>,
-    pub rename: &'a dyn Fn(&Path, &Path) -> std::io::Result<()>,
+    /// Renames the new file `tmp` over `target`, both names in `folder`, through a handle on the
+    /// folder (not a path that could be swapped under the call).
+    pub rename: &'a dyn Fn(&Path, &str, &str) -> std::io::Result<()>,
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -119,45 +121,62 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
-fn mtime_of(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
+/// The handle-based rename: the folder is opened without following a link and without the
+/// delete share right, so it cannot be renamed or replaced while the call runs; the new file is
+/// opened for DELETE (no link followed) and renamed with `FileRenameInfo` to `target` in that
+/// folder, replacing the old file. The target name is the judged folder's full path (the Win32
+/// call refuses a root directory handle).
 #[cfg(windows)]
-fn link_count(path: &Path) -> u32 {
+fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
-    let Ok(f) = std::fs::File::open(path) else { return u32::MAX };
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, GetFileInformationByHandle, SetFileInformationByHandle};
+    let dir = std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(folder)?;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: the handle is open for the call and `info` is a plain out structure.
-    if unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) } == 0 {
-        return u32::MAX;
+    if unsafe { GetFileInformationByHandle(dir.as_raw_handle() as HANDLE, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    info.nNumberOfLinks
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(std::io::Error::other("the folder is a link"));
+    }
+    let new = std::fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(folder.join(tmp))?;
+    // FILE_RENAME_INFO: ReplaceIfExists (4 bytes, padded to 8), RootDirectory (8, none), FileNameLength
+    // (4, in bytes), then the name.
+    let name: Vec<u16> = folder.join(target).as_os_str().encode_wide().collect();
+    let mut buf = vec![0u8; 24 + name.len() * 2];
+    buf[0] = 1;
+    buf[16..20].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
+    for (i, u) in name.iter().enumerate() {
+        buf[20 + i * 2..22 + i * 2].copy_from_slice(&u.to_le_bytes());
+    }
+    // SAFETY: the handle is open; the buffer is a FILE_RENAME_INFO of the size passed.
+    let ok = unsafe { SetFileInformationByHandle(new.as_raw_handle() as HANDLE, FileRenameInfo, buf.as_ptr().cast(), buf.len() as u32) };
+    drop(dir);
+    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
 }
 
 #[cfg(not(windows))]
-fn link_count(_path: &Path) -> u32 {
-    1
+fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<()> {
+    std::fs::rename(folder.join(tmp), folder.join(target))
 }
 
 impl Fs<'static> {
     pub(super) fn real() -> Fs<'static> {
-        Fs {
-            local: &dp::system_local,
-            read_link: &crate::scripts::read_link,
-            links: &link_count,
-            mtime: &mtime_of,
-            read: &|p| dp::bounded_read(p, dp::MAX_FILE),
-            write_new: &write_new,
-            rename: &|a, b| std::fs::rename(a, b),
-        }
+        Fs { local: &dp::system_local, open: &dp::system_open, write_new: &write_new, rename: &rename_in_folder }
     }
 }
 
 #[derive(Debug)]
 pub(super) enum Outcome {
-    Wrote,
+    /// Written; the file's stamp as it is now.
+    Wrote(Option<Stamp>),
     /// The file is not the one that was read: nothing was written.
     Changed,
     Refused(String),
@@ -180,31 +199,53 @@ fn below(folder: &Path, name: &str) -> Option<PathBuf> {
 
 /// Rewrites the entry of profile `guid` in the file `name` (the profile's "Dynamic Profile
 /// Filename") with `change`, the rest of the file as it is. The path is resolved again below
-/// `folder`; a link (at the file or any folder below `folder`), a file with more than one name, a
-/// path the network judge refuses, or a file that no longer matches `stamp` is never written
-/// through. The bytes go to a hidden temporary file in the same folder (made new), then rename
-/// over the original, so a failure leaves the original whole.
+/// `folder`, then the folder, every folder below it and the file are each opened once through
+/// the loader's no-follow handle (`fs.open`): a link, a second name, an owner or writer that is
+/// not the person, the Mark of the Web, a path the network judge refuses, or a file whose bytes,
+/// write time or identity no longer match `stamp` is never written through. The bytes go to a
+/// hidden temporary file in the same folder (made new), then rename over the original by a handle
+/// on that folder, so a failure leaves the original whole. Gives the file's new stamp.
 pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &str, change: &dyn Fn(&mut Entry)) -> Outcome {
     let Some(rel) = below(folder, name) else { return Outcome::Refused("its file is not inside the Dynamic Profiles folder".into()) };
     let path = folder.join(&rel);
     if !(fs.local)(&path) {
         return Outcome::Refused("its file is on a network path or reached through a link to one".into());
     }
+    let trusted_folder = |p: &Path| match (fs.open)(p) {
+        Ok(o) if o.dir && o.trust.is_ok() => Ok(()),
+        Ok(o) if o.dir => Err(o.trust.err().unwrap_or_default()),
+        Ok(_) => Err("it is not a folder".to_string()),
+        Err(e) => Err(e),
+    };
     let mut at = folder.to_path_buf();
-    for part in rel.components() {
+    if let Err(e) = trusted_folder(&at) {
+        return Outcome::Refused(format!("the Dynamic Profiles folder is not trusted: {e}"));
+    }
+    let parts: Vec<_> = rel.components().collect();
+    for part in &parts[..parts.len() - 1] {
         at.push(part);
-        if (fs.read_link)(&at).is_some() {
-            return Outcome::Refused("its file is, or is inside, a link".into());
+        if let Err(e) = trusted_folder(&at) {
+            return Outcome::Refused(format!("its folder is not trusted: {e}"));
         }
     }
-    if (fs.links)(&path) > 1 {
+    let opened = match (fs.open)(&path) {
+        Ok(o) => o,
+        Err(e) => return Outcome::Refused(format!("its file could not be opened: {e}")),
+    };
+    if opened.dir {
+        return Outcome::Refused("its file is a folder".into());
+    }
+    if let Err(e) = &opened.trust {
+        return Outcome::Refused(format!("its file is not trusted: {e}"));
+    }
+    if opened.stat.links > 1 {
         return Outcome::Refused("its file has more than one name (a hard link)".into());
     }
-    let bytes = match (fs.read)(&path) {
+    let bytes = match opened.bytes {
         Ok(b) => b,
         Err(e) => return Outcome::Refused(format!("its file could not be read: {e}")),
     };
-    if Stamp::new(&bytes, (fs.mtime)(&path)) != *stamp {
+    if Stamp::new(&bytes, opened.stat) != *stamp {
         return Outcome::Changed;
     }
     let Some((list, kind)) = dp::raw_profiles(&bytes) else { return Outcome::Refused("its file could not be read as Dynamic Profiles".into()) };
@@ -215,8 +256,9 @@ pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &
     if out.is_empty() {
         return Outcome::Refused("its file could not be written".into());
     }
-    let Some(file_name) = path.file_name() else { return Outcome::Refused("its file has no name".into()) };
-    let tmp = path.with_file_name(format!(".{}.tandem-tmp", file_name.to_string_lossy()));
+    let (Some(file_name), Some(parent)) = (path.file_name().map(|n| n.to_string_lossy().to_string()), path.parent()) else { return Outcome::Refused("its file has no name".into()) };
+    let tmp_name = format!(".{file_name}.tandem-tmp");
+    let tmp = parent.join(&tmp_name);
     let mut made = (fs.write_new)(&tmp, &out);
     if matches!(&made, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
         // Left by a crash: ours alone (a dotfile with this suffix).
@@ -227,11 +269,13 @@ pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &
         let _ = std::fs::remove_file(&tmp);
         return Outcome::Refused(format!("could not write: {e}"));
     }
-    if let Err(e) = (fs.rename)(&tmp, &path) {
+    if let Err(e) = (fs.rename)(parent, &tmp_name, &file_name) {
         let _ = std::fs::remove_file(&tmp);
         return Outcome::Refused(format!("could not replace the file: {e}"));
     }
-    Outcome::Wrote
+    // What the file is now, for the next write-back (a second profile in the same file).
+    let now = (fs.open)(&path).ok().and_then(|o| o.bytes.ok().map(|b| Stamp::new(&b, o.stat)));
+    Outcome::Wrote(now)
 }
 
 // ---- The app ---------------------------------------------------------------------------------
@@ -291,10 +335,9 @@ impl App {
             // The one open of each object answers its type, its verdict and its bytes; a file's
             // bytes are stamped here for a later write-back.
             let open = |p: &Path| {
-                let mtime = mtime_of(p);
                 let o = dp::system_open(p)?;
                 if let Ok(bytes) = &o.bytes {
-                    stamps.borrow_mut().insert(p.display().to_string(), Stamp::new(bytes, mtime));
+                    stamps.borrow_mut().insert(p.display().to_string(), Stamp::new(bytes, o.stat));
                 }
                 Ok(o)
             };
@@ -415,7 +458,7 @@ impl App {
         let Some(stamp) = source.stamp.clone() else { return };
         let name = self.store.profiles.iter().find(|p| p.guid() == guid).map(|p| crate::profile_list::display_text(&p.name())).unwrap_or_default();
         match rewrite(&Fs::real(), &folder, &source.path, &stamp, guid, change) {
-            Outcome::Wrote => {}
+            Outcome::Wrote(_) => {}
             Outcome::Changed => self.dynamic_log(&format!("Dynamic profile {name} changed on disk, not rewritten.")),
             Outcome::Refused(why) => {
                 let line = format!("Dynamic profile {name} was not rewritten: {why}.");
@@ -452,9 +495,22 @@ mod tests {
         v.as_object().expect("an object").clone()
     }
 
+    /// A fresh folder under %APPDATA% (the temp folder is writable by other users, which the
+    /// loader's own judge refuses, so the real handle is only happy here). Folders of earlier runs
+    /// (another process id, more than an hour old) are removed once per run.
     fn scratch(tag: &str) -> PathBuf {
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        let base = std::env::var_os("APPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
+        SWEEP.call_once(|| {
+            for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
+                let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 3600);
+                if old && e.file_name().to_string_lossy().starts_with("tandem-dynapp-") {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        });
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let dir = std::env::temp_dir().join(format!("tandem-dynapp-{tag}-{}-{nanos}", std::process::id()));
+        let dir = base.join(format!("tandem-dynapp-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -567,9 +623,10 @@ mod tests {
         p
     }
 
+    /// The stamp the loader would record: one open of the file through the loader's handle.
     fn stamp_of_file(p: &Path) -> Stamp {
-        let bytes = std::fs::read(p).unwrap();
-        Stamp::new(&bytes, std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        let o = dp::system_open(p).unwrap();
+        Stamp::new(&o.bytes.unwrap(), o.stat)
     }
 
     fn real() -> Fs<'static> {
@@ -594,24 +651,33 @@ mod tests {
         let dir = scratch("wb");
         let p = write_json(&dir, "a.json", json!({"Profiles": [{"Guid": "G", "Name": "Old"}, {"Guid": "H", "Name": "Other"}]}));
         let out = rewrite(&real(), &dir, &p.display().to_string(), &stamp_of_file(&p), "G", &rename_it);
-        assert!(matches!(out, Outcome::Wrote), "{out:?}");
+        assert!(matches!(out, Outcome::Wrote(_)), "{out:?}");
         assert_eq!(names(&p), ["Renamed", "Other"]);
         assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
         // The same name relative to the folder works too.
         let again = rewrite(&real(), &dir, "a.json", &stamp_of_file(&p), "H", &|e| {
             e.insert("Name".into(), json!("H2"));
         });
-        assert!(matches!(again, Outcome::Wrote), "{again:?}");
+        assert!(matches!(again, Outcome::Wrote(_)), "{again:?}");
         assert_eq!(names(&p), ["Renamed", "H2"]);
         // A property list keeps its type.
         let plist = crate::dynamic_profiles::write_file(vec![entry(json!({"Guid": "P", "Name": "Pl"}))], FileType::PropertyList);
         let pp = dir.join("b.plist");
         std::fs::write(&pp, &plist).unwrap();
         let out = rewrite(&real(), &dir, "b.plist", &stamp_of_file(&pp), "P", &rename_it);
-        assert!(matches!(out, Outcome::Wrote), "{out:?}");
+        assert!(matches!(out, Outcome::Wrote(_)), "{out:?}");
         let (list, kind) = crate::dynamic_profiles::raw_profiles(&std::fs::read(&pp).unwrap()).unwrap();
         assert_eq!(kind, FileType::PropertyList);
         assert_eq!(list[0]["Name"], "Renamed");
+    }
+
+    /// An `open` that answers as the real handle does, except for the objects `tweak` changes.
+    fn open_with(tweak: impl Fn(&Path, &mut dp::Opened) + 'static) -> impl Fn(&Path) -> Result<dp::Opened, String> {
+        move |p: &Path| {
+            let mut o = dp::system_open(p)?;
+            tweak(p, &mut o);
+            Ok(o)
+        }
     }
 
     #[test]
@@ -620,21 +686,77 @@ mod tests {
         let p = write_json(&dir, "a.json", json!({"Profiles": [{"Guid": "G", "Name": "Old"}]}));
         let before = std::fs::read(&p).unwrap();
         let stamp = stamp_of_file(&p);
-        // The file itself is a link.
+        // The file itself is a link: the handle says so (trust is the loader's verdict).
         let itself = p.clone();
-        let fs = Fs { read_link: &move |q: &Path| (q == itself).then(|| PathBuf::from("C:\\elsewhere\\x.json")), ..real() };
+        let open = open_with(move |q, o| {
+            if q == itself {
+                o.trust = Err("it is a link (a symbolic link or junction), which Tandem does not follow".into());
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
         assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(_)));
         // A folder above it, inside the Dynamic Profiles folder, is one.
         std::fs::create_dir(dir.join("sub")).unwrap();
         let q = write_json(&dir.join("sub"), "b.json", json!({"Profiles": [{"Guid": "S", "Name": "S"}]}));
         let sub = dir.join("sub");
-        let fs = Fs { read_link: &move |q: &Path| (q == sub).then(|| PathBuf::from("C:\\elsewhere")), ..real() };
+        let open = open_with(move |q, o| {
+            if q == sub {
+                o.trust = Err("it is a link".into());
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
         assert!(matches!(rewrite(&fs, &dir, "sub/b.json", &stamp_of_file(&q), "S", &rename_it), Outcome::Refused(_)));
+        // The Dynamic Profiles folder itself is one: the root is judged too.
+        let root = dir.clone();
+        let open = open_with(move |q, o| {
+            if q == root {
+                o.trust = Err("it is a link".into());
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
+        assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(m) if m.contains("folder")));
         // A hard link to another name is refused too.
-        let fs = Fs { links: &|_| 2, ..real() };
+        let open = open_with(|_, o| {
+            if !o.dir {
+                o.stat.links = 2;
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
         assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(_)));
+        // Another owner, another writer or the Mark of the Web: the handle's verdict is final.
+        let open = open_with(|_, o| {
+            if !o.dir {
+                o.trust = Err("writable by other users (S-1-1-0 may write)".into());
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
+        assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(m) if m.contains("writable by other users")));
         assert_eq!(std::fs::read(&p).unwrap(), before, "nothing was written through a link");
         assert!(leftovers(&dir).is_empty());
+    }
+
+    /// A file replaced by another with the same bytes (a different identity) or touched since the
+    /// load is not the one that was read.
+    #[test]
+    fn write_back_refuses_a_swapped_identity() {
+        let dir = scratch("identity");
+        let p = write_json(&dir, "a.json", json!({"Profiles": [{"Guid": "G", "Name": "Old"}]}));
+        let stamp = stamp_of_file(&p);
+        let open = open_with(|_, o| {
+            if !o.dir {
+                o.stat.id = Some((9, 9));
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
+        assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Changed));
+        let open = open_with(|_, o| {
+            if !o.dir {
+                o.stat.mtime = Some(std::time::UNIX_EPOCH);
+            }
+        });
+        let fs = Fs { open: &open, ..real() };
+        assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Changed));
+        assert!(matches!(rewrite(&real(), &dir, "a.json", &stamp, "G", &rename_it), Outcome::Wrote(_)), "the real file still matches");
     }
 
     #[test]
@@ -656,8 +778,8 @@ mod tests {
     #[test]
     fn write_back_stays_in_the_folder() {
         let dir = scratch("stay");
-        let stamp = Stamp::new(b"x", None);
-        let never = Fs { read: &|_| panic!("read outside the folder"), read_link: &|_| panic!("probed outside the folder"), links: &|_| panic!("probed"), mtime: &|_| panic!("probed"), write_new: &|_, _| panic!("wrote outside the folder"), rename: &|_, _| panic!("renamed outside the folder"), ..real() };
+        let stamp = Stamp::new(b"x", dp::Stat::default());
+        let never = Fs { open: &|_| panic!("opened outside the folder"), write_new: &|_, _| panic!("wrote outside the folder"), rename: &|_, _, _| panic!("renamed outside the folder"), ..real() };
         for name in ["..\\x.json", "..\\..\\x.json", "C:\\x.json", "\\\\h\\s\\x.json", "sub\\..\\..\\x.json", "\\x.json", "", ".", "C:x.json"] {
             assert!(matches!(rewrite(&never, &dir, name, &stamp, "G", &rename_it), Outcome::Refused(_)), "{name:?}");
         }
@@ -665,7 +787,7 @@ mod tests {
         let other = scratch("stay-other");
         assert!(matches!(rewrite(&never, &dir, &other.join("a.json").display().to_string(), &stamp, "G", &rename_it), Outcome::Refused(_)));
         // The network judge has the last word on the path.
-        let fs = Fs { local: &|_| false, read: &|_| panic!("read"), ..real() };
+        let fs = Fs { local: &|_| false, open: &|_| panic!("opened"), ..real() };
         assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(_)));
     }
 
@@ -681,19 +803,19 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), before);
         assert!(leftovers(&dir).is_empty());
         // The rename fails: the original is intact and the temporary file is removed.
-        let fs = Fs { rename: &|_, _| Err(std::io::Error::other("locked")), ..real() };
+        let fs = Fs { rename: &|_, _, _| Err(std::io::Error::other("locked")), ..real() };
         assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(_)));
         assert_eq!(std::fs::read(&p).unwrap(), before);
         assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
         // The temporary file is a dotfile, so a reload never reads it as a profile file.
         let seen = std::cell::RefCell::new(String::new());
         let fs = Fs { write_new: &|t: &Path, b: &[u8]| { *seen.borrow_mut() = t.file_name().unwrap().to_string_lossy().to_string(); std::fs::write(t, b) }, ..real() };
-        assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Wrote));
+        assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Wrote(_)));
         assert!(seen.borrow().starts_with('.') && seen.borrow().ends_with(".tandem-tmp"), "{}", seen.borrow());
         // A stale temporary file of an earlier crash does not block the write.
         std::fs::write(dir.join(seen.borrow().as_str()), "stale").unwrap();
         let stamp = stamp_of_file(&p);
-        assert!(matches!(rewrite(&real(), &dir, "a.json", &stamp, "G", &rename_it), Outcome::Wrote));
+        assert!(matches!(rewrite(&real(), &dir, "a.json", &stamp, "G", &rename_it), Outcome::Wrote(_)));
         assert!(leftovers(&dir).is_empty());
     }
 
@@ -706,5 +828,19 @@ mod tests {
         assert!(body.contains("load_gated("));
         assert!(body.contains("system_local") && body.contains("system_open"));
         assert!(!body.contains("dynamic_profiles::load("), "an ungated load");
+    }
+
+    /// 13v2 fix r1 item 2 (class): the write-back judges with the loader's one no-follow handle and
+    /// nothing else: no path-based link, size, time or read probe is left in it.
+    #[test]
+    fn write_back_uses_the_loaders_handle() {
+        let src = include_str!("dynamic_profiles_app.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap();
+        assert!(body.contains("system_open"));
+        for old in ["bounded_read(", "link_count", "read_link", "mtime_of", "std::fs::metadata", "File::open("] {
+            assert!(!body.contains(old), "the write-back still probes by path: {old}");
+        }
+        let rewrite = body.split("pub(super) fn rewrite(").nth(1).unwrap().split("// ---- The app").next().unwrap();
+        assert!(rewrite.contains("fs.open") && rewrite.contains("fs.rename"));
     }
 }

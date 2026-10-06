@@ -51,6 +51,17 @@ pub struct Opened {
     pub dir: bool,
     pub trust: Result<(), String>,
     pub bytes: Result<Vec<u8>, String>,
+    /// What the same handle says of the file: its last write time, its identity (volume serial and
+    /// file index) and how many names it has. A write-back compares them with what the load saw.
+    pub stat: Stat,
+}
+
+/// A file's last write time, identity and name count, all from one handle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stat {
+    pub mtime: Option<std::time::SystemTime>,
+    pub id: Option<(u32, u64)>,
+    pub links: u32,
 }
 
 /// The verdict on `facts` for the user `me`: no link of any kind (a folder or file that is one is
@@ -120,12 +131,13 @@ pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
         return Err(format!("it could not be examined ({})", std::io::Error::last_os_error()));
     }
     let (reparse, dir) = (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0, info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0);
+    let stat = Stat { mtime: filetime_to_system(info.ftLastWriteTime.dwHighDateTime, info.ftLastWriteTime.dwLowDateTime), id: Some((info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow))), links: info.nNumberOfLinks };
     let facts = unsafe {
         let (mut owner, mut dacl): (PSID, *mut ACL) = (null_mut(), null_mut());
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         let err = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &mut owner, null_mut(), &mut dacl, null_mut(), &mut sd);
         if err != 0 {
-            return Ok(Opened { dir, trust: Err(format!("its owner could not be read ({})", std::io::Error::from_raw_os_error(err as i32))), bytes: Err("not read".into()) });
+            return Ok(Opened { dir, trust: Err(format!("its owner could not be read ({})", std::io::Error::from_raw_os_error(err as i32))), bytes: Err("not read".into()), stat });
         }
         let read_acl = || -> Result<(String, Option<Vec<Ace>>), String> {
             let owner_text = if owner.is_null() { return Err("it has no owner".to_string()) } else { crate::winpipe::sid_text(owner)? };
@@ -159,12 +171,12 @@ pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
     };
     let (owner, dacl) = match facts {
         Ok(f) => f,
-        Err(why) => return Ok(Opened { dir, trust: Err(why), bytes: Err("not read".into()) }),
+        Err(why) => return Ok(Opened { dir, trust: Err(why), bytes: Err("not read".into()), stat }),
     };
     let zone = if dir || reparse { None } else { zone_id(path) };
     let trust = judge_facts(&Facts { reparse, dir, links: info.nNumberOfLinks, owner, dacl, zone }, &me);
     if dir || reparse || trust.is_err() {
-        return Ok(Opened { dir, trust, bytes: Err("not read".into()) });
+        return Ok(Opened { dir, trust, bytes: Err("not read".into()), stat });
     }
     let size = (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow);
     let bytes = if size > limit as u64 {
@@ -177,12 +189,20 @@ pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
             Err(e) => Err(e.to_string()),
         }
     };
-    Ok(Opened { dir, trust, bytes })
+    Ok(Opened { dir, trust, bytes, stat })
 }
 
 #[cfg(not(windows))]
 pub fn open(_path: &std::path::Path, _limit: usize) -> Result<Opened, String> {
     Err("Dynamic Profiles are read on Windows only".into())
+}
+
+/// A FILETIME (100 ns ticks since 1601) as a `SystemTime`, as `Metadata::modified` makes it.
+#[cfg(windows)]
+fn filetime_to_system(high: u32, low: u32) -> Option<std::time::SystemTime> {
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = (u64::from(high) << 32) | u64::from(low);
+    ticks.checked_sub(UNIX_EPOCH_TICKS).map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_nanos(t.saturating_mul(100)))
 }
 
 /// The ZoneId in a file's Zone.Identifier stream (`inert_files::zone_of` reads the text).

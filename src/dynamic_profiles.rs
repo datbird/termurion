@@ -509,7 +509,7 @@ pub struct Loaded {
     pub errors: Vec<(String, String)>,
 }
 
-pub use crate::dynamic_profiles_trust::Opened;
+pub use crate::dynamic_profiles_trust::{Opened, Stat};
 
 /// What a folder passes before anything in it is read: `local` is the one network judge on the
 /// path, `open` opens ONE object once without following a link and answers from that handle
@@ -538,7 +538,7 @@ pub fn system_open(path: &Path) -> Result<Opened, String> {
 /// caller appears. The app loads through `load_gated` with `system_local` and `system_open`.
 #[cfg(test)]
 pub fn load(folder: &Path, read: &dyn Fn(&Path) -> Result<Vec<u8>, String>, list: &dyn Fn(&Path) -> Vec<String>, saved_guids: &dyn Fn(&str) -> bool) -> Loaded {
-    let open = |p: &Path| Ok(if p == folder { Opened { dir: true, trust: Ok(()), bytes: Err("not a file".into()) } } else { Opened { dir: false, trust: Ok(()), bytes: read(p) } });
+    let open = |p: &Path| Ok(if p == folder { Opened { dir: true, trust: Ok(()), bytes: Err("not a file".into()), stat: Default::default() } } else { Opened { dir: false, trust: Ok(()), bytes: read(p), stat: Default::default() } });
     load_gated(folder, list, saved_guids, &Gate { local: &|p: &Path| crate::scripts::stays_local(p), open: &open })
 }
 
@@ -1313,7 +1313,7 @@ mod tests {
     }
 
     fn opened(dir: bool, trust: Result<(), &str>, bytes: Vec<u8>) -> Result<Opened, String> {
-        Ok(Opened { dir, trust: trust.map_err(str::to_string), bytes: if dir { Err("not a file".into()) } else { Ok(bytes) } })
+        Ok(Opened { dir, trust: trust.map_err(str::to_string), bytes: if dir { Err("not a file".into()) } else { Ok(bytes) }, stat: Default::default() })
     }
 
     #[test]
