@@ -336,6 +336,7 @@ pub mod host_state;
 pub mod url_schemes;
 pub mod url_launch;
 pub mod update;
+pub mod tips;
 #[cfg(windows)]
 pub mod update_fetch_win;
 pub mod update_ui;

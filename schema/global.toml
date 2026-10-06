@@ -5144,3 +5144,24 @@ label = "Auto-lock session name after editing it."
 type = "bool"
 default = true
 help = "Auto-lock session name after editing it."
+
+# 13v2 Task 3: Tip of the Day. The controller's stored keys (NoSyncTipsToNotShow, NoSyncLastTipTime,
+# NoSyncPermissionToShowTip, NoSyncTipOfTheDayOffset, NoSyncLaunchExperienceControllerRunCount,
+# NoSyncNextAnnoyanceTime, NoSyncTipOfTheDayEligibilityBeganTime) have no row, as NoSync keys are read.
+[[setting]]
+key = "NoSyncTipsDisabled"
+tab = "Advanced"
+section = "Tip of the Day"
+label = "Disable the Tip of the Day?"
+type = "bool"
+default = false
+help = "Disable the Tip of the Day?"
+
+[[setting]]
+key = "TimeBetweenTips"
+tab = "Advanced"
+section = "Tip of the Day"
+label = "Time between tips (in seconds)"
+type = "float"
+default = 86400.0
+help = "Time between tips (in seconds)"

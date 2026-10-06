@@ -2118,6 +2118,33 @@ mod tests {
         }
     }
 
+    /// m13v2 Task 3: the Tip of the Day rows (`IP:1029`, `IP:1030`); the controller's stored
+    /// keys have no row.
+    #[test]
+    fn tip_rows_follow_iterm2() {
+        for (key, kind, default, label) in [
+            ("NoSyncTipsDisabled", Kind::Bool, Value::Boolean(false), "Disable the Tip of the Day?"),
+            ("TimeBetweenTips", Kind::Float, Value::Float(86400.0), "Time between tips (in seconds)"),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Tip of the Day", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, label, "{key}");
+        }
+        for key in [
+            "NoSyncTipsToNotShow",
+            "NoSyncLastTipTime",
+            "NoSyncPermissionToShowTip",
+            "NoSyncTipOfTheDayOffset",
+            "NoSyncLaunchExperienceControllerRunCount",
+            "NoSyncNextAnnoyanceTime",
+            "NoSyncTipOfTheDayEligibilityBeganTime",
+        ] {
+            assert!(schema::find_global(key).is_none(), "{key}");
+        }
+    }
+
     /// m13i Task 1: the pane navigation rows (`AS:311`, `:510`, `:667`, `:715`, `:716`, `:881`).
     #[test]
     fn navigation_rows_follow_iterm2() {
