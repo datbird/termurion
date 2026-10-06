@@ -1863,6 +1863,8 @@ pub fn run() {
     };
     // "Load settings from a custom folder or URL": the location's settings replace the local
     // ones before anything reads them; its questions and failures show with the first window.
+    // Read once at launch (its help says a restart is needed).
+    let trigger_pool_width = globals.int("MaximumNumberOfTriggerCommands");
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
     // iTerm2 drops bindings whose profile is gone when it loads them (P11).
     if crate::url_schemes::prune_globals(&mut globals, &store) {
@@ -2170,7 +2172,7 @@ pub fn run() {
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
-        trigger_pool: crate::triggers::CommandPool::new(16),
+        trigger_pool: crate::triggers::CommandPool::new(trigger_pool_width),
         trigger_children: Vec::new(),
         handler_inbox: Default::default(),
         bells: HashMap::new(),

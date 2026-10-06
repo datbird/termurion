@@ -13,19 +13,49 @@ use crate::screen::{Request, Screen};
 use crate::triggers::{self, Trigger};
 
 /// The profile's trigger switches.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TriggerPrefs {
     /// "Enable triggers in interactive apps".
     pub interactive: bool,
     /// "Use interpolated strings for parameters".
     pub interpolated: bool,
+    /// `TriggerRadius`: the screen rows a logical line is searched back over (iTerm2: 3).
+    pub radius: i32,
+    /// `AllowIdempotentTriggers`: re-check the screen for idempotent actions in interactive apps.
+    pub idempotent_mode: bool,
+    /// `IdempotentTriggerModeRateLimit`.
+    pub idempotent_every: Duration,
 }
+
+impl Default for TriggerPrefs {
+    fn default() -> Self {
+        TriggerPrefs { interactive: false, interpolated: false, radius: 3, idempotent_mode: false, idempotent_every: Duration::from_millis(250) }
+    }
+}
+
+/// Whether the idempotent triggers should run now (`PTYTriggerEvaluator.m:293-329`): only when
+/// triggers are not otherwise in use, the setting allows it, the screen changed since the last
+/// check, and the rate limit has passed.
+pub fn idempotent_due(active: bool, allow: bool, dirty: bool, last: Option<Instant>, now: Instant, every: Duration) -> bool {
+    !active && allow && dirty && last.is_none_or(|t| now.saturating_duration_since(t) >= every)
+}
+
+/// Most triggers a screen compiles, the longest pattern, the time one feed may spend on
+/// triggers, the matches taken from a line and the requests one feed may queue (B5).
+pub const MAX_TRIGGERS: usize = crate::triggers::MAX_TRIGGERS;
+pub const MAX_PATTERN: usize = crate::triggers::MAX_PATTERN;
+pub const TRIGGER_BUDGET: Duration = Duration::from_millis(20);
+const MAX_MATCHES: usize = 256;
+const MAX_REQUESTS: usize = 1024;
+/// Steps a backtracking pattern may take per match attempt, and the size of what it delegates.
+const BACKTRACK_LIMIT: usize = 100_000;
+const REGEX_SIZE: usize = 1 << 20;
 
 /// A trigger action the window runs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerRequest {
     Alert { trigger: usize, text: String },
-    Notify(String),
+    Notify { trigger: usize, text: String },
     Bell,
     Bounce { until_active: bool },
     SendText(String),
@@ -49,6 +79,58 @@ pub enum TriggerRequest {
     Invoke { invocation: String, captures: Vec<String>, ranges: Vec<(usize, usize)>, input: String, line: i64 },
     /// An interpolated parameter that cannot be evaluated (shown once).
     ParameterError { trigger: usize, text: String },
+    /// Trigger checks of some output were skipped for cost (said once per pane).
+    TooSlow,
+    /// A backtracking pattern passed its step or time budget and is off for this session.
+    PatternTooSlow { trigger: usize },
+}
+
+/// A compiled pattern. One that needs neither lookaround nor backreferences runs on the
+/// linear-time `regex` engine (no input makes it slow); the rest backtrack, under a step limit.
+#[derive(Clone, Debug)]
+enum Matcher {
+    Linear(regex::Regex),
+    Backtracking(fancy_regex::Regex),
+}
+
+/// The byte spans of a match's groups.
+type Spans = Vec<Option<(usize, usize)>>;
+
+impl Matcher {
+    fn compile(pattern: &str) -> Result<Matcher, String> {
+        if pattern.chars().count() > MAX_PATTERN {
+            return Err(format!("The pattern is longer than {MAX_PATTERN} characters."));
+        }
+        if let Ok(re) = regex::RegexBuilder::new(pattern).size_limit(REGEX_SIZE).dfa_size_limit(REGEX_SIZE).build() {
+            return Ok(Matcher::Linear(re));
+        }
+        fancy_regex::RegexBuilder::new(pattern)
+            .backtrack_limit(BACKTRACK_LIMIT)
+            .delegate_size_limit(REGEX_SIZE)
+            .delegate_dfa_size_limit(REGEX_SIZE)
+            .build()
+            .map(Matcher::Backtracking)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Up to `MAX_MATCHES` matches' group spans; Err when a backtracking pattern passed its limit.
+    fn matches(&self, text: &str) -> Result<Vec<Spans>, ()> {
+        let mut out = Vec::new();
+        match self {
+            Matcher::Linear(re) => {
+                for caps in re.captures_iter(text).take(MAX_MATCHES) {
+                    out.push((0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect());
+                }
+            }
+            Matcher::Backtracking(re) => {
+                for caps in re.captures_iter(text).take(MAX_MATCHES) {
+                    let caps = caps.map_err(|_| ())?;
+                    out.push((0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect());
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// A group that did not match starts here (NSNotFound on 64-bit Windows and macOS).
@@ -79,7 +161,7 @@ pub(crate) fn raw_parameter(action: &str) -> bool {
 #[derive(Clone, Debug)]
 pub struct Compiled {
     pub trigger: Trigger,
-    re: Option<fancy_regex::Regex>,
+    re: Option<Matcher>,
     pub error: Option<String>,
     /// The line an Instant trigger last fired on.
     last_line: Option<i64>,
@@ -106,6 +188,18 @@ pub struct TriggerState {
     /// Rows a banner wrote (`append_banner`), which triggers never check: iTerm2 writes its
     /// banners with triggers off (`SM:6721`).
     skip: Vec<std::ops::Range<i64>>,
+    /// When this feed's trigger checks must stop (B5), and the request count it began at.
+    deadline: Option<Instant>,
+    /// The time one feed may spend (None: `TRIGGER_BUDGET`); a test of the line count lengthens it.
+    budget: Option<Duration>,
+    req_base: usize,
+    /// The banner for skipped checks was said.
+    told_slow: bool,
+    /// Idempotent mode: when it last ran, the screen's `tick_digest` then, and a pass that
+    /// runs only idempotent actions is under way.
+    idem_last: Option<Instant>,
+    idem_digest: u64,
+    idem_pass: bool,
 }
 
 /// A logical line's text and, for each character, its byte offset and cell.
@@ -231,8 +325,6 @@ fn url_ok(v: &str) -> bool {
     })
 }
 
-/// iTerm2's triggerRadius: rows before and after a row a logical line may span.
-const RADIUS: i32 = 3;
 const INSTANT_EVERY: Duration = Duration::from_millis(500);
 
 impl Screen {
@@ -242,19 +334,27 @@ impl Screen {
         let old = std::mem::take(&mut self.triggers.list);
         self.triggers.list = list
             .into_iter()
+            .take(MAX_TRIGGERS)
             .enumerate()
             .map(|(i, trigger)| {
                 if let Some(prev) = old.get(i).filter(|p| p.trigger == trigger) {
                     return prev.clone();
                 }
-                let (re, error) = match fancy_regex::Regex::new(&trigger.regex) {
+                let (re, error) = match Matcher::compile(&trigger.regex) {
                     Ok(re) => (Some(re), None),
-                    Err(e) => (None, Some(e.to_string())),
+                    Err(e) => (None, Some(e)),
                 };
                 Compiled { trigger, re, error, last_line: None, off_here: false, events: Default::default() }
             })
             .collect();
         self.triggers.prefs = prefs;
+    }
+
+    /// The Advanced limits (`TriggerRadius`, `AllowIdempotentTriggers`,
+    /// `IdempotentTriggerModeRateLimit`), which are not the profile's: the list stays.
+    pub fn set_trigger_limits(&mut self, radius: i32, idempotent_mode: bool, idempotent_every: Duration) {
+        let p = &mut self.triggers.prefs;
+        (p.radius, p.idempotent_mode, p.idempotent_every) = (radius.clamp(1, 64), idempotent_mode, idempotent_every);
     }
 
     /// Disable This Alert: trigger `i` stays off for this session.
@@ -473,9 +573,58 @@ impl Screen {
             }
             let wraps = self.term.grid()[Line(line)][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
             if !wraps && !self.triggers.skip.iter().any(|r| r.contains(&row)) {
+                if self.over_budget() {
+                    break;
+                }
                 self.evaluate_line(line, false);
             }
         }
+    }
+
+    /// A feed's trigger checks (all its pieces) start a clock and a request count (B5).
+    pub(crate) fn begin_budget(&mut self) {
+        self.triggers.deadline = Some(Instant::now() + self.triggers.budget.unwrap_or(TRIGGER_BUDGET));
+        self.triggers.req_base = self.requests.len();
+    }
+
+    /// True when this feed has spent its time or its requests; the pane is told once.
+    fn over_budget(&mut self) -> bool {
+        let over = self.triggers.deadline.is_some_and(|d| Instant::now() >= d) || self.requests.len().saturating_sub(self.triggers.req_base) >= MAX_REQUESTS;
+        if over && !self.triggers.told_slow {
+            self.triggers.told_slow = true;
+            self.requests.push(Request::Trigger(TriggerRequest::TooSlow));
+        }
+        over
+    }
+
+    /// Idempotent mode (`PTYTriggerEvaluator.m:293-334`): with triggers not otherwise in use
+    /// (an interactive app with "Enable triggers in interactive apps" off) and the setting on,
+    /// after the screen changed (`tick_digest`, the same change signal the scrollbar ticks use),
+    /// every logical line on the screen is checked again for the actions that are safe to
+    /// repeat, at most once per `IdempotentTriggerModeRateLimit`.
+    pub fn check_idempotent_triggers(&mut self, now: Instant) {
+        let usable = !self.triggers.list.is_empty() && !self.triggers.busy;
+        let digest = self.tick_digest();
+        let prefs = self.triggers.prefs;
+        if !usable || !idempotent_due(self.triggers_active(), prefs.idempotent_mode, digest != self.triggers.idem_digest, self.triggers.idem_last, now, prefs.idempotent_every) {
+            return;
+        }
+        self.triggers.idem_last = Some(now);
+        self.triggers.idem_digest = digest;
+        self.begin_budget();
+        self.triggers.idem_pass = true;
+        let (rows, cols) = (self.term.grid().screen_lines() as i32, self.term.grid().columns());
+        for line in 0..rows {
+            let wraps = self.term.grid()[Line(line)][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+            if wraps && line + 1 < rows {
+                continue;
+            }
+            if self.over_budget() {
+                break;
+            }
+            self.evaluate_line(line, false);
+        }
+        self.triggers.idem_pass = false;
     }
 
     /// Instant triggers on the line being written, at most every 0.5 s.
@@ -487,6 +636,7 @@ impl Screen {
             return;
         }
         self.triggers.last_instant = Some(now);
+        self.begin_budget();
         let line = self.term.grid().cursor.point.line.0;
         self.evaluate_line(line, true);
     }
@@ -496,7 +646,7 @@ impl Screen {
         let g = self.term.grid();
         let (top, cols) = (-(g.history_size() as i32), g.columns());
         let mut start = end;
-        while start > top && end - start < RADIUS && g[Line(start - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+        while start > top && end - start < self.triggers.prefs.radius.max(1) && g[Line(start - 1)][Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
             start -= 1;
         }
         let mut text = String::new();
@@ -541,12 +691,18 @@ impl Screen {
     fn evaluate_line(&mut self, end: i32, instant: bool) {
         let line = self.logical_line(end);
         let row = self.row_number(end);
-        if !instant {
+        if !instant && !self.triggers.idem_pass {
             self.triggers.lines_checked += 1;
         }
         for i in 0..self.triggers.list.len() {
+            if self.over_budget() {
+                break;
+            }
             let c = &self.triggers.list[i];
             let t = &c.trigger;
+            if self.triggers.idem_pass && !triggers::action_info(&t.action).is_some_and(|a| a.idempotent) {
+                continue;
+            }
             if !t.enabled || c.off_here || c.re.is_none() || t.match_type != 0 || !crate::trigger_events::job_gate(&t.job, &self.shell.job_ancestors) {
                 continue;
             }
@@ -562,12 +718,24 @@ impl Screen {
             let raw = raw_parameter(&t.action);
             let mut fired = false;
             let mut stop = false;
-            for caps in re.captures_iter(&line.text) {
-                let Ok(caps) = caps else { break };
-                let Some(m) = caps.get(0).filter(|m| m.start() < m.end()) else { continue };
-                let groups: Vec<Option<&str>> = (0..caps.len()).map(|g| caps.get(g).map(|m| m.as_str())).collect();
+            let started = Instant::now();
+            let found = re.matches(&line.text);
+            // A backtracking pattern over its step limit, or slower than a feed's whole budget,
+            // is off for this session and the person is told (B5).
+            if matches!(re, Matcher::Backtracking(_)) && (found.is_err() || started.elapsed() > TRIGGER_BUDGET) {
+                self.triggers.list[i].off_here = true;
+                self.triggers.list[i].error = Some("The pattern took too long to match and was turned off for this session.".into());
+                self.requests.push(Request::Trigger(TriggerRequest::PatternTooSlow { trigger: i }));
+            }
+            let Ok(found) = found else { continue };
+            for gs in found {
+                if self.over_budget() {
+                    break;
+                }
+                let Some((m_start, m_end)) = gs[0].filter(|(a, b)| a < b) else { continue };
+                let groups: Vec<Option<&str>> = gs.iter().map(|g| g.map(|(a, b)| &line.text[a..b])).collect();
                 // Only Invoke Script Function reads the groups' places.
-                let spans: Vec<Option<(usize, usize)>> = if raw { (0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect() } else { Vec::new() };
+                let spans: Vec<Option<(usize, usize)>> = if raw { gs.clone() } else { Vec::new() };
                 // iTerm2 interpolates only a parameter holding an expression; Invoke Script
                 // Function takes its parameter as written.
                 let value = if raw {
@@ -602,7 +770,7 @@ impl Screen {
                     triggers::substitute(&param, &groups)
                 };
                 fired = true;
-                match self.trigger_action(i, &value, (m.start(), m.end()), &line, row, &Captures { groups: &groups, spans: &spans }) {
+                match self.trigger_action(i, &value, (m_start, m_end), &line, row, &Captures { groups: &groups, spans: &spans }) {
                     Flow::More => {}
                     Flow::Done => break,
                     Flow::StopAll => {
@@ -800,7 +968,7 @@ impl Screen {
             }
             "StopTrigger" => Flow::StopAll,
             "AlertTrigger" => ask(self, TriggerRequest::Alert { trigger: i, text: value.to_string() }),
-            "iTermUserNotificationTrigger" => ask(self, TriggerRequest::Notify(value.to_string())),
+            "iTermUserNotificationTrigger" => ask(self, TriggerRequest::Notify { trigger: i, text: value.to_string() }),
             "BellTrigger" => {
                 self.bell_count += 1;
                 ask(self, TriggerRequest::Bell)
@@ -861,6 +1029,131 @@ mod tests {
 
     fn alerts(s: &mut Screen) -> usize {
         s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count()
+    }
+
+    fn too_slow(s: &mut Screen) -> (usize, usize) {
+        let r = s.take_requests();
+        (r.iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::TooSlow))).count(), r.iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::PatternTooSlow { .. }))).count())
+    }
+
+    /// B5: a backtracking pattern on a long line costs a bounded time and cannot hang a feed.
+    #[test]
+    fn catastrophic_patterns_are_bounded() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers((0..10).map(|_| trig("(?=a)(a+)+$", "AlertTrigger", "x", false)).collect(), TriggerPrefs::default());
+        let line = format!("{}b\r\n", "a".repeat(40));
+        let t0 = std::time::Instant::now();
+        for _ in 0..30 {
+            s.feed(line.as_bytes());
+        }
+        assert!(t0.elapsed() < Duration::from_secs(2), "took {:?}", t0.elapsed());
+        let (_, slow) = too_slow(&mut s);
+        assert_eq!(slow, 10, "each pattern is turned off once, with a notice");
+        assert!(s.trigger_errors().len() == 10);
+    }
+
+    /// The ruling: no lookaround or backreference means the linear engine, so `(a+)+$` is cheap
+    /// on any line; the rest backtrack under a limit; a pattern past the cap is an error.
+    #[test]
+    fn matcher_choice_follows_the_ruling() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("(a+)+$", "AlertTrigger", "x", false), trig("(?=a)b", "AlertTrigger", "x", false), trig(r"(a)\1", "AlertTrigger", "x", false), trig("(", "AlertTrigger", "x", false), trig(&"a".repeat(MAX_PATTERN + 1), "AlertTrigger", "x", false)], TriggerPrefs::default());
+        let l = &s.triggers.list;
+        assert!(matches!(l[0].re, Some(Matcher::Linear(_))));
+        assert!(matches!(l[1].re, Some(Matcher::Backtracking(_))));
+        assert!(matches!(l[2].re, Some(Matcher::Backtracking(_))));
+        assert!(l[3].re.is_none() && l[3].error.is_some());
+        assert!(l[4].re.is_none() && l[4].error.as_deref().is_some_and(|e| e.contains("longer")));
+        // The linear engine on the classic bad line: instant, and it still matches.
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("(a+)+$", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        let t0 = std::time::Instant::now();
+        s.feed(format!("{}\r\n", "a".repeat(70)).as_bytes());
+        s.feed(format!("{}b\r\n", "a".repeat(70)).as_bytes());
+        assert!(t0.elapsed() < Duration::from_millis(500));
+        assert_eq!(alerts(&mut s), 1, "the line ending in a, not the one ending in b");
+    }
+
+    /// B5: 256 triggers at most, and a feed that spends its time budget skips the rest with ONE notice.
+    #[test]
+    fn trigger_budget_skips_the_rest() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers((0..300).map(|_| trig("(?=a)(a+)+$", "AlertTrigger", "x", false)).collect(), TriggerPrefs::default());
+        assert_eq!(s.triggers.list.len(), MAX_TRIGGERS);
+        let mut text = String::new();
+        for _ in 0..1000 {
+            text.push_str(&"a".repeat(40));
+            text.push_str("b\r\n");
+        }
+        let t0 = std::time::Instant::now();
+        s.feed(text.as_bytes());
+        assert!(t0.elapsed() < Duration::from_secs(1), "took {:?}", t0.elapsed());
+        assert_eq!(too_slow(&mut s).0, 1);
+        s.feed(text.as_bytes());
+        assert_eq!(too_slow(&mut s).0, 0, "said once per pane");
+    }
+
+    /// B5: one feed queues at most `MAX_REQUESTS` trigger requests.
+    #[test]
+    fn requests_per_feed_are_capped() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("x", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed("x\r\n".repeat(5000).as_bytes());
+        let n = s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count();
+        assert!(n <= MAX_REQUESTS && n > 0, "{n}");
+    }
+
+    #[test]
+    fn radius_follows_the_setting() {
+        let line = format!("AAAAAAAAAA{}\r\n", "x".repeat(40));
+        for (radius, hits) in [(3, 0), (5, 1)] {
+            let mut s = Screen::new(10, 10);
+            s.set_triggers(vec![trig("^AAAAAAAAAA", "AlertTrigger", "x", false)], TriggerPrefs { radius, ..TriggerPrefs::default() });
+            s.feed(line.as_bytes());
+            assert_eq!(alerts(&mut s), hits, "radius {radius}");
+        }
+        assert_eq!(TriggerPrefs::default().radius, 3, "iTerm2's default");
+    }
+
+    #[test]
+    fn idempotent_mode_follows_iterm2() {
+        use alacritty_terminal::index::{Column, Line};
+        let now = Instant::now();
+        let ms = Duration::from_millis;
+        assert!(idempotent_due(false, true, true, None, now, ms(250)));
+        assert!(!idempotent_due(true, true, true, None, now, ms(250)), "triggers active: the normal path runs");
+        assert!(!idempotent_due(false, false, true, None, now, ms(250)));
+        assert!(!idempotent_due(false, true, false, None, now, ms(250)), "nothing changed");
+        assert!(!idempotent_due(false, true, true, Some(now - ms(100)), now, ms(250)));
+        assert!(idempotent_due(false, true, true, Some(now - ms(300)), now, ms(250)));
+        for allowed in [true, false] {
+            let mut s = Screen::new(40, 5);
+            s.feed(b"\x1b[?1049h");
+            s.set_triggers(vec![trig("foo", "HighlightTrigger", "{#ffffff,#ff0000}", false), trig("foo", "AlertTrigger", "x", false)], TriggerPrefs { idempotent_mode: allowed, idempotent_every: Duration::ZERO, ..TriggerPrefs::default() });
+            s.feed(b"foo");
+            s.check_idempotent_triggers(now);
+            let red = s.term().grid()[Line(0)][Column(0)].bg == Color::Spec(c(255, 0, 0));
+            assert_eq!(red, allowed, "highlighted only with the key on");
+            assert_eq!(alerts(&mut s), 0, "an Alert is not idempotent");
+        }
+    }
+
+    /// B5: the change signal is `tick_digest`, not a flag of our own.
+    #[test]
+    fn idempotent_uses_the_tick_digest() {
+        let now = Instant::now();
+        let mut s = Screen::new(40, 5);
+        s.feed(b"\x1b[?1049h");
+        s.set_triggers(vec![trig("foo", "BounceTrigger", "1", false)], TriggerPrefs { idempotent_mode: true, idempotent_every: Duration::ZERO, ..TriggerPrefs::default() });
+        let bounces = |s: &mut Screen| s.take_requests().iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Bounce { .. }))).count();
+        s.feed(b"foo");
+        s.check_idempotent_triggers(now);
+        assert_eq!(bounces(&mut s), 1);
+        s.check_idempotent_triggers(now + Duration::from_secs(1));
+        assert_eq!(bounces(&mut s), 0, "the screen did not change");
+        s.feed(b" bar");
+        s.check_idempotent_triggers(now + Duration::from_secs(2));
+        assert_eq!(bounces(&mut s), 1, "it changed");
     }
 
     #[test]
@@ -925,7 +1218,7 @@ mod tests {
         // Each grid numbers its rows apart: a primary banner's row number does not keep the
         // alternate screen's row of the same number from being checked.
         let mut s = Screen::new(40, 5);
-        s.set_triggers(vec![trig("exited", "AlertTrigger", "x", false)], TriggerPrefs { interactive: true, interpolated: false });
+        s.set_triggers(vec![trig("exited", "AlertTrigger", "x", false)], TriggerPrefs { interactive: true, ..Default::default() });
         s.feed(b"a\r\nb\r\n");
         s.append_banner("ssh exited.");
         s.feed(b"\x1b[?1049h\x1b[H");
@@ -1032,8 +1325,11 @@ mod tests {
     fn each_line_is_checked_once() {
         let mut s = Screen::with_scrollback(40, 5, 10000);
         s.set_triggers(vec![trig(r"^line (\d+)$", "iTermSetUserVariableTrigger", "last\u{1}\\1", false)], TriggerPrefs::default());
-        let text: String = (0..3000).map(|i| format!("line {i}\r\n")).collect();
-        s.feed(text.as_bytes());
+        // In reads of a hundred lines: one read has a time budget (B5).
+        for chunk in 0..30 {
+            let text: String = (chunk * 100..chunk * 100 + 100).map(|i| format!("line {i}\r\n")).collect();
+            s.feed(text.as_bytes());
+        }
         assert_eq!(s.shell.vars.get("last").map(String::as_str), Some("2999"));
         assert_eq!(s.triggers.lines_checked, 3000);
         s.feed(b"line x\r\nline y\r\n");
@@ -1097,7 +1393,7 @@ mod tests {
         s.set_triggers(vec![trig("foo", "AlertTrigger", "x", false)], TriggerPrefs::default());
         s.feed(b"\x1b[?1049hfoo\r\n");
         assert_eq!(alerts(&mut s), 0);
-        s.set_triggers(vec![trig("foo", "AlertTrigger", "x", false)], TriggerPrefs { interactive: true, interpolated: false });
+        s.set_triggers(vec![trig("foo", "AlertTrigger", "x", false)], TriggerPrefs { interactive: true, ..Default::default() });
         s.feed(b"foo\r\n");
         assert_eq!(alerts(&mut s), 1);
     }
@@ -1118,7 +1414,7 @@ mod tests {
     #[test]
     fn interpolated_parameters() {
         let mut s = Screen::new(40, 5);
-        s.set_triggers(vec![trig("id=(\\w+)", "AlertTrigger", "got \\(matches[1]) on \\(session.name)", false)], TriggerPrefs { interactive: false, interpolated: true });
+        s.set_triggers(vec![trig("id=(\\w+)", "AlertTrigger", "got \\(matches[1]) on \\(session.name)", false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
         s.app_vars.insert("session.name".into(), "Main".into());
         s.feed(b"id=abc\r\n");
         let texts: Vec<String> = s.take_requests().into_iter().filter_map(|r| match r {
@@ -1358,8 +1654,8 @@ mod tests {
             ("iTermBufferInputTrigger", "1", TriggerRequest::BufferInput(false)),
             ("iTermSetProfileBooleanTrigger", "Silence Bell\u{1}1", TriggerRequest::ProfileSetting { key: "Silence Bell".into(), on: true }),
             ("MuteCoprocessTrigger", "cat", TriggerRequest::Coprocess { cmd: "cat".into(), silent: true }),
-            ("iTermUserNotificationTrigger", "done", TriggerRequest::Notify("done".into())),
-            ("GrowlTrigger", "done", TriggerRequest::Notify("done".into())),
+            ("iTermUserNotificationTrigger", "done", TriggerRequest::Notify { trigger: 0, text: "done".into() }),
+            ("GrowlTrigger", "done", TriggerRequest::Notify { trigger: 0, text: "done".into() }),
             ("CaptureTrigger", "", TriggerRequest::Captured { needs_shell_integration: true }),
             ("PasswordTrigger", "github", TriggerRequest::OpenPasswordManager("github".into())),
             ("PasswordTrigger", "Open Password Manager to Unlock", TriggerRequest::OpenPasswordManager("Open Password Manager to Unlock".into())),
@@ -1390,6 +1686,7 @@ mod tests {
     #[test]
     fn a_read_bigger_than_the_scrollback_checks_every_line() {
         let mut s = Screen::with_scrollback(40, 5, 100);
+        s.triggers.budget = Some(Duration::from_secs(60));
         s.set_triggers(vec![trig(r"^line (\d+)$", "iTermSetUserVariableTrigger", "last\u{1}\\1", false)], TriggerPrefs::default());
         let text: String = (0..3000).map(|i| format!("line {i}\r\n")).collect();
         s.feed(text.as_bytes());
@@ -1423,7 +1720,7 @@ mod tests {
     #[test]
     fn interpolation_only_with_an_expression() {
         let mut s = Screen::new(40, 5);
-        s.set_triggers(vec![trig(r"id=(\w+)", "SendTextTrigger", "\\1\\r", false)], TriggerPrefs { interactive: false, interpolated: true });
+        s.set_triggers(vec![trig(r"id=(\w+)", "SendTextTrigger", "\\1\\r", false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
         s.feed(b"id=abc\r\n");
         let got: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
             Request::Trigger(t) => Some(t),
@@ -1435,7 +1732,7 @@ mod tests {
     #[test]
     fn parameter_errors_are_reported_once() {
         let mut s = Screen::new(40, 5);
-        s.set_triggers(vec![trig("x", "AlertTrigger", "\\(f(1))", false)], TriggerPrefs { interactive: false, interpolated: true });
+        s.set_triggers(vec![trig("x", "AlertTrigger", "\\(f(1))", false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
         s.feed(b"x\r\nx\r\n");
         let errors: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
             Request::Trigger(t @ TriggerRequest::ParameterError { .. }) => Some(t),
@@ -1499,7 +1796,7 @@ mod tests {
         // The raw parameter, never interpolated nor substituted (`iTermRPCTrigger.m:62`).
         for param in ["f(x: \"\\(bogus)\")", "f(x: \"\\1\")"] {
             let mut s = Screen::new(40, 5);
-            s.set_triggers(vec![trig("a(b)", "iTermRPCTrigger", param, false)], TriggerPrefs { interactive: false, interpolated: true });
+            s.set_triggers(vec![trig("a(b)", "iTermRPCTrigger", param, false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
             s.feed(b"xab\r\n");
             let got = trigger_requests(&mut s);
             assert!(matches!(got.as_slice(), [TriggerRequest::Invoke { invocation, .. }] if invocation == param), "{got:?}");

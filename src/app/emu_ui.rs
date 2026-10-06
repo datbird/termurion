@@ -17,6 +17,7 @@ impl App {
     /// tmux pane keeps the type tmux reports for it (`PS:3253-3255`).
     pub(super) fn apply_emu_rules(&mut self, pane: PaneId) {
         let rules = self.emu_rules();
+        let (radius, idem, every) = (self.globals.int("TriggerRadius") as i32, self.globals.bool("AllowIdempotentTriggers"), crate::alerts::safe_secs(self.globals.number("IdempotentTriggerModeRateLimit").unwrap_or(0.25), 0.0, 3600.0));
         let Some(p) = self.panes.get(&pane) else { return };
         let term = if p.tmux_io().is_some() {
             None
@@ -25,6 +26,8 @@ impl App {
         };
         if let Some(p) = self.panes.get_mut(&pane) {
             p.set_emu(rules, term.as_deref());
+            // The trigger limits are Advanced settings, read here with the other emulation knobs.
+            p.own_mut().set_trigger_limits(radius, idem, every);
         }
         // The profile's Answerback String (`PS:6207`); a tmux pane has none of its own.
         let answerback = self.panes.get(&pane).filter(|p| p.tmux_io().is_none()).map(|p| self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).string("Answerback String"));

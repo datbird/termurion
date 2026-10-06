@@ -5503,3 +5503,59 @@ label = "Clear bell icon when a session becomes active."
 type = "bool"
 default = true
 help = "Clear bell icon when a session becomes active.\nWhen off, you must type in the session to clear the bell icon."
+
+# Trigger limits (13w)
+
+[[setting]]
+key = "TriggerRadius"
+tab = "Advanced"
+section = "Terminal"
+label = "Number of screen lines to match against trigger regular expressions."
+type = "int"
+default = 3
+help = "Number of screen lines to match against trigger regular expressions.\nTrigger regular expressions are matched against the last logical line of text when a newline is received. A search is performed to find the start of the line. Since very long lines would cause performance problems, the search (and consequently the regular expression match, highlighting, and so on) is limited to this many screen lines."
+
+[[setting]]
+key = "AllowIdempotentTriggers"
+tab = "Advanced"
+section = "Terminal"
+label = "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled."
+type = "bool"
+default = false
+help = "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled."
+
+[[setting]]
+key = "IdempotentTriggerModeRateLimit"
+tab = "Advanced"
+section = "Terminal"
+label = "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates."
+type = "float"
+default = 0.25
+help = "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates.\nThis limits the performance impact of trigger evaluation."
+
+[[setting]]
+key = "MaximumNumberOfTriggerCommands"
+tab = "Advanced"
+section = "General"
+label = "Maximum number of trigger-launched commands that can run at once."
+type = "int"
+default = 16
+help = "Maximum number of trigger-launched commands that can run at once.\nIf too many \u201cRun Command\u2026\u201d triggers fire their commands will be queued. You must restart Tandem for changes to this setting to take effect."
+
+[[setting]]
+key = "AlertTriggerRateLimit"
+tab = "Advanced"
+section = "General"
+label = "Rate limit for Alert triggers."
+type = "float"
+default = 1.0
+help = "Rate limit for Alert triggers.\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed."
+
+[[setting]]
+key = "UserNotificationTriggerRateLimit"
+tab = "Advanced"
+section = "General"
+label = "Rate limit for Notification triggers."
+type = "float"
+default = 0.0
+help = "Rate limit for Notification triggers.\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed."

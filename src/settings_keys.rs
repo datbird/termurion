@@ -4521,4 +4521,27 @@ mod tests {
             assert!(!row.optional_bool(), "{key}");
         }
     }
+
+    /// 13w Task 7: the trigger limit rows, iTerm2's text.
+    #[test]
+    fn trigger_rows_follow_iterm2() {
+        let again = "\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed.";
+        let rows = [
+            ("TriggerRadius", "Terminal", Kind::Int, Value::Integer(3), "Number of screen lines to match against trigger regular expressions.\nTrigger regular expressions are matched against the last logical line of text when a newline is received. A search is performed to find the start of the line. Since very long lines would cause performance problems, the search (and consequently the regular expression match, highlighting, and so on) is limited to this many screen lines.".to_string()),
+            ("AllowIdempotentTriggers", "Terminal", Kind::Bool, Value::Boolean(false), "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled.".to_string()),
+            ("IdempotentTriggerModeRateLimit", "Terminal", Kind::Float, Value::Float(0.25), "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates.\nThis limits the performance impact of trigger evaluation.".to_string()),
+            ("MaximumNumberOfTriggerCommands", "General", Kind::Int, Value::Integer(16), "Maximum number of trigger-launched commands that can run at once.\nIf too many \u{201c}Run Command\u{2026}\u{201d} triggers fire their commands will be queued. You must restart Tandem for changes to this setting to take effect.".to_string()),
+            ("AlertTriggerRateLimit", "General", Kind::Float, Value::Float(1.0), format!("Rate limit for Alert triggers.{again}")),
+            ("UserNotificationTriggerRateLimit", "General", Kind::Float, Value::Float(0.0), format!("Rate limit for Notification triggers.{again}")),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
 }

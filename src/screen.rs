@@ -1247,6 +1247,8 @@ impl Screen {
         self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
+            // One time and request budget for the whole read, whatever pieces it goes in (B5).
+            self.begin_budget();
         }
         // With triggers, a read holding more lines than the buffer keeps goes in pieces, so
         // every line is checked before it scrolls away.

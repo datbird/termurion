@@ -78,6 +78,12 @@ pub fn looked_at(front: bool, tab_shown: bool) -> bool {
     front && tab_shown
 }
 
+/// Text from a program made safe to show: control, bidi and zero-width characters removed,
+/// at most 200 characters (B5).
+pub fn safe_text(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() && !matches!(*c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')).take(200).collect()
+}
+
 /// A time from the settings, in `lo..=hi` seconds (a negative, huge, or NaN value would
 /// panic in Duration).
 pub fn safe_secs(v: f64, lo: f64, hi: f64) -> Duration {
@@ -89,6 +95,12 @@ mod tests {
     use super::*;
 
     const ALL: AlertPrefs = AlertPrefs { enabled: true, bell: true, idle: true, new_output: true, session_ended: true, terminal: true, suppress_active: false };
+
+    #[test]
+    fn safe_text_removes_what_misleads() {
+        assert_eq!(safe_text("a\u{202e}b\u{200b}c\nd\u{7}e"), "abcde");
+        assert_eq!(safe_text(&"x".repeat(500)).len(), 200);
+    }
 
     #[test]
     fn alert_texts_follow_iterm2() {

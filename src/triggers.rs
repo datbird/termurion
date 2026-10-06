@@ -274,17 +274,25 @@ pub fn merge_list(stored: Option<&toml::Value>, list: &[Trigger]) -> toml::Value
     toml::Value::Array(out)
 }
 
-/// Run Command's pool: at most `max` commands at once; the rest wait their turn.
+/// The widest Run Command pool and the longest queue behind it (B5).
+pub const MAX_POOL: usize = 64;
+pub const MAX_WAITING: usize = 256;
+
+/// Run Command's pool: at most `max` commands at once; the rest wait their turn, at most
+/// `MAX_WAITING` of them (the newest are dropped, with one notice per burst).
 #[derive(Clone, Debug, Default)]
 pub struct CommandPool {
     max: usize,
     running: usize,
     waiting: std::collections::VecDeque<String>,
+    /// Commands dropped since the last notice was taken.
+    dropped: usize,
 }
 
 impl CommandPool {
-    pub fn new(max: usize) -> CommandPool {
-        CommandPool { max, ..Default::default() }
+    /// A pool `max` wide, kept within `1..=MAX_POOL` (a pool that runs nothing is no pool).
+    pub fn new(max: i64) -> CommandPool {
+        CommandPool { max: max.clamp(1, MAX_POOL as i64) as usize, ..Default::default() }
     }
 
     /// A command to run: it, when it may start now.
@@ -292,10 +300,22 @@ impl CommandPool {
         if self.running < self.max {
             self.running += 1;
             Some(cmd)
-        } else {
+        } else if self.waiting.len() < MAX_WAITING {
             self.waiting.push_back(cmd);
             None
+        } else {
+            self.dropped += 1;
+            None
         }
+    }
+
+    /// How many commands were dropped since the last call (the caller says so once).
+    pub fn take_dropped(&mut self) -> usize {
+        std::mem::take(&mut self.dropped)
+    }
+
+    pub fn waiting(&self) -> usize {
+        self.waiting.len()
     }
 
     /// A command ended: the next waiting one to start.
@@ -312,6 +332,37 @@ impl CommandPool {
     pub fn running(&self) -> usize {
         self.running
     }
+}
+
+/// Most triggers a profile keeps, the longest pattern and parameter (P8).
+pub const MAX_TRIGGERS: usize = 256;
+pub const MAX_PATTERN: usize = 4096;
+pub const MAX_PARAMETER: usize = 64 * 1024;
+const MAX_KEYS: usize = 32;
+const MAX_DEPTH: usize = 8;
+
+fn depth_ok(v: &toml::Value, depth: usize) -> bool {
+    match v {
+        toml::Value::Array(a) => depth < MAX_DEPTH && a.len() <= 1024 && a.iter().all(|e| depth_ok(e, depth + 1)),
+        toml::Value::Table(t) => depth < MAX_DEPTH && t.len() <= MAX_KEYS && t.values().all(|e| depth_ok(e, depth + 1)),
+        toml::Value::String(s) => s.len() <= MAX_PARAMETER,
+        _ => true,
+    }
+}
+
+/// A stored `Triggers` value as every reader may see it, made at the one write point
+/// (`Profile::set`, `Profile::from_values`): at most `MAX_TRIGGERS` tables, each with a text
+/// action (an action Tandem lacks is kept, as `parse_list` keeps it), a pattern of at most `MAX_PATTERN` characters, a parameter of at most
+/// `MAX_PARAMETER` bytes and bounded depth. Anything that is not a list is dropped.
+pub fn clean(v: &toml::Value) -> toml::Value {
+    let ok = |t: &toml::Table| {
+        t.len() <= MAX_KEYS
+            && t.get("action").is_some_and(toml::Value::is_str)
+            && t.get("regex").and_then(toml::Value::as_str).is_none_or(|r| r.chars().count() <= MAX_PATTERN)
+            && t.values().all(|e| depth_ok(e, 0))
+    };
+    let list = v.as_array().map(|a| a.iter().filter_map(toml::Value::as_table).filter(|t| ok(t)).take(MAX_TRIGGERS).cloned().map(toml::Value::Table).collect()).unwrap_or_default();
+    toml::Value::Array(list)
 }
 
 /// At most one event per key in each period; events inside it are dropped.
@@ -379,6 +430,54 @@ mod tests {
         assert_eq!(list[1].action, "NoSuchTrigger", "unknown actions are kept, never dropped");
         assert!(list[1].enabled && !list[1].instant, "defaults");
         assert_eq!(Trigger::from_table(&t.to_table()), *t);
+    }
+
+    /// P8: the one write point bounds a profile's triggers.
+    #[test]
+    fn clean_bounds_a_trigger_list() {
+        let mk = |regex: String, parameter: String| {
+            let mut t = toml::Table::new();
+            t.insert("regex".into(), regex.into());
+            t.insert("action".into(), "AlertTrigger".into());
+            t.insert("parameter".into(), parameter.into());
+            toml::Value::Table(t)
+        };
+        let many = toml::Value::Array((0..300).map(|_| mk("a".into(), "b".into())).collect());
+        assert_eq!(clean(&many).as_array().unwrap().len(), MAX_TRIGGERS);
+        let mixed = toml::Value::Array(vec![mk("a".repeat(MAX_PATTERN + 1), String::new()), mk("a".into(), "p".repeat(MAX_PARAMETER + 1)), toml::Value::Integer(3), mk("a".repeat(MAX_PATTERN), "ok".into())]);
+        assert_eq!(parse_list(&clean(&mixed)).len(), 1, "an over-long pattern or parameter and a non-table are dropped");
+        assert_eq!(clean(&toml::Value::Integer(1)), toml::Value::Array(vec![]));
+        let mut deep = toml::Value::Integer(1);
+        for _ in 0..20 {
+            deep = toml::Value::Array(vec![deep]);
+        }
+        let mut t = mk("a".into(), "b".into()).as_table().unwrap().clone();
+        t.insert("eventParams".into(), deep);
+        assert!(clean(&toml::Value::Array(vec![toml::Value::Table(t)])).as_array().unwrap().is_empty(), "nested too deep");
+        let mut p = crate::profile::Profile::from_values(std::collections::BTreeMap::from([("Triggers".to_string(), many.clone())]));
+        assert_eq!(p.get("Triggers").unwrap().as_array().unwrap().len(), MAX_TRIGGERS, "from_values (Dynamic Profiles inherit it)");
+        p.set("Triggers", many);
+        assert_eq!(p.get("Triggers").unwrap().as_array().unwrap().len(), MAX_TRIGGERS, "set");
+    }
+
+    /// B5/P17: a pool is 1..=64 wide with a bounded queue.
+    #[test]
+    fn command_pool_is_bounded() {
+        let mut p = CommandPool::new(0);
+        assert_eq!(p.submit("a".into()), Some("a".into()), "below 1 still runs one");
+        assert_eq!(p.submit("b".into()), None);
+        let mut p = CommandPool::new(1000);
+        for i in 0..MAX_POOL {
+            assert!(p.submit(i.to_string()).is_some());
+        }
+        assert!(p.submit("w".into()).is_none());
+        for _ in 0..MAX_WAITING + 40 {
+            p.submit("x".into());
+        }
+        assert_eq!(p.waiting(), MAX_WAITING);
+        assert_eq!(p.take_dropped(), 41, "the newest were dropped, counted once");
+        assert_eq!(p.take_dropped(), 0);
+        assert_eq!(p.finished(), Some("w".into()), "the oldest waits first");
     }
 
     #[test]

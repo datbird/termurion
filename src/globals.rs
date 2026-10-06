@@ -55,6 +55,8 @@ enum Bound {
     Text { max: usize, ok: fn(char) -> bool },
     /// A finite number clamped into `min..=max`; anything else is the default.
     Number { min: f64, max: f64 },
+    /// A whole number clamped into `min..=max` and stored as an integer; anything else is the default.
+    Int { min: i64, max: i64 },
 }
 
 /// The bounded keys. Later 13w tasks add their numbers here.
@@ -66,6 +68,12 @@ const BOUNDS: &[(&str, Bound)] = &[
     // B2/B4: a sound name is short text with no control character (`bell_badge::resolve` judges it again).
     ("SuccessSound", Bound::Text { max: 260, ok: |c| !c.is_control() }),
     ("ErrorSound", Bound::Text { max: 260, ok: |c| !c.is_control() }),
+    // B4/B5: the trigger numbers (a radius is rows scanned per line, a pool is processes, a limit is a Duration).
+    ("TriggerRadius", Bound::Int { min: 1, max: 64 }),
+    ("MaximumNumberOfTriggerCommands", Bound::Int { min: 1, max: 64 }),
+    ("IdempotentTriggerModeRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
+    ("AlertTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
+    ("UserNotificationTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
     ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
 ];
 
@@ -80,6 +88,10 @@ fn bounded(key: &str, value: &Value) -> Option<Value> {
         Bound::Number { min, max } => {
             let n = value.as_float().or_else(|| value.as_integer().map(|i| i as f64)).filter(|n| n.is_finite())?;
             Some(if (*min..=*max).contains(&n) { value.clone() } else { Value::Float(n.clamp(*min, *max)) })
+        }
+        Bound::Int { min, max } => {
+            let n = value.as_integer().or_else(|| value.as_float().filter(|f| f.is_finite()).map(|f| f.round() as i64))?;
+            Some(Value::Integer(n.clamp(*min, *max)))
         }
     }
 }
@@ -329,6 +341,30 @@ mod tests {
                 g.set(key, bad.clone());
                 assert_eq!(g.number(key), if key == "BellRateLimit" { Some(0.1) } else { Some(0.5) }, "{key} refuses {bad:?}: back to the default");
             }
+        }
+    }
+
+    /// B4/B5: the trigger numbers are clamped at the one write point.
+    #[test]
+    fn globals_bounds_clamp_the_trigger_numbers() {
+        let mut g = Globals::empty(&scratch("bounds-trigger"));
+        for key in ["TriggerRadius", "MaximumNumberOfTriggerCommands"] {
+            g.set(key, Value::Integer(1_000_000_000));
+            assert_eq!(g.int(key), 64, "{key} above");
+            g.set(key, Value::Integer(-5));
+            assert_eq!(g.int(key), 1, "{key} below");
+            g.set(key, Value::Integer(7));
+            assert_eq!(g.int(key), 7, "{key} inside");
+            g.set(key, Value::String("x".into()));
+            assert_eq!(g.int(key), if key == "TriggerRadius" { 3 } else { 16 }, "{key} refuses text");
+        }
+        for key in ["IdempotentTriggerModeRateLimit", "AlertTriggerRateLimit", "UserNotificationTriggerRateLimit"] {
+            g.set(key, Value::Float(-1.0));
+            assert_eq!(g.number(key), Some(0.0), "{key} below");
+            g.set(key, Value::Float(1e12));
+            assert_eq!(g.number(key), Some(3600.0), "{key} above");
+            g.set(key, Value::Float(f64::NAN));
+            assert!(g.number(key).is_some_and(|n| n.is_finite() && (0.0..=3600.0).contains(&n)), "{key} NaN");
         }
     }
 
