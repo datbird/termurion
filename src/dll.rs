@@ -16,13 +16,28 @@ use windows_sys::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
 /// (`SetDllDirectoryW("")`). Every program calls it first in `main`, before any window or
 /// graphics initialization, so a bare load anywhere (a dependency's `libloading`, wgpu-hal's
 /// vulkan-1.dll and d3d12.dll) never finds a DLL planted in the current folder or on PATH.
-/// False when Windows refused either call.
+/// Both calls always run (one failing never skips the other) and each failure is written to
+/// stderr; false when Windows refused either.
 #[cfg(windows)]
 pub fn harden_process() -> bool {
     use windows_sys::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, SetDefaultDllDirectories, SetDllDirectoryW};
     let empty = [0u16];
     // SAFETY: both calls take plain values or a NUL-terminated string that outlives the call.
-    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 && SetDllDirectoryW(empty.as_ptr()) != 0 }
+    let dirs = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 };
+    let cwd = unsafe { SetDllDirectoryW(empty.as_ptr()) != 0 };
+    let mut ok = true;
+    for (name, done) in [("SetDefaultDllDirectories", dirs), ("SetDllDirectoryW", cwd)] {
+        if let Some(line) = failure_line(name, done) {
+            eprintln!("{line}");
+            ok = false;
+        }
+    }
+    ok
+}
+
+/// The stderr line for a hardening call that failed; None when it succeeded.
+pub fn failure_line(call: &str, ok: bool) -> Option<String> {
+    (!ok).then(|| format!("tandem: {call} failed; the DLL search is not fully restricted"))
 }
 
 /// A system DLL by bare name (`icu.dll`): only System32 is searched, never the exe's folder or
@@ -139,6 +154,13 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 7, "{seen} programs");
+    }
+
+    /// Review minor: each failed call is reported, a success is silent.
+    #[test]
+    fn a_failed_hardening_call_is_reported() {
+        assert_eq!(super::failure_line("X", true), None);
+        assert!(super::failure_line("X", false).unwrap().contains("X failed"));
     }
 
     #[cfg(windows)]
