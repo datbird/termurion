@@ -73,8 +73,26 @@ pub fn ftp_change(text: &str, url: &SshUrl, s: &Settings) -> Result<Change, UrlE
         return Err(UrlError::NoHost);
     }
     let mut line = String::new();
-    word(&crate::semantic::encode_url_chars(text), &mut line);
+    word(&crate::semantic::encode_url_chars(&without_password(text)), &mut line);
     Ok(Change { custom_command: "Yes", command: format!("{} {line}", program(&s.ftp_path, DEFAULT_FTP)), login_shell: None })
+}
+
+/// The URL without the password of its userinfo (`scheme://user:pw@host` becomes
+/// `scheme://user@host`): the password is never stored or typed into a command line, the ftp
+/// program prompts for it. The userinfo ends at the last `@` of the authority.
+fn without_password(text: &str) -> String {
+    let Some((scheme, rest)) = text.split_once("://") else { return text.to_string() };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    match authority.rfind('@') {
+        Some(at) => {
+            let (userinfo, host) = (&authority[..at], &authority[at + 1..]);
+            let user = userinfo.split(':').next().unwrap_or("");
+            let user = if user.is_empty() { String::new() } else { format!("{user}@") };
+            format!("{scheme}://{user}{host}{tail}")
+        }
+        None => text.to_string(),
+    }
 }
 
 /// The change an external URL makes: Ok(None) for a scheme that changes nothing (iTerm2's
@@ -140,7 +158,7 @@ mod tests {
     fn ftp_commands_follow_iterm2() {
         assert_eq!(command("ftp://h/x").as_deref(), Ok("ftp ftp://h/x"));
         assert_eq!(command("ftp://h/pub/f.txt").as_deref(), Ok("ftp ftp://h/pub/f.txt"));
-        assert_eq!(command("FTP://u:p@h:2121/a%20b").as_deref(), Ok("ftp FTP://u:p@h:2121/a%20b"));
+        assert_eq!(command("FTP://u:p@h:2121/a%20b").as_deref(), Ok("ftp FTP://u@h:2121/a%20b"), "the password is dropped");
         let c = change_for("ftp://h", &settings()).unwrap().unwrap();
         assert_eq!((c.custom_command, c.login_shell), ("Yes", None));
         let mut s = settings();
@@ -149,6 +167,29 @@ mod tests {
         assert_eq!(command("ftp:x"), Err(UrlError::NoHost));
         assert_eq!(command("ftp://-h/x"), Err(UrlError::BadHostname));
         assert_eq!(command("ftp://a;b@h/x"), Err(UrlError::IllegalUsername("a;b".into())));
+    }
+
+    /// Ruling (task 3 fix 1): a password in an ftp or telnet URL is never stored. The session copy's
+    /// Command (which becomes the saved Bookmark, an arrangement summary and the process command
+    /// line) carries the URL without it; the ftp program prompts.
+    #[test]
+    fn an_ftp_password_is_never_stored() {
+        for url in ["ftp://bob:secret@h/x", "ftp://bob:secret@h:21/a%20b?q=1", "ftp://:secret@h/x", "ftp://bob:se%3Acret@h/x", "ftp://bob:s@cret@h/x", "ftp://bob:secret@h"] {
+            let c = command(url).unwrap();
+            assert!(!c.contains("secret") && !c.contains("se%3Acret") && !c.contains("cret"), "{url} -> {c}");
+        }
+        assert_eq!(command("ftp://bob:secret@h/x").as_deref(), Ok("ftp ftp://bob@h/x"));
+        assert_eq!(command("ftp://:secret@h/x").as_deref(), Ok("ftp ftp://h/x"));
+        assert_eq!(command("ftp://bob:s@cret@h/x").as_deref(), Ok("ftp ftp://bob@h/x"), "the last @ ends the userinfo");
+        assert_eq!(command("ftp://bob@h/x").as_deref(), Ok("ftp ftp://bob@h/x"), "a user alone stays");
+        assert_eq!(command("ftp://h/a@b:c").as_deref(), Ok("ftp ftp://h/a@b:c"), "an @ in the path is not userinfo");
+        // No saved or serialized form of the session copy holds it either.
+        let profile = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-ftp-pw-{}.toml", std::process::id()))).profiles[0].clone();
+        for url in ["ftp://bob:secret@h/x", "telnet://bob:secret@h:23"] {
+            let changed = crate::ssh_url::profile_for_url(&profile, url, &settings()).unwrap().unwrap();
+            assert!(!format!("{changed:?}").contains("secret"), "{url}");
+            assert!(!changed.string("Command").contains("secret"), "{url}");
+        }
     }
 
     /// The 14e-P17 list plus the ftp and telnet cases: nothing hostile reaches a command line as

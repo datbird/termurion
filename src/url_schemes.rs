@@ -735,10 +735,6 @@ mod registration_tests {
         PathBuf::from(r"C:\T\tandem.exe")
     }
 
-    fn ours(scheme: &str, e: &Path) -> (String, String, String) {
-        (format!("Software\\Classes\\Tandem.{scheme}\\shell\\open\\command"), String::new(), tandem_command(e))
-    }
-
     #[test]
     fn schemes_follow_iterm2() {
         // P8: iTerm2's list narrowed to the schemes Tandem opens; the rest wait for a Browser profile.
