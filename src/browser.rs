@@ -876,6 +876,40 @@ impl NavList {
     }
 }
 
+/// The pane each window had focused when its views were last placed, so a pane change is told from
+/// none. Per window, and acted on only while the window is in front: a background window's redraw
+/// never moves keyboard focus (Task 5 fix r1).
+#[derive(Clone, Debug)]
+pub struct FocusSeen<K> {
+    seen: std::collections::HashMap<K, Option<crate::layout::PaneId>>,
+}
+
+impl<K> Default for FocusSeen<K> {
+    fn default() -> Self {
+        FocusSeen { seen: std::collections::HashMap::new() }
+    }
+}
+
+impl<K: std::hash::Hash + Eq> FocusSeen<K> {
+    /// `Some(previous)` when this window's focus changed and the window is in front; a window that
+    /// is not in front keeps what it saw, so the change is acted on once it is.
+    pub fn step(&mut self, window: K, focused: Option<crate::layout::PaneId>, in_front: bool) -> Option<Option<crate::layout::PaneId>> {
+        if !in_front {
+            return None;
+        }
+        let prev = self.seen.insert(window, focused).unwrap_or(None);
+        (prev != focused).then_some(prev)
+    }
+
+    pub fn forget(&mut self, pane: crate::layout::PaneId) {
+        for v in self.seen.values_mut() {
+            if *v == Some(pane) {
+                *v = None;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,6 +1270,25 @@ mod tests {
         let g = geometry(Rect { x: 0.0, y: 0.0, w: 400.0, h: 32.0 }, 1.0, false);
         assert!(suggestion_rects(&g, 20.0, 20, 1000.0).len() <= MAX_SUGGESTIONS);
         assert_eq!(suggestion_rects(&g, 20.0, 5, 60.0).len(), 1, "never below the pane");
+    }
+
+    #[test]
+    fn focus_handover_is_per_window_and_only_in_front() {
+        let mut f: FocusSeen<u32> = FocusSeen::default();
+        // Window A shows a browser pane (1) and is in front: its first placement is a change.
+        assert_eq!(f.step(1, Some(1), true), Some(None));
+        // Window B (a terminal pane 2) is drawn in the background: nothing moves.
+        assert_eq!(f.step(2, Some(2), false), None);
+        // A is drawn again (a title event): its focus did not change, so the keyboard stays where it is.
+        assert_eq!(f.step(1, Some(1), true), None, "a background window's redraw never moves keyboard focus");
+        // B comes to the front: now its change is acted on, once.
+        assert_eq!(f.step(2, Some(2), true), Some(None));
+        assert_eq!(f.step(2, Some(2), true), None);
+        // A change in a window that is not in front waits until it is.
+        assert_eq!(f.step(1, Some(3), false), None);
+        assert_eq!(f.step(1, Some(3), true), Some(Some(1)));
+        f.forget(3);
+        assert_eq!(f.step(1, Some(3), true), Some(None), "a closed pane is forgotten");
     }
 
     #[test]

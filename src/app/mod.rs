@@ -1627,7 +1627,7 @@ pub struct App {
     /// re-parented when its pane changes windows.
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
     /// The pane that was focused at the last placement, to tell a pane change from none.
-    focus_seen: Option<PaneId>,
+    focus_seen: crate::browser::FocusSeen<WindowId>,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
     browser_url_override: Option<String>,
 }
@@ -2560,7 +2560,7 @@ pub fn run() {
         web_focus_held: None,
         tool_view_ids: HashMap::new(),
         browser_views: HashMap::new(),
-        focus_seen: None,
+        focus_seen: Default::default(),
         browser_url_override: None,
     };
     // The handoff class is registered before the first window, so COM's wait for it is short.

@@ -154,11 +154,13 @@ impl App {
         };
         let mine: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
         let focused = self.focused_pane_id();
+        // Keyboard focus moves into a page only in the window that is in front (foreground root).
+        let in_front = crate::webhost_win::foreground_root() == Some(hwnd);
         let panes: Vec<PaneId> = self.browser_views.keys().copied().collect();
         for pane in panes {
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
             match rect {
-                Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane)),
+                Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front),
                 None => {
                     // Not shown: hidden when it is this window's pane (another tab, buried, zoomed
                     // away) or sits in this window's handle with no pane (an Undo Close stash).
@@ -173,8 +175,9 @@ impl App {
             }
         }
         // Keyboard focus follows the active pane when it changes within this window.
-        let seen = std::mem::replace(&mut self.focus_seen, focused);
-        if seen != focused {
+        let window = self.current_window();
+        let step = window.and_then(|w| self.focus_seen.step(w, focused, in_front));
+        if let Some(seen) = step {
             let prev = seen.filter(|p| mine.contains(p));
             self.browser_focus_moved(prev, focused);
             if let Some(next) = focused.filter(|p| self.is_browser_pane(*p) && !self.browser_views.get(p).is_some_and(|b| b.bar.keys)) {
@@ -255,9 +258,7 @@ impl App {
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
         self.browser_views.remove(&pane);
-        if self.focus_seen == Some(pane) {
-            self.focus_seen = None;
-        }
+        self.focus_seen.forget(pane);
     }
 
     /// The pane that owns view `view`.
@@ -1113,6 +1114,17 @@ mod tests {
         assert!(browser_setup(true).in_private && !browser_setup(false).in_private);
         let s = browser_setup(false);
         assert!(s.guard_local_schemes && !s.web_message && s.user_agent.as_deref() == Some(""));
+    }
+
+    /// The hand-over compares per window and moves focus only for the window in front (fix r1).
+    #[test]
+    fn the_focus_handover_is_gated_on_the_front_window() {
+        let src = include_str!("browser_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let f = &prod[prod.find("pub(super) fn place_browser_views").unwrap()..prod.find("fn show_browser_view").unwrap()];
+        assert!(f.contains("foreground_root() == Some(hwnd)") && f.contains("self.focus_seen.step(w, focused, in_front)"));
+        assert!(f.contains("focused == Some(pane) && in_front"), "a view made in the background is not focused");
+        assert!(!f.contains("mem::replace(&mut self.focus_seen"));
     }
 
     #[test]
