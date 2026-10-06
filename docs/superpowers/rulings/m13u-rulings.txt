@@ -40,3 +40,89 @@ Ruling (merge): at the end of the event loop Bonjour stops first, then the one p
 - Task 10: TmuxWindowsOpenInBackground: a new tmux tab in a window that has tabs is inserted without being selected; a new tmux window is created with winit's with_active(false) (iTerm2 orders it below the key window). Cost: Windows may still raise the window; the checklist row says so.
 - Task 10: the filler color follows PTYTab.m:1189-1208 on the focused pane's background (dark means brightness under one half), black in full screen with UseBlackFillerColorForTmuxInFullScreen, and the pane's alpha on a see-through window. Half rounds up (26 and 230).
 
+
+== Task 11: the full ledger (pre-flight fixes, pre-flight rulings, decisions, deferred minors)
+
+-- Standing rule (controller, at the pre-flight)
+Ruling: global hooks never record or send keys outside Tandem's windows and are removed on exit and panic (winkeys::uninstall from the one teardown_process). - cost if wrong: a held remapped modifier or a stale hook outlives Tandem until Windows reaps it.
+
+-- Pre-flight fixes B1-B6
+Ruling B1: stock global shortcuts are Tandem's own; R7 yields only the person's own mappings (Snapshot.stock, built from keymaps' [global] entries byte for byte). - cost if wrong: Win+Left snaps the window instead of changing tab, from the keyboard and from bumbles.
+Ruling B2: two fade paths chosen per window by whether it uses the alpha surface: an opaque window by a layered window (FADE_LAYERED), a see-through one by a renderer pass scaling the premultiplied target (FADE_COMPOSED); hotkey_motion::fade_path replaces fade_allowed; a window recreated during a fade ends it. - cost if wrong: the default (see-through) hotkey window never fades while the row says have; the rows stay partial for that reason.
+Ruling B3: a session hotkey registers only when the person set it or allowed it in the question; a value from any other writer (API, OSC, ssh/URL, arrangement, import, a tmux server's @hotkeys) is stored inert and asks once; chord rules (Ctrl, Alt or Win; not shell-owned; not the app, Open Quickly or a profile chord; at most 16); @hotkeys read bounded (4 KiB, 64 entries, 64 bytes of text) and written only for what the person set or allowed. - cost if wrong: a stranger's tmux server owns Ctrl+Alt+1 on the person's machine.
+Ruling B4: session ids (SESSION_HOTKEY_BASE + group index) are routed first and the press returns before the previous-window tail; a SESSION arm names the sessions of a refused chord; the id list is rebuilt on every register_hotkeys. - cost if wrong: the press brings a window forward and flips straight back, or a refusal shows nowhere.
+Ruling B5: forced-layout activation is "the foreground window belongs to this process" (the existing app_active edge), not WindowEvent::Focused; the layout is given back at exit and in the panic hook. - cost if wrong: the keyboard stays German after Tandem closes, or flaps while Settings is open.
+Ruling B6: winkeys::shell_owned_chord is one pure function over menus::Chord (a scan table, no Win32 call on the hook thread); keyroute, session chords and 13t's profile claims all read it. - cost if wrong: a keystroke lags on the hook thread, or three lists drift apart.
+
+-- Pre-flight rulings P1-P17
+Ruling P1: RemapModifiersGlobally keeps iTerm2's default (true); turning it on or off calls Remapper::flush (key-ups of every injected key still down). - cost if wrong: a held remapped Ctrl stays down in Windows after the switch flips.
+Ruling P2: scene::indicator_glyphs and indicators take pinned: bool last; order broadcast, coprocess, pin, AI linked, streaming; IndicatorKind::Pin carries "This Hotkey Window is pinned." (shown through scene::tab_tooltip). - cost if wrong: the pin lands beside the AI glyphs in another order than iTerm2's.
+Ruling P3: keyaction::status lists no Later arm any more (44 Done here, 40 Done in 13t, 62 Done since 13h). - cost if wrong: a red status test or a flipped 62.
+Ruling P4: KeyOptions::effective is applied in App::key_bytes, the only reader of the Option settings; from_profile reads both switches (left default true, right default false). - cost if wrong: 1036 changes nothing.
+Ruling P5: App.sides is filled beside mods and alt_side (App-wide, not swap_live); the in-app remap is applied once so the legacy bytes and the kitty protocol see the same remap. - cost if wrong: Alt as Ctrl works in bash but not in a kitty-protocol program.
+Ruling P6: kitty_modifier gained sides and bucky and its mask became 63, both callers and the tests changed by exact edits. - cost if wrong: Hyper and Meta bits are dropped on modifier-key events.
+Ruling P7: yields_to_system gates only a hit in Snapshot.keys that is not stock and not a menu command; the Leader, Win+number, composer chords and menu commands never yield. - cost if wrong: remote Cmd chords from bumbles stop working after the upgrade.
+Ruling P8: Undo (action 44) and Win+Z share App::toolbelt_undo; 44 beeps via find_ui::beep when no tool field has the keyboard; text_for_layout calls ToUnicodeEx with flag 0x4 and never on a dead key. - cost if wrong: Undo in a tool does nothing, or a remapped chord eats a dead key.
+Ruling P9: in_pinned_hotkey_window is ShowPinnedIndicator && hotkey_pinned() for the current window. - cost if wrong: a second pin predicate to keep in step.
+Ruling P10: the Session Hotkey row writes through Edit::SessionHotkey / App::set_session_hotkey onto the pane's own copy, never the shared profile; any other writer's value is inert. - cost if wrong: a hotkey set in Edit Session lands on every session of the profile, or a script sets one silently.
+Ruling P11: SESSION_HOTKEY_BASE stays 0x1000, ids are base plus group index, at most 16 chords; a profile list over 4095 hotkey profiles is refused with a banner. - cost if wrong: an id collision routes a press to the wrong window.
+Ruling P12: Motion::at returns (position, alpha, done); a style with no slide fades through a Roll with from equal to to; animation off touches nothing. - cost if wrong: normal-style hotkey windows pop instead of fade.
+Ruling P13: a tmux tab draws at natural size inside the area left after title bars, margins, scrollbar and timestamp room; the size report still sends the whole area; the filler color rounds half up (26 and 230). - cost if wrong: tmux and Tandem disagree about the grid by the margin width.
+Ruling P14: winkeys::uninstall posts WM_APP_UNHOOK to the hook thread (flush, UnhookWindowsHookEx, drop hotkeys) and runs from the one teardown; a crash or kill relies on Windows. - cost if wrong: none beyond today's behavior.
+Ruling P15: relabels follow the plan exactly ("Alt Key Sends (Right)", "Left/Right Alt key changeable", "Left/Right Win Key"); macos_only is false on the five rows. - cost if wrong: a stale count test.
+Ruling P16: the forced layout never changes a layout beyond B5's process test (while Settings records a shortcut or the Password Manager has focus, the foreground is Tandem's own anyway); no new setting. - cost if wrong: none; recorded so the behavior is not surprising.
+Ruling P17: no new idle wake anywhere in 13u (forced layout by the existing about_to_wait pass, fades by the existing 8 ms Roll tick, session hotkeys by the hook's existing sink). - cost if wrong: an extra timer.
+
+-- Rulings from the ledger (progress.md)
+Ruling: preset mappings count as stock (Natural Text Editing's Win+Left and Win+Right while unedited). - cost if wrong: a person who wants Windows' snap on those keys must edit or remove the mapping.
+Ruling: the right-Alt corner follows iTerm2: an unset right side that is not changeable follows a changeable left side (Esc+). - cost if wrong: one corner of an opt-in experimental feature.
+Ruling: one process teardown function (teardown_process: hook, keyboard layout, notification icon) is called on every exit path: the end of the event loop, Erase All, relaunch, logoff and the main-thread panic hook; a test scans every process::exit. - cost if wrong: a path that exits without it leaves a held modifier or a forced layout.
+Ruling: the hook callback is panic-free (guarded with catch_unwind; a panic flushes remapped keys and passes the key on; a poisoned lock is read through the poison). - cost if wrong: a panic on the hook thread aborts the process with a key down.
+Ruling: one chord-derivation function: the question and the registration read the same hotkey::chord (session_hotkeys::chord_label), the keycode wins. - cost if wrong: the prompt shows Ctrl+Alt+Q for a Ctrl+Alt+1 registration.
+Ruling: one pending consent prompt per session, silent refusal after Ignore, a same-value write is a no-op. - cost if wrong: a flood of prompts, or a person who Ignored must clear and set the hotkey from Edit Session.
+Ruling: restored and API-created sessions use the same consent path (session_hotkeys_adopt asks once on the first pass). - cost if wrong: a person's own hotkey restored from an arrangement asks once more.
+Ruling: FADE_LAYERED ships false until a desktop check (restated above in the Task 9 fix round). - cost if wrong: opaque hotkey windows do not fade until confirmed.
+Ruling: Task 7 is removed; milestone 14e owns 02:1116 (the host-change title offer and restoreKeyModeAutomaticallyOnHostChange). - cost if wrong: none; the row is not 13u's.
+Ruling: the Ctrl+Win chord order is global hotkey, remap, key mapping (stock never yields), menu command, profile shortcut, Windows (written out in the merge section above). - cost if wrong: a chord lands on the wrong owner.
+Ruling (R3): 02:340 default fixed to iTerm2's (on) under R7. - cost if wrong: see Task 6.
+Ruling (m11c-rulings.txt:157): superseded by Task 10's custom-title prefix. - cost if wrong: none (iTerm2's behavior).
+Ruling: the Task 9 probe result (Step 0) is inconclusive over ssh (session 0, no composed desktop); see the Task 9 section above. - cost if wrong: see FADE_LAYERED.
+
+-- Decisions (task reports, "cost if wrong")
+Decision (plan, R7): shell-owned Win chords are Windows' symbolic hotkeys. - cost if wrong: a user mapping on Win+E needs the option off (Win+E is also a Tandem menu command here and never yields).
+Decision (plan): the forced layout's id is the HKL's two 16-bit words as 8 hex digits. - cost if wrong: the id differs from a registry KLID for some IMEs but round-trips on the same machine.
+Decision (plan): remapping off rebuilds typed text with ToUnicodeEx and the remapped modifiers. - cost if wrong: dead keys pressed with a remapped modifier may compose differently.
+Decision (plan): fades use a layered window only while they run; a failure or present error shows the window at once and turns fades off for the run. - cost if wrong: no fade on systems where layered flip-model windows fail.
+Decision (plan): "Right Option Key Sends" shows as "Alt Key Sends (Right)". - cost if wrong: on AltGr layouts Windows reports Right Alt as Ctrl+Alt, so the setting only affects layouts where Right Alt is plain Alt.
+Decision (plan): non-edge fades are linear; edge slides ease in. - cost if wrong: slightly different pacing if AppKit's default is not linear. (Superseded in part by the Task 9 fix round: left styles ease in too.)
+Decision (plan): session hotkeys use ids from 0x1000 in the existing hotkey registration. - cost if wrong: none.
+Decision (plan): the tmux filler appears only while tmux's window is smaller than the tab; Tandem still reports the whole area. - cost if wrong: a brief filler until tmux resizes.
+Decision (plan): Undo's beep uses find_ui::beep. - cost if wrong: none.
+Decision (plan): parity rows are found by title. - cost if wrong: a line number from the research drifted onto the wrong row.
+Decision (Task 1): the brief's status(62) Later(7) is stale (Done since 13h). - cost if wrong: none.
+Decision (Task 1): restoreKeyModeAutomaticallyOnHostChange already exists (14e); left untouched. - cost if wrong: none.
+Decision (Task 1): the left "Option Key Sends" row is relabeled "Alt Key Sends (Left)" too, with its help, and m13b's checklist line updated. - cost if wrong: one label.
+Decision (Task 1): the two new Keys helps use ASCII apostrophes (brief verbatim); the Force once help keeps curly quotes. - cost if wrong: typography only.
+Decision (Task 1): toolbelt_chord keeps its behavior; toolbelt_undo returns true when a tool has focus even with an empty undo stack. - cost if wrong: none.
+Decision (Task 1, fix r1): KeyboardLocale is bounded to 64 characters; "Treat Option as Alt" reads "Treat Alt as Alt for special keys like arrows"; hotkey modifier choices read "Alt", "Win". - cost if wrong: label wording.
+Decision (Task 2): Meta (1) is changed to Esc+ by the mode like Normal (iTerm2 does the same); Tandem already treats Normal as Esc+. - cost if wrong: one opt-in corner.
+Decision (Task 2, fix): DECSTR clears 1036 (iTerm2's softReset does). - cost if wrong: a soft reset leaves Alt sending Esc+.
+Decision (Task 3): bucky and sides ride on KeyEvent, not Keyboard; a held Ctrl with no known side counts as plain Ctrl; Right Alt is not bucky-mappable. - cost if wrong: none.
+Decision (Task 4): the US layout lookup also tries GetKeyboardLayout(0) so a desktop-less session can test; modifier-key events report the physical key with the remapped state (a kitty program sees "Alt key, Ctrl state" in a remapped mix); the panic hook uninstalls only on the main thread. - cost if wrong: a kitty-protocol program sees an odd modifier-key event in a remapped mix.
+Decision (Task 5): activation via the app_active edge polled in about_to_wait; a person's own layout change noticed on the next pass; a forced flag so only Tandem's own change is restored; once-per-session with an empty layout clears the flag and forces nothing. - cost if wrong: a resign lands one pass late; a hard kill cannot restore (the layout is per thread so only Tandem's own input was changed).
+Decision (Task 8): SettingsWindow.edit_session was added ahead of 13t (the merge kept 13t's); consent uses the scripts alert queue (Then::SessionHotkey, NoSyncSessionHotkeyFromProgram, Permanent, only Ignore remembered) rather than a new sheet type; chords that can never register are stored inert with no question. - cost if wrong: a textual conflict (resolved); a person-set hotkey restored from an arrangement asks once more.
+Decision (Task 8, fix): a tmux answer is remembered by (gateway client name, session name), never by name alone. - cost if wrong: a host reached under another client name is asked again.
+Decision (Task 9): edge ease-in with a linear no-slide fade, a failed fade ends at once (a visible jump), full screen does not fade (PHK:747-757 corrected this: traditional full screen fades, Lion full screen does not exist in Tandem). - cost if wrong: pacing only, or one visible jump.
+Decision (Task 9, fix): the composed fade runs in its own pass on a non-sRGB view; an alpha-surface window not drawing see-through does not fade; a composed show renders one frame at opacity 0 before it is uncloaked. - cost if wrong: one extra pass or frame while a fade runs.
+Decision (Task 10): natural_size ignores gap; a sub-cell filler sliver shows when the area is not a whole number of cells; a new tmux window opens with with_active(false); a zoomed tmux tab keeps today's full-area layout; filler_follows_iterm2 lives in scene.rs's last test module. - cost if wrong: cosmetic; Windows may still raise a new window.
+
+-- Deferred minors (final triage, each with its cost)
+Deferred: an unmapped Win key still reports 57444u and Ctrl+Win+a sends 97;5u to a kitty program (iTerm2 ignores events with an unmapped Command key). - cost if wrong: a kitty-protocol program sees a Win event iTerm2 would hide.
+Deferred: Bucky::from_profile has no test of its own. - cost if wrong: a profile key typo is caught only by the checklist row.
+Deferred: left and right Ctrl and Win state from winit is a checklist row (sides come from lcontrol_state and friends). - cost if wrong: a swapped side maps the wrong key to Hyper.
+Deferred: a crash or hard kill leaves a target key injected down for a held remapped modifier until it is pressed again; a hook-thread panic is now caught but a hard kill is not. - cost if wrong: one stuck modifier after a kill, cleared by pressing it.
+Deferred: with Left Control remapped, Left Ctrl plus Right Alt is read as AltGr by the in-app remap; an unbound in-app Win chord is swallowed like an unbound physical one. - cost if wrong: one corner of an opt-in remap.
+Deferred: Win+Alt+Up/Down and Win+Ctrl+O, Win+Shift+R and Win+Shift+Enter are not on the shell_owned list; to confirm on EXTREME. - cost if wrong: a mapping on a chord Windows consumes does not yield to it with the option on.
+Deferred (Task 6 review): test variable names and one weak assert in symbolic_shortcuts_follow_the_option; Snapshot::new leaves respect_system false until the first refresh_route. - cost if wrong: a misleading test name; the option reads off for one frame.
+Deferred (Task 8 review): session_row_pane is an identity shim kept for a test; a program can silently clear a person's live hotkey (program_set None); a hook press queued before a re-registration can route to the new group at that index (a generation tag would close it); in edit-session mode selecting another profile shows the edited pane's Session Hotkey row under it; Undo Close drops a pane's hotkey and the restored session asks again. - cost if wrong: a test that asserts little; a lower-privilege clear; one misrouted press in a narrow race; a confusing row; one extra question.
+Deferred (Task 9 review): see_through_now repeats build_frame's expression (build_frame should call it); set_window_alpha removes WS_EX_LAYERED without a frame-changed redraw (checklist row 7 covers it); the RED evidence is stub based. - cost if wrong: the fade gate and the frame drift apart; a stale frame after the layered style leaves.
