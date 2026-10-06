@@ -235,7 +235,8 @@ pub fn response_headers(mime: &str, headers: &[(String, String)]) -> String {
     out
 }
 
-fn scheme_of(url: &str) -> String {
+/// A URL's scheme, lowercased; empty when it has none.
+pub fn scheme_of(url: &str) -> String {
     let end = url.find(':').unwrap_or(0);
     let s = &url[..end];
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') { s.to_ascii_lowercase() } else { String::new() }

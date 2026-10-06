@@ -23,6 +23,23 @@ pub enum ToolId {
     Profiles,
     Snippets,
     Codecierge,
+    /// A tool a script registered: a web view (`ToolWebView`). Holds the tool's interned name.
+    Dynamic(&'static str),
+}
+
+/// The process-wide name table behind `ToolId::Dynamic`: one leaked string per distinct
+/// registered name, so the leak is bounded by the names scripts ever register.
+static INTERNED: std::sync::Mutex<std::collections::BTreeSet<&'static str>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// `name` as a `&'static str`, the same pointer every time it is asked for.
+pub fn intern(name: &str) -> &'static str {
+    let mut set = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = set.get(name) {
+        return s;
+    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    set.insert(leaked);
+    leaked
 }
 
 impl ToolId {
@@ -56,9 +73,11 @@ impl ToolId {
             ToolId::Profiles => "Profiles",
             ToolId::Snippets => "Snippets",
             ToolId::Codecierge => "Codecierge",
+            ToolId::Dynamic(name) => name,
         }
     }
 
+    /// Built-in tools only: a dynamic tool is found through the registry (`shown_tools`).
     pub fn from_name(name: &str) -> Option<ToolId> {
         ToolId::ALL.into_iter().find(|t| t.name() == name)
     }
@@ -80,6 +99,8 @@ impl ToolId {
             ToolId::Profiles => 110.0,
             ToolId::Snippets => 87.0,
             ToolId::Codecierge => crate::codecierge::MIN_HEIGHT,
+            // `ToolWebView minimumHeight` (`TWV:128-130`).
+            ToolId::Dynamic(_) => 15.0,
         }
     }
 }
@@ -106,11 +127,14 @@ pub fn stored_names(v: Option<&Value>) -> Vec<String> {
     }
 }
 
-/// The stored names that are one of the built-in tools, in the order stored. A dynamic tool's
-/// name draws nothing: its web view cannot be made without a WebView2 host, and iTerm2 adds no
-/// wrapper for a tool whose view it could not make (`TBV:580-611`).
-pub fn shown_tools(names: &[String]) -> Vec<ToolId> {
-    names.iter().filter_map(|n| ToolId::from_name(n)).collect()
+/// The stored names that are a tool: a built-in, or a registered dynamic tool (`dynamic`), in
+/// the order stored. A name nothing registers draws nothing (m11c; `TBV:580-611` adds no
+/// wrapper for a tool it cannot make).
+pub fn shown_tools(names: &[String], dynamic: &[DynamicTool]) -> Vec<ToolId> {
+    names
+        .iter()
+        .filter_map(|n| ToolId::from_name(n).or_else(|| dynamic.iter().find(|d| &d.name == n).map(|d| ToolId::Dynamic(intern(&d.name)))))
+        .collect()
 }
 
 /// Toggles a tool in the stored name list: removes it if present, else appends it at the
@@ -227,6 +251,14 @@ pub fn register_dynamic(registry: Option<&Value>, names: &[String], identifier: 
         names = toggle_named(&names, name);
     }
     (Some(Value::Table(t)), names)
+}
+
+/// Whether registering `identifier` as `name` at `url` changes nothing, so the tool's shown view
+/// only reloads (`TBV:160-168`, `iTermToolbeltDidRegisterDynamicToolNotification`). The
+/// complement of `register_dynamic` answering a new registry.
+pub fn registration_reloads(registry: Option<&Value>, identifier: &str, name: &str, url: &str) -> bool {
+    let e = registry.and_then(Value::as_table).and_then(|t| t.get(identifier));
+    e.and_then(|e| e.get(DYNAMIC_URL)).and_then(Value::as_str) == Some(url) && e.and_then(|e| e.get(DYNAMIC_NAME)).and_then(Value::as_str) == Some(name)
 }
 
 /// The Toolbelt menu and the hamburger's list order: every built-in tool and every dynamic
@@ -424,7 +456,7 @@ mod tests {
         assert!(stored_names(Some(&Value::Array(vec![]))).is_empty());
 
         let names: Vec<String> = ["Notes", "Snippets", "Bogus", "Profiles"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(shown_tools(&names), vec![ToolId::Notes, ToolId::Snippets, ToolId::Profiles]);
+        assert_eq!(shown_tools(&names, &[]), vec![ToolId::Notes, ToolId::Snippets, ToolId::Profiles]);
 
         let profiles_only = vec!["Profiles".to_string()];
         assert_eq!(toggle_name(&profiles_only, ToolId::Snippets), vec!["Profiles".to_string(), "Snippets".to_string()]);
@@ -549,6 +581,41 @@ mod tests {
         assert!(toggle_named(&s(&["Web"]), "Web").is_empty());
         assert_eq!(toggle_named(&profiles, "Web"), s(&["Profiles", "Web"]));
         assert_eq!(DYNAMIC_TOOLS_KEY, "NoSyncDynamicTools");
+    }
+
+    /// Task 2 (13x): a registered dynamic tool is shown by name; unknown names still draw nothing.
+    #[test]
+    fn shown_tools_include_dynamic() {
+        let reg = register_dynamic(None, &["Profiles".to_string()], "id1", "Web", "https://a", false).0.unwrap();
+        let d = dynamic_tools(Some(&reg));
+        let names: Vec<String> = ["Profiles", "Web", "Gone"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(shown_tools(&names, &d), vec![ToolId::Profiles, ToolId::Dynamic("Web")]);
+        assert_eq!(shown_tools(&names, &[]), vec![ToolId::Profiles], "no registry: the name draws nothing (m11c)");
+        assert!(std::ptr::eq(intern("Web"), intern("Web")), "one leaked string per name");
+        assert_eq!(intern("Web"), "Web");
+        assert_eq!(ToolId::from_name("Web"), None, "from_name answers built-ins only");
+        assert_eq!(ToolId::Dynamic("Web").name(), "Web");
+        // A built-in's name is never a dynamic tool (RegisterTool refuses it), and wins if stored.
+        let clash = vec![DynamicTool { identifier: "x".into(), name: "Jobs".into(), url: "https://j".into() }];
+        assert_eq!(shown_tools(&["Jobs".to_string()], &clash), vec![ToolId::Jobs]);
+    }
+
+    /// iTerm2's `ToolWebView` minimum height (`TWV:128-130`).
+    #[test]
+    fn dynamic_tool_minimum_follows_iterm2() {
+        assert_eq!(ToolId::Dynamic("Web").minimum_height(), 15.0);
+        assert_eq!(crate::toolbelt_layout::wrapper_minimum(ToolId::Dynamic("Web")), 46.0);
+    }
+
+    /// A repeat registration reloads (`TBV:160-168`); anything else registers (`TBV:175-181`).
+    #[test]
+    fn a_registration_reloads_only_when_nothing_changed() {
+        let reg = register_dynamic(None, &[], "id1", "Web", "https://a", false).0.unwrap();
+        assert!(registration_reloads(Some(&reg), "id1", "Web", "https://a"));
+        assert!(!registration_reloads(Some(&reg), "id1", "Web", "https://b"));
+        assert!(!registration_reloads(Some(&reg), "id1", "Web 2", "https://a"));
+        assert!(!registration_reloads(Some(&reg), "id2", "Web", "https://a"));
+        assert!(!registration_reloads(None, "id1", "Web", "https://a"));
     }
 
     #[test]

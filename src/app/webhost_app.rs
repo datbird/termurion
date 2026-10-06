@@ -186,7 +186,11 @@ impl App {
             let Ok(posted) = self.web_events.try_recv() else { break };
             if let Some((store, result)) = &posted.env {
                 match result {
-                    Ok(()) => crate::host::log(&format!("webhost: environment {store:?} ready")),
+                    Ok(()) => {
+                        crate::host::log(&format!("webhost: environment {store:?} ready"));
+                        // Views waiting for their environment are made on the next frame.
+                        self.redraw();
+                    }
                     Err(e) => crate::host::log(&format!("webhost: environment {store:?} failed: {e}")),
                 }
             }
@@ -242,6 +246,9 @@ impl App {
 
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.
     fn web_route(&mut self, event: &Event, _event_loop: &ActiveEventLoop) {
+        if self.tool_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+            return;
+        }
         match event {
             Event::Created(v) => crate::host::log(&format!("webhost: view {v} created")),
             // The text is Tandem's own (an error from COM), never the page's.

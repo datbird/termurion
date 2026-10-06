@@ -500,6 +500,21 @@ mod tests {
     }
 
     #[test]
+    fn a_dynamic_tool_reconciles_like_any_other() {
+        let web = ToolId::Dynamic("Web");
+        assert_eq!(wrapper_minimum(web), 46.0);
+        let split = Split { tools: vec![Profiles], heights: vec![300.0], collapsed: vec![false] };
+        let two = reconcile(&split, &[Profiles, web], 400.0);
+        assert_eq!(two.tools, vec![Profiles, web]);
+        assert_eq!(two.heights.len(), 2);
+        assert!((two.heights.iter().sum::<f32>() - 400.0).abs() < 0.01);
+        assert!(two.heights[1] >= wrapper_minimum(web));
+        assert!(two.expanded(web));
+        let one = reconcile(&two, &[Profiles], 400.0);
+        assert_eq!(one.tools, vec![Profiles]);
+    }
+
+    #[test]
     fn panel_takes_room_before_the_panes() {
         let area = rect(0.0, 30.0, 1000.0, 600.0);
         let (term, panel) = split_window(area, true, 250.0);

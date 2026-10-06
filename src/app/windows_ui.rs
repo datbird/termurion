@@ -126,6 +126,9 @@ pub(super) struct WinSlot {
     replay_seen: Option<(u64, PaneId)>,
     /// The password manager open over this window.
     pwm_window: Option<super::pwm_app::PwmWin>,
+    /// This window's dynamic tool web views by tool name, and what each was made for (13x Task 2).
+    tool_views: HashMap<String, crate::webhost_win::WebView>,
+    tool_loaded: HashMap<String, super::tool_web_ui::Loaded>,
     /// What Shell > ssh > Disconnect last showed: the focused session's identity, None for none
     /// (the outer None: not shown yet). Per window, since each window has its own menu bar.
     ssh_menu_shown: Option<Option<String>>,
@@ -235,6 +238,8 @@ impl WinSlot {
             replay_window: None,
             replay_seen: None,
             pwm_window: None,
+            tool_views: HashMap::new(),
+            tool_loaded: HashMap::new(),
             ssh_menu_shown: None,
             download_files_shown: None,
             text_blinking: false,
@@ -360,6 +365,8 @@ impl App {
         swap(&mut self.replay_window, &mut s.replay_window);
         swap(&mut self.replay_seen, &mut s.replay_seen);
         swap(&mut self.pwm_window, &mut s.pwm_window);
+        swap(&mut self.tool_views, &mut s.tool_views);
+        swap(&mut self.tool_loaded, &mut s.tool_loaded);
         swap(&mut self.ssh_menu_shown, &mut s.ssh_menu_shown);
         swap(&mut self.download_files_shown, &mut s.download_files_shown);
         swap(&mut self.text_blinking, &mut s.text_blinking);
@@ -831,6 +838,8 @@ impl App {
     pub(super) fn drop_current_window(&mut self) -> bool {
         let Some(k) = self.windows.current() else { return false };
         self.save_window_frame();
+        // Its tool views close while their parent window still exists.
+        self.close_tool_views();
         self.forget_window(k);
         if let Some(h) = self.hwnd() {
             crate::winkeys::remove_window(h);
@@ -1101,6 +1110,8 @@ impl WinSlot {
             replay_window: None,
             replay_seen: None,
             pwm_window: None,
+            tool_views: HashMap::new(),
+            tool_loaded: HashMap::new(),
             ssh_menu_shown: None,
             download_files_shown: None,
             text_blinking: false,

@@ -252,7 +252,7 @@ impl App {
             // `viewDidLayout`).
             ToolId::Jobs => ListSpec { right: vec![ToolButton::Inspect, ToolButton::Send], popup_w: more::SIGNAL_POPUP_W, ..ListSpec::default() },
             // Their own layouts (`more::note_layout`, Codecierge's onboarding view).
-            ToolId::Notes | ToolId::Codecierge => ListSpec::default(),
+            ToolId::Notes | ToolId::Codecierge | ToolId::Dynamic(_) => ListSpec::default(),
         }
     }
 
@@ -402,7 +402,8 @@ impl App {
             ToolId::CapturedOutput => self.captured_shown(&query),
             ToolId::SessionStatus => self.status_shown(),
             ToolId::Jobs => self.jobs_shown(),
-            ToolId::Notes => Shown::Notes,
+            // Never read: a web tool draws no list.
+            ToolId::Notes | ToolId::Dynamic(_) => Shown::Notes,
             ToolId::Codecierge => Shown::Codecierge(cc_view.unwrap_or_else(|| crate::codecierge::View::Onboarding(crate::codecierge::CodeciergeState::Ready))),
         });
         // Jobs' selection follows its processes, not its row numbers.
@@ -544,6 +545,8 @@ impl App {
                     self.draw_codecierge(frame, area, cell);
                     continue;
                 }
+                // Its web view is a child window (`place_tool_views`).
+                ToolId::Dynamic(_) => continue,
                 _ => {}
             }
             let (l, rows, first, shown) = self.tool_layout(tool, area);
@@ -613,6 +616,7 @@ impl App {
         match tool {
             ToolId::Notes => return self.notes_press(area, button, x, y),
             ToolId::Codecierge => return self.codecierge_press(area, button, x, y),
+            ToolId::Dynamic(_) => return,
             _ => {}
         }
         let (l, _, _, shown) = self.tool_layout(tool, area);
@@ -1530,6 +1534,7 @@ impl App {
         match tool {
             ToolId::Notes => return self.notes_wheel(dy),
             ToolId::Codecierge => return self.codecierge_wheel(dy),
+            ToolId::Dynamic(_) => return,
             _ => {}
         }
         let row_h = self.list_metrics().row_h;

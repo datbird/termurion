@@ -151,6 +151,7 @@ mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
 mod toolbelt_ui;
+mod tool_web_ui;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
 mod pane_nav_ui;
@@ -936,6 +937,10 @@ pub struct App {
     replay_seen: Option<(u64, PaneId)>,
     /// This window's password manager (per window: `swap_live`).
     pwm_window: Option<pwm_app::PwmWin>,
+    /// This window's dynamic tool web views by tool name, and what each was made for (13x Task 2;
+    /// per window: `swap_live`).
+    tool_views: HashMap<String, crate::webhost_win::WebView>,
+    tool_loaded: HashMap<String, tool_web_ui::Loaded>,
     /// What Shell > ssh > Disconnect last showed in this window (per window: `swap_live`).
     ssh_menu_shown: Option<Option<String>>,
     /// What Shell > ssh > Download Files last showed in this window, None until set (per window:
@@ -1608,6 +1613,9 @@ pub struct App {
     /// The window whose keyboard focus sits in one of its own web views (13x Task 1a): the parent saw
     /// `Focused(false)` but is still the foreground window. App-wide, never per window.
     web_focus_held: Option<WindowId>,
+    /// The tool views of every window, by view id, with whether the view failed (13x Task 2).
+    /// App-wide: an event names a view, not a window.
+    tool_view_ids: HashMap<crate::webhost::ViewId, bool>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -2122,6 +2130,8 @@ pub fn run() {
         replay_window: None,
         replay_seen: None,
         pwm_window: None,
+        tool_views: HashMap::new(),
+        tool_loaded: HashMap::new(),
         ssh_menu_shown: None,
         download_files_shown: None,
         pwm: Default::default(),
@@ -2531,6 +2541,7 @@ pub fn run() {
         web_envs,
         web_events,
         web_focus_held: None,
+        tool_view_ids: HashMap::new(),
     };
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();

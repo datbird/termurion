@@ -189,7 +189,7 @@ impl App {
     }
 
     pub(super) fn toolbelt_tools(&self) -> Vec<ToolId> {
-        toolbelt::shown_tools(&self.toolbelt_names())
+        toolbelt::shown_tools(&self.toolbelt_names(), &toolbelt::dynamic_tools(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref()))
     }
 
     /// The split view follows the tool list and the panel's height (hidden too: its height is
@@ -377,6 +377,7 @@ impl App {
         }
         let (name, identifier, url) = (r.name.as_deref().unwrap_or_default(), r.identifier.as_deref().unwrap_or_default(), r.url.as_deref().unwrap_or_default());
         let before = self.toolbelt_names();
+        let reloads = toolbelt::registration_reloads(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref(), identifier, name, url);
         let (registry, names) = toolbelt::register_dynamic(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref(), &self.configured_toolbelt_names(), identifier, name, url, r.reveal_if_already_registered());
         let names_changed = names != before;
         if let Some(registry) = &registry {
@@ -388,6 +389,10 @@ impl App {
         if registry.is_some() || names_changed {
             self.save_globals();
             self.toolbelt_names_changed(&names);
+        }
+        // The same name and URL again: the shown view loads its page again (`TBV:160-168`).
+        if reloads {
+            self.reload_tool_view(identifier);
         }
         status
     }
@@ -485,6 +490,7 @@ impl App {
     pub(super) fn draw_toolbelt(&mut self, frame: &mut Frame, cell: (f32, f32)) {
         let Some(l) = self.belt_layout() else {
             // A hidden toolbelt shows no Jobs: the watcher lets this window's tree go.
+            self.hide_tool_views();
             return self.jobs_want(false);
         };
         let scale = self.scale();
@@ -508,6 +514,9 @@ impl App {
         let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
         let d = scene::BeltDraw { layout: &l, titles: &refs, dark, title_widths: &widths, empty: &empty, text_scale };
         scene::toolbelt(frame, &d, cell, scale);
+        // A dynamic tool's content is its web view's (a child window); nothing is drawn for it.
+        let tools = self.belt.split.tools.clone();
+        self.place_tool_views(&l, &tools);
         self.draw_tools(frame, cell);
     }
 
@@ -659,6 +668,32 @@ mod tests {
         }
         assert_eq!(tool_name_from_menu_id("toolbelt:tool:My Web Tool"), Some("My Web Tool"));
         assert_eq!(tool_name_from_menu_id("Paste History"), None);
+    }
+
+    /// 13x Task 2: RegisterTool's reload and rename (`TBV:154-186`) as the views see them.
+    #[test]
+    fn tool_reload_follows_iterm2() {
+        use super::tool_web_ui::{plan, Op, Wanted};
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let (reg, names) = toolbelt::register_dynamic(None, &s(&["Profiles"]), "id1", "Web", "https://a", false);
+        let reg = reg.unwrap();
+        // The same name and URL again: the registry does not change, and the shown view reloads.
+        assert_eq!(toolbelt::register_dynamic(Some(&reg), &names, "id1", "Web", "https://a", false).0, None);
+        assert!(toolbelt::registration_reloads(Some(&reg), "id1", "Web", "https://a"));
+        // The registry maps the identifier to the tool the view was made for.
+        assert_eq!(toolbelt::dynamic_tools(Some(&reg)).iter().find(|d| d.identifier == "id1").map(|d| d.name.as_str()), Some("Web"));
+        // A new name: the view of the old name closes and the new name's view is made.
+        let (reg2, names2) = toolbelt::register_dynamic(Some(&reg), &names, "id1", "Web 2", "https://a", false);
+        let d2 = toolbelt::dynamic_tools(reg2.as_ref());
+        let content = Some(crate::layout::Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+        let have: std::collections::HashMap<String, String> = [("Web".to_string(), "https://a".to_string())].into();
+        let wanted: Vec<Wanted> = toolbelt::shown_tools(&names2, &d2).into_iter().filter_map(|t| match t {
+            ToolId::Dynamic(n) => d2.iter().find(|d| d.name == n).map(|d| Wanted { name: d.name.clone(), url: d.url.clone(), content }),
+            _ => None,
+        }).collect();
+        let ops = plan(&wanted, &have, true);
+        assert!(ops.contains(&Op::Close("Web".into())), "{ops:?}");
+        assert!(ops.iter().any(|o| matches!(o, Op::Create { name, .. } if name == "Web 2")), "{ops:?}");
     }
 
     #[test]
