@@ -1697,7 +1697,10 @@ pub(crate) fn teardown_process() {
     // The overlay icons come off the taskbar buttons (the badge is the app's, not the shell's).
     #[cfg(windows)]
     crate::taskbar_win::clear_all();
-    // This run's Dev Null browser folder goes with it (pure file removal, no COM).
+    // Every web view closes (its browser process lets go of its folder), then this run's Dev Null
+    // browser folder goes with it (file removal).
+    #[cfg(windows)]
+    let _ = crate::webhost_win::close_all();
     #[cfg(windows)]
     crate::webhost_win::cleanup_files();
 }

@@ -523,6 +523,13 @@ impl WebView {
             visible: None,
         }));
         let weak = Rc::downgrade(&inner);
+        // Every view is known to the process teardown (`close_all`), whatever owns it.
+        LIVE.with(|l| {
+            if let Ok(mut l) = l.try_borrow_mut() {
+                l.retain(|w| w.strong_count() > 0);
+                l.push(weak.clone());
+            }
+        });
         let fail_poster = poster.clone();
         let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |hr, ctrl| guard(|| {
             let Some(inner) = weak.upgrade() else { return Ok(()) };
@@ -781,18 +788,42 @@ impl WebView {
 
 impl Drop for WebView {
     fn drop(&mut self) {
-        // A view closed with requests pending completes them with Continue.
-        let (pending, core) = {
-            let mut i = self.inner.borrow_mut();
-            (std::mem::take(&mut i.pending), i.core.take())
-        };
-        for (_, p) in pending {
-            let _ = unsafe { p.deferral.Complete() };
-        }
-        if let Some(c) = core {
-            let _ = unsafe { c.ctrl.Close() };
+        shut(&self.inner);
+    }
+}
+
+thread_local! {
+    /// Every view made on this (the UI) thread, for the process teardown.
+    static LIVE: RefCell<Vec<std::rc::Weak<RefCell<Inner>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Completes a view's pending requests with Continue and closes its controller (its browser
+/// process lets go of the user data folder). Twice is safe: the second finds nothing.
+fn shut(inner: &Rc<RefCell<Inner>>) {
+    let Ok(mut i) = inner.try_borrow_mut() else { return };
+    let (pending, core) = (std::mem::take(&mut i.pending), i.core.take());
+    drop(i);
+    for (_, p) in pending {
+        let _ = unsafe { p.deferral.Complete() };
+    }
+    if let Some(c) = core {
+        let _ = unsafe { c.ctrl.Close() };
+    }
+}
+
+/// The process teardown's part (13w's one `teardown_process`, every way out): every live web view
+/// on this thread is closed before the Dev Null folder is removed, so no browser process still
+/// holds it. The owners' later drops find nothing to do. Returns how many were closed.
+pub fn close_all() -> usize {
+    let views = LIVE.with(|l| l.try_borrow_mut().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default());
+    let mut closed = 0;
+    for w in views {
+        if let Some(inner) = w.upgrade() {
+            shut(&inner);
+            closed += 1;
         }
     }
+    closed
 }
 
 fn poster_failed(inner: &Rc<RefCell<Inner>>, why: String) {
@@ -1128,6 +1159,85 @@ mod tests {
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, IsWindow, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW};
+
+    /// 13w seam S4: WebView2 and 13w's taskbar overlay share the STA winit made on the UI thread.
+    /// No web view file initializes or uninitializes COM in live code; the taskbar initializes an
+    /// apartment only on its own worker thread and never uninitializes one.
+    #[test]
+    fn webhost_win_never_initializes_com() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let live = |f: &str| std::fs::read_to_string(root.join(f)).unwrap().split("#[cfg(test)]\nmod tests").next().unwrap().to_string();
+        for f in ["webhost_win.rs", "webhost.rs", "web_popover.rs", "svg_raster_win.rs", "app/webhost_app.rs", "app/browser_app.rs", "app/web_popover_app.rs", "app/tool_web_ui.rs", "taskbar_win.rs"] {
+            let code = live(f);
+            for bad in ["CoUninitialize", "OleUninitialize", "OleInitialize("] {
+                assert!(!code.contains(bad), "{f} calls {bad}");
+            }
+            if f != "taskbar_win.rs" {
+                assert!(!code.contains("CoInitializeEx("), "{f} initializes COM; the UI thread's STA is winit's");
+            }
+        }
+        let t = live("taskbar_win.rs");
+        assert_eq!(t.matches("CoInitializeEx(").count(), 1);
+        let worker = &t[t.find("fn worker(").unwrap()..];
+        assert!(worker[..worker.find("\n}\n").unwrap()].contains("CoInitializeEx("), "only the worker thread makes an apartment");
+    }
+
+    /// 13w merge (13v2/13w/browser): every window hook is a comctl32 subclass with its own id, so
+    /// the hooks on one window form one chain (each passes messages on and takes itself off at
+    /// WM_NCDESTROY); the web view code adds no hook and never replaces a window procedure.
+    #[test]
+    fn every_window_hook_is_one_subclass_chain() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let id = regex::Regex::new(r"const \w*SUBCLASS_ID: usize = (0x[0-9A-Fa-f_]+);").unwrap();
+        let (mut ids, mut dirs) = (Vec::new(), vec![root.clone()]);
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                    continue;
+                }
+                if p.extension().is_none_or(|x| x != "rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap();
+                let code = text.split("#[cfg(test)]\nmod tests").next().unwrap();
+                assert!(!code.contains("GWLP_WNDPROC"), "{p:?} replaces a window procedure; use SetWindowSubclass");
+                if code.contains("SetWindowSubclass(") {
+                    assert!(code.contains("DefSubclassProc(") && code.contains("RemoveWindowSubclass("), "{p:?}: a subclass passes messages on and takes itself off");
+                    let found: Vec<String> = id.captures_iter(code).map(|c| c[1].replace('_', "").to_ascii_lowercase()).collect();
+                    assert!(!found.is_empty(), "{p:?}: a subclass has its own id constant");
+                    ids.extend(found);
+                }
+            }
+        }
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "two hooks share a subclass id: one would replace the other");
+        assert!(n >= 11, "{n}");
+        for f in ["webhost_win.rs", "app/browser_app.rs", "app/web_popover_app.rs", "app/webhost_app.rs"] {
+            let text = std::fs::read_to_string(root.join(f)).unwrap();
+            assert!(!text.split("#[cfg(test)]\nmod tests").next().unwrap().contains("SetWindowSubclass("), "{f}: the web view host adds no window hook");
+        }
+    }
+
+    /// The 13w merge: the one process teardown covers web views. Every view registers at create;
+    /// `teardown_process` closes them before it removes the Dev Null folder; twice is safe.
+    #[test]
+    fn the_process_teardown_closes_every_web_view() {
+        assert_eq!(close_all(), 0, "nothing live on a fresh thread");
+        assert_eq!(close_all(), 0, "twice is safe");
+        let this = include_str!("webhost_win.rs");
+        let create = &this[this.find("pub fn create(env: &Env").unwrap()..];
+        assert!(create[..create.find("\n    }\n").unwrap()].contains("l.push(weak.clone())"), "every view registers");
+        let m = include_str!("app/mod.rs");
+        let t = &m[m.find("pub(crate) fn teardown_process()").unwrap()..];
+        let t = &t[..t.find("\n}\n").unwrap()];
+        let close = t.find("crate::webhost_win::close_all()").expect("teardown closes the views");
+        assert!(close < t.find("crate::webhost_win::cleanup_files()").unwrap(), "views close before their folder goes");
+        assert!(close > t.find("crate::dlog::stop_at_exit()").unwrap());
+    }
 
     #[test]
     fn view_setup_defaults_are_the_closed_ones() {
