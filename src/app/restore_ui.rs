@@ -128,6 +128,7 @@ impl App {
         if state.windows.is_empty() {
             return None;
         }
+        crate::rlog!("restoring saved windows: {}", state.windows.len());
         if self.globals.bool("LogRestorableStateSize") {
             self.write_state_sizes(&state);
         }

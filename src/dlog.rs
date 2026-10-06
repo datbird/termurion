@@ -218,20 +218,21 @@ pub fn scrub(text: &str) -> String {
 
 /// Every file holding `dlog!` calls and how many: a new call site is a review of what it passes.
 pub const CALL_SITES: &[(&str, usize)] = &[
-    ("app/api_requests.rs", 1),
     ("app/api_ui.rs", 2),
     ("app/bell_ui.rs", 2),
     ("app/clipboard_ui.rs", 1),
     ("app/hotkey_ui.rs", 2),
     ("app/menu.rs", 2),
-    ("app/mod.rs", 4),
-    ("app/restore_ui.rs", 1),
+    ("app/mod.rs", 5),
+    ("app/restore_ui.rs", 2),
     ("app/session_end_ui.rs", 1),
     ("app/tmux_ui.rs", 2),
     ("app/triggers_ui.rs", 1),
     ("app/windows_ui.rs", 3),
+    ("globals.rs", 1),
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),
+    ("trigger_eval.rs", 1),
 ];
 
 
@@ -940,6 +941,33 @@ mod tests {
         // The macro itself runs the check in a `const`, so every spelling gets it.
         let src = include_str!("dlog.rs").split("#[cfg(test)]").next().unwrap();
         assert_eq!(src.matches("const _: () = $crate::dlog::no_capture($fmt);").count(), 2, "dlog! and rlog! check their format at compile time");
+    }
+
+    /// Resume notes "Log sites": a Settings edit (any writer: the window, a script, remote
+    /// settings) logs its setting's name and the kind of value, never the value.
+    #[test]
+    fn settings_edits_are_logged_by_name_only() {
+        let _g = global_guard();
+        let mut globals = crate::globals::Globals::empty(Path::new("never-written.toml"));
+        start_logging("H\n".into(), true);
+        globals.set("SomeTextSetting", toml::Value::String("hunter2-value".into()));
+        globals.set("SomeFlagSetting", toml::Value::Boolean(true));
+        let (_, body, _) = stop().unwrap();
+        assert!(body.contains("setting changed: SomeTextSetting (text)\n"), "{body}");
+        assert!(body.contains("setting changed: SomeFlagSetting (bool)\n"), "{body}");
+        assert!(!body.contains("hunter2"), "{body}");
+    }
+
+    /// The sites the Resume notes list that were missing: restored windows (count), focus changes
+    /// between panes, the trigger index.
+    #[test]
+    fn listed_log_sites_exist() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let read = |f: &str| std::fs::read_to_string(src.join(f)).unwrap();
+        assert!(read("app/restore_ui.rs").contains("rlog!(\"restoring saved windows: {}\""));
+        assert!(read("app/mod.rs").contains("dlog!(\"pane focus changed to {}\""));
+        assert!(read("trigger_eval.rs").contains("dlog!(\"trigger {} fired: {}\", i, info.class)"));
+        assert!(!read("app/api_requests.rs").contains("setting changed by a script"), "one site for every writer");
     }
 
     /// P2, review of Task 2: no public function turns an arbitrary `String` into a log-safe value.

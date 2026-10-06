@@ -146,6 +146,19 @@ impl Globals {
         if key == crate::api_profile::SET_COOKIE && value.as_bool() != Some(self.bool(key)) {
             self.values.remove(crate::claude_code::COOKIE_BY_KEY);
         }
+        // The one write point for every writer (window, script, remote settings): the setting's
+        // name and the kind of its value, never the value.
+        if crate::dlog::is_on() {
+            let setting = crate::dlog::name(key);
+            let kind = match &value {
+                Value::Boolean(_) => "bool",
+                Value::Integer(_) => "int",
+                Value::Float(_) => "float",
+                Value::String(_) => "text",
+                _ => "other",
+            };
+            crate::dlog!("setting changed: {} ({})", setting, kind);
+        }
         if default_of(key).as_ref() == Some(&value) && !KEPT_WHEN_DEFAULT.contains(&key) {
             self.values.remove(key);
         } else {

@@ -939,8 +939,6 @@ impl App {
                                 Status::Ok
                             }
                             PrefStep::Store => {
-                                let setting = key;
-                                crate::dlog!("setting changed by a script: {}", crate::dlog::name(setting));
                                 self.globals.set(key, v);
                                 globals_changed = true;
                                 Status::Ok

@@ -1500,6 +1500,8 @@ pub struct App {
     last_notified_script: Option<String>,
     /// The last notification was "Debug logging turned on": a click on it turns logging off.
     last_notified_debug: Option<u64>,
+    /// The pane the debug log last named as focused (app-wide: a window switch changes it too).
+    focus_logged: Option<PaneId>,
     /// The automatic-start notification shows once per launch (`AD:1309-1324`).
     debug_notice_shown: bool,
     /// Status bar strings with function calls, by session and string: their shown values
@@ -2431,6 +2433,7 @@ pub fn run() {
         script_console_reveal: None,
         last_notified_script: None,
         last_notified_debug: None,
+        focus_logged: None,
         debug_notice_shown: false,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
@@ -6274,6 +6277,16 @@ impl App {
     }
 
     fn render_frame(&mut self, timing: bool) {
+        // Focus moves between windows and panes, as the debug log reports them.
+        if crate::dlog::is_on() {
+            let focus = self.focused_id();
+            if focus != self.focus_logged {
+                self.focus_logged = focus;
+                if let Some(pane) = focus {
+                    crate::dlog!("pane focus changed to {}", pane);
+                }
+            }
+        }
         // Recorded first: a frame that finds no surface still ends the wait for one.
         let now = Instant::now();
         let before = self.pacer.last();

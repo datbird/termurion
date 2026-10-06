@@ -674,6 +674,8 @@ impl Screen {
             s.requests.push(Request::Trigger(r));
             Flow::Done
         };
+        // The trigger's index and action class, never what it matched or carries.
+        crate::dlog!("trigger {} fired: {}", i, info.class);
         match info.class {
             "HighlightTrigger" => {
                 let (fg, bg) = highlight_colors(value);
