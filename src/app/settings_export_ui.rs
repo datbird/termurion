@@ -436,9 +436,8 @@ impl App {
         for path in &list {
             super::scripts_app::remove_path(path);
         }
-        // Every exit unhooks the keyboard, so a held remapped key is released.
-        crate::winkeys::uninstall();
-        crate::notify::remove(0);
+        // Every exit tears the process down: the keyboard hook, the layout, the icon.
+        super::teardown_process();
         std::process::exit(0);
     }
 

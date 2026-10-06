@@ -1488,6 +1488,17 @@ fn message_box(text: &str) {
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
+/// What ends with the process, on EVERY way out of it (Quit, Erase All, a logoff, a panic on the
+/// main thread): the keyboard hook and its hotkeys come off (a held remapped key is released),
+/// the person's keyboard layout comes back, and the notification area icon goes. A crash or kill
+/// needs nothing of it that Windows does not do (the hook, hotkeys and the per-thread layout end
+/// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
+pub(crate) fn teardown_process() {
+    crate::winkeys::uninstall();
+    crate::input_locale::restore_after_panic();
+    crate::notify::remove(0);
+}
+
 pub fn run() {
     // A cookie in Tandem's own environment (Tandem started from a Tandem shell) must reach no
     // session and no child: only a cookie Tandem mints for a session is ever set.
@@ -1527,8 +1538,7 @@ pub fn run() {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().name() == Some("main") {
-            crate::winkeys::uninstall();
-            crate::input_locale::restore_after_panic();
+            teardown_process();
         }
         previous_hook(info);
     }));
@@ -2251,11 +2261,7 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
-    // The keyboard hook and its hotkeys end with Tandem (a crash needs nothing: Windows removes them).
-    app.locale_exit();
-    crate::winkeys::uninstall();
-    // Every exit that is not a crash takes the notification area icon with it.
-    crate::notify::remove(0);
+    teardown_process();
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
     if app.relaunch_on_exit {
         drop(app);

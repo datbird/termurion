@@ -68,10 +68,4 @@ impl App {
         }
         self.locale_run(step);
     }
-
-    /// Tandem is ending: the person's layout comes back.
-    pub(crate) fn locale_exit(&mut self) {
-        let step = self.locale.exiting();
-        self.locale_run(step);
-    }
 }

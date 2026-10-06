@@ -89,10 +89,13 @@ impl Forcer {
 
     /// Tandem came to the front; `current` is the person's layout.
     pub fn became_active(&mut self, prefs: &Prefs, current: &str) -> Step {
-        self.system = Some(current.to_string());
+        // Once per session leaves its layout in place after a resign: then `current` is the forced
+        // one, and the person's layout stays the one to put back.
+        if !self.forced {
+            self.system = Some(current.to_string());
+        }
         self.active = true;
         self.changed_since_active = false;
-        self.forced = false;
         if !prefs.force || prefs.once { Step::Nothing } else { self.force(prefs) }
     }
 
@@ -437,6 +440,15 @@ mod tests {
         f.became_active(&o, "00000409");
         f.session_focused(&o, true);
         assert_eq!(f.resigned(&o), Step::Nothing);
+        assert_eq!(f.exiting(), act("00000409"));
+        // Once per session, leave and return: the forced layout is current now, but the
+        // person's layout is still the one to put back.
+        let mut f = Forcer::default();
+        f.became_active(&o, "00000409");
+        f.session_focused(&o, true);
+        f.resigned(&o);
+        assert_eq!(f.became_active(&o, "00000407"), Step::Nothing);
+        assert_eq!(f.to_restore(), Some("00000409".to_string()));
         assert_eq!(f.exiting(), act("00000409"));
         // Never forced: nothing to put back.
         let mut f = Forcer::default();

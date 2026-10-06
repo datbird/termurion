@@ -295,28 +295,62 @@ mod tests {
         assert!(tick.contains("refresh_caption_frame()"), "the current window re-checks its caption frame");
     }
 
-    /// Every non-crash exit removes the notification area icon (task 9 review 2), and the
-    /// icon window hears the taskbar's broadcast (review 1), and a second start is the reopen.
+    /// Every non-crash exit takes the process down through `teardown_process`: the keyboard hook,
+    /// the person's layout and the icon (13u Task 5 review). The scan covers every exit site.
     #[test]
-    fn every_exit_path_unhooks_the_keyboard() {
+    fn every_exit_path_runs_the_one_teardown() {
+        const CALL: &str = "teardown_process()";
         let m = include_str!("mod.rs");
         let after = m.split("event_loop.run_app(&mut app)").nth(1).expect("run_app");
-        assert!(after[..400].contains("winkeys::uninstall"), "unhooked after the event loop ends");
-        let erase = include_str!("settings_export_ui.rs");
-        let tail = erase.split("super::scripts_app::remove_path(path);").nth(1).expect("erase exit");
-        let before_exit = tail.split("std::process::exit(0)").next().unwrap();
-        assert!(before_exit.contains("winkeys::uninstall"), "unhooked before Erase All's exit");
+        assert!(after[..400].contains(CALL), "torn down after the event loop ends");
+        let hook = m.split("std::panic::set_hook").nth(1).and_then(|r| r.split("let event_loop").next()).expect("panic hook");
+        assert!(hook.contains(CALL), "the panic hook tears down");
+        let logoff = include_str!("logout_ui.rs").split("fn logoff_now").nth(1).and_then(|r| r.split("\n}").next()).expect("logoff_now");
+        assert!(logoff.contains(CALL), "a logoff tears down");
+        // Every std::process::exit in the app (outside tests) is preceded by the teardown.
+        let mut sites = 0;
+        let mut dirs = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let path = e.path();
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                if path.is_dir() {
+                    // bin/ holds separate programs with no hook of ours.
+                    if name != "bin" {
+                        dirs.push(path);
+                    }
+                    continue;
+                }
+                // The console tools (a probe run) never install the hook or change the layout.
+                if !name.ends_with(".rs") || name == "util_console.rs" {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).unwrap();
+                let code = src.split("#[cfg(test)]").next().unwrap();
+                for (at, _) in code.match_indices("std::process::exit(") {
+                    sites += 1;
+                    let before = &code[at.saturating_sub(600)..at];
+                    assert!(before.contains(CALL), "{name}: process::exit without the teardown before it");
+                }
+                assert!(!code.contains("process::abort("), "{name}: an abort skips the teardown");
+            }
+        }
+        assert!(sites >= 1, "the scan found Erase All's exit");
     }
 
+    /// Every non-crash exit removes the notification area icon (task 9 review 2), and the
+    /// icon window hears the taskbar's broadcast (review 1), and a second start is the reopen.
     #[test]
     fn the_icon_is_removed_on_exit_and_survives_explorer() {
         let m = include_str!("mod.rs");
         let after = m.split("event_loop.run_app(&mut app)").nth(1).expect("run_app");
-        assert!(after[..400].contains("notify::remove"), "removed right after the event loop ends");
+        assert!(after[..400].contains("teardown_process()"), "removed right after the event loop ends");
+        let teardown = m.split("fn teardown_process").nth(1).and_then(|r| r.split("\n}").next()).expect("teardown_process");
+        assert!(teardown.contains("notify::remove"), "the teardown removes the icon");
         let relaunch = include_str!("settings_export_ui.rs");
         let tail = relaunch.split("self.leave_host(false);").nth(1).expect("relaunch exit");
         let before_exit = tail.split("std::process::exit(0)").next().unwrap();
-        assert!(before_exit.contains("notify::remove"), "removed before the relaunch exit");
+        assert!(before_exit.contains("teardown_process()"), "removed before the relaunch exit");
         let n = include_str!("../notify.rs");
         let win = n.split("fn window()").nth(1).and_then(|r| r.split("\nfn base").next()).expect("window()");
         assert!(!win.contains("HWND_MESSAGE"), "a message-only window never hears TaskbarCreated");
