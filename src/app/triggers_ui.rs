@@ -20,7 +20,8 @@ pub(super) fn trigger_limits_from(globals: &crate::globals::Globals) -> (Duratio
 
 /// Whether a notification trigger may post now: its own limit, and the pane's floor.
 fn notify_allowed(limits: &mut crate::triggers::RateLimit<(PaneId, usize)>, pane: PaneId, trigger: usize, now: Instant, limit: Duration) -> bool {
-    limits.allow((pane, usize::MAX), now, NOTIFY_FLOOR) && limits.allow((pane, trigger), now, limit)
+    // The trigger's own limit is asked first without recording, so a refusal there leaves the pane's floor unspent.
+    limits.would_allow(&(pane, trigger), now, limit) && limits.allow((pane, usize::MAX), now, NOTIFY_FLOOR) && limits.allow((pane, trigger), now, limit)
 }
 
 /// A profile's triggers and switches.
@@ -235,7 +236,7 @@ impl App {
                 wake = Some(now + Duration::from_millis(500));
             }
             // Idempotent mode rides the same timer (`performPeriodicTriggerCheck`).
-            if s.triggers.prefs.idempotent_mode && !s.triggers.list.is_empty() {
+            if s.idempotent_wake() {
                 s.check_idempotent_triggers(now);
                 wake = Some(wake.unwrap_or(now + Duration::from_millis(500)));
             }
@@ -320,6 +321,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T7 m3: a trigger refused by its own limit does not spend the pane's floor.
+    #[test]
+    fn a_refused_trigger_does_not_spend_the_pane_floor() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut l = crate::triggers::RateLimit::default();
+        assert!(notify_allowed(&mut l, 1, 0, t0, Duration::from_secs(1)));
+        assert!(!notify_allowed(&mut l, 1, 0, t0 + ms(300), Duration::from_secs(1)), "its own limit refuses");
+        assert!(notify_allowed(&mut l, 1, 1, t0 + ms(400), Duration::from_secs(1)), "another trigger: the floor was last spent at t0, 400 ms ago");
+    }
 
     #[test]
     fn trigger_limits_follow_iterm2() {

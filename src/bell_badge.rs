@@ -106,6 +106,13 @@ pub fn sound_for(failed: bool, success: &str, error: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Whether the system beep follows a mark sound: only when the sound was refused or unresolved
+/// (`None`). A resolved sound that did not start (`Some(false)`: `SND_NOSTOP` while another sound
+/// plays) must not be stacked with a beep.
+pub fn beeps_after(outcome: Option<bool>) -> bool {
+    outcome.is_none()
+}
+
 /// The icon's text: the total, "99+" above 99. Digits only, at most three characters, so
 /// nothing a program wrote can reach the icon.
 pub fn icon_text(label: &str) -> String {
@@ -224,6 +231,13 @@ pub fn accept_file(p: &Path) -> Option<LocalPath> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_resolved_sound_that_is_busy_gets_no_beep() {
+        assert!(beeps_after(None), "refused: the system beep");
+        assert!(!beeps_after(Some(false)), "resolved but busy: no stacked beep");
+        assert!(!beeps_after(Some(true)), "played: no beep");
+    }
+
     /// Task 6 fix r1 item 1: a label that changes inside the throttle window is held until the
     /// window ends, with a wake at that moment, so the taskbar number is never left stale.
     #[test]

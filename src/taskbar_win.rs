@@ -26,7 +26,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_FILENAME, SND_NODEFAULT, SND_NOSTOP};
 use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, ICONINFO, RegisterWindowMessageW, WM_NCDESTROY};
+use windows_sys::Win32::UI::WindowsAndMessaging::{ChangeWindowMessageFilterEx, CreateIconIndirect, MSGFLT_ALLOW, DestroyIcon, ICONINFO, RegisterWindowMessageW, WM_NCDESTROY};
 
 use crate::bell_badge::{self, Sound};
 
@@ -155,7 +155,10 @@ fn draw_icon(text: &str) -> Option<windows_sys::Win32::UI::WindowsAndMessaging::
         SelectObject(dc, old);
         DeleteObject(font);
         DeleteObject(brush);
-        let mask = windows_sys::Win32::Graphics::Gdi::CreateBitmap(SIZE, SIZE, 1, 1, std::ptr::null());
+        // The mask is all zeros (every pixel opaque, the colour bitmap carries the alpha): a null
+        // buffer would leave its contents undefined.
+        let mask_bits = vec![0u8; (SIZE as usize).div_ceil(16) * 2 * SIZE as usize];
+        let mask = windows_sys::Win32::Graphics::Gdi::CreateBitmap(SIZE, SIZE, 1, 1, mask_bits.as_ptr().cast());
         let icon_info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
         let icon = CreateIconIndirect(&icon_info);
         DeleteObject(mask);
@@ -197,13 +200,21 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 
 /// Hears `TaskbarButtonCreated` on a window (once; a window made again on a new handle gets it again).
 pub fn watch(hwnd: isize) {
-    created_message();
+    let message = created_message();
+    // SAFETY: a live window of this process. An elevated Tandem would otherwise never hear the
+    // message from Explorer (a lower integrity process) after Explorer restarts, and the badge would
+    // be lost.
+    unsafe { ChangeWindowMessageFilterEx(hwnd as HWND, message, MSGFLT_ALLOW, std::ptr::null_mut()) };
     // SAFETY: a live window of this process; the proc only queues and forwards.
     unsafe { SetWindowSubclass(hwnd as HWND, Some(proc), SUBCLASS_ID, 0) };
 }
 
 /// Every overlay off, waiting a moment for it (the process is ending).
 pub fn clear_all() {
+    // A process that never showed a badge has no worker: do not start one (and wait) at exit.
+    if JOBS.get().is_none() {
+        return;
+    }
     let (tx, rx) = channel();
     if send(Job::ClearAll(tx)).is_ok() {
         let _ = rx.recv_timeout(Duration::from_millis(300));
@@ -254,9 +265,10 @@ pub fn play_sound(sound: &Sound) -> bool {
     unsafe { PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), flags | SND_ASYNC | SND_NODEFAULT | SND_NOSTOP) != 0 }
 }
 
-/// A named sound resolved and played; false when it is refused or nothing played.
-pub fn play_named(name: &str) -> bool {
-    std::panic::catch_unwind(|| resolve_name(name).is_some_and(|s| play_sound(&s))).unwrap_or(false)
+/// A named sound through the judge: None when it is refused, else whether it started (false while
+/// another sound plays, `SND_NOSTOP`). See `bell_badge::beeps_after`.
+pub fn play_named(name: &str) -> Option<bool> {
+    std::panic::catch_unwind(|| resolve_name(name).map(|s| play_sound(&s))).unwrap_or(None)
 }
 
 trait EncodeWideNul {

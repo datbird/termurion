@@ -240,9 +240,6 @@ pub fn wait_any(pids: &[u32], gap: Duration) {
 
 /// The names an ancestry lost, in the old order (`PC:479-500`); growth or no change is empty.
 pub fn ancestry_shrank(old: &[String], new: &[String]) -> Vec<String> {
-    if new.len() >= old.len() {
-        return Vec::new();
-    }
     old.iter().filter(|n| !new.contains(n)).cloned().collect()
 }
 
@@ -477,13 +474,13 @@ impl JobWatch {
         self.lock().prompts.get(&shell).is_some_and(|d| d.on)
     }
 
-    /// `FastForegroundJobUpdates`: on, a watched foreground job's exit ends the wait at once;
-    /// off, plain polling from the next look.
     /// `LogForegroundJobAncestryDiagnostics`, read by the watcher at each look.
     pub fn set_ancestry_diagnostics(&self, on: bool) {
         self.lock().ancestry_diagnostics = on;
     }
 
+    /// `FastForegroundJobUpdates`: on, a watched foreground job's exit ends the wait at once;
+    /// off, plain polling from the next look.
     pub fn set_fast_updates(&self, on: bool) {
         self.lock().fast_updates = on;
     }
@@ -634,6 +631,7 @@ mod tests {
         assert_eq!(ancestry_shrank(&names(&["claude", "node", "pwsh"]), &names(&["node", "pwsh"])), names(&["claude"]));
         assert!(ancestry_shrank(&names(&["node"]), &names(&["claude", "node"])).is_empty(), "growth is not a shrink");
         assert!(ancestry_shrank(&names(&["node"]), &names(&["node"])).is_empty());
+        assert_eq!(ancestry_shrank(&names(&["claude", "pwsh"]), &names(&["node", "pwsh"])), names(&["claude"]), "a swap of equal length loses a name too: iTerm2 has no length guard");
         // The line itself is made by `rlog!` from log-safe parts (`dlog::names`).
         assert_eq!(crate::dlog::names(&names(&["claude", "node"])).to_string(), "[\"claude\", \"node\"]");
         assert_eq!(crate::dlog::names(&[]).to_string(), "[]");

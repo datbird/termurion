@@ -39,24 +39,26 @@ pub(super) fn next_step(imported: &[toml::Table], marked: bool) -> Next {
 /// `TriggerController.m:711-735`: each chosen profile gets the triggers it does not already have
 /// (an unknown guid is skipped, `:719-721`); the guids of the profiles changed. The write goes
 /// through `Profile::set`, the one write point (`triggers::clean`).
-fn import_to(store: &mut Store, guids: &[String], imported: &[toml::Table]) -> Vec<String> {
+fn import_to(store: &mut Store, guids: &[String], imported: &[toml::Table]) -> (Vec<String>, usize) {
     let mut changed = Vec::new();
+    let mut dropped = 0;
     for guid in guids {
         let Some(profile) = store.get_mut(guid) else { continue };
         let stored = profile.get("Triggers");
         let merged = tf::add_triggers(stored.as_ref(), imported);
         if stored.as_ref() != Some(&merged) {
-            profile.set("Triggers", merged);
+            profile.set("Triggers", merged.clone());
+            dropped = dropped.max(tf::dropped_by_limit(&merged, profile.get("Triggers").as_ref()));
             changed.push(guid.clone());
         }
     }
-    changed
+    (changed, dropped)
 }
 
 /// The profiles changed by `import_to` (their number).
 #[cfg(test)]
 pub(super) fn apply_import(store: &mut Store, guids: &[String], imported: &[toml::Table]) -> usize {
-    import_to(store, guids, imported).len()
+    import_to(store, guids, imported).0.len()
 }
 
 /// The chooser: `select_profiles_text` above the profile list (several rows may be chosen, none at
@@ -117,8 +119,9 @@ impl App {
         if self.trigger_import.is_some() {
             return;
         }
-        let Some(imported) = self.trigger_imports.pop_front() else { return };
+        // No window can open without the GPU: the waiting file stays queued, not dropped.
         let Some(g) = self.gpu.as_ref() else { return };
+        let Some(imported) = self.trigger_imports.pop_front() else { return };
         let text = tf::select_profiles_text(&imported);
         match EguiHost::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, tf::IMPORT_TITLE, 620.0, 700.0) {
             Ok(host) => {
@@ -176,7 +179,10 @@ impl App {
             Some(Outcome::Cancel) => self.trigger_import = None,
             Some(Outcome::Ok) => {
                 if let Some(w) = self.trigger_import.take() {
-                    let changed = import_to(&mut self.store, &w.list.selection, &w.imported);
+                    let (changed, dropped) = import_to(&mut self.store, &w.list.selection, &w.imported);
+                    if dropped > 0 {
+                        self.ask_scripts(ask(tf::NOT_IMPORTED_HEADING, &tf::not_kept_text(dropped), &[crate::api_auth::OK], None, Warn::Persistent, Then::Nothing));
+                    }
                     if !changed.is_empty() {
                         for guid in &changed {
                             self.dynamic_edited(guid);
@@ -215,6 +221,28 @@ mod tests {
         assert_eq!(changed, 1);
         assert_eq!(store.get("G2").unwrap().get("Triggers"), Some(toml::Value::Array(vec![a.clone().into(), c.into()])));
         assert_eq!(store.get("G1").unwrap().get("Triggers"), Some(toml::Value::Array(vec![a.into()])));
+    }
+
+    /// T9 m2: a profile near the cap keeps what fits and the import says how many did not.
+    #[test]
+    fn import_into_a_nearly_full_profile_counts_the_dropped_tail() {
+        let mut store = Store::fresh(std::path::Path::new("none.toml"));
+        let mut g = crate::profile::Profile::new("Full");
+        g.set(crate::profile::GUID, "G".into());
+        g.set("Triggers", toml::Value::Array((0..255).map(|i| trigger(&format!("old{i}")).into()).collect()));
+        store.add(g);
+        let (changed, dropped) = import_to(&mut store, &["G".to_string()], &[trigger("n1"), trigger("n2"), trigger("n3")]);
+        assert_eq!((changed.len(), dropped), (1, 2));
+        assert_eq!(store.get("G").unwrap().get("Triggers").and_then(|v| v.as_array().map(Vec::len)), Some(256));
+    }
+
+    /// T9 m1: the chooser takes the waiting file off the queue only once a window can open.
+    #[test]
+    fn show_trigger_import_checks_the_gpu_before_taking_the_file() {
+        let src = include_str!("trigger_file_ui.rs");
+        let body = &src[src.find("pub(super) fn show_trigger_import(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.find("self.gpu.as_ref()").unwrap() < body.find("pop_front()").unwrap(), "{body}");
     }
 
     #[test]

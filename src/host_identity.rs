@@ -6,6 +6,7 @@
 //! pane may open or run still ask `remote_text` first.
 
 use sha2::{Digest, Sha256};
+#[cfg(not(test))]
 use std::sync::Mutex;
 
 /// iTerm2's HMAC key for the machine identity (`iTermMachineIdentity.swift`).
@@ -162,17 +163,30 @@ pub fn machine_source() -> Option<String> {
 
 /// The two fake values, refreshed by the app from the settings each pass, so a change applies to
 /// hosts reported afterward (`NSHost+iTerm.m:70-75`).
+#[cfg(not(test))]
 static FAKES: Mutex<(String, String)> = Mutex::new((String::new(), String::new()));
 
+// Tests run beside each other on threads of one process: each sees only the fakes it set itself.
+#[cfg(test)]
+thread_local! {
+    static FAKES: std::cell::RefCell<(String, String)> = const { std::cell::RefCell::new((String::new(), String::new())) };
+}
+
 pub fn set_fakes(name: &str, boot: &str) {
+    #[cfg(not(test))]
     if let Ok(mut f) = FAKES.lock() {
         *f = (name.to_string(), boot.to_string());
     }
+    #[cfg(test)]
+    FAKES.with(|f| *f.borrow_mut() = (name.to_string(), boot.to_string()));
 }
 
 /// The fake host name and fake boot identity now in effect.
 pub fn fakes() -> (String, String) {
-    FAKES.lock().map(|f| f.clone()).unwrap_or_default()
+    #[cfg(not(test))]
+    return FAKES.lock().map(|f| f.clone()).unwrap_or_default();
+    #[cfg(test)]
+    FAKES.with(|f| f.borrow().clone())
 }
 
 /// `our_value` for the fake boot identity given, over `real` (the cached real identity when None
@@ -301,6 +315,16 @@ mod tests {
         assert!(!is_local_name("localhost", &fake));
         assert!(!is_local_name("PC1", &fake));
         assert!(is_local_name("FAKE.host", &fake));
+    }
+
+    /// T4 m2: tests run on threads of one process; a test that sets the fakes must not change what a
+    /// test running beside it reads.
+    #[test]
+    fn fakes_set_in_a_test_do_not_reach_other_tests() {
+        set_fakes("only.here", "boot-x");
+        let other = std::thread::spawn(fakes).join().unwrap();
+        assert_eq!(other, (String::new(), String::new()));
+        set_fakes("", "");
     }
 
     /// The live fake is read from the process-wide cell the app refreshes each pass.

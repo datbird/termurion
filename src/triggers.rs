@@ -428,6 +428,11 @@ impl<K> Default for RateLimit<K> {
 }
 
 impl<K: std::hash::Hash + Eq> RateLimit<K> {
+    /// Whether `allow` would say yes, recording nothing.
+    pub fn would_allow(&self, key: &K, now: std::time::Instant, period: std::time::Duration) -> bool {
+        !self.last.get(key).is_some_and(|t| now.saturating_duration_since(*t) < period)
+    }
+
     pub fn allow(&mut self, key: K, now: std::time::Instant, period: std::time::Duration) -> bool {
         if self.last.get(&key).is_some_and(|t| now.saturating_duration_since(*t) < period) {
             return false;

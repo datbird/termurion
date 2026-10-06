@@ -277,8 +277,8 @@ impl App {
                 // often than the beep floor.
                 let named = crate::bell_badge::sound_for(failed, &self.globals.string("SuccessSound"), &self.globals.string("ErrorSound"));
                 if self.bell_limiter.beep(std::time::Instant::now()) {
-                    let played = named.is_some_and(|n| crate::taskbar_win::play_named(&n));
-                    if !played {
+                    let outcome = named.and_then(|n| crate::taskbar_win::play_named(&n));
+                    if crate::bell_badge::beeps_after(outcome) {
                         unsafe {
                             MessageBeep(if failed { MB_ICONHAND } else { MB_OK });
                         }

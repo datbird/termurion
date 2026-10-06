@@ -366,6 +366,10 @@ const INSTANT_EVERY: Duration = Duration::from_millis(500);
 impl Screen {
     /// The profile's triggers. A trigger that is unchanged keeps its state (the line an
     /// Instant trigger fired on, Disable This Alert), so a settings refresh fires nothing.
+    ///
+    /// `prefs` replaces ALL of the switches, including the three Advanced ones (`radius`,
+    /// `idempotent_mode`, `idempotent_every`), which callers build from the defaults: the app must
+    /// run `set_trigger_limits` (through `apply_emu_rules`) AFTER every `set_triggers`.
     pub fn set_triggers(&mut self, list: Vec<Trigger>, prefs: TriggerPrefs) {
         let old = std::mem::take(&mut self.triggers.list);
         self.triggers.list = list
@@ -445,6 +449,12 @@ impl Screen {
         self.triggers.next = self.cursor_row();
         // Row numbers moved, so banner rows are no longer where they were.
         self.triggers.skip.clear();
+    }
+
+    /// Whether the timer must come back for idempotent mode: only where it can run (triggers in the
+    /// list, and not otherwise in use), so a pane on its primary screen never wakes the loop for it.
+    pub fn idempotent_wake(&self) -> bool {
+        self.triggers.prefs.idempotent_mode && !self.triggers.list.is_empty() && !self.triggers_active()
     }
 
     fn triggers_active(&self) -> bool {
@@ -1193,9 +1203,25 @@ mod tests {
     fn requests_per_feed_are_capped() {
         let mut s = Screen::new(80, 24);
         s.set_triggers(vec![trig("x", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        // The time budget is lengthened so only the request cap can stop the feed.
+        s.triggers.budget = Some(Duration::from_secs(60));
         s.feed("x\r\n".repeat(5000).as_bytes());
         let n = s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count();
-        assert!(n <= MAX_REQUESTS && n > 0, "{n}");
+        assert_eq!(n, MAX_REQUESTS, "the cap, not the clock, ended the feed");
+    }
+
+    /// T7 minor 7: the 500 ms wake for idempotent mode is wanted only where it can do something:
+    /// triggers in the list and not otherwise in use (a full-screen app without "interactive").
+    #[test]
+    fn idempotent_mode_wakes_the_loop_only_when_it_can_run() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("x", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.set_trigger_limits(3, true, Duration::from_millis(250));
+        assert!(!s.idempotent_wake(), "on the primary screen the live triggers run instead: no wake");
+        s.feed(b"\x1b[?1049h");
+        assert!(s.idempotent_wake(), "a full-screen app without interactive triggers: idempotent mode runs");
+        s.set_trigger_limits(3, false, Duration::from_millis(250));
+        assert!(!s.idempotent_wake(), "the setting is off");
     }
 
     #[test]

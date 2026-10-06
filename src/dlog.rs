@@ -1091,6 +1091,26 @@ mod tests {
         assert_eq!(checked, ["log_table", "name", "names", "program"], "the log-safe constructors");
     }
 
+    /// T2 m5: `emit` and `emit_retro` are public for the macros only; no other code calls them, so
+    /// nothing reaches the log without `LogSafe` arguments and a checked format.
+    #[test]
+    fn emit_is_called_only_by_the_macros() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut dirs = vec![src.clone()];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("dlog.rs") {
+                    let t = std::fs::read_to_string(&p).unwrap();
+                    let live = t.split("#[cfg(test)]").next().unwrap_or("");
+                    assert!(!live.contains("dlog::emit(") && !live.contains("dlog::emit_retro("), "{p:?} calls the log's emit directly");
+                }
+            }
+        }
+    }
+
     /// Every live `dlog!` and `rlog!` call: (file, macro, format string, argument text).
     fn live_sites() -> Vec<(String, &'static str, String, String)> {
         let call = regex::Regex::new(r"\b(dlog|rlog)!\s*[(\[{]").unwrap();

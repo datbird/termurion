@@ -358,7 +358,13 @@ pub fn import_into(stored: Option<&toml::Value>, files: &[(String, Result<String
         match text {
             Err(e) => alerts.push((tf::IMPORT_FAILED_HEADING.to_string(), tf::load_error_text(name, e))),
             Ok(text) => match tf::parse(text, name) {
-                Ok(imported) => list = tf::add_triggers(Some(&list), &imported),
+                Ok(imported) => {
+                    list = tf::add_triggers(Some(&list), &imported);
+                    let off = tf::off_count(&imported);
+                    if off > 0 {
+                        alerts.push((tf::IMPORTED_OFF_HEADING.to_string(), tf::off_text(off)));
+                    }
+                }
                 Err(e) => alerts.push((e.heading.to_string(), e.text)),
             },
         }
@@ -423,10 +429,14 @@ fn export_one(t: &Trigger) {
             table.remove(k);
         }
     }
+    let text = match tf::export_file_text(&table) {
+        Ok(text) => text,
+        Err(e) => return push_alert(tf::EXPORT_FAILED_HEADING, e),
+    };
     let dialog = rfd::FileDialog::new().set_title(tf::EXPORT_TITLE).set_file_name(format!("triggers.{}", tf::EXTENSION)).add_filter("iTerm2 triggers", &[tf::EXTENSION]);
     let Some(path) = crate::localfs::save_file(dialog) else { return };
     let shown = crate::inert_files::shown_name(&path.path().file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
-    match write_export(&path, &tf::export_text(&[table])) {
+    match write_export(&path, &text) {
         Ok(()) => REVEAL.with(|r| *r.borrow_mut() = Some(path.path().to_string_lossy().into_owned())),
         Err(e) => push_alert(tf::EXPORT_FAILED_HEADING, tf::save_error_text(&shown, &e.to_string())),
     }
@@ -448,7 +458,11 @@ fn import_button(profile: &mut Profile) -> bool {
     }
     let changed = stored.as_ref() != Some(&merged) && !(stored.is_none() && merged.as_array().is_some_and(Vec::is_empty));
     if changed {
-        profile.set("Triggers", merged);
+        profile.set("Triggers", merged.clone());
+        let dropped = tf::dropped_by_limit(&merged, profile.get("Triggers").as_ref());
+        if dropped > 0 {
+            push_alert(tf::NOT_IMPORTED_HEADING, tf::not_kept_text(dropped));
+        }
     }
     changed
 }
@@ -637,6 +651,17 @@ mod tests {
         assert_eq!(split_tab_status("#00ff00\u{1}#ffffff\u{1}work"), ("#00ff00".to_string(), "#ffffff".to_string(), "work".to_string()));
         assert_eq!(setting("Silence Bell", true), "Silence Bell\u{1}1");
         assert_eq!(split_setting("Silence Bell\u{1}0"), ("Silence Bell".to_string(), false));
+    }
+
+    /// T9 m3: the editor's Import says how many triggers came in turned off.
+    #[test]
+    fn editor_import_says_how_many_came_in_off() {
+        let run = toml::Table::from_iter([("action".to_string(), "ScriptTrigger".into()), ("regex".to_string(), "x".into()), ("parameter".to_string(), "echo".into())]);
+        let c = crate::trigger_file::canonical(&run).unwrap();
+        let files = vec![("x.it2triggers".to_string(), Ok(crate::trigger_file::export_text(std::slice::from_ref(&c))))];
+        let (merged, alerts) = import_into(None, &files);
+        assert_eq!(merged.as_array().unwrap()[0].as_table().unwrap().get("disabled").and_then(toml::Value::as_bool), Some(true));
+        assert_eq!(alerts, vec![(crate::trigger_file::IMPORTED_OFF_HEADING.to_string(), crate::trigger_file::off_text(1))]);
     }
 
     #[test]

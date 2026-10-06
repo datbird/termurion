@@ -4430,12 +4430,12 @@ mod tests {
             (
                 "FakeFullyQualifiedDomainName",
                 "Override the local hostname used for localhost detection.",
-                "\nWhen non-empty, the app behaves as though this computer\u{2019}s full DNS name were this value. Lets you test how localhost detection reacts to a hostname change without actually renaming your computer. Affects hosts reported after you change it; leave empty to use the real hostname.",
+                "\nWhen non-empty, the app behaves as though this computer\u{2019}s full DNS name were this value. Lets you test how localhost detection reacts to a hostname change without actually renaming your computer. Takes effect at once for opening paths; a host that was already reported keeps the answer it was given. Leave empty to use the real hostname.",
             ),
             (
                 "FakeBootSessionUUID",
                 "Override this machine\u{2019}s identity used for OSC 7 machineID localhost detection.",
-                "\nWhen non-empty, the app behaves as though this machine\u{2019}s boot identity were this value. Lets you test how machine-identity localhost detection reacts without rebooting. Affects hosts reported after you change it; leave empty to use the real value.",
+                "\nWhen non-empty, the app behaves as though this machine\u{2019}s boot identity were this value. Lets you test how machine-identity localhost detection reacts without rebooting. Takes effect at once for opening paths; a host that was already reported keeps the answer it was given. Leave empty to use the real value.",
             ),
         ];
         for (key, label, rest) in rows {

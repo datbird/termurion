@@ -142,14 +142,13 @@ pub fn set_resident(on: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// How many notifications were shown (every `show_with`, whoever called it).
+/// How many notifications were shown (every `show_with` that Windows accepted, whoever called it).
 pub fn shown_count() -> u64 {
     SHOWN.load(Ordering::SeqCst)
 }
 
 /// Shows a notification with `title` and `body`; `silent` plays no sound.
 pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
-    SHOWN.fetch_add(1, Ordering::SeqCst);
     let hwnd = window()?;
     let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -167,6 +166,7 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
         ADDED.store(false, Ordering::SeqCst);
         return Err("Windows did not show the notification".into());
     }
+    SHOWN.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 

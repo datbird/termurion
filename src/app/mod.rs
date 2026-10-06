@@ -6621,7 +6621,7 @@ impl ApplicationHandler<UserEvent> for App {
                     #[cfg(windows)]
                     {
                         crate::firstmouse_win::watch(h);
-                self.taskbar_watch(h);
+                        self.taskbar_watch(h);
                         logout_ui::watch(h);
                     }
                 }

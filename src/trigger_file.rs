@@ -175,6 +175,33 @@ pub fn add_triggers(existing: Option<&Value>, imported: &[Table]) -> Value {
     Value::Array(list)
 }
 
+pub const NOT_IMPORTED_HEADING: &str = "Import Incomplete";
+pub const IMPORTED_OFF_HEADING: &str = "Triggers Imported Turned Off";
+
+/// The line that says how many imported triggers are stored turned off.
+pub fn off_text(n: usize) -> String {
+    format!("{n} of these triggers act on your sessions or computer; they are imported turned off.")
+}
+
+/// The line that says triggers did not fit: a profile holds at most `MAX_TRIGGERS`.
+pub fn not_kept_text(n: usize) -> String {
+    format!("{n} {} not imported: a profile holds at most {MAX_TRIGGERS} triggers.", if n == 1 { "trigger was" } else { "triggers were" })
+}
+
+/// How many triggers of `merged` the stored list `kept` (read back after `Profile::set`) lost to
+/// the one write point's cap.
+pub fn dropped_by_limit(merged: &Value, kept: Option<&Value>) -> usize {
+    let len = |v: Option<&Value>| v.and_then(Value::as_array).map_or(0, Vec::len);
+    len(Some(merged)).saturating_sub(len(kept))
+}
+
+/// The text `export_text` writes for one trigger, or why there is none (a trigger that has no
+/// canonical form would write an empty list without a word).
+pub fn export_file_text(t: &Table) -> Result<String, String> {
+    canonical(t).ok_or_else(|| "This trigger cannot be exported.".to_string())?;
+    Ok(export_text(std::slice::from_ref(t)))
+}
+
 /// How many of these triggers import turned off.
 pub fn off_count(imported: &[Table]) -> usize {
     imported.iter().filter(|t| t.get("action").and_then(Value::as_str).is_none_or(|a| !crate::triggers::imports_enabled(a))).count()
@@ -286,7 +313,7 @@ pub fn select_profiles_text(imported: &[Table]) -> String {
     let mut text = format!("Select the profiles into which these triggers should be imported:\n\n{}", lines.join("\n"));
     let off = off_count(imported);
     if off > 0 {
-        text.push_str(&format!("\n\n{off} of these triggers act on your sessions or computer; they are imported turned off."));
+        text.push_str(&format!("\n\n{}", off_text(off)));
     }
     text
 }
@@ -413,6 +440,24 @@ mod tests {
             let off = add_triggers(None, &[table(json!({"action": class, "regex": "x", "parameter": "p", "disabled": false}))]);
             assert_eq!(off.as_array().unwrap()[0].as_table().unwrap().get("disabled").and_then(toml::Value::as_bool), Some(true), "{class}");
         }
+    }
+
+    #[test]
+    fn export_refuses_a_trigger_with_no_canonical_form() {
+        let good = table(json!({"action": "AlertTrigger", "regex": "x", "parameter": "p"}));
+        assert!(export_file_text(&good).unwrap().contains("AlertTrigger"));
+        let unknown = table(json!({"action": "NoSuchTrigger", "regex": "x"}));
+        assert_eq!(export_file_text(&unknown), Err("This trigger cannot be exported.".to_string()));
+    }
+
+    #[test]
+    fn a_cut_off_import_is_counted() {
+        let list = |n: usize| Value::Array((0..n).map(|i| Value::Table(table(json!({"action": "BellTrigger", "regex": format!("r{i}")})))).collect());
+        assert_eq!(dropped_by_limit(&list(258), Some(&list(256))), 2);
+        assert_eq!(dropped_by_limit(&list(3), Some(&list(3))), 0);
+        assert_eq!(dropped_by_limit(&list(3), None), 3);
+        assert_eq!(not_kept_text(2), "2 triggers were not imported: a profile holds at most 256 triggers.");
+        assert_eq!(not_kept_text(1), "1 trigger was not imported: a profile holds at most 256 triggers.");
     }
 
     #[test]

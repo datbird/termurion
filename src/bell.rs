@@ -108,7 +108,7 @@ impl Limiter {
         true
     }
 
-    /// A beep or a bell icon may go now.
+    /// A beep may go now (the bell icon is not floored here).
     pub fn beep(&mut self, now: Instant) -> bool {
         Self::pass(&mut self.beep, now, BELL_FLOOR)
     }
