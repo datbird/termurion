@@ -12,6 +12,8 @@ use tandem::git_state as gs;
 use tandem::git_wrapper;
 
 fn main() {
+    #[cfg(windows)]
+    tandem::dll::harden_process();
     let mut argv = std::env::args_os().skip(1);
     let program = argv.next().map_or_else(|| PathBuf::from("git"), PathBuf::from);
     let raw: Vec<OsString> = argv.collect();

@@ -11,6 +11,20 @@ use windows_sys::Win32::Foundation::HMODULE;
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 
+/// Restricts the whole process's DLL search to the application folder, System32 and the folders
+/// added by `AddDllDirectory` (`LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`), and removes the current folder
+/// (`SetDllDirectoryW("")`). Every program calls it first in `main`, before any window or
+/// graphics initialization, so a bare load anywhere (a dependency's `libloading`, wgpu-hal's
+/// vulkan-1.dll and d3d12.dll) never finds a DLL planted in the current folder or on PATH.
+/// False when Windows refused either call.
+#[cfg(windows)]
+pub fn harden_process() -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, SetDefaultDllDirectories, SetDllDirectoryW};
+    let empty = [0u16];
+    // SAFETY: both calls take plain values or a NUL-terminated string that outlives the call.
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != 0 && SetDllDirectoryW(empty.as_ptr()) != 0 }
+}
+
 /// A system DLL by bare name (`icu.dll`): only System32 is searched, never the exe's folder or
 /// the current folder. None when it is not there.
 #[cfg(windows)]
@@ -79,6 +93,37 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    /// Review finding 1 (class fix): every program starts by restricting the process's DLL search
+    /// (`dll::harden_process`), before any window, graphics or other load, so no DLL anywhere in
+    /// the process (wgpu-hal and ash load vulkan-1.dll and d3d12.dll through libloading's bare
+    /// `LoadLibraryExW`) comes from the current folder or PATH.
+    #[test]
+    fn every_program_hardens_the_dll_search_first() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("bin");
+        let mut seen = 0;
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            let name = e.path().file_name().unwrap().to_string_lossy().to_string();
+            let main_at = text.find("fn main()").unwrap_or_else(|| panic!("{name}: no main"));
+            let body = &text[main_at..];
+            let harden = body.find("tandem::dll::harden_process()").unwrap_or_else(|| panic!("{name}: main never calls harden_process"));
+            let first_use = body.find("tandem::").unwrap();
+            assert_eq!(harden, first_use, "{name}: harden_process is not the first call into Tandem");
+            // Nothing before it in main but the opening: no other statement ends with a semicolon.
+            assert!(!body[..harden].contains(';'), "{name}: a statement runs before harden_process");
+            seen += 1;
+        }
+        assert!(seen >= 7, "{seen} programs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn harden_process_restricts_the_search() {
+        assert!(super::harden_process());
+        // A system DLL still loads, by the flags `load_system` passes.
+        assert!(super::load_system("kernel32.dll").is_some());
     }
 
     #[cfg(windows)]
