@@ -255,13 +255,33 @@ pub fn consent_text(origin: &Origin, label: &str) -> String {
     format!("{who} asks to register {label} as a hotkey that works in every app.")
 }
 
+/// What a program's write did, for the app: the question to ask (None when it needs none) and the
+/// question of this pane that the write replaced (its still-queued alert is dropped).
+#[derive(Debug, Default, PartialEq)]
+pub struct Written {
+    pub ask: Option<(PaneId, Shortcut, Origin)>,
+    pub stale: Option<Shortcut>,
+}
+
+/// The most tmux decisions the book keeps (a stranger's server names stay bounded).
+const MAX_DECIDED: usize = 64;
+
 /// The session hotkeys that are on (`live`: the person set or allowed them) and those that wait
 /// for the person (`pending`). Only `live` ever registers; a value that a program wrote is
 /// stored with its session but sits in `pending` until it is allowed.
+///
+/// A program cannot flood the person with questions: a session has at most one question out, a
+/// session whose question was answered Ignore is not asked again until it ends, a program writing
+/// the value that is already live or waiting changes nothing, and a tmux session's answer for a
+/// value stands for every pane that tmux session brings with the same value.
 #[derive(Default)]
 pub struct Book {
     live: Vec<(PaneId, Shortcut)>,
     pending: Vec<(PaneId, Shortcut, Origin)>,
+    /// Sessions that said Ignore: their program writes are refused silently until they end.
+    ignored: Vec<PaneId>,
+    /// A tmux session's answer (name, value, allowed), for the next pane with the same value.
+    decided: Vec<(String, Shortcut, bool)>,
 }
 
 impl Book {
@@ -273,9 +293,19 @@ impl Book {
         &self.pending
     }
 
+    /// The value is on, waiting for an answer, or its session said Ignore: nothing more to decide.
+    pub fn knows(&self, pane: PaneId, s: &Shortcut) -> bool {
+        self.live.iter().any(|(p, x)| *p == pane && x == s) || self.pending.iter().any(|(p, x, _)| *p == pane && x == s) || self.ignored.contains(&pane)
+    }
+
+    /// The pane's value waits for the person (it shows as not registered, never as live).
+    pub fn waiting(&self, pane: PaneId) -> bool {
+        self.pending.iter().any(|(p, _, _)| *p == pane)
+    }
+
     /// The person set (Some) or cleared (None) the pane's hotkey.
     pub fn person_set(&mut self, pane: PaneId, s: Option<Shortcut>) {
-        self.pane_gone(pane);
+        self.drop_values(pane);
         if let Some(s) = s {
             self.live.push((pane, s));
             self.live.sort_by_key(|(p, _)| *p);
@@ -283,32 +313,76 @@ impl Book {
     }
 
     /// A program wrote the pane's hotkey (or cleared it): the old one is off, the new one waits.
-    /// Returns what to ask the person.
-    pub fn program_set(&mut self, pane: PaneId, s: Option<Shortcut>, origin: Origin) -> Option<(PaneId, Shortcut, Origin)> {
-        self.pane_gone(pane);
-        let s = s?;
+    pub fn program_set(&mut self, pane: PaneId, s: Option<Shortcut>, origin: Origin) -> Written {
+        let Some(s) = s else {
+            self.drop_values(pane);
+            return Written::default();
+        };
+        // The value that is already live or waiting: nothing changes, nothing is asked.
+        if self.live.iter().any(|(p, x)| *p == pane && *x == s) || self.pending.iter().any(|(p, x, _)| *p == pane && *x == s) {
+            return Written::default();
+        }
+        let stale = self.pending.iter().find(|(p, _, _)| *p == pane).map(|(_, x, _)| x.clone());
+        self.drop_values(pane);
+        if self.ignored.contains(&pane) {
+            return Written { ask: None, stale };
+        }
+        // A tmux session answered for this value before: the same answer.
+        if let Origin::Tmux(name) = &origin {
+            if let Some((_, _, allowed)) = self.decided.iter().find(|(n, x, _)| n == name && *x == s) {
+                if *allowed {
+                    self.live.push((pane, s));
+                    self.live.sort_by_key(|(p, _)| *p);
+                } else {
+                    self.ignored.push(pane);
+                }
+                return Written { ask: None, stale };
+            }
+        }
         self.pending.push((pane, s.clone(), origin.clone()));
-        Some((pane, s, origin))
+        Written { ask: Some((pane, s, origin)), stale }
+    }
+
+    fn decide(&mut self, origin: &Origin, s: &Shortcut, allowed: bool) {
+        if let Origin::Tmux(name) = origin {
+            self.decided.retain(|(n, x, _)| !(n == name && x == s));
+            self.decided.push((name.clone(), s.clone(), allowed));
+            if self.decided.len() > MAX_DECIDED {
+                self.decided.remove(0);
+            }
+        }
     }
 
     /// The person allowed a waiting hotkey. False when it is no longer waiting.
     pub fn allow(&mut self, pane: PaneId, s: &Shortcut) -> bool {
         let Some(i) = self.pending.iter().position(|(p, x, _)| *p == pane && x == s) else { return false };
-        self.pending.remove(i);
+        let (_, _, origin) = self.pending.remove(i);
+        self.decide(&origin, s, true);
         self.live.push((pane, s.clone()));
         self.live.sort_by_key(|(p, _)| *p);
         true
     }
 
-    /// The person ignored a waiting hotkey: it stays stored, inert.
+    /// The person ignored a waiting hotkey: it stays stored, inert, and its session is not asked
+    /// again. (The answer to a question that a newer one replaced changes nothing.)
     pub fn ignore(&mut self, pane: PaneId, s: &Shortcut) {
-        self.pending.retain(|(p, x, _)| !(*p == pane && x == s));
+        let Some(i) = self.pending.iter().position(|(p, x, _)| *p == pane && x == s) else { return };
+        let (_, _, origin) = self.pending.remove(i);
+        self.decide(&origin, s, false);
+        if !self.ignored.contains(&pane) {
+            self.ignored.push(pane);
+        }
     }
 
-    /// The session ended (or its value changed): nothing of it stays.
-    pub fn pane_gone(&mut self, pane: PaneId) {
+    fn drop_values(&mut self, pane: PaneId) {
         self.live.retain(|(p, _)| *p != pane);
         self.pending.retain(|(p, _, _)| *p != pane);
+    }
+
+    /// The session ended: nothing of it stays, and a new session is asked afresh.
+    pub fn pane_gone(&mut self, pane: PaneId) {
+        self.drop_values(pane);
+        self.ignored.retain(|p| *p != pane);
     }
 }
 
@@ -459,10 +533,71 @@ mod tests {
     }
 
     #[test]
+    fn program_prompts_are_bounded() {
+        let a = sc(18, CTRL_ALT, "1");
+        let mut b = Book::default();
+        // One question per session: a second write replaces the first.
+        assert!(b.program_set(1, Some(a.clone()), Origin::Program).ask.is_some());
+        let w = b.program_set(1, Some(sc(19, CTRL_ALT, "2")), Origin::Program);
+        assert!(w.ask.is_some() && w.stale == Some(a.clone()), "the replaced question is named so its alert is dropped");
+        assert_eq!(b.pending().len(), 1);
+        // The same value again: nothing changes, nothing is asked.
+        assert_eq!(b.program_set(1, Some(sc(19, CTRL_ALT, "2")), Origin::Program), Written::default());
+        assert_eq!(b.pending().len(), 1);
+        // Ignore: this session is never asked again, however many chords the program tries.
+        b.ignore(1, &sc(19, CTRL_ALT, "2"));
+        for code in 0..40u16 {
+            let w = b.program_set(1, Some(sc(code, CTRL_ALT, "x")), Origin::Program);
+            assert!(w.ask.is_none(), "chord {code}");
+        }
+        assert!(b.pending().is_empty() && b.live().is_empty());
+        // Another session is asked as usual; the session ending clears its refusal.
+        assert!(b.program_set(2, Some(a.clone()), Origin::Program).ask.is_some());
+        b.pane_gone(1);
+        assert!(b.program_set(1, Some(a.clone()), Origin::Program).ask.is_some());
+        // The answer to a question that a newer one replaced does not silence the session.
+        let mut b = Book::default();
+        b.program_set(5, Some(a.clone()), Origin::Program);
+        b.program_set(5, Some(sc(19, CTRL_ALT, "2")), Origin::Program);
+        b.ignore(5, &a);
+        assert!(b.program_set(5, Some(sc(20, CTRL_ALT, "3")), Origin::Program).ask.is_some(), "a stale Ignore changes nothing");
+        // A live hotkey is not turned off by the same value written again.
+        let mut b = Book::default();
+        b.person_set(7, Some(a.clone()));
+        assert_eq!(b.program_set(7, Some(a.clone()), Origin::Program), Written::default());
+        assert_eq!(b.live(), &[(7, a.clone())], "still live");
+    }
+
+    #[test]
+    fn tmux_answers_stand_for_the_same_session_and_value() {
+        let a = sc(18, CTRL_ALT, "1");
+        let tmux = |n: &str| Origin::Tmux(n.into());
+        let mut b = Book::default();
+        assert!(b.program_set(1, Some(a.clone()), tmux("work")).ask.is_some());
+        assert!(b.allow(1, &a));
+        // Attached again (new pane ids), the same tmux session and value: allowed without a question.
+        b.pane_gone(1);
+        assert!(b.program_set(9, Some(a.clone()), tmux("work")).ask.is_none());
+        assert_eq!(b.live(), &[(9, a.clone())]);
+        // Another tmux session, or another value, is asked.
+        assert!(b.program_set(10, Some(a.clone()), tmux("other")).ask.is_some());
+        assert!(b.program_set(11, Some(sc(19, CTRL_ALT, "2")), tmux("work")).ask.is_some());
+        // An Ignore stands too, and stays inert.
+        let mut b = Book::default();
+        b.program_set(1, Some(a.clone()), tmux("work"));
+        b.ignore(1, &a);
+        b.pane_gone(1);
+        assert!(b.program_set(2, Some(a.clone()), tmux("work")).ask.is_none());
+        assert!(b.live().is_empty() && b.pending().is_empty());
+        assert!(b.knows(2, &a), "a refused session is known: nothing more to decide");
+        assert!(!b.waiting(2));
+    }
+
+    #[test]
     fn program_supplied_hotkey_needs_consent() {
         let s = sc(18, CTRL_ALT, "1");
         let mut b = Book::default();
-        let ask = b.program_set(3, Some(s.clone()), Origin::Tmux("x".into()));
+        let ask = b.program_set(3, Some(s.clone()), Origin::Tmux("x".into())).ask;
         assert!(ask.is_some(), "the person is asked");
         assert!(b.live().is_empty(), "nothing registers before the answer");
         assert_eq!(consent_text(&Origin::Tmux("x".into()), "Ctrl+Alt+1"), "tmux session \u{201c}x\u{201d} asks to register Ctrl+Alt+1 as a hotkey that works in every app.");

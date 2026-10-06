@@ -341,6 +341,11 @@ impl App {
         }
     }
 
+    /// Drops the queued asks that `about` picks (one already showing is left; its answer is stale).
+    pub(super) fn alert_drop_queued(&mut self, about: impl Fn(&Then) -> bool) {
+        self.scripts_alerts.retain(|a| !about(&a.then));
+    }
+
     /// Whether an ask that `about` picks is queued or showing.
     pub(super) fn alert_waits(&self, about: impl Fn(&Then) -> bool) -> bool {
         waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, about)

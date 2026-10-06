@@ -37,9 +37,17 @@ impl App {
     /// A program wrote (Some) or cleared (None) a pane's session hotkey: it is stored with the
     /// session by the caller, and here it is made inert, and the person is asked.
     pub(super) fn session_hotkey_from_program(&mut self, pane: PaneId, s: Option<Shortcut>, origin: Origin) {
-        let ask = self.session_hotkeys.program_set(pane, s, origin);
+        let written = self.session_hotkeys.program_set(pane, s, origin);
         self.session_hotkeys_dirty = true;
-        let Some((pane, s, origin)) = ask else { return };
+        // The question this one replaces is dropped if it still waits in the queue.
+        if let Some(old) = written.stale {
+            self.alert_drop_queued(|t| matches!(t, Then::SessionHotkey { pane: p, shortcut, .. } if *p == pane && *shortcut == old));
+        }
+        // Answered by an earlier decision for the same tmux session and value: it may be on already.
+        if self.session_hotkeys.live().iter().any(|(p, _)| *p == pane) {
+            self.after_session_hotkeys(pane);
+        }
+        let Some((pane, s, origin)) = written.ask else { return };
         // A chord that could never register is not worth a question.
         let Ok(chord) = session_hotkeys::check(&s, &[]) else { return };
         if self.alert_waits(|t| matches!(t, Then::SessionHotkey { pane: p, shortcut, .. } if *p == pane && *shortcut == s)) {
