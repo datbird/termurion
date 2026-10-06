@@ -530,12 +530,11 @@ impl App {
     /// A selection the person just made ended (`liveSelectionDidEnd`, `PTYTextView.m:6275-6284`):
     /// with `AutoSearch` on a short one becomes the shared find query, even with sync off, and the
     /// focused bar searches it quietly (B5), leaving the selection alone.
-    pub(super) fn selection_ended(&mut self, id: PaneId) {
+    pub(super) fn selection_ended_with(&mut self, id: PaneId, text: &str) {
         let on = self.globals.bool("AutoSearch");
         let Some(p) = self.panes.get(&id) else { return };
         let width = p.screen.term().columns();
-        let Some(text) = p.screen.selection_text() else { return };
-        if let Some(q) = auto_search_query(on, &text, width) {
+        if let Some(q) = auto_search_query(on, text, width) {
             self.set_find_pasteboard_always(&q, None);
         }
     }
@@ -543,10 +542,16 @@ impl App {
     /// Copies a selection the person just made (mouse release, Smart Selection, Select All):
     /// nothing with `CopySelection` off (`TV:3940-3945`).
     pub(super) fn copy_on_selection(&mut self, id: PaneId) {
+        self.copy_on_selection_with(id, None);
+    }
+
+    /// `copy_on_selection` with the selection's text already extracted (a mouse release extracts
+    /// it once for everything it does).
+    pub(super) fn copy_on_selection_with(&mut self, id: PaneId, text: Option<&str>) {
         match copy_kind(self.globals.bool("CopySelection"), self.globals.bool("CopyWithStylesByDefault")) {
             None => {}
-            Some(CopyKind::Plain) => self.copy_selection(id),
-            Some(CopyKind::Styled) => self.copy_with_styles(id),
+            Some(CopyKind::Plain) => self.copy_selection_with(id, text),
+            Some(CopyKind::Styled) => self.copy_with_styles_with(id, text),
         }
     }
 
@@ -829,11 +834,29 @@ mod tests {
     /// the clipboard, like the plain copy.
     #[test]
     fn copy_with_styles_follows_the_plain_copy() {
-        let body = include_str!("seltools_ui.rs").split("fn copy_with_styles(").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        let body = include_str!("seltools_ui.rs").split("fn copy_with_styles_with(").nth(1).unwrap().split("\n    }\n").next().unwrap();
         let (text, refuse, remember, write) = (body.find("selection_text()").unwrap(), body.find("copy_decision(").unwrap_or(usize::MAX), body.find("remember_paste(").unwrap_or(usize::MAX), body.find("winclip::set(").unwrap());
         assert!(text < refuse && refuse < write, "an empty styled copy is refused before the write");
         assert!(body.contains("DisallowCopyEmptyString"));
         assert!(remember < write, "the styled copy reaches Paste History");
+    }
+
+    /// Final review minor 8: a drag's release extracts the selection text once (an autoscroll drag
+    /// over a big buffer was four extractions and normalizations), and passes it on.
+    #[test]
+    fn a_release_extracts_the_selection_once() {
+        let code = include_str!("mod.rs");
+        let arm = &code[code.find("Drag::Select { pane, command, .. } => {").unwrap()..];
+        let arm = &arm[..arm.find("Drag::App { pane, button, clicks, at }").unwrap()];
+        let n = arm.matches("selection_text()").count() + arm.matches("selected_text(").count();
+        assert_eq!(n, 1, "{n} extractions on release");
+        for f in ["selection_ended_with(", "copy_on_selection_with(", "chat_offer_selection_with("] {
+            assert!(arm.contains(f), "{f}");
+        }
+        // Each helper that extracted for itself is the pre-extracted one now.
+        for f in ["self.selection_ended(", "self.copy_on_selection(", "self.chat_offer_selection("] {
+            assert!(!arm.contains(f), "{f} extracts again");
+        }
     }
 
     /// Task 4 re-review item 3: a Win-press masks the Start menu for a left press on a pane even

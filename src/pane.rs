@@ -2242,7 +2242,7 @@ impl Pane {
     /// region, one row higher for a line-style mark. In a view the own screen's rows.
     pub fn search_region(&mut self) -> Option<(usize, usize)> {
         let (first, last) = self.own_region()?;
-        let line_style = self.selected_command.and_then(|m| self.screen.command_record(m)).is_some_and(|m| m.line_style);
+        let line_style = self.selected_command.and_then(|m| self.own().command_record(m)).is_some_and(|m| m.line_style);
         Some((if line_style { first.saturating_sub(1) } else { first }, last))
     }
 

@@ -17,11 +17,16 @@ pub(super) const CHECKED: &[&str] =
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
     pub(super) fn copy_with_styles(&mut self, id: PaneId) {
+        self.copy_with_styles_with(id, None);
+    }
+
+    /// `copy_with_styles` with the text already extracted, when the caller has it.
+    pub(super) fn copy_with_styles_with(&mut self, id: PaneId, text: Option<&str>) {
         if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::Styles) {
             return;
         }
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
-        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return };
+        let Some(text) = text.map(str::to_string).or_else(|| self.panes.get(&id).and_then(|p| p.screen.selection_text())) else { return };
         // An empty copy never clears the clipboard with DisallowCopyEmptyString (`PTYTextView.m:4189-4193`).
         if !crate::seltext::copy_decision(&text, self.globals.bool("DisallowCopyEmptyString")) {
             return;

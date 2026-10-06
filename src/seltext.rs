@@ -261,6 +261,10 @@ fn extract_sub(cells: &dyn Cells, sub: &Sub, opts: Options, end_trim: bool, out:
             }
             let mut tail = String::new();
             cells.push_cell(row, to, &mut tail);
+            // A wide character's trailing spacer pushes nothing: the character before it is the tail.
+            if tail.is_empty() && to > 0 {
+                cells.push_cell(row, to - 1, &mut tail);
+            }
             tail.chars().all(char::is_whitespace)
         };
         let newline = if sub.mode == Mode::Box { !last || opts.last_newline } else { reaches_end && (!last || opts.last_newline) && ends_row() };
@@ -352,6 +356,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Final review minor 9: a window whose last cell is a wide character's trailing spacer does
+    /// not end its row (the wide character is text, so the line goes on).
+    #[test]
+    fn a_window_ending_in_a_wide_character_does_not_end_the_row() {
+        let cells = FakeCells::new(4, &[("a\u{4e2d}\0b", false), ("cdef", false)]);
+        let mut win = sub((0, 0), (1, 3), Mode::Character);
+        win.window = Some((1, 2));
+        assert_eq!(extract(&cells, &[win], TRIM), "\u{4e2d}de");
+        // A blank at the window's end still ends it.
+        let blank = FakeCells::new(4, &[("ab  ", false), ("cdef", false)]);
+        let mut win = sub((0, 0), (1, 3), Mode::Character);
+        win.window = Some((1, 2));
+        assert_eq!(extract(&blank, &[win], TRIM), "b\nde");
     }
 
     fn sub(a: (usize, usize), b: (usize, usize), mode: Mode) -> Sub {

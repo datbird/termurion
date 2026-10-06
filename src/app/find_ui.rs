@@ -341,6 +341,13 @@ fn search_pane(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, f
     }
 }
 
+/// Whether the bar says "Searching only selected command": the selected command's region exists
+/// and the search uses it (Find skips it in a Zoom view, which has other rows; Filter reads the
+/// own screen and keeps it).
+pub(super) fn find_restricted(region: bool, filter: bool, in_view: bool) -> bool {
+    region && (filter || !in_view)
+}
+
 /// The results of a fresh search. A loud one (the person's own typing, Enter, Find...) makes the
 /// nearest match at or above `from` current and selects and shows it; a quiet one (B5: the
 /// shared query, auto search) keeps the matches and highlights only, so no match is current (the
@@ -1285,6 +1292,32 @@ mod tests {
         p.selected_command = p.screen.prompt_at_or_before(2);
         assert_eq!(p.selected_region(), Some((1, 11)));
         assert_eq!(p.search_region(), Some((0, 11)));
+    }
+
+    /// Final review minor 5: a Filter view has no marks, so the line-style row comes from the own
+    /// screen's record, not the view's.
+    #[test]
+    fn a_line_style_region_survives_a_view() {
+        let mut p = crate::pane::Pane::recording(1, 30, 12);
+        p.screen.line_style_marks = true;
+        p.screen.feed(b"x\r\n\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07abc");
+        p.selected_command = p.screen.prompt_at_or_before(2);
+        let line = crate::synthetic::Styled { text: "abc".into(), sgr: "abc".into() };
+        let view = crate::synthetic::view(&[line], p.own());
+        p.show_view(view);
+        assert_eq!(p.search_region(), Some((0, 11)), "one row higher, as without the view");
+    }
+
+    /// Final review minor 6: the bar says it searches only the selected command when the search
+    /// does: Find skips the region in a Zoom view, Filter reads the own screen so it keeps it.
+    #[test]
+    fn the_restricted_notice_matches_what_find_does() {
+        assert!(find_restricted(true, false, false));
+        assert!(!find_restricted(true, false, true), "a Find inside a view is not restricted");
+        assert!(find_restricted(true, true, true), "Filter reads the own screen");
+        assert!(!find_restricted(false, true, false));
+        let m = include_str!("mod.rs");
+        assert!(m.contains("find_ui::find_restricted("), "the bar asks the predicate");
     }
 
     fn selection_start(p: &crate::pane::Pane) -> Pos {

@@ -4586,10 +4586,15 @@ impl App {
     /// Copy as the person asked for it (Edit > Copy, a key, copy mode): the selection's text
     /// goes to the clipboard, except an empty one with `DisallowCopyEmptyString` (`TV:4089-4150`).
     fn copy_selection(&mut self, id: PaneId) {
+        self.copy_selection_with(id, None);
+    }
+
+    /// `copy_selection` with the text already extracted, when the caller has it.
+    fn copy_selection_with(&mut self, id: PaneId, text: Option<&str>) {
         if self.copy_porthole_selection(id, porthole_ui::CopyAs::Plain) {
             return;
         }
-        let Some(text) = self.selected_text(id) else { return };
+        let Some(text) = text.map(str::to_string).or_else(|| self.selected_text(id)) else { return };
         if !crate::seltext::copy_decision(&text, self.globals.bool("DisallowCopyEmptyString")) {
             return;
         }
@@ -5267,7 +5272,11 @@ impl App {
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
             Drag::Select { pane, command, .. } => {
-                let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
+                // The text is extracted once (an autoscroll drag over a big buffer is a big extraction)
+                // and only when a selection exists; the live one and the extras decide that cheaply.
+                let any = self.panes.get(&pane).is_some_and(|p| !p.screen.subs().is_empty());
+                let text = if any { self.selected_text(pane).filter(|s| !s.is_empty()) } else { None };
+                let empty = text.is_none();
                 // A Win-click with no drag (B11): the selection it held comes back as the live one.
                 let kept = self.panes.get(&pane).filter(|p| p.screen.live_is_empty()).map(|p| p.screen.extra_subs()).filter(|k| !k.is_empty());
                 if let Some(kept) = kept {
@@ -5292,11 +5301,11 @@ impl App {
                         // Last (`TV:7940-7962`): no fold, note, key cursor or path mark took the click.
                         self.click_after_release(pane, removed);
                     }
-                } else {
-                    self.selection_ended(pane);
+                } else if let Some(text) = text {
+                    self.selection_ended_with(pane, &text);
                     // iTerm2 copies a selection as soon as it is made.
-                    self.copy_on_selection(pane);
-                    self.chat_offer_selection(pane);
+                    self.copy_on_selection_with(pane, Some(&text));
+                    self.chat_offer_selection_with(pane, &text);
                 }
             }
             Drag::App { pane, button, clicks, at } => {
@@ -5764,7 +5773,7 @@ impl App {
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
                 let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();
-                let restricted = self.panes.get_mut(&tab.focused).is_some_and(|p| p.search_region().is_some());
+                let restricted = self.panes.get_mut(&tab.focused).is_some_and(|p| find_ui::find_restricted(p.search_region().is_some(), f.filter, p.live.is_some()));
                 let palette_selection = self.panes.get(&tab.focused).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
                 let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE), progress: f.progress, selection: palette_selection };
                 let first_quad = frame.quads.len();

@@ -106,7 +106,7 @@ impl Sel {
         let (row, x) = self.end;
         let end = if x > 0 {
             Pos { row: row as usize, col: (x.min(width) - 1) as usize }
-        } else if row > self.start.0 {
+        } else if self.mode != crate::seltext::Mode::Box && row > self.start.0 {
             Pos { row: (row - 1) as usize, col: (width - 1).max(0) as usize }
         } else {
             return None;
@@ -327,6 +327,17 @@ mod tests {
         // An end at column 0 ends the line above.
         let got = to_sel(&sub((2, 12), (0, 14), None, M::Character), 80, 10).unwrap().to_sub(80).unwrap();
         assert_eq!(got.end, crate::find::Pos { row: 3, col: 79 });
+    }
+
+    /// Final review minor 7: the column-0 end rule is for run modes; a Box ending at column 0
+    /// covers no column, not the last one.
+    #[test]
+    fn a_box_end_at_column_zero_covers_nothing() {
+        use pb::SelectionMode as M;
+        let b = to_sel(&sub((2, 12), (0, 14), None, M::Box), 80, 10).unwrap();
+        assert_eq!(b.to_sub(80), None);
+        let line = to_sel(&sub((2, 12), (0, 14), None, M::Character), 80, 10).unwrap();
+        assert_eq!(line.to_sub(80).unwrap().end, crate::find::Pos { row: 3, col: 79 });
     }
 
     /// Window key 1 "pty-A" with tabs 5 (panes 1, 2) and 6 (pane 3), window key 2 "pty-B"

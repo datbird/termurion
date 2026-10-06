@@ -729,16 +729,15 @@ impl App {
     /// A terminal selection ended (`textViewLiveSelectionDidEnd`, `PTYSession.m:14912-14916`): a
     /// short one in the pane the shown chat links goes to the chat's input when it is still
     /// eligible (`CVC:1060-1067`, `offer_text`).
-    pub(super) fn chat_offer_selection(&mut self, pane: PaneId) {
+    pub(super) fn chat_offer_selection_with(&mut self, pane: PaneId, text: &str) {
         let Some(chat) = self.chat_shown.clone() else { return };
         let Some(reference) = self.session_ref(pane) else { return };
         if self.chat_row(&chat).and_then(|r| r.terminal_session_guid).as_deref() != Some(reference.as_str()) {
             return;
         }
         let Some(p) = self.panes.get(&pane) else { return };
-        let Some(text) = p.own().selection_text().filter(|t| !t.is_empty()) else { return };
-        if chat_menu::short_selection(text.chars().count(), p.own().term().grid().columns()) {
-            self.offer_text(&chat, &text);
+        if !text.is_empty() && chat_menu::short_selection(text.chars().count(), p.own().term().grid().columns()) {
+            self.offer_text(&chat, text);
         }
     }
 }
