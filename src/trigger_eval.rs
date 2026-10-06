@@ -1177,6 +1177,17 @@ mod tests {
         assert_eq!((alerts(&mut s), s.triggers.list[0].off_here), (1, false), "a quick pattern stays on");
     }
 
+    /// Review 2: a nested feed (Inject Data) never restarts the read's budget or its request cap.
+    #[test]
+    fn inject_does_not_restart_the_budget() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("x", "AlertTrigger", "x", false), trig("x", "iTermInjectTrigger", "i", false)], TriggerPrefs::default());
+        s.triggers.budget = Some(Duration::from_secs(60));
+        s.feed("x\r\n".repeat(3000).as_bytes());
+        let n = s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count();
+        assert_eq!(n, MAX_REQUESTS, "the request cap holds for the whole read");
+    }
+
     /// B5: one feed queues at most `MAX_REQUESTS` trigger requests.
     #[test]
     fn requests_per_feed_are_capped() {
