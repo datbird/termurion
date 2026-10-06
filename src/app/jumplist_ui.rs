@@ -17,22 +17,39 @@ use crate::jumplist::{self, Recent, Recents, TabOpen};
 pub(super) const KEY: &str = "SaveProfilesToRecentDocuments";
 const BANNER: &str = "jump-list";
 const LIST_FILE: &str = "recents.json";
+/// The Jump List items the person removed (`jumplist::Removed`), next to the recents list.
+const REMOVED_FILE: &str = "removed.json";
 
 /// `%APPDATA%\Tandem\Recents`.
 fn recents_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("Recents")
 }
 
-/// The stored list: read at most one byte past its limit, and `Recents::load` keeps only what
-/// is valid.
-fn load_recents(dir: &Path) -> Recents {
+/// A list file of the folder, read at most one byte past its limit (so an oversized one is
+/// refused by its loader); empty when it cannot be read.
+fn read_list(dir: &Path, name: &str) -> String {
     use std::io::Read;
     let mut text = String::new();
-    let read = std::fs::File::open(dir.join(LIST_FILE)).and_then(|f| f.take(jumplist::MAX_LIST_BYTES as u64 + 1).read_to_string(&mut text));
+    let read = std::fs::File::open(dir.join(name)).and_then(|f| f.take(jumplist::MAX_LIST_BYTES as u64 + 1).read_to_string(&mut text));
     if read.is_err() {
-        return Recents::default();
+        return String::new();
     }
-    Recents::load(&text)
+    text
+}
+
+/// The stored list: `Recents::load` keeps only what is valid.
+fn load_recents(dir: &Path) -> Recents {
+    Recents::load(&read_list(dir, LIST_FILE))
+}
+
+/// The saved removed items: `Removed::load` keeps only what is valid.
+fn load_removed(dir: &Path) -> jumplist::Removed {
+    jumplist::Removed::load(&read_list(dir, REMOVED_FILE))
+}
+
+fn store_removed(dir: &Path, removed: &jumplist::Removed) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join(REMOVED_FILE), removed.save())
 }
 
 /// Writes the front entry's `.itermtab` file and the list.
@@ -96,6 +113,7 @@ impl App {
         }
         let dir = recents_dir();
         self.recents = load_recents(&dir);
+        self.jump_sync.removed = load_removed(&dir);
         if !self.globals.bool(KEY) {
             self.recents.clear();
             let _ = store_recents(&dir, &self.recents);
@@ -134,6 +152,12 @@ impl App {
         if let Some(e) = tick.banner {
             self.banners.set(BANNER, e);
             self.redraw();
+        }
+        if tick.save_removed {
+            if let Err(e) = store_removed(&recents_dir(), &self.jump_sync.removed) {
+                self.banners.set(BANNER, format!("Tandem could not save the removed Jump List items: {e}"));
+                self.redraw();
+            }
         }
         tick.wake
     }

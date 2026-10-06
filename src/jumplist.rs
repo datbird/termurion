@@ -23,6 +23,8 @@ pub const MAX_LINKS: usize = 200;
 /// The recents list file and a `.itermtab` file are read at most this long.
 pub const MAX_LIST_BYTES: usize = 64 * 1024;
 pub const MAX_TAB_FILE: usize = 4 * 1024;
+/// Removed Jump List items kept (the newest).
+pub const MAX_REMOVED: usize = 256;
 
 /// One Jump List item: the title shown and the arguments Tandem's own exe is started with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -283,13 +285,59 @@ pub struct Tick {
     pub wake: Option<std::time::Instant>,
     /// A failure to tell the person, once until the next success.
     pub banner: Option<String>,
+    /// The commit reported a removal not known before: save `Sync::removed`.
+    pub save_removed: bool,
 }
 
-/// The rebuild loop's state: the removed items the last commit reported, the time of the last
+/// The Jump List items the person removed, as their arguments: every `BeginList` report merged in
+/// (Windows reports the removals since the last list), the newest `MAX_REMOVED` kept, saved next
+/// to the recents list so a removal is never offered again, also after a restart.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Removed {
+    pub list: Vec<Vec<String>>,
+}
+
+impl Removed {
+    /// Adds the new items of `report` at the end; the oldest go past `MAX_REMOVED`. True when
+    /// the list changed.
+    pub fn merge(&mut self, report: Vec<Vec<String>>) -> bool {
+        let before = self.list.len();
+        let mut changed = false;
+        for args in report {
+            if !self.list.contains(&args) {
+                self.list.push(args);
+                changed = true;
+            }
+        }
+        let over = self.list.len().saturating_sub(MAX_REMOVED);
+        self.list.drain(..over);
+        changed || self.list.len() != before
+    }
+
+    /// The list from its file text, with the recents list's bounds: an oversized or unreadable
+    /// text is empty; each entry has 1 to 4 arguments of at most 1024 characters; the last
+    /// `MAX_REMOVED` are kept.
+    pub fn load(text: &str) -> Removed {
+        if text.len() > MAX_LIST_BYTES {
+            return Removed::default();
+        }
+        let Ok(list) = serde_json::from_str::<Vec<Vec<String>>>(text) else { return Removed::default() };
+        let mut list: Vec<Vec<String>> = list.into_iter().filter(|a| (1..=4).contains(&a.len()) && a.iter().all(|s| s.chars().count() <= 1024)).collect();
+        let over = list.len().saturating_sub(MAX_REMOVED);
+        list.drain(..over);
+        Removed { list }
+    }
+
+    pub fn save(&self) -> String {
+        serde_json::to_string(&self.list).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+/// The rebuild loop's state: the removed items every commit reported, the time of the last
 /// commit, whether the last one failed, and the key's last value.
 #[derive(Debug, Default)]
 pub struct Sync {
-    pub removed: Vec<Vec<String>>,
+    pub removed: Removed,
     pub failed: bool,
     pub started: bool,
     pub key_seen: Option<bool>,
@@ -298,9 +346,9 @@ pub struct Sync {
 
 impl Sync {
     /// One pass: nothing when `due` is clear; a wake time while the gap since the last commit
-    /// holds the rebuild back; otherwise clears `due`, builds the model, drops the links the last
-    /// commit saw removed and hands it to `write` (the injected COM writer), keeping the removed
-    /// items it reports. A failure is not retried until `due` is set again, and is reported once.
+    /// holds the rebuild back; otherwise clears `due`, builds the model, drops every link a commit
+    /// saw removed and hands it to `write` (the injected COM writer), merging the removed items it
+    /// reports into the kept list (never replacing it). A failure is not retried until `due` is set again, and is reported once.
     pub fn tick(&mut self, due: &mut bool, now: std::time::Instant, build: &dyn Fn() -> Model, write: &mut dyn FnMut(&Model) -> Result<Vec<Vec<String>>, String>) -> Tick {
         if !*due {
             return Tick::default();
@@ -308,18 +356,17 @@ impl Sync {
         if let Some(last) = self.last {
             let at = last + REBUILD_GAP;
             if now < at {
-                return Tick { wake: Some(at), banner: None };
+                return Tick { wake: Some(at), ..Tick::default() };
             }
         }
         *due = false;
         self.last = Some(now);
-        match write(&without_removed(build(), &self.removed)) {
+        match write(&without_removed(build(), &self.removed.list)) {
             Ok(removed) => {
-                self.removed = removed;
                 self.failed = false;
-                Tick::default()
+                Tick { save_removed: self.removed.merge(removed), ..Tick::default() }
             }
-            Err(e) => Tick { wake: None, banner: (!std::mem::replace(&mut self.failed, true)).then_some(e) },
+            Err(e) => Tick { banner: (!std::mem::replace(&mut self.failed, true)).then_some(e), ..Tick::default() },
         }
     }
 }
@@ -531,7 +578,7 @@ mod tests {
             written.push(m.clone());
             Ok(removed.clone())
         });
-        assert_eq!((r, due, written.len()), (Tick::default(), false, 1));
+        assert_eq!((r, due, written.len()), (Tick { save_removed: true, ..Tick::default() }, false, 1));
         // Due again inside the gap: held back, with the time to look again.
         due = true;
         let r = sync.tick(&mut due, t0 + Duration::from_millis(300), &m, &mut |_| panic!("too soon"));
@@ -543,7 +590,7 @@ mod tests {
         });
         assert_eq!((r, due), (Tick::default(), false));
         assert_eq!(written[1].categories[1].links, vec![link("B", &["--new-tab", GB])]);
-        assert!(sync.removed.is_empty());
+        assert_eq!(sync.removed.list, removed, "an empty report keeps what an earlier one removed");
         // A failure is told once, not retried until due again, and clears on success.
         due = true;
         let now = t0 + 3 * REBUILD_GAP;
@@ -555,5 +602,52 @@ mod tests {
         due = true;
         sync.tick(&mut due, now + 2 * REBUILD_GAP, &m, &mut |_| Ok(Vec::new()));
         assert!(!sync.failed);
+    }
+
+    /// Task 6 review, Important 1: BeginList reports the items removed since the last list (the
+    /// SDK sample, Firefox and Chromium keep them), so each report is merged into a bounded list
+    /// that is saved; a removal survives later commits that report nothing and a reload.
+    #[test]
+    fn a_removed_item_survives_two_commits_and_a_reload() {
+        use std::time::Instant;
+        let t0 = Instant::now();
+        let m = || model(&profiles(), GA, &[], &[], false);
+        let gone = vec!["--new-tab".to_string(), GA.to_string()];
+        let mut sync = Sync::default();
+        let mut written: Vec<Model> = Vec::new();
+        let mut due = true;
+        let r = sync.tick(&mut due, t0, &m, &mut |_| Ok(vec![gone.clone()]));
+        assert!(r.save_removed, "a new removal is saved");
+        for n in 1..=2u32 {
+            due = true;
+            let r = sync.tick(&mut due, t0 + n * REBUILD_GAP, &m, &mut |m| {
+                written.push(m.clone());
+                Ok(Vec::new())
+            });
+            assert!(!r.save_removed, "nothing new to save");
+        }
+        for w in &written {
+            assert!(!w.categories.iter().flat_map(|c| &c.links).any(|l| l.args == gone), "commit after commit: {w:?}");
+        }
+        // A reload: a new run reads what was saved.
+        let mut again = Sync { removed: Removed::load(&sync.removed.save()), ..Sync::default() };
+        let mut after = None;
+        due = true;
+        again.tick(&mut due, t0, &m, &mut |m| {
+            after = Some(m.clone());
+            Ok(Vec::new())
+        });
+        assert!(!after.unwrap().categories.iter().flat_map(|c| &c.links).any(|l| l.args == gone), "after a reload");
+        // The same removal reported again changes nothing; the list is bounded, newest kept.
+        assert!(!sync.removed.merge(vec![gone.clone()]));
+        let mut r = Removed::default();
+        assert!(r.merge((0..MAX_REMOVED + 10).map(|i| vec!["--arrangement".to_string(), format!("A{i}")]).collect()));
+        assert_eq!(r.list.len(), MAX_REMOVED);
+        assert_eq!(r.list.last().unwrap()[1], format!("A{}", MAX_REMOVED + 9));
+        // The saved text is read with the same bounds as the recents: oversized, broken or odd entries go.
+        assert_eq!(Removed::load(&" ".repeat(MAX_LIST_BYTES + 1)), Removed::default());
+        assert_eq!(Removed::load("not json"), Removed::default());
+        let odd = format!("[[], [\"--new-tab\", \"{GA}\"], [\"{}\"], [\"a\",\"b\",\"c\",\"d\",\"e\"]]", "x".repeat(5000));
+        assert_eq!(Removed::load(&odd).list, vec![gone]);
     }
 }

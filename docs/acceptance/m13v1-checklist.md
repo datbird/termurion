@@ -58,3 +58,9 @@ Same setup and capture as rows 1-5.
 | 19 | A recording or arrangement from Explorer on a share: right-click `Z:\x.itr` (and `C:\t\share\x.itermarrangement`, row 3's link) > Open with > Tandem: refused with the network banner, no SMB. Session > Log > Import Recording and Load Arrangement from File picking the same files in the dialog do open them (the person's own pick). | |
 | 20 | A parent step after a link: `mkdir C:\r\x\y`, `mklink /D C:\r\d x\y`, `mklink /D C:\r\f \\server\share`. Open `C:\r\d\..\f\notes.txt` with Tandem (and click it printed in a pane): refused, no SMB. | |
 | 21 | A Markdown document (Porthole) with links `[a](Z:\notes.txt)` and `[b](C:\t\share\notes.txt)`: clicking either shows the network banner and asks nothing, no SMB; with "Always" set earlier, still refused. A link to a local `.txt` asks and opens it. | |
+
+## Jump List (task 6 fix r1)
+
+| # | Check | Result |
+|---|---|---|
+| 22 | Right-click Tandem's taskbar button, Remove from this list on a profile item. Open two new tabs (two rebuilds) and edit a profile name: the item stays gone. Quit and start Tandem: still gone. `%APPDATA%\Tandem\Recents\removed.json` lists its arguments. | |
