@@ -1701,6 +1701,8 @@ pub fn run() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
     }
+    // Tandem's own scheme registrations follow the exe when it moved (only schemes the person bound).
+    crate::url_schemes::repair_at_start(&globals);
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
     // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
     let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
