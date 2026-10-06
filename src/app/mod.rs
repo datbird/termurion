@@ -6070,8 +6070,6 @@ impl App {
     }
 
     fn build_frame(&mut self) -> Frame {
-        // Before the timed phases (13w S12): each browser view is placed for this frame.
-        self.place_browser_views();
         let mut attention: Option<Instant> = None;
         // Every pane's face is measured before the frame (`pane_cell` only reads).
         self.ensure_faces();
@@ -6471,6 +6469,9 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Before the timed phases (13w S12): each browser view is placed for this frame, so the
+        // COM calls a changed placement makes are not counted as drawing.
+        self.place_browser_views();
         // Nothing is measured while LogDrawingPerformance is off.
         let timing = self.globals.bool("LogDrawingPerformance");
         let started = timing.then(Instant::now);
@@ -8000,6 +8001,17 @@ mod tests {
         assert_eq!(named, classified.into_iter().collect::<Vec<_>>());
         // report is read through `a.report` too, and the web hold is the arm's own state.
         assert!(include_str!("mod.rs").contains("web_focus_held: Option<WindowId>"));
+    }
+
+    /// 13w seam S12: the browser views are placed before the first draw timer starts, and only
+    /// there (once per frame).
+    #[test]
+    fn browser_views_are_placed_before_the_draw_timers() {
+        let src = include_str!("mod.rs");
+        let render = fn_body(src, "fn render(&mut self)", "    ");
+        assert!(render.find("self.place_browser_views();").unwrap() < render.find("let started = timing.then(Instant::now);").unwrap());
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(live.matches("self.place_browser_views();").count(), 1);
     }
 
     #[test]
