@@ -65,8 +65,14 @@ impl App {
             cwd: self.pane_dir(id),
             smart,
             raw_command: prefs.action == "raw command",
+            require_slash: self.require_slash(),
         };
         Some(Clicked { ctx, line, base, joined, found, rules, prefs, link_id: link.map(|h| h.id().to_string()) })
+    }
+
+    /// `RequireSlashInURLGuess`: a URL guess with no scheme needs a slash.
+    pub(super) fn require_slash(&self) -> bool {
+        self.globals.bool("RequireSlashInURLGuess")
     }
 
     /// Whether a reported host name is this computer (`localhost`, its name or its DNS name; P17).
@@ -300,10 +306,10 @@ impl App {
                 }
                 if c.ctx.link.is_some() {
                     extra.push(("Copy Link Address".into(), CtxItem::CopyLink));
-                } else if semantic::url_like(&c.ctx.before, &c.ctx.after).is_some() {
+                } else if semantic::url_like(&c.ctx.before, &c.ctx.after, c.ctx.require_slash).is_some() {
                     extra.push(("Copy URL".into(), CtxItem::CopyLink));
                 }
-                let link = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after));
+                let link = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after, c.ctx.require_slash));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
                 pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new() });
@@ -406,7 +412,7 @@ impl App {
     /// text may only download (P10).
     pub(super) fn open_text(&mut self, id: PaneId, text: &str) {
         if self.remote_text(id) {
-            let link = semantic::url_like("", text);
+            let link = semantic::url_like("", text, self.require_slash());
             match link.filter(|u| ssh_files::click_route(true, Some(u.as_str())) == ssh_files::ClickRoute::Local) {
                 Some(u) => self.execute(id, semantic::guard_open(&u, has_code()), None, false),
                 None => {
@@ -419,7 +425,7 @@ impl App {
         let prefs = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(|p| Prefs::from_value(p.get("Semantic History").as_ref())).unwrap_or_default();
         let target = match semantic::find_path("", text, cwd.as_deref()) {
             Some((path, line, column)) => Target::File { path, line, column },
-            None => Target::Url(semantic::url_like("", text).unwrap_or_else(|| text.to_string())),
+            None => Target::Url(semantic::url_like("", text, self.require_slash()).unwrap_or_else(|| text.to_string())),
         };
         let cwd_s = cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         let around = Around { prefix: "", suffix: text, cwd: &cwd_s };
@@ -431,7 +437,7 @@ impl App {
     /// Copy Link Address, the pointer action: the link or URL at a point.
     pub(super) fn copy_link_at(&mut self, id: PaneId, point: Point) {
         let Some(c) = self.clicked(id, point) else { return };
-        let Some(link) = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after)) else { return };
+        let Some(link) = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after, c.ctx.require_slash)) else { return };
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(link) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));

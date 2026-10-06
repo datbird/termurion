@@ -26,6 +26,8 @@ pub struct ClickContext {
     pub smart: Option<(usize, usize, String)>,
     /// Semantic History is set to "raw command".
     pub raw_command: bool,
+    /// `RequireSlashInURLGuess`: text with no scheme needs a slash to be a URL.
+    pub require_slash: bool,
 }
 
 /// iTerm2 looks this far each way from the click.
@@ -50,7 +52,7 @@ pub fn resolve_range(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Ran
             return Some((Target::RawCommand(word), Some(range)));
         }
     }
-    url_in(&ctx.before, &ctx.after).map(|(u, r)| (Target::Url(u), Some(r)))
+    url_in(&ctx.before, &ctx.after, ctx.require_slash).map(|(u, r)| (Target::Url(u), Some(r)))
 }
 
 pub fn resolve(ctx: &ClickContext) -> Option<Target> {
@@ -180,13 +182,47 @@ fn path_in(before: &str, after: &str, cwd: Option<&Path>) -> Option<PathHit> {
     })
 }
 
-/// URL-like text around the click, made into a URL.
-pub fn url_like(before: &str, after: &str) -> Option<String> {
-    url_in(before, after).map(|(u, _)| u)
+/// URL-like text around the click, made into a URL. `require_slash` is
+/// `RequireSlashInURLGuess`: text with no scheme needs a slash.
+pub fn url_like(before: &str, after: &str, require_slash: bool) -> Option<String> {
+    url_in(before, after, require_slash).map(|(u, _)| u)
 }
 
-fn url_in(before: &str, after: &str) -> Option<(String, std::ops::Range<usize>)> {
-    let url_char = |c: char| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c);
+/// Whether a string with no colon could be a URL (`stringLooksLikeURL`,
+/// `iTermURLActionFactory.m:904-941`): no character a URL cannot hold, not empty, no leading
+/// slash, any other slash is enough; without one, `require_slash` refuses, else a dotted quad
+/// or a hostname of at least two components passes.
+pub fn looks_like_url(s: &str, require_slash: bool) -> bool {
+    if s.is_empty() || !s.chars().all(url_char) {
+        return false;
+    }
+    match s.find('/') {
+        Some(0) => return false,
+        Some(_) => return true,
+        None => {}
+    }
+    if require_slash {
+        return false;
+    }
+    let octet = |l: &str| !l.is_empty() && l.len() <= 3 && l.chars().all(|c| c.is_ascii_digit()) && l.parse::<u32>().is_ok_and(|n| n <= 255) && (l == "0" || !l.starts_with('0'));
+    let quad: Vec<&str> = s.split('.').collect();
+    if quad.len() == 4 && quad.iter().all(|l| octet(l)) {
+        return true;
+    }
+    let label = |l: &str| {
+        let b = l.as_bytes();
+        !b.is_empty() && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-') && b[0] != b'-' && b[b.len() - 1] != b'-'
+    };
+    let labels: Vec<&str> = s.split('.').collect();
+    labels.len() >= 2 && labels.iter().all(|l| label(l))
+}
+
+/// A character NSCharacterSet's urlCharacterSet allows.
+fn url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)
+}
+
+fn url_in(before: &str, after: &str, require_slash: bool) -> Option<(String, std::ops::Range<usize>)> {
     let mut start = before.char_indices().rev().find(|(_, c)| !url_char(*c)).map_or(0, |(i, c)| i + c.len_utf8());
     let end = after.char_indices().find(|(_, c)| !url_char(*c)).map_or(after.len(), |(i, _)| i);
     let mut s = format!("{}{}", &before[start..], &after[..end]);
@@ -217,6 +253,9 @@ fn url_in(before: &str, after: &str) -> Option<(String, std::ops::Range<usize>)>
     }
     if s.starts_with("mailto:") && s.len() > 7 {
         return Some((s.clone(), range(0)));
+    }
+    if !s.contains(':') && !looks_like_url(&s, require_slash) {
+        return None;
     }
     let host = s.split(['/', '?', '#']).next().unwrap_or_default();
     let host = host.rsplit_once(':').filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit())).map_or(host, |(h, _)| h);
@@ -529,15 +568,38 @@ mod tests {
     #[test]
     fn url_like_text_becomes_a_url() {
         let (b, a) = click("go to https://exa|mple.com/a?b=1.");
-        assert_eq!(url_like(&b, &a).as_deref(), Some("https://example.com/a?b=1"));
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("https://example.com/a?b=1"));
         let (b, a) = click("(see www.exam|ple.com/x)");
-        assert_eq!(url_like(&b, &a).as_deref(), Some("https://www.example.com/x"));
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("https://www.example.com/x"));
         let (b, a) = click("mail mailto:a@|b.com");
-        assert_eq!(url_like(&b, &a).as_deref(), Some("mailto:a@b.com"));
+        assert_eq!(url_like(&b, &a, true).as_deref(), Some("mailto:a@b.com"));
         let (b, a) = click("just a wo|rd");
-        assert_eq!(url_like(&b, &a), None);
+        assert_eq!(url_like(&b, &a, true), None);
         let (b, a) = click("version 1.2|.3");
-        assert_eq!(url_like(&b, &a), None);
+        assert_eq!(url_like(&b, &a, true), None);
+    }
+
+
+    #[test]
+    fn looks_like_url_follows_iterm2() {
+        for (s, want) in [("example.com", false), ("example.com/", true), ("foo/bar", true), ("/usr/bin", false), ("", false), ("a b", false)] {
+            assert_eq!(looks_like_url(s, true), want, "require_slash true: {s:?}");
+        }
+        for (s, want) in [("example.com", true), ("10.0.0.1", true), ("256.1.1.1", true), ("localhost", false), ("-a.com", false), ("a b", false), ("/usr/bin", false), ("foo/bar", true)] {
+            assert_eq!(looks_like_url(s, false), want, "require_slash false: {s:?}");
+        }
+    }
+
+    #[test]
+    fn url_guess_needs_a_slash() {
+        let guess = |text: &str, slash: bool| {
+            let (b, a) = click(text);
+            url_like(&b, &a, slash)
+        };
+        assert_eq!(guess("exam|ple.com", true), None);
+        assert_eq!(guess("exam|ple.com/x", true).as_deref(), Some("https://example.com/x"));
+        assert_eq!(guess("exam|ple.com", false).as_deref(), Some("https://example.com"));
+        assert_eq!(guess("go https://exa|mple.com", true).as_deref(), Some("https://example.com"));
     }
 
     #[test]

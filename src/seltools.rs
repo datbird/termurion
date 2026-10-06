@@ -77,6 +77,36 @@ pub fn clip_to_dividers(lo: usize, hi: usize, click: usize, dividers: &[usize]) 
     (left, right)
 }
 
+/// A match that ends at its window's right edge, extended across the divider onto the rows
+/// below (`SearchResultSoftBoundaryExtender.swift`): the text from `start` to the window's edge
+/// on `start.row`, then each following row's window while the divider column still holds a
+/// divider, is matched again and a match from the start that reaches a later row wins. Returns
+/// its end cell and text. `rows` are the cell characters, `start.row` indexes them; the regex
+/// is the caller's bounded one and an error is no match.
+pub fn extend_across_divider(rows: &[Vec<char>], start: (usize, usize), window: (usize, usize), re: &fancy_regex::Regex) -> Option<((usize, usize), String)> {
+    let (lo, hi) = window;
+    let divider_col = hi + 1;
+    let mut text = String::new();
+    let mut coords: Vec<(usize, usize)> = Vec::new();
+    let mut append = |row: usize, from: usize| {
+        for col in from..=hi {
+            let Some(&c) = rows.get(row).and_then(|r| r.get(col)) else { break };
+            text.push(c);
+            coords.push((row, col));
+        }
+    };
+    append(start.0, start.1);
+    let mut row = start.0 + 1;
+    while row < rows.len() && rows[row].get(divider_col).is_some_and(|c| DIVIDERS.contains(c)) {
+        append(row, lo);
+        row += 1;
+    }
+    let m = re.find(&text).ok().flatten().filter(|m| m.start() == 0 && m.end() > 0)?;
+    let last = text[..m.end()].chars().count() - 1;
+    let end = coords[last];
+    (end.0 > start.0).then(|| (end, m.as_str().to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +166,23 @@ mod tests {
         assert_eq!(clip_to_dividers(0, 20, 3, &[6]), (0, 5));
         assert_eq!(clip_to_dividers(0, 20, 9, &[6]), (7, 20));
         assert_eq!(clip_to_dividers(2, 4, 3, &[]), (2, 4));
+    }
+
+    #[test]
+    fn soft_boundary_urls_extend() {
+        let re = fancy_regex::Regex::new(r"https?://[a-z.]+/?").unwrap();
+        let rows: Vec<Vec<char>> = ["http://ex\u{2502}zz", "ample.com\u{2502}zz"].iter().map(|r| r.chars().collect()).collect();
+        // The match "http://ex" ends at column 8, the window's right edge: it reaches row 1.
+        assert_eq!(extend_across_divider(&rows, (0, 0), (0, 8), &re), Some(((1, 8), "http://example.com".to_string())));
+        // A match that starts mid-row extends the same way.
+        let rows: Vec<Vec<char>> = ["see http://ex\u{2502}", "ample.com    \u{2502}"].iter().map(|r| r.chars().collect()).collect();
+        assert_eq!(extend_across_divider(&rows, (0, 4), (0, 12), &re), Some(((1, 8), "http://example.com".to_string())));
+        // A match ending before the window's edge has nothing to extend: the row below holds
+        // no divider in the divider column.
+        let rows: Vec<Vec<char>> = ["http://a.b  \u{2502}zz", "next line   zz"].iter().map(|r| r.chars().collect()).collect();
+        assert_eq!(extend_across_divider(&rows, (0, 0), (0, 11), &re), None);
+        // Rows with no divider do not extend.
+        let rows: Vec<Vec<char>> = ["http://ex", "ample.com"].iter().map(|r| r.chars().collect()).collect();
+        assert_eq!(extend_across_divider(&rows, (0, 0), (0, 8), &re), None);
     }
 }

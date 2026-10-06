@@ -3,7 +3,7 @@
 //! Alt with the label copies it.
 
 use super::*;
-use crate::find::{self, Match};
+use crate::find::{self, Match, Pos};
 
 /// Labels for `n` results: 1 to 9, then A to Z; past 35 results, two letters after the
 /// digits, so no label is the start of another.
@@ -44,8 +44,65 @@ pub(super) struct Shortcuts {
     pub typed: String,
 }
 
-/// iTerm2's URL pattern for Find URLs, less its trailing punctuation.
-const URL_PATTERN: &str = r#"(?i)\b(?:(?:https?|ftp|file|ssh|telnet)://|mailto:|www\.)[^\s<>"'`]+"#;
+/// Find URLs reads at most this many bytes of a logical line past the visible rows each way (a
+/// visible line can be thousands of rows long, P10).
+const FIND_LINE_CAP: usize = 100_000;
+
+/// The most rows below a match that a soft boundary may extend it over.
+const EXTEND_ROWS: usize = 200;
+
+/// `FindUrlsRegex` compiled the way iTerm2 searches with it: case-sensitive, with bounded
+/// backtracking (B6). None for an invalid pattern.
+pub(super) fn find_urls_regex(g: &Globals) -> Option<fancy_regex::Regex> {
+    fancy_regex::RegexBuilder::new(&crate::smartsel::to_rust_regex(&g.string("FindUrlsRegex")))
+        .backtrack_limit(20_000)
+        .delegate_size_limit(1 << 20)
+        .delegate_dfa_size_limit(1 << 20)
+        .build()
+        .ok()
+}
+
+/// The matches of `re` in `text[window]` as byte ranges of `text`; an error ends the scan.
+fn url_hits(re: &fancy_regex::Regex, text: &str, window: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for m in re.find_iter(&text[window.clone()]) {
+        let Ok(m) = m else { break };
+        if m.end() > m.start() {
+            out.push(window.start + m.start()..window.start + m.end());
+        }
+    }
+    out
+}
+
+/// The bytes of `line` worth scanning: the visible rows' cells widened by FIND_LINE_CAP each way.
+fn scan_window(line: &find::Logical, rows: &std::ops::RangeInclusive<usize>) -> std::ops::Range<usize> {
+    let first = line.cells.partition_point(|(_, p)| p.row < *rows.start());
+    let last = line.cells.partition_point(|(_, p)| p.row <= *rows.end());
+    let lo = line.cells.get(first).map_or(line.text.len(), |c| c.0);
+    let hi = line.cells.get(last).map_or(line.text.len(), |c| c.0);
+    let (mut lo, mut hi) = (lo.saturating_sub(FIND_LINE_CAP), (hi + FIND_LINE_CAP).min(line.text.len()));
+    while !line.text.is_char_boundary(lo) {
+        lo -= 1;
+    }
+    while !line.text.is_char_boundary(hi) {
+        hi += 1;
+    }
+    lo..hi
+}
+
+/// The cell characters of buffer rows `from..from + count` (fewer at the buffer's end).
+fn buffer_rows(screen: &crate::screen::Screen, from: usize, count: usize) -> Vec<Vec<char>> {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    let grid = screen.term().grid();
+    let top = -(grid.history_size() as i32);
+    let bottom = grid.screen_lines() as i32 - 1;
+    (0..count)
+        .map(|i| from as i32 + top + i as i32)
+        .take_while(|l| *l <= bottom)
+        .map(|l| (0..grid.columns()).map(|c| grid[Line(l)][Column(c)].c).collect())
+        .collect()
+}
 
 /// Matches in `lines` that start on screen, each with its text.
 fn on_screen(lines: &[find::Logical], hits: impl Iterator<Item = (usize, std::ops::Range<usize>)>, rows: &std::ops::RangeInclusive<usize>) -> Vec<(Match, String)> {
@@ -80,16 +137,27 @@ impl App {
             Vec::new()
         };
         let mut items = if kind == "urls" {
-            let re = regex::Regex::new(URL_PATTERN).expect("URL pattern");
-            let hits = lines.iter().enumerate().flat_map(|(i, l)| {
-                re.find_iter(&l.text)
-                    .map(|m| {
-                        let t = m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']']);
-                        (i, m.start()..m.start() + t.len())
-                    })
-                    .collect::<Vec<_>>()
-            });
-            on_screen(&lines, hits, &rows)
+            let Some(re) = find_urls_regex(&self.globals) else {
+                self.banners.set("action", "Find URLs: invalid regular expression");
+                return self.redraw();
+            };
+            let hits = lines.iter().enumerate().flat_map(|(i, l)| url_hits(&re, &l.text, scan_window(l, &rows)).into_iter().map(move |r| (i, r)).collect::<Vec<_>>());
+            let mut items = on_screen(&lines, hits, &rows);
+            if self.globals.bool("FindURLsRespectsSoftBoundaries") {
+                let Some(p) = self.panes.get(&id) else { return };
+                for (m, text) in items.iter_mut() {
+                    let Some((lo, hi)) = super::selection_ui::click_window(&p.screen, m.start.row, m.start.col) else { continue };
+                    if m.end.row != m.start.row || m.end.col < hi {
+                        continue;
+                    }
+                    let grid_rows = buffer_rows(&p.screen, m.start.row, EXTEND_ROWS);
+                    if let Some(((row, col), t)) = crate::seltools::extend_across_divider(&grid_rows, (0, m.start.col), (lo, hi), &re) {
+                        m.end = Pos { row: m.start.row + row, col };
+                        *text = t;
+                    }
+                }
+            }
+            items
         } else if !find_hits.is_empty() {
             find_hits
         } else {
@@ -163,6 +231,36 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn urls(g: &Globals, text: &str) -> Vec<String> {
+        let re = find_urls_regex(g).expect("pattern");
+        url_hits(&re, text, 0..text.len()).into_iter().map(|r| text[r].to_string()).collect()
+    }
+
+    #[test]
+    fn find_urls_pattern_follows_iterm2() {
+        let mut g = Globals::empty(std::path::Path::new("unused.toml"));
+        assert_eq!(urls(&g, "see https://ex-a.com:8080/a?b=1&c=(2) now"), ["https://ex-a.com:8080/a?b=1&c=(2)"]);
+        for none in ["ftp://x.org", "www.x.org", "mailto:a@b.c", "HTTPS://X.ORG"] {
+            assert!(urls(&g, none).is_empty(), "{none}");
+        }
+        assert_eq!(urls(&g, "http://a.b\u{2502}c"), ["http://a.b"]);
+        g.set("FindUrlsRegex", toml::Value::String("ftp://[a-z.]+".into()));
+        assert_eq!(urls(&g, "ftp://x.org"), ["ftp://x.org"]);
+        g.set("FindUrlsRegex", toml::Value::String("(unclosed".into()));
+        assert!(find_urls_regex(&g).is_none());
+    }
+
+    #[test]
+    fn find_urls_pattern_is_bounded() {
+        // A pattern that backtracks hard over a long line gives up instead of hanging.
+        let mut g = Globals::empty(std::path::Path::new("unused.toml"));
+        g.set("FindUrlsRegex", toml::Value::String("(a*)*b".into()));
+        let text = "a".repeat(100_000);
+        let start = std::time::Instant::now();
+        let _ = urls(&g, &text);
+        assert!(start.elapsed().as_secs() < 5);
+    }
 
     #[test]
     fn labels_run_digits_then_letters() {
