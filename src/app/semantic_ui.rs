@@ -10,8 +10,13 @@ use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
 use crate::smartsel::{self, Escape};
 use crate::ssh_files;
 
-/// Smart Selection looks this many logical lines each way from the click.
-const RADIUS: usize = 2;
+/// `SmartSelectionRadius` (iTerm2's 2): the logical lines Smart Selection looks at each way from
+/// the click. Clamped to 0..=50 (P6), so a negative value is 0 and a hand-edited huge one cannot
+/// make every click read thousands of lines.
+pub(super) fn radius(g: &crate::globals::Globals) -> usize {
+    let n = g.number("SmartSelectionRadius").filter(|v| !v.is_nan()).unwrap_or(2.0);
+    n.clamp(0.0, 50.0) as usize
+}
 
 impl App {
     /// Selects the best Smart Selection match at `point`. Returns the rule and match, or
@@ -20,7 +25,7 @@ impl App {
         let rules = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(smartsel::rules)?;
         let p = self.panes.get_mut(&id)?;
         let at = to_pos(&p.screen, point);
-        let (lines, _) = find::logical_lines_around(&p.screen, at.row, RADIUS);
+        let (lines, _) = find::logical_lines_around(&p.screen, at.row, radius(&self.globals));
         let joined = find::Logical::join(&lines, if ignore_newlines { "" } else { "\n" });
         let click = joined.offset_of(at)?;
         let found = smartsel::select_at(&joined.text, click, &rules)?;
@@ -37,7 +42,7 @@ impl App {
         let rules = smartsel::rules(profile);
         let prefs = Prefs::from_value(profile.get("Semantic History").as_ref());
         let at = to_pos(&p.screen, point);
-        let (lines, i) = find::logical_lines_around(&p.screen, at.row, RADIUS);
+        let (lines, i) = find::logical_lines_around(&p.screen, at.row, radius(&self.globals));
         let line = lines.get(i)?.clone_line();
         let o = line.offset_of(at)?;
         let joined = Logical::join(&lines, "\n");
@@ -607,6 +612,20 @@ pub(super) fn shell_open(target: &str, _cwd: Option<&std::path::Path>, _backgrou
 #[cfg(test)]
 mod title_menu_tests {
     use super::*;
+
+    #[test]
+    fn smart_selection_radius_follows_the_key() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("radius-test.toml"));
+        assert_eq!(radius(&g), 2);
+        g.set("SmartSelectionRadius", toml::Value::Integer(0));
+        assert_eq!(radius(&g), 0);
+        g.set("SmartSelectionRadius", toml::Value::Integer(5));
+        assert_eq!(radius(&g), 5);
+        g.set("SmartSelectionRadius", toml::Value::Integer(-4));
+        assert_eq!(radius(&g), 0);
+        g.set("SmartSelectionRadius", toml::Value::Integer(100_000));
+        assert_eq!(radius(&g), 50);
+    }
 
     #[test]
     fn picks_act_on_the_menus_pane() {

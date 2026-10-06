@@ -346,11 +346,12 @@ impl Results {
         self.current = anchor.or(was).and_then(|start| self.matches.iter().position(|m| m.start == start));
     }
 
-    /// "N", or "i/N" with a current match, i counted from the bottom.
-    pub fn label(&self) -> String {
+    /// "N", or "i/N" with a current match, i counted from the bottom with `swap` on (iTerm2's
+    /// default) and from the top with it off (`iTermSearchFieldCell.m:299`).
+    pub fn label(&self, swap: bool) -> String {
         let n = self.matches.len();
         match self.current {
-            Some(i) if i < n => format!("{}/{n}", n - i),
+            Some(i) if i < n => format!("{}/{n}", if swap { n - i } else { i + 1 }),
             _ => n.to_string(),
         }
     }
@@ -477,15 +478,25 @@ mod tests {
         assert_eq!(r.current, Some(0));
     }
 
+    /// `iTermSearchFieldCell.m:299`: with the swap on i counts from the bottom, off from the top.
+    #[test]
+    fn label_follows_swap() {
+        let m = |r| Match { start: at_pos(r, 0), end: at_pos(r, 1) };
+        let r = Results { matches: (0..5).map(m).collect(), current: Some(1) };
+        assert_eq!(r.label(true), "4/5");
+        assert_eq!(r.label(false), "2/5");
+        assert_eq!(Results::default().label(false), "0");
+    }
+
     #[test]
     fn the_count_counts_from_the_bottom() {
         let mut r = three();
-        assert_eq!(r.label(), "3");
+        assert_eq!(r.label(true), "3");
         r.current = Some(2);
-        assert_eq!(r.label(), "1/3");
+        assert_eq!(r.label(true), "1/3");
         r.current = Some(0);
-        assert_eq!(r.label(), "3/3");
-        assert_eq!(Results::default().label(), "0");
+        assert_eq!(r.label(true), "3/3");
+        assert_eq!(Results::default().label(true), "0");
     }
 
     #[test]
@@ -538,7 +549,7 @@ mod tests {
         // Scrollback is full: 3 lines dropped off the top, so every row moved up by 3.
         r.update(vec![m(2), m(3), m(4), m(8)], Some(at_pos(3, 0)));
         assert_eq!(r.current, Some(1));
-        assert_eq!(r.label(), "3/4");
+        assert_eq!(r.label(true), "3/4");
     }
 
     #[test]

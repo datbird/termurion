@@ -543,7 +543,7 @@ impl App {
                 let active = if kind == Kind::SearchTool { f.is_some_and(|f| f.open && !f.filter) } else { filtering };
                 let (text, label, chevrons, close, placeholder) = if kind == Kind::SearchTool {
                     let text = f.filter(|f| !f.filter).map(|f| f.query.clone()).unwrap_or_default();
-                    let label = f.filter(|f| active && !f.query.is_empty()).map(|f| f.results.label()).unwrap_or_default();
+                    let label = f.filter(|f| active && !f.query.is_empty()).map(|f| f.results.label(self.globals.bool("SwapFindNextPrevious"))).unwrap_or_default();
                     (text, label, true, sbc::is_temporary(c), SEARCH_PLACEHOLDER)
                 } else {
                     let text = f.filter(|_| filtering).map(|f| f.query.clone()).unwrap_or_default();

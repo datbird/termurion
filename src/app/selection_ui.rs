@@ -120,12 +120,44 @@ pub fn copy_kind(copy_on_select: bool, with_styles: bool) -> Option<CopyKind> {
     copy_on_select.then_some(if with_styles { CopyKind::Styled } else { CopyKind::Plain })
 }
 
+/// Whether a selection of `len` cells is short enough for auto search: at most 80 or the
+/// pane's width, whichever is more (`PTYTextView.m:3893-3896`).
+pub(super) fn short_selection(len: usize, width: usize) -> bool {
+    len <= width.max(80)
+}
+
+/// Whether a key sent to the session removes a finished selection: `TypingClearsSelection` on
+/// and no selection being dragged (`PTYTextView.m:7495-7500`).
+pub(super) fn typing_clears(live: bool, key_on: bool) -> bool {
+    key_on && !live
+}
+
+/// The query a finished selection puts on the shared find query: its text when `AutoSearch` is
+/// on and it is short (`PTYTextView.m:6275-6284`).
+pub(super) fn auto_search_query(on: bool, text: &str, width: usize) -> Option<String> {
+    let len = text.chars().count();
+    (on && len > 0 && short_selection(len, width)).then(|| text.to_string())
+}
+
 impl App {
     /// The text of every selection in `id`'s pane through `seltext::extract` with the copy
     /// options; None with no selection. `Screen::selection_text` is the one entry (every other
     /// reader of the selected text goes through it too); this is its pane-level name.
     pub(super) fn selected_text(&mut self, id: PaneId) -> Option<String> {
         self.panes.get(&id).and_then(|p| p.screen.selection_text())
+    }
+
+    /// A selection the person just made ended (`liveSelectionDidEnd`, `PTYTextView.m:6275-6284`):
+    /// with `AutoSearch` on a short one becomes the shared find query, even with sync off, and the
+    /// focused bar searches it quietly (B5), leaving the selection alone.
+    pub(super) fn selection_ended(&mut self, id: PaneId) {
+        let on = self.globals.bool("AutoSearch");
+        let Some(p) = self.panes.get(&id) else { return };
+        let width = p.screen.term().columns();
+        let Some(text) = p.screen.selection_text() else { return };
+        if let Some(q) = auto_search_query(on, &text, width) {
+            self.set_find_pasteboard_always(&q, None);
+        }
     }
 
     /// Copies a selection the person just made (mouse release, Smart Selection, Select All):
@@ -259,6 +291,39 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_search_follows_iterm2() {
+        assert!(short_selection(80, 40));
+        assert!(!short_selection(81, 40));
+        assert!(short_selection(120, 132));
+        assert!(!short_selection(133, 132));
+        // On, a finished 5-character selection becomes the shared query; off, nothing.
+        assert_eq!(auto_search_query(true, "hello", 80).as_deref(), Some("hello"));
+        assert_eq!(auto_search_query(false, "hello", 80), None);
+        // A 200-character selection in an 80-column pane is not short; nor is an empty one.
+        assert_eq!(auto_search_query(true, &"x".repeat(200), 80), None);
+        assert_eq!(auto_search_query(true, "", 80), None);
+        // It goes to the shared query even with sync off (setStringValueUnconditionally).
+        let mut board = String::new();
+        let q = auto_search_query(true, "hello", 80).unwrap();
+        assert!(super::find_ui::board_set(&mut board, false, &q, true));
+        assert_eq!(board, "hello");
+    }
+
+    /// A key typed to the session removes a finished selection, not one being dragged (R3, `02:1016`).
+    #[test]
+    fn typing_clears_selection() {
+        assert!(typing_clears(false, true));
+        assert!(!typing_clears(true, true));
+        assert!(!typing_clears(false, false));
+        // B4: the clear sits inside the bytes branch of to_terminal, after the movement scroll and
+        // before the write, so a bare modifier press (a Win for a Win-drag) keeps the selection.
+        let body = include_str!("mod.rs").split("fn to_terminal(").nth(1).unwrap().split("fn mouse_press(").next().unwrap();
+        let (bytes, clear, write) = (body.find("if let Some(bytes) = bytes").unwrap(), body.find("typing_clears(").unwrap(), body.find("self.user_write(").unwrap());
+        let movement = body.find("movement_scroll(").unwrap();
+        assert!(movement < bytes && bytes < clear && clear < write);
+    }
 
     #[test]
     fn copy_on_selection_uses_styles() {

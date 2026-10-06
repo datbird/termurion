@@ -12,8 +12,44 @@ use winit::keyboard::{Key as WKey, NamedKey};
 use super::*;
 use crate::find::{self, Match, Pos, Results};
 
-/// iTerm2 waits this long before searching for a query of two characters or fewer.
-const SHORT_QUERY_DELAY: Duration = Duration::from_secs(1);
+/// The longest query the shared find query takes (`iTermFindPasteboard.m:43-47`).
+pub(super) const BOARD_MAX: usize = 10 * 1024;
+
+/// `FindDelaySeconds`: how long iTerm2 waits before searching a query of two characters or
+/// fewer. Clamped to 0..=10 and NaN reads as the default, so a hand-edited value cannot panic
+/// `Duration::from_secs_f64` (P6).
+pub(super) fn find_delay(g: &crate::globals::Globals) -> Duration {
+    let secs = g.number("FindDelaySeconds").filter(|v| !v.is_nan()).unwrap_or(1.0);
+    Duration::from_secs_f64(secs.clamp(0.0, 10.0))
+}
+
+/// Whether Enter, with or without Shift, searches up: with `SwapFindNextPrevious` on Enter goes
+/// up and Shift+Enter down; with it off the reverse (`iTermFindDriver.m:258-277`).
+pub(super) fn step_direction(enter_shift: bool, swap: bool) -> bool {
+    enter_shift != swap
+}
+
+/// Sets the shared query. `always` is Use Selection for Find and auto search
+/// (`setStringValueUnconditionally`); else only with `SynchronizeQueryWithFindPasteboard` on.
+/// A string over `BOARD_MAX` characters is refused. True when the query was set.
+pub(super) fn board_set(board: &mut String, sync: bool, text: &str, always: bool) -> bool {
+    if (!sync && !always) || text.chars().count() > BOARD_MAX {
+        return false;
+    }
+    *board = text.to_string();
+    true
+}
+
+/// Loads the shared query into a bar that is not already showing it (`iTermFindDriver.m:440-455`):
+/// only with the sync key on, and a quiet search follows (B5). True when the bar took it.
+pub(super) fn board_load(board: &str, sync: bool, f: &mut FindState, now: Instant) -> bool {
+    if !sync || board.is_empty() || f.query == board {
+        return false;
+    }
+    f.set_query(board, now);
+    f.quiet = true;
+    true
+}
 /// New output searches again after this pause, so a stream of output searches rarely.
 const OUTPUT_DELAY: Duration = Duration::from_millis(150);
 
@@ -102,6 +138,9 @@ pub(super) struct FindState {
     pub filter: bool,
     /// The lines the Filter view shows.
     pub shown: Vec<String>,
+    /// The pending search comes from the shared query, not the person's typing: it fills the
+    /// results and highlights but selects nothing and scrolls nowhere (B5).
+    pub quiet: bool,
 }
 
 impl FindState {
@@ -116,6 +155,7 @@ impl FindState {
     }
 
     fn edited(&mut self, now: Instant) {
+        self.quiet = false;
         self.pending = true;
         self.fresh = true;
         self.changed_at = Some(now);
@@ -140,7 +180,7 @@ impl FindState {
     }
 
     /// When the pending search runs, if one waits.
-    pub fn due(&self) -> Option<Instant> {
+    pub fn due(&self, short_delay: Duration) -> Option<Instant> {
         if !self.pending {
             return None;
         }
@@ -148,15 +188,15 @@ impl FindState {
         Some(if !self.fresh {
             at + OUTPUT_DELAY
         } else if !self.query.is_empty() && self.query.chars().count() <= 2 {
-            at + SHORT_QUERY_DELAY
+            at + short_delay
         } else {
             at
         })
     }
 
     /// Takes the pending search if it is due now.
-    pub fn take_due(&mut self, now: Instant) -> Option<bool> {
-        if self.due().is_some_and(|d| now >= d) {
+    pub fn take_due(&mut self, now: Instant, short_delay: Duration) -> Option<bool> {
+        if self.due(short_delay).is_some_and(|d| now >= d) {
             self.pending = false;
             Some(self.fresh)
         } else {
@@ -295,14 +335,22 @@ impl App {
         let now = Instant::now();
         let Some(f) = self.finds.get_mut(&id) else { return false };
         let was_filter = f.filter;
-        match f.key(key, now) {
+        let outcome = f.key(key, now);
+        if outcome == Outcome::Nothing {
+            self.share_query(id);
+        }
+        match outcome {
             Outcome::Nothing => {}
             Outcome::Close => {
                 if was_filter {
                     self.end_view(id);
                 }
             }
-            Outcome::Step { up } => self.find_step(id, up),
+            // The bar reports Return as "up"; the swap key decides what that means.
+            Outcome::Step { up } => {
+                let up = step_direction(!up, self.globals.bool("SwapFindNextPrevious"));
+                self.find_step(id, up);
+            }
             Outcome::Grow => self.find_grow(id),
             Outcome::PasteMatch => {
                 let text = self.panes.get(&id).and_then(|p| p.screen.selection_text());
@@ -322,7 +370,58 @@ impl App {
         if let Some(f) = self.finds.get_mut(&id) {
             f.key(BarKey::Text(text.to_string()), Instant::now());
         }
+        self.share_query(id);
         self.redraw();
+    }
+
+    /// Puts bar `id`'s query on the shared query after the person edited it (not a Filter bar's).
+    fn share_query(&mut self, id: PaneId) {
+        let Some(q) = self.finds.get(&id).filter(|f| !f.filter).map(|f| f.query.clone()) else { return };
+        self.set_find_pasteboard(&q, Some(id));
+    }
+
+    /// Sets the shared find query with `SynchronizeQueryWithFindPasteboard` on (`from` is the
+    /// bar that was edited, which already shows it). The key window's focused bar loads it.
+    pub(super) fn set_find_pasteboard(&mut self, text: &str, from: Option<PaneId>) {
+        if board_set(&mut self.find_pasteboard, self.globals.bool("SynchronizeQueryWithFindPasteboard"), text, false) {
+            self.after_board_set(from);
+        }
+    }
+
+    /// `set_find_pasteboard` for Use Selection for Find and auto search: even with sync off.
+    pub(super) fn set_find_pasteboard_always(&mut self, text: &str, from: Option<PaneId>) {
+        if board_set(&mut self.find_pasteboard, self.globals.bool("SynchronizeQueryWithFindPasteboard"), text, true) {
+            self.after_board_set(from);
+        }
+    }
+
+    fn after_board_set(&mut self, from: Option<PaneId>) {
+        if let Some(id) = self.focused_id().filter(|id| Some(*id) != from) {
+            self.load_find_pasteboard(id);
+        }
+    }
+
+    /// The focused bar in the key window takes the shared query when it differs
+    /// (`iTermFindDriver.m:440-455`); its search runs quiet (B5). Other bars wait for focus.
+    pub(super) fn load_find_pasteboard(&mut self, id: PaneId) {
+        if !self.focused || self.focused_id() != Some(id) {
+            return;
+        }
+        let sync = self.globals.bool("SynchronizeQueryWithFindPasteboard");
+        if let Some(f) = self.finds.get_mut(&id).filter(|f| f.open && !f.filter) {
+            board_load(&self.find_pasteboard, sync, f, Instant::now());
+        }
+    }
+
+    /// A pane or window that gained the keyboard loads the shared query into its bar.
+    fn follow_focus(&mut self) {
+        let now = self.focused.then(|| self.focused_id()).flatten();
+        if now != self.find_focus_seen {
+            self.find_focus_seen = now;
+            if let Some(id) = now {
+                self.load_find_pasteboard(id);
+            }
+        }
     }
 
     /// Pastes the clipboard into the find query, on one line.
@@ -335,27 +434,36 @@ impl App {
         if let Some(f) = self.finds.get_mut(&id) {
             f.key(BarKey::Text(text), Instant::now());
         }
+        self.share_query(id);
         self.redraw();
     }
 
     /// Runs the searches whose time has come. Returns when the next one is due.
     pub(super) fn run_due_searches(&mut self) -> Option<Instant> {
         let now = Instant::now();
-        let due: Vec<(PaneId, bool)> =
-            self.finds.iter_mut().filter_map(|(id, f)| f.take_due(now).map(|fresh| (*id, fresh))).collect();
-        for (id, fresh) in due {
+        let delay = find_delay(&self.globals);
+        self.follow_focus();
+        let due: Vec<(PaneId, bool, bool)> =
+            self.finds.iter_mut().filter_map(|(id, f)| f.take_due(now, delay).map(|fresh| (*id, fresh, std::mem::take(&mut f.quiet)))).collect();
+        for (id, fresh, quiet) in due {
             if self.finds.get(&id).is_some_and(|f| f.filter) {
                 self.refilter(id, fresh);
             } else {
-                self.search(id, fresh);
+                self.search_as(id, fresh, quiet);
             }
         }
-        self.finds.values().filter_map(FindState::due).min()
+        self.finds.values().filter_map(|f| f.due(delay)).min()
     }
 
     /// Searches a pane for its query. A new query makes the nearest match at or above the
     /// last one (else the bottom of the view) current; new output keeps the current one.
     fn search(&mut self, id: PaneId, fresh: bool) {
+        self.search_as(id, fresh, false);
+    }
+
+    /// `search`; `quiet` fills the results and highlights but selects nothing and scrolls nowhere
+    /// (B5: a query that came from the shared query or a selection must not move that selection).
+    fn search_as(&mut self, id: PaneId, fresh: bool, quiet: bool) {
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
         match find::find_all(&p.screen, &find::pattern(&f.query, mode)) {
@@ -368,7 +476,7 @@ impl App {
                 let from = f.results.current.and_then(|i| f.results.matches.get(i)).map_or_else(|| view_bottom(&p.screen), |m| m.start);
                 f.results = Results { matches, current: None };
                 f.results.start_at(from);
-                if let Some(m) = f.results.current.and_then(|i| f.results.matches.get(i)) {
+                if let Some(m) = f.results.current.and_then(|i| f.results.matches.get(i)).filter(|_| !quiet) {
                     reveal(p, &m.clone());
                 }
             }
@@ -495,6 +603,7 @@ impl App {
             f.set_query(&query, Instant::now());
             f.pending = false;
         }
+        self.share_query(id);
         self.search(id, true);
     }
 
@@ -516,7 +625,8 @@ impl App {
                 let f = self.finds.entry(id).or_default();
                 f.open();
                 f.typing = true;
-                if !f.query.is_empty() {
+                self.load_find_pasteboard(id);
+                if let Some(f) = self.finds.get_mut(&id).filter(|f| !f.query.is_empty()) {
                     f.set_query(&f.query.clone(), now);
                 }
             }
@@ -525,13 +635,16 @@ impl App {
                 let query = if matches!(self.find_mode(), find::Mode::RegexSensitive | find::Mode::RegexInsensitive) { regex::escape(&text) } else { text };
                 let f = self.finds.entry(id).or_default();
                 f.set_query(&query, now);
+                // Use Selection for Find shares the query even with sync off.
+                self.set_find_pasteboard_always(&query, Some(id));
             }
-            ("findNext:", _) => self.find_step(id, true),
-            ("findPrevious:", _) => self.find_step(id, false),
+            ("findNext:", _) => self.find_step(id, step_direction(false, self.globals.bool("SwapFindNextPrevious"))),
+            ("findPrevious:", _) => self.find_step(id, step_direction(true, self.globals.bool("SwapFindNextPrevious"))),
             ("clearFindString:", _) => {
                 let f = self.finds.entry(id).or_default();
                 f.set_query("", now);
                 f.results = Results::default();
+                self.share_query(id);
             }
             ("filter:", _) => {
                 self.belt_yield_keys();
@@ -660,6 +773,8 @@ impl App {
                 f.set_query("", now);
                 f.results = Results::default();
             }
+            // iTerm2 clears the find pasteboard with the history.
+            self.find_pasteboard.clear();
             self.redraw_all();
             return true;
         }
@@ -852,6 +967,8 @@ mod tests {
         assert!(!body.contains("reveal("));
     }
 
+    const ONE: Duration = Duration::from_secs(1);
+
     fn typed(q: &str, now: Instant) -> FindState {
         let mut f = FindState::default();
         f.open();
@@ -866,32 +983,108 @@ mod tests {
         let t = Instant::now();
         let mut f = typed("ab", t);
         assert_eq!(f.query, "ab");
-        assert_eq!(f.due(), Some(t + Duration::from_secs(1)));
-        assert_eq!(f.take_due(t + Duration::from_millis(500)), None);
-        assert_eq!(f.take_due(t + Duration::from_secs(1)), Some(true));
+        assert_eq!(f.due(ONE), Some(t + Duration::from_secs(1)));
+        assert_eq!(f.take_due(t + Duration::from_millis(500), ONE), None);
+        assert_eq!(f.take_due(t + Duration::from_secs(1), ONE), Some(true));
         assert!(!f.pending);
         let mut long = typed("abc", t);
-        assert_eq!(long.take_due(t), Some(true));
+        assert_eq!(long.take_due(t, ONE), Some(true));
         long.key(BarKey::Backspace, t);
         assert_eq!(long.query, "ab");
-        assert_eq!(long.due(), Some(t + Duration::from_secs(1)));
+        assert_eq!(long.due(ONE), Some(t + Duration::from_secs(1)));
         // An empty query clears the matches at once.
         let mut empty = typed("a", t);
         empty.key(BarKey::Backspace, t);
-        assert_eq!(empty.due(), Some(t));
+        assert_eq!(empty.due(ONE), Some(t));
+    }
+
+    /// `FindDelaySeconds` is the wait for a query of two characters or fewer (Review Focus 5).
+    #[test]
+    fn find_delay_follows_the_key() {
+        let t = Instant::now();
+        let f = typed("ab", t);
+        assert_eq!(f.due(Duration::from_secs_f64(1.0)), Some(t + Duration::from_secs(1)));
+        assert_eq!(f.due(Duration::from_secs_f64(0.25)), Some(t + Duration::from_millis(250)));
+        assert_eq!(typed("abc", t).due(Duration::from_secs_f64(1.0)), Some(t));
+        // The key's value, clamped (P6): negative, NaN and huge values cannot panic.
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("find-test.toml"));
+        assert_eq!(find_delay(&g), Duration::from_secs(1));
+        g.set("FindDelaySeconds", toml::Value::Float(0.25));
+        assert_eq!(find_delay(&g), Duration::from_millis(250));
+        g.set("FindDelaySeconds", toml::Value::Float(-3.0));
+        assert_eq!(find_delay(&g), Duration::ZERO);
+        g.set("FindDelaySeconds", toml::Value::Float(f64::NAN));
+        assert_eq!(find_delay(&g), Duration::from_secs(1));
+        g.set("FindDelaySeconds", toml::Value::Float(1e300));
+        assert_eq!(find_delay(&g), Duration::from_secs(10));
+    }
+
+    /// Enter searches up with the swap on, down with it off; Shift+Enter the reverse
+    /// (`PseudoTerminal.m:15327-15341`).
+    #[test]
+    fn find_direction_follows_the_key() {
+        assert!(step_direction(false, true));
+        assert!(!step_direction(true, true));
+        assert!(!step_direction(false, false));
+        assert!(step_direction(true, false));
+        // The Find Next menu item is the unshifted one, Find Previous the shifted one.
+        let body = include_str!("find_ui.rs").split("(\"findNext:\", _) =>").nth(1).unwrap().split("(\"clearFindString:\"").next().unwrap();
+        assert!(body.contains("step_direction(false,") && body.contains("step_direction(true,"));
+    }
+
+    /// One query in every bar with the sync key on; the bar that becomes the key window's focused
+    /// one takes it; Use Selection for Find sets it with sync off too; a long string is refused
+    /// (`iTermFindPasteboard.m:43-47`).
+    #[test]
+    fn shared_query_follows_iterm2() {
+        let t = Instant::now();
+        let mut board = String::new();
+        let mut a = typed("abc", t);
+        let mut b = typed("zzz", t);
+        assert!(board_set(&mut board, true, &a.query, false));
+        assert_eq!(board, "abc");
+        assert!(board_load(&board, true, &mut b, t));
+        assert_eq!(b.query, "abc");
+        assert!(b.quiet && b.pending && b.fresh, "a quiet search follows");
+        // Already showing it: nothing to do.
+        assert!(!board_load(&board, true, &mut b, t));
+        // The typing bar does not reload what it just set.
+        assert!(!board_load(&board, true, &mut a, t));
+        // Sync off: typing shares nothing and a bar keeps its own query.
+        let mut c = typed("own", t);
+        assert!(!board_set(&mut board, false, "def", false));
+        assert_eq!(board, "abc");
+        assert!(!board_load(&board, false, &mut c, t));
+        assert_eq!(c.query, "own");
+        // Use Selection for Find sets it even with sync off.
+        assert!(board_set(&mut board, false, "sel", true));
+        assert_eq!(board, "sel");
+        // Over 10240 characters is refused, at the limit it is taken.
+        let long = "x".repeat(BOARD_MAX + 1);
+        assert!(!board_set(&mut board, true, &long, false));
+        assert!(!board_set(&mut board, true, &long, true));
+        assert_eq!(board, "sel");
+        assert!(board_set(&mut board, true, &"x".repeat(BOARD_MAX), false));
+        // An empty shared query never wipes a bar's own (nothing was shared yet).
+        let mut d = typed("keep", t);
+        assert!(!board_load("", true, &mut d, t));
+        assert_eq!(d.query, "keep");
+        // The person's own typing is not quiet.
+        d.key(BarKey::Text("x".into()), t);
+        assert!(!d.quiet);
     }
 
     #[test]
     fn output_searches_again_without_moving_the_current_match() {
         let t = Instant::now();
         let mut f = typed("abc", t);
-        f.take_due(t);
+        f.take_due(t, ONE);
         f.output_changed(t);
-        assert_eq!(f.due(), Some(t + OUTPUT_DELAY));
-        assert_eq!(f.take_due(t + OUTPUT_DELAY), Some(false));
+        assert_eq!(f.due(ONE), Some(t + OUTPUT_DELAY));
+        assert_eq!(f.take_due(t + OUTPUT_DELAY, ONE), Some(false));
         let mut none = FindState::default();
         none.output_changed(t);
-        assert_eq!(none.due(), None);
+        assert_eq!(none.due(ONE), None);
     }
 
     #[test]
@@ -924,10 +1117,10 @@ mod tests {
     fn a_closed_bar_does_not_search_on_output() {
         let t = Instant::now();
         let mut f = typed("abc", t);
-        f.take_due(t);
+        f.take_due(t, ONE);
         f.key(BarKey::Close, t);
         f.output_changed(t);
-        assert_eq!(f.due(), None);
+        assert_eq!(f.due(ONE), None);
     }
 
     #[test]
@@ -935,7 +1128,7 @@ mod tests {
         let t = Instant::now();
         let mut f = typed("abc", t);
         assert_eq!(f.before_step(), PreStep::Fresh);
-        f.take_due(t);
+        f.take_due(t, ONE);
         f.results.matches.push(crate::find::Match { start: Default::default(), end: Default::default() });
         assert_eq!(f.before_step(), PreStep::Step);
         f.output_changed(t);

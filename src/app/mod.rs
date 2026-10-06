@@ -391,6 +391,11 @@ pub struct App {
     mark_pos: HashMap<PaneId, u32>,
     /// Each pane's find bar and matches.
     finds: HashMap<PaneId, find_ui::FindState>,
+    /// The query every find bar shares with `SynchronizeQueryWithFindPasteboard` on (iTerm2's find
+    /// pasteboard; Windows has none, so it lives in Tandem). App-wide, not swapped per window.
+    find_pasteboard: String,
+    /// The pane that had the keyboard when the shared query was last loaded.
+    find_focus_seen: Option<PaneId>,
     /// Where the focused pane's find bar and its mode label were last drawn.
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
@@ -1680,6 +1685,8 @@ pub fn run() {
         alt_infer_focus: None,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
+        find_pasteboard: String::new(),
+        find_focus_seen: None,
         find_bar_rect: None,
         find_mode_rect: None,
         title_bars: Vec::new(),
@@ -4853,8 +4860,16 @@ impl App {
             }
         }
         if let Some(bytes) = bytes {
-            pane.scroll(Scroll::Bottom);
             let sender = pane.id;
+            pane.scroll(Scroll::Bottom);
+            // A key for the session removes a finished selection, not one being dragged (R3).
+            // Only a key with bytes: a bare Win press for a Win-drag keeps it (B4).
+            let live = matches!(&self.drag, Drag::Select { pane: dragged, .. } if *dragged == sender);
+            if selection_ui::typing_clears(live, self.globals.bool("TypingClearsSelection")) {
+                if let Some(p) = self.panes.get_mut(&sender) {
+                    p.clear_selection();
+                }
+            }
             if self.tmux_key_by_name(sender, key) {
                 return;
             }
@@ -5179,6 +5194,7 @@ impl App {
                         self.open_password_manager(None, Some(pane));
                     }
                 } else {
+                    self.selection_ended(pane);
                     // iTerm2 copies a selection as soon as it is made.
                     self.copy_on_selection(pane);
                     self.chat_offer_selection(pane);
@@ -5633,7 +5649,7 @@ impl App {
             // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar.
             let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none());
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
-                let count = if f.filter { "Filter".to_string() } else { f.results.label() };
+                let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();
                 let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some() };
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
