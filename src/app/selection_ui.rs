@@ -7,7 +7,7 @@ use alacritty_terminal::term::cell::Flags;
 
 use super::find_ui::{to_point, to_pos};
 use super::*;
-use crate::find::{self, Logical, Pos};
+use crate::find::{self, Pos};
 use crate::screen::Screen;
 use crate::seltext::Mode;
 use crate::seltools;
@@ -48,33 +48,15 @@ pub fn click_window(screen: &Screen, row: usize, col: usize) -> Option<(usize, u
     wordsel::window_at(&rows, (line - from) as usize, col, grid.columns())
 }
 
-/// `line` cut to the cells of `row` in columns `lo..=hi`.
-fn restrict(line: &Logical, row: usize, lo: usize, hi: usize) -> Logical {
-    let mut out = Logical { text: String::new(), cells: Vec::new() };
-    for (i, (o, p)) in line.cells.iter().enumerate() {
-        if p.row == row && p.col >= lo && p.col <= hi {
-            let end = line.cells.get(i + 1).map_or(line.text.len(), |c| c.0);
-            out.cells.push((out.text.len(), *p));
-            out.text.push_str(&line.text[*o..end]);
-        }
-    }
-    out
-}
-
 /// The cells of the word at `at` (a double click), both ends inclusive: iTerm2's word over the
 /// logical line, kept inside the column `window`. Where there is no text (past a line's end)
 /// it is the one cell.
 pub fn word_span(screen: &Screen, at: Pos, rule: &Rule, seg: &dyn Segmenter, window: Option<(usize, usize)>) -> (Pos, Pos) {
-    let (lines, i) = find::logical_lines_around(screen, at.row, 0);
-    let Some(line) = lines.get(i) else { return (at, at) };
-    let owned;
-    let line = match window {
-        Some((lo, hi)) => {
-            owned = restrict(line, at.row, lo, hi);
-            &owned
-        }
-        None => line,
-    };
+    // Only the rows a word can reach (B6): LONG_MAX cells to the right, and as far left as atoms
+    // are laid out (REGEX_REACH with a regex), never the whole wrapped line a program printed.
+    let up = if rule.regex.is_some() { wordsel::REGEX_REACH } else { wordsel::LONG_MAX };
+    let Some(line) = find::logical_around(screen, at.row, window, up, wordsel::LONG_MAX) else { return (at, at) };
+    let line = &line;
     let Some(offset) = line.offset_of(at) else { return (at, at) };
     let range = wordsel::word_at(line, offset, rule, seg);
     if range.is_empty() {
@@ -689,6 +671,31 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review fix 4 (B6, P10): a double click and every move of a word drag read only the
+    /// rows a word can reach (`wordsel::LONG_MAX` cells each way), never the whole wrapped line.
+    #[test]
+    fn word_span_reads_a_bounded_span_of_a_huge_line() {
+        let mut s = crate::screen::Screen::with_scrollback(80, 24, 20_000);
+        s.feed("x".repeat(1_000_000).as_bytes());
+        s.feed(b"\r\nshort word here\r\n");
+        let rule = Rule { regex_mode: false, chars: String::new(), regex: None };
+        let seg = wordsel::NoSegmenter;
+        let at = Pos { row: 6000, col: 5 };
+        crate::find::work::take();
+        let (a, b) = word_span(&s, at, &rule, &seg, None);
+        let read = crate::find::work::take();
+        // Up to the reach each way plus the click's own rows, not the 1 000 000 cells of the line.
+        assert!(read <= 2 * wordsel::LONG_MAX + 4 * 80, "{read} cells read");
+        assert!(a <= at && at <= b, "{a:?} {b:?}");
+        // A window reads one row; a short line is still its word.
+        word_span(&s, at, &rule, &seg, Some((0, 9)));
+        assert!(crate::find::work::take() <= 80, "a window reads one row");
+        let mut small = crate::screen::Screen::with_scrollback(80, 24, 100);
+        small.feed(b"short word here\r\n");
+        let (a, b) = word_span(&small, Pos { row: 0, col: 7 }, &rule, &seg, None);
+        assert_eq!((a.col, b.col), (6, 9), "{a:?} {b:?}");
+    }
 
     /// Merge seam (S7): a plain press records 13r's path-mark press before 13s decides between a
     /// drag of the selection and a new selection, and the frame wake list keeps both milestones'

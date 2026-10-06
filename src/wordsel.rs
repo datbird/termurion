@@ -11,7 +11,7 @@ pub const ATOM_MAX: usize = 256;
 /// The most regex calls one click makes; the class run then stands (B6).
 pub const ATOM_BUDGET: usize = 20_000;
 /// With a regex, atoms are laid out from this many cells before the click, to bound the work.
-const REGEX_REACH: usize = ATOM_BUDGET / 2;
+pub const REGEX_REACH: usize = ATOM_BUDGET / 2;
 /// The most atoms the segmenter looks at each way of the click (I2: a bounded window, so a
 /// long run costs no more than a short one).
 pub const SEG_REACH: usize = ATOM_MAX;

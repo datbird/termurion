@@ -3,6 +3,19 @@
 
 use crate::screen::Screen;
 
+/// The cells the text builders below have read on this thread: the work counter the bound tests
+/// watch (a huge wrapped line must cost the same as a short one).
+#[cfg(test)]
+pub(crate) mod work {
+    thread_local!(static CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+    pub(crate) fn add(n: usize) {
+        CELLS.with(|c| c.set(c.get() + n));
+    }
+    pub(crate) fn take() -> usize {
+        CELLS.with(|c| c.replace(0))
+    }
+}
+
 /// iTerm2's `findMode_iTerm` values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -159,6 +172,33 @@ pub fn logical_lines_around(screen: &Screen, row: usize, radius: usize) -> (Vec<
     (logical_between(screen, first, last), above)
 }
 
+/// The logical line holding buffer row `row`, built from at most `up` cells of rows above it and
+/// `down` cells of rows below it (a wrapped line of any length costs no more than that), or only
+/// that row's cells inside the columns `window`. None past the buffer.
+pub fn logical_around(screen: &Screen, row: usize, window: Option<(usize, usize)>, up: usize, down: usize) -> Option<Logical> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    let line = row as i32 + top;
+    if line < top || line > bottom {
+        return None;
+    }
+    if window.is_some() {
+        let r = rows_text(screen, line, line, window).into_iter().next()?;
+        return Some(Logical { text: r.text, cells: r.cells });
+    }
+    let cols = grid.columns().max(1);
+    let (rows_up, rows_down) = ((up / cols + 1) as i32, (down / cols + 1) as i32);
+    let (mut first, mut last) = (line, line);
+    while first > top && line - first < rows_up && wraps(screen, first - 1) {
+        first -= 1;
+    }
+    while last < bottom && last - line < rows_down && wraps(screen, last) {
+        last += 1;
+    }
+    logical_between(screen, first, last).into_iter().next()
+}
+
 /// The text of every logical line, oldest first, without the cell map (for Filter).
 pub fn logical_texts(screen: &Screen) -> Vec<String> {
     use alacritty_terminal::grid::Dimensions;
@@ -166,17 +206,19 @@ pub fn logical_texts(screen: &Screen) -> Vec<String> {
     texts_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
 }
 
-/// The logical lines on screen, widened to whole lines.
-pub fn visible_lines(screen: &Screen) -> Vec<Logical> {
+/// The logical lines on screen, widened over the lines that run past it by at most `reach` cells
+/// each way (a visible line can be a whole scrollback of wrapped rows, P10).
+pub fn visible_lines(screen: &Screen, reach: usize) -> Vec<Logical> {
     use alacritty_terminal::grid::Dimensions;
     let grid = screen.term().grid();
     let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
-    let mut a = -(grid.display_offset() as i32);
-    let mut b = (a + grid.screen_lines() as i32 - 1).min(bottom);
-    while a > top && wraps(screen, a - 1) {
+    let (a0, b0) = (-(grid.display_offset() as i32), (-(grid.display_offset() as i32) + grid.screen_lines() as i32 - 1).min(bottom));
+    let room = (reach / grid.columns().max(1) + 1) as i32;
+    let (mut a, mut b) = (a0, b0);
+    while a > top && a0 - a < room && wraps(screen, a - 1) {
         a -= 1;
     }
-    while b < bottom && wraps(screen, b) {
+    while b < bottom && b - b0 < room && wraps(screen, b) {
         b += 1;
     }
     logical_between(screen, a, b)
@@ -297,6 +339,8 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
         let r = (l + history) as usize;
         let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
         let end = if wrapped { cols } else { (0..cols).rev().find(|&c| row[Column(c)].c != ' ').map_or(0, |c| c + 1) };
+        #[cfg(test)]
+        work::add(end);
         for c in 0..end {
             let cell = &row[Column(c)];
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
@@ -341,6 +385,8 @@ pub fn rows_text(screen: &Screen, first: i32, last: i32, window: Option<(usize, 
         let wraps = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
         let end = if wraps { to + 1 } else { (from..=to).rev().find(|&c| row[Column(c)].c != ' ').map_or(from, |c| c + 1) };
         let mut r = RowText { text: String::new(), cells: Vec::new(), wraps };
+        #[cfg(test)]
+        work::add(end.saturating_sub(from));
         for c in from..end {
             let cell = &row[Column(c)];
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {

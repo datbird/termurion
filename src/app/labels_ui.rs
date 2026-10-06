@@ -90,6 +90,12 @@ fn scan_window(line: &find::Logical, rows: &std::ops::RangeInclusive<usize>) -> 
     lo..hi
 }
 
+/// The logical lines of the visible rows, widened (as `FIND_LINE_CAP` allows) over the lines that
+/// run past them.
+fn visible_url_lines(screen: &crate::screen::Screen) -> Vec<find::Logical> {
+    find::visible_lines(screen, FIND_LINE_CAP)
+}
+
 /// The cell characters of buffer rows `from..from + count` (fewer at the buffer's end).
 fn buffer_rows(screen: &crate::screen::Screen, from: usize, count: usize) -> Vec<Vec<char>> {
     use alacritty_terminal::grid::Dimensions;
@@ -121,7 +127,7 @@ impl App {
     pub(super) fn reveal_shortcuts(&mut self, kind: &str) {
         let Some(id) = self.focused_id() else { return };
         let Some(p) = self.panes.get(&id) else { return };
-        let lines = find::visible_lines(&p.screen);
+        let lines = visible_url_lines(&p.screen);
         let rows = find::visible_rows(&p.screen);
         let find_hits: Vec<(Match, String)> = if kind == "pick" {
             let matches = self.finds.get(&id).map(|f| f.results.matches.clone()).unwrap_or_default();
@@ -231,6 +237,24 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review fix 4 (P10): Find URLs builds the visible rows' lines widened by at most
+    /// FIND_LINE_CAP bytes each way, not the whole wrapped line a program printed.
+    #[test]
+    fn find_urls_text_is_bounded_on_a_huge_line() {
+        let mut s = crate::screen::Screen::with_scrollback(80, 24, 20_000);
+        s.feed("x".repeat(1_000_000).as_bytes());
+        s.feed(b"\r\ntail\r\n");
+        find::work::take();
+        let lines = visible_url_lines(&s);
+        let read = find::work::take();
+        assert!(read <= 2 * FIND_LINE_CAP + 40 * 80, "{read} cells read");
+        let bytes: usize = lines.iter().map(|l| l.text.len()).sum();
+        assert!(bytes <= 2 * FIND_LINE_CAP + 40 * 80, "{bytes}");
+        assert!(lines.iter().any(|l| l.text == "tail"), "the short line is whole");
+        let rows = find::visible_rows(&s);
+        assert!(lines.iter().flat_map(|l| l.cells.iter()).any(|(_, p)| rows.contains(&p.row)));
+    }
 
     fn urls(g: &Globals, text: &str) -> Vec<String> {
         let re = find_urls_regex(g).expect("pattern");
