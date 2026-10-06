@@ -98,8 +98,9 @@ fn fetch(curl: &Path, url: &str, proto: &str) -> Fetched {
     let inherited = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
     let mut cmd = Command::new(curl);
     cmd.args(&args).env_clear().envs(curl_env(inherited)).stdin(Stdio::null()).stdout(out_w).stderr(err_w).creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-    if let Some(dir) = curl.parent() {
-        cmd.current_dir(dir);
+    // System32 as the working folder, through the one path judge (13v1) like every folder.
+    if let Some(dir) = curl.parent().and_then(crate::localfs::judge) {
+        crate::localfs::set_cwd(&mut cmd, &dir);
     }
     let spawned = cmd.spawn();
     drop(cmd);

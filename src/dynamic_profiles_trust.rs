@@ -102,8 +102,9 @@ pub fn judge(owner: &str, me: &str, dacl: Option<&[Ace]>) -> Result<(), String> 
 /// type, the link count, the owner and access list (`GetSecurityInfo`), and, for a file that
 /// passes `judge_facts`, its bytes (at most `limit`). A file is opened with a read-only share
 /// mode, so it cannot be swapped between the judgment and the read. Unreadable is an error.
+/// The path is a judged one (13v1's one path judge); the handle is `localfs::open_unfollowed`.
 #[cfg(windows)]
-pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
+pub fn open(path: &crate::localfs::LocalPath, limit: usize) -> Result<Opened, String> {
     use std::io::Read;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
@@ -111,18 +112,17 @@ pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
     use windows_sys::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, GetAce, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, READ_CONTROL};
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, READ_CONTROL};
 
     // A folder is opened with every share right (an editor keeps working in it); a file with
     // read only, so nobody writes it under the read.
-    let is_dir = std::fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+    let is_dir = crate::localfs::lstat(path).map(|s| s.is_dir).unwrap_or(false);
     let share = if is_dir { FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE } else { FILE_SHARE_READ };
-    let mut file = std::fs::OpenOptions::new()
-        .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA)
-        .share_mode(share)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(|e| e.to_string())?;
+    // The one no-follow handle (FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).
+    let mut file = crate::localfs::open_unfollowed(&crate::localfs::Unfollowed::from(path.clone()), |o| {
+        o.access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA).share_mode(share);
+    })
+    .map_err(|e| e.to_string())?;
     let me = crate::winpipe::user_sid().map_err(|e| format!("the current user is unknown ({e})"))?;
     let handle = file.as_raw_handle() as HANDLE;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
@@ -173,7 +173,7 @@ pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
         Ok(f) => f,
         Err(why) => return Ok(Opened { dir, trust: Err(why), bytes: Err("not read".into()), stat }),
     };
-    let zone = if dir || reparse { None } else { zone_id(path) };
+    let zone = if dir || reparse { None } else { zone_id(path.path()) };
     let trust = judge_facts(&Facts { reparse, dir, links: info.nNumberOfLinks, owner, dacl, zone }, &me);
     if dir || reparse || trust.is_err() {
         return Ok(Opened { dir, trust, bytes: Err("not read".into()), stat });
@@ -193,7 +193,7 @@ pub fn open(path: &std::path::Path, limit: usize) -> Result<Opened, String> {
 }
 
 #[cfg(not(windows))]
-pub fn open(_path: &std::path::Path, _limit: usize) -> Result<Opened, String> {
+pub fn open(_path: &crate::localfs::LocalPath, _limit: usize) -> Result<Opened, String> {
     Err("Dynamic Profiles are read on Windows only".into())
 }
 
@@ -212,12 +212,19 @@ fn zone_id(path: &std::path::Path) -> Option<u32> {
     let mut stream = path.as_os_str().to_os_string();
     stream.push(":Zone.Identifier");
     let mut text = String::new();
-    std::fs::File::open(stream).ok()?.take(4096).read_to_string(&mut text).ok()?;
+    // The stream's name goes through the one path judge as `inert_files` judges it.
+    crate::localfs::open(&crate::localfs::judge(std::path::PathBuf::from(stream))?).ok()?.take(4096).read_to_string(&mut text).ok()?;
     crate::inert_files::zone_of(&text)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests open by path: the path is judged first, as `dynamic_profiles::system_open` does.
+    #[cfg(windows)]
+    fn open(p: &std::path::Path, limit: usize) -> Result<Opened, String> {
+        super::open(&crate::localfs::LocalPath::judge(p).expect("a local path"), limit)
+    }
 
     fn ace(sid: &str, mask: u32) -> Ace {
         Ace { sid: sid.into(), mask, allow: true, inherit_only: false }

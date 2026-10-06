@@ -117,7 +117,10 @@ pub(super) struct Fs<'a> {
 
 fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let path = crate::localfs::judge_io(path)?;
+    let mut f = crate::localfs::open_custom(&path, |o| {
+        o.write(true).create_new(true);
+    })?;
     f.write_all(bytes)?;
     f.sync_all()
 }
@@ -134,8 +137,12 @@ fn rename_in_folder(folder: &Path, judged: Option<(u32, u64)>, tmp: &str, target
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW, SetFileInformationByHandle};
-    let dir = std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(folder)?;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW, SetFileInformationByHandle};
+    // The folder through 13v1's one path judge, then opened as itself (no link followed).
+    let folder = crate::localfs::judge_io(folder)?;
+    let dir = crate::localfs::open_unfollowed(&crate::localfs::Unfollowed::from(folder.clone()), |o| {
+        o.access_mode(FILE_READ_ATTRIBUTES).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    })?;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: the handle is open for the call and `info` is a plain out structure.
     if unsafe { GetFileInformationByHandle(dir.as_raw_handle() as HANDLE, &mut info) } == 0 {
@@ -149,11 +156,10 @@ fn rename_in_folder(folder: &Path, judged: Option<(u32, u64)>, tmp: &str, target
     if judged.is_some_and(|j| j != now) {
         return Err(std::io::Error::other("the folder is not the one that was judged"));
     }
-    let new = std::fs::OpenOptions::new()
-        .access_mode(DELETE)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(folder.join(tmp))?;
+    let tmp = folder.unfollowed(tmp).ok_or_else(crate::localfs::refused)?;
+    let new = crate::localfs::open_unfollowed(&tmp, |o| {
+        o.access_mode(DELETE).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    })?;
     // FILE_RENAME_INFO: ReplaceIfExists (4 bytes, padded to 8), RootDirectory (8, none), FileNameLength
     // (4, in bytes), then the name.
     // The folder's own path as the HANDLE reports it (links resolved), then the bare file name: a
@@ -183,7 +189,16 @@ fn rename_in_folder(folder: &Path, judged: Option<(u32, u64)>, tmp: &str, target
 
 #[cfg(not(windows))]
 fn rename_in_folder(folder: &Path, _judged: Option<(u32, u64)>, tmp: &str, target: &str) -> std::io::Result<()> {
-    std::fs::rename(folder.join(tmp), folder.join(target))
+    let folder = crate::localfs::judge_io(folder)?;
+    let (Some(from), Some(to)) = (folder.child(tmp), folder.child(target)) else { return Err(crate::localfs::refused()) };
+    crate::localfs::rename(&from, &to)
+}
+
+/// Removes a temporary file the write-back made (judged first, as every path).
+fn remove_tmp(tmp: &Path) {
+    if let Some(t) = crate::localfs::judge(tmp) {
+        let _ = crate::localfs::remove_file(&t);
+    }
 }
 
 impl Fs<'static> {
@@ -284,15 +299,15 @@ pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &
     let mut made = (fs.write_new)(&tmp, &out);
     if matches!(&made, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
         // Left by a crash: ours alone (a dotfile with this suffix).
-        let _ = std::fs::remove_file(&tmp);
+        remove_tmp(&tmp);
         made = (fs.write_new)(&tmp, &out);
     }
     if let Err(e) = made {
-        let _ = std::fs::remove_file(&tmp);
+        remove_tmp(&tmp);
         return Outcome::Refused(format!("could not write: {e}"));
     }
     if let Err(e) = (fs.rename)(parent, parent_id, &tmp_name, &file_name) {
-        let _ = std::fs::remove_file(&tmp);
+        remove_tmp(&tmp);
         return Outcome::Refused(format!("could not replace the file: {e}"));
     }
     // What the file is now, for the next write-back (a second profile in the same file).
@@ -365,8 +380,8 @@ impl App {
         let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
         let folder = dp::folder(&self.globals.string("DynamicProfilesPath"), &appdata, &home);
         // Never made on a network path; the reload then reports it.
-        if dp::system_local(&folder) {
-            let _ = std::fs::create_dir_all(&folder);
+        if let Some(judged) = crate::localfs::judge(&folder) {
+            let _ = crate::localfs::create_dir_all(&judged);
         }
         let latency = self.globals.number("DynamicProfilesNotificationLatency").filter(|v| v.is_finite()).unwrap_or(0.1).clamp(0.01, 60.0);
         self.dynamic_scan = Some(crate::dynamic_profiles_scan::Scanner::start(folder, std::time::Duration::from_secs_f64(latency), self.notify.clone()));
@@ -409,7 +424,7 @@ impl App {
                 }
                 Ok(o)
             };
-            let list = |f: &Path| dp::list_dir(f, &dp::system_local, dp::MAX_ENTRIES);
+            let list = |f: &Path| crate::localfs::judge(f).map(|f| dp::list_dir(&f, &dp::system_local, dp::MAX_ENTRIES)).unwrap_or_default();
             let saved = |g: &str| store.profiles.iter().any(|p| p.guid() == g && !is_dynamic(p));
             dp::load_gated(&folder, &list, &saved, &Gate { local: &dp::system_local, open: &open })
         };
@@ -457,7 +472,7 @@ impl App {
             self.dynamic_errors_pending += errors.len();
             return;
         }
-        let reveal = Some(PathBuf::from(&errors[0].0)).filter(|p| !errors[0].0.is_empty() && crate::scripts::stays_local(p) && p.is_file());
+        let reveal = Some(PathBuf::from(&errors[0].0)).filter(|p| !errors[0].0.is_empty() && crate::localfs::is_local_file(p));
         self.ask_scripts(error_ask(errors, reveal));
     }
 
@@ -916,7 +931,7 @@ mod tests {
         let p = write_json(&dir, "a.json", json!({"Profiles": [{"Guid": "A", "Name": "A", "Rewritable": true}, {"Guid": "B", "Name": "B", "Rewritable": true}]}));
         let mut s = store();
         let read = |q: &Path| std::fs::read(q).map_err(|e| e.to_string());
-        let list = |f: &Path| crate::dynamic_profiles::list_dir(f, &|_| true, 100);
+        let list = |f: &Path| crate::localfs::judge(f).map(|f| crate::dynamic_profiles::list_dir(&f, &|_| true, 100)).unwrap_or_default();
         apply_loaded(&mut s, &crate::dynamic_profiles::load(&dir, &read, &list, &|_| false), false);
         let stamp = stamp_of_file(&p);
         let files = ["A", "B"].iter().map(|g| (g.to_string(), Source { path: p.display().to_string(), stamp: Some(stamp.clone()) })).collect();
@@ -941,7 +956,7 @@ mod tests {
         assert_eq!(names(&p), ["A2", "B2"]);
         // The reload after the flush reads what was written and changes nothing.
         let read = |q: &Path| std::fs::read(q).map_err(|e| e.to_string());
-        let list = |f: &Path| crate::dynamic_profiles::list_dir(f, &|_| true, 100);
+        let list = |f: &Path| crate::localfs::judge(f).map(|f| crate::dynamic_profiles::list_dir(&f, &|_| true, 100)).unwrap_or_default();
         let again = crate::dynamic_profiles::load(&dir, &read, &list, &|_| false);
         let (changes, _) = apply_loaded(&mut s, &again, false);
         assert!(changes.update.is_empty(), "{changes:?}");

@@ -5,14 +5,13 @@
 //! `POLL` by the worker alone). The folder is resolved once at start; a change of the setting
 //! needs a restart, as in iTerm2.
 
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows_sys::Win32::Storage::FileSystem::{FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Storage::FileSystem::{FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification, FindNextChangeNotification};
 use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
 
 use crate::pty::Notify;
@@ -117,10 +116,10 @@ impl Drop for Scanner {
 }
 
 /// A change notification on the whole tree under `folder`, None when it cannot be watched.
+/// The folder goes through 13v1's one path judge first, on every call (a folder that became a link
+/// to a share since is never watched).
 fn watch(folder: &Path) -> Option<HANDLE> {
-    let wide: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
-    let h = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 1, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_DIR_NAME) };
-    (h != INVALID_HANDLE_VALUE).then_some(h)
+    crate::localfs::LocalPath::judge(folder).and_then(|f| crate::localfs::watch_tree(&f, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_DIR_NAME))
 }
 
 fn run(folder: PathBuf, latency: Duration, notify: Notify, shared: Arc<Shared>) {
@@ -149,7 +148,7 @@ fn run(folder: PathBuf, latency: Duration, notify: Notify, shared: Arc<Shared>) 
         } else if let (true, Some(h)) = (r == WAIT_OBJECT_0 + 1, change) {
             // A watch that cannot go on (its folder was removed) is dropped at once, or it would
             // stay signaled and spin; the reload then finds the folder missing.
-            if unsafe { FindNextChangeNotification(h) } == 0 || !folder.is_dir() {
+            if unsafe { FindNextChangeNotification(h) } == 0 || !crate::localfs::is_local_dir(&folder) {
                 unsafe { FindCloseChangeNotification(h) };
                 change = None;
                 due = Some(Instant::now());
@@ -159,7 +158,7 @@ fn run(folder: PathBuf, latency: Duration, notify: Notify, shared: Arc<Shared>) 
                 due = Some((now + latency).min(began + MAX_DEFER));
             }
         } else if r == WAIT_TIMEOUT {
-            if change.is_none() && folder.is_dir() {
+            if change.is_none() && crate::localfs::is_local_dir(&folder) {
                 change = watch(&folder);
                 if change.is_some() {
                     due = Some(Instant::now());

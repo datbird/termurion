@@ -99,7 +99,9 @@ pub fn files(names: &[String]) -> Vec<String> {
 }
 
 /// Reads at most `limit` bytes of a file: its size is checked first, and the read is cut one
-/// byte past the limit in case it grew. A folder or device is no file.
+/// byte past the limit in case it grew. A folder or device is no file. Tests only: the app reads
+/// every file through the one no-follow handle (`dynamic_profiles_trust::open`).
+#[cfg(test)]
 pub fn bounded_read(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
@@ -120,43 +122,33 @@ pub fn bounded_read(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
 /// Every entry below `root`, subfolders included, as "/" paths (`enumeratorAtPath:`). A link or
 /// junction is listed but never entered; an entry `local` refuses is neither listed nor entered;
 /// nothing goes deeper than `MAX_DEPTH` folders. Stops one entry past `max`, which is enough to
-/// tell a folder is too big.
-pub fn list_dir(root: &Path, local: &dyn Fn(&Path) -> bool, max: usize) -> Vec<String> {
+/// tell a folder is too big. The root is a judged path (13v1's one path judge), and a folder is
+/// entered only as a plain entry of a judged folder (`localfs::entries_upto`, whose kinds come from
+/// the listing itself, links not followed).
+pub fn list_dir(root: &crate::localfs::LocalPath, local: &dyn Fn(&Path) -> bool, max: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
+    let mut stack: Vec<(crate::localfs::LocalPath, String, usize)> = vec![(root.clone(), String::new(), 0)];
     while let Some((dir, prefix, depth)) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else { continue };
-        for entry in read.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
+        // One past what is still allowed: enough to tell the folder is too big.
+        let Ok(read) = crate::localfs::entries_upto(&dir, max.saturating_sub(out.len()).saturating_add(1)) else { continue };
+        for entry in read {
+            let name = entry.name.to_string_lossy().to_string();
             let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
-            let full = entry.path();
-            if !local(&full) {
+            if !local(entry.path()) {
                 continue;
             }
             out.push(rel.clone());
             if out.len() > max {
                 return out;
             }
-            let Ok(meta) = std::fs::symlink_metadata(&full) else { continue };
-            if meta.is_dir() && !is_link(&meta) && depth < MAX_DEPTH {
-                stack.push((full, rel, depth + 1));
+            if entry.stat.is_dir && !entry.stat.is_link && !entry.stat.is_reparse && depth < MAX_DEPTH {
+                if let Some(sub) = entry.local() {
+                    stack.push((sub, rel, depth + 1));
+                }
             }
         }
     }
     out
-}
-
-fn is_link(meta: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const REPARSE_POINT: u32 = 0x400;
-        meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        meta.file_type().is_symlink()
-    }
 }
 
 // ---- Parsing ---------------------------------------------------------------------------------
@@ -528,9 +520,11 @@ pub fn system_local(path: &Path) -> bool {
     crate::localfs::judged(path)
 }
 
-/// The open as the app uses it (`dynamic_profiles_trust::open`, at most `MAX_FILE` bytes).
+/// The open as the app uses it (`dynamic_profiles_trust::open`, at most `MAX_FILE` bytes): the
+/// path is judged by 13v1's one path judge first, then opened once as itself (no link followed).
 pub fn system_open(path: &Path) -> Result<Opened, String> {
-    crate::dynamic_profiles_trust::open(path, MAX_FILE)
+    let judged = crate::localfs::LocalPath::judge(path).ok_or_else(|| "it is on a network path or reached through a link to one".to_string())?;
+    crate::dynamic_profiles_trust::open(&judged, MAX_FILE)
 }
 
 /// `load_gated` over a fake disk with the network judge and every object trusted: for the pure
@@ -1313,6 +1307,29 @@ mod tests {
         assert!(crate::scripts::stays_local(Path::new("C:\\dp\\a.json")));
     }
 
+    /// The 13v1 merge (S10): the app's network judge is 13v1's ONE path judge (netpath::judge
+    /// through `localfs`), not an injected or narrower one; the open judges before its one
+    /// no-follow handle, and a refused path is never opened.
+    #[test]
+    fn dynamic_profiles_go_through_the_one_path_judge() {
+        let src = include_str!("dynamic_profiles.rs").split("#[cfg(test)]\nmod tests").next().unwrap().to_string();
+        let local = src.split("pub fn system_local(").nth(1).and_then(|r| r.split("\n}\n").next()).unwrap();
+        assert!(local.contains("crate::localfs::judged(path)"), "the one judge");
+        assert!(!local.contains("scripts::"), "no older network rule");
+        let open = src.split("pub fn system_open(").nth(1).and_then(|r| r.split("\n}\n").next()).unwrap();
+        assert!(open.find("LocalPath::judge(path)").is_some_and(|j| j < open.find("dynamic_profiles_trust::open(").unwrap_or(0)), "judged before the one handle opens");
+        let trust = include_str!("dynamic_profiles_trust.rs");
+        let handle = trust.split("pub fn open(path: &crate::localfs::LocalPath").nth(1).and_then(|r| r.split("\n}\n").next()).expect("the open takes a judged path");
+        assert!(handle.contains("localfs::open_unfollowed("), "the one no-follow handle stays");
+        // The judge itself, with no I/O on the network: a share, a device name and a relative path.
+        for p in ["\\\\host\\share\\dp", "\\\\?\\UNC\\host\\share\\dp", "C:\\dp\\CON.json", "dp\\a.json"] {
+            assert!(!system_local(Path::new(p)), "{p}");
+            assert!(system_open(Path::new(p)).is_err(), "{p} is never opened");
+        }
+        // A mapped drive is refused by the same judge (injected drives, as 13v1's tests do).
+        assert!(!crate::netpath::judge(Path::new("Z:\\dp"), &|_| None, &crate::netpath::MappedLetters(&['Z'])));
+    }
+
     fn opened(dir: bool, trust: Result<(), &str>, bytes: Vec<u8>) -> Result<Opened, String> {
         Ok(Opened { dir, trust: trust.map_err(str::to_string), bytes: if dir { Err("not a file".into()) } else { Ok(bytes) }, stat: Default::default() })
     }
@@ -1436,16 +1453,17 @@ mod tests {
         std::fs::write(root.join("sub").join("b.json"), b"{}").unwrap();
         std::fs::write(root.join("sub").join("deeper").join("c.json"), b"{}").unwrap();
         let all = |_: &Path| true;
-        let mut got = list_dir(&root, &all, 100);
+        let judged = crate::localfs::LocalPath::judge(&root).unwrap();
+        let mut got = list_dir(&judged, &all, 100);
         got.sort();
         assert_eq!(got, names(&["a.json", "sub", "sub/b.json", "sub/deeper", "sub/deeper/c.json"]));
         // An entry the judge refuses is not listed, and a folder it refuses is not entered.
         let no_sub = |p: &Path| !p.ends_with("sub");
-        let mut got = list_dir(&root, &no_sub, 100);
+        let mut got = list_dir(&judged, &no_sub, 100);
         got.sort();
         assert_eq!(got, names(&["a.json"]));
         // The cap: one past it is enough to refuse the folder.
-        assert_eq!(list_dir(&root, &all, 2).len(), 3);
+        assert_eq!(list_dir(&judged, &all, 2).len(), 3);
         let file = root.join("a.json");
         assert_eq!(bounded_read(&file, 1024).unwrap(), b"{}".to_vec());
         assert!(bounded_read(&file, 1).unwrap_err().contains("too large"));
