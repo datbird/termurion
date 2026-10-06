@@ -3021,3 +3021,46 @@ default = {}
 help = "Expressions bound to color wells and checkboxes (a right click on one binds it); never drawn."
 light_dark = false
 macos_only = false
+
+# 13v2 Task 5: the keys iTerm2 stores for a dynamic profile (ITAddressBookMgr.h). They have no
+# Settings control and no default (keysWithoutDefaultValues); the folder's own record of the file
+# ("Dynamic Profile Filename") is no row.
+[[setting]]
+key = "Dynamic Profile Parent Name"
+tab = ""
+section = ""
+label = "Dynamic profile parent name"
+type = "string"
+help = "The name of the profile a dynamic profile inherits from; set in the dynamic profile's file, never drawn."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Dynamic Profile Parent GUID"
+tab = ""
+section = ""
+label = "Dynamic profile parent Guid"
+type = "string"
+help = "The Guid of the profile a dynamic profile inherits from (tried before the name); set in the dynamic profile's file, never drawn."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Rewritable"
+tab = ""
+section = ""
+label = "Dynamic profile is rewritable"
+type = "bool"
+help = "When set in a dynamic profile's file, edits made in Settings are written back to that file; never drawn."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Is Dynamic Profile"
+tab = ""
+section = ""
+label = "Is a dynamic profile"
+type = "bool"
+help = "Set on a profile that came from a Dynamic Profiles file; such a profile is never saved to the profile file; never drawn."
+light_dark = false
+macos_only = false

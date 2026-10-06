@@ -2145,6 +2145,54 @@ mod tests {
         }
     }
 
+    /// m13v2 Task 5: the Dynamic Profiles rows (`AS`: `dynamicProfilesPath`,
+    /// `dynamicProfilesNotificationLatency`, `addDynamicTagToDynamicProfiles`) and the profile keys
+    /// iTerm2 stores for a dynamic profile, which have no control.
+    #[test]
+    fn dynamic_rows_follow_iterm2() {
+        for (key, kind, default, label, help_tail) in [
+            (
+                "DynamicProfilesPath",
+                Kind::String,
+                Value::String(String::new()),
+                "Path to folder with dynamic profiles.",
+                "\nWhen empty, %APPDATA%\\Tandem\\DynamicProfiles will be used. You must restart Tandem after modifying this setting.",
+            ),
+            (
+                "DynamicProfilesNotificationLatency",
+                Kind::Float,
+                Value::Float(0.1),
+                "Delay between detecting a change to dynamic profiles and acting on it.",
+                "\nIf a lot of changes happen to the DynamicProfiles folder a longer delay will help coalesce filesystem events to reduce CPU usage.",
+            ),
+            (
+                "AddDynamicTagToDynamicProfiles",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Add a 'Dynamic' tag to dynamic profiles.",
+                "\nWhen enabled, dynamic profiles will have a 'Dynamic' tag added to them, which can be used to filter or identify them.",
+            ),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, format!("{label}{help_tail}"), "{key}");
+        }
+        for (key, kind) in [
+            ("Dynamic Profile Parent Name", Kind::String),
+            ("Dynamic Profile Parent GUID", Kind::String),
+            ("Rewritable", Kind::Bool),
+            ("Is Dynamic Profile", Kind::Bool),
+        ] {
+            let s = schema::find(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.kind), ("", kind), "{key}: no Settings control");
+            assert!(s.default.is_none(), "{key}: iTerm2 has no default for it");
+        }
+        // The filename is the folder's record, never a row.
+        assert!(schema::find("Dynamic Profile Filename").is_none());
+    }
+
     /// m13i Task 1: the pane navigation rows (`AS:311`, `:510`, `:667`, `:715`, `:716`, `:881`).
     #[test]
     fn navigation_rows_follow_iterm2() {

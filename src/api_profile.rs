@@ -18,16 +18,7 @@ const VARIANTS: [&str; 2] = [" (Light)", " (Dark)"];
 
 /// iTerm2's keys without a default (`keysWithoutDefaultValues`) that Tandem's schema does not
 /// list; they answer only when the profile has them.
-const NO_DEFAULT: [&str; 8] = [
-    GUID,
-    ORIGINAL_GUID,
-    "Special Font Config",
-    "Dynamic Profile Parent Name",
-    "Dynamic Profile Parent GUID",
-    "Dynamic Profile Filename",
-    "Rewritable",
-    "Is Dynamic Profile",
-];
+const NO_DEFAULT: [&str; 4] = [GUID, ORIGINAL_GUID, "Special Font Config", "Dynamic Profile Filename"];
 
 /// The setting a key belongs to, and for a light or dark variant its default.
 fn setting_of(key: &str) -> Option<(&'static Setting, Option<Value>)> {

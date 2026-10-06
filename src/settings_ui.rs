@@ -946,8 +946,9 @@ impl SettingsWindow {
                         edit = Edit::Changed(String::new());
                     }
                 });
-                // A Bonjour host lives in memory only (13t B1): it cannot be the default.
-                let transient = store.transient.contains(&selected);
+                // A Bonjour host or a Dynamic Profile is not in the file (13t B1, 13v2 B1): it cannot be
+                // the default.
+                let transient = store.unsaved(&selected);
                 if ui.add_enabled(!transient, egui::Button::new("Set as Default")).clicked() {
                     if store.set_default(&selected) {
                         edit = Edit::Changed(selected.clone());

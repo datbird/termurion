@@ -5165,3 +5165,32 @@ label = "Time between tips (in seconds)"
 type = "float"
 default = 86400.0
 help = "Time between tips (in seconds)"
+
+# 13v2 Task 5: Dynamic Profiles (iTermAdvancedSettingsModel: dynamicProfilesPath,
+# dynamicProfilesNotificationLatency, addDynamicTagToDynamicProfiles).
+[[setting]]
+key = "DynamicProfilesPath"
+tab = "Advanced"
+section = "General"
+label = "Path to folder with dynamic profiles."
+type = "string"
+default = ""
+help = "Path to folder with dynamic profiles.\nWhen empty, %APPDATA%\\Tandem\\DynamicProfiles will be used. You must restart Tandem after modifying this setting."
+
+[[setting]]
+key = "DynamicProfilesNotificationLatency"
+tab = "Advanced"
+section = "General"
+label = "Delay between detecting a change to dynamic profiles and acting on it."
+type = "float"
+default = 0.1
+help = "Delay between detecting a change to dynamic profiles and acting on it.\nIf a lot of changes happen to the DynamicProfiles folder a longer delay will help coalesce filesystem events to reduce CPU usage."
+
+[[setting]]
+key = "AddDynamicTagToDynamicProfiles"
+tab = "Advanced"
+section = "General"
+label = "Add a 'Dynamic' tag to dynamic profiles."
+type = "bool"
+default = false
+help = "Add a 'Dynamic' tag to dynamic profiles.\nWhen enabled, dynamic profiles will have a 'Dynamic' tag added to them, which can be used to filter or identify them."
