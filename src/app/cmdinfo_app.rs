@@ -12,6 +12,9 @@ use crate::cmdinfo_ui::{Act, CmdInfoEvent, CmdInfoWindow};
 /// The banner for a session that cannot take text (`13q`: an ended pane takes no input).
 const ENDED: &str = "The session has ended.";
 
+/// The banner for a session waiting at a password prompt.
+const PASSWORD_PROMPT: &str = "Tandem did not write this text: the session is at a password prompt.";
+
 impl App {
     /// Win-click on a prompt's command: the Command Info window at the click (`at`, window
     /// pixels). A mark that is gone shows nothing.
@@ -130,7 +133,11 @@ impl App {
                 self.cmdinfo_add_snippet(&info.command);
             }
             Act::Composer => {
-                let shell = self.panes.get(&pane).and_then(|p| p.own().shell.shell.clone());
+                // An ended session takes no Composer (13q, S6, P11).
+                if self.panes.get(&pane).is_some_and(|p| p.exited.is_some() || p.ended) {
+                    return self.banners.set("action", ENDED);
+                }
+                let shell = self.composer_shell(pane);
                 match cmdinfo::composer_text(&info.command, info.directory.as_deref(), shell.as_deref()) {
                     Ok(text) => {
                         self.cmdinfo = None;
@@ -140,6 +147,17 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The shell that will read the Composer's `cd` line: the one shell integration named, else
+    /// the program the local session launched; a remote pane that named none is read as a POSIX
+    /// shell (a remote host is mostly one). None leaves the shell unknown, which refuses any
+    /// path a shell might read.
+    fn composer_shell(&self, pane: PaneId) -> Option<String> {
+        let p = self.panes.get(&pane)?;
+        let remote = self.remote_text(pane) || p.own().shell.host.as_deref().is_some_and(|h| !self.host_is_this_machine(h));
+        let launch = Some(p.command.as_str()).filter(|c| !c.is_empty()).and_then(|c| c.split_whitespace().next());
+        crate::ai_terminal::detected_shell(p.own().shell.shell.as_deref(), launch, !remote).or_else(|| remote.then(|| "sh".to_string()))
     }
 
     /// Types `text` into the pane through the guard (B5): a control character or a very long
@@ -152,6 +170,10 @@ impl App {
         let Some(p) = self.panes.get_mut(&pane) else { return };
         if p.exited.is_some() || p.ended {
             return self.banners.set("action", ENDED);
+        }
+        // A password read is never fed program text.
+        if p.at_password_prompt() {
+            return self.banners.set("action", PASSWORD_PROMPT);
         }
         p.scroll(Scroll::Bottom);
         // Broadcast input applies, as `commandInfoSend` writes to the session.
@@ -223,6 +245,23 @@ mod tests {
         assert!(code.find("composer_text(").unwrap() < code.find("open_composer_with(").unwrap());
         let snippet = &code[code.find("fn cmdinfo_add_snippet").unwrap()..];
         assert!(snippet.find("cmdinfo::writable").unwrap() < snippet.find("snippets.snippets.push").unwrap());
+    }
+
+    /// Review fix 2: program text is never typed into a password read.
+    #[test]
+    fn a_write_refuses_a_password_prompt() {
+        let write = &code()[code().find("fn cmdinfo_write").unwrap()..];
+        let (guard, send) = (write.find("at_password_prompt()").expect("asks the pane"), write.find("user_write(").unwrap());
+        assert!(guard < send && write.contains("PASSWORD_PROMPT"));
+    }
+
+    /// Review fix 3: the Composer button in an ended pane says so and opens nothing (S6, P11).
+    #[test]
+    fn the_composer_button_refuses_an_ended_pane() {
+        let arm = &code()[code().find("Act::Composer =>").unwrap()..];
+        let (ended, open) = (arm.find("ENDED").expect("says the session has ended"), arm.find("open_composer_with(").unwrap());
+        assert!(ended < open);
+        assert!(arm.find(".exited.is_some() || ").is_some_and(|i| i < open));
     }
 
     /// B5: Command Info opens in a pane whose text a remote host wrote; nothing else does.
