@@ -22,11 +22,11 @@ pub(super) fn apply_event(store: &mut Store, live: &mut Vec<Live>, event: Event,
             let guid = profile.guid();
             store.add(profile);
             store.transient.insert(guid.clone());
-            live.push(Live { guid, name: found.name, address: found.address });
+            live.push(Live { guid, name: found.name, service: found.service, address: found.address });
             true
         }
-        Event::Lost(name) => {
-            let gone = bonjour::lost_guids(live, &name);
+        Event::Lost(lost) => {
+            let gone = bonjour::lost_guids(live, &lost);
             for guid in &gone {
                 store.delete(guid);
             }
@@ -121,6 +121,10 @@ mod tests {
         Event::Found(Found { name: name.into(), service: "ssh".into(), address: address.into(), port: 22, user: Some("bob".into()) })
     }
 
+    fn lost(name: &str, service: &str, address: &str) -> Event {
+        Event::Lost(bonjour::Lost { name: name.into(), service: service.into(), address: address.into() })
+    }
+
     fn store() -> Store {
         Store::fresh(&std::env::temp_dir().join(format!("tandem-bonjour-{}.toml", std::process::id())))
     }
@@ -148,11 +152,17 @@ mod tests {
         s.save().unwrap();
         let back = Store::load(&std::env::temp_dir().join(format!("tandem-bonjour-{}.toml", std::process::id()))).unwrap();
         assert_eq!(back.profiles.len(), 1);
-        // Lost by the service name removes the profiles it made.
-        assert!(apply_event(&mut s, &mut live, Event::Lost("Mac".into()), "ssh"));
+        // An ftp goodbye of the same name, and an ssh goodbye from another address, keep the
+        // ssh profile; the host's own goodbye removes the profile it made.
+        assert!(!apply_event(&mut s, &mut live, lost("Mac", "ftp", "10.0.0.5"), "ssh"));
+        assert!(!apply_event(&mut s, &mut live, lost("Mac", "ssh", "10.0.0.9"), "ssh"));
+        assert_eq!(s.profiles.len(), 3);
+        assert!(apply_event(&mut s, &mut live, lost("Mac", "ssh", "10.0.0.5"), "ssh"));
+        assert_eq!(s.profiles.iter().map(|p| p.name()).collect::<Vec<_>>(), vec!["Default", "Mac (10.0.0.6)"]);
+        assert!(apply_event(&mut s, &mut live, lost("Mac", "ssh", "10.0.0.6"), "ssh"));
         assert_eq!(s.profiles.len(), 1);
         assert!(s.transient.is_empty() && live.is_empty());
-        assert!(!apply_event(&mut s, &mut live, Event::Lost("Mac".into()), "ssh"));
+        assert!(!apply_event(&mut s, &mut live, lost("Mac", "ssh", "10.0.0.5"), "ssh"));
         // Turning the key off removes every Bonjour profile.
         apply_event(&mut s, &mut live, found("A", "10.0.1.1"), "ssh");
         apply_event(&mut s, &mut live, found("B", "10.0.1.2"), "ssh");
@@ -173,7 +183,7 @@ mod tests {
         assert_eq!(live.len(), bonjour::MAX_HOSTS);
         assert_eq!(s.transient.len(), bonjour::MAX_HOSTS);
         // A lost host frees a slot.
-        assert!(apply_event(&mut s, &mut live, Event::Lost("h0".into()), "ssh"));
+        assert!(apply_event(&mut s, &mut live, lost("h0", "ssh", "10.1.0.1"), "ssh"));
         assert!(apply_event(&mut s, &mut live, found("late", "10.9.9.9"), "ssh"));
     }
 

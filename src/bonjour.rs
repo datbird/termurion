@@ -21,8 +21,18 @@ pub struct Found {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Found(Found),
-    /// A service went away, by its (cleaned) service name.
-    Lost(String),
+    /// A resolved service said goodbye.
+    Lost(Lost),
+}
+
+/// A service that went away: the name, service and address it was found with (P5: a goodbye
+/// matches name AND address; the service keeps a same-named ftp or telnet instance from
+/// removing an ssh host).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lost {
+    pub name: String,
+    pub service: String,
+    pub address: String,
 }
 
 /// The services iTerm2 browses (`:416-428`); only ssh, scp and sftp make profiles.
@@ -107,11 +117,12 @@ fn safe_address(text: &str) -> Option<String> {
     (!numeric && text.len() <= 253 && crate::ssh_url::hostname_ok(text)).then(|| text.to_string())
 }
 
-/// One live Bonjour profile: its guid, the service name it came from and its address.
+/// One live Bonjour profile: its guid, the service name, service and address it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Live {
     pub guid: String,
     pub name: String,
+    pub service: String,
     pub address: String,
 }
 
@@ -121,9 +132,10 @@ pub fn accept(live: &[Live], found: &Found) -> bool {
     live.len() < MAX_HOSTS && !live.iter().any(|l| l.name == found.name && l.address == found.address)
 }
 
-/// The guids a lost service removes (iTerm2 matches by name, `:521-541`).
-pub fn lost_guids(live: &[Live], name: &str) -> Vec<String> {
-    live.iter().filter(|l| l.name == name).map(|l| l.guid.clone()).collect()
+/// The guids a lost service removes: same name, service and address (P5; iTerm2 matches by name
+/// alone, `:521-541`).
+pub fn lost_guids(live: &[Live], lost: &Lost) -> Vec<String> {
+    live.iter().filter(|l| l.name == lost.name && l.service == lost.service && l.address == lost.address).map(|l| l.guid.clone()).collect()
 }
 
 /// A profile name that is free: `base`, else "base (address)", else numbered.
@@ -324,7 +336,7 @@ pub use browser::Browser;
 /// request's last callback; no early return, failed spawn or panic can free one sooner.
 #[cfg(windows)]
 mod browser {
-    use super::{instance_label, DnsSd, Ended, Event, Found, Requests, MAX_HOSTS, SERVICES};
+    use super::{instance_label, DnsSd, Ended, Event, Found, Lost, Requests, MAX_HOSTS, SERVICES};
     use crate::pty::Notify;
     use std::collections::HashMap;
     use std::ffi::c_void;
@@ -592,8 +604,9 @@ mod browser {
         let requests = &mut session.requests;
         let browses = &session.browses;
         let mut resolving: HashMap<u64, Resolving> = HashMap::new();
-        // Instance names seen and not gone, by lowercase full name (resolving or resolved).
-        let mut known: HashMap<String, Option<String>> = HashMap::new();
+        // Instance names seen and not gone, by lowercase full name: None while resolving, then
+        // what a goodbye reports.
+        let mut known: HashMap<String, Option<Lost>> = HashMap::new();
         let emit = |e: Event| {
             if ui.try_send(e).is_ok() {
                 notify();
@@ -632,8 +645,8 @@ mod browser {
                         continue;
                     }
                     if gone {
-                        if let Some(Some(name)) = known.remove(&key) {
-                            emit(Event::Lost(name));
+                        if let Some(Some(lost)) = known.remove(&key) {
+                            emit(Event::Lost(lost));
                         } else if let Some(id) = resolving.iter().find(|(_, r)| r.full.eq_ignore_ascii_case(&full)).map(|(id, _)| *id) {
                             resolving.remove(&id);
                             requests.cancel(id);
@@ -660,7 +673,7 @@ mod browser {
                     };
                     let Some(name) = instance_label(&r.full, SERVICES[r.service]) else { continue };
                     let Some(service) = super::service_type(SERVICES[r.service]) else { continue };
-                    known.insert(r.full.to_ascii_lowercase(), Some(name.clone()));
+                    known.insert(r.full.to_ascii_lowercase(), Some(Lost { name: name.clone(), service: service.clone(), address: address.clone() }));
                     emit(Event::Found(Found { name, service, address, port, user: super::user_from_txt(&txt) }));
                 }
             }
@@ -907,14 +920,18 @@ mod tests {
     #[test]
     fn live_hosts_are_bounded_and_matched() {
         let f = found("ssh", None, 22);
-        let live = vec![Live { guid: "g1".into(), name: f.name.clone(), address: f.address.clone() }];
+        let live = vec![Live { guid: "g1".into(), name: f.name.clone(), service: "ssh".into(), address: f.address.clone() }];
         assert!(!accept(&live, &f), "the same name and address twice");
         assert!(accept(&live, &Found { address: "10.0.0.6".into(), ..f.clone() }), "same name, other address");
-        let full: Vec<Live> = (0..MAX_HOSTS).map(|i| Live { guid: i.to_string(), name: format!("n{i}"), address: "10.0.0.9".into() }).collect();
+        let full: Vec<Live> = (0..MAX_HOSTS).map(|i| Live { guid: i.to_string(), name: format!("n{i}"), service: "ssh".into(), address: "10.0.0.9".into() }).collect();
         assert!(!accept(&full, &f), "at the cap");
         assert!(accept(&full[..MAX_HOSTS - 1], &f));
-        assert_eq!(lost_guids(&live, "Bob's Mac"), vec!["g1".to_string()]);
-        assert!(lost_guids(&live, "bob's mac").is_empty());
+        let lost = |name: &str, service: &str, address: &str| Lost { name: name.into(), service: service.into(), address: address.into() };
+        assert_eq!(lost_guids(&live, &lost("Bob's Mac", "ssh", "10.0.0.5")), vec!["g1".to_string()]);
+        assert!(lost_guids(&live, &lost("bob's mac", "ssh", "10.0.0.5")).is_empty());
+        // P5: name AND address; and a same-named ftp or telnet instance going leaves the ssh host.
+        assert!(lost_guids(&live, &lost("Bob's Mac", "ssh", "10.0.0.6")).is_empty(), "another host of the same name");
+        assert!(lost_guids(&live, &lost("Bob's Mac", "ftp", "10.0.0.5")).is_empty(), "the ftp service of the same host");
         let none = |_: &str| false;
         assert_eq!(unique_name("h", "10.0.0.5", &none), "h");
         assert_eq!(unique_name("h", "10.0.0.5", &|n| n == "h"), "h (10.0.0.5)");
