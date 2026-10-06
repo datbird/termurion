@@ -2183,6 +2183,19 @@ mod tests {
         }
     }
 
+    /// m13v2 Task 8: the screen reader's line count (`AS`: `numberOfLinesForAccessibility`).
+    #[test]
+    fn access_row_follows_iterm2() {
+        let s = schema::find_global("NumberOfLinesForAccessibility").expect("the row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Terminal", Kind::Int));
+        assert_eq!(s.default, Some(Value::Integer(1000)));
+        assert_eq!(s.label, "Maximum number of lines of history to expose to Accessibility.");
+        assert_eq!(
+            s.help,
+            "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
+        );
+    }
+
     /// m13v2 Task 6 (supersedes the m13t Task 8 ruling): iTerm2's full warning for the first edit
     /// of a dynamic profile that is not rewritable (`PPV:1217-1253`); none for a saved profile or a
     /// rewritable one.

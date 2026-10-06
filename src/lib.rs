@@ -342,6 +342,7 @@ pub mod menu_tips;
 #[cfg(windows)]
 pub mod menu_tip_win;
 pub mod licenses;
+pub mod access;
 pub mod dynamic_profiles;
 pub mod dynamic_profiles_trust;
 #[cfg(windows)]

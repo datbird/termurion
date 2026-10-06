@@ -5223,3 +5223,14 @@ label = "Maximum pixel height for a single screenshot file."
 type = "int"
 default = 30000
 help = "Maximum pixel height for a single screenshot file.\nScreenshots taller than this will be split into multiple files. Also affects the maximum total pixels (this value squared / 5)."
+
+# 13v2 Task 8: the screen reader's line count (iTermAdvancedSettingsModel: numberOfLinesForAccessibility).
+# The provider clamps it to 1..=10000 (access::MAX_LINES).
+[[setting]]
+key = "NumberOfLinesForAccessibility"
+tab = "Advanced"
+section = "Terminal"
+label = "Maximum number of lines of history to expose to Accessibility."
+type = "int"
+default = 1000
+help = "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
