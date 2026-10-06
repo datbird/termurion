@@ -1,6 +1,6 @@
 //! The Tandem window: tabs of split panes, drawn with wgpu.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -164,6 +164,7 @@ mod claude_code_app;
 mod scripts_alerts;
 mod tips_app;
 mod update_app;
+mod dynamic_profiles_app;
 mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
@@ -564,6 +565,15 @@ pub struct App {
     composer_worker: crate::composer_worker::Worker,
     /// Watches and scans the Scripts folder (started with the first window).
     scripts_scan: Option<crate::scripts_scan::Scanner>,
+    /// The Dynamic Profiles folder's watch (app-wide, 13v2 Task 6); None where there is none.
+    dynamic_scan: Option<crate::dynamic_profiles_scan::Scanner>,
+    /// Errors of a burst that came while an alert for the first still waited (`_pendingErrors`).
+    dynamic_errors_pending: usize,
+    /// Each dynamic profile's file as read (its text and what it looked like), for a write-back.
+    dynamic_files: HashMap<String, dynamic_profiles_app::Source>,
+    /// Rewritable dynamic profiles edited since the last write-back, and when it falls due.
+    dynamic_write: BTreeSet<String>,
+    dynamic_write_due: Option<Instant>,
     /// The Scripts menu's tree from the last scan.
     scripts_tree: Vec<crate::scripts::Node>,
     /// Every script's relative name ("folder/name.py"), iTerm2's `allScripts`.
@@ -1544,6 +1554,9 @@ pub(crate) fn teardown_process() {
     // A running update check ends with Tandem (its curl.exe), not after it.
     #[cfg(windows)]
     crate::update_fetch_win::cancel_running();
+    // The Dynamic Profiles folder's watch stops with Tandem.
+    #[cfg(windows)]
+    crate::dynamic_profiles_scan::stop_all();
 }
 
 pub fn run() {
@@ -1870,6 +1883,11 @@ pub fn run() {
         composers: HashMap::new(),
         composer_worker,
         scripts_scan: None,
+        dynamic_scan: None,
+        dynamic_errors_pending: 0,
+        dynamic_files: HashMap::new(),
+        dynamic_write: BTreeSet::new(),
+        dynamic_write_due: None,
         scripts_tree: Vec::new(),
         scripts_all: Vec::new(),
         scripts_keys: Default::default(),
@@ -4003,6 +4021,10 @@ impl App {
                 self.redraw();
             }
             return;
+        }
+        // A rewritable dynamic profile's edit goes back to its file once it settles.
+        if let Edit::Changed(guid) = &edit {
+            self.dynamic_edited(guid);
         }
         match edit {
             Edit::None | Edit::Preview => return,
@@ -6211,6 +6233,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.snippets.broken {
             self.banners.set("snippets", format!("Could not read the snippets in {}. The file stays as it is until a snippet is added.", snippets_ui::snippets_path().display()));
         }
+        // The Dynamic Profiles folder is read before the first window, so a startup arrangement
+        // can name a dynamic profile.
+        self.dynamic_profiles_start();
         let arrangement_policy = self.globals.bool("OpenArrangementAtStartup");
         let hotkey_only = !arrangement_policy && self.globals.bool("OpenNoWindowsAtStartup");
         let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();
@@ -6506,6 +6531,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.scripts_scan_tick();
         self.update_tick(event_loop);
         self.tips_tick(event_loop);
+        let dynamic_due = self.dynamic_profiles_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);
@@ -6579,7 +6605,7 @@ impl ApplicationHandler<UserEvent> for App {
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
         let command_due = self.command_click_tick();
-        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6727,6 +6753,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
                     // Edit Session's Copy Current Settings to Selected Profile, after its question.
                     let copy = slot.as_mut().and_then(|s| s.copy_request.take());
+                    // The dynamic profile warning's Mark as Rewritable and Reveal in Explorer.
+                    let dynamic = slot.as_mut().and_then(|s| s.dynamic_request.take());
                     // "Edit Profiles\u{2026}" opens the Settings window, which needs the event loop.
                     let edit = match edit {
                         Edit::EditProfiles(guid) => {
@@ -6751,6 +6779,11 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some((pane, dest)) = copy {
                         self.copy_to_profile(pane, &dest);
+                    }
+                    match dynamic {
+                        Some(crate::settings_ui::DynamicRequest::Mark(guid)) => self.mark_rewritable(&guid),
+                        Some(crate::settings_ui::DynamicRequest::Reveal(guid)) => self.reveal_dynamic(&guid),
+                        None => {}
                     }
                     if let Some(path) = reveal {
                         self.reveal_in_explorer(&path);

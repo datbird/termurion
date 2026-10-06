@@ -347,6 +347,7 @@ mod tests {
         assert!(after[..400].contains("teardown_process()"), "removed right after the event loop ends");
         let teardown = m.split("fn teardown_process").nth(1).and_then(|r| r.split("\n}").next()).expect("teardown_process");
         assert!(teardown.contains("notify::remove"), "the teardown removes the icon");
+        assert!(teardown.contains("dynamic_profiles_scan::stop_all"), "the teardown stops the Dynamic Profiles watch");
         let relaunch = include_str!("settings_export_ui.rs");
         let tail = relaunch.split("self.leave_host(false);").nth(1).expect("relaunch exit");
         let before_exit = tail.split("std::process::exit(0)").next().unwrap();

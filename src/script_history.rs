@@ -13,6 +13,9 @@ pub const GLOBAL_NAME: &str = "Tandem App";
 /// Automatic Profile Switching's entry (`SH:45-54`).
 pub const APS_ID: &str = "__APS";
 pub const APS_NAME: &str = "Automatic Profile Switching";
+/// The Dynamic Profiles entry (`SH:58-66`).
+pub const DYNAMIC_PROFILES_ID: &str = "__DP";
+pub const DYNAMIC_PROFILES_NAME: &str = "Dynamic Profiles";
 /// Log lines an entry keeps (`SH:293`).
 pub const MAX_LOG_LINES: usize = 1000;
 /// Calls an entry keeps (`SH:313-318`).
@@ -289,6 +292,8 @@ pub struct History {
     /// The Automatic Profile Switching entry was added once (`_haveAddedAPSLoggingEntry`):
     /// once cleared it is not added again.
     aps_added: bool,
+    /// The Dynamic Profiles entry was added once (`_haveAddedDynamicProfilesLoggingEntry`).
+    dynamic_added: bool,
 }
 
 impl History {
@@ -300,7 +305,7 @@ impl History {
             entries.push(Entry::new(APS_ID, APS_NAME, now));
         }
         entries.push(Entry::new(GLOBAL_ID, GLOBAL_NAME, now));
-        History { entries, generation: 0, aps_added: aps }
+        History { entries, generation: 0, aps_added: aps, dynamic_added: false }
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -408,6 +413,15 @@ impl History {
         if !self.aps_added {
             self.aps_added = true;
             self.add(Entry::new(APS_ID, APS_NAME, now));
+        }
+    }
+
+    /// Adds the Dynamic Profiles entry at the end the first time an error is logged
+    /// (`addDynamicProfilesLoggingEntryIfNeeded`, `SH:367-377`); never again once added.
+    pub fn add_dynamic_profiles_entry(&mut self, now: u64) {
+        if !self.dynamic_added {
+            self.dynamic_added = true;
+            self.add(Entry::new(DYNAMIC_PROFILES_ID, DYNAMIC_PROFILES_NAME, now));
         }
     }
 
@@ -651,6 +665,25 @@ mod tests {
         h.ensure_aps(5);
         let ids: Vec<&str> = h.entries().iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["iTerm2"], "added once only");
+    }
+
+    /// `addDynamicProfilesLoggingEntryIfNeeded` (`SH:367-377`): one entry, "Dynamic Profiles" with
+    /// id "__DP", added at the end the first time and never again (even after Clear Terminated).
+    #[test]
+    fn dynamic_entry_follows_iterm2() {
+        let mut h = History::new(false, 0);
+        h.add_dynamic_profiles_entry(7);
+        h.add_dynamic_profiles_entry(8);
+        let rows: Vec<(&str, &str)> = h.entries().iter().map(|e| (e.id.as_str(), e.name.as_str())).collect();
+        assert_eq!(rows, [("iTerm2", "Tandem App"), ("__DP", "Dynamic Profiles")]);
+        assert_eq!((DYNAMIC_PROFILES_ID, DYNAMIC_PROFILES_NAME), ("__DP", "Dynamic Profiles"));
+        assert_eq!(h.entries()[1].started, 7);
+        h.add_log(DYNAMIC_PROFILES_ID, "bad file\n", "S");
+        assert_eq!(h.find(DYNAMIC_PROFILES_ID).unwrap().log_lines().len(), 1);
+        h.find_mut(DYNAMIC_PROFILES_ID).unwrap().running = false;
+        h.clear_terminated();
+        h.add_dynamic_profiles_entry(9);
+        assert_eq!(h.entries().len(), 1, "added once only");
     }
 
     #[test]

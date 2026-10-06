@@ -398,6 +398,10 @@ pub struct SettingsWindow {
     copy_dest: Option<String>,
     copy_pending: Option<String>,
     pub copy_request: Option<(PaneId, String)>,
+    /// What the dynamic profile warning's buttons ask the app to do, taken after each frame.
+    pub dynamic_request: Option<DynamicRequest>,
+    /// Dynamic profiles whose first edit already showed the warning in this window.
+    dynamic_warned: std::collections::HashSet<String>,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
     /// The registered session title providers as (display name, unique id), for the Title
@@ -432,6 +436,15 @@ pub struct SettingsWindow {
     /// Whether a terminal window is open; the app sets it before each redraw (it enables the
     /// Profiles window's split buttons).
     pub window_exists: bool,
+}
+
+/// What the dynamic profile warning asks of the app (its buttons).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DynamicRequest {
+    /// "Mark as Rewritable" for this profile.
+    Mark(String),
+    /// "Reveal in Explorer" for this profile's file.
+    Reveal(String),
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -571,6 +584,8 @@ impl SettingsWindow {
             copy_dest: None,
             copy_pending: None,
             copy_request: None,
+            dynamic_request: None,
+            dynamic_warned: Default::default(),
             open_editor: None,
             title_providers: Vec::new(),
             session_hotkey: None,
@@ -605,6 +620,11 @@ impl SettingsWindow {
         }
         self.host.window.request_redraw();
         self.host.focus();
+    }
+
+    /// The profile the editor shows.
+    pub fn selected_guid(&self) -> Option<&str> {
+        self.selected.as_deref()
     }
 
     /// Shows this profile in the editor (Edit Session).
@@ -705,6 +725,7 @@ impl SettingsWindow {
         let copy_dest = &mut self.copy_dest;
         let copy_pending = &mut self.copy_pending;
         let copy_request = &mut self.copy_request;
+        let dynamic_request = &mut self.dynamic_request;
         let shortcut_rows: Vec<(String, String, Option<char>)> = store.profiles.iter().map(|p| (p.guid(), p.name(), crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
         let mut shortcut_take: Option<(String, Option<char>)> = None;
         let title_providers = &self.title_providers;
@@ -751,7 +772,7 @@ impl SettingsWindow {
                             let dest = copy_pending.take();
                             if let (true, Some(pane), Some(dest)) = (copy_confirmed(answer.index), edit_session, dest) {
                                 if store.get(&dest).is_some_and(|d| !d.string("Dynamic Profile Filename").is_empty()) {
-                                    then_dynamic = store.get(&dest).map(Profile::name);
+                                    then_dynamic = Some(dest.clone());
                                 }
                                 *copy_request = Some((pane, dest));
                             }
@@ -763,10 +784,17 @@ impl SettingsWindow {
                                 settings_keys::Saved::Profile(g) => edit = Edit::Changed(g),
                             },
                             Some(settings_keys::SheetThen::CreateHotkey(existing)) => crate::settings_hotkey::create_answered(hk, store, &existing, answer.index),
+                            Some(settings_keys::SheetThen::DynamicProfile(guid)) => match answer.index {
+                                0 => *dynamic_request = Some(DynamicRequest::Mark(guid)),
+                                1 => *dynamic_request = Some(DynamicRequest::Reveal(guid)),
+                                _ => {}
+                            },
                             Some(settings_keys::SheetThen::Nothing) | None => {}
                         }
-                        if let Some(name) = then_dynamic {
-                            *sheet = Some(settings_keys::SheetWarning::new(settings_keys::dynamic_profile_spec(&name), settings_keys::SheetThen::Nothing));
+                        if let Some(guid) = then_dynamic {
+                            if let Some(spec) = store.get(&guid).and_then(settings_keys::dynamic_profile_spec) {
+                                *sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::DynamicProfile(guid)));
+                            }
                         }
                     }
                     answered.push(answer);
@@ -1288,6 +1316,17 @@ impl SettingsWindow {
                 });
             });
         });
+        // The first edit of a dynamic profile that is not rewritable asks "Changes Will Be Lost"
+        // (`PPV:1196-1253`), once per profile in this window; the edit itself stands.
+        if let Edit::Changed(guid) = &edit {
+            if !guid.is_empty() && self.sheet.is_none() && !self.dynamic_warned.contains(guid) {
+                if let Some(spec) = store.profiles.iter().find(|p| p.guid() == *guid).and_then(settings_keys::dynamic_profile_spec) {
+                    self.dynamic_warned.insert(guid.clone());
+                    self.sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::DynamicProfile(guid.clone())));
+                    self.host.request_redraw();
+                }
+            }
+        }
         // The shortcut a profile took leaves every other profile (`setShortcutValueToSelectedItem`).
         if let Some((guid, key)) = shortcut_take {
             crate::profile_menu::take_shortcut(&mut store.profiles, &guid, key);

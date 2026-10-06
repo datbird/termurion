@@ -1053,6 +1053,8 @@ mod tests {
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
+        ("app/dynamic_profiles_app.rs", "reveal_dynamic", "selects a Dynamic Profiles file below the folder (a plain-name path the network judge passed); nothing runs it"),
+        ("app/scripts_alerts.rs", "scripts_answered", "the Dynamic Profiles error's Reveal in Explorer selects the file the loader named; nothing runs it"),
         ("app/semantic_ui.rs", "spawn_direct", "the sink itself; execute's callers are checked"),
         ("semantic.rs", "plan", "builds a Run and opens nothing; its callers are checked"),
         ("semantic.rs", "open_url_run", "builds a Run and opens nothing; smart_action_run's callers are checked"),

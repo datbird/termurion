@@ -469,6 +469,19 @@ pub fn parse_file(path: &str, bytes: &[u8], saved_guids: &dyn Fn(&str) -> bool) 
     (Some((kept, kind)), errors)
 }
 
+/// The profile entries of a file as they stand (no entry dropped), and its type: what a
+/// write-back edits. None when the file is not one the loader would read.
+pub fn raw_profiles(bytes: &[u8]) -> Option<(Vec<Json>, FileType)> {
+    if bytes.len() > MAX_FILE {
+        return None;
+    }
+    let (root, kind) = read_root("", bytes).ok()?;
+    match root.get("Profiles") {
+        Some(Json::Array(list)) if list.len() <= MAX_PROFILES => Some((list.clone(), kind)),
+        _ => None,
+    }
+}
+
 // ---- Loading ---------------------------------------------------------------------------------
 
 /// What `load` found: the profiles with the file each came from, and the errors with their file.

@@ -341,6 +341,8 @@ pub mod tips;
 pub mod dynamic_profiles;
 pub mod dynamic_profiles_trust;
 #[cfg(windows)]
+pub mod dynamic_profiles_scan;
+#[cfg(windows)]
 pub mod update_fetch_win;
 pub mod update_ui;
 pub mod ssh_recovery;

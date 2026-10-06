@@ -73,6 +73,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SlowScan => Answer::Button(1),
         // Sparkle's question: a closed window answers neither (nothing is stored, it asks again).
         Then::UpdatePermission | Then::TipPermission => Answer::Closed,
+        // A closed error alert is no answer: nothing is revealed (P21).
+        Then::DynamicProfilesError(_) => Answer::Closed,
         // Neither: a close never changes the person's locale.
         Then::LocaleMismatch { .. } => Answer::Closed,
         // A closed window never starts a log or makes a folder.
@@ -267,6 +269,9 @@ pub(super) enum Then {
     UpdatePermission,
     /// "See Tips of the Day?": Yes (0) or No (1). Closed, nothing is stored.
     TipPermission,
+    /// "Dynamic Profiles Error": OK (0), View Log (1) shows the Dynamic Profiles console entry, and
+    /// Reveal in Explorer (2, only with the file) selects the file of the first error.
+    DynamicProfilesError(Option<std::path::PathBuf>),
 }
 
 impl Then {
@@ -276,6 +281,8 @@ impl Then {
     pub(super) fn never_remember(&self) -> Vec<usize> {
         match self {
             Then::OpenNewScript(_) | Then::PrefsQuit | Then::Malformed(_) => vec![1],
+            // View Log, and Reveal in Explorer when the file is offered: navigation, never remembered.
+            Then::DynamicProfilesError(file) => if file.is_some() { vec![1, 2] } else { vec![1] },
             Then::Archive(_) => vec![1, 2],
             // Replace would overwrite for every later file of that name.
             Then::SshKeepOrReplace { .. } => vec![1],
@@ -291,7 +298,7 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
     }
 }
 
@@ -345,6 +352,7 @@ impl App {
             // The finished download keeps both files.
             Then::SshKeepOrReplace { .. } => self.scripts_answered(then, 0),
             Then::Paste(pane) => self.paste_answered(pane, None),
+            Then::DynamicProfilesError(_) => self.dynamic_errors_pending = 0,
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
             _ => {}
@@ -457,6 +465,14 @@ impl App {
             Then::SessionHotkey { pane, shortcut } => self.session_hotkey_answered(pane, shortcut, index),
             Then::UpdatePermission => self.update_permission_answered(index),
             Then::TipPermission => self.tip_permission_answered(index),
+            Then::DynamicProfilesError(file) => {
+                self.dynamic_errors_pending = 0;
+                match (index, file) {
+                    (1, _) => self.reveal_script_entry(crate::script_history::DYNAMIC_PROFILES_ID),
+                    (2, Some(path)) => self.reveal_in_explorer(&path.display().to_string()),
+                    _ => {}
+                }
+            }
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem => {}
             Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),
             Then::LogExists { pane, path } => self.log_exists_answered(pane, path, index),

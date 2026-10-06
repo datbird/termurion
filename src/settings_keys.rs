@@ -1086,20 +1086,27 @@ pub fn possible_override_spec() -> crate::warnings::Spec {
     settings_spec("NeverWarnAboutPossibleOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
 }
 
-/// Editing a dynamic profile (`showDynamicProfileWarning`, `ProfilePreferencesViewController.m:1217-1245`):
-/// iTerm2's first paragraph; Tandem imports Dynamic Profiles once and never writes them back, so
-/// its second paragraph and its Mark as Rewritable and Reveal buttons are not offered.
-pub fn dynamic_profile_spec(name: &str) -> crate::warnings::Spec {
-    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem imports dynamic profiles once and does not write changes back to the file.");
-    crate::warnings::Spec {
+/// Editing a dynamic profile that is not rewritable (`showDynamicProfileWarning`,
+/// `ProfilePreferencesViewController.m:1217-1253`): iTerm2's text and buttons ("rewritable" closes
+/// with a second left quote there, kept). None for a saved profile and for a rewritable one.
+/// Supersedes the m13t Task 8 ruling that Tandem never writes dynamic profiles back (13v2).
+pub fn dynamic_profile_spec(profile: &crate::profile::Profile) -> Option<crate::warnings::Spec> {
+    if !profile.bool("Is Dynamic Profile") || profile.bool("Rewritable") {
+        return None;
+    }
+    let name = profile.name();
+    let name = if name.is_empty() { "(unknown name)".to_string() } else { name };
+    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change.");
+    Some(crate::warnings::Spec {
         id: Some("NoSyncDynamicProfileChangeWillBeLost".to_string()),
         kind: crate::warnings::Kind::Temporary,
         heading: "Changes Will Be Lost".to_string(),
         text,
-        labels: vec![crate::api_auth::OK.to_string()],
-        cancel: None,
-        never_remember: Vec::new(),
-    }
+        labels: vec!["Mark as Rewritable".to_string(), "Reveal in Explorer".to_string(), crate::api_auth::CANCEL.to_string()],
+        cancel: Some(2),
+        // "Reveal in Explorer" is a one-time navigation and is never remembered.
+        never_remember: vec![1],
+    })
 }
 
 /// Copy to Profile's question (`PP:780-791`); 13t's Copy to Profile asks it.
@@ -1116,6 +1123,8 @@ pub enum SheetThen {
     SaveKey,
     /// Create a Dedicated Hotkey Window's question, with the hotkey profiles as (Guid, name).
     CreateHotkey(Vec<(String, String)>),
+    /// The dynamic profile (its Guid) warning: Mark as Rewritable (0) or Reveal in Explorer (1).
+    DynamicProfile(String),
 }
 
 /// A warning shown over the settings window, with its checkbox's state.
@@ -2143,6 +2152,32 @@ mod tests {
         ] {
             assert!(schema::find_global(key).is_none(), "{key}");
         }
+    }
+
+    /// m13v2 Task 6 (supersedes the m13t Task 8 ruling): iTerm2's full warning for the first edit
+    /// of a dynamic profile that is not rewritable (`PPV:1217-1253`); none for a saved profile or a
+    /// rewritable one.
+    #[test]
+    fn dynamic_warning_follows_iterm2() {
+        let mut saved = crate::profile::Profile::new("Dev");
+        assert!(dynamic_profile_spec(&saved).is_none(), "a saved profile");
+        saved.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        let spec = dynamic_profile_spec(&saved).expect("a dynamic one");
+        assert_eq!(spec.heading, "Changes Will Be Lost");
+        assert_eq!(
+            spec.text,
+            "The selected profile, \u{201c}Dev\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change."
+        );
+        assert_eq!(spec.labels, ["Mark as Rewritable", "Reveal in Explorer", "Cancel"]);
+        assert_eq!(spec.cancel, Some(2));
+        assert_eq!(spec.never_remember, vec![1], "Reveal in Explorer is never remembered");
+        assert_eq!(spec.id.as_deref(), Some("NoSyncDynamicProfileChangeWillBeLost"));
+        assert_eq!(spec.kind, crate::warnings::Kind::Temporary);
+        saved.set("Rewritable", toml::Value::Boolean(true));
+        assert!(dynamic_profile_spec(&saved).is_none(), "a rewritable one");
+        let mut unnamed = crate::profile::Profile::new("");
+        unnamed.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        assert!(dynamic_profile_spec(&unnamed).unwrap().text.contains("\u{201c}(unknown name)\u{201d}"));
     }
 
     /// m13v2 Task 5: the Dynamic Profiles rows (`AS`: `dynamicProfilesPath`,
