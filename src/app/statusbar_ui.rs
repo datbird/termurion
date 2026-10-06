@@ -808,6 +808,7 @@ impl App {
         let work = self.monitor_rects().map(|(w, _)| w);
         let scale = f64::from(self.scale());
         self.text_popover = None;
+        self.web_popover = None;
         if let Some(g) = self.gpu.as_ref() {
             let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
             let origin = g.window.inner_position().unwrap_or_default();
@@ -817,6 +818,26 @@ impl App {
                 Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
             }
         }
+        if let Some(w) = back {
+            self.enter(w);
+        }
+    }
+
+    /// A StatusBarComponentRequest's popover (`BASE:363-389`): the HTML in a web popover when the
+    /// runtime and the HTML's size allow it, else the text popover (11c's fallback).
+    pub(super) fn open_html_popover(&mut self, pane: PaneId, id: &str, html: &str, size: (f64, f64), event_loop: &ActiveEventLoop) {
+        if !self.web_popover_possible(html) {
+            return self.open_text_popover(pane, id, &crate::script_statusbar::html_text(html), size, event_loop);
+        }
+        let back = self.current_window();
+        self.enter_pane_window(pane);
+        let anchor = self.component_anchor(pane, id).unwrap_or_else(|| {
+            let a = self.window_area();
+            (a.x + a.w / 2.0, a.y)
+        });
+        let origin = self.gpu.as_ref().and_then(|g| g.window.inner_position().ok()).unwrap_or_default();
+        let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
+        self.open_web_popover(Some(pane), crate::web_popover::Kind::Html { html: html.to_string() }, size, at, event_loop);
         if let Some(w) = back {
             self.enter(w);
         }

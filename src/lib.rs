@@ -286,6 +286,8 @@ pub mod git_log_ui;
 #[cfg(windows)]
 pub mod status_popover_ui;
 #[cfg(windows)]
+pub mod web_popover;
+#[cfg(windows)]
 pub mod cmdinfo_ui;
 #[cfg(windows)]
 pub mod shot_ui;

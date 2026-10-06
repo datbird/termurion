@@ -619,7 +619,7 @@ impl App {
                 let link = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new() });
+                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None });
             } else if fold.is_some() {
                 pending = Some(CtxPending { fold, ..CtxPending::for_pane(id, Vec::new()) });
             }
@@ -636,7 +636,15 @@ impl App {
             for (label, item) in self.lock_items_for(id) {
                 extra.push((label.into(), item));
             }
-            pending.get_or_insert_with(|| CtxPending::for_pane(id, Vec::new()));
+            let pend = pending.get_or_insert_with(|| CtxPending::for_pane(id, Vec::new()));
+            // Quick Look Link: a short selection that is an http or https URL (`CMH:557-558`).
+            let columns = self.panes.get(&id).map_or(0, |p| p.screen.term().columns());
+            if let Some(text) = self.selected_text(id).filter(|t| crate::web_popover::quick_look_offered(t, columns)) {
+                if let Some(url) = crate::web_popover::quick_look_target(&text) {
+                    extra.push(("Quick Look Link".into(), CtxItem::QuickLookLink));
+                    pend.quick_look = Some((url, self.pointer_screen()));
+                }
+            }
         }
         // The script providers' items (`CMH:898-914`), for that session.
         let mut providers: Vec<(String, CtxItem)> = Vec::new();
@@ -696,6 +704,10 @@ impl App {
         } else if item == "unfold" {
             if let Some(f) = pend.fold {
                 self.unfold(pend.pane, f);
+            }
+        } else if item == "quicklook" {
+            if let Some((url, at)) = pend.quick_look {
+                self.quick_look_url(&url, at, event_loop);
             }
         } else if item == "copylink" {
             if let (Some(link), Some(cb)) = (pend.link, &mut self.clipboard) {
@@ -761,6 +773,8 @@ pub(super) enum CtxItem {
     /// A Smart Selection action by index, and whether it is enabled (not in a remote pane, P10).
     Action(usize, bool),
     CopyLink,
+    /// Quick Look Link (`CMH:557-558`): a short http or https selection, opened at the pointer.
+    QuickLookLink,
     Unfold,
     StopCoprocess,
     ToggleBroadcast,
@@ -785,6 +799,7 @@ impl CtxItem {
         match self {
             CtxItem::Action(i, _) => format!("{CTX_ID}action.{i}"),
             CtxItem::CopyLink => format!("{CTX_ID}copylink"),
+            CtxItem::QuickLookLink => format!("{CTX_ID}quicklook"),
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
             CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
@@ -869,12 +884,14 @@ pub(super) struct CtxPending {
     fold: Option<u32>,
     /// The script providers' items shown (title, unique id).
     providers: Vec<(String, String)>,
+    /// Quick Look Link's URL and the pointer (screen pixels) when the menu opened.
+    quick_look: Option<(String, (f64, f64))>,
 }
 
 impl CtxPending {
     /// A pending menu for `pane` with no link, fold or Smart Selection action.
     fn for_pane(pane: PaneId, providers: Vec<(String, String)>) -> Self {
-        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers }
+        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None }
     }
 }
 
@@ -1067,6 +1084,10 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("app/web_popover_app.rs", "quick_look_url", "only an http or https URL with a host (web_popover::quick_look_target) is shown or opened, the one kind a remote pane's link may open (P10)"),
+        ("app/web_popover_app.rs", "web_popover_event", "opens the page the popover shows, only when its scheme is http or https (quick_look_scheme_ok)"),
+        ("app/web_popover_app.rs", "web_popover_view_event", "an external protocol a popover's page asked for goes through external_uri_run (guard_open), only for a person's gesture"),
+        ("app/web_popover_app.rs", "external_uri_run", "builds a decision and opens nothing; its caller is checked"),
         ("localfs.rs", "open_with_shell", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("localfs.rs", "shell_verb", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("app/scripts_alerts.rs", "bind_scheme_confirmed", "opens the constant Default apps page (url_schemes::DEFAULT_APPS_URI), never text from a pane or a link"),

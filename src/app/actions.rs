@@ -493,7 +493,24 @@ impl App {
                 let point = self.grid_point(pane, cell.0, cell.1);
                 self.show_context_menu_at(Some((pane, Some(point))));
             }
-            "kOpenTargetPointerAction" | "kQuickLookAction" | "kOpenTargetInBackgroundPointerAction" => {
+            // A web link in a popover (`ARC:913-917`); anything else opens as 13j did.
+            "kQuickLookAction" => {
+                let point = self.grid_point(pane, cell.0, cell.1);
+                let link = self.target_at(pane, point).and_then(|(_, t, _)| match t {
+                    crate::semantic::Target::Link(u) | crate::semantic::Target::Url(u) => crate::web_popover::quick_look_target(&u),
+                    _ => None,
+                });
+                match link {
+                    Some(u) => {
+                        let at = self.pointer_screen();
+                        self.quick_look_url(&u, at, event_loop);
+                    }
+                    None => {
+                        self.open_target(pane, point, false, event_loop);
+                    }
+                }
+            }
+            "kOpenTargetPointerAction" | "kOpenTargetInBackgroundPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);
                 self.open_target(pane, point, b.action == "kOpenTargetInBackgroundPointerAction", event_loop);
             }

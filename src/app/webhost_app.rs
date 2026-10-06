@@ -182,6 +182,7 @@ impl App {
             self.banners.set("webview2", format!("The WebView2 Runtime folder in Advanced > Web Browser was not used: {why}"));
         }
         self.web_focus_recheck();
+        self.web_popover_tick();
         for _ in 0..DRAIN_PER_TICK {
             let Ok(posted) = self.web_events.try_recv() else { break };
             if let Some((store, result)) = &posted.env {
@@ -256,6 +257,9 @@ impl App {
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.
     fn web_route(&mut self, event: &Event, _event_loop: &ActiveEventLoop) {
         if self.tool_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+            return;
+        }
+        if self.web_popover_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
             return;
         }
         match event {

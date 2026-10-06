@@ -1376,7 +1376,7 @@ impl App {
         let status = crate::script_statusbar::popover_status(r, pane.is_some(), component);
         if let (pb::status_bar_component_response::Status::Ok, Some(pane)) = (status, pane) {
             let size = open.size.as_ref().map_or((0.0, 0.0), |s| (f64::from(s.width.unwrap_or_default()), f64::from(s.height.unwrap_or_default())));
-            self.open_text_popover(pane, &id, &crate::script_statusbar::html_text(open.html.as_deref().unwrap_or_default()), size, event_loop);
+            self.open_html_popover(pane, &id, open.html.as_deref().unwrap_or_default(), size, event_loop);
         }
         reply(req, Resp::StatusBarComponentResponse(pb::StatusBarComponentResponse { status: Some(status as i32) }))
     }

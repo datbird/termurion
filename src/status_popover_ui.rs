@@ -36,18 +36,24 @@ pub enum PopoverEvent {
     Close,
 }
 
+/// The window attributes of a popover: frameless, no taskbar button, hidden until placed, `w` by
+/// `h` points of content.
+pub(crate) fn popover_attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
+    use winit::platform::windows::WindowAttributesExtWindows;
+    Window::default_attributes()
+        .with_title(title)
+        .with_decorations(false)
+        .with_skip_taskbar(true)
+        .with_visible(false)
+        .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+}
+
 /// A frameless, taskbar-less window of `w` by `h` points, its bottom centered on `at` (screen
 /// pixels) as a popover above its button (`preferredEdge: .maxY`), kept on `work`, the work
 /// area of the button's monitor (`place`).
 #[allow(clippy::too_many_arguments)]
 fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, w: f64, h: f64, at: (f64, f64), work: Option<Rect>) -> Result<EguiHost, String> {
-    use winit::platform::windows::WindowAttributesExtWindows;
-    let attrs = Window::default_attributes()
-        .with_title(title)
-        .with_decorations(false)
-        .with_skip_taskbar(true)
-        .with_visible(false)
-        .with_inner_size(winit::dpi::LogicalSize::new(w, h));
+    let attrs = popover_attributes(title, w, h);
     let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
     let scale = host.window.scale_factor();
     let (pw, ph) = (w * scale, h * scale);
@@ -73,7 +79,7 @@ pub fn popover_size(size: (f64, f64), work: Option<Rect>, scale: f64, max_px: f6
 /// Where a popover of `pw` by `ph` pixels goes: its bottom centered on `at`, moved inside
 /// `work` (the monitor's work area, screen pixels; its top-left edge wins when it is too
 /// small), or kept off negative coordinates without one.
-fn place(at: (f64, f64), pw: f64, ph: f64, work: Option<Rect>) -> (f64, f64) {
+pub(crate) fn place(at: (f64, f64), pw: f64, ph: f64, work: Option<Rect>) -> (f64, f64) {
     let (x, y) = (at.0 - pw / 2.0, at.1 - ph);
     match work {
         Some(r) => {

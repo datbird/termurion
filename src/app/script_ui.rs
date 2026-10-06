@@ -21,6 +21,7 @@ use crate::expr::{self, Call, FailKind, Failure, Value};
 use crate::layout::PaneId;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::warnings::Preempt;
+use crate::webhost::ViewId;
 use crate::script_eval::{self, Host, HostOutcome, Invocation, Layered, Step, Timeout};
 use crate::script_fn;
 use crate::script_statusbar;
@@ -66,6 +67,8 @@ pub(super) enum Origin {
     /// A profile binding's evaluation (`PS:6319`): the pane, the bound key and the evaluation's
     /// number there (`bindings_ui`), so an older answer never applies.
     Binding { pane: PaneId, key: String, nth: u64 },
+    /// A popover page's `iterm2Invoke` (`WVW:211-215`): the view, the page's callback (empty when it gave none) and the invoked function's signature (a failure is logged to the connection that registered it, `BASE:433-436`).
+    WebView { view: ViewId, callback: String, signature: String },
 }
 
 /// Whether Initial Text must wait: an SSH profile's session with no conductor yet is still at
@@ -797,6 +800,7 @@ impl App {
                 }
             }
             Origin::Title { pane, nth } => self.title_finished(*pane, *nth, invocation, r),
+            Origin::WebView { view, callback, signature } => self.web_invoke_answered(*view, callback, signature, r),
             // Never `user_write`: Initial Text is not broadcast (`writeTaskNoBroadcast`,
             // `PS:4276`). The pane may be gone by now.
             // An answer of an older start (the session restarted meanwhile) is dropped.
