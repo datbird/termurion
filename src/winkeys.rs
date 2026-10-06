@@ -362,13 +362,19 @@ pub fn uninstall() {
     }
 }
 
+/// Locks a hook mutex through a poison: after a panic in the hook (caught by `guarded`) the data
+/// is still consistent for a key press, and unwrapping here would panic on every later keystroke.
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Remapping, and Do Not Remap Modifiers. True when the event was swallowed.
 fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
     let fg = unsafe { GetForegroundWindow() } as isize;
     let focused = is_tandem(fg) || fg == SETTINGS.load(Ordering::Relaxed);
     let tags = *h.tags.read().unwrap();
-    let mut r = h.remapper.lock().unwrap();
+    let mut r = locked(&h.remapper);
     if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags, REMAP_GLOBAL.load(Ordering::Relaxed)) {
         inject(&keys);
         return true;
@@ -376,7 +382,7 @@ fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     if is_modifier(vk) {
         return false;
     }
-    let mut exempting = h.exempting.lock().unwrap();
+    let mut exempting = locked(&h.exempting);
     if down && r.active() && (*exempting == Some(vk) || (h.exempt)(vk, r.physical_mods())) {
         *exempting = Some(vk);
         inject(&r.exempt_down(vk));
@@ -449,7 +455,7 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                     ctrl: held(0x11),
                 };
                 let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else if cockpit { cockpit_chord(c) } else { (h.bound)(c) };
-                let verdict = h.gate.lock().unwrap().on_key(e, &bound);
+                let verdict = locked(&h.gate).on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
                         mask_start_menu();
@@ -655,10 +661,11 @@ pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
     let digit9 = (0x02..=0x0A).contains(&scan);
     // The modifiers match exactly, as iTerm2's symbolic hotkeys do: Win+Shift is the shell's for
     // Snipping (S), Restore (M), Notifications (V), Cycle taskbar (T), Reverse language (Space),
-    // new instance (1..0) and moving or stretching a window (Left, Right, Up), not every letter.
+    // new instance (1..0) and moving, stretching or restoring a window (Left, Right, Up, Down), not
+    // every letter.
     match (extra, shift) {
         (0, false) => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
-        (0, true) => matches!(scan, 0x1F | 0x32 | 0x2F | 0x14 | 0x39 | 0xE04B | 0xE04D | 0xE048) || digit,
+        (0, true) => matches!(scan, 0x1F | 0x32 | 0x2F | 0x14 | 0x39 | 0xE04B | 0xE04D | 0xE048 | 0xE050) || digit,
         // Virtual desktops (Win+Ctrl+D, F4, Left, Right), Quick Assist (Q), Narrator (N), speech
         // (S), sound output (V), the input language (Space), and the like.
         (MOD_CONTROL, false) => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E | 0x10 | 0x31 | 0x1F | 0x2F | 0x39) || digit9,
@@ -927,7 +934,7 @@ mod tests {
             assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
         }
         // Win+Shift is exact: the shell's own few, not every letter.
-        for k in [MKey::Char('s'), MKey::Char('m'), MKey::Char('v'), MKey::Char('t'), MKey::Space, MKey::Left, MKey::Right, MKey::Up, MKey::Char('3')] {
+        for k in [MKey::Char('s'), MKey::Char('m'), MKey::Char('v'), MKey::Char('t'), MKey::Space, MKey::Left, MKey::Right, MKey::Up, MKey::Down, MKey::Char('3')] {
             assert!(shell_owned_chord(&chord(k.clone(), false, false, true)), "Win+Shift+{k:?}");
         }
         for k in "qwazxe".chars() {
@@ -975,6 +982,20 @@ mod tests {
             let h = HChord { key: HKey::Scan(scan), mods: MOD_WIN };
             assert_eq!(shell_owned_chord(&chord(key, false, false, false)), shell_owned(h));
         }
+    }
+
+    #[test]
+    fn a_poisoned_hook_lock_is_recovered() {
+        let m = Mutex::new(5u8);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap();
+            panic!("poison it");
+        }));
+        assert!(m.is_poisoned());
+        // Every later key press still reads it.
+        assert_eq!(*locked(&m), 5);
+        *locked(&m) = 6;
+        assert_eq!(*locked(&m), 6);
     }
 
     #[test]
