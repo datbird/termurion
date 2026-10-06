@@ -192,6 +192,7 @@ impl App {
                 35 => self.start_coprocess(t, &b.text, false, crate::coprocess::Entry::KeyBinding),
                 36 => self.find_regex_in(t, &b.text),
                 37 => self.set_profile_on(t, &b.text),
+                40 => self.load_preset_action(t, &b.text),
                 41 | 42 => self.paste_special_in(t, b),
                 73 => self.copy_mode_commands_in(t, &b.text),
                 // Invoke Script Function: once in each target session's scope.

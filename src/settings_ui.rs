@@ -8,6 +8,7 @@ use winit::window::WindowId;
 
 use crate::chrome;
 use crate::globals::Globals;
+use crate::layout::PaneId;
 use crate::mouse::Mods;
 use crate::profile::{self, Profile};
 use crate::schema::{self, Kind, Setting};
@@ -38,6 +39,14 @@ pub fn value_of_rgb(c: [u8; 3]) -> Value {
     profile::color_value(crate::palette::rgb(c[0], c[1], c[2]))
 }
 
+/// The Profiles window's remembered tag sidebar state (`iTermProfilesWindowController.m:42`).
+const PROFILES_TAGS_OPEN: &str = "NoSyncProfilesWindowTagsOpen";
+/// "Close this window after opening a profile." (`kCloseBookmarksWindowAfterOpening`).
+pub const CLOSE_AFTER_OPENING: &str = "CloseBookmarksWindowAfterOpening";
+
+/// The side of the Colors tab's hue and chroma wheel.
+const HUE_WHEEL_SIZE: f32 = 180.0;
+
 pub enum Edit {
     None,
     Changed(String),
@@ -46,8 +55,10 @@ pub enum Edit {
     SessionHotkey(crate::layout::PaneId, Option<crate::hotkey::Shortcut>),
     Imported(usize),
     Error(String),
-    /// Open a session with this profile Guid.
-    Open(String, How),
+    /// Open these profiles (the Profiles window's selection, in list order) as `How`.
+    OpenMany(Vec<String>, How),
+    /// "Edit Profiles\u{2026}": Settings on this profile's General tab, or on the Profiles page.
+    EditProfiles(Option<String>),
     /// A global setting changed (Keys or Pointer).
     GlobalsChanged,
     /// The snippets changed (Settings > Shortcuts).
@@ -63,6 +74,33 @@ pub enum Edit {
     ImportAll,
     /// General > Settings' Erase All Settings and Data button.
     EraseAll,
+    /// A color preset is being previewed (or the preview was put back): the panes redraw, and
+    /// nothing is saved (B2).
+    Preview,
+}
+
+/// What `App::apply_edit` does first with an edit (B2): false when nothing more is applied (no edit,
+/// or a preview, which only redraws). Any other edit first puts a stale preview back through
+/// `restore`, so the previewed colors are never in the store when it is saved.
+pub fn gate_edit(edit: &Edit, restore: &mut dyn FnMut()) -> bool {
+    if !edit_arms_save(edit) {
+        return false;
+    }
+    restore();
+    true
+}
+
+/// The one save of the profile store (`App::save_store`): a live color preview is put back first
+/// (through `restore`, which says whether a profile changed), so no save path writes previewed
+/// colors, whether or not an edit led to it. Whether the colors were put back, and the save's result.
+pub fn save_restored(store: &mut Store, restore: &mut dyn FnMut(&mut Store) -> bool) -> (bool, Result<(), String>) {
+    let restored = restore(store);
+    (restored, store.save())
+}
+
+/// Whether an edit starts the pause before the profiles are saved: a preview never does.
+pub fn edit_arms_save(edit: &Edit) -> bool {
+    !matches!(edit, Edit::Preview | Edit::None)
 }
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
@@ -94,6 +132,217 @@ pub enum How {
     Window,
     SplitRight,
     SplitDown,
+    /// The first profile in a new window and the rest as its tabs ("New Tabs in New Window").
+    TabsInNewWindow,
+    /// The first profile in a new window and the rest split into it (Alt on a split button); the
+    /// flag is true for side by side.
+    SplitsInNewWindow(bool),
+}
+
+/// The Profiles window's buttons (`profileTableSelectionDidChange:`, `PWC:359-400`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buttons {
+    pub new_tab: bool,
+    pub new_window: bool,
+    pub new_window_title: &'static str,
+    pub new_tabs_in_new_window: bool,
+    pub splits: bool,
+}
+
+/// Which buttons are enabled for `selected` profiles; `window_exists` is whether a terminal window is open.
+pub fn profiles_buttons(selected: usize, window_exists: bool, any_prevents_tabs: bool) -> Buttons {
+    if selected == 0 {
+        return Buttons { new_tab: false, new_window: false, new_window_title: "New Window", new_tabs_in_new_window: false, splits: false };
+    }
+    // New Tab stays enabled with no window: its shortcut is Enter (`PWC:372-374`).
+    Buttons {
+        new_tab: !any_prevents_tabs,
+        new_window: true,
+        new_window_title: if selected > 1 { "New Windows" } else { "New Window" },
+        new_tabs_in_new_window: selected > 1 && !any_prevents_tabs,
+        splits: selected > 1 || window_exists,
+    }
+}
+
+/// The Profiles window's context menu for `selected` rows (`profileTable:menuForEvent:`).
+pub fn profiles_context_menu(selected: usize) -> Vec<&'static str> {
+    match selected {
+        0 => Vec::new(),
+        1 => vec!["Edit Profile\u{2026}", "Open in New Tab", "Open in New Window"],
+        _ => vec!["Open in New Tabs", "Open in New Windows"],
+    }
+}
+
+/// Whether "Close this window after opening a profile." closes the window after `how`
+/// (`PWC:285-340`): after every kind of opening, splits into the current window included
+/// (`openBookmarkInVerticalPane:` and `openBookmarkInHorizontalPane:` close it too, `PWC:298-301`, `:311-314`).
+/// Only the Profiles window reads its box (`PWC` is the only reader of
+/// CloseBookmarksWindowAfterOpening); an Open All from the Profiles menu never closes it.
+pub fn closes_after(key: bool, _how: How, from: Opener) -> bool {
+    key && from == Opener::ProfilesWindow
+}
+
+/// Where several profiles were opened from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opener {
+    ProfilesWindow,
+    /// The Profiles menu's Open All.
+    Menu,
+}
+
+/// The General tab's Shortcut popup (`PGP:1329-1418`): "none", A-Z and 0-9, each titled
+/// "Ctrl+Win+A", and "Ctrl+Win+A (Name)" for a key a profile holds. Answers the new key
+/// (None clears) when one was picked; the profile's own value is set here.
+fn shortcut_row(ui: &mut egui::Ui, s: &Setting, profile: &mut Profile, rows: &[(String, String, Option<char>)]) -> Option<Option<char>> {
+    let titles = crate::profile_menu::shortcut_titles(rows);
+    let current = crate::profile_menu::shortcut_tag(crate::profile_menu::stored_key(&profile.string("Shortcut")).unwrap_or(' '));
+    let shown = |title: &str| if title.is_empty() { "None".to_string() } else { title.to_string() };
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(&s.label).on_hover_text(&s.help);
+        let text = titles.iter().find(|(t, _)| *t == current).map(|(_, t)| shown(t)).unwrap_or_default();
+        egui::ComboBox::from_id_salt("profile_shortcut").selected_text(text).show_ui(ui, |ui| {
+            for (tag, title) in &titles {
+                if ui.selectable_label(*tag == current, shown(title)).clicked() && *tag != current {
+                    picked = Some(crate::profile_menu::shortcut_key(*tag));
+                }
+            }
+        });
+    });
+    if let Some(key) = picked {
+        match key {
+            Some(k) => profile.set("Shortcut", Value::String(k.to_string())),
+            None => {
+                profile.values.remove("Shortcut");
+            }
+        }
+    }
+    picked
+}
+
+/// Copy to Profile's button text (`PreferencePanel.xib:10840-10850`).
+pub const COPY_TO_PROFILE: &str = "Copy Current Settings to Selected Profile";
+
+/// Whether the Edit Session window follows the active session (`PseudoTerminal.m:5047-5049`):
+/// unless Advanced "Pin Edit Session" is on, while the window is open for a session.
+pub fn follows(pin: bool, open_for_session: bool) -> bool {
+    !pin && open_for_session
+}
+
+/// Whether typing a session name locks the title (`ProfilesGeneralPreferencesViewController.m:1617-1623`):
+/// "Allow Title Setting" is on and "Auto-lock session name after editing it" (`key`) is set.
+pub fn lock_after_name_edit(allow_title: bool, key: bool) -> bool {
+    allow_title && key
+}
+
+/// The pane Edit Session moves to when the active pane changed from `seen` to `now`.
+pub fn follow_target(seen: Option<PaneId>, now: Option<PaneId>, pin: bool, editing: Option<PaneId>) -> Option<PaneId> {
+    let now = now?;
+    (seen != Some(now) && editing.is_some_and(|e| e != now) && follows(pin, editing.is_some())).then_some(now)
+}
+
+/// The Edit Session pane after `closed` closed.
+pub fn edit_session_after_close(editing: Option<PaneId>, closed: PaneId) -> Option<PaneId> {
+    editing.filter(|&p| p != closed)
+}
+
+/// Whether the answer to the Replace question (button `index`) goes ahead.
+pub fn copy_confirmed(index: usize) -> bool {
+    index == 0
+}
+
+/// Copy to Profile (`ProfilePreferencesViewController.m:765-812`): the session's values with the
+/// destination's guid and name; the original guid, the session hotkey and the keys that make a
+/// profile transient or dynamic are removed (P4), each trigger's performance entry is dropped,
+/// and the one network-path filter runs over it (P3).
+pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
+    let mut values = session.values.clone();
+    for key in [profile::GUID, profile::NAME, "Shortcut"] {
+        values.remove(key);
+    }
+    for key in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename", "Is Dynamic Profile", "Rewritable", "Bonjour Service Address"] {
+        values.remove(key);
+    }
+    for key in [profile::GUID, profile::NAME, "Shortcut"] {
+        if let Some(v) = destination.values.get(key) {
+            values.insert(key.to_string(), v.clone());
+        }
+    }
+    if let Some(Value::Array(tags)) = values.get_mut("Tags") {
+        tags.retain(|t| t.as_str() != Some("bonjour"));
+    }
+    if let Some(Value::Array(triggers)) = values.get_mut("Triggers") {
+        for t in triggers.iter_mut().filter_map(Value::as_table_mut) {
+            t.remove("performance");
+        }
+    }
+    crate::start_dir::scrub_map(&mut values);
+    Profile::from_values(values)
+}
+
+/// Opening more than this many sessions at once asks first (P6).
+pub const OPEN_ASK_ABOVE: usize = 8;
+
+/// Whether opening `count` profiles at once asks first.
+pub fn asks_before_opening(count: usize) -> bool {
+    count > OPEN_ASK_ABOVE
+}
+
+/// One step of opening several profiles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// A tab in the current window.
+    Tab(String),
+    /// A window of its own.
+    Window(String),
+    /// A split of the current pane (side by side when the flag is true).
+    Split(bool, String),
+    /// A new window with the first profile, and the rest as its tabs or splits.
+    NewWindow(String, Rest),
+}
+
+/// How the profiles after the first join a new window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rest {
+    Tabs(Vec<String>),
+    Splits(bool, Vec<String>),
+}
+
+impl Rest {
+    /// The profiles after the first.
+    pub fn guids(&self) -> impl Iterator<Item = &String> {
+        match self {
+            Rest::Tabs(g) | Rest::Splits(_, g) => g.iter(),
+        }
+    }
+}
+
+/// The steps that open `guids` (in list order) as `how` (`_openBookmarkInTab:firstInWindow:inPane:`,
+/// `_openProfilesAsSplitsInNewWindow:`, `PWC:213-290`).
+pub fn open_plan(guids: &[String], how: How, window_exists: bool) -> Vec<Step> {
+    let Some((first, rest)) = guids.split_first() else { return Vec::new() };
+    let in_new_window = |rest_of: Rest| if rest.is_empty() { Step::Window(first.clone()) } else { Step::NewWindow(first.clone(), rest_of) };
+    match how {
+        How::Tab => guids.iter().cloned().map(Step::Tab).collect(),
+        How::Window => guids.iter().cloned().map(Step::Window).collect(),
+        How::TabsInNewWindow => vec![in_new_window(Rest::Tabs(rest.to_vec()))],
+        How::SplitsInNewWindow(side) => vec![in_new_window(Rest::Splits(side, rest.to_vec()))],
+        How::SplitRight | How::SplitDown => {
+            let side = how == How::SplitRight;
+            if window_exists {
+                guids.iter().cloned().map(|g| Step::Split(side, g)).collect()
+            } else {
+                vec![in_new_window(Rest::Splits(side, rest.to_vec()))]
+            }
+        }
+    }
+}
+
+/// What Enter in the search field or a double click opens (`profileTableRowSelected:`): tabs, or
+/// windows with Shift. Each profile is launched on its own, so one that refuses tabs still gets a
+/// window (`App::new_tab`), whatever the rest of the selection are.
+pub fn row_opens(shift: bool) -> How {
+    if shift { How::Window } else { How::Tab }
 }
 
 /// The settings editor, or iTerm2's Profiles window (Cmd+O): a list to start sessions from.
@@ -137,14 +386,20 @@ pub struct SettingsWindow {
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
+    /// The pane Settings is open for (Edit Session); None for plain Settings. The app keeps it
+    /// at the active session unless Pin Edit Session is on (`follow_target`); 13u's "Session
+    /// Hotkey" row reads it to know which pane to write.
+    pub edit_session: Option<PaneId>,
+    /// Edit Session's Copy to Profile: the destination picked (the shared profile until one is),
+    /// the one the question is about, and the confirmed copy the app takes after each frame.
+    copy_dest: Option<String>,
+    copy_pending: Option<String>,
+    pub copy_request: Option<(PaneId, String)>,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
-    /// The session Settings was opened to edit (Edit Session): the Session Hotkey row shows, and
-    /// writes that pane's own session value (never the shared profile).
-    pub edit_session: Option<crate::layout::PaneId>,
     /// The edited session's hotkey, as the app holds it (the row shows it).
     pub session_hotkey: Option<crate::hotkey::Shortcut>,
     /// The row's value waits for the person's answer (a program's or a restored value): not registered.
@@ -162,6 +417,15 @@ pub struct SettingsWindow {
     /// The warnings answered since the app last took them: it lists the automatic answers in
     /// Suppressed Alerts and saves the settings a remembered answer changed.
     pub answered: Vec<settings_keys::SheetAnswer>,
+    /// The Colors tab's presets: the Editing mode, a live hover preview, the questions and dialogs.
+    presets: crate::settings_presets::State,
+    /// The profile list's search, tag sidebar and selection. The Profiles window's sidebar state is
+    /// saved in `NoSyncProfilesWindowTagsOpen`; Settings keeps its own per window.
+    list: crate::profile_list_ui::ListState,
+    list_init: bool,
+    /// Whether a terminal window is open; the app sets it before each redraw (it enables the
+    /// Profiles window's split buttons).
+    pub window_exists: bool,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -198,6 +462,17 @@ impl SettingsWindow {
     /// pickers and Manage AI Models read the discovered models.
     pub fn shows_ai_models(&self) -> bool {
         shows_ai_models_on(self.mode, self.page, self.ai.sub)
+    }
+
+    /// A file to show in Explorer (an exported color preset), taken after each frame.
+    pub fn take_reveal(&mut self) -> Option<String> {
+        self.presets.reveal.take()
+    }
+
+    /// Puts a live color preview's colors back before anything is saved or the window goes (B2).
+    /// True when a profile changed.
+    pub fn restore_preview(&mut self, store: &mut Store) -> bool {
+        self.presets.restore(store)
     }
 
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
@@ -259,6 +534,7 @@ impl SettingsWindow {
             Mode::Profiles => ("Profiles", 420.0, 460.0),
         };
         let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
+        let host_dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         settings_keys::add_icon_font(host.ctx());
         if mode == Mode::Settings {
             if let Some(h) = host.hwnd() {
@@ -284,9 +560,12 @@ impl SettingsWindow {
             scheme_ask: None,
             special_exceptions: None,
             tmux_session: false,
+            edit_session: None,
+            copy_dest: None,
+            copy_pending: None,
+            copy_request: None,
             open_editor: None,
             title_providers: Vec::new(),
-            edit_session: None,
             session_hotkey: None,
             session_hotkey_waiting: false,
             sleep_status: String::new(),
@@ -295,6 +574,10 @@ impl SettingsWindow {
             sheet: None,
             show_remembered: false,
             answered: Vec::new(),
+            presets: crate::settings_presets::State::new(host_dark),
+            list: Default::default(),
+            list_init: false,
+            window_exists: true,
         })
     }
 
@@ -304,9 +587,22 @@ impl SettingsWindow {
         self.host.window.request_redraw();
     }
 
+    /// "Edit Profiles\u{2026}" (`editBookmarks:`): the Profiles page, on this profile's General tab
+    /// when there is one.
+    pub fn show_profiles(&mut self, guid: Option<&str>) {
+        self.page = Page::Profiles;
+        if let Some(g) = guid {
+            self.selected = Some(g.to_string());
+            self.tab = 0;
+        }
+        self.host.window.request_redraw();
+        self.host.focus();
+    }
+
     /// Shows this profile in the editor (Edit Session).
     pub fn select(&mut self, guid: &str) {
         self.selected = Some(guid.to_string());
+        self.copy_dest = None;
         self.host.window.request_redraw();
     }
 
@@ -359,6 +655,18 @@ impl SettingsWindow {
         // A fixed Theme forces its mode here too (`tab_theme::forced_dark`).
         let style = crate::tab_theme::from_value(globals.int(crate::tab_theme::KEY));
         let dark = crate::tab_theme::forced_dark(style).unwrap_or_else(|| self.host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark));
+        self.presets.editing.follow(dark);
+        let presets = &mut self.presets;
+        if !self.list_init {
+            self.list_init = true;
+            if self.mode == Mode::Profiles {
+                self.list.tags_open = globals.bool(PROFILES_TAGS_OPEN);
+                self.list.selection = vec![selected.clone()];
+            }
+        }
+        let window_exists = self.window_exists;
+        let list = &mut self.list;
+        let list_rows = crate::profile_list::rows(&store.profiles);
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
@@ -384,8 +692,13 @@ impl SettingsWindow {
         let special_exceptions = &mut self.special_exceptions;
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
-        let title_providers = &self.title_providers;
         let edit_session = self.edit_session;
+        let copy_dest = &mut self.copy_dest;
+        let copy_pending = &mut self.copy_pending;
+        let copy_request = &mut self.copy_request;
+        let shortcut_rows: Vec<(String, String, Option<char>)> = store.profiles.iter().map(|p| (p.guid(), p.name(), crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
+        let mut shortcut_take: Option<(String, Option<char>)> = None;
+        let title_providers = &self.title_providers;
         let session_hotkey = self.session_hotkey.clone();
         let session_hotkey_waiting = self.session_hotkey_waiting;
         let sleep_status = &self.sleep_status;
@@ -411,6 +724,28 @@ impl SettingsWindow {
                 if let Some(answer) = settings_keys::sheet_warning(ui.ctx(), globals, w, show_remembered) {
                     // Forget shows the warning again; any other answer ends it.
                     if answer.index < answer.spec.labels.len() {
+                        // "Update Which Modes?": load the preset the click was about (P21).
+                        if crate::settings_presets::is_question_id(answer.spec.id.as_deref()) {
+                            if let Some((name, _)) = presets.pending.take() {
+                                if let (Some(p), Some(preset)) = (store.get_mut(&selected), crate::color_presets::find(globals, &name)) {
+                                    crate::settings_presets::load(&preset, p, answer.index == 0, presets.editing.dark, dark);
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                            }
+                        }
+                        // Copy to Profile's question: Replace copies (the app does it), anything else
+                        // changes nothing; a dynamic destination then shows its warning.
+                        let replacing = answer.spec.id.as_deref() == Some("NoSyncReplaceProfileWarning");
+                        let mut then_dynamic = None;
+                        if replacing {
+                            let dest = copy_pending.take();
+                            if let (true, Some(pane), Some(dest)) = (copy_confirmed(answer.index), edit_session, dest) {
+                                if store.get(&dest).is_some_and(|d| !d.string("Dynamic Profile Filename").is_empty()) {
+                                    then_dynamic = store.get(&dest).map(Profile::name);
+                                }
+                                *copy_request = Some((pane, dest));
+                            }
+                        }
                         match sheet.take().map(|w| w.then) {
                             Some(settings_keys::SheetThen::SaveKey) => match settings_keys::held_answered(keys, answer.index, globals, store) {
                                 settings_keys::Saved::Nothing => {}
@@ -419,6 +754,9 @@ impl SettingsWindow {
                             },
                             Some(settings_keys::SheetThen::CreateHotkey(existing)) => crate::settings_hotkey::create_answered(hk, store, &existing, answer.index),
                             Some(settings_keys::SheetThen::Nothing) | None => {}
+                        }
+                        if let Some(name) = then_dynamic {
+                            *sheet = Some(settings_keys::SheetWarning::new(settings_keys::dynamic_profile_spec(&name), settings_keys::SheetThen::Nothing));
                         }
                     }
                     answered.push(answer);
@@ -455,6 +793,7 @@ impl SettingsWindow {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
                             Page::Keys => {
+                                crate::color_presets::remember_names(globals);
                                 let mut c = settings_keys::keys_page(ui, globals, keys, &profiles, &key_maps);
                                 match crate::settings_hotkey::keys_section(ui, globals, store, hk, keys) {
                                     crate::settings_hotkey::KeysEdit::None => {}
@@ -489,7 +828,10 @@ impl SettingsWindow {
                             Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance").0,
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
-                            Page::Shortcuts => match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
+                            Page::Shortcuts => match {
+                                crate::color_presets::remember_names(globals);
+                                crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles)
+                            } {
                                 crate::settings_shortcuts::Changed::None => false,
                                 crate::settings_shortcuts::Changed::Actions => true,
                                 crate::settings_shortcuts::Changed::Snippets => {
@@ -509,35 +851,73 @@ impl SettingsWindow {
             if mode == Mode::Profiles {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.heading("Profiles");
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        for p in &store.profiles {
-                            let r = ui.selectable_label(p.guid() == selected, p.name());
-                            if r.clicked() {
-                                pick = Some(p.guid());
-                            }
-                            if r.double_clicked() {
-                                edit = Edit::Open(p.guid(), How::Tab);
+                    let menu: &dyn Fn(usize) -> Vec<&'static str> = &profiles_context_menu;
+                    let event = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, true, Some(menu));
+                    if list.tags_open != globals.bool(PROFILES_TAGS_OPEN) {
+                        globals.set(PROFILES_TAGS_OPEN, Value::Boolean(list.tags_open));
+                        if matches!(edit, Edit::None) {
+                            edit = Edit::GlobalsChanged;
+                        }
+                    }
+                    // The selected profiles in list order (`orderedSelectedGuids`).
+                    let ordered: Vec<String> = list_rows.iter().filter(|r| list.selection.contains(&r.0)).map(|r| r.0.clone()).collect();
+                    let any_prevents = ordered.iter().any(|g| store.get(g).is_some_and(|p| p.bool("Prevent Opening in a Tab")));
+                    let b = profiles_buttons(ordered.len(), window_exists, any_prevents);
+                    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+                    let open = |how: How| Edit::OpenMany(ordered.clone(), how);
+                    match event {
+                        crate::profile_list_ui::ListEvent::Activated(_) if !ordered.is_empty() => edit = open(row_opens(shift)),
+                        crate::profile_list_ui::ListEvent::MenuItem(label) => {
+                            edit = match label {
+                                "Edit Profile\u{2026}" => Edit::EditProfiles(ordered.first().cloned()),
+                                "Open in New Tab" | "Open in New Tabs" => open(How::Tab),
+                                _ => open(How::Window),
                             }
                         }
-                    });
+                        _ => {}
+                    }
                     ui.separator();
-                    ui.horizontal(|ui| {
-                        for (label, how) in [("New Tab", How::Tab), ("New Window", How::Window), ("Split Right", How::SplitRight), ("Split Down", How::SplitDown)] {
-                            if ui.button(label).clicked() {
-                                edit = Edit::Open(selected.clone(), how);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_enabled(b.new_tab, egui::Button::new("New Tab")).clicked() {
+                            edit = open(How::Tab);
+                        }
+                        if ui.add_enabled(b.new_window, egui::Button::new(b.new_window_title)).clicked() {
+                            edit = open(How::Window);
+                        }
+                        if ui.add_enabled(b.new_tabs_in_new_window, egui::Button::new("New Tabs in New Window")).clicked() {
+                            edit = open(How::TabsInNewWindow);
+                        }
+                        // Alt turns a split into "first in a new window, the rest split into it".
+                        for (label, alt_label, side_by_side) in [("Split Right", "New Window, Split Right", true), ("Split Down", "New Window, Split Down", false)] {
+                            if ui.add_enabled(b.splits, egui::Button::new(if alt { alt_label } else { label })).clicked() {
+                                edit = open(if alt {
+                                    How::SplitsInNewWindow(side_by_side)
+                                } else if side_by_side {
+                                    How::SplitRight
+                                } else {
+                                    How::SplitDown
+                                });
                             }
                         }
+                        if ui.button("Edit Profiles\u{2026}").clicked() {
+                            edit = Edit::EditProfiles(ordered.first().cloned());
+                        }
                     });
+                    let mut close = globals.bool(CLOSE_AFTER_OPENING);
+                    if ui.checkbox(&mut close, "Close this window after opening a profile.").changed() {
+                        globals.set(CLOSE_AFTER_OPENING, Value::Boolean(close));
+                        if matches!(edit, Edit::None) {
+                            edit = Edit::GlobalsChanged;
+                        }
+                    }
                 });
                 return;
             }
             egui::Panel::left("profiles").default_size(220.0).show(ui, |ui| {
                 ui.heading("Profiles");
-                for p in &store.profiles {
-                    let star = if p.guid() == store.default_guid { " (default)" } else { "" };
-                    if ui.selectable_label(p.guid() == selected, format!("{}{star}", p.name())).clicked() {
-                        pick = Some(p.guid());
-                    }
+                list.selection = vec![selected.clone()];
+                if let crate::profile_list_ui::ListEvent::Picked(g) = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false, None) {
+                    pick = Some(g);
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -556,9 +936,12 @@ impl SettingsWindow {
                         edit = Edit::Changed(String::new());
                     }
                 });
-                if ui.button("Set as Default").clicked() {
-                    store.default_guid = selected.clone();
-                    edit = Edit::Changed(selected.clone());
+                // A Bonjour host lives in memory only (13t B1): it cannot be the default.
+                let transient = store.transient.contains(&selected);
+                if ui.add_enabled(!transient, egui::Button::new("Set as Default")).clicked() {
+                    if store.set_default(&selected) {
+                        edit = Edit::Changed(selected.clone());
+                    }
                 }
                 if ui.button("Import from iTerm2...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {
@@ -608,14 +991,89 @@ impl SettingsWindow {
                 let saved_guid = store.shared_guid(&selected);
                 let Some(profile) = store.get_mut(&selected) else { return };
                 let separate = profile.bool("Use Separate Colors for Light and Dark Mode");
-                if separate && schema::TABS[tab] == "Colors" {
-                    ui.label(format!("Editing the {} mode colors (Windows is in {} mode).", if dark { "Dark" } else { "Light" }, if dark { "dark" } else { "light" }));
+                let system_dark = dark;
+                let colors = schema::TABS[tab] == "Colors";
+                // The Colors tab's wells edit the mode the Editing selector names, not Windows' mode.
+                let dark = if colors { presets.editing.dark } else { dark };
+                if colors {
+                    let h = crate::settings_presets::colors_header(ui, presets, globals, profile, &selected, system_dark);
+                    if h.previewed {
+                        edit = Edit::Preview;
+                    }
+                    if h.import {
+                        crate::settings_presets::begin_import(presets);
+                    }
+                    if h.export {
+                        crate::settings_presets::begin_export(presets, profile);
+                    }
+                    if h.save_as {
+                        crate::settings_presets::begin_save_as(presets, globals, profile);
+                    }
+                    if h.delete {
+                        crate::settings_presets::begin_delete(presets, globals);
+                    }
+                    if h.gallery {
+                        *open_url = Some(crate::settings_presets::GALLERY_URL.to_string());
+                    }
+                    if let Some(name) = h.clicked {
+                        match crate::settings_presets::click(presets, &name, globals, profile, system_dark) {
+                            crate::settings_presets::Click::Loaded => edit = Edit::Changed(selected.clone()),
+                            crate::settings_presets::Click::Ask(spec) => {
+                                *sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::Nothing));
+                                ui.ctx().request_repaint();
+                            }
+                            crate::settings_presets::Click::Missing => {}
+                        }
+                    }
+                    if crate::settings_presets::pump_dialogs(ui.ctx(), presets, globals, profile) {
+                        edit = Edit::GlobalsChanged;
+                    }
                     // iTerm2 shows a warning button whose click shows this text; Tandem shows the text.
-                    if crate::tab_theme::mode_warning(style, separate) {
+                    if separate && crate::tab_theme::mode_warning(style, separate) {
                         ui.colored_label(ui.visuals().warn_fg_color, crate::tab_theme::MODE_WARNING);
                     }
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Edit Session: copy this session's settings to a profile (`02:984`).
+                    if edit_session.is_some() && schema::TABS[tab] == "General" {
+                        let dest = copy_dest.clone().filter(|d| profiles.iter().any(|(g, _)| g == d)).unwrap_or_else(|| selected.clone());
+                        let dest_name = profiles.iter().find(|(g, _)| *g == dest).map(|(_, n)| n.clone()).unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("copy_to_profile_dest").selected_text(crate::profile_list::display_text(&dest_name)).show_ui(ui, |ui| {
+                                for (g, n) in &profiles {
+                                    if ui.selectable_label(*g == dest, crate::profile_list::display_text(n)).clicked() {
+                                        *copy_dest = Some(g.clone());
+                                    }
+                                }
+                            });
+                            if ui.button(COPY_TO_PROFILE).clicked() && sheet.is_none() {
+                                *copy_pending = Some(dest.clone());
+                                *sheet = Some(settings_keys::SheetWarning::new(settings_keys::replace_profile_spec(&dest_name), settings_keys::SheetThen::Nothing));
+                                ui.ctx().request_repaint();
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                    // The hue and chroma wheel sits at the right of the ANSI wells (it takes no
+                    // room from them); a drag writes the key as a color well does.
+                    if colors {
+                        let size = HUE_WHEEL_SIZE.min(ui.available_width() / 2.0);
+                        let top_left = egui::pos2(ui.max_rect().right() - size, ui.cursor().top());
+                        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(top_left, egui::vec2(size, size))));
+                        let id = egui::Id::new("hue_wheel_drag");
+                        let mut drag = child.data(|d| d.get_temp::<Option<(String, (f32, f32), (f32, f32))>>(id)).flatten();
+                        let points: Vec<(String, crate::palette::Rgb)> = crate::hue_wheel_ui::KEYS.iter().map(|k| ((*k).to_string(), profile.color_for(k, dark))).collect();
+                        let moved = crate::hue_wheel_ui::wheel(&mut child, &points, &mut drag);
+                        child.data_mut(|d| d.insert_temp(id, drag));
+                        if let Some((key, c)) = moved {
+                            if let Some(s) = schema::find(&key) {
+                                let key = edit_key(profile, s, dark);
+                                profile.set(&key, value_of_rgb([c.r, c.g, c.b]));
+                                crate::bindings::drop_for_write(profile, &key);
+                                edit = Edit::Changed(selected.clone());
+                            }
+                        }
+                    }
                     for (section, list) in sections(schema::TABS[tab]) {
                         if !section.is_empty() && section != "Key Mappings" {
                             ui.add_space(8.0);
@@ -642,6 +1100,7 @@ impl SettingsWindow {
                                 continue;
                             }
                             if s.key == "Keyboard Map" {
+                                crate::color_presets::remember_names(globals);
                                 if settings_keys::profile_key_mappings(ui, profile, keys, &profiles, &global_keys) {
                                     edit = Edit::Changed(selected.clone());
                                 }
@@ -650,6 +1109,14 @@ impl SettingsWindow {
                             if s.key == "Bound Hosts" {
                                 let others: Vec<crate::aps::Candidate> = rule_owners.iter().filter(|c| c.guid != selected).cloned().collect();
                                 if crate::settings_lists::bound_hosts(ui, profile, &others, aps_warning) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            // The Shortcut popup of letters and digits, each with the profile bound to it.
+                            if s.key == "Shortcut" {
+                                if let Some(key) = shortcut_row(ui, s, profile, &shortcut_rows) {
+                                    shortcut_take = Some((selected.clone(), key));
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;
@@ -753,6 +1220,19 @@ impl SettingsWindow {
                             } else {
                                 ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
                             }
+                            // Edit Session's name row: the lock button toggles "Allow Title Setting", and a
+                            // typed name locks the title (`PGP:1617-1623`).
+                            if s.key == "Name" && edit_session.is_some() {
+                                if changed && lock_after_name_edit(profile.bool("Allow Title Setting"), globals.bool("AutoLockSessionNameOnEdit")) {
+                                    profile.set("Allow Title Setting", Value::Boolean(false));
+                                }
+                                let allow = profile.bool("Allow Title Setting");
+                                let tip = "Allow Title Setting: when off, programs cannot change this session's title.";
+                                if ui.button(if allow { "Title unlocked" } else { "Title locked" }).on_hover_text(tip).clicked() {
+                                    profile.set("Allow Title Setting", Value::Boolean(!allow));
+                                    changed = true;
+                                }
+                            }
                             // The notes under Transparency and Blur Radius (PWP:157-170, 762-769).
                             if s.key == "Transparency" && profile.float("Transparency") > 0.0 {
                                 ui.label(egui::RichText::new(crate::transparency::OVERRIDE_NOTICE).small());
@@ -797,6 +1277,14 @@ impl SettingsWindow {
                 });
             });
         });
+        // The shortcut a profile took leaves every other profile (`setShortcutValueToSelectedItem`).
+        if let Some((guid, key)) = shortcut_take {
+            crate::profile_menu::take_shortcut(&mut store.profiles, &guid, key);
+        }
+        // A preview whose header is gone (another tab, page or profile) goes back now (B2).
+        if self.presets.strand_check(store) && matches!(edit, Edit::None) {
+            edit = Edit::Preview;
+        }
         if let Some(e) = self.ai.take_error() {
             edit = Edit::Error(e);
         }
@@ -1370,6 +1858,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     let mut commit = false;
     // The widget that takes the value, and whether it is enabled, for the non-default bar.
     let mut widget: Option<(egui::Rect, bool)> = None;
+    // A color well or a checkbox can be bound to an expression (`ExpressionBindableView`).
+    let bound_expression = matches!(s.kind, Kind::Bool | Kind::Color).then(|| crate::bindings::expression_of(profile, &key).map(str::to_string)).flatten();
+    let mut bind_action = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {
             let enabled = ui.is_enabled();
@@ -1382,6 +1873,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                         commit = true;
                     }
                     widget = Some((r.rect, enabled));
+                    bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Int => {
                     ui.label(&s.label);
@@ -1437,6 +1929,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                         commit = true;
                     }
                     widget = Some((r.rect, enabled));
+                    bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Enum => {
                     ui.label(&s.label);
@@ -1474,11 +1967,123 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     });
     if let Some(v) = changed {
         profile.set(&key, v);
+        // A color picked in the well wins over a palette-owned binding (`PCP:555-569`).
+        if s.kind == Kind::Color {
+            crate::bindings::drop_for_write(profile, &key);
+        }
+    }
+    match bind_action {
+        Some(BindAction::Remove) => {
+            crate::bindings::set(profile, &key, None);
+            commit = true;
+        }
+        Some(BindAction::Edit) => binding_dialog_open(ui.ctx(), &profile.guid(), &key, bound_expression.as_deref().unwrap_or("")),
+        None => {}
+    }
+    if let Some(text) = binding_dialog(ui, &profile.guid(), &key) {
+        crate::bindings::set(profile, &key, Some(&text));
+        commit = true;
     }
     if let Some((rect, enabled)) = widget.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &key)) {
         settings_keys::non_default_bar(ui, rect, enabled);
     }
     commit
+}
+
+/// What a right click on a bindable control chose.
+enum BindAction {
+    Edit,
+    Remove,
+}
+
+/// The link glyph (Segoe Fluent Icons) a bound control shows at its right.
+const LINK_GLYPH: char = '\u{E71B}';
+
+/// The right-click menu of a color well or checkbox (`EBV:22-45`) and the glyph a bound one shows.
+fn binding_menu(ui: &mut egui::Ui, r: &egui::Response, bound: Option<&str>) -> Option<BindAction> {
+    let mut action = None;
+    r.context_menu(|ui| {
+        if ui.button(if bound.is_some() { crate::bindings::MENU_EDIT } else { crate::bindings::MENU_BIND }).clicked() {
+            action = Some(BindAction::Edit);
+            ui.close();
+        }
+        if bound.is_some() && ui.button(crate::bindings::MENU_REMOVE).clicked() {
+            action = Some(BindAction::Remove);
+            ui.close();
+        }
+    });
+    if let Some(e) = bound {
+        let tip = format!("Bound to the expression {e}");
+        match settings_keys::icon_text(ui.ctx(), LINK_GLYPH) {
+            Some(g) => ui.label(g).on_hover_text(tip),
+            None => ui.label("(bound)").on_hover_text(tip),
+        };
+    }
+    action
+}
+
+/// The bind dialog's state: which control it is for, its text and whether the help shows.
+#[derive(Clone)]
+struct BindDialog {
+    guid: String,
+    key: String,
+    text: String,
+    help: bool,
+}
+
+fn binding_dialog_id() -> egui::Id {
+    egui::Id::new("tandem-binding-dialog")
+}
+
+fn binding_dialog_open(ctx: &egui::Context, guid: &str, key: &str, text: &str) {
+    ctx.data_mut(|d| d.insert_temp(binding_dialog_id(), BindDialog { guid: guid.into(), key: key.into(), text: text.into(), help: false }));
+}
+
+/// "Bind Expression to Setting" (`EBV:59-101`), shown by the control it is for. The text to
+/// store (empty clears the binding) after OK.
+fn binding_dialog(ui: &egui::Ui, guid: &str, key: &str) -> Option<String> {
+    let ctx = ui.ctx();
+    let mut d = ctx.data(|d| d.get_temp::<BindDialog>(binding_dialog_id())).filter(|d| d.guid == guid && d.key == key)?;
+    let mut done = None;
+    let mut open = true;
+    egui::Window::new(crate::bindings::TITLE).collapsible(false).resizable(false).default_width(420.0).open(&mut open).show(ctx, |ui| {
+        ui.label(crate::bindings::INFO);
+        let r = ui.add(egui::TextEdit::singleline(&mut d.text).hint_text(crate::bindings::placeholder(key)).desired_width(380.0));
+        if !d.help {
+            r.request_focus();
+        }
+        ui.horizontal(|ui| {
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("OK").clicked() || enter {
+                done = Some(Some(d.text.clone()));
+            }
+            if ui.button("Cancel").clicked() {
+                done = Some(None);
+            }
+            if ui.button("?").clicked() {
+                d.help = !d.help;
+            }
+        });
+        if d.help {
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                ui.label(crate::bindings::help_text(key));
+            });
+        }
+    });
+    if !open {
+        done = Some(None);
+    }
+    match done {
+        Some(result) => {
+            ctx.data_mut(|m| m.remove::<BindDialog>(binding_dialog_id()));
+            result
+        }
+        None => {
+            ctx.data_mut(|m| m.insert_temp(binding_dialog_id(), d));
+            None
+        }
+    }
 }
 
 /// Whether this mode, page and AI sub-tab show the discovered models.
@@ -1503,6 +2108,88 @@ mod tests {
             _ => panic!("the row edits the session"),
         }
         assert!(matches!(session_edit(7, None), Edit::SessionHotkey(7, None)), "x clears it");
+    }
+
+    fn g(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn profiles_window_buttons_follow_iterm2() {
+        let none = profiles_buttons(0, true, false);
+        assert!(!none.new_tab && !none.new_window && !none.new_tabs_in_new_window && !none.splits);
+        let one = profiles_buttons(1, true, false);
+        assert!(one.new_tab && one.new_window && one.splits && !one.new_tabs_in_new_window);
+        assert_eq!(one.new_window_title, "New Window");
+        let no_window = profiles_buttons(1, false, false);
+        assert!(no_window.new_tab && no_window.new_window && !no_window.splits, "tab stays enabled for Enter");
+        let two = profiles_buttons(2, false, false);
+        assert_eq!(two.new_window_title, "New Windows");
+        assert!(two.new_tabs_in_new_window && two.splits, "several: splits even with no window");
+        let refuses = profiles_buttons(2, true, true);
+        assert!(!refuses.new_tab && !refuses.new_tabs_in_new_window && refuses.new_window && refuses.splits);
+        let one_refuses = profiles_buttons(1, true, true);
+        assert!(!one_refuses.new_tab && one_refuses.new_window);
+    }
+
+    #[test]
+    fn profiles_window_context_menu_follows_iterm2() {
+        assert!(profiles_context_menu(0).is_empty());
+        assert_eq!(profiles_context_menu(1), vec!["Edit Profile\u{2026}", "Open in New Tab", "Open in New Window"]);
+        assert_eq!(profiles_context_menu(2), vec!["Open in New Tabs", "Open in New Windows"]);
+        assert_eq!(profiles_context_menu(5), vec!["Open in New Tabs", "Open in New Windows"]);
+    }
+
+    #[test]
+    fn close_after_opening_follows_iterm2() {
+        let pw = Opener::ProfilesWindow;
+        for how in [How::Tab, How::Window, How::TabsInNewWindow, How::SplitsInNewWindow(true), How::SplitsInNewWindow(false)] {
+            assert!(closes_after(true, how, pw), "{how:?}");
+            assert!(!closes_after(false, how, pw), "{how:?} with the key off");
+        }
+        // iTerm2 closes after a split into the current window too (`PWC:298-301`, `:311-314`).
+        assert!(closes_after(true, How::SplitRight, pw));
+        assert!(closes_after(true, How::SplitDown, pw));
+        assert!(!closes_after(false, How::SplitDown, pw));
+        // Only the Profiles window reads its box: the Profiles menu's Open All leaves it open.
+        assert!(!closes_after(true, How::Tab, Opener::Menu));
+        assert!(!closes_after(true, How::TabsInNewWindow, Opener::Menu));
+    }
+
+    #[test]
+    fn open_plan_follows_iterm2() {
+        let abc = g(&["a", "b", "c"]);
+        assert_eq!(open_plan(&abc, How::Tab, true), vec![Step::Tab("a".into()), Step::Tab("b".into()), Step::Tab("c".into())]);
+        assert_eq!(open_plan(&abc[..2], How::Window, true), vec![Step::Window("a".into()), Step::Window("b".into())]);
+        assert_eq!(open_plan(&abc, How::TabsInNewWindow, true), vec![Step::NewWindow("a".into(), Rest::Tabs(g(&["b", "c"])))]);
+        assert_eq!(open_plan(&abc, How::SplitRight, true), vec![Step::Split(true, "a".into()), Step::Split(true, "b".into()), Step::Split(true, "c".into())]);
+        assert_eq!(open_plan(&abc[..2], How::SplitDown, true), vec![Step::Split(false, "a".into()), Step::Split(false, "b".into())]);
+        assert_eq!(open_plan(&abc, How::SplitDown, false), vec![Step::NewWindow("a".into(), Rest::Splits(false, g(&["b", "c"])))], "no window: the first opens one");
+        assert_eq!(open_plan(&abc, How::SplitsInNewWindow(true), true), vec![Step::NewWindow("a".into(), Rest::Splits(true, g(&["b", "c"])))]);
+        assert_eq!(open_plan(&abc[..1], How::SplitsInNewWindow(true), true), vec![Step::Window("a".into())], "one profile is a plain window");
+        assert_eq!(open_plan(&abc[..1], How::TabsInNewWindow, true), vec![Step::Window("a".into())]);
+        assert!(open_plan(&[], How::Tab, true).is_empty());
+    }
+
+    #[test]
+    fn opening_many_asks_above_eight() {
+        assert!(!asks_before_opening(1) && !asks_before_opening(8));
+        assert!(asks_before_opening(9) && asks_before_opening(500));
+    }
+
+    #[test]
+    fn row_opens_follows_iterm2() {
+        assert_eq!(row_opens(false), How::Tab);
+        assert_eq!(row_opens(true), How::Window);
+    }
+
+    /// `profileTableRowSelected:` launches each bookmark on its own, so a profile that refuses
+    /// tabs gets a window while the rest of a mixed selection follow the chosen mode: the row
+    /// action asks for tabs and `new_tab` applies the per-profile rule.
+    #[test]
+    fn a_mixed_selection_opens_per_profile() {
+        let tabs = |how: How| open_plan(&["a".into(), "b".into()], how, true);
+        assert_eq!(tabs(row_opens(false)), vec![Step::Tab("a".into()), Step::Tab("b".into())]);
     }
 
     struct Reg(Option<String>);
@@ -2034,4 +2721,134 @@ mod tests {
         assert!(on(&p, "Archive Directory"));
         assert!(on(&p, "Columns"));
     }
+
+    /// B2: a color preview redraws the panes and never starts the save timer.
+    #[test]
+    fn preview_never_arms_the_save() {
+        assert!(!edit_arms_save(&Edit::Preview));
+        assert!(edit_arms_save(&Edit::Changed("g".into())));
+    }
+
+    /// B2 through the gate `apply_edit` runs first: a preview stops there with the colors still
+    /// previewed; any other edit puts a stale preview back before it is applied and saved.
+    #[test]
+    fn a_stale_preview_never_reaches_a_save() {
+        let mut store = Store::fresh(&std::env::temp_dir().join(format!("tandem-gate-{}.toml", std::process::id())));
+        let guid = store.default_guid.clone();
+        let before = store.get(&guid).unwrap().values.clone();
+        let mut st = crate::settings_presets::State::new(false);
+        let p = store.get_mut(&guid).unwrap();
+        st.preview = Some(crate::settings_presets::Preview::begin(p, &guid, false, "Solarized"));
+        crate::settings_presets::load(&crate::color_presets::built_in()[0].1, p, false, false, false);
+        let previewed = store.get(&guid).unwrap().values.clone();
+        assert_ne!(previewed, before);
+        let mut run = |edit: &Edit, store: &mut Store| gate_edit(edit, &mut || {
+            st.restore(store);
+        });
+        assert!(!run(&Edit::Preview, &mut store), "a preview stops at the gate");
+        assert_eq!(store.get(&guid).unwrap().values, previewed, "and leaves the colors previewed");
+        assert!(!run(&Edit::None, &mut store));
+        // Another edit (a tab away, then any change) restores before it is applied.
+        assert!(run(&Edit::Changed("g".into()), &mut store));
+        assert_eq!(store.get(&guid).unwrap().values, before);
+    }
+
+    /// B2: every save writes the profile without a live preview, whatever led to it (focus loss,
+    /// a trigger, a key action, a direct save), not only the saves an edit starts.
+    #[test]
+    fn a_save_with_a_live_preview_writes_the_original_colors() {
+        let path = std::env::temp_dir().join(format!("tandem-save-{}.toml", std::process::id()));
+        let mut store = Store::fresh(&path);
+        let guid = store.default_guid.clone();
+        let before = store.get(&guid).unwrap().values.clone();
+        let mut st = crate::settings_presets::State::new(false);
+        let p = store.get_mut(&guid).unwrap();
+        st.preview = Some(crate::settings_presets::Preview::begin(p, &guid, false, "Solarized"));
+        crate::settings_presets::load(&crate::color_presets::built_in()[0].1, p, false, false, false);
+        assert_ne!(store.get(&guid).unwrap().values, before);
+        let (restored, saved) = save_restored(&mut store, &mut |s| st.restore(s));
+        assert!(restored && saved.is_ok());
+        assert!(st.preview.is_none());
+        let on_disk = Store::load(&path).unwrap();
+        assert_eq!(on_disk.get(&guid).unwrap().color_for("Foreground Color", true), store.get(&guid).unwrap().color_for("Foreground Color", true));
+        assert_eq!(store.get(&guid).unwrap().values, before, "the store holds the original colors again");
+        assert_eq!(on_disk.file_profiles(), store.file_profiles(), "and so does the file");
+        let _ = std::fs::remove_file(&path);
+        // No save path of the app writes the store around `save_store`.
+        for (name, src) in [("mod.rs", include_str!("app/mod.rs")), ("emu_ui.rs", include_str!("app/emu_ui.rs")), ("hotkey_ui.rs", include_str!("app/hotkey_ui.rs")), ("tmux_tabs_ui.rs", include_str!("app/tmux_tabs_ui.rs"))] {
+            assert!(!src.contains("self.store.save()"), "{name} saves the store around save_store");
+        }
+    }
+
+    #[test]
+    fn edit_session_follows_iterm2() {
+        assert!(follows(false, true));
+        assert!(!follows(true, true));
+        assert!(!follows(false, false));
+        assert!(!follows(true, false));
+    }
+
+    #[test]
+    fn edit_session_follows_the_active_pane() {
+        // The focus moved from pane 1 to pane 2 while Edit Session is open on pane 1.
+        assert_eq!(follow_target(Some(1), Some(2), false, Some(1)), Some(2));
+        // No change, nothing open, a pinned window and no active pane do nothing.
+        assert_eq!(follow_target(Some(2), Some(2), false, Some(1)), None);
+        assert_eq!(follow_target(Some(1), Some(2), false, None), None);
+        assert_eq!(follow_target(Some(1), Some(2), true, Some(1)), None);
+        assert_eq!(follow_target(Some(1), None, false, Some(1)), None);
+        // Already editing the new pane: nothing to do.
+        assert_eq!(follow_target(Some(1), Some(2), false, Some(2)), None);
+    }
+
+    #[test]
+    fn edit_session_clears_when_its_pane_closes() {
+        assert_eq!(edit_session_after_close(Some(4), 4), None);
+        assert_eq!(edit_session_after_close(Some(4), 5), Some(4));
+        assert_eq!(edit_session_after_close(None, 5), None);
+    }
+
+    #[test]
+    fn auto_lock_follows_iterm2() {
+        assert!(lock_after_name_edit(true, true), "Allow Title Setting turns off");
+        assert!(!lock_after_name_edit(false, true), "already locked");
+        assert!(!lock_after_name_edit(true, false), "the setting is off");
+        assert!(!lock_after_name_edit(false, false));
+    }
+
+    #[test]
+    fn copy_to_profile_follows_iterm2() {
+        assert_eq!(COPY_TO_PROFILE, "Copy Current Settings to Selected Profile");
+        let mut session = Profile::new("S");
+        session.set("Guid", Value::String("s".into()));
+        session.set(crate::session_profile::ORIGINAL_GUID, Value::String("d".into()));
+        session.set("Session Hotkey", Value::String("x".into()));
+        session.set("Shortcut", Value::String("Q".into()));
+        session.set("Ansi 1 Color", Value::String("changed".into()));
+        session.set("Bonjour Service Address", Value::String("10.0.0.2".into()));
+        session.set("Is Dynamic Profile", Value::Boolean(true));
+        session.set("Tags", Value::Array(vec![Value::String("bonjour".into()), Value::String("work".into())]));
+        session.set("Working Directory", Value::String("\\\\evil\\share".into()));
+        let trig: Value = toml::from_str("t = [{ regex = \"a\", action = \"X\", performance = 3 }]").map(|t: toml::Table| t["t"].clone()).unwrap();
+        session.set("Triggers", trig);
+        let mut dest = Profile::new("Work");
+        dest.set("Guid", Value::String("d".into()));
+        dest.set("Shortcut", Value::String("W".into()));
+        let c = copied_profile(&session, &dest);
+        assert_eq!((c.guid(), c.name()), ("d".to_string(), "Work".to_string()));
+        for gone in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Bonjour Service Address", "Is Dynamic Profile"] {
+            assert!(c.values.get(gone).is_none(), "{gone}");
+        }
+        assert_eq!(c.string("Ansi 1 Color"), "changed");
+        assert_eq!(c.string("Shortcut"), "W", "the destination keeps its own shortcut");
+        assert_eq!(c.get("Tags").unwrap().as_array().unwrap().len(), 1, "the bonjour tag goes");
+        assert_eq!(c.string("Working Directory"), "", "a network path is scrubbed");
+        let trig = c.get("Triggers").unwrap();
+        assert!(trig.as_array().unwrap()[0].as_table().unwrap().get("performance").is_none());
+        // The question is 13b's, and Cancel changes nothing: the copy is only made on Replace.
+        let q = settings_keys::replace_profile_spec("Work");
+        assert_eq!((q.id.as_deref(), q.labels.clone()), (Some("NoSyncReplaceProfileWarning"), vec!["Replace".to_string(), "Cancel".into()]));
+        assert!(copy_confirmed(0) && !copy_confirmed(1));
+    }
 }
+

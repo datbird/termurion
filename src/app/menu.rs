@@ -60,7 +60,9 @@ pub(super) struct MenuBar {
     pub(super) named_key: (Option<PaneId>, Vec<(u32, Option<String>)>),
     /// The Profiles menu, its fixed items, and the profiles listed after them.
     pub(super) profiles: Option<(Submenu, usize)>,
-    pub(super) profile_items: Vec<(String, String)>,
+    pub(super) profile_items: Vec<crate::profile_menu::Node>,
+    /// Builds the profile entries only when a shown profile changed.
+    pub(super) profile_cache: crate::profile_menu::MenuCache,
     /// Window > Arrangements > Restore Window Arrangement and ... as Tabs, and what they list.
     pub(super) restore: Option<Submenu>,
     pub(super) restore_tabs: Option<Submenu>,
@@ -109,6 +111,8 @@ pub(super) struct MenuBar {
 
 /// Menu ids of the Profiles menu's profile entries.
 pub(super) const PROFILE_ID: &str = "profile-open:";
+/// A Profiles menu "Open All" item: the id continues with the folder's tag path.
+pub(super) const PROFILE_ALL_ID: &str = "profile-all:";
 
 /// A window's Win32 handle.
 pub(super) fn hwnd_of(window: &Window) -> Option<isize> {
@@ -244,7 +248,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -358,20 +362,8 @@ impl App {
     /// Edit Session for the session `pane` (`PT editSession:makeKey:`): Settings opened at the
     /// profile it uses; Settings alone without a session.
     pub(super) fn edit_session(&mut self, pane: Option<PaneId>, event_loop: &ActiveEventLoop) {
-        let guid = pane.and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile));
-        let tmux = pane.is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
         self.open_settings(event_loop, Mode::Settings);
-        if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
-            s.select(&g);
-            s.edit_session = pane;
-            // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
-            s.set_tmux_session(tmux);
-        }
-        if let Some(s) = self.settings.as_mut().filter(|_| pane.is_none()) {
-            s.edit_session = None;
-            s.session_hotkey = None;
-        }
-        self.sync_session_hotkey_row();
+        self.point_edit_session(pane);
     }
 
     /// A context menu built from `entries` (`tab_menu::Entry`) as a popup at the pointer;
@@ -635,6 +627,10 @@ impl App {
         }
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
             return self.open_profile_from_menu(guid);
+        }
+        if let Some(path) = id.strip_prefix(PROFILE_ALL_ID) {
+            let alt = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+            return self.open_all_from_menu(path, alt);
         }
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;

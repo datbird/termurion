@@ -71,7 +71,7 @@ section = ""
 label = "Profile shortcut"
 type = "string"
 default_note = "No default value (NSNull); no shortcut is assigned unless the user picks one."
-help = "A Cmd+Ctrl+letter or digit keystroke that opens a new window with this profile."
+help = "A Ctrl+Win+letter or digit keystroke that opens this profile in a new tab (Alt: in a new window)."
 light_dark = false
 macos_only = false
 
@@ -3008,5 +3008,16 @@ default = [
 ]
 default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); this is the full built-in rule list shipped in plists/SmartSelectionRules.plist, which SmartSelectionController falls back to when the profile has no Smart Selection Rules key of its own. None of the built-in rules carry an \"actions\" array (that is only added by user-created rules)."
 help = "Ordered regex rules that classify what a double or triple click selects, each with a precision level (low, normal, high, very_high) and optional actions."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Bindings"
+tab = ""
+section = ""
+label = "Variable bindings"
+type = "dict"
+default = {}
+help = "Expressions bound to color wells and checkboxes (a right click on one binds it); never drawn."
 light_dark = false
 macos_only = false

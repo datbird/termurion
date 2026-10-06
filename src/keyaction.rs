@@ -302,6 +302,8 @@ pub enum Arg {
     MenuItem,
     Sequence,
     Setting,
+    /// A color preset's name (Load Color Preset).
+    ColorPreset,
     Other,
 }
 
@@ -319,9 +321,10 @@ fn arg_of(code: i64) -> Arg {
         38 | 76 => Arg::VimText,
         25 => Arg::MenuItem,
         26..=29 | 37 => Arg::Profile,
+        40 => Arg::ColorPreset,
         66 => Arg::Sequence,
         75 => Arg::Setting,
-        35 | 36 | 40 | 41 | 42 | 45..=48 | 60 | 63 | 64 | 65 | 72 | 73 => Arg::Other,
+        35 | 36 | 41 | 42 | 45..=48 | 60 | 63 | 64 | 65 | 72 | 73 => Arg::Other,
         _ => Arg::None,
     }
 }
@@ -376,7 +379,6 @@ pub fn info(code: i64) -> Option<&'static ActionInfo> {
 /// Whether an action works now, or the milestone that brings it.
 pub fn status(code: i64) -> Status {
     match code {
-        40 => Status::Later(13),
         _ => Status::Done,
     }
 }

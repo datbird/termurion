@@ -27,7 +27,9 @@ impl App {
         Some(fresh)
     }
 
-    /// Sets or removes (None) values on the pane's own copy of its profile, and redraws.
+    /// Sets or removes (None) values on the pane's own copy of its profile, and redraws. It never
+    /// drops a palette-owned binding (`PS:8384-8394`); the Settings color writers do
+    /// (`bindings::drop_for_write`).
     pub(super) fn set_session_values(&mut self, pane: PaneId, values: &[(String, Option<toml::Value>)]) {
         let Some(guid) = self.divorce(pane) else { return };
         self.store.set_session(&guid, values);

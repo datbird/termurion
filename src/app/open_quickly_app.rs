@@ -44,11 +44,17 @@ fn icon(kind: &ItemKind) -> char {
         // Code, iTerm2's script icon.
         ItemKind::Script(_) => '\u{E943}',
         ItemKind::Invocation(_) => '\u{E943}',
+        // A swatch drawn in the preset's colors (`PaletteRow.swatch`); the glyph is its fallback.
+        ItemKind::ColorPreset(_) => '\u{E790}',
     }
 }
 
-fn row_of(item: &Item) -> PaletteRow {
-    PaletteRow { icon: icon(&item.kind), title: item.title.clone(), title_bold: item.title_bold.clone(), detail: item.detail.clone(), detail_bold: item.detail_bold.clone() }
+fn row_of(item: &Item, sources: &Sources) -> PaletteRow {
+    let swatch = match &item.kind {
+        ItemKind::ColorPreset(n) => sources.color_presets.iter().find(|(p, _, _)| p == n).map(|(_, fg, bg)| ([fg.r, fg.g, fg.b], [bg.r, bg.g, bg.b])),
+        _ => None,
+    };
+    PaletteRow { icon: icon(&item.kind), swatch, title: item.title.clone(), title_bold: item.title_bold.clone(), detail: item.detail.clone(), detail_bold: item.detail_bold.clone() }
 }
 
 /// The last `HISTORY_LIMIT` distinct non-empty values, oldest first.
@@ -171,7 +177,7 @@ impl App {
         sources.invocation = crate::expr::parse_calls(q.window.query()).ok().map(|_| q.window.query().to_string());
         q.invocation_pane = current;
         let items = open_quickly::items(q.window.query(), &sources);
-        q.window.set_items(items.iter().map(row_of).collect());
+        q.window.set_items(items.iter().map(|i| row_of(i, &sources)).collect());
         q.items = items;
         q.snippet_guids = snippet_guids;
         q.actions = actions;
@@ -260,6 +266,8 @@ impl App {
             .collect();
         s.menu_items.extend(self.quickly_script_menu_items());
         s.scripts = self.scripts_all.clone();
+        let dark = self.dark();
+        s.color_presets = if has_window { crate::color_presets::swatches(&self.globals, dark) } else { Vec::new() };
         s
     }
 
@@ -477,6 +485,13 @@ impl App {
             }
             // `OQW:444-448`: launched as a person's choice.
             ItemKind::Script(name) => self.launch_relative_script(name),
+            // `OQW:449-453`: the current session only.
+            ItemKind::ColorPreset(name) => {
+                if let Some(id) = self.focused_id() {
+                    self.load_preset_into_session(id, name);
+                }
+                self.bring_forward();
+            }
             ItemKind::MenuItem(id) => {
                 // On the next turn, after the palette is gone; the command runs only if it
                 // still does (`run_command` skips a command owned by a later milestone).

@@ -132,7 +132,7 @@ impl App {
                 reply(req, Resp::SetBroadcastDomainsResponse(pb::SetBroadcastDomainsResponse { status: Some(status as i32) }))
             }
             Some(Req::TmuxRequest(r)) => self.api_tmux(conn, req, r, event_loop),
-            Some(Req::ColorPresetRequest(r)) => reply(req, Resp::ColorPresetResponse(api_misc::color_preset(r))),
+            Some(Req::ColorPresetRequest(r)) => reply(req, Resp::ColorPresetResponse(api_misc::color_preset(r, &|n| crate::color_presets::find(&self.globals, n).cloned(), &crate::color_presets::all_names(&self.globals)))),
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -950,8 +950,7 @@ impl App {
                 Some(Q::SetDefaultProfileRequest(d)) => {
                     use res::set_default_profile_result::Status;
                     let guid = d.guid.clone().unwrap_or_default();
-                    let status = if self.store.get_mut(&guid).is_some() {
-                        self.store.default_guid = guid.clone();
+                    let status = if self.store.set_default(&guid) {
                         self.apply_edit(Edit::Changed(guid));
                         Status::Ok
                     } else {

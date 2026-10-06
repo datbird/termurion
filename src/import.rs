@@ -37,7 +37,23 @@ pub fn p3_to_srgb(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     (round(enc(sr)), round(enc(sg)), round(enc(sb)))
 }
 
-fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option<Value> {
+/// Converts an sRGB color to Display P3 (both gamma encoded, 0 to 1). sRGB lies inside P3, so
+/// nothing clips; the inverse of `p3_to_srgb` for those colors.
+pub fn srgb_to_p3(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let lin = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let enc = |c: f64| {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    };
+    let (r, g, b) = (lin(r), lin(g), lin(b));
+    // Linear sRGB to linear Display P3: the inverse of `p3_to_srgb`'s matrix, rows summing to 1.
+    let pr = 0.822462 * r + 0.177538 * g;
+    let pg = 0.0331942 * r + 0.9668057 * g;
+    let pb = 0.0170827 * r + 0.0723975 * g + 0.91052 * b;
+    (enc(pr), enc(pg), enc(pb))
+}
+
+pub(crate) fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option<Value> {
     let (mut r, mut g, mut b) = (get("Red Component")?, get("Green Component")?, get("Blue Component")?);
     if space == Some("P3") {
         (r, g, b) = p3_to_srgb(r, g, b);
@@ -48,6 +64,17 @@ fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option
     t.insert("b".into(), Value::Float(b));
     t.insert("a".into(), Value::Float(get("Alpha Component").unwrap_or(1.0)));
     Some(Value::Table(t))
+}
+
+/// A preset color as a profile value: `{r, g, b, a}` in sRGB (a P3 color converted, a missing alpha 1).
+pub(crate) fn preset_color_to_value(c: &crate::color_presets::PresetColor) -> Value {
+    let get = |k: &str| match k {
+        "Red Component" => Some(c.r),
+        "Green Component" => Some(c.g),
+        "Blue Component" => Some(c.b),
+        _ => c.a,
+    };
+    color_table(get, c.space.as_deref()).expect("a preset color has all three components")
 }
 
 pub(crate) fn from_plist(v: &plist::Value) -> Option<Value> {
@@ -117,7 +144,7 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
 fn scrubbed(t: toml::Table) -> Profile {
     let mut values: std::collections::BTreeMap<String, Value> = t.into_iter().collect();
     crate::start_dir::scrub_map(&mut values);
-    Profile { values }
+    Profile::from_values(values)
 }
 
 /// Imported profiles may lack a Guid or repeat one; give each a unique Guid.
@@ -278,6 +305,20 @@ pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn srgb_to_p3_follows_p3_to_srgb() {
+        // sRGB red is less saturated in P3; gray stays gray; the two conversions invert each other.
+        let (r, g, b) = srgb_to_p3(1.0, 0.0, 0.0);
+        assert!((r - 0.9175).abs() < 2e-3 && (g - 0.2003).abs() < 2e-3 && (b - 0.1387).abs() < 2e-3, "{r} {g} {b}");
+        let (r, g, b) = srgb_to_p3(0.5, 0.5, 0.5);
+        assert!((r - 0.5).abs() < 1e-4 && (g - 0.5).abs() < 1e-4 && (b - 0.5).abs() < 1e-4);
+        for c in [(0.2, 0.7, 0.4), (1.0, 1.0, 0.0), (0.03, 0.9, 0.99)] {
+            let (r, g, b) = srgb_to_p3(c.0, c.1, c.2);
+            let back = p3_to_srgb(r, g, b);
+            assert!((back.0 - c.0).abs() < 1e-3 && (back.1 - c.1).abs() < 1e-3 && (back.2 - c.2).abs() < 1e-3, "{c:?} {back:?}");
+        }
+    }
+
     use super::*;
     use crate::palette::rgb;
 

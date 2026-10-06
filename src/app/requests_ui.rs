@@ -148,6 +148,13 @@ impl App {
                 };
                 self.redraw();
             }
+            Request::ColorPreset(name) => self.escape_preset(pane, &name),
+            Request::NamedColor(name, c) => {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.screen.set_named_color(&name, c);
+                    self.redraw();
+                }
+            }
             Request::AskClearHistory => self.ask_clear_history(pane),
             Request::AskDecrqcra => self.ask_decrqcra(pane),
             Request::Print(job) => self.print_request(pane, job),

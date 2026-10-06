@@ -151,7 +151,7 @@ mod tests {
         for tab in TABS {
             assert!(profile().iter().any(|s| s.tab == tab), "no settings in {tab}");
         }
-        assert!(profile().iter().all(|s| TABS.contains(&s.tab.as_str())), "a setting names an unknown tab");
+        assert!(profile().iter().all(|s| s.tab.is_empty() || TABS.contains(&s.tab.as_str())), "a setting names an unknown tab");
     }
 
     #[test]

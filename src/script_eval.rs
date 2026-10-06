@@ -117,6 +117,13 @@ impl Invocation {
         Ok(Invocation::with(text, Body::Calls(calls.into_iter().map(Expr::Call).collect()), lax, timeout, side_effects, now))
     }
 
+    /// An expression (a variable, a literal, an operator, a call) whose result is its value
+    /// (`ExpressionBindableView`'s bound expression); a syntax error is the failure.
+    pub fn for_expression(text: &str, timeout: Timeout, side_effects: bool, lax: bool, now: Instant) -> Result<Invocation, Failure> {
+        let e = expr::parse_expression(text).map_err(Failure::plain)?;
+        Ok(Invocation::with(text, Body::Calls(vec![e]), lax, timeout, side_effects, now))
+    }
+
     /// An interpolated string whose result is its text; `lax` is
     /// `laxNilPolicyInInterpolatedStrings`.
     pub fn for_template(template: &str, timeout: Timeout, side_effects: bool, lax: bool, now: Instant) -> Result<Invocation, Failure> {

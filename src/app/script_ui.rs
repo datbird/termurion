@@ -63,6 +63,9 @@ pub(super) enum Origin {
     /// A profile's Initial Text (`PS:3698-3706`): written to the session when it finishes; a
     /// failure or a result that is not a string writes nothing.
     InitialText { pane: PaneId, epoch: u64 },
+    /// A profile binding's evaluation (`PS:6319`): the pane, the bound key and the evaluation's
+    /// number there (`bindings_ui`), so an older answer never applies.
+    Binding { pane: PaneId, key: String, nth: u64 },
 }
 
 /// Whether Initial Text must wait: an SSH profile's session with no conductor yet is still at
@@ -623,6 +626,13 @@ impl App {
         self.start_run(invocation, inv, scope, origin)
     }
 
+    /// Starts the evaluation of a bound expression (no side effects).
+    pub(super) fn invoke_expression(&mut self, text: &str, scope: ScopeSpec, timeout: Timeout, origin: Origin) -> Option<u64> {
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let inv = Invocation::for_expression(text, timeout, false, lax, Instant::now());
+        self.start_run(text, inv, scope, origin)
+    }
+
     /// Starts an invocation already parsed (a call sequence, or an interpolated string);
     /// as `invoke`.
     fn start_run(&mut self, invocation: &str, inv: Result<Invocation, Failure>, scope: ScopeSpec, origin: Origin) -> Option<u64> {
@@ -774,6 +784,10 @@ impl App {
                 }
                 Err(f) => self.report_function_error(OPEN_QUICKLY, invocation, &f),
             },
+            Origin::Binding { pane, key, nth } => {
+                let value = r.map_err(|f| script_eval::template_failed_text(invocation, &f.reason));
+                self.binding_finished(*pane, key, *nth, value);
+            }
             Origin::Template { pane, key, nth } => self.template_finished(*pane, key, *nth, missing, r),
             Origin::Component { pane, id, nth, reg } => self.component_finished(*pane, id, *nth, reg, invocation, missing, r),
             // `RPC:566-570`: "Error in onclick handler" in the console.

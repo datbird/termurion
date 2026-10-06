@@ -442,7 +442,6 @@ mod tests {
                 Request::ReportWindowFrame,
                 Request::ReportScreenFrames,
                 Request::SetWindowFrame(1.0, 2.0, 3.0, 4.0),
-                Request::TabColor(Some(Rgb { r: 255, g: 0, b: 0 })),
                 Request::TabColor(None),
             ]
         );

@@ -351,7 +351,7 @@ mod tests {
     }
 
     fn profile(pairs: &[(&str, Value)]) -> Profile {
-        let mut p = Profile { values: Default::default() };
+        let mut p = Profile::default();
         for (k, v) in pairs {
             p.values.insert(k.to_string(), v.clone());
         }

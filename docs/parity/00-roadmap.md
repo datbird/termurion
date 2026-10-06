@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 273 | 32 | 11 |
-| `02-global-settings.md` | 820 | 624 | 41 | 155 |
-| `03-features-and-menus.md` | 648 | 574 | 37 | 37 |
-| Total | 1,784 | 1,471 | 110 | 203 |
+| `01-profile-settings.md` | 316 | 284 | 30 | 2 |
+| `02-global-settings.md` | 820 | 629 | 40 | 151 |
+| `03-features-and-menus.md` | 648 | 583 | 35 | 30 |
+| Total | 1,784 | 1,496 | 105 | 183 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -800,6 +800,10 @@ build. Every kept quirk is listed in `docs/acceptance/m14e-checklist.md` and rul
 `docs/superpowers/rulings/m14e-rulings.txt`.
 
 Milestone 13s parity close (2026-10-05): 28 existing rows to have and one new row: 02 CopySelection (already have; the key is CopySelection, the row named SelectionCopiesText), CopyLastNewline, WordSelectionMode, WordCharacters, WordSelectionRegexPattern, TripleClickSelectsFullWrappedLines, WrapDroppedFilenamesInQuotesWhenPasting, fractionOfCharacterSelectingNextNeighbor, useDoubleClickDelayForCommandSelection, findUrlsRegex, findURLsRespectsSoftBoundaries, requireCmdForDraggingText, findDelaySeconds, swapFindNextPrevious, synchronizeQueryWithFindPasteboard, smartSelectionRadius, alphaForDeselectedCommandShade, requireSlashInURLGuess, trimWhitespaceOnCopy, copyWithStylesByDefault, copyBackgroundColor, disallowCopyEmptyString, typingClearsSelection, excludeBackgroundColorsFromCopiedStyle and autoSearch; 01 Drag to Scroll in Alternate Screen Mode Disabled; 03 Selection Respects Soft Boundaries, Select Matches (two rows), and the new row Multiple selections. Per file: 01 316 rows, 273 have, 32 partial, 11 missing; 02 820, 624, 41, 155; 03 648, 570, 40, 38; total 1,784 rows, 1,467 have, 113 partial, 204 missing. Task 10 (d436ac2, colored Filter and Zoom, chunked filter, progress line) then moved 03 Filter, Filter mode and Zoom In on Selection from partial to have and Filter progress indicator from missing to have: 03 648 rows, 574 have, 37 partial, 37 missing; total 1,784 rows, 1,471 have, 110 partial, 203 missing. The commands filter: and zoomOnSelection: stay partial in the command registry. Tandem's security work in this milestone: every runtime DLL load names a search path (src/dll.rs), every program restricts the process's DLL search first thing, the C runtime is linked statically and every import loads from System32 only (build.rs keeps both), copied HTML links are web or mailto only, and dropped names pass 13r's one guard. The rulings are docs/superpowers/rulings/m13s-rulings.txt and the checklist docs/acceptance/m13s-checklist.md.
+
+Milestone 13t merge of main (13r semantic history, 13s selection and find; 2026-10-05): 13t Tasks 1-6 changed no parity row yet, so the union is main's rows. Recounted: 01 316 rows, 273 have, 32 partial, 11 missing; 02 820, 624, 41, 155; 03 648, 574, 37, 37; total 1,784 rows, 1,471 have, 110 partial, 203 missing. 13t's color presets, bindings and profile list run under main's security rules unchanged: no runtime DLL load, no new process start (the color gallery page and an exported preset's reveal are already listed in 13r's sink sweep), no command-valued profile key touched, and the GPU tests use the one shared test device.
+
+Milestone 13t built profiles and presets (01: 11 rows to have, 2 from partial (Profile shortcut, Tags) and 9 from missing (the Light/Dark editing selector, Color Presets menu, Import, Export, Save as, Delete, Visit Online Gallery, Edit/remove color binding, Hue/Chroma wheel); 02: 5 rows to have, 4 from missing (Add Bonjour hosts to Profiles, Load Color Preset, pinEditSession, autoLockSessionNameOnEdit) and noSyncReplaceProfileWarning from partial; 03: 9 rows to have, 7 from missing (the Profiles window's seven rows, the stale "Tandem has no profiles concept" text removed) and 2 from partial (Open Quickly: Search color presets, Python API: Color presets)). Per file: 01 316 rows, 284 have, 30 partial, 2 missing; 02 820, 629, 40, 151; 03 648, 583, 35, 30; total 1,784 rows, 1,496 have, 105 partial, 183 missing (counted with parity-count.py). The OSC SetColors and it2setcolor rows stay partial for their other reasons; their preset text now says presets load. Security: a .itermcolors and the stored Custom Color Presets are untrusted and sanitized at one point (1 MiB, 256 presets, finite components, XML only); a profile's Bindings and Tags are cleaned at the one write point with caps; an escape-code preset flood keeps fixed-size pending state; Bonjour hosts are untrusted network input (names cleaned, addresses re-formatted, in memory only, nothing connects until picked, never in Export All or profiles.toml); the Profiles menu tree is capped at 1024 items. The rulings are docs/superpowers/rulings/m13t-rulings.txt and the checklist docs/acceptance/m13t-checklist.md.
 
 ## Order
 

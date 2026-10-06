@@ -1598,12 +1598,20 @@ impl Screen {
                 "SetColors" => {
                     for (name, v) in crate::osc1337::set_colors(&value) {
                         match (name.as_str(), crate::osc1337::color(&v)) {
-                            ("tab", _) if v == "default" => self.requests.push(Request::TabColor(None)),
-                            ("tab", Some(crate::osc1337::Color::Rgb(c))) => self.requests.push(Request::TabColor(Some(c))),
+                            ("preset", _) => {
+                                // A loop of the sequence leaves one load pending, with at most one
+                                // queued color per name behind it.
+                                self.queue_preset(v);
+                            }
+                            ("tab", _) if v == "default" => self.queue_tab_color(None),
+                            ("tab", Some(crate::osc1337::Color::Rgb(c))) => self.queue_tab_color(Some(c)),
                             ("tab", Some(crate::osc1337::Color::Index(i))) => {
                                 let c = self.palette.indexed(i);
-                                self.requests.push(Request::TabColor(Some(c)));
+                                self.queue_tab_color(Some(c));
                             }
+                            // iTerm2 pauses the stream for a preset: colors after a pending one apply
+                            // after it, in order (the window's handler).
+                            (_, Some(c)) if self.pending.preset_pending() => self.queue_color_after_preset(&name, c),
                             (_, Some(c)) => {
                                 if self.apply_color(&name, c) {
                                     self.color_sets.retain(|(n, _)| *n != name);
@@ -1756,6 +1764,146 @@ mod tests {
         assert_eq!(color(&marks[0].1, true), MarkColor::Error);
         assert_eq!(s.shell.history[0].command, "ls -l");
         assert_eq!(s.shell.history[0].code, Some(2));
+    }
+
+    #[test]
+    fn osc_preset_follows_iterm2() {
+        let mut s = Screen::new(40, 10);
+        let before = s.palette.clone();
+        s.feed(b"\x1b]1337;SetColors=preset=Solarized Dark\x07");
+        assert_eq!(s.take_requests(), vec![Request::ColorPreset("Solarized Dark".into())]);
+        assert!(s.palette == before, "the request, not the parser, changes colors");
+        // A program looping the sequence leaves one load pending.
+        s.feed(b"\x1b]1337;SetColors=preset=A\x07\x1b]1337;SetColors=preset=B\x07");
+        assert_eq!(s.take_requests(), vec![Request::ColorPreset("B".into())]);
+    }
+
+    fn built_in(name: &str) -> crate::color_presets::Preset {
+        crate::color_presets::built_in().iter().find(|(n, _)| n == name).unwrap().1.clone()
+    }
+
+    /// What the window's request handler does with the color requests, in order.
+    fn run_color_requests(s: &mut Screen, preset: &str) {
+        let reqs = s.take_requests();
+        run_color_requests_from(s, reqs, preset);
+    }
+
+    fn run_color_requests_from(s: &mut Screen, reqs: Vec<Request>, preset: &str) {
+        for r in reqs {
+            match r {
+                Request::ColorPreset(_) => {
+                    s.apply_escape_preset(&built_in(preset));
+                }
+                Request::NamedColor(n, c) => {
+                    s.set_named_color(&n, c);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// iTerm2 pauses the stream for a preset, so SetColors after it (in the same payload or the
+    /// next one) apply after it and are never overwritten by it.
+    #[test]
+    fn osc_preset_keeps_stream_order() {
+        let red = alacritty_terminal::vte::ansi::Rgb { r: 255, g: 0, b: 0 };
+        for feed in [&b"\x1b]1337;SetColors=preset=Tango Dark,fg=ff0000\x07"[..], &b"\x1b]1337;SetColors=preset=Tango Dark\x07\x1b]1337;SetColors=fg=ff0000\x07"[..]] {
+            let mut s = Screen::new(40, 10);
+            s.feed(feed);
+            run_color_requests(&mut s, "Tango Dark");
+            assert_eq!(s.palette.fg, red);
+            assert_eq!(s.palette.bg, crate::color_presets::swatch(&built_in("Tango Dark"), true).1, "the preset's other colors still loaded");
+        }
+        // A color set BEFORE the preset is the preset's to overwrite.
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;SetColors=fg=ff0000\x07\x1b]1337;SetColors=preset=Tango Dark\x07");
+        run_color_requests(&mut s, "Tango Dark");
+        assert_eq!(s.palette.fg, crate::color_presets::swatch(&built_in("Tango Dark"), true).0);
+    }
+
+    /// A program looping `preset=X,fg=...` (or alternating a preset with other colors) queues a
+    /// bounded number of requests, and the order that matters still holds.
+    #[test]
+    fn osc_preset_flood_is_bounded() {
+        let mut s = Screen::new(40, 10);
+        let line = b"\x1b]1337;SetColors=preset=Tango Dark,fg=ff0000,bg=00ff00\x07\x1b]1337;SetColors=bold=0000ff\x07";
+        for _ in 0..10_000 {
+            s.feed(line);
+        }
+        let reqs = s.take_requests();
+        let presets = reqs.iter().filter(|r| matches!(r, Request::ColorPreset(_))).count();
+        let named = reqs.iter().filter(|r| matches!(r, Request::NamedColor(..))).count();
+        assert_eq!(presets, 1, "one preset load is pending");
+        assert!(named <= 25, "at most one queued color per name, got {named}");
+        run_color_requests_from(&mut s, reqs, "Tango Dark");
+        let (red, green, blue) = (alacritty_terminal::vte::ansi::Rgb { r: 255, g: 0, b: 0 }, alacritty_terminal::vte::ansi::Rgb { r: 0, g: 255, b: 0 }, alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 255 });
+        assert_eq!((s.palette.fg, s.palette.bg, s.palette.bold), (red, green, blue), "the colors after the last preset apply on top of it");
+        // The queue empties on take, and a color with no preset pending applies at once.
+        s.feed(b"\x1b]1337;SetColors=fg=010203\x07");
+        assert!(s.take_requests().is_empty());
+        assert_eq!(s.palette.fg, alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 });
+        // Unknown names behind a pending preset queue nothing.
+        s.feed(b"\x1b]1337;SetColors=preset=A\x07");
+        for i in 0..1000 {
+            s.feed(format!("\x1b]1337;SetColors=junk{i}=ff0000\x07").as_bytes());
+        }
+        assert_eq!(s.take_requests().len(), 1);
+    }
+
+    /// A program looping `preset=X`, then many tab and color changes in the same frame (the tab
+    /// requests used to make every color scan the tail): the pending state is fixed size, so the
+    /// work stays linear in the sequences fed, and the order that matters still holds.
+    #[test]
+    fn osc_preset_pending_state_is_fixed_size() {
+        crate::screen::PENDING_WORK.with(|w| w.set(0));
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;SetColors=preset=Tango Dark\x07");
+        let n = 5_000;
+        for i in 0..n {
+            s.feed(format!("\x1b]1337;SetColors=tab={:02x}0000,fg={:02x}0000\x07", i % 256, i % 256).as_bytes());
+        }
+        s.feed(b"\x1b]1337;SetColors=tab=00ff00,fg=0000ff\x07");
+        let work = crate::screen::PENDING_WORK.with(|w| w.get());
+        assert!(work <= 10 * n, "work {work} for {n} sequences is not linear");
+        let reqs = s.take_requests();
+        assert!(reqs.len() <= 27, "preset + 25 colors + tab at most, got {}", reqs.len());
+        assert_eq!(reqs.iter().filter(|r| matches!(r, Request::ColorPreset(_))).count(), 1);
+        let last_tab = reqs.iter().rev().find_map(|r| if let Request::TabColor(c) = r { Some(*c) } else { None });
+        assert_eq!(last_tab, Some(Some(alacritty_terminal::vte::ansi::Rgb { r: 0, g: 255, b: 0 })), "the latest tab wins");
+        run_color_requests_from(&mut s, reqs, "Tango Dark");
+        assert_eq!(s.palette.fg, alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 255 });
+    }
+
+    #[test]
+    fn osc_preset_sets_named_colors_and_ends_with_the_program() {
+        let mut s = Screen::new(40, 10);
+        let profile = s.palette.clone();
+        let tango = built_in("Tango Dark");
+        let named = crate::color_presets::named_colors(&tango, true);
+        s.set_named_colors(&named);
+        let (fg, _) = crate::color_presets::swatch(&tango, true);
+        assert_eq!(s.palette.fg, fg);
+        assert!(s.palette != profile);
+        // A profile change keeps what the program set; the program ending drops it.
+        s.set_palette(profile.clone());
+        assert_eq!(s.palette.fg, fg);
+        s.program_ended();
+        s.set_palette(profile.clone());
+        assert!(s.palette == profile, "the profile's colors are back");
+    }
+
+    #[test]
+    fn osc_preset_skips_unnameable_keys() {
+        // No built-in preset has a match color (an optional key), so the most one names is 24; a
+        // preset lacking a color (Solarized Dark has no link color) names fewer.
+        let most = crate::color_presets::built_in().iter().map(|(_, p)| crate::color_presets::named_colors(p, true).len()).max().unwrap();
+        assert_eq!(most, 24);
+        let names: Vec<&str> = crate::color_presets::named_colors(&built_in("Solarized Dark"), true).into_iter().map(|(n, _)| n).collect();
+        assert!(names.len() < 24 && !names.contains(&"link"), "{names:?}");
+        for n in ["fg", "bg", "bold", "selbg", "selfg", "curbg", "curfg", "black", "white", "br_black", "br_white"] {
+            assert!(names.contains(&n), "{n}");
+        }
+        assert!(!names.iter().any(|n| n.contains("underline") || n.contains("guide") || n.contains("badge") || *n == "tab"));
     }
 
     #[test]

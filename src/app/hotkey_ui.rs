@@ -663,7 +663,7 @@ impl App {
         let Some(p) = self.store.get_mut(guid) else { return };
         let pinned = !p.bool("HotKey Window AutoHides");
         p.set("HotKey Window AutoHides", toml::Value::Boolean(pinned));
-        if let Err(e) = self.store.save() {
+        if let Err(e) = self.save_store() {
             self.banners.set("settings", format!("Settings not saved: {e}"));
         }
         self.menus_dirty = true;

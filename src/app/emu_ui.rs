@@ -134,7 +134,7 @@ impl App {
             let guid = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile));
             if let Some(profile) = guid.and_then(|g| self.store.get_mut(&g)) {
                 profile.set("Disable Printing", toml::Value::Boolean(true));
-                if let Err(e) = self.store.save() {
+                if let Err(e) = self.save_store() {
                     self.banners.set("print", format!("Could not save the profile: {e}"));
                 }
                 self.refresh_panes();

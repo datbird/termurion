@@ -1280,7 +1280,7 @@ impl App {
             let (guid, made) = self.store.tmux_profile();
             if made {
                 self.tools_changed();
-                if let Err(e) = self.store.save() {
+                if let Err(e) = self.save_store() {
                     self.banners.set("profiles", format!("Could not save profiles: {e}"));
                 }
             }

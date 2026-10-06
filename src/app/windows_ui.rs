@@ -609,7 +609,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                    NewWindow::Profile(_) | NewWindow::ProfilesIn(..) | NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
                 // a changed order.
@@ -649,6 +649,7 @@ impl App {
         self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
+            NewWindow::ProfilesIn(g, _) => Some(g.clone()),
             NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Arrangement(w, _) | NewWindow::Restored(w) => self.first_arrangement_guid(w),
@@ -664,7 +665,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
-        let applies_space = matches!(first, NewWindow::Profile(_) | NewWindow::Hotkey(..));
+        let applies_space = matches!(first, NewWindow::Profile(_) | NewWindow::ProfilesIn(..) | NewWindow::Hotkey(..));
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
@@ -675,6 +676,16 @@ impl App {
                 self.begin_window_start(from_pane, from_dir);
                 self.new_tab(guid.as_deref());
                 self.end_window_start();
+            }
+            NewWindow::ProfilesIn(guid, rest) => {
+                self.begin_window_start(from_pane, from_dir);
+                self.new_tab(Some(&guid));
+                self.end_window_start();
+                // The rest join the new window: tabs, or splits of its active pane.
+                match rest {
+                    crate::settings_ui::Rest::Tabs(guids) => guids.iter().for_each(|g| self.new_tab(Some(g))),
+                    crate::settings_ui::Rest::Splits(side_by_side, guids) => guids.iter().for_each(|g| self.split(if side_by_side { Axis::Row } else { Axis::Column }, Some(g))),
+                }
             }
             NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => {
                 self.tabs.push(tab);
@@ -1094,29 +1105,34 @@ impl App {
 }
 
 impl App {
-    /// The Profiles menu lists every profile after its fixed items.
+    /// The Profiles menu shows the tag tree after its fixed items: untagged profiles, a submenu per
+    /// tag, "Open All" where a menu holds several (`iTermProfilesMenuController.m`). It is rebuilt
+    /// only when a profile it shows changed (`MenuCache`), never per output batch, and the muda
+    /// items only when the tree differs.
     pub(super) fn refresh_profiles_menu(&mut self) {
-        let items: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let Some(bar) = &mut self.menu_bar else { return };
-        if bar.profile_items == items {
+        let Some(tree) = bar.profile_cache.rebuild(&self.store.profiles) else { return };
+        if bar.profile_items == tree {
             return;
         }
         let Some((sub, fixed)) = &bar.profiles else { return };
         while sub.remove_at(*fixed).is_some() {}
-        for (guid, name) in &items {
-            let entry = muda::MenuItem::with_id(format!("{}{guid}", menu::PROFILE_ID), name.replace('&', "&&"), true, None);
-            if let Err(e) = sub.append(&entry) {
-                self.banners.set("menu", format!("Profiles menu: {e}"));
-            }
+        if let Err(e) = append_profile_nodes(sub, &tree) {
+            self.banners.set("menu", format!("Profiles menu: {e}"));
         }
-        bar.profile_items = items;
+        bar.profile_items = tree;
     }
 
-    /// A profile picked in the Profiles menu: a tab, or a window with Alt held (swapped by
-    /// openProfilesInNewWindow; a profile that refuses tabs always gets a window).
+    /// A profile picked in the Profiles menu: a tab, or a window with Alt held.
     pub(super) fn open_profile_from_menu(&mut self, guid: &str) {
-        use crate::winmodel::{OpenRequest, Target, open_target};
         let option = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+        self.open_profile(guid, option);
+    }
+
+    /// Opens a profile (swapped by openProfilesInNewWindow; a profile that refuses tabs always
+    /// gets a window): the menu item, or its alternate with `option`, and a profile shortcut.
+    pub(super) fn open_profile(&mut self, guid: &str, option: bool) {
+        use crate::winmodel::{OpenRequest, Target, open_target};
         let prevent = self.store.get(guid).is_some_and(|p| p.bool("Prevent Opening in a Tab"));
         match open_target(OpenRequest::ProfileMenu { option }, prevent, self.globals.bool("openProfilesInNewWindow")) {
             Target::Tab => self.new_tab(Some(guid)),
@@ -1126,12 +1142,58 @@ impl App {
             }
         }
     }
+
+    /// "Open All" in the menu at `path`: every profile of it and its submenus as tabs, or with
+    /// Alt (`window`) in a new window (`newSessionsInWindow:`).
+    pub(super) fn open_all_from_menu(&mut self, path: &str, window: bool) {
+        let guids = self.menu_bar.as_ref().map(|b| crate::profile_menu::open_all_guids(&b.profile_items, path)).unwrap_or_default();
+        if guids.is_empty() {
+            return;
+        }
+        self.open_selected_profiles(guids, if window { crate::settings_ui::How::TabsInNewWindow } else { crate::settings_ui::How::Tab }, crate::settings_ui::Opener::Menu);
+    }
+
+    /// The saved profile a Ctrl+Win shortcut key opens: the first one holding it (P8).
+    pub(super) fn profile_for_shortcut(&self, key: char) -> Option<String> {
+        self.store.profiles.iter().find(|p| crate::profile_menu::stored_key(&p.string("Shortcut")) == Some(key)).map(|p| p.guid())
+    }
+}
+
+/// The menu entry for a profile: its name, and the shortcut as accelerator text.
+fn profile_menu_text(name: &str, shortcut: Option<char>) -> String {
+    let name = name.replace('&', "&&");
+    match shortcut {
+        Some(k) => format!("{name}\tCtrl+Win+{k}"),
+        None => name,
+    }
+}
+
+fn append_profile_nodes(sub: &muda::Submenu, nodes: &[crate::profile_menu::Node]) -> Result<(), muda::Error> {
+    use crate::profile_menu::Node;
+    for node in nodes {
+        match node {
+            Node::Profile { guid, name, shortcut } => sub.append(&muda::MenuItem::with_id(format!("{}{guid}", menu::PROFILE_ID), profile_menu_text(name, *shortcut), true, None))?,
+            Node::Folder { name, children } => {
+                let folder = muda::Submenu::new(name.replace('&', "&&"), true);
+                append_profile_nodes(&folder, children)?;
+                sub.append(&folder)?;
+            }
+            Node::More => sub.append(&muda::MenuItem::new("More profiles are in Settings", false, None))?,
+            Node::OpenAll { path } => {
+                sub.append(&muda::PredefinedMenuItem::separator())?;
+                sub.append(&muda::MenuItem::with_id(format!("{}{path}", menu::PROFILE_ALL_ID), "Open All", true, None))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What a new window starts with.
 pub(super) enum NewWindow {
     /// One tab of a profile (the default one when None).
     Profile(Option<String>),
+    /// The Profiles window's several profiles in one window: the first, and the rest as its tabs or splits.
+    ProfilesIn(String, crate::settings_ui::Rest),
     /// A tab moved from another window.
     Tab(Tab),
     /// A tab dragged out of every tab bar, and the screen point it was dropped at (the new
@@ -1974,5 +2036,11 @@ mod tests {
         assert_eq!(active, None, "the active tab moved");
         let (_, kept, active) = split_for_merge(vec![tab(1, 10), tab(2, 20), tab(3, 30)], 2, stays);
         assert_eq!((kept.len(), active), (2, Some(1)), "tab 3 stays active, now at index 1");
+    }
+
+    #[test]
+    fn profile_menu_item_shows_its_shortcut() {
+        assert_eq!(profile_menu_text("Work & Play", Some('Q')), "Work && Play\tCtrl+Win+Q");
+        assert_eq!(profile_menu_text("Work", None), "Work");
     }
 }

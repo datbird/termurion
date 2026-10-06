@@ -167,6 +167,14 @@ pub mod undo_close;
 pub mod startup;
 pub mod jobtitle;
 pub mod profile;
+pub mod profile_list;
+pub mod profile_menu;
+pub mod profile_list_ui;
+pub mod color_presets;
+pub mod oklab;
+pub mod hue_wheel_ui;
+pub mod bindings;
+pub mod bonjour;
 pub mod prompted;
 pub mod schema;
 pub mod scene;
@@ -260,6 +268,7 @@ pub mod session_profile;
 
 #[cfg(windows)]
 pub mod settings_ui;
+pub mod settings_presets;
 
 #[cfg(windows)]
 pub mod egui_host;

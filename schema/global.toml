@@ -3183,6 +3183,16 @@ type = "bool"
 default = true
 help = "Prefer integrated to discrete GPU"
 
+# 13t Task 9: Bonjour hosts as profiles.
+[[setting]]
+key = "EnableRendezvous"
+tab = "General"
+section = "Bonjour"
+label = "Add Bonjour hosts to Profiles"
+type = "bool"
+default = false
+help = "Add Bonjour hosts to Profiles"
+
 [[setting]]
 key = "Bidi"
 tab = "General"
@@ -5069,3 +5079,49 @@ label = "Support DECSET 1036?"
 type = "bool"
 default = false
 help = "Support DECSET 1036?\nThis allows apps in the terminal to control whether the Alt key sends esc+ or acts like a regular Alt key."
+
+[[setting]]
+key = "Custom Color Presets"
+tab = "Stored"
+section = "Colors"
+label = "Custom color presets"
+type = "dict"
+default = {}
+help = "The color presets you imported or saved, by name. Each is a table of color keys (Ansi 0 Color, Foreground Color, and their Light and Dark variants), each color {r, g, b, a}. Managed from the Colors tab's Color Presets menu."
+
+[[setting]]
+key = "NoSyncProfilesWindowTagsOpen"
+tab = "Stored"
+section = "Profiles"
+label = "Profiles window: tags sidebar open"
+type = "bool"
+default = false
+help = "Remembered by the Profiles window."
+
+[[setting]]
+key = "CloseBookmarksWindowAfterOpening"
+tab = "Stored"
+section = "Profiles"
+label = "Profiles window: close after opening a profile"
+type = "bool"
+default = false
+help = "Remembered by the Profiles window's checkbox, \"Close this window after opening a profile.\""
+
+# 13t Task 8: Edit Session.
+[[setting]]
+key = "PinEditSession"
+tab = "Advanced"
+section = "General"
+label = "Pin Edit Session window to the session it originally edited."
+type = "bool"
+default = false
+help = "Pin Edit Session window to the session it originally edited.\nIf not set, it will affect the most recently active session."
+
+[[setting]]
+key = "AutoLockSessionNameOnEdit"
+tab = "Advanced"
+section = "Session"
+label = "Auto-lock session name after editing it."
+type = "bool"
+default = true
+help = "Auto-lock session name after editing it."

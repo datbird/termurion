@@ -213,17 +213,34 @@ pub fn tabs_holding(tabs: &[(u64, Vec<u64>)], panes: &[u64]) -> Vec<u64> {
     tabs.iter().filter(|(_, ps)| ps.iter().any(|p| panes.contains(p))).map(|(t, _)| *t).collect()
 }
 
-/// ColorPreset (`H:3883-3950`) until milestone 13 brings presets: a list is OK with no names
-/// (so no payload), every name is PRESET_NOT_FOUND, an unset request REQUEST_MALFORMED.
-pub fn color_preset(r: &pb::ColorPresetRequest) -> pb::ColorPresetResponse {
+/// ColorPreset (`H:3883-3950`): a list names every preset; a get answers each key's raw
+/// components (alpha 1 and color space "Calibrated" when absent, `H:3917-3940`); an unknown name is
+/// PRESET_NOT_FOUND, an unset request REQUEST_MALFORMED.
+pub fn color_preset(r: &pb::ColorPresetRequest, find: &dyn Fn(&str) -> Option<crate::color_presets::Preset>, names: &[String]) -> pb::ColorPresetResponse {
     use pb::color_preset_request::Request;
-    use pb::color_preset_response::Status;
-    let status = match r.request {
-        None => Status::RequestMalformed,
-        Some(Request::ListPresets(_)) => Status::Ok,
-        Some(Request::GetPreset(_)) => Status::PresetNotFound,
+    use pb::color_preset_response::{get_preset::ColorSetting, GetPreset, ListPresets, Response, Status};
+    let (status, response) = match &r.request {
+        None => (Status::RequestMalformed, None),
+        Some(Request::ListPresets(_)) => (Status::Ok, Some(Response::ListPresets(ListPresets { name: names.to_vec() }))),
+        Some(Request::GetPreset(g)) => match g.name.as_deref().and_then(find) {
+            None => (Status::PresetNotFound, None),
+            Some(p) => {
+                let color_settings = p
+                    .iter()
+                    .map(|(key, c)| ColorSetting {
+                        red: Some(c.r as f32),
+                        green: Some(c.g as f32),
+                        blue: Some(c.b as f32),
+                        alpha: Some(c.a.unwrap_or(1.0) as f32),
+                        color_space: Some(c.space.clone().unwrap_or_else(|| "Calibrated".to_string())),
+                        key: Some(key.clone()),
+                    })
+                    .collect();
+                (Status::Ok, Some(Response::GetPreset(GetPreset { color_settings })))
+            }
+        },
     };
-    pb::ColorPresetResponse { status: Some(status as i32), response: None }
+    pb::ColorPresetResponse { status: Some(status as i32), response }
 }
 
 #[cfg(test)]
@@ -419,14 +436,30 @@ mod tests {
     }
 
     #[test]
-    fn color_presets_refuse_until_milestone_13() {
+    fn api_color_presets_follow_iterm2() {
+        use crate::color_presets::{Preset, PresetColor};
         use pb::color_preset_request::{GetPreset, ListPresets, Request};
-        use pb::color_preset_response::Status;
-        let answer = |r: Option<Request>| color_preset(&pb::ColorPresetRequest { request: r });
+        use pb::color_preset_response::{Response, Status};
+        let mut tango = Preset::new();
+        tango.insert("Ansi 0 Color".into(), PresetColor { r: 0.25, g: 0.5, b: 0.75, a: None, space: None });
+        tango.insert("Foreground Color".into(), PresetColor { r: 1.0, g: 0.0, b: 0.0, a: Some(0.5), space: Some("P3".into()) });
+        let find = |n: &str| (n == "Tango Dark").then(|| tango.clone());
+        let names = vec!["Solarized".to_string(), "Tango Dark".to_string()];
+        let answer = |r: Option<Request>| color_preset(&pb::ColorPresetRequest { request: r }, &find, &names);
         let list = answer(Some(Request::ListPresets(ListPresets {})));
-        assert_eq!((list.status, list.response), (Some(Status::Ok as i32), None));
-        let get = answer(Some(Request::GetPreset(GetPreset { name: Some("Solarized".into()) })));
-        assert_eq!((get.status, get.response), (Some(Status::PresetNotFound as i32), None));
+        assert_eq!(list.status, Some(Status::Ok as i32));
+        assert_eq!(list.response, Some(Response::ListPresets(pb::color_preset_response::ListPresets { name: names.clone() })));
+        let get = answer(Some(Request::GetPreset(GetPreset { name: Some("Tango Dark".into()) })));
+        assert_eq!(get.status, Some(Status::Ok as i32));
+        let Some(Response::GetPreset(g)) = get.response else { panic!("no preset") };
+        assert_eq!(g.color_settings.len(), 2);
+        let ansi = g.color_settings.iter().find(|c| c.key.as_deref() == Some("Ansi 0 Color")).unwrap();
+        assert_eq!((ansi.red, ansi.green, ansi.blue, ansi.alpha), (Some(0.25), Some(0.5), Some(0.75), Some(1.0)));
+        assert_eq!(ansi.color_space.as_deref(), Some("Calibrated"));
+        let fg = g.color_settings.iter().find(|c| c.key.as_deref() == Some("Foreground Color")).unwrap();
+        assert_eq!((fg.red, fg.alpha, fg.color_space.as_deref()), (Some(1.0), Some(0.5), Some("P3")), "raw components, not converted");
+        let missing = answer(Some(Request::GetPreset(GetPreset { name: Some("Nope".into()) })));
+        assert_eq!((missing.status, missing.response), (Some(Status::PresetNotFound as i32), None));
         assert_eq!(answer(None).status, Some(Status::RequestMalformed as i32));
     }
 }

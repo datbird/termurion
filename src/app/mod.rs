@@ -42,7 +42,7 @@ use crate::render::Renderer;
 use crate::screen::Look;
 use crate::store::{self, Store};
 use crate::scene::{self, Frame, rgba};
-use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
+use crate::settings_ui::{Edit, Mode, SettingsWindow};
 
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
@@ -60,6 +60,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod paste_ui;
+mod edit_session_ui;
 mod history_ui;
 mod shell_history_ui;
 mod snippets_ui;
@@ -149,6 +150,10 @@ mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
 mod pane_nav_ui;
 mod open_quickly_app;
+mod presets_ui;
+mod profiles_open_ui;
+mod bindings_ui;
+mod bonjour_ui;
 mod replay_ui;
 mod pwm_app;
 mod api_ui;
@@ -1156,6 +1161,15 @@ pub struct App {
     /// call token, and the run each started call's token belongs to.
     script_runs: BTreeMap<u64, script_ui::Run>,
     script_next: u64,
+    /// Expression bindings per pane and bound key (`bindings_ui`); app-wide, so no `swap_live`.
+    bindings: HashMap<(PaneId, String), bindings_ui::Bound>,
+    /// Bonjour hosts as profiles (`bonjour_ui`): the browser while `EnableRendezvous` is on, the
+    /// hosts live now, and the state last synced; app-wide, so no `swap_live`.
+    bonjour: Option<crate::bonjour::Browser>,
+    bonjour_live: Vec<crate::bonjour::Live>,
+    bonjour_wanted: Option<bool>,
+    /// The active pane `follow_edit_session` last saw; app-wide, so no `swap_live`.
+    edit_follow_seen: Option<PaneId>,
     script_tokens: HashMap<u64, u64>,
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
     /// in the remembered mode).
@@ -2109,6 +2123,11 @@ pub fn run() {
         api_hooks: HashMap::new(),
         script_runs: BTreeMap::new(),
         script_next: 1,
+        bindings: HashMap::new(),
+        bonjour: None,
+        bonjour_live: Vec::new(),
+        bonjour_wanted: None,
+        edit_follow_seen: None,
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
@@ -2277,6 +2296,8 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
+    // Stop browsing: the callbacks end before the process does.
+    app.bonjour = None;
     teardown_process();
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
     if app.relaunch_on_exit {
@@ -3594,6 +3615,13 @@ impl App {
         self.orch_held.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
+        self.bindings.retain(|(p, _), _| *p != id);
+        if let Some(s) = self.settings.as_mut() {
+            s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, id);
+        }
+        if self.edit_follow_seen == Some(id) {
+            self.edit_follow_seen = None;
+        }
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
@@ -3895,6 +3923,7 @@ impl App {
         };
         if let Some(s) = slot {
             s.set_tmux_session(false);
+            s.edit_session = None;
         }
     }
 
@@ -3922,16 +3951,28 @@ impl App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
+        // The one gate (B2): a preview only redraws; any other edit first puts a stale preview back,
+        // in either window, so the previewed colors are never saved.
+        let preview = matches!(edit, Edit::Preview);
+        let (store, settings, profiles_win) = (&mut self.store, &mut self.settings, &mut self.profiles_win);
+        let go = crate::settings_ui::gate_edit(&edit, &mut || {
+            for w in [settings.as_mut(), profiles_win.as_mut()].into_iter().flatten() {
+                w.restore_preview(store);
+            }
+        });
+        if !go {
+            if preview {
+                self.refresh_panes();
+                self.redraw();
+            }
+            return;
+        }
         match edit {
-            Edit::None => return,
+            Edit::None | Edit::Preview => return,
             Edit::SessionHotkey(pane, s) => self.set_session_hotkey(pane, s),
-            Edit::Open(guid, how) => match how {
-                // A tab or split goes to the window the person used last.
-                How::Tab => self.new_tab(Some(&guid)),
-                How::Window => self.pending_windows.push(windows_ui::NewWindow::Profile(Some(guid))),
-                How::SplitRight => self.split(Axis::Row, Some(&guid)),
-                How::SplitDown => self.split(Axis::Column, Some(&guid)),
-            },
+            Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how, crate::settings_ui::Opener::ProfilesWindow),
+            // Taken by the window's redraw handler, which has the event loop.
+            Edit::EditProfiles(_) => return,
             Edit::Error(e) => self.banners.set("import", e),
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => self.globals_changed(true),
@@ -4013,6 +4054,7 @@ impl App {
         self.sync_blur();
         self.refresh_scroll_style();
         self.presence_globals_changed();
+        self.bonjour_sync();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -4111,11 +4153,29 @@ impl App {
     fn save_now(&mut self) {
         self.save_due = None;
         self.tools_changed();
-        match self.store.save() {
+        match self.save_store() {
             Ok(()) => self.banners.clear("save"),
             Err(e) => self.banners.set("save", format!("Could not save settings: {e}")),
         }
         self.prefs_changed();
+    }
+
+    /// The one save of the profile store: a color preview still live in either settings window is
+    /// put back first (the panes show the profile again), so nothing writes previewed colors (B2).
+    pub(super) fn save_store(&mut self) -> Result<(), String> {
+        let (settings, profiles_win) = (&mut self.settings, &mut self.profiles_win);
+        let (restored, saved) = crate::settings_ui::save_restored(&mut self.store, &mut |store| {
+            let mut any = false;
+            for w in [settings.as_mut(), profiles_win.as_mut()].into_iter().flatten() {
+                any |= w.restore_preview(store);
+            }
+            any
+        });
+        if restored {
+            self.refresh_panes();
+            self.redraw();
+        }
+        saved
     }
 
     /// Takes the renderer's fonts from the default profile. A font that is not
@@ -4735,10 +4795,11 @@ impl App {
     }
 
     /// Hands the keyboard hook what it needs after a focus, profile, or settings change.
-    fn refresh_route(&self) {
+    fn refresh_route(&mut self) {
         let mut snapshot = self.with_route(keyroute::Snapshot::new);
         snapshot.composer = self.composer_has_keys();
         snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
+        snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
@@ -4748,11 +4809,20 @@ impl App {
             .collect();
         *self.exempt_map.write().unwrap() = exempt;
         *self.remap_tags.write().unwrap() = crate::remap::Tags::from_globals(&self.globals);
+        // Every focus, tab, window and profile change comes through here (B6): Edit Session
+        // follows the active session.
+        self.follow_edit_session();
     }
 
     /// Saves a custom scripts folder typed in the open Settings window and not yet applied,
     /// before Tandem ends, so nothing typed is lost.
     fn save_pending_settings(&mut self) {
+        // A color preset still previewed goes back before anything is saved (B2).
+        for slot in [&mut self.settings, &mut self.profiles_win] {
+            if let Some(w) = slot.as_mut() {
+                w.restore_preview(&mut self.store);
+            }
+        }
         if self.settings.as_mut().is_some_and(|s| s.take_folder_pending()) {
             self.save_globals();
         }
@@ -4947,8 +5017,17 @@ impl App {
             Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
             Route::Terminal => {
                 if let Some(c) = chord {
-                    if let Some(item) = crate::commands::command_for_chord(c) {
-                        self.run_command(item, event_loop);
+                    // A menu chord, then a profile's Ctrl+Win shortcut (`keyroute::terminal_chord`);
+                    // neither sends bytes to the session, so neither clears a selection (S10).
+                    let shortcuts = self.route_snapshot.read().unwrap().profile_shortcuts.clone();
+                    match keyroute::terminal_chord(&shortcuts, c) {
+                        keyroute::ChordAction::Menu(item) => self.run_command(item, event_loop),
+                        keyroute::ChordAction::Profile { key, window } => {
+                            if let Some(guid) = self.profile_for_shortcut(key) {
+                                self.open_profile(&guid, window);
+                            }
+                        }
+                        keyroute::ChordAction::Nothing => {}
                     }
                 } else if let Some((key, base)) = typed {
                     self.to_terminal(&key, base.as_ref(), fallback, event_loop);
@@ -6430,10 +6509,12 @@ impl ApplicationHandler<UserEvent> for App {
         self.log_tick();
         self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
+        let bindings_due = self.tick_bindings();
+        self.bonjour_tick();
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
         let command_due = self.command_click_tick();
-        let wake = [cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6539,6 +6620,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
+        let window_exists = self.current_window().is_some();
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
             if !slot.as_ref().is_some_and(|s| s.id() == id) {
@@ -6549,8 +6631,13 @@ impl ApplicationHandler<UserEvent> for App {
                     // A custom scripts folder typed and not yet applied is applied as the
                     // window closes (iTerm2's `windowWillClose`, `GP:3428-3430`).
                     let pending = slot.as_mut().is_some_and(|s| s.take_folder_pending());
+                    // A color preset still previewed goes back before the window does (B2).
+                    let previewed = slot.as_mut().is_some_and(|s| s.restore_preview(&mut self.store));
                     *slot = None;
                     crate::winkeys::set_recording(false);
+                    if previewed {
+                        self.apply_edit(Edit::Preview);
+                    }
                     if pending {
                         self.apply_edit(Edit::GlobalsChanged);
                     }
@@ -6558,18 +6645,31 @@ impl ApplicationHandler<UserEvent> for App {
                 WindowEvent::RedrawRequested => {
                     let win = slot.as_mut().unwrap();
                     win.show_remembered = self.show_remembered;
+                    win.window_exists = window_exists;
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     // Configure SSH's help button opens its page in the browser.
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
+                    // An exported color preset is shown in Explorer.
+                    let reveal = slot.as_mut().and_then(|s| s.take_reveal());
                     // Profiles > General's URL schemes menu asks before Tandem becomes the handler.
                     let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     // Profiles > Text's "Manage Special Exceptions" opens its window.
                     let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
                     // Profiles > Terminal's "Change Locale" opens the picker.
                     let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
+                    // Edit Session's Copy Current Settings to Selected Profile, after its question.
+                    let copy = slot.as_mut().and_then(|s| s.copy_request.take());
+                    // "Edit Profiles\u{2026}" opens the Settings window, which needs the event loop.
+                    let edit = match edit {
+                        Edit::EditProfiles(guid) => {
+                            self.edit_profiles(event_loop, guid);
+                            Edit::None
+                        }
+                        other => other,
+                    };
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
@@ -6583,6 +6683,12 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(guid) = locale {
                         self.open_locale_settings(guid);
+                    }
+                    if let Some((pane, dest)) = copy {
+                        self.copy_to_profile(pane, &dest);
+                    }
+                    if let Some(path) = reveal {
+                        self.reveal_in_explorer(&path);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {
