@@ -44,10 +44,6 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
             ui.data_mut(|d| d.insert_temp(focus_id, true));
             r.request_focus();
         }
-        if r.changed() {
-            // Typing replaces the tag selection, as the search field and the sidebar share the text.
-            st.selected_tags.clear();
-        }
         field_focused = r.has_focus();
         if ui.button(if st.tags_open { "< Tags" } else { "Tags >" }).clicked() {
             st.tags_open = !st.tags_open;
@@ -107,25 +103,25 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
                 let (guid, name, tags, _) = &rows[i];
                 let star = if guid == default_guid { "\u{2605} " } else { "" };
                 let selected = st.selection.contains(guid);
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ui.text_style_height(&egui::TextStyle::Body) + 4.0), egui::Sense::click());
+                // The tags sit on a second, smaller line under the name (`PLV:657-671`).
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let small = egui::FontId::new(font.size * 0.8, font.family.clone());
+                let line = ui.text_style_height(&egui::TextStyle::Body);
+                let joined = tags.iter().map(|t| display_text(t)).collect::<Vec<_>>().join(", ");
+                let height = if joined.is_empty() { line + 4.0 } else { line * 1.8 + 4.0 };
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
                 if selected {
                     ui.painter().rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
                 } else if resp.hovered() {
                     ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
                 }
-                let font = egui::TextStyle::Body.resolve(ui.style());
                 let text = if selected { ui.visuals().selection.stroke.color } else { ui.visuals().text_color() };
-                let tag_x = rect.left() + width * 0.6;
-                ui.painter().with_clip_rect(egui::Rect::from_min_max(rect.min, egui::pos2(tag_x - 4.0, rect.max.y))).text(
-                    egui::pos2(rect.left() + 4.0, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!("{star}{}", display_text(name)),
-                    font.clone(),
-                    text,
-                );
-                let dim = if selected { text } else { ui.visuals().weak_text_color() };
-                let joined = tags.iter().map(|t| display_text(t)).collect::<Vec<_>>().join(", ");
-                ui.painter().with_clip_rect(rect).text(egui::pos2(tag_x, rect.center().y), egui::Align2::LEFT_CENTER, joined, font, dim);
+                let name_y = if joined.is_empty() { rect.center().y } else { rect.top() + 2.0 + line * 0.5 };
+                ui.painter().with_clip_rect(rect).text(egui::pos2(rect.left() + 4.0, name_y), egui::Align2::LEFT_CENTER, format!("{star}{}", display_text(name)), font, text);
+                if !joined.is_empty() {
+                    let dim = if selected { text } else { ui.visuals().weak_text_color() };
+                    ui.painter().with_clip_rect(rect).text(egui::pos2(rect.left() + 4.0, rect.top() + 2.0 + line * 1.4), egui::Align2::LEFT_CENTER, joined, small, dim);
+                }
                 if resp.clicked() {
                     st.selection = click_selection(&st.selection, &shown, guid, mods.ctrl || mods.command, mods.shift, multi);
                     event = ListEvent::Picked(guid.clone());

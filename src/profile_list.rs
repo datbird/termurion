@@ -18,7 +18,7 @@ pub fn is_hostile(c: char) -> bool {
 }
 
 /// `sortedIndentedTags` (`ProfileTagsView.m:150-181`): every tag and each missing parent, sorted,
-/// as (indented label, full tag path), four spaces per level.
+/// as (indented label, full tag path), two non-breaking spaces per level (`ProfileTagsView.m:139-147`).
 pub fn tag_tree(tags: &[String]) -> Vec<(String, String)> {
     tag_tree_counted(tags, &mut 0)
 }
@@ -60,7 +60,7 @@ pub fn tag_tree_counted(tags: &[String], work: &mut usize) -> Vec<(String, Strin
                 path.push('/');
             }
             path.push_str(parts[matched]);
-            let label = format!("{}{}", "    ".repeat(matched), display_text(parts[matched]));
+            let label = format!("{}{}", "\u{a0}\u{a0}".repeat(matched), display_text(parts[matched]));
             *work += label.chars().count() + path.chars().count();
             out.push((label, path.clone()));
             matched += 1;
@@ -191,10 +191,10 @@ mod tests {
     #[test]
     fn tag_tree_follows_iterm2() {
         let t = tag_tree(&s(&["work", "work/db", "work/web", "home"]));
-        let want: Vec<(String, String)> = [("home", "home"), ("work", "work"), ("    db", "work/db"), ("    web", "work/web")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let want: Vec<(String, String)> = [("home", "home"), ("work", "work"), ("\u{a0}\u{a0}db", "work/db"), ("\u{a0}\u{a0}web", "work/web")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         assert_eq!(t, want);
         let t = tag_tree(&s(&["a/b/c"]));
-        let want: Vec<(String, String)> = [("a", "a"), ("    b", "a/b"), ("        c", "a/b/c")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let want: Vec<(String, String)> = [("a", "a"), ("\u{a0}\u{a0}b", "a/b"), ("\u{a0}\u{a0}\u{a0}\u{a0}c", "a/b/c")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         assert_eq!(t, want);
     }
 
