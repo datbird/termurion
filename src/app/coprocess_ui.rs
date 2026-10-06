@@ -234,8 +234,13 @@ impl App {
             // A dropped name the one cmd.exe builder refuses: nothing runs, and the banner says why.
             Some(Err(why)) => self.banners.set("action", why),
             None => {
-                let text = coprocess::drop_text(&files, self.globals.bool("WrapDroppedFilenamesInQuotesWhenPasting"));
-                self.user_paste(pane, &text, crate::broadcast::Write::Drop);
+                // The names pass 13r's one guard for terminal writes (B5): a refused name types
+                // nothing and the banner says why.
+                let shell = self.composer_shell(pane);
+                match coprocess::drop_text(&files, self.globals.bool("WrapDroppedFilenamesInQuotesWhenPasting"), shell.as_deref()) {
+                    Ok(text) => self.user_paste(pane, &text, crate::broadcast::Write::Drop),
+                    Err(why) => self.banners.set("action", why),
+                }
             }
         }
     }

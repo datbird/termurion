@@ -192,15 +192,22 @@ pub fn drop_command(template: &str, files: &[String]) -> Option<Result<String, S
     Some(crate::semantic::build_cmd_line(&pieces).ok_or_else(|| crate::semantic::CMD_REFUSED.to_string()))
 }
 
-/// Dropped filenames as text for the shell prompt (`NSPasteboard+iTerm.m:31-35`): every name
-/// in double quotes with `always_quote`, else only a name holding whitespace or a character
-/// cmd or PowerShell treats specially (R10, 13s-u ruling); backslash stays (it separates
-/// paths) and a Windows path cannot hold `"`, so nothing is escaped. Typed text for the
-/// person's shell: never a coprocess command (S13).
-pub fn drop_text(files: &[String], always_quote: bool) -> String {
-    const SPECIAL: &str = "&()[]{}^=;!'+,`~%";
-    let quote = |f: &String| always_quote || f.is_empty() || f.contains(|c: char| c.is_whitespace() || SPECIAL.contains(c));
-    files.iter().map(|f| if quote(f) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ")
+/// Dropped filenames as text for the shell prompt (`NSPasteboard+iTerm.m:31-35`). Every name
+/// first passes 13r's one guard for terminal writes (`pathnav::quote_for`: control characters,
+/// the union refusal, the network rule), so Err is the banner and nothing is typed. What passes
+/// is quoted for the shell the pane reports (`shell`, as `App::composer_shell` names it): every
+/// name with `always_quote`, else a name holding whitespace or a character PowerShell or cmd.exe
+/// splits on (`,` `=` `+`); a POSIX shell always gets its escaped form (a bare backslash would be
+/// read as an escape). Typed text for the person's shell: never a coprocess command (S13).
+pub fn drop_text(files: &[String], always_quote: bool, shell: Option<&str>) -> Result<String, String> {
+    let kind = crate::pathnav::shell_of(shell);
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let quoted = crate::pathnav::quote_for(f, kind)?;
+        let bare = !always_quote && kind != crate::pathnav::Shell::Posix && !f.is_empty() && !f.contains(|c: char| c.is_whitespace() || ",=+".contains(c));
+        out.push(if bare { f.clone() } else { quoted });
+    }
+    Ok(out.join(" "))
 }
 
 /// The banner when a coprocess ends with stderr output.
@@ -215,13 +222,34 @@ mod tests {
     #[test]
     fn dropped_names_follow_the_key() {
         let two = ["C:\\a b\\c.txt".to_string(), "D:\\x".to_string()];
-        assert_eq!(drop_text(&two, false), "\"C:\\a b\\c.txt\" D:\\x");
-        assert_eq!(drop_text(&two, true), "\"C:\\a b\\c.txt\" \"D:\\x\"");
-        for c in ['&', '(', ')', ';', '^', '%', '!', ',', '[', '=', '`'] {
+        assert_eq!(drop_text(&two, false, None).as_deref(), Ok("\"C:\\a b\\c.txt\" D:\\x"));
+        assert_eq!(drop_text(&two, true, None).as_deref(), Ok("\"C:\\a b\\c.txt\" \"D:\\x\""));
+        for c in [',', '=', '+'] {
             let name = format!("D:\\a{c}b");
-            assert_eq!(drop_text(&[name.clone()], false), format!("\"{name}\""), "{c}");
+            assert_eq!(drop_text(&[name.clone()], false, None), Ok(format!("\"{name}\"")), "{c}");
         }
-        assert_eq!(drop_text(&[], false), "");
+        assert_eq!(drop_text(&[], false, None).as_deref(), Ok(""));
+    }
+
+    /// Merge seam (13r B5): a dropped name is typed into the shell, so it passes the one guard
+    /// for terminal writes, the union refusal for every shell, not a quoting of its own.
+    #[test]
+    fn dropped_names_pass_the_union_refusal() {
+        use crate::pathnav::{NETWORK_REFUSED, REFUSED, UNION_REFUSED};
+        for c in ['&', '(', ')', ';', '^', '%', '!', '[', '`', '$', '\'', '"', '\u{2019}', '\u{ff02}'] {
+            let name = format!("D:\\a{c}b");
+            for shell in [None, Some("cmd"), Some("pwsh"), Some("bash")] {
+                assert_eq!(drop_text(&[name.clone()], false, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
+                assert_eq!(drop_text(&[name.clone()], true, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
+            }
+        }
+        // One bad name refuses the whole drop: nothing is typed.
+        assert_eq!(drop_text(&["D:\\ok".into(), "D:\\a&calc".into()], false, None), Err(UNION_REFUSED.to_string()));
+        assert_eq!(drop_text(&["D:\\a\nb".into()], false, None), Err(REFUSED.to_string()));
+        assert_eq!(drop_text(&["\\\\evil\\s\\x".into()], false, None), Err(NETWORK_REFUSED.to_string()));
+        // The reported shell picks the quoting of what passes.
+        assert_eq!(drop_text(&["C:\\a b".into()], false, Some("pwsh")).as_deref(), Ok("'C:\\a b'"));
+        assert_eq!(drop_text(&["C:\\x".into()], false, Some("bash")).as_deref(), Ok("C\\:\\\\x"));
     }
 
     #[test]
