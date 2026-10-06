@@ -5233,3 +5233,32 @@ label = "Path to telnet for opening telnet: URLs."
 type = "string"
 default = "telnet"
 help = "Path to telnet for opening telnet: URLs.\nYou may want to set this to the full path of another telnet program."
+
+# Debug log (13w)
+
+[[setting]]
+key = "StartDebugLoggingAutomatically"
+tab = "Advanced"
+section = "Debugging"
+label = "Start debug logging automatically when Tandem is launched."
+type = "bool"
+default = false
+help = "Start debug logging automatically when Tandem is launched."
+
+[[setting]]
+key = "AppendToExistingDebugLog"
+tab = "Advanced"
+section = "Debugging"
+label = "Append to existing debug log rather than replacing it."
+type = "bool"
+default = false
+help = "Append to existing debug log rather than replacing it."
+
+[[setting]]
+key = "LogToSyslog"
+tab = "Advanced"
+section = "Debugging"
+label = "Debug logs also write to the debug output."
+type = "bool"
+default = false
+help = "Debug logs also write to the debug output."

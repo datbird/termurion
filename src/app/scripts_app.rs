@@ -356,6 +356,7 @@ impl App {
                     Ok(()) => {
                         self.last_notified_script = Some(id.to_string());
                         self.last_notified = None;
+                        self.last_notified_debug = false;
                     }
                     Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
                 }

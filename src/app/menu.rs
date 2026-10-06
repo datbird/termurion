@@ -671,6 +671,7 @@ impl App {
         if commands::status(item).unavailable() {
             return;
         }
+        crate::dlog!("menu command {}", crate::dlog::name(&item.selector));
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         if self.paste_command(&item.selector, label) {
@@ -923,6 +924,7 @@ impl App {
             }
             "toggleAutoComposer:" => self.toggle_auto_composer(),
             "startStopLogging:" => self.start_stop_logging(),
+            "debugLogging:" => self.toggle_debug_logging(),
             "saveArchive:" => self.save_archive_menu(),
             "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),

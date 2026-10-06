@@ -264,6 +264,12 @@ pub(super) enum Then {
     LogStyle { pane: crate::layout::PaneId, path: std::path::PathBuf, append: bool },
     /// "Session Logging Problem": OK only.
     LogProblem,
+    /// "Debug Logging Enabled": OK starts the log (iTerm2 runs the alert modally, then starts), and
+    /// so does a closed window. The person's own action, so never capped (P10).
+    DebugLogStart,
+    /// An alert the person asked for whose answer changes nothing ("Debug Logging Stopped", "Problem
+    /// Saving Debug Log"): not capped, so a flood of capped asks never drops the one naming the file (P10).
+    Acknowledged,
     /// "OK to run ...?" for a script opened with Tandem (Task 2): OK (0) opens the session that
     /// runs it; Cancel (1) does nothing. A closed window cancels; another process raises it, so
     /// it is capped (B6).
@@ -477,7 +483,8 @@ impl App {
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
             Then::SessionHotkey { pane, shortcut } => self.session_hotkey_answered(pane, shortcut, index),
-            Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem => {}
+            Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem | Then::Acknowledged => {}
+            Then::DebugLogStart => self.debug_log_start_answered(),
             Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),
             Then::LogExists { pane, path } => self.log_exists_answered(pane, path, index),
             Then::LogStyle { pane, path, append } => self.log_style_answered(pane, path, append, index),

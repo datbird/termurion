@@ -1888,6 +1888,7 @@ pub const PIN_GLYPH: char = '\u{E718}';
 pub fn indicator_tip<T>(hits: &[(T, Rect, IndicatorKind)], x: f32, y: f32) -> Option<&'static str> {
     match hits.iter().find(|(_, r, _)| r.contains(x, y))?.2 {
         IndicatorKind::Pin => Some(PIN_HOVER),
+        IndicatorKind::DebugLogging => Some(crate::dlog::INDICATOR_HOVER),
         _ => None,
     }
 }
@@ -1921,12 +1922,14 @@ pub fn tab_icon(dot: bool, dead: bool, bell: bool, new_output: bool, idle: bool)
 pub const COPROCESS_GLYPH: char = '\u{E8AB}';
 /// Broadcast input: this session sends (and receives), or only receives.
 pub const BROADCAST_GLYPH: char = '\u{EC05}';
+/// Debug logging is on (`IH:389`; Segoe Fluent Icons "Bug").
+pub const DEBUG_LOGGING_GLYPH: char = '\u{EBE8}';
 pub const RECEIVE_ONLY_GLYPH: char = '\u{E701}';
 
 /// The top-right glyphs in iTerm2's order (right to left): broadcast or receive-only,
 /// then the coprocess, then the pin of a pinned hotkey window.
-pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool) -> Vec<char> {
-    indicators(sends, receives, coprocess, linked, streaming, pinned).into_iter().map(|(g, _)| g).collect()
+pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool, debug_logging: bool) -> Vec<char> {
+    indicators(sends, receives, coprocess, linked, streaming, pinned, debug_logging).into_iter().map(|(g, _)| g).collect()
 }
 
 /// What a press on an indicator glyph does.
@@ -1936,10 +1939,11 @@ pub enum IndicatorKind {
     AiLinked,
     AiStreaming,
     Pin,
+    DebugLogging,
 }
 
 /// The glyphs with their kinds, in the same order.
-pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool) -> Vec<(char, IndicatorKind)> {
+pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool, debug_logging: bool) -> Vec<(char, IndicatorKind)> {
     let mut out = Vec::new();
     if sends {
         out.push((BROADCAST_GLYPH, IndicatorKind::Other));
@@ -1948,6 +1952,9 @@ pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, st
     }
     if coprocess {
         out.push((COPROCESS_GLYPH, IndicatorKind::Other));
+    }
+    if debug_logging {
+        out.push((DEBUG_LOGGING_GLYPH, IndicatorKind::DebugLogging));
     }
     if pinned {
         out.push((PIN_GLYPH, IndicatorKind::Pin));
@@ -4425,14 +4432,14 @@ mod broadcast_tests {
 
     #[test]
     fn indicators_keep_iterm2_order() {
-        assert_eq!(indicator_glyphs(true, true, true, false, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
-        assert_eq!(indicator_glyphs(false, true, false, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, true, false, false, false), vec![COPROCESS_GLYPH]);
-        assert!(indicator_glyphs(false, false, false, false, false, false).is_empty());
+        assert_eq!(indicator_glyphs(true, true, true, false, false, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
+        assert_eq!(indicator_glyphs(false, true, false, false, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, true, false, false, false, false), vec![COPROCESS_GLYPH]);
+        assert!(indicator_glyphs(false, false, false, false, false, false, false).is_empty());
         // The pin follows the coprocess and comes before the AI glyphs (P2).
-        assert_eq!(indicator_glyphs(true, false, true, false, false, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, PIN_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, false, true, true, true), vec![PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
-        let kinds: Vec<IndicatorKind> = indicators(false, false, false, false, false, true).into_iter().map(|(_, k)| k).collect();
+        assert_eq!(indicator_glyphs(true, false, true, false, false, true, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, PIN_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, true, true, false), vec![PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        let kinds: Vec<IndicatorKind> = indicators(false, false, false, false, false, true, false).into_iter().map(|(_, k)| k).collect();
         assert_eq!(kinds, vec![IndicatorKind::Pin]);
     }
 
@@ -4450,13 +4457,19 @@ mod broadcast_tests {
 
     #[test]
     fn indicator_glyphs_follow_iterm2() {
-        assert_eq!(indicator_glyphs(true, true, true, true, true, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, false, true, false, false), vec![AI_LINKED_GLYPH]);
+        assert_eq!(indicator_glyphs(true, true, true, true, true, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, false, false, false), vec![AI_LINKED_GLYPH]);
+        // Debug logging (`IH:389`): the Bug glyph, right after the coprocess one.
+        assert_eq!(DEBUG_LOGGING_GLYPH, '\u{EBE8}');
+        assert_eq!(indicator_glyphs(true, false, true, false, false, false, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, DEBUG_LOGGING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, false, false, true, true), vec![DEBUG_LOGGING_GLYPH, PIN_GLYPH]);
+        let bug = [(1u64, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, IndicatorKind::DebugLogging)];
+        assert_eq!(indicator_tip(&bug, 5.0, 5.0), Some("Debug logging is enabled."));
         assert_eq!(AI_STREAMING_GLYPH, RECEIVE_ONLY_GLYPH, "iTerm2 uses one symbol for both");
         assert_eq!(AI_LINKED_GLYPH, '\u{E8BD}');
         // Each glyph knows what a press on it means; the streaming glyph is told apart from
         // receive-only by its kind, not its character.
-        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true, false).into_iter().map(|(_, k)| k).collect();
+        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true, false, false).into_iter().map(|(_, k)| k).collect();
         assert_eq!(kinds, vec![IndicatorKind::Other, IndicatorKind::Other, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
         let hits = top_right_indicators(&mut Frame::default(), Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, &[BROADCAST_GLYPH, AI_LINKED_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
         assert_eq!(hits.len(), 2);

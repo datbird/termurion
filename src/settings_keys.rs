@@ -4230,4 +4230,24 @@ mod tests {
         let smart = schema::find_global("smartLoggingWithAutoComposer").unwrap();
         assert_eq!((smart.tab.as_str(), smart.kind, smart.default.clone()), ("Advanced", Kind::Bool, b(false)));
     }
+
+    /// 13w Task 1 (`AS` Debugging rows, `02:631`, `02:633`, `02:858`): the three debug-log rows with
+    /// iTerm2's section, kind, default and text (Tandem's names for its own folders).
+    #[test]
+    fn debug_log_rows_follow_iterm2() {
+        let rows: Vec<(&str, &str)> = vec![
+            ("StartDebugLoggingAutomatically", "Start debug logging automatically when Tandem is launched."),
+            ("AppendToExistingDebugLog", "Append to existing debug log rather than replacing it."),
+            ("LogToSyslog", "Debug logs also write to the debug output."),
+        ];
+        for (key, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!(row.label, help, "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
 }

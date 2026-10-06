@@ -127,6 +127,103 @@ pub fn open_unfollowed(p: &Unfollowed, configure: impl FnOnce(&mut OpenOptions))
     options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).open(&p.0)
 }
 
+/// Makes a NEW file at the entry, readable and writable by this user alone: owned by the user's SID
+/// (an elevated token would own it as Administrators) with a protected DACL of one allow entry for
+/// that SID (nothing inherited), `CREATE_NEW` so an existing entry (a
+/// planted file or link) is refused rather than reused, and the reparse point never followed.
+/// Another user's share of the folder gets no access, whatever the folder's own ACL says.
+#[cfg(windows)]
+pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+    let sid = crate::winpipe::user_sid().map_err(io::Error::other)?;
+    let sddl: Vec<u16> = format!("O:{sid}D:P(A;;FA;;;{sid})").encode_utf16().chain(std::iter::once(0)).collect();
+    let name: Vec<u16> = p.0.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: both strings are NUL-terminated and outlive the calls; the descriptor is freed once;
+    // the handle is owned by the `File` made from it.
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, std::ptr::null_mut()) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd, bInheritHandle: 0 };
+        let h = CreateFileW(name.as_ptr(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut());
+        let err = io::Error::last_os_error();
+        LocalFree(sd as HLOCAL);
+        if h == INVALID_HANDLE_VALUE {
+            return Err(err);
+        }
+        Ok(File::from_raw_handle(h as _))
+    }
+}
+
+/// How many names (hard links) the open file has.
+#[cfg(windows)]
+pub fn link_count(f: &File) -> io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    // SAFETY: a valid handle and a zeroed out-structure.
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        if GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(info.nNumberOfLinks)
+    }
+}
+
+/// The entry itself renamed (a link is moved, never followed).
+pub fn rename_unfollowed(from: &Unfollowed, to: &Unfollowed) -> io::Result<()> {
+    std::fs::rename(&from.0, &to.0)
+}
+
+/// The entry itself removed (a link is deleted, its target stays).
+pub fn remove_unfollowed(p: &Unfollowed) -> io::Result<()> {
+    match std::fs::remove_file(&p.0) {
+        // A junction or directory link goes with `remove_dir`.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => std::fs::remove_dir(&p.0).or(Err(e)),
+        other => other,
+    }
+}
+
+/// The entry's DACL as SDDL text (a test reads back what `create_owner_only` set).
+#[cfg(windows)]
+pub fn dacl_sddl(p: &Unfollowed) -> io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    let f = open_unfollowed(p, |o| {
+        o.read(true);
+    })?;
+    // SAFETY: the handle is open; the descriptor and the text are freed once.
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let rc = GetSecurityInfo(f.as_raw_handle() as _, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut sd);
+        if rc != 0 {
+            return Err(io::Error::from_raw_os_error(rc as i32));
+        }
+        let mut text: *mut u16 = std::ptr::null_mut();
+        let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, std::ptr::null_mut());
+        let err = io::Error::last_os_error();
+        LocalFree(sd as HLOCAL);
+        if ok == 0 {
+            return Err(err);
+        }
+        let mut n = 0;
+        while *text.add(n) != 0 {
+            n += 1;
+        }
+        let out = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
+        LocalFree(text as HLOCAL);
+        Ok(out)
+    }
+}
+
 impl AsRef<Path> for LocalPath {
     fn as_ref(&self) -> &Path {
         &self.0

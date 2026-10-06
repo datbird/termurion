@@ -1,0 +1,836 @@
+//! The debug log (iTerm2's `DebugLogging.m`): `dlog!` lines kept in memory while Toggle Debug
+//! Logging is on, written as one file when it goes off. The file is the one place Tandem writes
+//! what it did, so it holds no secret: every argument of `dlog!` must be a `LogSafe` value (a
+//! number, a flag, a literal, or `name(..)`, which keeps a short plain-ASCII word), a format
+//! string never captures a variable inline, and the call sites are listed (`CALL_SITES`).
+//!
+//! The file lives in `log_dirs()`: `%TEMP%` when the path judge accepts it, else Local AppData.
+//! It is made owner-only, never follows a link, is appended to only when it is this user's own
+//! single-link file, and is capped with one `.old` generation. The write runs off the UI thread
+//! (`dlog_ui`) or, at exit, inside `teardown_process`.
+
+use std::collections::VecDeque;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread::ThreadId;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(windows)]
+use crate::localfs;
+
+/// In-memory text past this loses its oldest half (`DL:452-457`).
+pub const MAX_LOG: usize = 200 * 1024 * 1024;
+/// The retrospective ring's bound (`DL:36-38`).
+pub const RING_MAX: usize = 10 * 1024 * 1024;
+/// The file never grows past this; the next write starts a new file and keeps the old one once.
+pub const MAX_FILE: u64 = 256 * 1024 * 1024;
+pub const TRUNCATED: &str = "*GIANT LOG TRUNCATED*\n";
+pub const FILE_NAME: &str = "debuglog.txt";
+pub const OLD_NAME: &str = "debuglog.old.txt";
+
+pub const ENABLED_HEADING: &str = "Debug Logging Enabled";
+pub const ENABLED_TEXT: &str = "Please reproduce the bug. Then toggle debug logging again to save the log.";
+pub const STOPPED_HEADING: &str = "Debug Logging Stopped";
+pub const SAVE_PROBLEM_HEADING: &str = "Problem Saving Debug Log";
+pub const AUTO_TITLE: &str = "Debug logging turned on";
+pub const AUTO_DETAIL: &str = "You may notice worse performance while debug logging is on.";
+/// The hover text of the top-right indicator (`IH:389`).
+pub const INDICATOR_HOVER: &str = "Debug logging is enabled.";
+
+pub fn stopped_text(path: &Path) -> String {
+    format!("Please send {} to the developers.", path.display())
+}
+
+pub fn save_failed_text(reason: &str) -> String {
+    format!("Failed to save debug log: {reason}")
+}
+
+pub fn could_not_open(path: &Path) -> String {
+    format!("could not open {} for writing", path.display())
+}
+
+/// The log file in a folder (`temp\debuglog.txt`).
+pub fn file_path(temp: &Path) -> PathBuf {
+    temp.join(FILE_NAME)
+}
+
+/// One entry (`DL:447-448`).
+pub fn entry(secs: i64, micros: u32, file: &str, line: u32, module: &str, thread: &str, text: &str) -> String {
+    format!("{secs}.{micros:06} {file}:{line} ({module}) {thread}: {text}\n")
+}
+
+/// What goes to the debug output with `LogToSyslog`: the prefix only, never the text (`DL:411-419`).
+pub fn syslog_prefix(secs: i64, micros: u32, file: &str, line: u32, module: &str) -> String {
+    format!("TandemDebugLog: {secs}.{micros:06} {file}:{line} ({module}): ")
+}
+
+/// A value that cannot carry a secret: only these are accepted as arguments of `dlog!`.
+/// A `String` or a borrowed `&str` is not one, so typed text, a title, a path or a token cannot
+/// be passed by accident; `name(..)` turns a short identifier into one.
+pub trait LogSafe {}
+
+macro_rules! log_safe {
+    ($($t:ty),* $(,)?) => { $(impl LogSafe for $t {})* };
+}
+log_safe!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, bool, char, std::time::Duration, Name);
+impl LogSafe for &'static str {}
+
+/// Identity, so the macro can demand `LogSafe` of each argument.
+#[doc(hidden)]
+pub fn safe<T: LogSafe + ?Sized>(t: &T) -> &T {
+    t
+}
+
+/// A short word for a log line: ASCII letters, digits and `. _ - space` as they are, anything
+/// else `?`, cut at 64 characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Name(String);
+
+pub fn name(s: &str) -> Name {
+    Name(s.chars().take(64).map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' ') { c } else { '?' }).collect())
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Words a log format must never name (the call-site test reads every `dlog!` format).
+pub const FORBIDDEN_WORDS: &[&str] = &["text", "input", "key", "cookie", "token", "password", "secret", "env", "clip", "title", "url", "argv", "typed", "chars"];
+
+/// Every file holding `dlog!` calls and how many: a new call site is a review of what it passes.
+pub const CALL_SITES: &[(&str, usize)] = &[("app/menu.rs", 1)];
+
+/// The text of the log in memory, and the retrospective ring beside it.
+#[derive(Debug)]
+pub struct Log {
+    on: bool,
+    body: String,
+    header: String,
+    ring: VecDeque<String>,
+    ring_bytes: usize,
+    cap: usize,
+}
+
+impl Default for Log {
+    fn default() -> Log {
+        Log::new()
+    }
+}
+
+impl Log {
+    pub const fn new() -> Log {
+        Log::with_cap(MAX_LOG)
+    }
+
+    /// A log with its own cap in bytes (tests).
+    pub const fn with_cap(cap: usize) -> Log {
+        Log { on: false, body: String::new(), header: String::new(), ring: VecDeque::new(), ring_bytes: 0, cap }
+    }
+
+    /// Starts logging from empty with this header (`DL:554-583`).
+    pub fn start(&mut self, header: String) {
+        self.on = true;
+        self.header = header;
+        self.body.clear();
+    }
+
+    /// Stops: the header and the body, or None when it was off.
+    pub fn stop(&mut self) -> Option<(String, String)> {
+        if !self.on {
+            return None;
+        }
+        self.on = false;
+        Some((std::mem::take(&mut self.header), std::mem::take(&mut self.body)))
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.on
+    }
+
+    /// Keeps one entry while on; past the cap the oldest half becomes `TRUNCATED` (`DL:452-457`).
+    pub fn append(&mut self, e: &str) {
+        if !self.on {
+            return;
+        }
+        self.body.push_str(e);
+        if self.body.len() > self.cap {
+            let mut cut = self.cap / 2;
+            while !self.body.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.body.replace_range(..cut, TRUNCATED);
+        }
+    }
+
+    /// A retrospective line: the debug log's own while logging is on, else the newest 10 MB of
+    /// the ring (`DL:333-366`).
+    pub fn remember(&mut self, e: &str) {
+        if self.on {
+            return self.append(e);
+        }
+        self.ring_bytes += e.len();
+        self.ring.push_back(e.to_string());
+        while self.ring_bytes > RING_MAX && self.ring.len() > 1 {
+            if let Some(old) = self.ring.pop_front() {
+                self.ring_bytes -= old.len();
+            }
+        }
+    }
+
+    /// How many lines the ring holds.
+    pub fn ring_len(&self) -> usize {
+        self.ring.len()
+    }
+}
+
+/// The file operations a save needs (a fake in tests, the owner-only disk for real).
+pub trait Write3 {
+    /// A new, empty file in place of any old one.
+    fn create(&mut self, p: &Path) -> std::io::Result<()>;
+    /// More bytes at the end of an existing file.
+    fn append(&mut self, p: &Path, chunk: &[u8]) -> std::io::Result<()>;
+}
+
+/// Header, body and footer as three writes (`DL:198-239`): onto the end of an existing file only
+/// when `append`, else after a fresh `create` (also when appending to a file that is not there).
+pub fn write(path: &Path, header: &str, body: &str, footer: &str, append: bool, exists: bool, fs: &mut dyn Write3) -> Result<(), String> {
+    if !(append && exists) {
+        fs.create(path).map_err(|_| could_not_open(path))?;
+    }
+    for chunk in [header, body, footer] {
+        fs.append(path, chunk.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// What the header and the footer say, in iTerm2's layout (`DL:98-150`). Counts and numbers
+/// only: no window title, tab title, folder or command line, which can hold a secret.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    pub version: String,
+    pub date: String,
+    pub unix: i64,
+    pub machine: String,
+    pub screens: Vec<String>,
+    pub os: String,
+    pub key_window: Option<usize>,
+    pub windows: Vec<WindowFact>,
+    pub order: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowFact {
+    pub number: usize,
+    pub tabs: usize,
+    pub panes: usize,
+}
+
+fn plural(n: usize, one: &str) -> String {
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
+fn joined<T: ToString>(items: &[T]) -> String {
+    if items.is_empty() { "none".into() } else { items.iter().map(T::to_string).collect::<Vec<_>>().join(", ") }
+}
+
+fn screens_line(f: &Facts) -> String {
+    if f.screens.is_empty() { "none".into() } else { f.screens.join("; ") }
+}
+
+fn windows_line(f: &Facts) -> String {
+    if f.windows.is_empty() {
+        return "none".into();
+    }
+    f.windows.iter().map(|w| format!("{} ({}, {})", w.number, plural(w.tabs, "tab"), plural(w.panes, "pane"))).collect::<Vec<_>>().join("; ")
+}
+
+pub fn header(f: &Facts) -> String {
+    let key = f.key_window.map_or("none".to_string(), |n| n.to_string());
+    format!(
+        "Tandem version: {}\nDate: {} ({})\nMachine: {}\nScreens: {}\nOS version: {}\nKey window: {}\nWindows: {}\nOrdered windows: {}\nPinned messages: \n------ END HEADER ------\n\n",
+        f.version,
+        f.date,
+        f.unix,
+        f.machine,
+        screens_line(f),
+        f.os,
+        key,
+        windows_line(f),
+        joined(&f.order)
+    )
+}
+
+pub fn footer(f: &Facts) -> String {
+    format!("------ BEGIN FOOTER -----\nScreens: {}\nWindows: {}\nOrdered windows: {}\n", screens_line(f), windows_line(f), joined(&f.order))
+}
+
+/// The footer of a log saved while Tandem ends: no window is left to describe.
+pub const EXIT_FOOTER: &str = "------ BEGIN FOOTER -----\nTandem was ending; no window facts were taken.\n";
+
+// ---- the process-wide log ----
+
+static LOG: Mutex<Log> = Mutex::new(Log::new());
+static ON: AtomicBool = AtomicBool::new(false);
+static APPEND: AtomicBool = AtomicBool::new(false);
+static SYSLOG: AtomicBool = AtomicBool::new(false);
+static MAIN: OnceLock<ThreadId> = OnceLock::new();
+
+/// One atomic load: `dlog!` does nothing and formats nothing while this is false.
+pub fn is_on() -> bool {
+    ON.load(Ordering::Relaxed)
+}
+
+/// Records the event loop's thread, so entries name it "main" (`run` calls it first).
+pub fn mark_main_thread() {
+    let _ = MAIN.set(std::thread::current().id());
+}
+
+/// `LogToSyslog`: entries also send their prefix to the debug output.
+pub fn set_syslog(on: bool) {
+    SYSLOG.store(on, Ordering::Relaxed);
+}
+
+/// Starts the log from empty. Without `append` the old file goes first (`DL:554-579`).
+pub fn start_logging(header: String, append: bool) {
+    #[cfg(windows)]
+    if !append {
+        remove_old_files();
+    }
+    let mut l = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    APPEND.store(append, Ordering::Relaxed);
+    l.start(header);
+    ON.store(true, Ordering::Relaxed);
+}
+
+/// Stops the log and hands back its header, body and whether the file is appended to. None when
+/// it was off. Nothing is written here: the caller saves where it may take time.
+pub fn stop() -> Option<(String, String, bool)> {
+    let mut l = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    ON.store(false, Ordering::Relaxed);
+    let append = APPEND.load(Ordering::Relaxed);
+    l.stop().map(|(h, b)| (h, b, append))
+}
+
+/// Stops and writes on this thread; the file's path when logging was on.
+#[cfg(windows)]
+pub fn stop_logging(footer: &dyn Fn() -> String) -> Result<Option<PathBuf>, String> {
+    match stop() {
+        None => Ok(None),
+        Some((h, b, append)) => save(&h, &b, &footer(), append).map(Some),
+    }
+}
+
+/// The one teardown's step (`AD:1130`, P21): stops and writes silently, on every way out, a panic
+/// on the main thread included. The panic hook runs before the stack unwinds, so a thread that
+/// panicked inside the log's own lock must not wait for it: `try_lock`, or give up.
+pub fn stop_at_exit() {
+    if !is_on() {
+        return;
+    }
+    let taken = {
+        let mut l = match LOG.try_lock() {
+            Ok(l) => l,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        ON.store(false, Ordering::Relaxed);
+        l.stop()
+    };
+    #[cfg(windows)]
+    if let Some((h, b)) = taken {
+        let _ = save(&h, &b, EXIT_FOOTER, APPEND.load(Ordering::Relaxed));
+    }
+    #[cfg(not(windows))]
+    drop(taken);
+}
+
+fn thread_name() -> &'static str {
+    if MAIN.get() == Some(&std::thread::current().id()) { "main" } else { "other" }
+}
+
+/// What `dlog!` calls once it knows logging is on.
+#[doc(hidden)]
+pub fn emit(file: &str, line: u32, module: &str, args: fmt::Arguments<'_>) {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let (secs, micros) = (now.as_secs() as i64, now.subsec_micros());
+    let file = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    if SYSLOG.load(Ordering::Relaxed) {
+        debug_output(&syslog_prefix(secs, micros, file, line, module));
+    }
+    let e = entry(secs, micros, file, line, module, thread_name(), &args.to_string());
+    // Never held across a call out: the entry is built first.
+    LOG.lock().unwrap_or_else(|e| e.into_inner()).append(&e);
+}
+
+/// The debug output (`OutputDebugStringW`): slow while a debugger listens, so only the two keys
+/// that ask for it call this, and only the prefix of a log entry or a number table goes (any
+/// process of the session can read it).
+pub fn debug_output(text: &str) {
+    #[cfg(windows)]
+    {
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: NUL-terminated and alive for the call.
+        unsafe { windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW(wide.as_ptr()) };
+    }
+    #[cfg(not(windows))]
+    let _ = text;
+}
+
+/// A debug log line. Costs one atomic load while logging is off and formats nothing; every
+/// argument must be `LogSafe` and the format may not capture a variable (`{name}`).
+#[macro_export]
+macro_rules! dlog {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        if $crate::dlog::is_on() {
+            $crate::dlog::emit(file!(), line!(), module_path!(), format_args!($fmt $(, $crate::dlog::safe(&$arg))*));
+        }
+    };
+}
+
+// ---- the file ----
+
+/// The folders a log may go in, best first: `%TEMP%` when the judge accepts it (a share is never
+/// one: the log holds window facts and the connection would send the person's hash), then
+/// `%LOCALAPPDATA%\Tandem\Logs`.
+#[cfg(windows)]
+pub fn log_dirs_with(env: &dyn Fn(&str) -> Option<String>) -> Vec<localfs::LocalPath> {
+    let mut out = Vec::new();
+    if let Some(t) = env("TEMP").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge) {
+        out.push(t);
+    }
+    let logs = env("LOCALAPPDATA").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge).and_then(|b| b.join("Tandem")).and_then(|b| b.join("Logs"));
+    if let Some(logs) = logs {
+        let _ = localfs::create_dir_all(&logs);
+        out.push(logs);
+    }
+    out
+}
+
+#[cfg(windows)]
+pub fn log_dirs() -> Vec<localfs::LocalPath> {
+    log_dirs_with(&|k| std::env::var(k).ok())
+}
+
+#[cfg(windows)]
+fn remove_old_files() {
+    for dir in log_dirs() {
+        if let Some(f) = dir.unfollowed(FILE_NAME) {
+            let _ = localfs::remove_unfollowed(&f);
+        }
+    }
+}
+
+/// The disk side of `write`: a new file is made owner-only and never through a link.
+#[cfg(windows)]
+struct Disk {
+    file: localfs::Unfollowed,
+}
+
+#[cfg(windows)]
+impl Write3 for Disk {
+    fn create(&mut self, _: &Path) -> std::io::Result<()> {
+        match localfs::remove_unfollowed(&self.file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        localfs::create_owner_only(&self.file).map(drop)
+    }
+
+    fn append(&mut self, _: &Path, chunk: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = localfs::open_unfollowed(&self.file, |o| {
+            o.append(true);
+        })?;
+        if localfs::file_stat(&f)?.is_reparse {
+            return Err(std::io::Error::other("the log file is a link"));
+        }
+        f.write_all(chunk)
+    }
+}
+
+/// Whether an existing log file is this user's own plain single-link file.
+#[cfg(windows)]
+fn is_ours(f: &std::fs::File) -> bool {
+    let Ok(st) = localfs::file_stat(f) else { return false };
+    st.is_file && !st.is_reparse && localfs::link_count(f).is_ok_and(|n| n == 1) && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// Looks at the file before the write: whether to append to it. A file that is not ours, or a
+/// link, is renamed away; one the new text would push past `cap` becomes the `.old` generation.
+#[cfg(windows)]
+fn prepare(dir: &localfs::LocalPath, file: &localfs::Unfollowed, append: bool, incoming: u64, cap: u64) -> Result<bool, String> {
+    let open = localfs::open_unfollowed(file, |o| {
+        o.read(true);
+    });
+    let f = match open {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return aside(dir, file).map(|_| false),
+    };
+    if !is_ours(&f) {
+        drop(f);
+        return aside(dir, file).map(|_| false);
+    }
+    let len = localfs::file_stat(&f).map_or(0, |s| s.len);
+    drop(f);
+    if append && len + incoming > cap {
+        let old = dir.unfollowed(OLD_NAME).ok_or_else(|| could_not_open(dir.path()))?;
+        match localfs::remove_unfollowed(&old) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        localfs::rename_unfollowed(file, &old).map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Moves an entry that is not ours to `debuglog.stale-<unix>.txt`.
+#[cfg(windows)]
+fn aside(dir: &localfs::LocalPath, file: &localfs::Unfollowed) -> Result<(), String> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let to = dir.unfollowed(format!("debuglog.stale-{}-{}.txt", now.as_secs(), now.subsec_nanos())).ok_or_else(|| could_not_open(dir.path()))?;
+    localfs::rename_unfollowed(file, &to).map_err(|e| e.to_string())
+}
+
+/// Saves into one folder; the file's path.
+#[cfg(windows)]
+pub fn save_in(dir: &localfs::LocalPath, header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
+    save_in_capped(dir, header, body, footer, append, MAX_FILE)
+}
+
+#[cfg(windows)]
+pub fn save_in_capped(dir: &localfs::LocalPath, header: &str, body: &str, footer: &str, append: bool, cap: u64) -> Result<PathBuf, String> {
+    let file = dir.unfollowed(FILE_NAME).ok_or_else(|| could_not_open(dir.path()))?;
+    let exists = prepare(dir, &file, append, (header.len() + body.len() + footer.len()) as u64, cap)?;
+    let mut disk = Disk { file: file.clone() };
+    write(file.path(), header, body, footer, append, exists, &mut disk)?;
+    Ok(file.path().to_path_buf())
+}
+
+/// Saves into the first folder that takes it (iTerm2 reports the failure of its one folder).
+#[cfg(windows)]
+pub fn save(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
+    let mut first_error = None;
+    for dir in log_dirs() {
+        match save_in(&dir, header, body, footer, append) {
+            Ok(p) => return Ok(p),
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| could_not_open(Path::new(FILE_NAME))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// The process-wide log is shared by tests that start it.
+    fn global_guard() -> std::sync::MutexGuard<'static, ()> {
+        static G: Mutex<()> = Mutex::new(());
+        G.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A fake disk: records each call, and fails on request.
+    #[derive(Default)]
+    struct Fake {
+        calls: Vec<String>,
+        fail_create: bool,
+        fail_append: bool,
+    }
+
+    impl Write3 for Fake {
+        fn create(&mut self, p: &Path) -> std::io::Result<()> {
+            self.calls.push(format!("create {}", p.display()));
+            if self.fail_create { Err(std::io::Error::other("no")) } else { Ok(()) }
+        }
+        fn append(&mut self, p: &Path, chunk: &[u8]) -> std::io::Result<()> {
+            self.calls.push(format!("append {} {}", p.display(), String::from_utf8_lossy(chunk)));
+            if self.fail_append { Err(std::io::Error::other("disk full")) } else { Ok(()) }
+        }
+    }
+
+    /// `DL:395-461`: the entry, the system log prefix, and the on/off life of a log.
+    #[test]
+    fn log_entries_follow_iterm2() {
+        assert_eq!(entry(1700000000, 42, "bell_ui.rs", 33, "tandem::app::bell_ui", "main", "Beep"), "1700000000.000042 bell_ui.rs:33 (tandem::app::bell_ui) main: Beep\n");
+        assert_eq!(syslog_prefix(1700000000, 42, "bell_ui.rs", 33, "tandem::app::bell_ui"), "TandemDebugLog: 1700000000.000042 bell_ui.rs:33 (tandem::app::bell_ui): ");
+        let mut log = Log::default();
+        assert!(!log.is_on());
+        log.append("dropped\n");
+        assert_eq!(log.stop(), None, "off: nothing kept, nothing to stop");
+        log.start("HEAD\n".into());
+        assert!(log.is_on());
+        log.append("one\n");
+        log.append("two\n");
+        assert_eq!(log.stop(), Some(("HEAD\n".to_string(), "one\ntwo\n".to_string())));
+        assert!(!log.is_on());
+        assert_eq!(log.stop(), None, "a second stop has nothing");
+        log.start("H2\n".into());
+        assert_eq!(log.stop(), Some(("H2\n".to_string(), String::new())), "a new start begins empty");
+    }
+
+    /// `DL:452-457`: past the cap the oldest half becomes the truncation line.
+    #[test]
+    fn giant_log_truncates() {
+        let mut log = Log::with_cap(100);
+        log.start(String::new());
+        let a = "a".repeat(60);
+        let b = "b".repeat(60);
+        log.append(&a);
+        log.append(&b);
+        let (_, body) = log.stop().unwrap();
+        assert_eq!(body, format!("{TRUNCATED}{}{}", "a".repeat(10), b), "the first 50 bytes went");
+        assert_eq!(TRUNCATED, "*GIANT LOG TRUNCATED*\n");
+        assert_eq!(MAX_LOG, 200 * 1024 * 1024);
+        // A cut never splits a character.
+        let mut log = Log::with_cap(10);
+        log.start(String::new());
+        log.append("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}");
+        assert!(log.stop().unwrap().1.starts_with(TRUNCATED));
+    }
+
+    /// `DL:198-239`: header, body, footer in that order; append only to an existing file.
+    #[test]
+    fn flush_follows_iterm2() {
+        let path = Path::new("C:\\t\\debuglog.txt");
+        let mut f = Fake::default();
+        write(path, "H", "B", "F", false, true, &mut f).unwrap();
+        assert_eq!(f.calls, vec!["create C:\\t\\debuglog.txt", "append C:\\t\\debuglog.txt H", "append C:\\t\\debuglog.txt B", "append C:\\t\\debuglog.txt F"]);
+        let mut f = Fake::default();
+        write(path, "H", "B", "F", true, true, &mut f).unwrap();
+        assert_eq!(f.calls.len(), 3, "append onto an existing file: no create");
+        assert!(f.calls.iter().all(|c| c.starts_with("append")));
+        let mut f = Fake::default();
+        write(path, "H", "B", "F", true, false, &mut f).unwrap();
+        assert!(f.calls[0].starts_with("create"), "append but no file yet: create");
+        let mut f = Fake { fail_create: true, ..Default::default() };
+        assert_eq!(write(path, "H", "B", "F", false, true, &mut f), Err(could_not_open(path)));
+        assert_eq!(could_not_open(path), "could not open C:\\t\\debuglog.txt for writing");
+        let mut f = Fake { fail_append: true, ..Default::default() };
+        assert_eq!(write(path, "H", "B", "F", false, true, &mut f), Err("disk full".to_string()), "a write failure gives the system's reason");
+        assert_eq!(ENABLED_HEADING, "Debug Logging Enabled");
+        assert_eq!(ENABLED_TEXT, "Please reproduce the bug. Then toggle debug logging again to save the log.");
+        assert_eq!(STOPPED_HEADING, "Debug Logging Stopped");
+        assert_eq!(stopped_text(path), "Please send C:\\t\\debuglog.txt to the developers.");
+        assert_eq!(SAVE_PROBLEM_HEADING, "Problem Saving Debug Log");
+        assert_eq!(save_failed_text("disk full"), "Failed to save debug log: disk full");
+        assert_eq!(AUTO_TITLE, "Debug logging turned on");
+        assert_eq!(AUTO_DETAIL, "You may notice worse performance while debug logging is on.");
+        assert_eq!(file_path(Path::new("C:\\Temp")), PathBuf::from("C:\\Temp").join("debuglog.txt"));
+    }
+
+    /// P2: only values that cannot carry a secret reach the log; a name is cleaned.
+    #[test]
+    fn log_arguments_are_log_safe() {
+        assert_eq!(name("menu.copy-1 ok").to_string(), "menu.copy-1 ok");
+        assert_eq!(name("a/b:c\u{202e}\r\nx").to_string(), "a?b?c???x");
+        assert_eq!(name(&"x".repeat(200)).to_string().len(), 64);
+        assert_eq!(format!("{}", name("")), "");
+        // The compile-time half: a `String` or a non-static `&str` is no `LogSafe`.
+        fn takes<T: LogSafe + ?Sized>(_: &T) {}
+        takes(&7u64);
+        takes(&true);
+        takes(&'c');
+        takes(&"literal");
+        takes(&std::time::Duration::from_secs(1));
+        takes(&name("x"));
+    }
+
+    /// The header and footer: Tandem's facts in iTerm2's layout, counts and numbers only (P3).
+    #[test]
+    fn header_and_footer_follow_iterm2() {
+        let facts = Facts {
+            version: "1.2.3".into(),
+            date: "2026-10-06 12:00:00".into(),
+            unix: 1790000000,
+            machine: "x86_64 Some CPU".into(),
+            screens: vec!["0,0 1920x1080 @ 1.00".into(), "1920,0 2560x1440 @ 1.50".into()],
+            os: "Windows 11 Pro build 26100".into(),
+            key_window: Some(2),
+            windows: vec![WindowFact { number: 1, tabs: 3, panes: 5 }, WindowFact { number: 2, tabs: 1, panes: 1 }],
+            order: vec![2, 1],
+        };
+        let h = header(&facts);
+        assert_eq!(
+            h,
+            "Tandem version: 1.2.3\nDate: 2026-10-06 12:00:00 (1790000000)\nMachine: x86_64 Some CPU\nScreens: 0,0 1920x1080 @ 1.00; 1920,0 2560x1440 @ 1.50\nOS version: Windows 11 Pro build 26100\nKey window: 2\nWindows: 1 (3 tabs, 5 panes); 2 (1 tab, 1 pane)\nOrdered windows: 2, 1\nPinned messages: \n------ END HEADER ------\n\n"
+        );
+        let f = footer(&facts);
+        assert_eq!(f, "------ BEGIN FOOTER -----\nScreens: 0,0 1920x1080 @ 1.00; 1920,0 2560x1440 @ 1.50\nWindows: 1 (3 tabs, 5 panes); 2 (1 tab, 1 pane)\nOrdered windows: 2, 1\n");
+        let none = Facts { key_window: None, windows: vec![], order: vec![], ..facts };
+        assert!(header(&none).contains("Key window: none\nWindows: none\nOrdered windows: none\n"));
+    }
+
+    /// The retrospective ring keeps the newest lines within its byte bound.
+    #[test]
+    fn remember_keeps_the_newest() {
+        let mut log = Log::default();
+        let line = "x".repeat(1024 * 1024);
+        for _ in 0..12 {
+            log.remember(&line);
+        }
+        assert_eq!(log.ring_len(), 10, "10 MB of 1 MB lines");
+        let mut on = Log::default();
+        on.start(String::new());
+        on.remember("goes to the debug log\n");
+        assert_eq!(on.ring_len(), 0, "never while debug logging is on");
+        assert_eq!(on.stop().unwrap().1, "goes to the debug log\n");
+    }
+
+    /// The macro costs nothing and formats nothing while off, and writes while on.
+    #[test]
+    fn the_macro_is_free_while_off() {
+        fn boom() -> u64 {
+            panic!("formatted while off")
+        }
+        let _g = global_guard();
+        assert!(!is_on());
+        crate::dlog!("never built {}", boom());
+        start_logging("HEAD\n".into(), true);
+        assert!(is_on());
+        crate::dlog!("hello {}", 5u64);
+        let (_, body, _) = stop().unwrap();
+        assert!(body.contains(" dlog.rs:"), "the file name, not the path: {body}");
+        assert!(body.contains("(tandem::dlog::tests) "), "{body}");
+        assert!(body.ends_with(": hello 5\n"), "{body}");
+        assert!(!is_on());
+    }
+
+    /// Every `dlog!` call site is listed; a format string never names a secret-shaped word and
+    /// never captures a variable inline (an inline capture skips the `LogSafe` check).
+    #[test]
+    fn log_call_sites_are_listed_and_safe() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found: Vec<(String, usize)> = Vec::new();
+        let mut dirs = vec![src.clone()];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                    continue;
+                }
+                if p.extension().is_none_or(|x| x != "rs") {
+                    continue;
+                }
+                let rel = p.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+                let text = std::fs::read_to_string(&p).unwrap();
+                // This file's own tests and docs mention the macro.
+                let live = if rel == "dlog.rs" { text.split("#[cfg(test)]").next().unwrap_or("").to_string() } else { text.split("#[cfg(test)]").next().unwrap_or("").to_string() };
+                let mut n = 0;
+                for call in live.split("crate::dlog!(").skip(1) {
+                    n += 1;
+                    let fmt = call.split('"').nth(1).unwrap_or("");
+                    for bad in FORBIDDEN_WORDS {
+                        assert!(!fmt.to_ascii_lowercase().contains(bad), "{rel}: a log format names `{bad}`: {fmt}");
+                    }
+                    assert!(!fmt.contains("{") || fmt.replace("{}", "").replace("{:?}", "").replace("{:x}", "").replace("{{", "").find(|c| c == '{').is_none(), "{rel}: an inline capture in a log format: {fmt}");
+                }
+                if n > 0 {
+                    found.push((rel, n));
+                }
+            }
+        }
+        found.sort();
+        let want: Vec<(String, usize)> = CALL_SITES.iter().map(|(f, n)| (f.to_string(), *n)).collect();
+        assert_eq!(found, want, "a new dlog! call site needs a line in CALL_SITES after a secrets review");
+    }
+
+    /// `AD:1130`, P21: the one teardown stops the log and writes the file, and a panic reaches
+    /// it through the panic hook.
+    #[test]
+    fn the_teardown_saves_the_log() {
+        let m = include_str!("app/mod.rs");
+        let teardown = m.split("pub(crate) fn teardown_process()").nth(1).and_then(|r| r.split("\n}").next()).expect("teardown_process");
+        assert!(teardown.contains("crate::dlog::stop_at_exit()"), "teardown writes the debug log");
+        let run = m.split("pub fn run()").nth(1).unwrap();
+        assert!(run.contains("crate::dlog::mark_main_thread()"), "the event loop's thread is recorded");
+    }
+
+    /// The pure choice of the log folder: `%TEMP%` only when the judge accepts it (B3).
+    #[cfg(windows)]
+    #[test]
+    fn temp_on_a_share_falls_back() {
+        let local = std::env::temp_dir();
+        std::fs::create_dir_all(local.join("TandemDlogTest")).unwrap();
+        let env = |share: bool| {
+            let local = local.clone();
+            move |k: &str| match k {
+                "TEMP" if share => Some(r"\\srv\share\tmp".to_string()),
+                "TEMP" => Some(local.to_string_lossy().to_string()),
+                "LOCALAPPDATA" => Some(local.join("TandemDlogTest").to_string_lossy().to_string()),
+                _ => None,
+            }
+        };
+        let dirs: Vec<PathBuf> = log_dirs_with(&env(false)).into_iter().map(|d| d.into_path_buf()).collect();
+        assert_eq!(dirs[0], local, "a local TEMP is the first choice");
+        let dirs: Vec<PathBuf> = log_dirs_with(&env(true)).into_iter().map(|d| d.into_path_buf()).collect();
+        assert!(dirs.iter().all(|d| !d.to_string_lossy().starts_with(r"\\")), "a share is never a candidate: {dirs:?}");
+        assert!(dirs.first().is_some_and(|d| d.ends_with(r"TandemDlogTest\Tandem\Logs")), "Local AppData is the fallback: {dirs:?}");
+    }
+
+    #[cfg(windows)]
+    fn scratch(tag: &str) -> localfs::LocalPath {
+        let dir = std::env::temp_dir().join(format!("tandem-dlog-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        localfs::LocalPath::judge(&dir).expect("a temp folder is local")
+    }
+
+    /// B3: a new file has exactly one allow ACE, for this user; a planted link is refused and
+    /// the entry renamed away; the file is the user's own.
+    #[cfg(windows)]
+    #[test]
+    fn log_file_is_owner_only_and_unfollowed() {
+        let dir = scratch("acl");
+        let path = save_in(&dir, "H\n", "body\n", "F\n", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "H\nbody\nF\n");
+        let sddl = localfs::dacl_sddl(&dir.unfollowed(FILE_NAME).unwrap()).unwrap();
+        assert_eq!(sddl.matches("(A;").count(), 1, "one allow ACE: {sddl}");
+        assert!(sddl.contains(&crate::winpipe::user_sid().unwrap()) && sddl.starts_with("D:P"), "for the user, protected: {sddl}");
+        // A planted junction at the file's name is not followed and not written through.
+        let target = scratch("acl-target");
+        let _ = std::fs::remove_file(&path);
+        let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&path).arg(target.path()).output().unwrap();
+        assert!(status.status.success(), "mklink: {}", String::from_utf8_lossy(&status.stdout));
+        let saved = save_in(&dir, "H2\n", "b2\n", "F2\n", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "H2\nb2\nF2\n", "a fresh file stands at the name");
+        assert!(std::fs::read_dir(target.path()).unwrap().next().is_none(), "nothing was written through the junction");
+        let stale = std::fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("debuglog.stale-")).count();
+        assert_eq!(stale, 1, "the planted entry was renamed away");
+        let _ = std::fs::remove_dir_all(dir.path());
+        let _ = std::fs::remove_dir_all(target.path());
+    }
+
+    /// B3: appending never grows the file past the cap; the old one is kept as `.old` once.
+    #[cfg(windows)]
+    #[test]
+    fn append_is_capped() {
+        let dir = scratch("cap");
+        save_in_capped(&dir, "H1\n", "one\n", "F1\n", false, 64).unwrap();
+        save_in_capped(&dir, "H2\n", "two\n", "F2\n", true, 64).unwrap();
+        let p = dir.path().join(FILE_NAME);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("H1") && text.contains("H2"), "under the cap it appends: {text}");
+        let big = "x".repeat(100);
+        save_in_capped(&dir, "H3\n", &big, "F3\n", true, 64).unwrap();
+        let now = std::fs::read_to_string(&p).unwrap();
+        assert!(now.starts_with("H3") && !now.contains("H1"), "over the cap a fresh file starts: {}", now.len());
+        let old = std::fs::read_to_string(dir.path().join(OLD_NAME)).unwrap();
+        assert!(old.contains("H1") && old.contains("H2"), "the earlier file is the one generation kept");
+        save_in_capped(&dir, "H4\n", &big, "F4\n", true, 64).unwrap();
+        let old = std::fs::read_to_string(dir.path().join(OLD_NAME)).unwrap();
+        assert!(old.contains("H3") && !old.contains("H1"), "a second rotation replaces the first .old");
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+}

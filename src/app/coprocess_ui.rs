@@ -179,8 +179,8 @@ impl App {
         }
     }
 
-    /// The pane's top-right indicators: broadcast (sends, or receive only), the coprocess, and
-    /// the pin of a pinned hotkey window, and the AI chat's linked and streaming glyphs. Answers each AI glyph's rectangle, which the
+    /// The pane's top-right indicators: broadcast (sends, or receive only), the coprocess, debug
+    /// logging, and the pin of a pinned hotkey window, and the AI chat's linked and streaming glyphs. Answers each AI glyph's rectangle, which the
     /// frame keeps for a press (the draw loop holds a borrow of the tab).
     pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), broadcast: (bool, bool)) -> Vec<(PaneId, Rect, scene::IndicatorKind)> {
         if self.globals.bool("disableTopRightIndicators") {
@@ -188,7 +188,7 @@ impl App {
         }
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
         let (linked, streaming) = self.chat_pane_state(id);
-        let shown = scene::indicators(broadcast.0, broadcast.1, p.coprocess_command().is_some(), linked, streaming, self.in_pinned_hotkey_window());
+        let shown = scene::indicators(broadcast.0, broadcast.1, p.coprocess_command().is_some(), linked, streaming, self.in_pinned_hotkey_window(), crate::dlog::is_on());
         if shown.is_empty() {
             return Vec::new();
         }

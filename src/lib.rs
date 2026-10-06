@@ -21,6 +21,7 @@ pub mod display_watch;
 pub mod dragtext_win;
 #[cfg(windows)]
 pub mod firstmouse_win;
+pub mod dlog;
 pub mod dvr;
 pub mod replay;
 pub mod replay_panel;

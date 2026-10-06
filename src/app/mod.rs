@@ -116,6 +116,7 @@ mod emu_ui;
 mod jobs_ui;
 mod close_ui;
 mod coprocess_ui;
+mod dlog_ui;
 mod aps_ui;
 mod windows_ui;
 #[cfg(windows)]
@@ -210,6 +211,9 @@ pub enum UserEvent {
     Wake,
     /// A Win chord from the keyboard hook.
     Chord(crate::menus::Chord),
+    /// The debug log was written on its worker thread: the file's path or the reason it failed,
+    /// and whether to say it stopped (`dlog_ui`).
+    DebugLogSaved(Result<PathBuf, String>, bool),
     /// A menu item was clicked (its id).
     Menu(String),
     /// A notification was clicked.
@@ -1491,6 +1495,10 @@ pub struct App {
     /// was at hand).
     script_console_reveal: Option<String>,
     last_notified_script: Option<String>,
+    /// The last notification was "Debug logging turned on": a click on it turns logging off.
+    last_notified_debug: bool,
+    /// The automatic-start notification shows once per launch (`AD:1309-1324`).
+    debug_notice_shown: bool,
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
@@ -1581,6 +1589,7 @@ fn message_box(text: &str) {
 /// needs nothing of it that Windows does not do (the hook, hotkeys and the per-thread layout end
 /// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
 pub(crate) fn teardown_process() {
+    crate::dlog::stop_at_exit();
     crate::winkeys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
@@ -1588,6 +1597,7 @@ pub(crate) fn teardown_process() {
 }
 
 pub fn run() {
+    crate::dlog::mark_main_thread();
     // A cookie in Tandem's own environment (Tandem started from a Tandem shell) must reach no
     // session and no child: only a cookie Tandem mints for a session is ever set.
     for name in crate::session_env::NEVER_INHERITED {
@@ -2415,6 +2425,8 @@ pub fn run() {
         script_inspector: None,
         script_console_reveal: None,
         last_notified_script: None,
+        last_notified_debug: false,
+        debug_notice_shown: false,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
         script_components: HashMap::new(),
@@ -2445,6 +2457,8 @@ pub fn run() {
         restored_scripts,
         restored_dir: None,
     };
+    // Debug logging at launch starts before the first window (`AD:1356-1358`).
+    app.start_debug_logging_automatically();
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
     if let Err(e) = event_loop.run_app(&mut app) {
@@ -6822,6 +6836,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::JobsChanged => return self.jobs_changed(),
+            UserEvent::DebugLogSaved(result, announce) => return self.debug_log_saved(result, announce),
             UserEvent::DisplayChanged => {
                 let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));
                 self.display_due = Some(Instant::now() + delay);

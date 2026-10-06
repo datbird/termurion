@@ -45,6 +45,7 @@ impl App {
             Ok(()) => {
                 self.last_notified = Some(pane);
                 self.last_notified_script = None;
+                self.last_notified_debug = false;
             }
             Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
         }
@@ -60,6 +61,9 @@ impl App {
     /// A click on a notification: Tandem comes forward on the session it named, or on the
     /// Script Console entry of the script that failed.
     pub(super) fn reveal_notified(&mut self) {
+        if self.last_notified_debug {
+            return self.disable_debug_logging_from_notice();
+        }
         if let Some(id) = self.last_notified_script.clone() {
             return self.reveal_script_entry(&id);
         }
