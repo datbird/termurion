@@ -1,4 +1,4 @@
-Milestone 13t rulings (profiles and presets). Each line is `Ruling: ... - cost if wrong: ...`. Sections: pre-flight fixes B1 to B6, pre-flight rulings P1 to P23, rulings made while building, decisions from the task reports, deferred minors.
+Milestone 13t rulings (profiles and presets). Each line is `Ruling: ... - cost if wrong: ...`. Sections: pre-flight fixes B1 to B6, pre-flight rulings P1 to P23, rulings made while building, decisions from the task reports, final review fixes, deferred minors.
 
 == Pre-flight fixes (accepted by the controller)
 B1. Ruling: Bonjour profiles are kept out of the one serializer, not out of `save`: `Store.transient` (a set of guids filled only by `bonjour_ui`) is skipped by `Store::file_profiles`, so `save`, the remote-prefs drift snapshot and Export All all drop them; a profile tagged "bonjour" that arrives by import is an ordinary saved profile; a duplicate of a transient profile is saved without `Bonjour Service Address`; Set as Default is refused for one - cost if wrong: a LAN-advertised host reaches profiles.toml or an export, or settings drift fires on every discovery.
@@ -87,7 +87,7 @@ Ruling (Task 8): the Profiles menu orders by iTerm2's source over the brief: fol
 Ruling (Task 8): the Shortcut popup's none item reads None (iTerm2's is blank) and its lock button is text, no icon - cost if wrong: the label differs.
 Ruling (Task 8): the dynamic-profile warning shows iTerm2's first paragraph with OK only; the rewritable paragraph and the Mark as Rewritable and Reveal buttons are left out because Tandem never writes dynamic profiles back - cost if wrong: a person sees fewer choices than iTerm2.
 Ruling (Task 8): `refresh_route` became `&mut self`, and the Edit Session state is cleared when Settings opens any other way (one window serves both panels) - cost if wrong: none.
-Ruling (Task 9): no mDNS was sent by any test and the Browser has no automated test, only its pure parts; the callback code is covered by review and the checklist - cost if wrong: a Windows callback bug is found only on a real LAN.
+Ruling (Task 9): no mDNS was sent by any test and the Browser has no automated test, only its pure parts (the request owner is tested with a fake DNS-SD API); the callback code is covered by review and the checklist - cost if wrong: a Windows callback bug is found only on a real LAN.
 Ruling (Task 9): Bonjour profiles set no Run Command in Login Shell (Tandem has no such key; Windows runs the command line directly) - cost if wrong: none known.
 Ruling (Task 9): a link-local IPv6 address without a scope is accepted as advertised and likely will not connect - cost if wrong: such a host appears and fails to connect.
 Ruling (Task 9): the "logged once" note for the 128-host cap is not emitted (there is no log sink) - cost if wrong: none visible.
@@ -95,6 +95,10 @@ Ruling (Task 9): Bonjour profiles live only in memory, so they vanish at quit an
 Ruling (merge): the wake array keeps `bindings_due` first because existing tests require `progress_due, sleep_due]` at the end - cost if wrong: none.
 Ruling (brief): missing preset alphas read as 1, and parity rows are found by title - cost if wrong: none.
 Ruling (Task 10): the OSC SetColors, it2setcolor (two rows) parity rows keep their partial status for their other reasons; only their stale preset text changed - cost if wrong: the roadmap totals would be 3 rows higher in have.
+
+== Final review fixes
+Ruling (final 1): `bonjour::instance_label` tests the '.' byte before slicing, so a crafted PTR name (for example `X\u{e9}ssh._tcp.local`) cannot panic the worker; a fuzz test runs 20000 multi-byte and malformed names - cost if wrong: one LAN answer stops Bonjour for the run.
+Ruling (final 1): every buffer handed to DnsServiceBrowse or DnsServiceResolve (the request structure, its name and the cancel handle) has one owner, `bonjour::Requests`; a request is freed only after its last callback marked `Ended` (the browse callback with ERROR_CANCELLED, as Microsoft documents for DnsServiceBrowseCancel; the resolve callback, which runs once); dropping the owner (stop, a failed start or spawn, an unwind) cancels every open request, waits up to 2 s and leaks what has not ended; callbacks catch panics and mark their end last; a completed resolve is never cancelled - cost if wrong: if Windows never calls a cancelled resolve back, cancelled resolves stay counted against the 32 in flight (discovery slows, memory stays bounded) and a stop waits 2 s and leaks a few hundred bytes per such resolve.
 
 == Deferred minors (progress.md and review rounds)
 Ruling (deferred): the include_str source test in Task 8's menu code, the per-relayout Shortcut read in refresh_route and the Alt-variant windows_keeps are left as they are - cost if wrong: a source test breaks on a refactor and one extra read per relayout.

@@ -147,7 +147,10 @@ pub fn instance_label(full: &str, service: &str) -> Option<String> {
     let full = full.strip_suffix('.').unwrap_or(full);
     let service = service.strip_suffix('.').unwrap_or(service);
     let cut = full.len().checked_sub(service.len() + 1)?;
-    if !full.is_char_boundary(cut) || !full[cut + 1..].eq_ignore_ascii_case(service) || full.as_bytes()[cut] != b'.' {
+    // Bytes first: a '.' at `cut` makes both `cut` and `cut + 1` character boundaries, so the
+    // slice below cannot split a multi-byte character a hostile name puts there.
+    let bytes = full.as_bytes();
+    if bytes[cut] != b'.' || !bytes[cut + 1..].eq_ignore_ascii_case(service.as_bytes()) {
         return None;
     }
     let raw = &full[..cut];
@@ -178,6 +181,137 @@ pub fn is_bonjour(p: &Profile) -> bool {
     p.get("Tags").and_then(|t| t.as_array().cloned()).is_some_and(|a| a.iter().any(|t| t.as_str() == Some(TAG)))
 }
 
+/// The ids of DNS-SD requests whose last callback has run (Microsoft: `DnsServiceBrowseCancel`
+/// "causes one further invocation of the browse callback, with status ERROR_CANCELLED"; a resolve
+/// calls back once, on completion or cancel). The callbacks mark an id as their last act;
+/// `Requests` frees a request only after its id is marked.
+pub struct Ended {
+    ids: std::sync::Mutex<Vec<u64>>,
+    changed: std::sync::Condvar,
+}
+
+impl Ended {
+    pub const fn new() -> Ended {
+        Ended { ids: std::sync::Mutex::new(Vec::new()), changed: std::sync::Condvar::new() }
+    }
+
+    /// Called by a callback when it will not run again for `id`.
+    pub fn mark(&self, id: u64) {
+        let mut ids = self.ids.lock().unwrap_or_else(|p| p.into_inner());
+        ids.push(id);
+        self.changed.notify_all();
+    }
+
+    fn has(&self, id: u64) -> bool {
+        self.ids.lock().unwrap_or_else(|p| p.into_inner()).contains(&id)
+    }
+
+    /// Takes the marked ids `open` holds.
+    fn take(&self, open: &dyn Fn(u64) -> bool) -> Vec<u64> {
+        let mut ids = self.ids.lock().unwrap_or_else(|p| p.into_inner());
+        let (mine, rest): (Vec<u64>, Vec<u64>) = ids.iter().partition(|id| open(**id));
+        *ids = rest;
+        mine
+    }
+
+    /// Waits until every id `pending` names is marked, or `deadline`.
+    fn wait(&self, pending: &dyn Fn(&[u64]) -> bool, deadline: std::time::Instant) {
+        let mut ids = self.ids.lock().unwrap_or_else(|p| p.into_inner());
+        while pending(&ids) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            ids = self.changed.wait_timeout(ids, left).map(|(g, _)| g).unwrap_or_else(|p| p.into_inner().0);
+        }
+    }
+}
+
+/// What `Requests` needs from DNS-SD: cancelling a running request. `Request` owns every buffer
+/// the system was handed (the request structure, its query name and the cancel handle).
+pub trait DnsSd {
+    type Request;
+    fn cancel(&self, request: &Self::Request);
+}
+
+/// The one owner of every running DNS-SD request. A request's buffers are freed only after its
+/// last callback ran (`Ended`); dropping the owner (normal stop, a failed thread spawn, or an
+/// unwind) cancels every open request first, waits up to `grace` for their last callbacks, frees
+/// those and leaks the rest, since the system may still hold them.
+pub struct Requests<A: DnsSd> {
+    api: A,
+    ended: &'static Ended,
+    /// Open requests and whether each was cancelled.
+    open: std::collections::HashMap<u64, (A::Request, bool)>,
+    grace: std::time::Duration,
+}
+
+impl<A: DnsSd> Requests<A> {
+    pub fn new(api: A, ended: &'static Ended, grace: std::time::Duration) -> Requests<A> {
+        Requests { api, ended, open: std::collections::HashMap::new(), grace }
+    }
+
+    /// Takes a request the system accepted (it answered DNS_REQUEST_PENDING).
+    pub fn add(&mut self, id: u64, request: A::Request) {
+        self.open.insert(id, (request, false));
+    }
+
+    /// Open requests, cancelled ones whose last callback has not run included.
+    pub fn len(&self) -> usize {
+        self.open.len()
+    }
+
+    /// Cancels a request once; one that already ended (a completed resolve) is not cancelled.
+    pub fn cancel(&mut self, id: u64) {
+        if let Some((request, cancelled)) = self.open.get_mut(&id) {
+            if !*cancelled && !self.ended.has(id) {
+                self.api.cancel(request);
+            }
+            *cancelled = true;
+        }
+    }
+
+    /// Frees every request whose last callback ran.
+    pub fn reap(&mut self) {
+        let open = &self.open;
+        for id in self.ended.take(&|id| open.contains_key(&id)) {
+            self.open.remove(&id);
+        }
+    }
+
+    /// Frees `id` once its last callback ran (it is about to: its message arrived), waiting a
+    /// moment for the mark. Returns whether it was freed.
+    pub fn finish(&mut self, id: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        self.ended.wait(&|ids| !ids.contains(&id), deadline);
+        self.reap();
+        !self.open.contains_key(&id)
+    }
+
+    /// Cancels every open request, waits for their last callbacks, frees what ended and leaks
+    /// the rest. Runs once (Drop calls it; the owner may call it earlier).
+    pub fn shutdown(&mut self) {
+        if self.open.is_empty() {
+            return;
+        }
+        let ids: Vec<u64> = self.open.keys().copied().collect();
+        for id in &ids {
+            self.cancel(*id);
+        }
+        self.ended.wait(&|marked| ids.iter().any(|id| !marked.contains(id)), std::time::Instant::now() + self.grace);
+        self.reap();
+        for (_, (request, _)) in std::mem::take(&mut self.open) {
+            std::mem::forget(request);
+        }
+    }
+}
+
+impl<A: DnsSd> Drop for Requests<A> {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 #[cfg(windows)]
 pub use browser::Browser;
 
@@ -186,13 +320,16 @@ pub use browser::Browser;
 /// to one worker thread (never blocking, never touching the app); the worker starts and times
 /// out the resolves and hands `Event`s to the UI thread through a bounded channel and `Notify`.
 /// Nothing is polled: the worker sleeps until a message or the next resolve deadline.
+/// Every buffer handed to the system lives in one `Requests` owner, freed only after the
+/// request's last callback; no early return, failed spawn or panic can free one sooner.
 #[cfg(windows)]
 mod browser {
-    use super::{instance_label, Event, Found, MAX_HOSTS, SERVICES};
+    use super::{instance_label, DnsSd, Ended, Event, Found, Requests, MAX_HOSTS, SERVICES};
     use crate::pty::Notify;
     use std::collections::HashMap;
     use std::ffi::c_void;
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
     use std::sync::Mutex;
@@ -215,19 +352,25 @@ mod browser {
     /// DnsServiceBrowse and DnsServiceResolve answer this when the request is running.
     const DNS_REQUEST_PENDING: i32 = 9506;
     const STATUS_OK: u32 = 0;
+    /// The status of a request's last callback after its cancel.
+    const ERROR_CANCELLED: u32 = 1223;
+    /// How long a stop waits for the system's last callbacks before leaking what it still holds.
+    const GRACE: Duration = Duration::from_secs(2);
 
     enum Msg {
-        /// A PTR answer: the full instance name, and whether it is a goodbye (TTL 0).
-        Browsed { service: usize, full: String, gone: bool },
+        /// A PTR answer of browse `id`: the full instance name, and whether it is a goodbye (TTL 0).
+        Browsed { id: u64, full: String, gone: bool },
         Resolved { id: u64, found: Option<(String, u16, Vec<(String, String)>)> },
         Stop,
     }
 
-    /// Where the system's callbacks send. Set by `start`, cleared by Drop after every request is
-    /// cancelled. A callback holds this lock only to clone the sender.
+    /// Where the system's callbacks send. Set by `start`, cleared when the `Session` that owns
+    /// every request has ended them. A callback holds this lock only to clone the sender.
     static SINK: Mutex<Option<Sender<Msg>>> = Mutex::new(None);
     /// Context numbers for requests; a callback of an older Browser finds no entry.
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    /// The requests whose last callback ran.
+    static ENDED: Ended = Ended::new();
 
     fn send(m: Msg) {
         let tx = SINK.lock().ok().and_then(|g| g.clone());
@@ -236,17 +379,81 @@ mod browser {
         }
     }
 
-    /// A request's cancel handle: the system keeps the address until the request ends.
-    struct Cancel(Box<DNS_SERVICE_CANCEL>);
-    // SAFETY: only the worker (and `start`, before the worker runs) touches the handle.
-    unsafe impl Send for Cancel {}
+    /// Everything one request handed the system (Microsoft: the cancel handle "must remain valid
+    /// until the query is canceled"; the request and its name are kept as long). Boxes and the
+    /// name's heap buffer keep their addresses when this moves.
+    enum Request {
+        Browse { _request: Box<DNS_SERVICE_BROWSE_REQUEST>, _name: Vec<u16>, cancel: Box<DNS_SERVICE_CANCEL> },
+        Resolve { _request: Box<DNS_SERVICE_RESOLVE_REQUEST>, _name: Vec<u16>, cancel: Box<DNS_SERVICE_CANCEL> },
+    }
+    // SAFETY: the system only reads these buffers; on our side only the thread that owns the
+    // `Requests` (the starter, then the worker) touches them.
+    unsafe impl Send for Request {}
 
-    struct Resolving {
-        cancel: Cancel,
-        _name: Vec<u16>,
-        deadline: Instant,
-        full: String,
-        service: usize,
+    struct System;
+
+    impl DnsSd for System {
+        type Request = Request;
+        fn cancel(&self, r: &Request) {
+            // SAFETY: the handle was filled by the start call and is kept until the last callback.
+            unsafe {
+                match r {
+                    Request::Browse { cancel, .. } => DnsServiceBrowseCancel(&**cancel),
+                    Request::Resolve { cancel, .. } => DnsServiceResolveCancel(&**cancel),
+                };
+            }
+        }
+    }
+
+    /// The requests of one Browser. Dropping it (the worker ends, unwinds, or never started)
+    /// cancels every request and waits for its last callback before freeing, then clears the
+    /// callbacks' sink.
+    struct Session {
+        requests: Requests<System>,
+        /// Browse ids and the `SERVICES` index each browses.
+        browses: Vec<(u64, usize)>,
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            self.requests.shutdown();
+            *SINK.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+    }
+
+    fn browse(service: &str, id: u64) -> Result<Request, i32> {
+        let name = wide(service);
+        let request = Box::new(DNS_SERVICE_BROWSE_REQUEST {
+            Version: DNS_QUERY_REQUEST_VERSION1,
+            InterfaceIndex: 0,
+            QueryName: name.as_ptr(),
+            Anonymous: DNS_SERVICE_BROWSE_REQUEST_0 { pBrowseCallback: Some(on_browse) },
+            pQueryContext: id as usize as *mut c_void,
+        });
+        let mut cancel = Box::new(DNS_SERVICE_CANCEL { reserved: std::ptr::null_mut() });
+        // SAFETY: the request, name and cancel handle go into the returned `Request`, which the
+        // caller hands to `Requests` (kept until the last callback); on failure nothing runs.
+        let status = unsafe { DnsServiceBrowse(&*request, &mut *cancel) };
+        if status == DNS_REQUEST_PENDING {
+            Ok(Request::Browse { _request: request, _name: name, cancel })
+        } else {
+            Err(status)
+        }
+    }
+
+    fn resolve(full: &str, id: u64) -> Option<Request> {
+        let mut name = wide(full);
+        let request = Box::new(DNS_SERVICE_RESOLVE_REQUEST {
+            Version: DNS_QUERY_REQUEST_VERSION1,
+            InterfaceIndex: 0,
+            QueryName: name.as_mut_ptr(),
+            pResolveCompletionCallback: Some(on_resolve),
+            pQueryContext: id as usize as *mut c_void,
+        });
+        let mut cancel = Box::new(DNS_SERVICE_CANCEL { reserved: std::ptr::null_mut() });
+        // SAFETY: as in `browse`.
+        let status = unsafe { DnsServiceResolve(&*request, &mut *cancel) };
+        (status == DNS_REQUEST_PENDING).then(|| Request::Resolve { _request: request, _name: name, cancel })
     }
 
     pub struct Browser {
@@ -275,52 +482,62 @@ mod browser {
         None
     }
 
-    unsafe extern "system" fn on_browse(_status: u32, context: *const c_void, record: *const DNS_RECORDW) {
-        let service = context as usize;
-        let mut r = record;
-        // The records are the system's: copy what is needed, then free the list.
-        while !r.is_null() {
-            let rec = unsafe { &*r };
-            if rec.wType == DNS_TYPE_PTR {
-                if let Some(full) = unsafe { read_wide(rec.Data.PTR.pNameHost) } {
-                    send(Msg::Browsed { service, full, gone: rec.dwTtl == 0 });
+    /// Never unwinds into the system: the work is caught, and the end is marked last.
+    unsafe extern "system" fn on_browse(status: u32, context: *const c_void, record: *const DNS_RECORDW) {
+        let id = context as usize as u64;
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut r = record;
+            // The records are the system's: copy what is needed, then free the list.
+            while !r.is_null() {
+                let rec = unsafe { &*r };
+                if rec.wType == DNS_TYPE_PTR {
+                    if let Some(full) = unsafe { read_wide(rec.Data.PTR.pNameHost) } {
+                        send(Msg::Browsed { id, full, gone: rec.dwTtl == 0 });
+                    }
                 }
+                r = rec.pNext;
             }
-            r = rec.pNext;
-        }
-        if !record.is_null() {
-            unsafe { DnsFree(record as *const c_void, DnsFreeRecordList) };
+            if !record.is_null() {
+                unsafe { DnsFree(record as *const c_void, DnsFreeRecordList) };
+            }
+        }));
+        if status == ERROR_CANCELLED {
+            ENDED.mark(id);
         }
     }
 
+    /// A resolve calls back once (completion, timeout or cancel): the end is marked last.
     unsafe extern "system" fn on_resolve(status: u32, context: *const c_void, instance: *const DNS_SERVICE_INSTANCE) {
         let id = context as usize as u64;
-        let mut found = None;
-        if status == STATUS_OK && !instance.is_null() {
-            let i = unsafe { &*instance };
-            let address = if !i.ip4Address.is_null() {
-                Some(Ipv4Addr::from(unsafe { *i.ip4Address }.to_le_bytes()).to_string())
-            } else if !i.ip6Address.is_null() {
-                Some(Ipv6Addr::from(unsafe { i.ip6Address.read().IP6Byte }).to_string())
-            } else {
-                None
-            };
-            let mut txt = Vec::new();
-            if !i.keys.is_null() && !i.values.is_null() {
-                for n in 0..(i.dwPropertyCount as usize).min(MAX_TXT) {
-                    let k = unsafe { read_wide(*i.keys.add(n)) };
-                    let v = unsafe { read_wide(*i.values.add(n)) };
-                    if let (Some(k), Some(v)) = (k, v) {
-                        txt.push((k, v));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let mut found = None;
+            if status == STATUS_OK && !instance.is_null() {
+                let i = unsafe { &*instance };
+                let address = if !i.ip4Address.is_null() {
+                    Some(Ipv4Addr::from(unsafe { *i.ip4Address }.to_le_bytes()).to_string())
+                } else if !i.ip6Address.is_null() {
+                    Some(Ipv6Addr::from(unsafe { i.ip6Address.read().IP6Byte }).to_string())
+                } else {
+                    None
+                };
+                let mut txt = Vec::new();
+                if !i.keys.is_null() && !i.values.is_null() {
+                    for n in 0..(i.dwPropertyCount as usize).min(MAX_TXT) {
+                        let k = unsafe { read_wide(*i.keys.add(n)) };
+                        let v = unsafe { read_wide(*i.values.add(n)) };
+                        if let (Some(k), Some(v)) = (k, v) {
+                            txt.push((k, v));
+                        }
                     }
                 }
+                found = address.map(|a| (a, i.wPort, txt));
             }
-            found = address.map(|a| (a, i.wPort, txt));
-        }
-        if !instance.is_null() {
-            unsafe { DnsServiceFreeInstance(instance) };
-        }
-        send(Msg::Resolved { id, found });
+            if !instance.is_null() {
+                unsafe { DnsServiceFreeInstance(instance) };
+            }
+            send(Msg::Resolved { id, found });
+        }));
+        ENDED.mark(id);
     }
 
     impl Browser {
@@ -329,37 +546,24 @@ mod browser {
             let (tx, rx) = mpsc::channel::<Msg>();
             let (ui_tx, ui_rx) = mpsc::sync_channel::<Event>(UI_QUEUE);
             *SINK.lock().map_err(|_| "Bonjour is unavailable".to_string())? = Some(tx.clone());
-            let mut browses: Vec<(Cancel, Vec<u16>)> = Vec::new();
-            let mut failed = None;
+            // From here every return path drops `session`, which cancels what was started.
+            let mut session = Session { requests: Requests::new(System, &ENDED, GRACE), browses: Vec::new() };
             for (index, service) in SERVICES.iter().enumerate() {
-                let name = wide(service);
-                let mut cancel = Box::new(DNS_SERVICE_CANCEL { reserved: std::ptr::null_mut() });
-                let request = DNS_SERVICE_BROWSE_REQUEST {
-                    Version: DNS_QUERY_REQUEST_VERSION1,
-                    InterfaceIndex: 0,
-                    QueryName: name.as_ptr(),
-                    Anonymous: DNS_SERVICE_BROWSE_REQUEST_0 { pBrowseCallback: Some(on_browse) },
-                    pQueryContext: index as *mut c_void,
-                };
-                // SAFETY: the request, name and cancel handle are valid for the call; the name and
-                // handle outlive the request (kept in `browses` until it is cancelled).
-                let status = unsafe { DnsServiceBrowse(&request, &mut *cancel) };
-                if status != DNS_REQUEST_PENDING {
-                    failed = Some(format!("DnsServiceBrowse({service}) failed: {status}"));
-                    break;
+                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                match browse(service, id) {
+                    Ok(request) => {
+                        session.requests.add(id, request);
+                        session.browses.push((id, index));
+                    }
+                    Err(status) => return Err(format!("DnsServiceBrowse({service}) failed: {status}")),
                 }
-                browses.push((Cancel(cancel), name));
-            }
-            if let Some(e) = failed {
-                for (c, _) in &browses {
-                    unsafe { DnsServiceBrowseCancel(&*c.0) };
-                }
-                *SINK.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                return Err(e);
             }
             let worker = std::thread::Builder::new()
                 .name("bonjour".into())
-                .spawn(move || run(rx, ui_tx, notify, browses))
+                .spawn(move || {
+                    let mut session = session;
+                    let _ = catch_unwind(AssertUnwindSafe(|| run(&rx, &ui_tx, &notify, &mut session)));
+                })
                 .map_err(|e| format!("Bonjour thread: {e}"))?;
             Ok(Browser { events: ui_rx, stop: tx, worker: Some(worker) })
         }
@@ -378,7 +582,15 @@ mod browser {
         }
     }
 
-    fn run(rx: Receiver<Msg>, ui: SyncSender<Event>, notify: Notify, browses: Vec<(Cancel, Vec<u16>)>) {
+    struct Resolving {
+        deadline: Instant,
+        full: String,
+        service: usize,
+    }
+
+    fn run(rx: &Receiver<Msg>, ui: &SyncSender<Event>, notify: &Notify, session: &mut Session) {
+        let requests = &mut session.requests;
+        let browses = &session.browses;
         let mut resolving: HashMap<u64, Resolving> = HashMap::new();
         // Instance names seen and not gone, by lowercase full name (resolving or resolved).
         let mut known: HashMap<String, Option<String>> = HashMap::new();
@@ -388,6 +600,7 @@ mod browser {
             }
         };
         loop {
+            requests.reap();
             let next = resolving.values().map(|r| r.deadline).min();
             let msg = match next {
                 Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
@@ -404,49 +617,42 @@ mod browser {
             let expired: Vec<u64> = resolving.iter().filter(|(_, r)| r.deadline <= now).map(|(id, _)| *id).collect();
             for id in expired {
                 if let Some(r) = resolving.remove(&id) {
-                    unsafe { DnsServiceResolveCancel(&*r.cancel.0) };
+                    // Freed when its cancelled callback runs (a completed one is not cancelled).
+                    requests.cancel(id);
                     known.remove(&r.full.to_ascii_lowercase());
                 }
             }
             match msg {
                 None => {}
                 Some(Msg::Stop) => break,
-                Some(Msg::Browsed { service, full, gone }) => {
+                Some(Msg::Browsed { id, full, gone }) => {
+                    let Some(service) = browses.iter().find(|(b, _)| *b == id).map(|(_, s)| *s) else { continue };
                     let key = full.to_ascii_lowercase();
-                    if SERVICES.get(service).and_then(|s| instance_label(&full, s)).is_none() {
+                    if instance_label(&full, SERVICES[service]).is_none() {
                         continue;
                     }
                     if gone {
                         if let Some(Some(name)) = known.remove(&key) {
                             emit(Event::Lost(name));
                         } else if let Some(id) = resolving.iter().find(|(_, r)| r.full.eq_ignore_ascii_case(&full)).map(|(id, _)| *id) {
-                            if let Some(r) = resolving.remove(&id) {
-                                unsafe { DnsServiceResolveCancel(&*r.cancel.0) };
-                            }
+                            resolving.remove(&id);
+                            requests.cancel(id);
                         }
                         continue;
                     }
-                    if known.contains_key(&key) || known.len() >= MAX_KNOWN || resolving.len() >= MAX_RESOLVING {
+                    // Cancelled resolves count until their last callback frees them.
+                    if known.contains_key(&key) || known.len() >= MAX_KNOWN || requests.len() >= browses.len() + MAX_RESOLVING {
                         continue;
                     }
                     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-                    let mut name = wide(&full);
-                    let mut cancel = Box::new(DNS_SERVICE_CANCEL { reserved: std::ptr::null_mut() });
-                    let request = DNS_SERVICE_RESOLVE_REQUEST {
-                        Version: DNS_QUERY_REQUEST_VERSION1,
-                        InterfaceIndex: 0,
-                        QueryName: name.as_mut_ptr(),
-                        pResolveCompletionCallback: Some(on_resolve),
-                        pQueryContext: id as usize as *mut c_void,
-                    };
-                    // SAFETY: as in `start`; the name and handle are kept in `resolving`.
-                    let status = unsafe { DnsServiceResolve(&request, &mut *cancel) };
-                    if status == DNS_REQUEST_PENDING {
+                    if let Some(request) = resolve(&full, id) {
+                        requests.add(id, request);
                         known.insert(key, None);
-                        resolving.insert(id, Resolving { cancel: Cancel(cancel), _name: name, deadline: Instant::now() + RESOLVE_TIMEOUT, full: full.clone(), service });
+                        resolving.insert(id, Resolving { deadline: Instant::now() + RESOLVE_TIMEOUT, full, service });
                     }
                 }
                 Some(Msg::Resolved { id, found }) => {
+                    requests.finish(id);
                     let Some(r) = resolving.remove(&id) else { continue };
                     let Some((address, port, txt)) = found else {
                         known.remove(&r.full.to_ascii_lowercase());
@@ -459,15 +665,8 @@ mod browser {
                 }
             }
         }
-        // Cancel everything before the callbacks' sink goes (a cancel waits for a running callback,
-        // and a callback only ever sends).
-        for (c, _) in &browses {
-            unsafe { DnsServiceBrowseCancel(&*c.0) };
-        }
-        for r in resolving.values() {
-            unsafe { DnsServiceResolveCancel(&*r.cancel.0) };
-        }
-        *SINK.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        // The session's Drop cancels what is open, waits for the last callbacks, then clears the
+        // sink.
     }
 }
 
@@ -537,6 +736,142 @@ mod tests {
         assert_eq!(instance_label("a\\\\b._ssh._tcp.local", "_ssh._tcp.local").as_deref(), Some("a\\b"));
         assert_eq!(instance_label("_ssh._tcp.local", "_ssh._tcp.local"), None, "no instance name");
         assert_eq!(instance_label("x._ftp._tcp.local", "_ssh._tcp.local"), None);
+    }
+
+    /// A fake DNS-SD API: no traffic, it logs each cancel; a request logs its free when dropped.
+    struct FakeApi(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    struct FakeRequest(u64, std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl Drop for FakeRequest {
+        fn drop(&mut self) {
+            self.1.lock().unwrap().push(format!("free {}", self.0));
+        }
+    }
+    impl DnsSd for FakeApi {
+        type Request = FakeRequest;
+        fn cancel(&self, r: &FakeRequest) {
+            self.0.lock().unwrap().push(format!("cancel {}", r.0));
+        }
+    }
+
+    fn fake(ended: &'static Ended) -> (Requests<FakeApi>, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (Requests::new(FakeApi(log.clone()), ended, std::time::Duration::from_millis(300)), log)
+    }
+
+    /// The system's side: ends a request (its last callback returns) once it was cancelled.
+    fn end_after_cancel(ended: &'static Ended, log: std::sync::Arc<std::sync::Mutex<Vec<String>>>, id: u64) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            for _ in 0..200 {
+                if log.lock().unwrap().contains(&format!("cancel {id}")) {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    ended.mark(id);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        })
+    }
+
+    fn lines(log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+        log.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn requests_are_freed_only_after_their_last_callback() {
+        static ENDED: Ended = Ended::new();
+        let (mut r, log) = fake(&ENDED);
+        let h = |n: u64| FakeRequest(n, log.clone());
+        r.add(1, h(1));
+        r.add(2, h(2));
+        r.add(3, h(3));
+        // A resolve that completed on its own: freed once its callback ended, never cancelled.
+        ENDED.mark(2);
+        r.cancel(2);
+        r.reap();
+        assert_eq!(lines(&log), vec!["free 2"]);
+        // A cancelled request keeps its buffers until its last (cancelled) callback.
+        r.cancel(1);
+        r.reap();
+        assert_eq!(lines(&log), vec!["free 2", "cancel 1"]);
+        r.cancel(1);
+        assert_eq!(lines(&log).len(), 2, "one cancel per request");
+        ENDED.mark(1);
+        assert!(r.finish(1));
+        assert_eq!(lines(&log), vec!["free 2", "cancel 1", "free 1"]);
+        assert_eq!(r.len(), 1);
+        // Drop cancels what is open and waits for its end before freeing.
+        let t = end_after_cancel(&ENDED, log.clone(), 3);
+        drop(r);
+        t.join().unwrap();
+        assert_eq!(lines(&log), vec!["free 2", "cancel 1", "free 1", "cancel 3", "free 3"]);
+    }
+
+    #[test]
+    fn a_request_that_never_ends_is_leaked_not_freed() {
+        static ENDED: Ended = Ended::new();
+        let (mut r, log) = fake(&ENDED);
+        r.add(7, FakeRequest(7, log.clone()));
+        let start = std::time::Instant::now();
+        drop(r);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "the wait is bounded");
+        assert_eq!(lines(&log), vec!["cancel 7"], "cancelled, and never freed while the system may hold it");
+    }
+
+    #[test]
+    fn a_panic_still_cancels_before_freeing() {
+        static ENDED: Ended = Ended::new();
+        let (mut r, log) = fake(&ENDED);
+        r.add(4, FakeRequest(4, log.clone()));
+        r.add(5, FakeRequest(5, log.clone()));
+        let t4 = end_after_cancel(&ENDED, log.clone(), 4);
+        let t5 = end_after_cancel(&ENDED, log.clone(), 5);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owner = r;
+            panic!("a hostile name");
+        }));
+        assert!(unwound.is_err());
+        t4.join().unwrap();
+        t5.join().unwrap();
+        let l = lines(&log);
+        for id in [4, 5] {
+            let cancel = l.iter().position(|x| *x == format!("cancel {id}")).expect("cancelled");
+            let free = l.iter().position(|x| *x == format!("free {id}")).expect("freed");
+            assert!(cancel < free, "{l:?}");
+        }
+    }
+
+    #[test]
+    fn instance_label_survives_multibyte_and_malformed_names() {
+        // The byte before the service starts a two-byte character: the old code sliced inside it.
+        assert_eq!(instance_label("X\u{e9}ssh._tcp.local", "_ssh._tcp.local"), None);
+        assert_eq!(instance_label("\u{e9}._ssh._tcp.local", "_ssh._tcp.local").as_deref(), Some("\u{e9}"));
+        assert_eq!(instance_label("M\u{1f600}c._ssh._tcp.local", "_ssh._tcp.local").as_deref(), Some("M\u{1f600}c"));
+        assert_eq!(instance_label("\u{1f600}_ssh._tcp.local", "_ssh._tcp.local"), None);
+        assert_eq!(instance_label("a._\u{e9}sh._tcp.local", "_ssh._tcp.local"), None);
+        assert_eq!(instance_label("a\\", "_ssh._tcp.local"), None);
+        assert_eq!(instance_label("\\999\\0001._ssh._tcp.local", "_ssh._tcp.local").as_deref(), Some("\u{3e7}\u{0}1"));
+        assert_eq!(instance_label("", ""), None);
+        assert_eq!(instance_label(".", "."), None);
+        // Fuzz: names built from multi-byte characters, dots, escapes and digits never panic.
+        let parts = ["\u{e9}", "\u{1f600}", "\u{800}", ".", "\\", "\\0", "\\32", "\\999", "_ssh", "_tcp", "local", "s", "h", "X", "1"];
+        let services = ["_ssh._tcp.local", "_ftp._tcp.local", "_\u{e9}._tcp", "", "."];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..20_000 {
+            let mut name = String::new();
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            for k in 0..(seed % 12) {
+                name.push_str(parts[((seed >> (k * 4)) % parts.len() as u64) as usize]);
+            }
+            if seed & 1 == 0 {
+                name.push_str("._ssh._tcp.local");
+            }
+            for s in services {
+                let _ = instance_label(&name, s);
+                let _ = service_type(&name);
+            }
+        }
     }
 
     #[test]
