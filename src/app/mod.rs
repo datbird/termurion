@@ -120,6 +120,7 @@ mod windows_ui;
 #[cfg(windows)]
 mod chrome_ui;
 mod desktops_ui;
+mod launch_ui;
 mod presence_ui;
 #[cfg(windows)]
 mod sizing_ui;
@@ -223,6 +224,8 @@ pub enum UserEvent {
     Caption(isize, crate::caption::Event),
     /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
     OpenUrl(String),
+    /// Another `tandem.exe` handed over a request (the launch pipe, `launch_ui`).
+    Launch(crate::launch::Request),
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
@@ -621,6 +624,10 @@ pub struct App {
     url_listener: Option<std::thread::JoinHandle<()>>,
     /// The flood cap on URLs from outside (P13).
     url_flood: crate::url_launch::Flood,
+    /// Requests of a second `tandem.exe` that wait for the first window, and the flood cap on
+    /// them (app-wide, not in `swap_live`; m13v1).
+    launch_queue: Vec<crate::launch::Request>,
+    launch_flood: crate::url_launch::Flood,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -1507,7 +1514,7 @@ pub fn run() {
         crate::url_launch::UrlArg::Refused(why) => return crate::host::log(&format!("url: refused {why}")),
         // Only when no Tandem of this user runs does this one start (fix r1): a busy or failed
         // hand-over never opens a second Tandem beside the first.
-        crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&url) {
+        crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&crate::launch::Request::Url { url: url.clone() }) {
             crate::url_launch::AfterHand::Exit => return,
             crate::url_launch::AfterHand::Start => pending_urls_at_start.push(url),
             crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("url: refused: {why}")),
@@ -1520,10 +1527,32 @@ pub fn run() {
     if let Some(pid) = wait_pid {
         settings_export_ui::wait_for_pid(pid);
     }
-    // A second bare start while Tandem is excluded from the taskbar is iTerm2's reopen: the
-    // running one takes it as the dock click and this process ends.
-    if crate::presence::forwards_reopen(std::env::args_os().count(), wait_pid.is_some()) && crate::notify::forward_reopen() {
-        return;
+    // The rest of the command line (m13v1): a running Tandem of this user takes the request over
+    // the same pipe and this process ends (after the wait above, so the relaunch after an import
+    // never hands its start to the Tandem it replaced). With none running, this one starts and
+    // runs the request after its first window.
+    let mut launch_queue = Vec::new();
+    let request = match std::env::args_os().skip(1).map(|a| a.into_string()).collect::<Result<Vec<String>, _>>() {
+        Ok(args) => crate::launch::parse(&args, &std::env::current_dir().unwrap_or_default()),
+        Err(_) => Err(crate::launch::USAGE.to_string()),
+    };
+    match request {
+        Err(usage) => return message_box(&usage),
+        // Handled above (its hand-over and its queue are the URL's own).
+        Ok(crate::launch::Request::Url { .. }) => {}
+        Ok(request) => {
+            if crate::launch::forwardable_start(&request, wait_pid.is_some()) {
+                match crate::url_launch::hand_to_running(&request) {
+                    crate::url_launch::AfterHand::Exit => return,
+                    crate::url_launch::AfterHand::Start => {}
+                    crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("launch: refused: {why}")),
+                }
+            }
+            // A bare start is the startup plan's own window: it has nothing more to do.
+            if request != crate::launch::Request::Reopen {
+                launch_queue.push(request);
+            }
+        }
     }
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
@@ -1546,15 +1575,31 @@ pub fn run() {
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
     }));
-    // This Tandem takes URLs sent to it; a second one of the same user cannot bind and does not listen.
+    // This Tandem takes the requests sent to it. One that cannot bind is a second Tandem of the
+    // same user (another started at the same moment, or something holds the name): it hands its
+    // own request over once more and ends, so it never installs a second keyboard hook, hotkeys
+    // or tray icon beside the first (13u S4, R14de-6).
     let url_proxy = proxy.clone();
-    let url_listener = match crate::url_launch::listen(Box::new(move |url| {
-        let _ = url_proxy.lock().map(|p| p.send_event(UserEvent::OpenUrl(url)));
+    let url_listener = match crate::url_launch::listen(Box::new(move |request| {
+        let _ = url_proxy.lock().map(|p| {
+            p.send_event(match request {
+                crate::launch::Request::Url { url } => UserEvent::OpenUrl(url),
+                other => UserEvent::Launch(other),
+            })
+        });
     })) {
         Ok(h) => Some(h),
         Err(e) => {
-            crate::host::log(&format!("url: not listening: {e}"));
-            None
+            crate::host::log(&format!("launch: not listening: {e}"));
+            let mut again = pending_urls_at_start.iter().map(|u| crate::launch::Request::Url { url: u.clone() }).chain(launch_queue.iter().cloned()).collect::<Vec<_>>();
+            if again.is_empty() {
+                again.push(crate::launch::Request::Reopen);
+            }
+            let handed = again.iter().all(|r| matches!(crate::url_launch::hand_to_running(r), crate::url_launch::AfterHand::Exit));
+            if !handed {
+                message_box(&format!("Tandem could not take its launch pipe: {e}"));
+            }
+            return;
         }
     };
     let wake = proxy.clone();
@@ -1829,6 +1874,8 @@ pub fn run() {
         pending_urls_at_start,
         url_listener,
         url_flood: Default::default(),
+        launch_queue,
+        launch_flood: Default::default(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         dnd_dropped: Vec::new(),
@@ -6234,6 +6281,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.alpha_recreate_tick(event_loop);
         // URLs that came with the start or before the window open now, after the first window.
         self.open_pending_urls();
+        self.open_launch_queue(event_loop);
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -6458,6 +6506,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
+            UserEvent::Launch(request) => return self.receive_launch(request, event_loop),
             UserEvent::Logoff(done) => {
                 #[cfg(windows)]
                 self.logoff_now(&done);

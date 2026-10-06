@@ -130,8 +130,6 @@ const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
 impl App {
     /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) {
-        // A second start reaches an excluded Tandem whether or not the icon shows.
-        crate::notify::set_reopen(ui_element_now);
         let want = presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY));
         if !presence::tray_changes(want, self.tray_on) {
             return;
@@ -165,6 +163,12 @@ impl App {
         if right {
             return self.show_tray_menu();
         }
+        self.dock_click_now(event_loop);
+    }
+
+    /// iTerm2's dock click (`AD:946-952`): the icon's left click, and a second bare start of
+    /// `tandem.exe` (`launch::Request::Reopen`, which reaches here over the launch pipe).
+    pub(super) fn dock_click_now(&mut self, event_loop: &ActiveEventLoop) {
         let states = self.terminal_window_states();
         let hotkeys = states.iter().filter(|(_, h, on)| *h == Some(true) && *on).count();
         let regular = states.iter().filter(|(_, h, on)| h.is_none() && *on).count();
@@ -310,6 +314,9 @@ mod tests {
         let win = n.split("fn window()").nth(1).and_then(|r| r.split("\nfn base").next()).expect("window()");
         assert!(!win.contains("HWND_MESSAGE"), "a message-only window never hears TaskbarCreated");
         let run = m.split("pub fn run()").nth(1).and_then(|r| r.split("let event_loop").next()).expect("run");
-        assert!(run.contains("forward_reopen"), "a second bare start acts as the dock click");
+        let after_wait = run.split("wait_for_pid(pid)").nth(1).expect("the wait comes first");
+        assert!(after_wait.contains("forwardable_start(&request, wait_pid.is_some())") && after_wait.contains("hand_to_running(&request)"), "a second bare start hands its Reopen to the running Tandem, after the import wait");
+        assert!(include_str!("launch_ui.rs").contains("Request::Reopen => self.dock_click_now"), "and the running Tandem acts as the dock click");
+        assert!(!include_str!("../notify.rs").contains("forward_reopen"), "no second start channel beside the pipe");
     }
 }

@@ -2,6 +2,8 @@
 //! passes, and the per-user pipe that hands a URL to a running Tandem. A URL here comes from a
 //! browser or any program of the same user, so it is hostile input: one `url_ok` rule serves the
 //! command line and the pipe, and `ssh_url::parse` is the second gate before anything opens.
+//! The same pipe is the one channel for every request a second `tandem.exe` has (m13v1 Task 1:
+//! `launch::Request`); `launch::decode` is its only parser.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -56,17 +58,16 @@ pub fn url_argument(argv: &[OsString]) -> UrlArg {
 
 /// "open-url\n" + url + "\n". None for a URL that fails `url_ok`.
 pub fn pipe_message(url: &str) -> Option<Vec<u8>> {
-    if !url_ok(url) {
-        return None;
-    }
-    Some(format!("open-url\n{url}\n").into_bytes())
+    crate::launch::encode(&crate::launch::Request::Url { url: url.to_string() })
 }
 
-/// The URL of a message exactly as `pipe_message` makes it; None for anything else.
+/// The URL of a message exactly as `pipe_message` makes it; None for anything else (a message of
+/// another kind included: `launch::decode` reads those).
 pub fn parse_message(bytes: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let url = text.strip_prefix("open-url\n")?.strip_suffix('\n')?;
-    url_ok(url).then(|| url.to_string())
+    match crate::launch::decode(bytes)? {
+        crate::launch::Request::Url { url } => Some(url),
+        _ => None,
+    }
 }
 
 /// P13's flood cap: at most `FLOOD_MAX` external URLs admitted per `FLOOD_WINDOW`; the rest are
@@ -179,21 +180,21 @@ pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn 
 }
 
 #[cfg(windows)]
-pub use pipe::{hand_to_running, hand_to_running_on, listen, listen_on};
+pub use pipe::{hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on};
 
 #[cfg(windows)]
 mod pipe {
     use super::*;
     use crate::winpipe;
 
-    /// Hands `url` to a running Tandem of this user, retrying a busy pipe briefly.
-    pub fn hand_to_running(url: &str) -> AfterHand {
+    /// Hands `request` to a running Tandem of this user, retrying a busy pipe briefly.
+    pub fn hand_to_running(request: &crate::launch::Request) -> AfterHand {
         let name = match winpipe::url_pipe_name() {
             Ok(n) => n,
             Err(e) => return AfterHand::Refuse(format!("no link pipe name: {e}")),
         };
         let mut attempt = || {
-            let handed = hand_to_running_on(&name, url, &allow_foreground);
+            let handed = hand_request_on(&name, request, &allow_foreground);
             if let Handed::OtherOwner(e) = &handed {
                 crate::host::log(&format!("url: the link pipe is held by another owner, so this Tandem runs: {e}"));
             }
@@ -208,7 +209,12 @@ mod pipe {
     }
 
     pub fn hand_to_running_on(name: &str, url: &str, grant: &dyn Fn(u32)) -> Handed {
-        let Some(message) = pipe_message(url) else { return Handed::Failed("the URL is not one Tandem accepts".into()) };
+        hand_request_on(name, &crate::launch::Request::Url { url: url.to_string() }, grant)
+    }
+
+    /// The only writer to the pipe: one message, one connection.
+    pub fn hand_request_on(name: &str, request: &crate::launch::Request, grant: &dyn Fn(u32)) -> Handed {
+        let Some(message) = crate::launch::encode(request) else { return Handed::Failed("the request is not one Tandem accepts".into()) };
         let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
             Ok(Some(p)) => p,
             Ok(None) => return Handed::NoServer,
@@ -225,17 +231,19 @@ mod pipe {
         if let Err(e) = pipe.write_all(&message) {
             return Handed::Failed(e);
         }
-        // The listener closes the pipe when it has read; waiting for that keeps the message from
-        // being dropped with a closed handle.
-        let _ = pipe.read_timeout(&mut [0u8; 1], Duration::from_secs(2));
-        Handed::Taken
+        // The listener closes the pipe when it has read (before it acts on the request), so a
+        // close is the answer; a Tandem that does not close within 2 s is hung, not a taker.
+        match pipe.read_timeout(&mut [0u8; 1], Duration::from_secs(2)) {
+            Ok(None) => Handed::Failed("the running Tandem did not answer".into()),
+            _ => Handed::Taken,
+        }
     }
 
-    pub fn listen(notify: Box<dyn Fn(String) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
+    pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
         listen_on(&winpipe::url_pipe_name()?, Duration::from_secs(2), notify)
     }
 
-    pub fn listen_on(name: &str, wait: Duration, notify: Box<dyn Fn(String) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
+    pub fn listen_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
         let mut listener = winpipe::Listener::bind(name)?;
         Ok(std::thread::spawn(move || loop {
             let pipe = match listener.accept(Duration::from_secs(1)) {
@@ -251,30 +259,35 @@ mod pipe {
                 }
             };
             // The DACL admits this user at this elevation only; nothing more is checked of the client.
-            if let Some(url) = read_message(&pipe, wait) {
-                notify(url);
-            }
-            // A silent or finished client is closed either way, so it never blocks the next one.
+            let request = read_message(&pipe, wait);
+            // A silent or finished client is closed either way, so it never blocks the next one,
+            // and before the request runs, so the sender's answer never waits for the callback.
             pipe.shutdown();
+            if let Some(request) = request {
+                notify(request);
+            }
         }))
     }
 
-    /// One message, read within `wait` of the accept and at most 8 KiB in all.
-    fn read_message(pipe: &winpipe::Pipe, wait: Duration) -> Option<String> {
+    /// One message, read within `wait` of the accept and at most `launch::MAX_MESSAGE` in all:
+    /// it ends where `launch::decode` accepts it. A longer, malformed or silent client is dropped.
+    fn read_message(pipe: &winpipe::Pipe, wait: Duration) -> Option<crate::launch::Request> {
         let end = Instant::now() + wait;
         let mut bytes: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 1024];
-        while bytes.iter().filter(|b| **b == b'\n').count() < 2 {
+        loop {
             let left = end.saturating_duration_since(Instant::now());
-            if left.is_zero() || bytes.len() > MAX_URL + 16 {
+            if left.is_zero() || bytes.len() > crate::launch::MAX_MESSAGE {
                 return None;
             }
             match pipe.read_timeout(&mut chunk, left) {
                 Ok(Some(n)) if n > 0 => bytes.extend_from_slice(&chunk[..n]),
-                _ => break,
+                _ => return None,
+            }
+            if let Some(request) = crate::launch::decode(&bytes) {
+                return Some(request);
             }
         }
-        parse_message(&bytes)
     }
 }
 
@@ -423,7 +436,12 @@ mod tests {
         fn listening(name: &str, wait: Duration) -> mpsc::Receiver<String> {
             let (tx, rx) = mpsc::channel();
             let tx = std::sync::Mutex::new(tx);
-            listen_on(name, wait, Box::new(move |u| drop(tx.lock().unwrap().send(u)))).unwrap();
+            listen_on(name, wait, Box::new(move |r| {
+                if let crate::launch::Request::Url { url } = r {
+                    drop(tx.lock().unwrap().send(url));
+                }
+            }))
+            .unwrap();
             rx
         }
 
@@ -434,6 +452,83 @@ mod tests {
             let rx = listening(&name, Duration::from_secs(2));
             assert_eq!(hand_to_running_on(&name, "ssh://h", &|_| {}), Handed::Taken);
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "ssh://h");
+        }
+
+        fn listening_all(name: &str, wait: Duration) -> mpsc::Receiver<crate::launch::Request> {
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            listen_on(name, wait, Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            rx
+        }
+
+        fn every_kind() -> Vec<crate::launch::Request> {
+            use crate::launch::Request::*;
+            vec![
+                Reopen,
+                Open { paths: vec![r"C:\w\a.ps1".into(), r"D:\x y\b.sh".into()] },
+                Url { url: "ssh://h".into() },
+                NewWindow { guid: Some("ABC-1".into()) },
+                NewTab { guid: None },
+                Arrangement { name: "Dev".into() },
+            ]
+        }
+
+        /// The plan's `forward_and_listen` on the built pipe: an `Open` arrives whole, nothing
+        /// listening is answered fast, and a listener stuck in its callback is "no answer".
+        #[test]
+        fn forward_and_listen() {
+            let name = test_name("launch-open");
+            let t = Instant::now();
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::NoServer);
+            assert!(t.elapsed() < Duration::from_millis(300), "no listener is known at once");
+            let rx = listening_all(&name, Duration::from_secs(2));
+            let open = crate::launch::Request::Open { paths: vec![r"C:\w\a.ps1".into()] };
+            assert_eq!(hand_request_on(&name, &open, &|_| {}), Handed::Taken);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), open);
+
+            let name = test_name("launch-hung");
+            let (release, held) = mpsc::channel::<()>();
+            let held = std::sync::Mutex::new(held);
+            listen_on(&name, Duration::from_secs(2), Box::new(move |_| {
+                let _ = held.lock().unwrap().recv();
+            })).unwrap();
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Taken, "the first is read and closed");
+            let t = Instant::now();
+            assert!(matches!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Failed(_)), "the thread is stuck in the callback: no answer");
+            assert!(t.elapsed() >= Duration::from_secs(2) && t.elapsed() < Duration::from_secs(6));
+            let _ = release.send(());
+        }
+
+        /// B1: a client that connects and says nothing never blocks the next request of any kind.
+        #[test]
+        fn a_silent_client_does_not_block_the_next_request() {
+            for (i, request) in every_kind().into_iter().enumerate() {
+                let name = test_name(&format!("launch-silent-{i}"));
+                let rx = listening_all(&name, Duration::from_millis(200));
+                let silent = crate::winpipe::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
+                let t = Instant::now();
+                assert_eq!(hand_request_on(&name, &request, &|_| {}), Handed::Taken, "{request:?}");
+                assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), request);
+                assert!(t.elapsed() < Duration::from_secs(3));
+                assert_eq!(silent.read_timeout(&mut [0u8; 1], Duration::from_secs(1)), Ok(Some(0)));
+            }
+        }
+
+        /// P2: a hostile or oversized message on the wire reaches no callback, and the next
+        /// well-formed one still does.
+        #[test]
+        fn hostile_wire_messages_reach_no_callback() {
+            let name = test_name("launch-hostile");
+            let rx = listening_all(&name, Duration::from_millis(300));
+            let long = format!("arrangement\n{}\n", "a".repeat(crate::launch::MAX_MESSAGE));
+            for bad in [&b"reopen\nreopen\n"[..], b"junk\n", b"arrangement\na\0\n", long.as_bytes(), b"\xff\xfe"] {
+                let pipe = crate::winpipe::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
+                let _ = pipe.write_all(bad);
+                assert_eq!(pipe.read_timeout(&mut [0u8; 1], Duration::from_secs(3)), Ok(Some(0)), "dropped and closed");
+            }
+            assert!(rx.try_recv().is_err(), "nothing was delivered");
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Taken);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
         }
 
         /// P16: the running Tandem's pid, never everyone, may take the foreground.
