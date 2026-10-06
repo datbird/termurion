@@ -233,7 +233,11 @@ fn extract_sub(cells: &dyn Cells, sub: &Sub, opts: Options, end_trim: bool, out:
         } else {
             (if row == sub.start.row { sub.start.col } else { 0 }, if row == sub.end.row { sub.end.col } else { width - 1 })
         };
-        let reaches_end = sub.mode != Mode::Box && to >= width - 1;
+        // A window narrower than the row (a soft boundary, such as a tmux divider) ends its line
+        // only where it ends in a blank; else the line goes on in the next row (`TE:2004-2101`).
+        let windowed = sub.window.is_some_and(|(lo, hi)| lo > 0 || hi < width - 1);
+        let edge = sub.window.map_or(width - 1, |(_, hi)| hi.min(width - 1));
+        let reaches_end = sub.mode != Mode::Box && to >= edge;
         if let Some((lo, hi)) = sub.window {
             from = from.max(lo);
             to = to.min(hi);
@@ -251,7 +255,15 @@ fn extract_sub(cells: &dyn Cells, sub: &Sub, opts: Options, end_trim: bool, out:
             col += 1;
         }
         let last = row == last_row;
-        let newline = if sub.mode == Mode::Box { !last || opts.last_newline } else { reaches_end && !cells.wraps(row) && (!last || opts.last_newline) };
+        let ends_row = || {
+            if !windowed {
+                return !cells.wraps(row);
+            }
+            let mut tail = String::new();
+            cells.push_cell(row, to, &mut tail);
+            tail.chars().all(char::is_whitespace)
+        };
+        let newline = if sub.mode == Mode::Box { !last || opts.last_newline } else { reaches_end && (!last || opts.last_newline) && ends_row() };
         if newline || (last && opts.trim && end_trim) {
             if opts.trim {
                 trim_tail(out, base);
@@ -370,6 +382,13 @@ mod tests {
         let mut windowed = sub((0, 0), (1, 1), Mode::Character);
         windowed.window = Some((1, 2));
         assert_eq!(extract(&cells, &[windowed], TRIM), "b\nd");
+        // iTerm2's soft-boundary rule (`TE:2004-2101`): a window row with no blank at its end
+        // continues on the next row (a line wrapped at a divider), one with a blank ends its line.
+        let divided = FakeCells::new(6, &[("abcdXX", false), ("efg XX", false), ("ij  XX", false)]);
+        let mut win = sub((0, 0), (2, 3), Mode::Character);
+        win.window = Some((0, 3));
+        assert_eq!(extract(&divided, &[win.clone()], TRIM), "abcdefg\nij");
+        assert_eq!(extract(&divided, &[win], Options { last_newline: true, ..TRIM }), "abcdefg\nij\n");
         // A wide character's spacer adds nothing, and selecting only the spacer takes its character.
         let wide = FakeCells::new(4, &[("a\u{4e2d}\0b", false)]);
         assert_eq!(extract(&wide, &[sub((0, 0), (0, 3), Mode::Character)], TRIM), "a\u{4e2d}b");
