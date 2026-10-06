@@ -80,4 +80,15 @@ mod tests {
         let hk = body(include_str!("session_hotkey_ui.rs"), "fn session_hotkey_pane_gone(");
         assert!(hk.contains("edit_session_after_close") && hk.contains("s.session_hotkey_waiting = false;"));
     }
+
+    /// S5: `refresh_route` hands the hook both milestones' parts in one snapshot (13u's Respect
+    /// Windows shortcuts, 13t's claimed profile keys) and then lets Edit Session follow.
+    #[test]
+    fn refresh_route_carries_both_milestones() {
+        let route = body(include_str!("mod.rs"), "fn refresh_route(&mut self)");
+        let at = |n: &str| route.find(n).unwrap_or_else(|| panic!("refresh_route sets {n}"));
+        assert!(at("snapshot.respect_system =") < at("*self.route_snapshot.write()"));
+        assert!(at("snapshot.profile_shortcuts = keyroute::claimed_shortcuts(") < at("*self.route_snapshot.write()"));
+        assert!(at("*self.remap_tags.write()") < at("self.follow_edit_session();"));
+    }
 }
