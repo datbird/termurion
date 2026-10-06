@@ -113,24 +113,58 @@ impl Matcher {
             .map_err(|e| e.to_string())
     }
 
-    /// Up to `MAX_MATCHES` matches' group spans; Err when a backtracking pattern passed its limit.
-    fn matches(&self, text: &str) -> Result<Vec<Spans>, ()> {
+    /// Up to `MAX_MATCHES` matches' group spans, stopping between searches once `own` (this
+    /// pattern's own budget) or `feed` (the read's deadline) has passed; Err when a backtracking
+    /// pattern passed its step limit. One search is bounded by the step limit, so a call costs
+    /// about one search past a deadline, never `MAX_MATCHES` of them.
+    fn matches(&self, text: &str, own: Instant, feed: Option<Instant>) -> Result<(Vec<Spans>, Stop), ()> {
         let mut out = Vec::new();
+        let mut stop = Stop::Done;
+        let mut due = |out: &Vec<Spans>| -> bool {
+            let now = Instant::now();
+            if now >= own {
+                stop = Stop::Pattern;
+            } else if feed.is_some_and(|d| now >= d) {
+                stop = Stop::Feed;
+            }
+            !out.is_empty() && !matches!(stop, Stop::Done)
+        };
         match self {
             Matcher::Linear(re) => {
                 for caps in re.captures_iter(text).take(MAX_MATCHES) {
                     out.push((0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect());
+                    if due(&out) {
+                        break;
+                    }
                 }
             }
             Matcher::Backtracking(re) => {
                 for caps in re.captures_iter(text).take(MAX_MATCHES) {
                     let caps = caps.map_err(|_| ())?;
                     out.push((0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect());
+                    if due(&out) {
+                        break;
+                    }
                 }
             }
         }
-        Ok(out)
+        // A call that ran past its own budget (even in its last search) is slow whatever it found.
+        if matches!(stop, Stop::Done) && Instant::now() >= own {
+            stop = Stop::Pattern;
+        }
+        Ok((out, stop))
     }
+}
+
+/// Why a pattern's matching stopped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stop {
+    /// Every match was found.
+    Done,
+    /// The read's deadline passed between searches; the rest of the feed is skipped.
+    Feed,
+    /// This pattern alone used more than a whole budget: it is off for the session.
+    Pattern,
 }
 
 /// A group that did not match starts here (NSNotFound on 64-bit Windows and macOS).
@@ -192,6 +226,8 @@ pub struct TriggerState {
     deadline: Option<Instant>,
     /// The time one feed may spend (None: `TRIGGER_BUDGET`); a test of the line count lengthens it.
     budget: Option<Duration>,
+    /// The time one pattern may spend in one line (None: `TRIGGER_BUDGET`); a test shortens it.
+    pattern_budget: Option<Duration>,
     req_base: usize,
     /// The banner for skipped checks was said.
     told_slow: bool,
@@ -718,16 +754,16 @@ impl Screen {
             let raw = raw_parameter(&t.action);
             let mut fired = false;
             let mut stop = false;
-            let started = Instant::now();
-            let found = re.matches(&line.text);
-            // A backtracking pattern over its step limit, or slower than a feed's whole budget,
-            // is off for this session and the person is told (B5).
-            if matches!(re, Matcher::Backtracking(_)) && (found.is_err() || started.elapsed() > TRIGGER_BUDGET) {
+            let own = Instant::now() + self.triggers.pattern_budget.unwrap_or(TRIGGER_BUDGET);
+            let found = re.matches(&line.text, own, self.triggers.deadline);
+            // A pattern of either engine that passed its step limit or used a whole budget by
+            // itself is off for this session and the person is told (B5).
+            if matches!(found, Err(_) | Ok((_, Stop::Pattern))) {
                 self.triggers.list[i].off_here = true;
                 self.triggers.list[i].error = Some("The pattern took too long to match and was turned off for this session.".into());
                 self.requests.push(Request::Trigger(TriggerRequest::PatternTooSlow { trigger: i }));
             }
-            let Ok(found) = found else { continue };
+            let Ok((found, _)) = found else { continue };
             for gs in found {
                 if self.over_budget() {
                     break;
@@ -1091,6 +1127,54 @@ mod tests {
         assert_eq!(too_slow(&mut s).0, 1);
         s.feed(text.as_bytes());
         assert_eq!(too_slow(&mut s).0, 0, "said once per pane");
+    }
+
+    /// Review 1: matching stops between searches once a deadline passes, so one call never runs
+    /// all `MAX_MATCHES` searches past it (either engine).
+    #[test]
+    fn matching_stops_between_searches() {
+        let text = "a ".repeat(500);
+        for pattern in ["a", "(?=a)a"] {
+            let m = Matcher::compile(pattern).unwrap();
+            let (all, stop) = m.matches(&text, Instant::now() + Duration::from_secs(60), None).unwrap();
+            assert_eq!((all.len(), stop), (MAX_MATCHES, Stop::Done), "{pattern}: no deadline runs to the cap");
+            let (late, stop) = m.matches(&text, Instant::now(), None).unwrap();
+            assert_eq!((late.len(), stop), (1, Stop::Pattern), "{pattern}: its own budget spent");
+            let (feed, stop) = m.matches(&text, Instant::now() + Duration::from_secs(60), Some(Instant::now())).unwrap();
+            assert_eq!((feed.len(), stop), (1, Stop::Feed), "{pattern}: the read's deadline passed");
+        }
+    }
+
+    /// Review 1: one search at the backtrack limit fits the budget in a test (debug) build, so
+    /// "stop between searches" bounds a call to about one budget.
+    #[test]
+    fn one_search_fits_the_budget() {
+        let m = Matcher::compile("(?=a)(a+)+$").unwrap();
+        let text = format!("{}b", "a".repeat(40));
+        let t0 = Instant::now();
+        let r = m.matches(&text, Instant::now() + Duration::from_secs(60), None);
+        let took = t0.elapsed();
+        eprintln!("one limit-bound search took {took:?}");
+        assert!(r.is_err() || r.is_ok_and(|(v, _)| v.is_empty()), "the limit ends the search");
+        assert!(took < Duration::from_millis(100), "{took:?}");
+    }
+
+    /// Review 1: a pattern of EITHER engine that uses more than its budget is off for the session
+    /// with one banner; a quick one is left alone.
+    #[test]
+    fn a_slow_pattern_of_either_engine_is_turned_off() {
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("a+", "AlertTrigger", "x", false), trig("(?=a)a+", "AlertTrigger", "y", false)], TriggerPrefs::default());
+        s.triggers.pattern_budget = Some(Duration::ZERO);
+        s.feed(b"aaa\r\n");
+        assert_eq!(too_slow(&mut s).1, 2, "both engines");
+        assert!(s.triggers.list.iter().all(|c| c.off_here), "linear and backtracking are off");
+        s.feed(b"aaa\r\n");
+        assert_eq!(alerts(&mut s), 0, "off patterns fire nothing");
+        let mut s = Screen::new(80, 24);
+        s.set_triggers(vec![trig("a+", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"aaa\r\n");
+        assert_eq!((alerts(&mut s), s.triggers.list[0].off_here), (1, false), "a quick pattern stays on");
     }
 
     /// B5: one feed queues at most `MAX_REQUESTS` trigger requests.
