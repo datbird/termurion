@@ -245,9 +245,10 @@ pub fn resolve_name(name: &str) -> Option<Sound> {
 /// Plays a judged sound: asynchronous, never the default beep, never over a sound still
 /// playing (a flood of marks never stacks sounds). False when nothing played.
 pub fn play_sound(sound: &Sound) -> bool {
-    let (wide, flags): (Vec<u16>, u32) = match sound {
-        Sound::Alias(name) => (name.encode_utf16().chain(Some(0)).collect(), SND_ALIAS),
-        Sound::File(path) => (path.path().as_os_str().encode_wide_nul(), SND_FILENAME),
+    let (wide, flags): (Vec<u16>, u32) = match (sound.alias(), sound.file()) {
+        (Some(name), _) => (name.encode_utf16().chain(Some(0)).collect(), SND_ALIAS),
+        (None, Some(path)) => (path.as_os_str().encode_wide_nul(), SND_FILENAME),
+        (None, None) => return false,
     };
     // SAFETY: `wide` is NUL-terminated and lives past the call (the system copies a file name).
     unsafe { PlaySoundW(wide.as_ptr(), std::ptr::null_mut(), flags | SND_ASYNC | SND_NODEFAULT | SND_NOSTOP) != 0 }

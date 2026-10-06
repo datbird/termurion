@@ -117,13 +117,35 @@ pub fn icon_text(label: &str) -> String {
     }
 }
 
-/// A sound that passed the judge: only this type reaches `PlaySoundW`.
+/// A sound that passed the judge: only this type reaches `PlaySoundW`. Its field is private,
+/// so only `resolve` can make one (B2 by type, as `LocalPath`).
 #[derive(Debug)]
-pub enum Sound {
+pub struct Sound(Inner);
+
+#[derive(Debug)]
+enum Inner {
     /// A name registered under `HKCU\AppEvents\EventLabels`.
     Alias(String),
     /// A `.wav` file the path judge found local.
     File(LocalPath),
+}
+
+impl Sound {
+    /// The registered name, for `SND_ALIAS`.
+    pub fn alias(&self) -> Option<&str> {
+        match &self.0 {
+            Inner::Alias(n) => Some(n),
+            Inner::File(_) => None,
+        }
+    }
+
+    /// The judged file, for `SND_FILENAME`.
+    pub fn file(&self) -> Option<&Path> {
+        match &self.0 {
+            Inner::File(p) => Some(p.path()),
+            Inner::Alias(_) => None,
+        }
+    }
 }
 
 /// The largest sound file played.
@@ -154,17 +176,17 @@ pub fn resolve(name: &str, windir: &Path, is_alias: &dyn Fn(&str) -> bool, accep
         return None;
     }
     if is_drive_path(name) {
-        return if has_dotdot(name) { None } else { accept(Path::new(name)).map(Sound::File) };
+        return if has_dotdot(name) { None } else { accept(Path::new(name)).map(|p| Sound(Inner::File(p))) };
     }
     let plain = name.chars().count() <= MAX_NAME && !name.contains(['\\', '/', ':']) && !name.contains("..");
     if is_alias(name) && name.chars().count() <= MAX_NAME {
-        return Some(Sound::Alias(name.to_string()));
+        return Some(Sound(Inner::Alias(name.to_string())));
     }
     if !plain {
         return None;
     }
     let media: PathBuf = windir.join("Media");
-    [name.to_string(), format!("{name}.wav")].iter().find_map(|cand| accept(&media.join(cand)).map(Sound::File))
+    [name.to_string(), format!("{name}.wav")].iter().find_map(|cand| accept(&media.join(cand)).map(|p| Sound(Inner::File(p))))
 }
 
 /// The real acceptance: judged local, a `.wav`, a regular file of at most 5 MiB.
@@ -180,6 +202,39 @@ pub fn accept_file(p: &Path) -> Option<LocalPath> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 6 fix r1 item 2 (B2 by type): a `Sound` is built in `resolve` and nowhere else, so
+    /// no unjudged string can reach `PlaySoundW`; no other file names its variants.
+    #[test]
+    fn a_sound_is_built_only_by_the_judge() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let code = text.split("#[cfg(test)]").next().unwrap();
+            if f.file_name().is_some_and(|n| n == "bell_badge.rs") {
+                let judge = &code[code.find("pub fn resolve(").unwrap()..];
+                let judge = &judge[..judge.find("\n}\n").unwrap()];
+                let outside = code.replace(judge, "");
+                assert!(!outside.contains("Sound(Inner::"), "a Sound is built only inside resolve");
+                continue;
+            }
+            for banned in ["Sound::Alias", "Sound::File", "Sound(Inner", "bell_badge::Inner"] {
+                assert!(!code.contains(banned), "{} builds or opens a Sound with {banned}", f.display());
+            }
+        }
+    }
+
     use super::*;
     use std::cell::RefCell;
 
@@ -295,7 +350,7 @@ mod tests {
         }
         assert!(asked.borrow().is_empty(), "{:?}", asked.borrow());
         // An alias is an alias only by exact name.
-        assert!(matches!(resolve("SystemAsterisk", win, &alias, &accept), Some(Sound::Alias(n)) if n == "SystemAsterisk"));
+        assert!(matches!(resolve("SystemAsterisk", win, &alias, &accept), Some(s) if s.alias() == Some("SystemAsterisk")));
         // A bare name asks the judge for the Media folder, plain then with `.wav`; never anywhere else.
         assert!(resolve("Windows Ding", win, &alias, &accept).is_none());
         assert_eq!(*asked.borrow(), vec!["C:\\Windows\\Media\\Windows Ding".to_string(), "C:\\Windows\\Media\\Windows Ding.wav".to_string()]);
@@ -325,7 +380,7 @@ mod tests {
         let media = dir.join("Media");
         std::fs::create_dir_all(&media).unwrap();
         std::fs::write(media.join("Ding.wav"), b"RIFF").unwrap();
-        assert!(matches!(resolve("Ding", &dir, &|_| false, &accept_file), Some(Sound::File(_))));
+        assert!(matches!(resolve("Ding", &dir, &|_| false, &accept_file), Some(s) if s.file().is_some()));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
