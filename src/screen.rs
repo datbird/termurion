@@ -293,9 +293,10 @@ pub struct Screen {
     pub dnd: crate::kitty_dnd::Controller,
     /// What output asked the window to do, taken by the app.
     pub requests: Vec<Request>,
-    /// A `Request::ColorPreset` is queued in `requests` (reset when they are taken): colors after
-    /// it queue behind it. A stale true only queues a color the handler applies at once.
-    pub(crate) preset_pending: bool,
+    /// The escape-code preset and colors waiting for the window (fixed size; emitted by
+    /// `take_requests`): a preset in the stream is pending until taken, and colors after it wait
+    /// in their slots behind it.
+    pub(crate) pending: PendingColors,
     /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
     pub(crate) copy: crate::clipboard_osc::Copy,
     pub(crate) capture: Option<Vec<u8>>,
@@ -544,10 +545,43 @@ static TAB_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// and a synchronized update or color scheme reports the program left on (13q B9).
 pub(crate) const END_RESET: &str = "\x1b[0m\x1b(B\x0f\x1b]8;;\x1b\\\x1b[r\x1b[?6l\x1b[?7h\x1b[4l\x1b[?2026l\x1b[?2031l";
 
-/// Whether `SetColors` names a color (`apply_color` accepts it).
-fn is_color_name(name: &str) -> bool {
-    const ANSI: [&str; 8] = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
-    matches!(name, "fg" | "bg" | "bold" | "link" | "match" | "selbg" | "selfg" | "curbg" | "curfg") || ANSI.contains(&name.strip_prefix("br_").unwrap_or(name))
+#[cfg(test)]
+thread_local! {
+    /// Elements the pending escape-code preset and color bookkeeping looked at (a work counter for the tests).
+    pub(crate) static PENDING_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn pending_work(n: usize) {
+    PENDING_WORK.with(|w| w.set(w.get() + n));
+}
+
+/// The 25 colors `SetColors` names (`apply_color` accepts them), one pending slot each.
+const COLOR_NAMES: [&str; 25] = [
+    "fg", "bg", "bold", "link", "match", "selbg", "selfg", "curbg", "curfg", "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "br_black", "br_red", "br_green", "br_yellow",
+    "br_blue", "br_magenta", "br_cyan", "br_white",
+];
+
+fn color_slot(name: &str) -> Option<usize> {
+    COLOR_NAMES.iter().position(|n| *n == name)
+}
+
+/// What a program's escape codes asked of the colors since the window last took the requests:
+/// one pending preset, one color per name behind it and the latest tab color on each side of it.
+/// Fixed size, so a flood costs O(1) per color.
+#[derive(Default)]
+pub(crate) struct PendingColors {
+    preset: Option<String>,
+    colors: [Option<crate::osc1337::Color>; 25],
+    tab_before: Option<Option<alacritty_terminal::vte::ansi::Rgb>>,
+    tab_after: Option<Option<alacritty_terminal::vte::ansi::Rgb>>,
+}
+
+impl PendingColors {
+    /// A preset is waiting, so a color after it queues behind it.
+    pub(crate) fn preset_pending(&self) -> bool {
+        self.preset.is_some()
+    }
 }
 
 impl Screen {
@@ -663,7 +697,7 @@ impl Screen {
             clipboard_allowed: false,
             host_policy: Default::default(),
             requests: Vec::new(),
-            preset_pending: false,
+            pending: PendingColors::default(),
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
             capture_hold: Vec::new(),
@@ -1638,37 +1672,56 @@ impl Screen {
         env.iter().filter(|(k, _)| names.is_none_or(|n| n.contains(&k.as_str()))).cloned().collect()
     }
 
-    /// What output asked the window to do since the last call.
+    /// What output asked the window to do since the last call. The pending preset comes last:
+    /// the tab color set before it, the preset, its colors, then the tab color set after it
+    /// (stream order, as iTerm2 pauses the stream for a preset).
     pub fn take_requests(&mut self) -> Vec<Request> {
-        self.preset_pending = false;
-        std::mem::take(&mut self.requests)
-    }
-
-    /// Queues one SetColors color behind the pending preset (stream order), keeping the latest
-    /// per name, so a program looping colors cannot grow the queue past the 25 names. An
-    /// unknown name queues nothing.
-    pub(crate) fn queue_color_after_preset(&mut self, name: String, c: crate::osc1337::Color) {
-        if !is_color_name(&name) {
-            return;
-        }
-        let at = self.requests.iter().rposition(|r| matches!(r, Request::ColorPreset(_))).map_or(0, |i| i + 1);
-        match self.requests[at..].iter().position(|r| matches!(r, Request::NamedColor(n, _) if *n == name)) {
-            Some(i) => self.requests[at + i] = Request::NamedColor(name, c),
-            None => self.requests.push(Request::NamedColor(name, c)),
-        }
-    }
-
-    /// Queues a preset load. An earlier pending load and the colors queued behind it come before
-    /// this one in the stream, so they are dropped (this preset overwrites its colors).
-    pub(crate) fn queue_preset(&mut self, name: String) {
-        if self.preset_pending {
-            if let Some(i) = self.requests.iter().rposition(|r| matches!(r, Request::ColorPreset(_))) {
-                let tail: Vec<Request> = self.requests.drain(i..).filter(|r| !matches!(r, Request::ColorPreset(_) | Request::NamedColor(..))).collect();
-                self.requests.extend(tail);
+        let pending = std::mem::take(&mut self.pending);
+        let mut out = std::mem::take(&mut self.requests);
+        out.extend(pending.tab_before.map(Request::TabColor));
+        if let Some(name) = pending.preset {
+            out.push(Request::ColorPreset(name));
+            for (slot, c) in pending.colors.into_iter().enumerate() {
+                if let Some(c) = c {
+                    out.push(Request::NamedColor(COLOR_NAMES[slot].to_string(), c));
+                }
             }
         }
-        self.requests.push(Request::ColorPreset(name));
-        self.preset_pending = true;
+        out.extend(pending.tab_after.map(Request::TabColor));
+        out
+    }
+
+    /// A SetColors color behind a pending preset overwrites its slot (O(1), no queue); an
+    /// unknown name queues nothing.
+    pub(crate) fn queue_color_after_preset(&mut self, name: &str, c: crate::osc1337::Color) {
+        let Some(slot) = color_slot(name) else { return };
+        #[cfg(test)]
+        pending_work(1);
+        self.pending.colors[slot] = Some(c);
+    }
+
+    /// A SetColors `tab=` (None is `default`): the latest one is kept, before or after a
+    /// pending preset.
+    pub(crate) fn queue_tab_color(&mut self, c: Option<alacritty_terminal::vte::ansi::Rgb>) {
+        #[cfg(test)]
+        pending_work(1);
+        if self.pending.preset.is_some() {
+            self.pending.tab_after = Some(c);
+        } else {
+            self.pending.tab_before = Some(c);
+        }
+    }
+
+    /// Queues a preset load. An earlier pending load and the colors behind it come before this
+    /// one in the stream, so they are dropped (this preset overwrites its colors); a tab color
+    /// set after that load becomes one set before this one.
+    pub(crate) fn queue_preset(&mut self, name: String) {
+        #[cfg(test)]
+        pending_work(1);
+        let p = &mut self.pending;
+        p.tab_before = p.tab_after.take().or(p.tab_before.take());
+        p.colors = [None; 25];
+        p.preset = Some(name);
     }
 
     /// Whether DA1 claims clipboard support (`52`).

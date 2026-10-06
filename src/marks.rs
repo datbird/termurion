@@ -1578,15 +1578,15 @@ impl Screen {
                                 // queued color per name behind it.
                                 self.queue_preset(v);
                             }
-                            ("tab", _) if v == "default" => self.requests.push(Request::TabColor(None)),
-                            ("tab", Some(crate::osc1337::Color::Rgb(c))) => self.requests.push(Request::TabColor(Some(c))),
+                            ("tab", _) if v == "default" => self.queue_tab_color(None),
+                            ("tab", Some(crate::osc1337::Color::Rgb(c))) => self.queue_tab_color(Some(c)),
                             ("tab", Some(crate::osc1337::Color::Index(i))) => {
                                 let c = self.palette.indexed(i);
-                                self.requests.push(Request::TabColor(Some(c)));
+                                self.queue_tab_color(Some(c));
                             }
                             // iTerm2 pauses the stream for a preset: colors after a pending one apply
                             // after it, in order (the window's handler).
-                            (_, Some(c)) if self.preset_pending => self.queue_color_after_preset(name, c),
+                            (_, Some(c)) if self.pending.preset_pending() => self.queue_color_after_preset(&name, c),
                             (_, Some(c)) => {
                                 if self.apply_color(&name, c) {
                                     self.color_sets.retain(|(n, _)| *n != name);
@@ -1823,6 +1823,30 @@ mod tests {
             s.feed(format!("\x1b]1337;SetColors=junk{i}=ff0000\x07").as_bytes());
         }
         assert_eq!(s.take_requests().len(), 1);
+    }
+
+    /// A program looping `preset=X`, then many tab and color changes in the same frame (the tab
+    /// requests used to make every color scan the tail): the pending state is fixed size, so the
+    /// work stays linear in the sequences fed, and the order that matters still holds.
+    #[test]
+    fn osc_preset_pending_state_is_fixed_size() {
+        crate::screen::PENDING_WORK.with(|w| w.set(0));
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;SetColors=preset=Tango Dark\x07");
+        let n = 5_000;
+        for i in 0..n {
+            s.feed(format!("\x1b]1337;SetColors=tab={:02x}0000,fg={:02x}0000\x07", i % 256, i % 256).as_bytes());
+        }
+        s.feed(b"\x1b]1337;SetColors=tab=00ff00,fg=0000ff\x07");
+        let work = crate::screen::PENDING_WORK.with(|w| w.get());
+        assert!(work <= 10 * n, "work {work} for {n} sequences is not linear");
+        let reqs = s.take_requests();
+        assert!(reqs.len() <= 27, "preset + 25 colors + tab at most, got {}", reqs.len());
+        assert_eq!(reqs.iter().filter(|r| matches!(r, Request::ColorPreset(_))).count(), 1);
+        let last_tab = reqs.iter().rev().find_map(|r| if let Request::TabColor(c) = r { Some(*c) } else { None });
+        assert_eq!(last_tab, Some(Some(alacritty_terminal::vte::ansi::Rgb { r: 0, g: 255, b: 0 })), "the latest tab wins");
+        run_color_requests_from(&mut s, reqs, "Tango Dark");
+        assert_eq!(s.palette.fg, alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 255 });
     }
 
     #[test]
