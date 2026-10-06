@@ -887,6 +887,11 @@ impl App {
         // A hotkey window belongs to its hotkey, not to a restored arrangement.
         let windows: Vec<Value> = windows.into_iter().filter(|w| arrangement::hotkey_guid(w).is_none()).collect();
         if as_tabs {
+            // Nothing to restore never wakes a resident window (it would show, then hide again).
+            let has_tabs = windows.iter().any(|w| w.get("Tabs").and_then(|t| t.as_array()).is_some_and(|t| !t.is_empty()));
+            if !has_tabs {
+                return self.redraw();
+            }
             let woke = self.resident;
             self.wake_from_resident(super::resident_ui::Wake::InPlace);
             for w in &windows {
@@ -902,7 +907,7 @@ impl App {
             }
             self.settle_tabs();
             self.relayout();
-            // Nothing restored: the window rests again.
+            // Nothing restored (every tab failed): the window rests again.
             if woke && self.tabs.is_empty() {
                 self.go_resident();
             }

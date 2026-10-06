@@ -102,7 +102,7 @@ impl App {
             // A bad host or no host opens nothing and shows nothing (iTerm2's; Decision).
             Err(_) => return false,
         };
-        let before = (self.tabs.len(), self.pending_windows.len());
+        let before = (self.tabs.len(), self.pending_tabs());
         let copy = values.map(|values| {
             let saved = self.store.shared_guid(&guid);
             let shared = self.store.profiles.iter().find(|p| p.guid() == saved).unwrap_or_else(|| self.store.default_profile()).clone();
@@ -111,7 +111,7 @@ impl App {
             self.add_session_copy(divorced, &shared, &values, fresh)
         });
         self.new_tab(Some(copy.as_deref().unwrap_or(&guid)));
-        let started = (self.tabs.len(), self.pending_windows.len()) != before;
+        let started = (self.tabs.len(), self.pending_tabs()) != before;
         if let (false, Some(copy)) = (started, &copy) {
             self.forget_session_profile(copy);
         }

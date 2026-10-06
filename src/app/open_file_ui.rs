@@ -241,7 +241,7 @@ impl App {
         let fresh = uuid::Uuid::new_v4().to_string().to_uppercase();
         let divorced = crate::session_profile::divorce(&shared, fresh.clone());
         let copy = self.add_session_copy(divorced, &shared, &values, fresh);
-        let before = (self.tabs.len(), self.pending_windows.len(), self.panes.len());
+        let before = (self.tabs.len(), self.pending_tabs(), self.panes.len());
         let in_window = !(launch.new_window || self.tabs.is_empty());
         let started = match (in_window, launch.style) {
             (true, Style::Tab) => {
@@ -264,7 +264,7 @@ impl App {
                 }
             },
         };
-        if !started || (self.tabs.len(), self.pending_windows.len(), self.panes.len()) == before {
+        if !started || (self.tabs.len(), self.pending_tabs(), self.panes.len()) == before {
             self.forget_session_profile(&copy);
         }
         self.bring_forward();

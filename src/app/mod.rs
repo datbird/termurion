@@ -661,6 +661,9 @@ pub struct App {
     /// Tandem runs with no window (m13v1 Task 7, R3): the last window is hidden, empty and off the
     /// taskbar, the notification area icon is its way back. App-wide, not in `swap_live`.
     resident: bool,
+    /// Where in `pending_windows` the resident wake's one window waits (final review item 3): later
+    /// tabs asked for before it opens join it. Cleared when the window is awake. App-wide.
+    pending_wake: Option<usize>,
     /// When this Tandem started, and whether the person has done anything yet (a key in a
     /// session, Close, a window they closed): iTerm2's grace period for quitting (`AD:915-942`).
     launched_at: Instant,
@@ -2007,6 +2010,7 @@ pub fn run() {
         launch_queue,
         launch_flood: Default::default(),
         resident: false,
+        pending_wake: None,
         launched_at: Instant::now(),
         user_interacted: false,
         recents: Default::default(),
@@ -3140,10 +3144,10 @@ impl App {
             AddTab::Default => self.new_tab(None),
             AddTab::CurrentProfile => {
                 let guid = pane.and_then(|p| self.profile_for_new_session(p));
-                let (tabs, windows) = (self.tabs.len(), self.pending_windows.len());
+                let (tabs, windows) = (self.tabs.len(), self.pending_tabs());
                 self.new_tab(guid.as_deref());
                 // Nothing opened: a copy made for it goes.
-                if let Some(g) = guid.filter(|_| self.tabs.len() == tabs && self.pending_windows.len() == windows) {
+                if let Some(g) = guid.filter(|_| self.tabs.len() == tabs && self.pending_tabs() == windows) {
                     self.forget_session_profile(&g);
                 }
             }

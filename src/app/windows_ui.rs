@@ -1254,7 +1254,42 @@ pub(super) enum NewWindow {
     HotkeyRestored(String, crate::arrangement::Value),
 }
 
+impl NewWindow {
+    /// The tabs this queued window makes from profiles; any other kind counts as one.
+    pub(super) fn queued_tabs(&self) -> usize {
+        match self {
+            NewWindow::ProfilesIn(_, rest) => 1 + rest.guids().count(),
+            _ => 1,
+        }
+    }
+}
+
+/// The resident wake's ONE window (final review item 3): the first profile tab asked for while
+/// resident queues a window (`wake` remembers where), and every later one before it opens joins it
+/// as a tab (`default` names the default profile for a tab of none). iTerm2 opens one window with
+/// N tabs, never N windows.
+pub(super) fn queue_wake_tab(pending: &mut Vec<NewWindow>, wake: &mut Option<usize>, guid: Option<String>, default: &str) {
+    let tab = |g: Option<String>| g.unwrap_or_else(|| default.to_string());
+    match wake.and_then(|i| pending.get_mut(i)) {
+        Some(NewWindow::ProfilesIn(_, crate::settings_ui::Rest::Tabs(rest))) => rest.push(tab(guid)),
+        Some(w @ NewWindow::Profile(_)) => {
+            let NewWindow::Profile(first) = std::mem::replace(w, NewWindow::Orphans(Vec::new())) else { unreachable!() };
+            *w = NewWindow::ProfilesIn(tab(first), crate::settings_ui::Rest::Tabs(vec![tab(guid)]));
+        }
+        _ => {
+            pending.push(NewWindow::Profile(guid));
+            *wake = Some(pending.len() - 1);
+        }
+    }
+}
+
 impl App {
+    /// The tabs queued windows will make: a resident wake's tabs join one window, so a caller that
+    /// compares before and after counts tabs, not windows.
+    pub(super) fn pending_tabs(&self) -> usize {
+        self.pending_windows.iter().map(NewWindow::queued_tabs).sum()
+    }
+
     pub(super) fn open_pending(&mut self, event_loop: &ActiveEventLoop, w: NewWindow) {
         if let Err(e) = self.open_window_with(event_loop, w) {
             self.banners.set("window", format!("Could not open a window: {e}"));

@@ -105,6 +105,7 @@ impl App {
             return;
         }
         self.resident = false;
+        self.pending_wake = None;
         if let Some(id) = self.current_window() {
             self.registry.open(windows_ui::key(id));
             self.refresh_window_list();
@@ -137,8 +138,12 @@ impl App {
         }
         match how {
             Wake::Window(guid) => {
-                self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
-                let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
+                // Every tab asked for before the window opens joins the one window (item 3).
+                let first = self.pending_wake.is_none();
+                windows_ui::queue_wake_tab(&mut self.pending_windows, &mut self.pending_wake, guid.map(str::to_string), &self.store.default_guid);
+                if first {
+                    let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
+                }
                 true
             }
             Wake::InPlace => {
@@ -299,7 +304,7 @@ mod tests {
     #[test]
     fn every_tab_entry_wakes_a_resident_window_first() {
         let wake = body(production(OWN), "wake_from_resident");
-        assert!(wake.contains("!self.resident") && wake.contains("NewWindow::Profile(") && wake.contains("self.wake_in_place()"), "a profile tab opens through open_window_with, anything else wakes in place");
+        assert!(wake.contains("!self.resident") && wake.contains("queue_wake_tab(") && wake.contains("self.wake_in_place()"), "a profile tab opens through open_window_with, anything else wakes in place");
         let place = body(production(OWN), "wake_in_place");
         for step in ["leave_resident_for(false)", "WinTransparency::new", "apply_fonts()", "size_window(", "place_window()", "apply_space(", "apply_window_style(", "apply_window_profile(", "show_awake_window()"] {
             assert!(place.contains(step), "the in-place wake runs {step}");
@@ -319,6 +324,40 @@ mod tests {
         assert!(resident_branch.contains("return;") && !resident_branch.contains("reopen_target"), "a hidden window is never focused");
         let presence = production(PRESENCE);
         assert!(presence.contains("presence::DockClick::Unhandled => self.reopen(event_loop)") && !presence.contains("Reopen::Focus(w) => self.focus_terminal_window(w)"), "the tray's click is the one reopen");
+    }
+
+    /// Final review item 3: three tabs asked for in one pass while resident (the Profiles window's Open
+    /// in tabs, launch requests, links) make exactly ONE pending window holding the three profiles.
+    #[test]
+    fn several_wake_tabs_in_one_pass_make_one_window() {
+        use super::super::windows_ui::{queue_wake_tab, NewWindow};
+        use crate::settings_ui::Rest;
+        let (mut pending, mut wake) = (Vec::new(), None);
+        queue_wake_tab(&mut pending, &mut wake, Some("A".to_string()), "D");
+        assert!(matches!(pending.as_slice(), [NewWindow::Profile(Some(g))] if g == "A"), "one tab alone is a plain profile window");
+        queue_wake_tab(&mut pending, &mut wake, None, "D");
+        queue_wake_tab(&mut pending, &mut wake, Some("C".to_string()), "D");
+        assert_eq!(pending.len(), 1, "one window");
+        assert!(matches!(&pending[0], NewWindow::ProfilesIn(f, Rest::Tabs(r)) if f == "A" && r == &["D".to_string(), "C".to_string()]), "three tabs, in order");
+        assert_eq!(pending[0].queued_tabs(), 3);
+        // A window queued before the wake is left alone.
+        let (mut pending, mut wake) = (vec![NewWindow::Orphans(Vec::new())], None);
+        queue_wake_tab(&mut pending, &mut wake, None, "D");
+        queue_wake_tab(&mut pending, &mut wake, None, "D");
+        assert_eq!(pending.len(), 2);
+        assert!(matches!(&pending[1], NewWindow::ProfilesIn(f, Rest::Tabs(r)) if f == "D" && r.len() == 1));
+        // The wiring: the one wake function merges, the merge ends when the window opens, and the
+        // callers that compare before and after count tabs.
+        let wake_fn = body(production(OWN), "wake_from_resident");
+        assert!(wake_fn.contains("queue_wake_tab(&mut self.pending_windows, &mut self.pending_wake,"), "the wake merges");
+        assert!(body(production(OWN), "leave_resident_for").contains("self.pending_wake = None;"));
+        let ssh = production(include_str!("ssh_url_app.rs"));
+        assert!(ssh.contains("self.pending_tabs()") && !ssh.contains("self.pending_windows.len()"), "a second link in the pass keeps its session copy");
+        assert!(!production(MOD).contains("self.pending_windows.len()"), "the add-tab button counts tabs");
+        // N2: an as-tabs restore with nothing to restore never wakes (no flash, no frame saved).
+        let restore = body(production(include_str!("arrange_ui.rs")), "restore_arrangement");
+        let nothing = restore.find("if !has_tabs {").expect("nothing to restore is decided first");
+        assert!(nothing < restore.find("wake_from_resident(").unwrap());
     }
 
     /// The class guard: a new place that pushes a tab onto the window is looked at by a person. Each file
