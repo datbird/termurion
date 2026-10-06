@@ -24,6 +24,25 @@ pub enum Kind {
 
 /// Most rows a prompt may span for its paths to be looked at (`MS:4786-4789`).
 const MAX_PROMPT_ROWS: i64 = 5;
+/// How many rows above a hovered or clicked cell the Command Info hit test reads for a prompt
+/// mark: a command line spans a few rows, so a cell farther below one is not on a command.
+const HIT_WALK_ROWS: i32 = 64;
+
+/// The nearest marked row at or above `line` (down to `top`), reading at most `cap` rows.
+fn nearest_mark(line: i32, top: i32, cap: i32, mark_at: impl Fn(i32) -> u32) -> Option<(u32, i32)> {
+    let mut at = line;
+    for _ in 0..cap {
+        let id = mark_at(at);
+        if id != 0 {
+            return Some((id, at));
+        }
+        if at <= top {
+            return None;
+        }
+        at -= 1;
+    }
+    None
+}
 /// Most path candidates kept per prompt (B4).
 const MAX_PATH_CANDIDATES: usize = 4;
 /// Most path marks kept per pane.
@@ -938,20 +957,11 @@ impl Screen {
         // hover never reads the whole buffer for marks.
         let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
-        let mut line = point.line.0;
+        let line = point.line.0;
         if line < top || line >= grid.screen_lines() as i32 {
             return None;
         }
-        let id = loop {
-            let id = grid[Line(line)].mark();
-            if id != 0 {
-                break id;
-            }
-            if line <= top {
-                return None;
-            }
-            line -= 1;
-        };
+        let (id, line) = nearest_mark(line, top, HIT_WALK_ROWS, |l| grid[Line(l)].mark())?;
         let m = self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt && !m.command.trim().is_empty())?;
         let (a, b) = m.command_range?;
         let (start, end) = (self.resolve_from(line, a)?, self.resolve_from(line, b)?);
@@ -1677,6 +1687,21 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    /// Final wave item 6: the hit test reads a bounded number of rows however long the scrollback.
+    #[test]
+    fn the_command_hit_walk_is_bounded() {
+        let reads = std::cell::Cell::new(0);
+        let none = |_: i32| {
+            reads.set(reads.get() + 1);
+            0
+        };
+        assert_eq!(nearest_mark(0, -1_000_000, HIT_WALK_ROWS, none), None);
+        assert_eq!(reads.get(), HIT_WALK_ROWS as usize, "no marks in a million rows: 64 reads, not a million");
+        assert_eq!(nearest_mark(10, -100, HIT_WALK_ROWS, |l| if l == 4 { 7 } else { 0 }), Some((7, 4)), "a mark a few rows up is found");
+        assert_eq!(nearest_mark(0, -100, HIT_WALK_ROWS, |l| if l == -100 { 7 } else { 0 }), None, "a mark farther than the cap is not a hit");
+        assert_eq!(nearest_mark(0, -3, HIT_WALK_ROWS, |_| 0), None, "the top of the buffer ends the walk");
+    }
+
     use super::*;
     use crate::screen::Screen;
 

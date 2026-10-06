@@ -280,11 +280,12 @@ mod tests {
     #[test]
     fn dropped_names_cannot_run_commands() {
         let refused = Some(Err(crate::semantic::CMD_REFUSED.to_string()));
-        for name in [r"C:\d\a&calc&.txt", r"C:\d\%PATH%.txt", r"C:\d\a(1).txt", "C:\\"] {
+        for name in [r"C:\d\a&calc&.txt", r"C:\d\%PATH%.txt", r"C:\d\a(1).txt", "C:\\d\\"] {
             let files = vec![r"C:\ok.txt".to_string(), name.to_string()];
             assert_eq!(drop_command("x \\(filenames)", &files), refused, "{name}");
             assert_eq!(drop_command("x \"\\(filenames)\"", &files), refused, "{name}");
         }
+        assert_eq!(drop_command("x \\(filenames)", &["C:\\".to_string()]), Some(Ok("x \"C:\\.\"".into())), "a dropped drive root is written as X:\\.");
         let line = drop_command("upload \"\\(filenames)\"", &[r"C:\a b\x.txt".to_string()]).unwrap().unwrap();
         assert_eq!(crate::semantic::cmd_command_line(&line), r#"cmd.exe /d /v:off /s /c "upload "C:\a b\x.txt"""#);
         assert_eq!(crate::semantic::split_command_line(&line), ["upload", r"C:\a b\x.txt"]);
