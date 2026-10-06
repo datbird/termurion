@@ -8,7 +8,7 @@ body = "This window shows the Tandem tip of the day. It\u2019ll appear every 24 
 [[tip]]
 key = "0000"
 title = "Shell Integration"
-body = "The big new feature of Tandem version 3 is Shell Integration. Click \u201CLearn More\u201D for all the details."
+body = "A big feature of Tandem is Shell Integration. Click \u201CLearn More\u201D for all the details."
 url = "https://iterm2.com/shell_integration.html"
 
 [[tip]]
@@ -367,19 +367,14 @@ title = "Ligatures"
 body = "If you use a font that supports ligatures, you can enable ligature support in Settings > Profiles > Text."
 
 [[tip]]
-key = "0068"
-title = "Floating Hotkey Window"
-body = "New in 3.1: You can configure your hotkey window to appear over other apps\u2019 full screen windows. Turn on \u201CFloating Window\u201D in \u201CSettings > Profiles > Keys > Customize Hotkey Window.\u201D"
-
-[[tip]]
 key = "0069"
 title = "Multiple Hotkey Windows"
-body = "New in 3.1: You can have multiple hotkey windows. Each profile can have one or more hotkeys."
+body = "You can have multiple hotkey windows. Each profile can have one or more hotkeys."
 
 [[tip]]
 key = "0070"
 title = "Double-Tap Hotkey"
-body = "New in 3.1: You can configure a hotkey window to open on double-tap of a modifier in \u201CSettings > Profiles > Keys > Customize Hotkey Window.\u201D"
+body = "You can configure a hotkey window to open on double-tap of a modifier in \u201CSettings > Profiles > Keys > Customize Hotkey Window.\u201D"
 
 [[tip]]
 key = "0071"

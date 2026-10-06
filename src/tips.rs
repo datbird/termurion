@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn tips_load_and_translate() {
         let all = all();
-        assert_eq!(all.len(), 122);
+        assert_eq!(all.len(), 121);
         assert!(all.windows(2).all(|w| w[0].key.as_bytes() < w[1].key.as_bytes()), "sorted by key");
         let first = &all[0];
         assert_eq!(first.key, "000");
@@ -438,6 +438,21 @@ mod tests {
             }
         }
         assert!(checked >= 25, "only {checked} chords checked: the scan is broken");
+    }
+
+    /// Review fix 1: no tip speaks in iTerm2's release numbers ("version 3", "New in 3.1"), and
+    /// the floating-over-full-screen tip is gone (Tandem has no Floating Window setting).
+    #[test]
+    fn tips_name_no_iterm2_release() {
+        for t in all() {
+            for text in [&t.title, &t.body] {
+                assert!(!text.contains("version 3") && !text.contains("New in "), "tip {}: {text}", t.key);
+            }
+        }
+        let by = |k: &str| all().iter().find(|t| t.key == k);
+        assert_eq!(by("0000").map(|t| t.body.as_str()), Some("A big feature of Tandem is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details."));
+        assert!(by("0068").is_none());
+        assert!(by("0069").is_some_and(|t| t.body.starts_with("You can have multiple hotkey windows.")));
     }
 
 }

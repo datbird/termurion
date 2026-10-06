@@ -15,8 +15,9 @@ DEFAULT_SOURCE = os.path.expanduser("~/gitrepos/iterm2-ref/sources/TIps/iTermTip
 OUT = os.path.join(ROOT, "resources", "tips.toml")
 
 EXPECTED = 124
-# Not ported: they describe the Mac only (Touch Bar, "on your Mac").
-DROPPED = ["0066", "0105"]
+# Not ported: they describe the Mac only (Touch Bar, "on your Mac"), or a setting Tandem has no
+# row for (0068: the hotkey window floating over other apps' full-screen windows).
+DROPPED = ["0066", "0105", "0068"]
 
 # Applied in exactly this order (the triple before any pair, pairs before singles).
 REPLACEMENTS = [
@@ -74,6 +75,13 @@ def parse(text):
     return entries
 
 
+# iTerm2 release numbers are not Tandem's: the tip keeps its feature and drops the number.
+RELEASE_WORDS = [
+    ("The big new feature of Tandem version 3 is", "A big feature of Tandem is"),
+]
+NEW_IN = re.compile(r"New in [0-9.]+: ")
+
+
 def translate(s):
     for a, b in REPLACEMENTS:
         s = s.replace(a, b)
@@ -81,6 +89,9 @@ def translate(s):
     s = s.replace("Hold ^ while", "Hold Ctrl while")
     s = BARE_MODIFIER.sub(r"\1", s)
     s = HYPHEN_AFTER_PLUS.sub("+", s)
+    for a, b in RELEASE_WORDS:
+        s = s.replace(a, b)
+    s = NEW_IN.sub("", s)
     for g in LEFT_OVER:
         assert g not in s, f"{g!r} remains in {s!r}"
     return s
