@@ -195,8 +195,9 @@ impl App {
     pub(super) fn shutdown_decide(&mut self, hwnd: isize, end_now: &std::sync::atomic::AtomicBool) {
         use std::sync::atomic::Ordering;
         let never = self.globals.bool("NeverBlockSystemShutdown");
-        // A second window's query while the question is already standing: still held.
-        if self.shutdown_block.is_some() {
+        // The question is already pending (a query that raced the window procedure's own check):
+        // still held, and no second question (Task 8 M1).
+        if super::logout_ui::question_pending() {
             end_now.store(false, Ordering::Release);
             return;
         }
@@ -205,11 +206,9 @@ impl App {
             resident::ShutdownAnswer::EndNow => end_now.store(true, Ordering::Release),
             resident::ShutdownAnswer::AskFirst => {
                 end_now.store(false, Ordering::Release);
-                let reason: Vec<u16> = resident::BLOCK_REASON.encode_utf16().chain(Some(0)).collect();
-                // SAFETY: `hwnd` is a top-level window of this process; `reason` is NUL-terminated.
-                if unsafe { windows_sys::Win32::System::Shutdown::ShutdownBlockReasonCreate(hwnd as _, reason.as_ptr()) } != 0 {
-                    self.shutdown_block = Some(hwnd);
-                }
+                // Pending before anything is posted: every later query holds without asking.
+                super::logout_ui::begin_question();
+                super::logout_ui::raise_block(hwnd);
                 let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAsk));
             }
         }
@@ -218,10 +217,7 @@ impl App {
     /// Takes the block reason down (every path: OK, Cancel, the end of the session). Idempotent.
     pub(super) fn destroy_block_reason(&mut self) {
         #[cfg(windows)]
-        if let Some(hwnd) = self.shutdown_block.take() {
-            // SAFETY: the window the reason was created on; fails harmlessly if it is gone.
-            unsafe { windows_sys::Win32::System::Shutdown::ShutdownBlockReasonDestroy(hwnd as _) };
-        }
+        super::logout_ui::destroy_block();
     }
 
     /// The quit question for a held shutdown (`UserEvent::ShutdownAsk`): OK takes the reason down
@@ -229,9 +225,11 @@ impl App {
     /// (Windows does not retry: the person starts the shutdown again, Decision).
     pub(super) fn shutdown_query(&mut self, event_loop: &ActiveEventLoop) {
         if self.confirm_close(close_ui::Closing::Shutdown) {
+            super::logout_ui::end_question();
             self.destroy_block_reason();
             self.quit_confirmed(event_loop);
         } else {
+            super::logout_ui::end_question();
             self.destroy_block_reason();
         }
     }
@@ -449,8 +447,11 @@ mod tests {
         let src = include_str!("resident_ui.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
         let decide = &src[src.find("fn shutdown_decide(").unwrap()..src.find("fn destroy_block_reason(").unwrap()];
         assert!(decide.contains("on_shutdown(never, has_reasons)") && decide.contains("quit_reasons_now()"), "the decision is the pure table over the quit reasons");
-        let create = decide.find("ShutdownBlockReasonCreate").unwrap();
+        let create = decide.find("raise_block(hwnd)").unwrap();
         assert!(create > decide.find("AskFirst").unwrap(), "a reason is made only for AskFirst");
+        let pending = decide.find("begin_question()").unwrap();
+        assert!(pending < decide.find("ShutdownAsk").unwrap(), "pending before the question is posted (M1)");
+        assert!(decide.find("question_pending()").unwrap() < decide.find("quit_reasons_now()").unwrap(), "a pending question holds without deciding again");
         assert!(!decide.contains("confirm"), "no dialog inside the query");
         let ask = &src[src.find("fn shutdown_query(").unwrap()..];
         assert_eq!(ask.matches("destroy_block_reason()").count(), 2, "OK and Cancel both take it down");

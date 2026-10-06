@@ -4,7 +4,7 @@
 //! HWND_MESSAGE windows get no broadcast; the subclass goes on every terminal window, and the
 //! closure it runs is one app-wide setting (the keys decide it, not the current window).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,59 @@ fn windows() -> &'static Mutex<HashSet<isize>> {
 /// True from the first window's WM_ENDSESSION until a cancelled logoff: every window gets the
 /// message, the work is done once.
 static RAN: AtomicBool = AtomicBool::new(false);
+
+/// The one "quit question pending" state of the app (final review item 1): set when a shutdown was
+/// held to ask, cleared when the question is answered, at the end of the session, or never asked.
+/// While it is set, every window's WM_QUERYENDSESSION answers "hold" at once: nothing is asked of
+/// the app and no message is pumped inside the window procedure.
+static QUESTION_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// The window the shutdown block reason stands on (0: none). One for the app, owned here.
+static BLOCKED: AtomicIsize = AtomicIsize::new(0);
+
+/// Whether the quit question for a held shutdown is pending.
+pub(super) fn question_pending() -> bool {
+    QUESTION_PENDING.load(Ordering::SeqCst)
+}
+
+/// Marks the question pending; true when this call did (none was pending).
+pub(super) fn begin_question() -> bool {
+    !QUESTION_PENDING.swap(true, Ordering::SeqCst)
+}
+
+/// Clears the pending question; true when one was pending (the caller acts on its answer).
+pub(super) fn end_question() -> bool {
+    QUESTION_PENDING.swap(false, Ordering::SeqCst)
+}
+
+/// Raises the block reason on `hwnd` (Windows shows why Tandem holds the shutdown); a reason
+/// standing on another window comes down first.
+pub(super) fn raise_block(hwnd: isize) {
+    let reason: Vec<u16> = crate::resident::BLOCK_REASON.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `hwnd` is a top-level window of this process; `reason` is NUL-terminated.
+    if unsafe { windows_sys::Win32::System::Shutdown::ShutdownBlockReasonCreate(hwnd as HWND, reason.as_ptr()) } != 0 {
+        let old = BLOCKED.swap(hwnd, Ordering::SeqCst);
+        if old != 0 && old != hwnd {
+            // SAFETY: a window of this process; fails harmlessly when it is gone.
+            unsafe { ShutdownBlockReasonDestroy(old as HWND) };
+        }
+    }
+}
+
+/// Takes the block reason down (every path: OK, Cancel, a cancelled or ended session). Idempotent.
+pub(super) fn destroy_block() {
+    let h = BLOCKED.swap(0, Ordering::SeqCst);
+    if h != 0 {
+        // SAFETY: the window the reason was created on; fails harmlessly if it is gone.
+        unsafe { ShutdownBlockReasonDestroy(h as HWND) };
+    }
+}
+
+/// The window the block reason stands on (the tests read it).
+#[cfg(test)]
+pub(super) fn blocked() -> Option<isize> {
+    Some(BLOCKED.load(Ordering::SeqCst)).filter(|&h| h != 0)
+}
 
 /// What a shutdown query asks: set once by the app.
 fn query() -> &'static Mutex<Option<QueryFn>> {
@@ -167,6 +220,7 @@ impl super::App {
         self.flush_notes();
         let keep = !self.logout_armed && self.keep_jobs_on_quit();
         self.save_all_window_frames();
+        end_question();
         self.destroy_block_reason();
         if self.logout_armed {
             self.finish_archives(true, Duration::from_secs(2));
@@ -189,6 +243,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // A new attempt. The app decides (a pure read, bounded by `QUERY_LIMIT`); the question
         // itself is shown after this returns, never inside the procedure.
         RAN.store(false, Ordering::SeqCst);
+        // The question is already pending (a second window, or Windows asking again): hold at once,
+        // with the reason on this window, and never wait for the app (final review item 1).
+        if question_pending() {
+            raise_block(hwnd as isize);
+            return 0;
+        }
         let q = query().lock().ok().and_then(|q| q.clone());
         if let Some(q) = q {
             return LRESULT::from(q(hwnd as isize));
@@ -203,8 +263,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
         }
     } else if msg == WM_ENDSESSION {
-        // A cancelled logoff: the next one runs again, and no block reason stays standing.
+        // A cancelled logoff: the next one runs again, and no block reason stays standing (the app's
+        // record of it included, Task 8 M2). A question still open stays open: its answer decides.
         RAN.store(false, Ordering::SeqCst);
+        destroy_block();
         // SAFETY: idempotent; fails harmlessly when this window has no reason standing.
         unsafe { ShutdownBlockReasonDestroy(hwnd) };
     } else if msg == WM_NCDESTROY {
@@ -236,6 +298,12 @@ mod tests {
     fn message_window() -> HWND {
         let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         unsafe { CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0, 0, 0, 0, 0, HWND_MESSAGE, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null()) }
+    }
+
+    /// A hidden top-level window (a block reason needs one; it is never shown).
+    fn hidden_window() -> HWND {
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        unsafe { CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0, 0, 0, 0, 0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null()) }
     }
 
     fn counter() -> (Arc<AtomicUsize>, OnEnd) {
@@ -393,6 +461,53 @@ mod tests {
             DestroyWindow(resident);
             DestroyWindow(other);
         }
+    }
+
+    /// Final review item 1 (Task 8 I1, M1): while the quit question is pending, a second window's
+    /// WM_QUERYENDSESSION answers "hold" at once. The app is not asked (the bounded wait would pump
+    /// the question's own event into this procedure) and no posted message is dispatched.
+    #[test]
+    fn a_query_while_the_question_is_pending_never_waits() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PM_NOREMOVE, WM_USER};
+        let _g = serial();
+        let hwnd = hidden_window();
+        watch(hwnd as isize);
+        let asked = Arc::new(AtomicUsize::new(0));
+        let seen = asked.clone();
+        arm_query(Some(Arc::new(move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(QUERY_LIMIT);
+            true
+        })));
+        assert!(begin_question(), "no question was pending");
+        assert!(!begin_question(), "a second begin finds it pending");
+        unsafe { PostMessageW(hwnd, WM_USER + 7, 0, 0) };
+        let t = Instant::now();
+        let answer = unsafe { SendMessageW(hwnd, WM_QUERYENDSESSION, 0, 0) };
+        assert_eq!(answer, 0, "held");
+        assert!(t.elapsed() < QUERY_LIMIT, "no wait: {:?}", t.elapsed());
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "the app is not asked again");
+        let mut msg: MSG = unsafe { std::mem::zeroed() };
+        assert_ne!(unsafe { PeekMessageW(&mut msg, hwnd, WM_USER + 7, WM_USER + 7, PM_NOREMOVE) }, 0, "nothing was dispatched");
+        assert_eq!(blocked(), Some(hwnd as isize), "the held query shows the reason on the window asked (M2)");
+        assert!(end_question() && !question_pending());
+        destroy_block();
+        arm_query(None);
+        unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// Task 8 M2: a cancelled session end takes the block reason down app-wide (no stale record of it
+    /// stays behind to make a later query "hold" without its reason).
+    #[test]
+    fn a_cancelled_session_end_takes_the_reason_down() {
+        let _g = serial();
+        let hwnd = hidden_window();
+        watch(hwnd as isize);
+        raise_block(hwnd as isize);
+        assert_eq!(blocked(), Some(hwnd as isize));
+        unsafe { SendMessageW(hwnd, WM_ENDSESSION, 0, 0) };
+        assert_eq!(blocked(), None, "the reason went with the cancelled session end");
+        unsafe { DestroyWindow(hwnd) };
     }
 
     /// Every window that is watched for the display is watched for the end of the session, the

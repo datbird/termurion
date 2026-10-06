@@ -1060,8 +1060,6 @@ pub struct App {
     logout_set: bool,
     /// The shutdown query has been armed once.
     query_set: bool,
-    /// The window a shutdown block reason stands on (`resident_ui::shutdown_decide`).
-    shutdown_block: Option<isize>,
     /// Session restoration: when to save the windows, whether saving is over (quit, or the
     /// last window closed), and a focus loss waiting to be saved.
     state_debounce: crate::restore_state::Debounce,
@@ -2197,7 +2195,6 @@ pub fn run() {
         logout_armed: false,
         logout_set: false,
         query_set: false,
-        shutdown_block: None,
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
