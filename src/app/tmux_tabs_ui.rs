@@ -944,21 +944,31 @@ impl App {
     /// sends the whole area, so tmux resizes to it and the filler goes. Anything else, and an area
     /// that is smaller, is the whole area.
     pub(super) fn pane_area_for(&self, tab: &Tab) -> Rect {
-        let area = self.content_area_for(tab);
-        let Some(node) = tab.tmux_node.as_ref().filter(|_| tab.zoomed.is_none()) else { return area };
-        let (cw, ch) = self.pane_cell(tab.focused);
-        let (side, vert) = self.margins();
-        let stack = if self.tab_shows_titles(tab) { crate::layout::max_stack(&tab.layout.tree(), Axis::Column) } else { 0 };
-        let row_room = crate::layout::widest_row_room(&tab.layout.tree(), &|id| self.pane_room(id));
-        // The inverse of the size report: tmux's cells plus what the report took off.
-        let (nw, nh) = tmux_layout::natural_size(node, (cw, ch), self.gap());
-        tmux_layout::drawn_area(area, (nw, nh), (2.0 * side + row_room, 2.0 * vert + stack as f32 * self.title_height())).0
+        self.pane_area_in(tab, self.content_area_for(tab))
     }
 
-    /// The strips of a tmux tab's area that its panes do not cover (the filler's).
-    pub(super) fn tmux_filler(&self, tab: &Tab) -> Vec<Rect> {
+    /// `pane_area_for` with the tab's content area already computed.
+    fn pane_area_in(&self, tab: &Tab, area: Rect) -> Rect {
+        let Some(node) = tab.tmux_node.as_ref().filter(|_| tab.zoomed.is_none()) else { return area };
+        // The inverse of the size report: tmux's cells plus what the report took off.
+        let room = tmux_layout::Room {
+            cell: self.pane_cell(tab.focused),
+            gap: self.gap(),
+            margins: self.margins(),
+            titles: self.tab_shows_titles(tab).then(|| self.title_height()),
+            pane_room: &|id| self.pane_room(id),
+        };
+        tmux_layout::pane_area(area, node, &tab.layout, &room)
+    }
+
+    /// The strips of a tmux tab's area that its panes do not cover (the filler's): drawn every
+    /// frame, so a tab that is not tmux returns at once and nothing is allocated.
+    pub(super) fn tmux_filler(&self, tab: &Tab) -> [Option<Rect>; 2] {
+        if tab.tmux_node.is_none() || tab.zoomed.is_some() {
+            return [None, None];
+        }
         let area = self.content_area_for(tab);
-        let drawn = self.pane_area_for(tab);
+        let drawn = self.pane_area_in(tab, area);
         tmux_layout::drawn_area(area, (drawn.w, drawn.h), (0.0, 0.0)).1
     }
 
@@ -979,10 +989,10 @@ impl App {
             .iter()
             .map(|t| {
                 let area = self.content_area_for(t);
-                let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout.tree(), Axis::Column) } else { 0 };
+                let stack = if self.tab_shows_titles(t) { crate::layout::max_stack(&t.layout, Axis::Column) } else { 0 };
                 let (cw, ch) = self.pane_cell(t.focused);
                 // The panes of the widest row each give up their room (scrollbar, timestamp column).
-                let row_room = crate::layout::widest_row_room(&t.layout.tree(), &|id| self.pane_room(id));
+                let row_room = crate::layout::widest_row_room(&t.layout, &|id| self.pane_room(id));
                 (t.focused, (crate::margins::tmux_cols(area.w, cw, self.margins().0, row_room), tmux_rows(area.h, ch, self.margins().1, self.title_height(), stack)))
             })
             .collect();

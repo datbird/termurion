@@ -5749,13 +5749,13 @@ impl App {
         // A tmux window smaller than its tab leaves the rest to the filler (`PTYTab.m:1189-1208`).
         if let Some(tab) = self.tabs.get(self.active) {
             let strips = self.tmux_filler(tab);
-            if !strips.is_empty() {
+            if strips.iter().any(Option::is_some) {
                 let bg = self.panes.get(&tab.focused).map_or(palette_bg, |p| p.screen.palette.bg);
                 let black = self.full_screen() && self.globals.bool("UseBlackFillerColorForTmuxInFullScreen");
                 let color = scene::filler_color(bg, scene::filler_dark(bg), black);
                 let alpha = if see_through { alphas.iter().find(|(a, _)| *a == tab.focused).map_or(1.0, |(_, a)| *a) } else { 1.0 };
                 let color = if see_through { crate::transparency::premultiplied([color.r, color.g, color.b], alpha) } else { scene::rgba(color, 1.0) };
-                for rect in strips {
+                for rect in strips.into_iter().flatten() {
                     frame.quads.push(scene::Quad { rect, color });
                 }
             }

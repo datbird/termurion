@@ -119,6 +119,7 @@ Decision (Task 10): natural_size ignores gap; a sub-cell filler sliver shows whe
 -- Final review fix wave
 Ruling (final review 2): the session hotkey question puts the chord on its own first line, and every supplied name in it (a tmux session name, the asking pane's title) goes through inert_files::shown_name inside consent_text, so no caller can skip it. The tmux host is not shown. - cost if wrong: a hostile name garbles the line under the chord, never the chord.
 Decision (final review 5): a program's question names its session ("A program in session 'title'", presentationSessionTitle as the broadcast warning uses); an untitled session reads "A program in a session". - cost if wrong: a long title is cut at SHOWN_NAME.
+Decision (final review 3): layout::max_stack and widest_row_room walk the Layout in place (no Tree clone); the pane area is tmux_layout::pane_area (pure, tested with a tree-build counter); tmux_filler returns a fixed [Option<Rect>; 2] and returns before any work for a tab that is not tmux or is zoomed. No per-frame cache: with no tree built, the remaining cost is a few float sums per call. - cost if wrong: a profile could still show pane_area_for on hot paths; a per-frame cache would then be the next step.
 
 -- Deferred minors (final triage, each with its cost)
 Deferred: an unmapped Win key still reports 57444u and Ctrl+Win+a sends 97;5u to a kitty program (iTerm2 ignores events with an unmapped Command key). - cost if wrong: a kitty-protocol program sees a Win event iTerm2 would hide.

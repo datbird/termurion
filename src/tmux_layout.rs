@@ -174,20 +174,38 @@ pub fn natural_size(node: &Node, cell: (f32, f32), _gap: f32) -> (f32, f32) {
     (node.w() as f32 * cell.0, node.h() as f32 * cell.1)
 }
 
+/// What the size report takes off a tmux tab's area, for `pane_area`.
+pub struct Room<'a> {
+    pub cell: (f32, f32),
+    pub gap: f32,
+    /// The side and top margins.
+    pub margins: (f32, f32),
+    /// The title bar height, when the tab shows title bars.
+    pub titles: Option<f32>,
+    /// A pane's room at its right edge (scrollbar, timestamp column).
+    pub pane_room: &'a dyn Fn(PaneId) -> f32,
+}
+
+/// The area a tmux tab of window `node` and `layout` draws its panes in: tmux's cells plus what
+/// the size report took off (the inverse of the report), at the top left of `area`. Runs every
+/// frame and on every pointer move, so it walks the layout in place.
+pub fn pane_area(area: crate::layout::Rect, node: &Node, layout: &Layout, room: &Room) -> crate::layout::Rect {
+    let stack = room.titles.map_or(0.0, |h| crate::layout::max_stack(layout, Axis::Column) as f32 * h);
+    let row_room = crate::layout::widest_row_room(layout, &|id| (room.pane_room)(id));
+    let natural = natural_size(node, room.cell, room.gap);
+    drawn_area(area, natural, (2.0 * room.margins.0 + row_room, 2.0 * room.margins.1 + stack)).0
+}
+
 /// Where a tmux tab's panes are laid out in `area`, and the strips left for the filler: the panes
 /// take tmux's size (`natural`, plus the `extra` width and height the size report took off) at the
 /// top left; a dimension that is not larger than the area keeps the whole area.
-pub fn drawn_area(area: crate::layout::Rect, natural: (f32, f32), extra: (f32, f32)) -> (crate::layout::Rect, Vec<crate::layout::Rect>) {
+pub fn drawn_area(area: crate::layout::Rect, natural: (f32, f32), extra: (f32, f32)) -> (crate::layout::Rect, [Option<crate::layout::Rect>; 2]) {
     use crate::layout::Rect;
     let drawn = Rect { w: (natural.0 + extra.0).min(area.w), h: (natural.1 + extra.1).min(area.h), ..area };
-    let mut strips = Vec::new();
-    if drawn.w < area.w {
-        strips.push(Rect { x: drawn.x + drawn.w, w: area.w - drawn.w, ..area });
-    }
-    if drawn.h < area.h {
-        strips.push(Rect { y: drawn.y + drawn.h, w: drawn.w, h: area.h - drawn.h, ..area });
-    }
-    (drawn, strips)
+    // A fixed pair, right and below: the filler is drawn every frame.
+    let right = (drawn.w < area.w).then_some(Rect { x: drawn.x + drawn.w, w: area.w - drawn.w, ..area });
+    let below = (drawn.h < area.h).then_some(Rect { y: drawn.y + drawn.h, w: drawn.w, h: area.h - drawn.h, ..area });
+    (drawn, [right, below])
 }
 
 /// `csum,text` with tmux's checksum (for layouts sent back to tmux).
@@ -332,18 +350,45 @@ mod tests {
     }
 
     #[test]
+    fn the_pane_area_builds_no_layout_tree() {
+        use crate::layout::Rect;
+        let node = parse("0000,81x24,0,0{40x24,0,0,0,40x24,41,0,1}").unwrap();
+        let mut layout = Layout::new(1);
+        layout.split(1, Axis::Row, 2);
+        layout.split(2, Axis::Column, 3);
+        let area = Rect { x: 0.0, y: 0.0, w: 2000.0, h: 1000.0 };
+        let room = Room { cell: (10.0, 20.0), gap: 1.0, margins: (5.0, 2.0), titles: Some(18.0), pane_room: &|id| if id == 1 { 15.0 } else { 7.0 } };
+        let before = crate::layout::tree_builds();
+        let drawn = pane_area(area, &node, &layout, &room);
+        assert_eq!(crate::layout::tree_builds(), before, "no tree is built per frame or pointer move");
+        // 81 cells + margins + the widest row's room (15 + 7); 24 rows + margins + two stacked title bars.
+        assert_eq!(drawn, Rect { x: 0.0, y: 0.0, w: 810.0 + 10.0 + 22.0, h: 480.0 + 4.0 + 36.0 });
+        let none = Room { titles: None, ..room };
+        assert_eq!(pane_area(area, &node, &layout, &none).h, 484.0);
+    }
+
+    #[test]
+    fn the_filler_allocates_nothing_per_frame() {
+        let src = include_str!("app/tmux_tabs_ui.rs");
+        let body = src.split("fn tmux_filler(").nth(1).and_then(|r| r.split("\n    }\n").next()).expect("tmux_filler");
+        assert!(!body.contains("Vec"), "the filler's strips are a fixed array, not a Vec per frame");
+        assert!(body.find("tmux_node").is_some_and(|i| i < body.find("content_area_for").unwrap_or(usize::MAX)), "a tab that is not tmux returns before any work");
+        assert_eq!(body.matches("content_area_for").count(), 1, "the content area is computed once");
+    }
+
+    #[test]
     fn a_smaller_window_leaves_filler_strips() {
         use crate::layout::Rect;
         let area = Rect { x: 10.0, y: 30.0, w: 1000.0, h: 600.0 };
         // Larger area: the panes at tmux's size at the top left, a strip right and one below.
         let (drawn, strips) = drawn_area(area, (800.0, 480.0), (10.0, 4.0));
         assert_eq!(drawn, Rect { x: 10.0, y: 30.0, w: 810.0, h: 484.0 });
-        assert_eq!(strips, vec![Rect { x: 820.0, y: 30.0, w: 190.0, h: 600.0 }, Rect { x: 10.0, y: 514.0, w: 810.0, h: 116.0 }]);
+        assert_eq!(strips, [Some(Rect { x: 820.0, y: 30.0, w: 190.0, h: 600.0 }), Some(Rect { x: 10.0, y: 514.0, w: 810.0, h: 116.0 })]);
         // A smaller area keeps the whole area, and no filler.
         let (drawn, strips) = drawn_area(area, (1200.0, 700.0), (0.0, 0.0));
-        assert_eq!((drawn, strips.len()), (area, 0));
+        assert_eq!((drawn, strips), (area, [None, None]));
         // One dimension larger: only that strip.
         let (drawn, strips) = drawn_area(area, (1200.0, 400.0), (0.0, 0.0));
-        assert_eq!((drawn.w, drawn.h, strips.len()), (1000.0, 400.0, 1));
+        assert_eq!((drawn.w, drawn.h, strips.iter().flatten().count()), (1000.0, 400.0, 1));
     }
 }
