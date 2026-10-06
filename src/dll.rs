@@ -156,6 +156,16 @@ mod tests {
         assert!(seen >= 7, "{seen} programs");
     }
 
+    /// Task 5 fix r1 item 4: the load-time flags also live in build.rs, so `cargo install`, another
+    /// target or an env RUSTFLAGS cannot drop them, and the build fails without crt-static.
+    #[test]
+    fn the_build_script_keeps_the_load_flags() {
+        let b = include_str!("../build.rs");
+        assert!(b.contains("cargo:rustc-link-arg=/DEPENDENTLOADFLAG:0x800"));
+        assert!(b.contains("CARGO_CFG_TARGET_FEATURE") && b.contains("crt-static") && b.contains("panic!"));
+        assert!(b.contains("CARGO_CFG_TARGET_ENV") && b.contains("msvc"));
+    }
+
     /// Review minor: each failed call is reported, a success is silent.
     #[test]
     fn a_failed_hardening_call_is_reported() {
