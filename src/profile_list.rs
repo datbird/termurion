@@ -151,6 +151,26 @@ pub fn click_tags(selected: &[String], tag: &str, ctrl: bool) -> Vec<String> {
     if ctrl { toggled(selected, tag) } else { vec![tag.to_string()] }
 }
 
+/// The selection once a filter has hidden rows (`updateResultsForSearch`, `PLV:1004-1012`): hidden
+/// rows leave it, and with nothing left the first match is selected.
+pub fn follow_filter(selection: &[String], shown: &[String]) -> Vec<String> {
+    let kept: Vec<String> = selection.iter().filter(|g| shown.contains(g)).cloned().collect();
+    if kept.is_empty() { shown.first().cloned().into_iter().collect() } else { kept }
+}
+
+/// The selection after an arrow key in the search field (`setArrowHandler:`, `PLV:188`): one row
+/// from the last selected one, kept in the list.
+pub fn arrow(selection: &[String], shown: &[String], down: bool) -> Vec<String> {
+    let at = selection.last().and_then(|g| shown.iter().position(|s| s == g));
+    let next = match (at, down) {
+        (None, true) => 0,
+        (None, false) => shown.len().saturating_sub(1),
+        (Some(i), true) => (i + 1).min(shown.len().saturating_sub(1)),
+        (Some(i), false) => i.saturating_sub(1),
+    };
+    shown.get(next).cloned().into_iter().collect()
+}
+
 fn toggled(list: &[String], item: &str) -> Vec<String> {
     if list.iter().any(|s| s == item) {
         list.iter().filter(|s| *s != item).cloned().collect()
@@ -232,6 +252,21 @@ mod tests {
         assert_eq!(cache.builds, 1);
         assert_eq!(cache.get(&s(&["z"])).len(), 1);
         assert_eq!(cache.builds, 2);
+    }
+
+    #[test]
+    fn the_selection_follows_the_filter() {
+        let shown = s(&["b", "c"]);
+        assert_eq!(follow_filter(&s(&["a"]), &shown), s(&["b"]));
+        assert_eq!(follow_filter(&s(&["c"]), &shown), s(&["c"]));
+        assert_eq!(follow_filter(&s(&["a", "c"]), &shown), s(&["c"]));
+        assert!(follow_filter(&s(&["a"]), &[]).is_empty());
+        assert_eq!(arrow(&s(&["b"]), &shown, true), s(&["c"]));
+        assert_eq!(arrow(&s(&["c"]), &shown, true), s(&["c"]));
+        assert_eq!(arrow(&s(&["c"]), &shown, false), s(&["b"]));
+        assert_eq!(arrow(&[], &shown, true), s(&["b"]));
+        assert_eq!(arrow(&[], &shown, false), s(&["c"]));
+        assert!(arrow(&[], &[], true).is_empty());
     }
 
     #[test]

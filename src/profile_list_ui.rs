@@ -1,7 +1,7 @@
 //! The profile list: a search field, a "Tags >" button, the tag sidebar and the rows, shared by
 //! the Settings window and the Profiles window (`ProfileListView.m`, `ProfileTagsView.m`).
 
-use crate::profile_list::{all_tags, click_selection, click_tags, display_text, filter, tag_query, TagTreeCache};
+use crate::profile_list::{all_tags, arrow, follow_filter, click_selection, click_tags, display_text, filter, tag_query, TagTreeCache};
 
 /// The list's state; the window that owns the list keeps it.
 #[derive(Default)]
@@ -35,6 +35,7 @@ const TAGS_WIDTH: f32 = 110.0;
 pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, String, Vec<String>, String)], default_guid: &str, multi: bool) -> ListEvent {
     let mut event = ListEvent::None;
     let focus_id = ui.id().with("profile-list-search");
+    let mut field_focused = false;
     ui.horizontal(|ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut st.query).id(focus_id).hint_text("Search").desired_width((ui.available_width() - 70.0).max(40.0)));
         // The search field has focus when the list opens (iTerm2's first responder).
@@ -47,12 +48,40 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
             // Typing replaces the tag selection, as the search field and the sidebar share the text.
             st.selected_tags.clear();
         }
+        field_focused = r.has_focus();
         if ui.button(if st.tags_open { "< Tags" } else { "Tags >" }).clicked() {
             st.tags_open = !st.tags_open;
         }
     });
     let shown_idx = filter(rows, &st.query);
-    let shown: Vec<String> = shown_idx.iter().map(|&i| rows[i].0.clone()).collect();
+    let mut shown_idx = shown_idx;
+    let mut shown: Vec<String> = shown_idx.iter().map(|&i| rows[i].0.clone()).collect();
+    // Esc clears a typed query (`PLV:972-979`); the arrow keys move the selection from the field
+    // (`PLV:188`).
+    if field_focused {
+        if !st.query.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            st.query.clear();
+            st.selected_tags.clear();
+            shown_idx = filter(rows, &st.query);
+            shown = shown_idx.iter().map(|&i| rows[i].0.clone()).collect();
+        }
+        for (key, down) in [(egui::Key::ArrowDown, true), (egui::Key::ArrowUp, false)] {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                st.selection = arrow(&st.selection, &shown, down);
+                if let Some(g) = st.selection.first() {
+                    event = ListEvent::Picked(g.clone());
+                }
+            }
+        }
+    }
+    // The selection follows the filter (`updateResultsForSearch`, `PLV:1004-1012`).
+    let followed = follow_filter(&st.selection, &shown);
+    if followed != st.selection {
+        st.selection = followed;
+        if let Some(g) = st.selection.first() {
+            event = ListEvent::Picked(g.clone());
+        }
+    }
     let mods = ui.input(|i| i.modifiers);
     ui.horizontal_top(|ui| {
         if st.tags_open {

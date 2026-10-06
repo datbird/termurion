@@ -583,10 +583,12 @@ impl SettingsWindow {
                         }
                     }
                     ui.separator();
+                    // The buttons open the selected visible profile, never a hidden one.
+                    let target = list.selection.first().cloned();
                     ui.horizontal(|ui| {
                         for (label, how) in [("New Tab", How::Tab), ("New Window", How::Window), ("Split Right", How::SplitRight), ("Split Down", How::SplitDown)] {
-                            if ui.button(label).clicked() {
-                                edit = Edit::Open(selected.clone(), how);
+                            if ui.add_enabled(target.is_some(), egui::Button::new(label)).clicked() {
+                                edit = Edit::Open(target.clone().unwrap_or_default(), how);
                             }
                         }
                     });
