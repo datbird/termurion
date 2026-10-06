@@ -208,12 +208,14 @@ impl App {
         let Some(hwnd) = self.window_hwnd(held) else {
             // The window is gone.
             self.web_focus_held = None;
+            self.sync_web_keyboard();
             return;
         };
         if !crate::webhost::held_focus_lost(hwnd, webhost_win::foreground_root()) {
             return;
         }
         self.web_focus_held = None;
+        self.sync_web_keyboard();
         let back = self.current_window();
         if self.enter(held) {
             self.apply_focus(crate::webhost::FocusStep::Normal, false, held);
@@ -221,6 +223,13 @@ impl App {
                 self.enter(b);
             }
         }
+    }
+
+    /// Tells the 13u keyboard hook which window's web view holds the keyboard, so it passes keys on
+    /// instead of running Tandem's Win-chord commands on the terminal (security: Win+V must paste
+    /// into the page, not the shell).
+    pub(super) fn sync_web_keyboard(&self) {
+        crate::winkeys::set_web_focus(self.web_focus_held.and_then(|w| self.window_hwnd(w)).unwrap_or(0));
     }
 
     /// Whether `pane` is a browser pane. No pane is one until 13x Task 5 adds `Io::Browser`.

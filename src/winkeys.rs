@@ -139,6 +139,26 @@ fn is_tandem(hwnd: isize) -> bool {
     locked(&WINDOWS).contains(&hwnd)
 }
 
+/// The window whose web view holds the keyboard (13x Task 1a), 0 for none.
+static WEB_FOCUS: AtomicIsize = AtomicIsize::new(0);
+
+/// The app says which window's web view has keyboard focus (0: none).
+pub fn set_web_focus(hwnd: isize) {
+    WEB_FOCUS.store(hwnd, Ordering::Release);
+}
+
+/// Whether the terminal has the keyboard: `foreground` is a Tandem window and no web view of it holds
+/// the focus. A page owns the keyboard (as in iTerm2), so Tandem's Win-chord commands and remaps
+/// stay out of it; only the registered global hotkeys still act.
+fn terminal_has_keyboard(foreground_is_tandem: bool, foreground: isize, web_focus: isize) -> bool {
+    foreground_is_tandem && !(web_focus != 0 && web_focus == foreground)
+}
+
+/// `terminal_has_keyboard` for the window in front now: the one predicate the hook and the remapper ask.
+fn tandem_has_keyboard(foreground: isize) -> bool {
+    terminal_has_keyboard(is_tandem(foreground), foreground, WEB_FOCUS.load(Ordering::Acquire))
+}
+
 /// A terminal window closed.
 pub fn remove_window(hwnd: isize) {
     locked(&WINDOWS).retain(|h| *h != hwnd);
@@ -368,7 +388,7 @@ fn read_tags(t: &RwLock<Tags>) -> Tags {
 fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
     let fg = unsafe { GetForegroundWindow() } as isize;
-    let focused = is_tandem(fg) || fg == SETTINGS.load(Ordering::Relaxed);
+    let focused = tandem_has_keyboard(fg) || fg == SETTINGS.load(Ordering::Relaxed);
     let tags = read_tags(&h.tags);
     let mut r = locked(&h.remapper);
     if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags, REMAP_GLOBAL.load(Ordering::Relaxed)) {
@@ -475,7 +495,7 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                     // Remapping off and a Win side remapped away: that key is read in the app as its
                     // target, so it makes no Win chord here (`APP:252-285`).
                     win_held: crate::remap::win_chord_held(&read_tags(&h.tags), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
-                    focused: is_tandem(fg) || recording || pwm || chat || cockpit,
+                    focused: tandem_has_keyboard(fg) || recording || pwm || chat || cockpit,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
@@ -920,6 +940,32 @@ mod tests {
 
     fn none(_: &Chord) -> bool {
         false
+    }
+
+    /// 13u seam (13x Task 1a fix, security): while keyboard focus is inside a web view of the
+    /// foreground Tandem window, the terminal does not have the keyboard. The hook passes every key
+    /// on (no Win-chord command, no remap), so Win+V pastes into the page and never the shell.
+    #[test]
+    fn a_web_view_with_the_keyboard_is_not_the_terminal() {
+        // One predicate: a Tandem window in front, and not the one a web view holds.
+        assert!(terminal_has_keyboard(true, 10, 0), "no web focus");
+        assert!(!terminal_has_keyboard(true, 10, 10), "the web view in front has it");
+        assert!(terminal_has_keyboard(true, 10, 20), "another window's web view does not matter");
+        assert!(!terminal_has_keyboard(false, 10, 0), "not a Tandem window");
+        let mut g = Gate::default();
+        let v = KeyEvent { focused: terminal_has_keyboard(true, 10, 10), ..key(0x56, true) };
+        assert_eq!(g.on_key(v, &all), Verdict::Pass, "Win+V with web focus goes to the page");
+        let v = KeyEvent { focused: terminal_has_keyboard(true, 10, 0), ..key(0x56, true) };
+        assert!(matches!(g.on_key(v, &all), Verdict::Take(Some(_))), "and to the terminal without it");
+        // The hook and the remapper both ask it; the global hotkeys run before it and ask nothing.
+        let src = include_str!("winkeys.rs");
+        let hook = &src[src.find("unsafe fn hook_body").unwrap()..];
+        let hook = &hook[..hook.find("\n}\n").unwrap()];
+        assert!(hook.contains("tandem_has_keyboard(fg)"), "the Win-chord gate uses the predicate");
+        assert!(!hook.contains("is_tandem(fg)"), "no second foreground test beside it");
+        assert!(hook.find("global_hotkeys(kb, down)").unwrap() < hook.find("remap(h, kb, down)").unwrap());
+        let remap = &src[src.find("fn remap(h: &Hook").unwrap()..];
+        assert!(remap[..remap.find("\n}\n").unwrap()].contains("tandem_has_keyboard(fg)"));
     }
 
     #[test]

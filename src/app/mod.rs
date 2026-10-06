@@ -7558,6 +7558,7 @@ impl App {
             }
         }
         self.apply_focus(step, f, id);
+        self.sync_web_keyboard();
     }
 
     /// Runs one focus step in the current window: only what the table names (preflight B6).
