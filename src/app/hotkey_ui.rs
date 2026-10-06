@@ -357,7 +357,7 @@ impl App {
         let slide = self.slide_for(shown, animates);
         let duration = self.hotkey_duration();
         // A fade with no slide (left, normal, centered...) runs from the shown place to itself.
-        let motion = (slide.is_some() || fade.is_some()).then(|| Motion { from: slide.unwrap_or((shown.x, shown.y)), to: (shown.x, shown.y), duration, alpha: (if fade.is_some() { 0.0 } else { 1.0 }, 1.0) });
+        let motion = (slide.is_some() || fade.is_some()).then(|| Motion { from: slide.unwrap_or((shown.x, shown.y)), to: (shown.x, shown.y), duration, alpha: (if fade.is_some() { 0.0 } else { 1.0 }, 1.0), ease: hotkey_motion::eases(self.win_style) });
         if let Some(m) = &motion {
             g.window.set_outer_position(winit::dpi::PhysicalPosition::new(m.from.0.round() as i32, m.from.1.round() as i32));
         }
@@ -378,7 +378,7 @@ impl App {
         // A refused attribute ends fading for the run: the window shows at once (a slide still runs).
         let (motion, fade) = if self.fade_failed && fade.is_some() {
             self.end_fade();
-            (slide.map(|from| Motion { from, to: (shown.x, shown.y), duration, alpha: (1.0, 1.0) }), None)
+            (slide.map(|from| Motion { from, to: (shown.x, shown.y), duration, alpha: (1.0, 1.0), ease: hotkey_motion::eases(self.win_style) }), None)
         } else {
             (motion, fade)
         };
@@ -419,7 +419,7 @@ impl App {
         if slide.is_none() && fade.is_none() {
             return self.finish_hide(by_key, None);
         }
-        let motion = Motion { from: (shown.x, shown.y), to: slide.unwrap_or((shown.x, shown.y)), duration: self.hotkey_duration(), alpha: (1.0, if fade.is_some() { 0.0 } else { 1.0 }) };
+        let motion = Motion { from: (shown.x, shown.y), to: slide.unwrap_or((shown.x, shown.y)), duration: self.hotkey_duration(), alpha: (1.0, if fade.is_some() { 0.0 } else { 1.0 }), ease: hotkey_motion::eases(self.win_style) };
         if let Some(h) = self.hotkey.as_mut() {
             h.fade = 1.0;
             h.roll = Some(Roll { motion, fade, start: Instant::now(), hiding: true, by_key });
