@@ -586,6 +586,10 @@ impl App {
             attrs = attrs.with_visible(false).with_skip_taskbar(true);
         }
         // A window whose profiles want transparency is made for alpha (its surface cannot change later).
+        // A tmux window opened in the background shows without taking the focus.
+        if matches!(&first, NewWindow::Tabs(ts) if ts.first().is_some_and(|t| self.background_windows.remove(&t.id))) {
+            attrs = attrs.with_active(false);
+        }
         let mut kind = self.surface_kind_for(&first);
         let made = loop {
             let mut a = attrs.clone();

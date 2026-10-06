@@ -107,6 +107,7 @@ impl App {
                     self.api_tmux_window_opened(gw, window, None);
                     if let Some(t) = self.tmux.get_mut(&gw) {
                         t.window_titles.remove(&window);
+                        t.window_names.remove(&window);
                         t.tab_overrides.remove(&window);
                     }
                     let ids = self.tmux_window_panes(gw, window);
@@ -118,6 +119,9 @@ impl App {
                     }
                 }
                 Action::Rename(window, name) => {
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        t.window_names.insert(window, name.clone());
+                    }
                     // A set-titles string names the tab instead.
                     if self.tmux.get(&gw).is_some_and(|t| t.window_titles.contains_key(&window)) {
                         continue;
@@ -800,6 +804,10 @@ impl App {
         let focused = ids.get(&panes.first().map_or(0, |p| p.pane)).copied().unwrap_or(0);
         let mut tab = Tab::new(self.next_tab_id, layout, focused);
         tab.title = Some(self.tmux_title(&window.name));
+        tab.tmux_node = Some(node.clone());
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.window_names.insert(window.id, window.name.clone());
+        }
         self.next_tab_id += 1;
         // What was saved about this window: the tab's title and colors, its place, and the
         // Tandem window's size and origin.
@@ -848,8 +856,15 @@ impl App {
             Some(anchor) if self.enter_pane_window(anchor) => {
                 // A window hidden from a tab goes back to its place.
                 let at = tab_index.map_or(self.tabs.len(), |i| i.min(self.tabs.len()));
+                // With TmuxWindowsOpenInBackground the new tab opens behind the selected one,
+                // unless it is the window's only tab (`PT:13548-13552`).
+                let selects = crate::tmux_windows::open_active(self.globals.bool("TmuxWindowsOpenInBackground")) || self.tabs.is_empty();
                 self.tabs.insert(at, tab);
-                self.active = at;
+                if selects {
+                    self.active = at;
+                } else if at <= self.active {
+                    self.active += 1;
+                }
                 // A tmux tab never pins: it goes after any pinned tabs.
                 self.settle_tabs();
                 self.relayout();
@@ -869,6 +884,10 @@ impl App {
             _ => {
                 if origin.is_some() || size.is_some() {
                     self.tmux_geometry.insert(tab_id, (origin, size));
+                }
+                // A new window opens without taking the keyboard focus when asked to (`PT:13567-13574`).
+                if !crate::tmux_windows::open_active(self.globals.bool("TmuxWindowsOpenInBackground")) {
+                    self.background_windows.insert(tab_id);
                 }
                 self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
             }
@@ -902,11 +921,13 @@ impl App {
                         t.focused = anchor;
                     }
                     t.layout = layout;
+                    t.tmux_node = Some(node.clone());
                 }),
                 // Tandem shows none of this window's panes any more: it opens as a new tab.
                 None => {
                     let focused = layout.panes()[0];
-                    let tab = Tab::new(self.next_tab_id, layout, focused);
+                    let mut tab = Tab::new(self.next_tab_id, layout, focused);
+                    tab.tmux_node = Some(node.clone());
                     self.next_tab_id += 1;
                     self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
                 }
@@ -916,6 +937,29 @@ impl App {
         for id in gone {
             self.close_pane(id, event_loop);
         }
+    }
+
+    /// The area a tab's panes are laid out in. A tmux tab whose area is larger than tmux's window
+    /// lays out at tmux's size at the top left (the rest is the filler); the size report still
+    /// sends the whole area, so tmux resizes to it and the filler goes. Anything else, and an area
+    /// that is smaller, is the whole area.
+    pub(super) fn pane_area_for(&self, tab: &Tab) -> Rect {
+        let area = self.content_area_for(tab);
+        let Some(node) = tab.tmux_node.as_ref().filter(|_| tab.zoomed.is_none()) else { return area };
+        let (cw, ch) = self.pane_cell(tab.focused);
+        let (side, vert) = self.margins();
+        let stack = if self.tab_shows_titles(tab) { crate::layout::max_stack(&tab.layout.tree(), Axis::Column) } else { 0 };
+        let row_room = crate::layout::widest_row_room(&tab.layout.tree(), &|id| self.pane_room(id));
+        // The inverse of the size report: tmux's cells plus what the report took off.
+        let (nw, nh) = tmux_layout::natural_size(node, (cw, ch), self.gap());
+        tmux_layout::drawn_area(area, (nw, nh), (2.0 * side + row_room, 2.0 * vert + stack as f32 * self.title_height())).0
+    }
+
+    /// The strips of a tmux tab's area that its panes do not cover (the filler's).
+    pub(super) fn tmux_filler(&self, tab: &Tab) -> Vec<Rect> {
+        let area = self.content_area_for(tab);
+        let drawn = self.pane_area_for(tab);
+        tmux_layout::drawn_area(area, (drawn.w, drawn.h), (0.0, 0.0)).1
     }
 
     /// After a layout of the current window: each tmux tab's size in cells (its whole area,

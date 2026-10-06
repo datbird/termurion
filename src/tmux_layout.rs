@@ -168,6 +168,28 @@ pub fn border_status(node: Node, top: bool, bottom: bool, window_h: u32) -> Node
     }
 }
 
+/// What a window of this layout draws in pixels at `cell` (width, height): tmux's own cells, a
+/// divider counting as one cell as tmux counts it (Tandem's gap sits inside that cell).
+pub fn natural_size(node: &Node, cell: (f32, f32), _gap: f32) -> (f32, f32) {
+    (node.w() as f32 * cell.0, node.h() as f32 * cell.1)
+}
+
+/// Where a tmux tab's panes are laid out in `area`, and the strips left for the filler: the panes
+/// take tmux's size (`natural`, plus the `extra` width and height the size report took off) at the
+/// top left; a dimension that is not larger than the area keeps the whole area.
+pub fn drawn_area(area: crate::layout::Rect, natural: (f32, f32), extra: (f32, f32)) -> (crate::layout::Rect, Vec<crate::layout::Rect>) {
+    use crate::layout::Rect;
+    let drawn = Rect { w: (natural.0 + extra.0).min(area.w), h: (natural.1 + extra.1).min(area.h), ..area };
+    let mut strips = Vec::new();
+    if drawn.w < area.w {
+        strips.push(Rect { x: drawn.x + drawn.w, w: area.w - drawn.w, ..area });
+    }
+    if drawn.h < area.h {
+        strips.push(Rect { y: drawn.y + drawn.h, w: drawn.w, h: area.h - drawn.h, ..area });
+    }
+    (drawn, strips)
+}
+
 /// `csum,text` with tmux's checksum (for layouts sent back to tmux).
 pub fn checksum(text: &str) -> String {
     let mut csum: u16 = 0;
@@ -295,5 +317,33 @@ mod tests {
         assert_eq!(sizes(&top), vec![(0, 40, 23), (1, 39, 11), (2, 39, 11)]);
         let bottom = border_status(node, false, true, 24);
         assert_eq!(sizes(&bottom), vec![(0, 40, 23), (1, 39, 12), (2, 39, 10)]);
+    }
+
+    #[test]
+    fn natural_size_counts_tmux_cells() {
+        let one = parse("0000,80x24,0,0,0").unwrap();
+        assert_eq!(natural_size(&one, (10.0, 20.0), 1.0), (800.0, 480.0));
+        // Two 40-column panes side by side: the divider is one more cell.
+        let two = parse("0000,81x24,0,0{40x24,0,0,0,40x24,41,0,1}").unwrap();
+        assert_eq!(natural_size(&two, (10.0, 20.0), 1.0), (810.0, 480.0));
+        assert_eq!(natural_size(&two, (10.0, 20.0), 10.0), (810.0, 480.0), "the gap is inside the divider cell");
+        let stacked = parse("0000,80x25,0,0[80x12,0,0,0,80x12,0,13,1]").unwrap();
+        assert_eq!(natural_size(&stacked, (10.0, 20.0), 1.0), (800.0, 500.0));
+    }
+
+    #[test]
+    fn a_smaller_window_leaves_filler_strips() {
+        use crate::layout::Rect;
+        let area = Rect { x: 10.0, y: 30.0, w: 1000.0, h: 600.0 };
+        // Larger area: the panes at tmux's size at the top left, a strip right and one below.
+        let (drawn, strips) = drawn_area(area, (800.0, 480.0), (10.0, 4.0));
+        assert_eq!(drawn, Rect { x: 10.0, y: 30.0, w: 810.0, h: 484.0 });
+        assert_eq!(strips, vec![Rect { x: 820.0, y: 30.0, w: 190.0, h: 600.0 }, Rect { x: 10.0, y: 514.0, w: 810.0, h: 116.0 }]);
+        // A smaller area keeps the whole area, and no filler.
+        let (drawn, strips) = drawn_area(area, (1200.0, 700.0), (0.0, 0.0));
+        assert_eq!((drawn, strips.len()), (area, 0));
+        // One dimension larger: only that strip.
+        let (drawn, strips) = drawn_area(area, (1200.0, 400.0), (0.0, 0.0));
+        assert_eq!((drawn.w, drawn.h, strips.len()), (1000.0, 400.0, 1));
     }
 }

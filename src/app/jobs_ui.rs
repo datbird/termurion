@@ -46,18 +46,19 @@ impl App {
     /// unique id (`script_titles`; kept when the provider goes, until the next evaluation
     /// shows the ellipsis), else the ellipsis while no registered provider has the unique id.
     pub(super) fn session_title(&self, pane: PaneId) -> String {
-        match self.title_provider_id(pane) {
-            Some(None) => return String::new(),
-            Some(Some(id)) => {
-                if let Some(t) = self.script_titles.get(&pane).filter(|t| t.unique_id == id && !t.deps.is_empty()) {
-                    return t.value.clone();
-                }
-                if !self.api_fns.has_title_provider(&id) {
-                    return crate::script_eval::TITLE_UNREGISTERED.to_string();
-                }
-                return String::new();
-            }
-            None => {}
+        let provider = self.title_provider_id(pane);
+        if let Some(provider) = &provider {
+            let base = match provider {
+                None => String::new(),
+                Some(id) => match self.script_titles.get(&pane).filter(|t| t.unique_id == *id && !t.deps.is_empty()) {
+                    Some(t) => t.value.clone(),
+                    None if !self.api_fns.has_title_provider(id) => crate::script_eval::TITLE_UNREGISTERED.to_string(),
+                    None => String::new(),
+                },
+            };
+            // A tmux client session with a custom title wears the tmux title prefix (`SNC:368-387`).
+            let prefixed = self.tmux_window_name_of(pane).and_then(|name| jobtitle::tmux_session_title(&self.globals.string("tmuxTitlePrefix"), Some(provider.as_deref()), &base, &name));
+            return prefixed.unwrap_or(base);
         }
         let Some(p) = self.panes.get(&pane) else { return "Shell".into() };
         let s = p.own();

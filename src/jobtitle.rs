@@ -72,6 +72,18 @@ pub fn title_function_value(display_name: &str, unique_id: &str) -> toml::Value 
     toml::Value::Array(vec![item(display_name), item(unique_id)])
 }
 
+/// A tmux client session's title when its Title Components is Custom (`SNC:368-387`): the prefix and
+/// the title provider's value `base` when there is a Title Function (`provider` is Some(Some(id))),
+/// else the prefix and the tmux window's name. None when it is not Custom (the built-in title's
+/// prefix is the tmux label paths' own) and for a gateway, which `tmux_windows::gateway_title` names.
+pub fn tmux_session_title(prefix: &str, provider: Option<Option<&str>>, base: &str, window_name: &str) -> Option<String> {
+    let shown = match provider? {
+        Some(_) => base,
+        None => window_name,
+    };
+    Some(format!("{prefix}{shown}"))
+}
+
 /// The title for `components` (the profile's Title Components bits).
 pub fn title(components: u32, p: &TitleParts) -> String {
     // The AI-generated name is not available on Windows: its bit is accepted and draws nothing.
@@ -231,5 +243,18 @@ mod tests {
         assert_eq!(title(JOB | AI, &p), title(JOB, &p));
         assert_eq!(title(AI, &p), title(0, &p));
         assert_eq!(title(AI, &p), "Shell");
+    }
+
+    #[test]
+    fn tmux_title_prefix_follows_iterm2() {
+        let prefix = "\u{21a3} ";
+        // Custom with a Title Function: the prefix and the provider's value.
+        assert_eq!(tmux_session_title(prefix, Some(Some("id")), "api", "work").as_deref(), Some("\u{21a3} api"));
+        // Custom with no Title Function: the prefix and the tmux window's name.
+        assert_eq!(tmux_session_title(prefix, Some(None), "", "work").as_deref(), Some("\u{21a3} work"));
+        // Not Custom: not handled here, the tmux label paths keep their titles.
+        assert_eq!(tmux_session_title(prefix, None, "Shell", "work"), None);
+        // No prefix set: the value or the name alone.
+        assert_eq!(tmux_session_title("", Some(None), "", "work").as_deref(), Some("work"));
     }
 }

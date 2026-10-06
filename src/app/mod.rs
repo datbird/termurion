@@ -244,12 +244,15 @@ struct Tab {
     pinned: bool,
     /// The tab's group; its definition rides every member (`TABH:99-115`).
     group: Option<crate::tab_groups::TabGroup>,
+    /// A tmux tab's window layout as tmux last sent it: what the tab draws at when it is smaller
+    /// than the area (the filler fills the rest, 13u Task 10).
+    tmux_node: Option<crate::tmux_layout::Node>,
 }
 
 impl Tab {
     /// A tab with no title, not pinned and in no group.
     pub(super) fn new(id: u64, layout: Layout, focused: PaneId) -> Tab {
-        Tab { id, layout, focused, zoomed: None, title: None, pinned: false, group: None }
+        Tab { id, layout, focused, zoomed: None, title: None, pinned: false, group: None, tmux_node: None }
     }
 }
 
@@ -626,6 +629,8 @@ pub struct App {
     group_prompt: Option<(crate::prompt_ui::PromptWindow, tab_groups_ui::GroupPrompt)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
+    /// Tabs (by id) whose new window opens behind the active one (`TmuxWindowsOpenInBackground`).
+    background_windows: std::collections::HashSet<u64>,
     /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
     pending_urls_at_start: Vec<String>,
     /// The URL pipe's listener thread, when this Tandem owns the pipe (it ends with the process).
@@ -1877,6 +1882,7 @@ pub fn run() {
         undo_capture: None,
         archive_results: Default::default(),
         pending_windows: Vec::new(),
+        background_windows: Default::default(),
         pending_urls_at_start,
         url_listener,
         url_flood: Default::default(),
@@ -3358,7 +3364,7 @@ impl App {
         }
         let in_tab = || {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
-            tab.layout.rects(self.content_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+            tab.layout.rects(self.pane_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
         let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
         // A timer for this pane is stale now (`maybeReplaceTerminatedShellWithNewInstance` checks `_exited`).
@@ -5740,6 +5746,20 @@ impl App {
         self.draw_caption_content(&mut frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
+        // A tmux window smaller than its tab leaves the rest to the filler (`PTYTab.m:1189-1208`).
+        if let Some(tab) = self.tabs.get(self.active) {
+            let strips = self.tmux_filler(tab);
+            if !strips.is_empty() {
+                let bg = self.panes.get(&tab.focused).map_or(palette_bg, |p| p.screen.palette.bg);
+                let black = self.full_screen() && self.globals.bool("UseBlackFillerColorForTmuxInFullScreen");
+                let color = scene::filler_color(bg, scene::filler_dark(bg), black);
+                let alpha = if see_through { alphas.iter().find(|(a, _)| *a == tab.focused).map_or(1.0, |(_, a)| *a) } else { 1.0 };
+                let color = if see_through { crate::transparency::premultiplied([color.r, color.g, color.b], alpha) } else { scene::rgba(color, 1.0) };
+                for rect in strips {
+                    frame.quads.push(scene::Quad { rect, color });
+                }
+            }
+        }
         let mut block_buttons = Vec::new();
         let mut fps_rect: Option<Rect> = None;
         let mut picker_hits = Vec::new();

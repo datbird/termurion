@@ -51,6 +51,8 @@ pub(super) struct TmuxGw {
     pub(super) panes: HashMap<u32, (PaneId, u32)>,
     /// Each window's set-titles string, once tmux sent one.
     pub(super) window_titles: HashMap<u32, String>,
+    /// Each window's name as tmux reports it (the prefix is not part of it).
+    pub(super) window_names: HashMap<u32, String>,
     /// Tab titles the person gave tmux tabs (Edit Tab Title), by tmux window.
     pub(super) tab_overrides: HashMap<u32, String>,
 }
@@ -108,7 +110,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -275,6 +277,16 @@ impl App {
     pub(super) fn tmux_client_of(&self, pane: PaneId) -> Option<String> {
         let gw = self.panes.get(&pane)?.tmux_io()?.gateway;
         self.tmux.get(&gw).map(|t| t.client.clone())
+    }
+
+    /// The name of the tmux window that shows `pane`, as tmux reports it (None for a pane that is
+    /// not a tmux client's). It is the server's text: control, bidirectional and zero-width
+    /// characters are dropped and a long name is cut, as any name a remote sent.
+    pub(super) fn tmux_window_name_of(&self, pane: PaneId) -> Option<String> {
+        let io = self.panes.get(&pane)?.tmux_io()?;
+        let t = self.tmux.get(&io.gateway)?;
+        let window = t.panes.get(&io.pane)?.1;
+        Some(crate::inert_files::shown_name(t.window_names.get(&window)?))
     }
 
     pub(super) fn tmux_gateways(&self) -> std::collections::BTreeSet<PaneId> {

@@ -618,7 +618,7 @@ impl App {
             return SplitResult::Refused;
         }
         let Some(index) = self.tabs.iter().position(|t| t.layout.panes().contains(&target)) else { return SplitResult::Refused };
-        let area = self.content_area_for(&self.tabs[index]);
+        let area = self.pane_area_for(&self.tabs[index]);
         let Some((_, rect)) = self.tabs[index].layout.rects(area, self.gap()).into_iter().find(|(id, _)| *id == target) else { return SplitResult::Refused };
         let half = match axis {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },

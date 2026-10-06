@@ -1863,6 +1863,24 @@ pub fn contrasting(c: Rgb) -> Rgb {
     if luma < 0.55 { rgb(0xff, 0xff, 0xff) } else { rgb(0, 0, 0) }
 }
 
+/// The color under a tmux window that is smaller than its tab (`PTYTab.m:1189-1208`): black in
+/// full screen when the Advanced key says so, else the background 10% of the way toward white
+/// when it is dark and toward black when it is light (half rounds up).
+pub fn filler_color(bg: Rgb, dark_bg: bool, black: bool) -> Rgb {
+    if black {
+        return rgb(0, 0, 0);
+    }
+    // 0.1 * mix + 0.9 * component, in tenths so half rounds up exactly.
+    let toward = if dark_bg { 255u32 } else { 0 };
+    let mixed = |c: u8| ((toward + 9 * c as u32 + 5) / 10) as u8;
+    rgb(mixed(bg.r), mixed(bg.g), mixed(bg.b))
+}
+
+/// Whether a background is dark for the filler: its brightness (the largest component) is under one half.
+pub fn filler_dark(bg: Rgb) -> bool {
+    bg.r.max(bg.g).max(bg.b) < 128
+}
+
 /// A pinned tab's mark (Segoe Fluent Icons "Pin"; iTerm2's SF Symbol "pin.fill").
 pub const PIN_GLYPH: char = '\u{E718}';
 /// The hover text of the indicator under (`x`, `y`) among a frame's indicator rectangles
@@ -8726,5 +8744,19 @@ mod drawn_overlay_tests {
         }
         let right = f.overlay.iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max);
         assert!((right - (cell.x + cell.w / 2.0)).abs() < 0.01, "half the cell: {right} of {cell:?}");
+    }
+
+    #[test]
+    fn filler_follows_iterm2() {
+        // Black on a dark background: 10% toward white (half rounds up).
+        assert_eq!(filler_color(rgb(0, 0, 0), true, false), rgb(26, 26, 26));
+        assert_eq!(filler_color(rgb(255, 255, 255), false, false), rgb(230, 230, 230));
+        // The key makes it black whatever the background.
+        assert_eq!(filler_color(rgb(255, 255, 255), false, true), rgb(0, 0, 0));
+        assert_eq!(filler_color(rgb(30, 30, 30), true, true), rgb(0, 0, 0));
+        // A mid dark color: 0.9 * 100 + 0.1 * 255 = 115.5 rounds up.
+        assert_eq!(filler_color(rgb(100, 100, 100), true, false), rgb(116, 116, 116));
+        // Dark is brightness (the largest component) under one half.
+        assert!(filler_dark(rgb(127, 0, 0)) && !filler_dark(rgb(128, 0, 0)) && filler_dark(rgb(0, 0, 0)));
     }
 }
