@@ -802,7 +802,7 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
     }
     match scheme(target).as_deref() {
         None => Run::Blocked("Tandem opens only http, https, mailto, and ftp links, not paths or other text.".into()),
-        Some(s) if WEB.contains(&s) => Run::Open(target.to_string()),
+        Some(s) if WEB.contains(&s) => Run::Open(encode_url_chars(target)),
         Some("file") => match file_url_path(target) {
             Some(p) if crate::scripts::stays_local(Path::new(&p)) => file_open(&p, None, None, has_code),
             _ => Run::Blocked(format!("Tandem does not open network file links: {target}")),
@@ -953,6 +953,24 @@ pub fn cmd_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
+/// A URL with every character a ShellExecute handler could read as more than the URL percent-
+/// encoded, as iTerm2's NSURL does: `"`, `<`, `>`, a backtick, `^`, `{`, `}`, `|`, `\`, space,
+/// every control character and everything outside ASCII. The rest (including an existing `%`) stays.
+pub fn encode_url_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii() && !c.is_ascii_control() && !matches!(c, '"' | '<' | '>' | '`' | '^' | '{' | '}' | '|' | '\\' | ' ') {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
 /// Percent-encodes everything but letters, digits, and "-._~".
 pub fn percent_encode(s: &str) -> String {
     s.bytes()
@@ -1031,6 +1049,21 @@ pub fn needs_live_session(run: &Run) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Final wave item 4: a web URL reaches ShellExecute with no quote, space or control character.
+    #[test]
+    fn web_links_reach_shellexecute_encoded() {
+        let open = |u: &str| match guard_open(u, false) {
+            Run::Open(t) => t,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(open("mailto:a@b?x=\" /a C:\\secret.txt"), "mailto:a@b?x=%22%20/a%20C:%5Csecret.txt");
+        assert_eq!(open("https://a.b/x\r\ny"), "https://a.b/x%0D%0Ay");
+        assert_eq!(open("https://a.b/<>`^{}|\u{e9}"), "https://a.b/%3C%3E%60%5E%7B%7D%7C%C3%A9");
+        assert_eq!(open("https://a.b/p%20q?x=1&y=2#f"), "https://a.b/p%20q?x=1&y=2#f", "a valid URL is unchanged");
+        let encoded = open("mailto:a@b?x=\" /a C:\\secret.txt");
+        assert!(!encoded.contains(['"', ' ', '\\']));
+    }
+
     #[test]
     fn an_unbound_ssh_link_says_how_to_open_it() {
         let Run::Blocked(why) = guard_open("ssh://host", false) else { panic!("refused") };

@@ -157,18 +157,7 @@ pub fn encode_capture(action: &str, capture: &str) -> String {
     if action != "openUrl:" {
         return capture.to_string();
     }
-    let mut out = String::new();
-    for c in capture.chars() {
-        if c.is_ascii() && !c.is_ascii_control() && c != ' ' {
-            out.push(c);
-        } else {
-            let mut buf = [0u8; 4];
-            for b in c.encode_utf8(&mut buf).bytes() {
-                out.push_str(&format!("%{b:02X}"));
-            }
-        }
-    }
-    out
+    crate::semantic::encode_url_chars(capture)
 }
 
 /// An action's parameter (`CAP:161-255`). Interpolated: Copy with no parameter copies the whole
@@ -204,6 +193,12 @@ pub fn parameter(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_open_url_capture_is_encoded_for_quotes_and_controls() {
+        assert_eq!(encode_capture("openUrl:", "mailto:a@b?x=\" /a"), "mailto:a@b?x=%22%20/a");
+        assert_eq!(encode_capture("openUrl:", "https://a/x\ry"), "https://a/x%0Dy");
+    }
+
     use super::*;
 
     #[test]
