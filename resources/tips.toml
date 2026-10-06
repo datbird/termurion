@@ -245,7 +245,7 @@ body = "You can split a tab into multiple panes with Win+D and Shift+Win+D."
 [[tip]]
 key = "0043"
 title = "Adjust Split Panes"
-body = "Resize split panes with the keyboard using Ctrl+Win+-Arrow Key."
+body = "Resize split panes with the keyboard using Ctrl+Win+Arrow Key."
 
 [[tip]]
 key = "0044"
@@ -321,7 +321,7 @@ body = "Turn on \u201CEdit > Selection Respects Soft Boundaries\u201D to recogni
 [[tip]]
 key = "0058"
 title = "Select Without Dragging"
-body = "Single click where you want to start a selection and Shift+-click where you want it to end to select text without dragging."
+body = "Single click where you want to start a selection and Shift+click where you want it to end to select text without dragging."
 
 [[tip]]
 key = "0059"
@@ -421,7 +421,7 @@ body = "Hold Alt while dragging a tab to move the window. This is useful in the 
 [[tip]]
 key = "0079"
 title = "Composer"
-body = "Press Shift+Win. to open the Composer. It gives you a scratchpad to edit a command before sending it to the shell."
+body = "Press Shift+Win+. to open the Composer. It gives you a scratchpad to edit a command before sending it to the shell."
 
 [[tip]]
 key = "0080"
@@ -567,7 +567,7 @@ body = "Sync your tmux paste buffer with the local clipboard for seamless integr
 [[tip]]
 key = "0109"
 title = "Multi-Cursor in Composer"
-body = "Enhance your editing in the Composer with multiple cursors, created using Ctrl+Shift+-up/down or Alt+-drag."
+body = "Enhance your editing in the Composer with multiple cursors, created using Ctrl+Shift+up/down or Alt+drag."
 
 [[tip]]
 key = "0110"
@@ -592,12 +592,12 @@ body = "Learn more about your commands by Win+clicking in the Composer to open t
 [[tip]]
 key = "0114"
 title = "Quick Command Send"
-body = "Quickly send and remove commands in the Composer using Alt+Shift+-enter."
+body = "Quickly send and remove commands in the Composer using Alt+Shift+enter."
 
 [[tip]]
 key = "0115"
 title = "Queue Commands"
-body = "Queue up a command in the Composer to be sent after the current command finishes with Alt+-Enter."
+body = "Queue up a command in the Composer to be sent after the current command finishes with Alt+Enter."
 
 [[tip]]
 key = "0116"

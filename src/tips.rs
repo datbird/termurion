@@ -371,4 +371,73 @@ mod tests {
         g.set("TimeBetweenTips", Value::Float(0.0));
         assert_eq!(between_of(&g), MIN_BETWEEN);
     }
+    /// Review fix 3: a chord is Modifier+Key; the generator never leaves "+-" (iTerm2's "^\u{2318}-Arrow"
+    /// and "\u{2325}-drag" are a modifier then a hyphen), and the composer hint keeps its key.
+    #[test]
+    fn chords_read_as_chords() {
+        for t in all() {
+            assert!(!t.title.contains("+-") && !t.body.contains("+-"), "tip {} has a \"+-\" chord: {}", t.key, t.body);
+        }
+        let by = |k: &str| all().iter().find(|t| t.key == k).unwrap_or_else(|| panic!("{k}"));
+        assert!(by("0043").body.contains("Ctrl+Win+Arrow Key"));
+        assert!(by("0058").body.contains("Shift+click"));
+        assert!(by("0079").body.contains("Shift+Win+. to open the Composer"), "{}", by("0079").body);
+    }
+
+    /// Review fix 3: every key chord a tip names is a real Tandem binding: a menu item's chord
+    /// (`menus::command_for`) or a composer key (`composer::action`). Mouse chords (click, drag)
+    /// and a bare modifier ("Hold Alt+Win while") have no key to check.
+    #[test]
+    fn tip_chords_are_real_bindings() {
+        use crate::composer::{action, Action, Key, Mods};
+        use crate::menus::{command_for, Chord, ChordKey};
+        use crate::text_edit::EditKey;
+        let mut checked = 0;
+        for t in all() {
+            for word in t.body.split_whitespace().chain(t.title.split_whitespace()) {
+                let (mut ctrl, mut alt, mut shift, mut win) = (false, false, false, false);
+                let mut rest = word.trim_start_matches(['(', '\u{201c}']);
+                loop {
+                    if let Some(r) = rest.strip_prefix("Ctrl+") {
+                        ctrl = true;
+                        rest = r;
+                    } else if let Some(r) = rest.strip_prefix("Alt+") {
+                        alt = true;
+                        rest = r;
+                    } else if let Some(r) = rest.strip_prefix("Shift+") {
+                        shift = true;
+                        rest = r;
+                    } else if let Some(r) = rest.strip_prefix("Win+") {
+                        win = true;
+                        rest = r;
+                    } else {
+                        break;
+                    }
+                }
+                if !(ctrl || alt || shift || win) {
+                    continue;
+                }
+                let key = if rest.chars().count() > 1 { rest.trim_end_matches(['.', ',', ';', ':', ')', '\u{201d}']) } else { rest };
+                let lower = key.to_ascii_lowercase();
+                if key.is_empty() || ["click", "clicking", "drag", "dragging", "win", "alt", "shift", "ctrl"].contains(&lower.as_str()) {
+                    continue;
+                }
+                let menu = |k: ChordKey| command_for(&Chord { key: k, cmd: win, alt, shift, ctrl }).is_some();
+                let composer = |k: EditKey| action(&Key::Edit(k), Mods { ctrl, alt, shift, win }, false, false).is_some_and(|a| !matches!(a, Action::Edit(_)));
+                let real = match lower.as_str() {
+                    "up/down" => composer(EditKey::Up) && composer(EditKey::Down),
+                    "enter" => composer(EditKey::Enter),
+                    "arrow" => [ChordKey::Up, ChordKey::Down, ChordKey::Left, ChordKey::Right].into_iter().all(menu),
+                    "up" => menu(ChordKey::Up),
+                    "down" => menu(ChordKey::Down),
+                    k if k.chars().count() == 1 => menu(ChordKey::Char(k.chars().next().unwrap())),
+                    _ => false,
+                };
+                assert!(real, "tip {} names {word:?}, which is not a Tandem binding", t.key);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 25, "only {checked} chords checked: the scan is broken");
+    }
+
 }

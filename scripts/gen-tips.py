@@ -39,7 +39,12 @@ REPLACEMENTS = [
 ]
 CARET = re.compile(r"\^(?=[A-Za-z-])")
 # A modifier word that names no key after it ("holding Alt+ while dragging") loses its plus.
-BARE_MODIFIER = re.compile(r"\b(Win|Alt|Shift|Ctrl)\+(?=[ .,)]|$)")
+# A period after a modifier and then a space is the period KEY ("\u21e7\u2318. to open"); only a period
+# that ends the text is sentence punctuation.
+BARE_MODIFIER = re.compile(r"\b(Win|Alt|Shift|Ctrl)\+(?=[ ,)]|\.$|$)")
+# "\u2325-drag", "^\u2318-Arrow": the hyphen joined a modifier to a word; after the translation it
+# would read as a minus key ("Alt+-drag").
+HYPHEN_AFTER_PLUS = re.compile(r"\+-(?=[A-Za-z])")
 LEFT_OVER = ["iTerm2", "⌘", "⌥", "⇧", "⌃", "Finder", "↑", "↓"]
 
 ENTRY = re.compile(r'@"(\d+)"\s*:\s*@\{')
@@ -75,6 +80,7 @@ def translate(s):
     s = CARET.sub("Ctrl+", s)
     s = s.replace("Hold ^ while", "Hold Ctrl while")
     s = BARE_MODIFIER.sub(r"\1", s)
+    s = HYPHEN_AFTER_PLUS.sub("+", s)
     for g in LEFT_OVER:
         assert g not in s, f"{g!r} remains in {s!r}"
     return s
