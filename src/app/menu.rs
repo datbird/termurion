@@ -42,12 +42,16 @@ const NUDGE: f32 = 0.05;
 /// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&". Mac words read
 /// as Windows ones ("Finder" is "Explorer").
 pub(super) fn menu_text(item: &Item) -> String {
-    let label = menus::shown_label(item.label()).replace('&', "&&");
+    let label = crate::menu_tips::split_hint(&item.selector, &menus::shown_label(item.label()), *SPLIT_HINTS.get().unwrap_or(&false)).replace('&', "&&");
     match item.chord().filter(menus::reaches_tandem) {
         Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
         None => label,
     }
 }
+
+/// `ShowHintsInSplitPaneMenuItems` as it was at launch: iTerm2 reads it once while it builds the
+/// menus (`AD:394`), so a change needs a restart.
+static SPLIT_HINTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 pub(super) struct MenuBar {
     /// The window's menu bar (hidden in full screen, `App::sync_menu_hidden`).
@@ -133,6 +137,7 @@ impl App {
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
     pub(super) fn install_menus(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
+        SPLIT_HINTS.get_or_init(|| self.globals.bool("ShowHintsInSplitPaneMenuItems"));
         let menu = Menu::new();
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
@@ -204,6 +209,9 @@ impl App {
         if let Err(e) = unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) } {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
+        // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
+        #[cfg(windows)]
+        crate::menu_tip_win::install(hwnd, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
 
         let proxy = self.proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -697,9 +705,30 @@ impl App {
             return self.relayout();
         }
         match item.selector.as_str() {
-            "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", env!("CARGO_PKG_VERSION"))),
+            "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", crate::update::current_version())),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
             "checkForUpdatesFromMenu:" => self.check_for_updates(true),
+            // Help pages and the license file: fixed targets, the page through the one guard.
+            "copyModeShortcuts:" => match crate::semantic::guard_open(crate::menu_tips::COPY_MODE_URL, false) {
+                crate::semantic::Run::Open(url) => {
+                    if let Err(e) = super::semantic_ui::shell_open(&url, None, false) {
+                        self.banners.set("action", format!("Could not open {url}: {e}"));
+                    }
+                }
+                crate::semantic::Run::Blocked(why) => self.banners.set("action", why),
+                _ => {}
+            },
+            "openSourceLicenses:" => {
+                let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Tandem");
+                match crate::licenses::write_to(&dir, crate::licenses::text()) {
+                    Ok(path) => {
+                        if let Err(e) = super::semantic_ui::shell_open(&path.to_string_lossy(), None, false) {
+                            self.banners.set("action", format!("Could not open the license list: {e}"));
+                        }
+                    }
+                    Err(e) => self.banners.set("action", format!("Could not write the license list: {e}")),
+                }
+            }
             "showTipOfTheDay:" => self.show_tip_from_menu(event_loop),
             "makeScreenshot:" => self.make_screenshot(event_loop),
             "renderSelection:" => self.render_selection(),

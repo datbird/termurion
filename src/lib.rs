@@ -338,6 +338,10 @@ pub mod url_launch;
 pub mod update;
 pub mod tip_ui;
 pub mod tips;
+pub mod menu_tips;
+#[cfg(windows)]
+pub mod menu_tip_win;
+pub mod licenses;
 pub mod dynamic_profiles;
 pub mod dynamic_profiles_trust;
 #[cfg(windows)]

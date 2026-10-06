@@ -2154,6 +2154,35 @@ mod tests {
         }
     }
 
+    /// m13v2 Task 7: the menu hint, menu tip and screenshot cap rows (`AS`: `showHintsInSplitPaneMenuItems`,
+    /// `menuTipDelay`, `screenshotMaxPixelHeight`).
+    #[test]
+    fn menu_rows_follow_iterm2() {
+        for (key, kind, default, label, help_tail) in [
+            (
+                "ShowHintsInSplitPaneMenuItems",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Show hints in split pane menu items to indicate horizontal vs vertical semantics.",
+                "\nYou must restart Tandem after changing this setting for it to take effect.",
+            ),
+            ("MenuTipDelay", Kind::Float, Value::Float(1.0), "Time to wait before showing tips in the main menu.", "\nSet this to a big number if you don\u{2019}t like the tips."),
+            (
+                "ScreenshotMaxPixelHeight",
+                Kind::Int,
+                Value::Integer(30000),
+                "Maximum pixel height for a single screenshot file.",
+                "\nScreenshots taller than this will be split into multiple files. Also affects the maximum total pixels (this value squared / 5).",
+            ),
+        ] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", kind), "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.help, format!("{label}{help_tail}"), "{key}");
+        }
+    }
+
     /// m13v2 Task 6 (supersedes the m13t Task 8 ruling): iTerm2's full warning for the first edit
     /// of a dynamic profile that is not rewritable (`PPV:1217-1253`); none for a saved profile or a
     /// rewritable one.

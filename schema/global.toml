@@ -5194,3 +5194,32 @@ label = "Add a 'Dynamic' tag to dynamic profiles."
 type = "bool"
 default = false
 help = "Add a 'Dynamic' tag to dynamic profiles.\nWhen enabled, dynamic profiles will have a 'Dynamic' tag added to them, which can be used to filter or identify them."
+
+# 13v2 Task 7: menu hints and tips, and the screenshot cap (iTermAdvancedSettingsModel:
+# showHintsInSplitPaneMenuItems, menuTipDelay, screenshotMaxPixelHeight).
+[[setting]]
+key = "ShowHintsInSplitPaneMenuItems"
+tab = "Advanced"
+section = "General"
+label = "Show hints in split pane menu items to indicate horizontal vs vertical semantics."
+type = "bool"
+default = false
+help = "Show hints in split pane menu items to indicate horizontal vs vertical semantics.\nYou must restart Tandem after changing this setting for it to take effect."
+
+[[setting]]
+key = "MenuTipDelay"
+tab = "Advanced"
+section = "General"
+label = "Time to wait before showing tips in the main menu."
+type = "float"
+default = 1.0
+help = "Time to wait before showing tips in the main menu.\nSet this to a big number if you don\u2019t like the tips."
+
+[[setting]]
+key = "ScreenshotMaxPixelHeight"
+tab = "Advanced"
+section = "General"
+label = "Maximum pixel height for a single screenshot file."
+type = "int"
+default = 30000
+help = "Maximum pixel height for a single screenshot file.\nScreenshots taller than this will be split into multiple files. Also affects the maximum total pixels (this value squared / 5)."
