@@ -307,6 +307,7 @@ impl App {
     }
 
     pub(super) fn show_hotkey_window(&mut self, guid: &str, fg: isize) {
+        crate::rlog!("dropdown window shown");
         let previous = (!ours(fg)).then_some(fg);
         match self.hotkey_window_of(guid) {
             Some(w) => {
@@ -411,6 +412,7 @@ impl App {
             Some(h) if h.shown && h.roll.is_none() => h.guid.clone(),
             _ => return,
         };
+        crate::rlog!("dropdown window hidden");
         let animates = self.store.get(&guid).is_some_and(|p| Prefs::from_profile(p).animates);
         let Some(g) = &self.gpu else { return };
         let shown = Self::outer_rect(g);

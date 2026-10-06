@@ -238,6 +238,36 @@ pub fn wait_any(pids: &[u32], gap: Duration) {
     }
 }
 
+/// The names an ancestry lost, in the old order (`PC:479-500`); growth or no change is empty.
+pub fn ancestry_shrank(old: &[String], new: &[String]) -> Vec<String> {
+    if new.len() >= old.len() {
+        return Vec::new();
+    }
+    old.iter().filter(|n| !new.contains(n)).cloned().collect()
+}
+
+/// The diagnostic line for a shrinking ancestry (`PC:470-500`).
+pub fn ancestry_line(pid: u32, old: &[String], new: &[String], removed: &[String], deepest: Option<u32>) -> String {
+    let deepest = deepest.map_or("nil".to_string(), |p| p.to_string());
+    format!("[ANCESTRYDIAG] tracked pid {pid}: ancestry shrank {old:?} -> {new:?} (removed {removed:?}); deepest fg job pid={deepest}")
+}
+
+/// Logs a shrunken ancestry through `rlog!`: the line, then per vanished name whether a process
+/// of that name is still in the process list. Names are program names, never command lines.
+fn log_ancestry_shrink(procs: &[Proc], root: u32, old: &[String], now: &ShellJob) {
+    let removed = ancestry_shrank(old, &now.ancestors);
+    if removed.is_empty() {
+        return;
+    }
+    let clean = |v: &[String]| v.iter().map(|n| crate::dlog::name(n).to_string()).collect::<Vec<_>>();
+    let line = ancestry_line(root, &clean(old), &clean(&now.ancestors), &clean(&removed), now.job.as_ref().map(|j| j.pid));
+    crate::rlog!("{}", crate::dlog::built(line));
+    for gone in &removed {
+        let alive = procs.iter().any(|p| proctree::strip_exe(&p.name).eq_ignore_ascii_case(gone));
+        crate::rlog!("[ANCESTRYDIAG] vanished {}: still in the process list: {}", crate::dlog::name(gone), alive);
+    }
+}
+
 /// What the window knows about one shell's job.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShellJob {
@@ -255,6 +285,8 @@ struct Shared {
     /// `FastForegroundJobUpdates`: the wait between looks ends when a watched foreground job
     /// exits. Off, the watcher only polls.
     fast_updates: bool,
+    /// `LogForegroundJobAncestryDiagnostics`: a shrinking ancestry is logged (`PC:470-500`).
+    ancestry_diagnostics: bool,
     error: Option<String>,
     /// Shells whose whole tree the Jobs tool shows, and each one's last tree.
     trees_wanted: HashSet<u32>,
@@ -345,6 +377,11 @@ impl JobWatch {
                             for r in roots {
                                 let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r), root: proctree::root_name(&procs, r) };
                                 if s.roots.contains(&r) && s.jobs.get(&r) != Some(&now) {
+                                    if s.ancestry_diagnostics {
+                                        if let Some(old) = s.jobs.get(&r) {
+                                            log_ancestry_shrink(&procs, r, &old.ancestors, &now);
+                                        }
+                                    }
                                     s.jobs.insert(r, now);
                                     changed = true;
                                 }
@@ -442,6 +479,11 @@ impl JobWatch {
 
     /// `FastForegroundJobUpdates`: on, a watched foreground job's exit ends the wait at once;
     /// off, plain polling from the next look.
+    /// `LogForegroundJobAncestryDiagnostics`, read by the watcher at each look.
+    pub fn set_ancestry_diagnostics(&self, on: bool) {
+        self.lock().ancestry_diagnostics = on;
+    }
+
     pub fn set_fast_updates(&self, on: bool) {
         self.lock().fast_updates = on;
     }
@@ -584,6 +626,20 @@ pub fn still_running(set: &[(u32, u64)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PC:479-500`: the names that vanished from a shrinking ancestry, and the one log line.
+    #[test]
+    fn ancestry_diagnostics_follow_iterm2() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(ancestry_shrank(&names(&["claude", "node", "pwsh"]), &names(&["node", "pwsh"])), names(&["claude"]));
+        assert!(ancestry_shrank(&names(&["node"]), &names(&["claude", "node"])).is_empty(), "growth is not a shrink");
+        assert!(ancestry_shrank(&names(&["node"]), &names(&["node"])).is_empty());
+        assert_eq!(
+            ancestry_line(12, &names(&["claude", "node"]), &names(&["node"]), &names(&["claude"]), Some(40)),
+            "[ANCESTRYDIAG] tracked pid 12: ancestry shrank [\"claude\", \"node\"] -> [\"node\"] (removed [\"claude\"]); deepest fg job pid=40"
+        );
+        assert!(ancestry_line(12, &[], &[], &[], None).ends_with("deepest fg job pid=nil"));
+    }
 
     #[test]
     fn pe_subsystem_reads_the_header() {

@@ -74,7 +74,7 @@ pub trait LogSafe {}
 macro_rules! log_safe {
     ($($t:ty),* $(,)?) => { $(impl LogSafe for $t {})* };
 }
-log_safe!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, bool, char, std::time::Duration, Name);
+log_safe!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, bool, char, std::time::Duration, Name, Built);
 impl LogSafe for &'static str {}
 
 /// Identity, so the macro can demand `LogSafe` of each argument.
@@ -90,6 +90,21 @@ pub struct Name(String);
 
 pub fn name(s: &str) -> Name {
     Name(s.chars().take(64).map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' ') { c } else { '?' }).collect())
+}
+
+/// A line assembled by the caller from `LogSafe` parts only (names made by `name(..)`, numbers):
+/// kept as it is. Never wrap a value that came from a terminal or a user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Built(String);
+
+pub fn built(s: String) -> Built {
+    Built(s)
+}
+
+impl fmt::Display for Built {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 impl fmt::Display for Name {
@@ -132,11 +147,84 @@ pub const fn no_capture(fmt: &str) {
     assert!(!has_capture(fmt), "a log format may not capture a variable inline; pass it as an argument");
 }
 
+/// The program a command line starts, as a log name: the first word (or quoted path), its file
+/// name without folder or ".exe". Arguments are never part of it.
+pub fn program(cmd: &str) -> Name {
+    let cmd = cmd.trim_start();
+    let first = match cmd.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(""),
+        None => cmd.split_whitespace().next().unwrap_or(""),
+    };
+    let file = first.rsplit(['/', '\\']).next().unwrap_or("");
+    name(file.strip_suffix(".exe").or_else(|| file.strip_suffix(".EXE")).unwrap_or(file))
+}
+
 /// Words a log format must never name (the call-site test reads every `dlog!` format).
 pub const FORBIDDEN_WORDS: &[&str] = &["text", "input", "key", "cookie", "token", "password", "secret", "env", "clip", "title", "url", "argv", "typed", "chars"];
 
+/// Words an argument expression of a log call may not name: raw terminal input, a paste, a title,
+/// a URL, an environment value or a secret never reaches a log, whatever its type.
+pub const FORBIDDEN_ARG_WORDS: &[&str] = &["text", "input", "typed", "key", "paste", "clip", "password", "passwd", "token", "cookie", "secret", "env", "url", "argv", "bytes", "chars", "title", "data", "cmdline", "args"];
+
+/// The retrospective log's texts (`AD:3345-3373`).
+pub const NO_RING_HEADING: &str = "No Retrospective Logs";
+pub const NO_RING_TEXT: &str = "No retrospective debug logs have been recorded yet.";
+pub const RING_FILE: &str = "retrospective-debuglog.txt";
+pub const RING_SAVE_TITLE: &str = "Save Retrospective Debug Logs";
+pub const RING_SAVE_FAILED_HEADING: &str = "Could Not Save";
+
+pub fn ring_save_failed(e: &str) -> String {
+    format!("Failed to save retrospective debug logs: {e}")
+}
+
+/// One retrospective entry: the debug log's without the thread (`DL:350-351`).
+pub fn ring_entry(secs: i64, micros: u32, file: &str, line: u32, module: &str, text: &str) -> String {
+    format!("{secs}.{micros:06} {file}:{line} ({module}): {text}\n")
+}
+
+/// The ring's scrub (`DL:288-311`): the text inside `chars="..."` and `unmodchars="..."` (a key
+/// event's characters) becomes `[redacted]`. Tandem also redacts the shapes of a secret (P2):
+/// `password=`/`token=`/`secret=` values, a bearer token, a cookie header and URL userinfo.
+pub fn scrub(text: &str) -> String {
+    use regex::Regex;
+    static RES: OnceLock<[(Regex, &'static str); 5]> = OnceLock::new();
+    let res = RES.get_or_init(|| {
+        let re = |p: &str| Regex::new(p).expect("scrub pattern");
+        [
+            (re(r#"chars="[^"]*""#), "chars=\"[redacted]\""),
+            (re(r"(?i)\b(password|passwd|token|secret|apikey|api_key)(\s*[=:]\s*)\S+"), "$1$2[redacted]"),
+            (re(r"(?i)\b(bearer)(\s+)\S+"), "$1$2[redacted]"),
+            (re(r"(?i)\b(cookie)(\s*:\s*)[^\r\n]+"), "$1$2[redacted]"),
+            (re(r"://[^/\s@]+@"), "://[redacted]@"),
+        ]
+    });
+    let mut out = std::borrow::Cow::Borrowed(text);
+    for (r, with) in res {
+        if let std::borrow::Cow::Owned(s) = r.replace_all(&out, *with) {
+            out = std::borrow::Cow::Owned(s);
+        }
+    }
+    out.into_owned()
+}
+
 /// Every file holding `dlog!` calls and how many: a new call site is a review of what it passes.
-pub const CALL_SITES: &[(&str, usize)] = &[("app/menu.rs", 1)];
+pub const CALL_SITES: &[(&str, usize)] = &[
+    ("app/api_requests.rs", 1),
+    ("app/api_ui.rs", 2),
+    ("app/bell_ui.rs", 2),
+    ("app/clipboard_ui.rs", 1),
+    ("app/hotkey_ui.rs", 2),
+    ("app/menu.rs", 2),
+    ("app/mod.rs", 3),
+    ("app/restore_ui.rs", 1),
+    ("app/session_end_ui.rs", 1),
+    ("app/tmux_ui.rs", 2),
+    ("app/triggers_ui.rs", 1),
+    ("app/windows_ui.rs", 3),
+    ("host_client.rs", 2),
+    ("jobwatch.rs", 2),
+];
+
 
 /// The text of the log in memory, and the retrospective ring beside it.
 #[derive(Debug)]
@@ -147,6 +235,7 @@ pub struct Log {
     ring: VecDeque<String>,
     ring_bytes: usize,
     cap: usize,
+    ring_cap: usize,
 }
 
 impl Default for Log {
@@ -162,7 +251,12 @@ impl Log {
 
     /// A log with its own cap in bytes (tests).
     pub const fn with_cap(cap: usize) -> Log {
-        Log { on: false, body: String::new(), header: String::new(), ring: VecDeque::new(), ring_bytes: 0, cap }
+        Log::with_caps(cap, RING_MAX)
+    }
+
+    /// A log with its own body and ring caps in bytes (tests).
+    pub const fn with_caps(cap: usize, ring_cap: usize) -> Log {
+        Log { on: false, body: String::new(), header: String::new(), ring: VecDeque::new(), ring_bytes: 0, cap, ring_cap }
     }
 
     /// Starts logging from empty with this header (`DL:554-583`).
@@ -206,13 +300,25 @@ impl Log {
         if self.on {
             return self.append(e);
         }
+        let e = scrub(e);
         self.ring_bytes += e.len();
-        self.ring.push_back(e.to_string());
-        while self.ring_bytes > RING_MAX && self.ring.len() > 1 {
+        self.ring.push_back(e);
+        while self.ring_bytes > self.ring_cap && self.ring.len() > 1 {
             if let Some(old) = self.ring.pop_front() {
                 self.ring_bytes -= old.len();
             }
         }
+    }
+
+    /// The ring's lines, oldest first.
+    pub fn ring_text(&self) -> String {
+        self.ring.iter().map(String::as_str).collect()
+    }
+
+    /// Forgets the ring.
+    pub fn clear_ring(&mut self) {
+        self.ring.clear();
+        self.ring_bytes = 0;
     }
 
     /// How many lines the ring holds.
@@ -400,6 +506,34 @@ pub fn emit(file: &str, line: u32, module: &str, args: fmt::Arguments<'_>) {
     LOG.lock().unwrap_or_else(|e| e.into_inner()).append(&e);
 }
 
+/// What `rlog!` calls: while logging, the line goes to the debug log as `dlog!` would; else it
+/// is scrubbed into the ring (`DLH:109-128`).
+#[doc(hidden)]
+pub fn emit_retro(file: &str, line: u32, module: &str, args: fmt::Arguments<'_>) {
+    if is_on() {
+        return emit(file, line, module, args);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let file = file.rsplit(['/', '\\']).next().unwrap_or(file);
+    let e = ring_entry(now.as_secs() as i64, now.subsec_micros(), file, line, module, &args.to_string());
+    LOG.lock().unwrap_or_else(|e| e.into_inner()).remember(&e);
+}
+
+/// The ring's text, oldest line first.
+pub fn ring_text() -> String {
+    LOG.lock().unwrap_or_else(|e| e.into_inner()).ring_text()
+}
+
+pub fn clear_ring() {
+    LOG.lock().unwrap_or_else(|e| e.into_inner()).clear_ring();
+}
+
+/// `RLogRedact` (`DL:313-331`): the full text only while debug logging is on, else the redacted
+/// one. For a value a developer needs but a retrospective log may not keep.
+pub fn redact<'a>(full: &'a str, redacted: &'a str) -> &'a str {
+    if is_on() { full } else { redacted }
+}
+
 /// The debug output (`OutputDebugStringW`): slow while a debugger listens, so only the two keys
 /// that ask for it call this, and only the prefix of a log entry or a number table goes (any
 /// process of the session can read it).
@@ -422,6 +556,18 @@ macro_rules! dlog {
         if $crate::dlog::is_on() {
             const _: () = $crate::dlog::no_capture($fmt);
             $crate::dlog::emit(file!(), line!(), module_path!(), format_args!($fmt $(, $crate::dlog::safe(&$arg))*));
+        }
+    };
+}
+
+/// A retrospective log line (`RLog`): kept in a 10 MB ring while debug logging is off, in the
+/// debug log while it is on. Same rules as `dlog!`: every argument `LogSafe`, no inline capture.
+#[macro_export]
+macro_rules! rlog {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        {
+            const _: () = $crate::dlog::no_capture($fmt);
+            $crate::dlog::emit_retro(file!(), line!(), module_path!(), format_args!($fmt $(, $crate::dlog::safe(&$arg))*));
         }
     };
 }
@@ -741,6 +887,14 @@ mod tests {
         assert!(!is_on());
     }
 
+    /// A program's name only: no folder, no `.exe`, no arguments.
+    #[test]
+    fn program_names_carry_no_arguments() {
+        assert_eq!(program(r#""C:\Program Files\PowerShell\pwsh.exe" -NoLogo -Command secret"#).to_string(), "pwsh");
+        assert_eq!(program("ssh user@host -i key").to_string(), "ssh");
+        assert_eq!(program("").to_string(), "");
+    }
+
     /// `{}` and `{:..}` are plain; `{secret}` and `{0}` capture or index a named value.
     #[test]
     fn inline_captures_are_found() {
@@ -751,17 +905,14 @@ mod tests {
         assert!(has_capture("open {"));
         // The macro itself runs the check in a `const`, so every spelling gets it.
         let src = include_str!("dlog.rs").split("#[cfg(test)]").next().unwrap();
-        assert_eq!(src.matches("const _: () = $crate::dlog::no_capture($fmt);").count(), 1, "dlog! checks its format at compile time");
+        assert_eq!(src.matches("const _: () = $crate::dlog::no_capture($fmt);").count(), 2, "dlog! and rlog! check their format at compile time");
     }
 
-    /// Every `dlog!` call site is listed, whatever its spelling (`dlog!(`, `crate::dlog!(`,
-    /// `dlog! (`, `dlog!{`); a format string never names a secret-shaped word and never captures
-    /// a variable inline.
-    #[test]
-    fn log_call_sites_are_listed_and_safe() {
-        let call = regex::Regex::new(r"\bdlog!\s*[(\[{]").unwrap();
+    /// Every live `dlog!` and `rlog!` call: (file, macro, format string, argument text).
+    fn live_sites() -> Vec<(String, &'static str, String, String)> {
+        let call = regex::Regex::new(r"\b(dlog|rlog)!\s*[(\[{]").unwrap();
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut found: Vec<(String, usize)> = Vec::new();
+        let mut found = Vec::new();
         let mut dirs = vec![src.clone()];
         while let Some(d) = dirs.pop() {
             for e in std::fs::read_dir(d).unwrap().flatten() {
@@ -775,25 +926,129 @@ mod tests {
                 }
                 let rel = p.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
                 let text = std::fs::read_to_string(&p).unwrap();
-                // This file's own tests and docs mention the macro.
+                // Tests and docs mention the macros; only the code above them counts.
                 let live = text.split("#[cfg(test)]").next().unwrap_or("");
-                let mut n = 0;
-                for m in call.find_iter(live) {
-                    n += 1;
-                    let fmt = live[m.end()..].split('"').nth(1).unwrap_or("");
-                    for bad in FORBIDDEN_WORDS {
-                        assert!(!fmt.to_ascii_lowercase().contains(bad), "{rel}: a log format names `{bad}`: {fmt}");
+                for m in call.captures_iter(live) {
+                    let mac: &'static str = if &m[1] == "dlog" { "dlog" } else { "rlog" };
+                    let rest = &live[m.get(0).unwrap().end()..];
+                    // The call ends at its matching bracket.
+                    let mut depth = 1;
+                    let mut end = rest.len();
+                    for (i, c) in rest.char_indices() {
+                        match c {
+                            '(' | '[' | '{' => depth += 1,
+                            ')' | ']' | '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = i;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                    assert!(!has_capture(fmt), "{rel}: an inline capture in a log format: {fmt}");
-                }
-                if n > 0 {
-                    found.push((rel, n));
+                    let body = &rest[..end];
+                    let fmt = body.split('"').nth(1).unwrap_or("").to_string();
+                    let args = body.rsplit_once('"').map_or(String::new(), |(_, a)| a.to_string());
+                    found.push((rel.clone(), mac, fmt, args));
                 }
             }
         }
-        found.sort();
+        found
+    }
+
+    /// Every `dlog!` and `rlog!` call site is listed; a format string never names a secret-shaped
+    /// word and never captures a variable inline (an inline capture skips the `LogSafe` check);
+    /// and no argument is raw terminal input, a paste, a title, a URL, an environment value or a
+    /// token: only a number, a flag, a literal or `name(..)` of a selector or a program.
+    #[test]
+    fn log_call_sites_are_listed_and_safe() {
+        let sites = live_sites();
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for (rel, _, fmt, args) in &sites {
+            for bad in FORBIDDEN_WORDS {
+                assert!(!fmt.to_ascii_lowercase().contains(bad), "{rel}: a log format names `{bad}`: {fmt}");
+            }
+            assert!(!has_capture(fmt), "{rel}: an inline capture in a log format: {fmt}");
+            for bad in FORBIDDEN_ARG_WORDS {
+                assert!(!args.to_ascii_lowercase().contains(bad), "{rel}: a log argument names `{bad}` (raw input, a paste, a title, a url or a secret): {args}");
+            }
+            match counts.iter_mut().find(|(f, _)| f == rel) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((rel.clone(), 1)),
+            }
+        }
+        counts.sort();
         let want: Vec<(String, usize)> = CALL_SITES.iter().map(|(f, n)| (f.to_string(), *n)).collect();
-        assert_eq!(found, want, "a new dlog! call site needs a line in CALL_SITES after a secrets review");
+        assert_eq!(counts, want, "a new dlog!/rlog! call site needs a line in CALL_SITES after a secrets review");
+    }
+
+    /// The scrub and the ring (`DL:288-366`): keystroke fields are redacted, and secret shapes
+    /// go too (P2).
+    #[test]
+    fn scrub_follows_iterm2() {
+        assert_eq!(scrub("key chars=\"ab\" unmodchars=\"c\" x"), "key chars=\"[redacted]\" unmodchars=\"[redacted]\" x");
+        assert_eq!(scrub("no keystrokes here"), "no keystrokes here");
+        assert_eq!(scrub("chars=abc"), "chars=abc", "no quote, no scrub");
+        assert_eq!(scrub("login password=hunter2 ok"), "login password=[redacted] ok");
+        assert_eq!(scrub("Authorization: Bearer abc.def"), "Authorization: Bearer [redacted]");
+        assert_eq!(scrub("cookie: sid=1"), "cookie: [redacted]");
+        assert_eq!(scrub("open https://me:pw@host/x"), "open https://[redacted]@host/x");
+    }
+
+    /// `DL:333-366`: the ring keeps the newest lines that fit, never fewer than one; while
+    /// logging the line goes to the body.
+    #[test]
+    fn ring_follows_iterm2() {
+        assert_eq!(RING_MAX, 10 * 1024 * 1024);
+        assert_eq!(ring_entry(1700000000, 42, "bell_ui.rs", 33, "tandem::app::bell_ui", "Beep"), "1700000000.000042 bell_ui.rs:33 (tandem::app::bell_ui): Beep\n");
+        let mut log = Log::with_caps(MAX_LOG, 30);
+        for i in 0..5 {
+            log.remember(&format!("line number{i}\n"));
+        }
+        assert_eq!(log.ring_len(), 2, "two 13-byte lines fit in 30");
+        assert_eq!(log.ring_text(), "line number3\nline number4\n");
+        let mut tiny = Log::with_caps(MAX_LOG, 5);
+        tiny.remember("a line longer than the cap\n");
+        assert_eq!(tiny.ring_len(), 1, "never fewer than one");
+        tiny.remember("next\n");
+        assert_eq!(tiny.ring_text(), "next\n");
+        let mut log = Log::default();
+        log.remember("chars=\"q\" typed\n");
+        assert_eq!(log.ring_text(), "chars=\"[redacted]\" typed\n", "the ring scrubs");
+        log.clear_ring();
+        assert_eq!(log.ring_text(), "");
+        let mut on = Log::default();
+        on.start(String::new());
+        on.remember("to the body\n");
+        assert_eq!(on.ring_len(), 0);
+        assert_eq!(on.stop().unwrap().1, "to the body\n");
+    }
+
+    /// `RLogRedact` (`DL:313-331`): the full text only while logging; and `rlog!` keeps a line
+    /// in the ring while off and in the log while on.
+    #[test]
+    fn rlog_and_redact_follow_iterm2() {
+        let _g = global_guard();
+        clear_ring();
+        assert_eq!(redact("full", "redacted"), "redacted");
+        crate::rlog!("kept {}", 3u64);
+        assert!(ring_text().ends_with(": kept 3\n"), "{}", ring_text());
+        assert!(ring_text().contains(" dlog.rs:"));
+        start_logging("H\n".into(), true);
+        assert_eq!(redact("full", "redacted"), "full");
+        crate::rlog!("while on {}", 4u64);
+        let (_, body, _) = stop().unwrap();
+        assert!(body.ends_with(": while on 4\n"), "{body}");
+        assert!(!ring_text().contains("while on"), "never in the ring while logging");
+        clear_ring();
+        assert_eq!(ring_text(), "");
+        assert_eq!(NO_RING_HEADING, "No Retrospective Logs");
+        assert_eq!(NO_RING_TEXT, "No retrospective debug logs have been recorded yet.");
+        assert_eq!(RING_FILE, "retrospective-debuglog.txt");
+        assert_eq!(RING_SAVE_TITLE, "Save Retrospective Debug Logs");
+        assert_eq!(RING_SAVE_FAILED_HEADING, "Could Not Save");
+        assert_eq!(ring_save_failed("disk full"), "Failed to save retrospective debug logs: disk full");
     }
 
     /// A click on a notification stops the log only when the automatic-start notice is still the

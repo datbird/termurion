@@ -95,6 +95,7 @@ impl App {
             }
             restore_state::write_atomic(&path, &bytes)
         });
+        crate::rlog!("saving the windows for the next launch: {}", if result.is_ok() { "saved" } else { "failed" });
         match result {
             Ok(()) => self.banners.clear("state"),
             Err(e) => self.banners.set("state", format!("Could not save the windows for the next launch: {e}")),

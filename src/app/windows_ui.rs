@@ -671,6 +671,8 @@ impl App {
             }
             self.windows.start(key(id));
             self.registry.open(key(id));
+            let number = self.registry.number(key(id)).unwrap_or(0);
+            crate::rlog!("window opened: number {}", number);
         }
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
@@ -987,7 +989,11 @@ impl App {
             self.perf_frames.remove(&(n + 1));
             self.perf.forget_window(n + 1);
         }
+        crate::rlog!("window closed: number {}", self.registry.number(k).unwrap_or(0));
         self.registry.close(k);
+        if self.registry.order().is_empty() {
+            crate::rlog!("the last window closed");
+        }
         self.refresh_window_list();
     }
 

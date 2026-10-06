@@ -4250,4 +4250,17 @@ mod tests {
             assert!(!row.optional_bool(), "{key}");
         }
     }
+
+    /// `AS` `logForegroundJobAncestryDiagnostics`: Advanced > Debugging, off, iTerm2's text.
+    #[test]
+    fn ancestry_row_follows_iterm2() {
+        let row = schema::find_global("LogForegroundJobAncestryDiagnostics").expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Log a detailed trace when a session\u{2019}s foreground-job ancestor list unexpectedly shrinks.");
+        assert!(row.help.starts_with(&row.label) && row.help.contains("\nWhen an intermediate ancestor (such as the claude CLI) drops out"));
+        assert!(row.help.ends_with("Off by default; turn on only while reproducing an issue."));
+        assert!(!row.optional_bool());
+    }
 }

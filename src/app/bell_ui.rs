@@ -33,7 +33,9 @@ impl App {
         let prefs = self.bell_prefs(pane);
         let now = Instant::now();
         let ring = self.bells.entry(pane).or_default().ring(now, prefs);
+        crate::dlog!("bell in pane {}: effects shown {}", pane, ring.effects.is_some());
         if let Some(e) = ring.effects {
+            crate::dlog!("bell effects: beep {} icon {} flash {}", e.beep, e.icon, e.flash);
             if e.beep {
                 unsafe {
                     windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);

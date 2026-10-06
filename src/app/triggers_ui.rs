@@ -42,6 +42,17 @@ fn start_command(cmd: &str) -> std::io::Result<std::process::Child> {
 
 impl App {
     pub(super) fn trigger_request(&mut self, pane: PaneId, r: TriggerRequest) {
+        // The action class only, never the matched text or what the action carries.
+        let class = match &r {
+            TriggerRequest::Alert { .. } => "alert",
+            TriggerRequest::Notify(_) => "notification",
+            TriggerRequest::Bell => "bell",
+            TriggerRequest::Bounce { .. } => "bounce",
+            TriggerRequest::SendText(_) => "send",
+            TriggerRequest::RunCommand(_) => "run",
+            _ => "other",
+        };
+        crate::dlog!("trigger fired in pane {}: {}", pane, class);
         match r {
             TriggerRequest::Alert { trigger, text } => {
                 if self.trigger_limits.allow((pane, trigger), Instant::now(), ALERT_EVERY) && self.ask(pane, ALERT_BAR, &text, &["OK", "Disable This Alert"], true) {

@@ -925,6 +925,7 @@ impl App {
             "toggleAutoComposer:" => self.toggle_auto_composer(),
             "startStopLogging:" => self.start_stop_logging(),
             "debugLogging:" => self.toggle_debug_logging(),
+            "saveRetrospectiveDebugLogs:" => self.save_retrospective_logs(),
             "saveArchive:" => self.save_archive_menu(),
             "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),
@@ -1123,6 +1124,7 @@ impl App {
         if self.prefs_exit_pending {
             return;
         }
+        crate::rlog!("quit confirmed with {} windows", self.registry.order().len());
         self.save_pending_settings();
         // Before any window closes, so the saved state holds every window.
         self.save_state_for_quit();

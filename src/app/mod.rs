@@ -1839,6 +1839,7 @@ pub fn run() {
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
     jobs.set_fast_updates(globals.bool("FastForegroundJobUpdates"));
+    jobs.set_ancestry_diagnostics(globals.bool("LogForegroundJobAncestryDiagnostics"));
     let side_bar_preferred = side_bar_default(&globals);
     let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
@@ -3899,6 +3900,7 @@ impl App {
         };
         match started {
             Ok(mut pane) => {
+                crate::rlog!("session started: profile {} program {}", crate::dlog::name(&p.name()), crate::dlog::program(&cmd));
                 pane.cookie = cookie;
                 pane.command = cmd;
                 pane.start_dir = Some(cwd);
@@ -4203,6 +4205,7 @@ impl App {
         self.save_globals();
         // Job updates wait on a job's exit, or only poll (Advanced > Experimental Features).
         self.jobs.set_fast_updates(self.globals.bool("FastForegroundJobUpdates"));
+        self.jobs.set_ancestry_diagnostics(self.globals.bool("LogForegroundJobAncestryDiagnostics"));
         if api_now {
             self.api_settings_changed();
         }
@@ -4801,6 +4804,7 @@ impl App {
         for (id, (cols, rows), (cw, ch)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
+                    crate::dlog!("pane {} resized to {} columns {} rows", id, cols, rows);
                     self.activity.entry(id).or_default().resized(Instant::now());
                     if p.replay.is_some() {
                         reframe.push(id);
@@ -7070,6 +7074,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.relayout();
             }
             WindowEvent::Focused(f) => {
+                crate::dlog!("window focus changed: {}", f);
                 // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();

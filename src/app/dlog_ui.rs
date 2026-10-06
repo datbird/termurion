@@ -37,6 +37,12 @@ fn local_date() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
 }
 
+/// What Save Retrospective Debug Logs writes (`AD:3355-3357`): the header then the ring, no
+/// footer; None when the ring is empty.
+pub(super) fn retrospective_text(header: &str, ring: &str) -> Option<String> {
+    (!ring.is_empty()).then(|| format!("{header}{ring}"))
+}
+
 impl App {
     /// Session > Toggle Debug Logging: off asks first, then starts; on stops and saves.
     pub(super) fn toggle_debug_logging(&mut self) {
@@ -50,6 +56,18 @@ impl App {
     pub(super) fn debug_log_start_answered(&mut self) {
         if !dlog::is_on() {
             self.start_debug_logging();
+        }
+    }
+
+    /// iTerm2 > Save Retrospective Debug Logs (`AD:3345-3373`): the recent low-frequency log,
+    /// kept while debug logging was off, saved where the person picks.
+    pub(super) fn save_retrospective_logs(&mut self) {
+        let Some(text) = retrospective_text(&self.debug_log_header(), &dlog::ring_text()) else {
+            return self.ask_scripts(ask(dlog::NO_RING_HEADING, dlog::NO_RING_TEXT, &["OK"], None, Kind::Persistent, Then::Acknowledged));
+        };
+        let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().set_title(dlog::RING_SAVE_TITLE).set_file_name(dlog::RING_FILE)) else { return };
+        if let Err(e) = crate::localfs::write(&path, text) {
+            self.ask_scripts(ask(dlog::RING_SAVE_FAILED_HEADING, &dlog::ring_save_failed(&e.to_string()), &["OK"], None, Kind::Persistent, Then::Acknowledged));
         }
     }
 
@@ -153,5 +171,20 @@ impl App {
 
     pub(super) fn debug_log_footer(&self) -> String {
         dlog::footer(&self.debug_facts())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `AD:3345-3373`: an empty ring is nothing to save; else the header then the ring, no footer.
+    #[test]
+    fn retrospective_save_follows_iterm2() {
+        assert_eq!(retrospective_text("HEAD\n", ""), None);
+        assert_eq!(retrospective_text("HEAD\n", "one\ntwo\n"), Some("HEAD\none\ntwo\n".to_string()));
+        assert!(!retrospective_text("H\n", "x\n").unwrap().contains("FOOTER"));
+        let src = include_str!("dlog_ui.rs");
+        assert!(src.contains("dlog::NO_RING_HEADING") && src.contains("dlog::RING_SAVE_TITLE") && src.contains("dlog::RING_FILE") && src.contains("dlog::RING_SAVE_FAILED_HEADING"));
     }
 }

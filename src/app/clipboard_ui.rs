@@ -48,6 +48,12 @@ impl App {
         for (pane, r) in asked {
             // A request acts in the window that shows its pane.
             self.enter_pane_window(pane);
+            let kind = match &r {
+                Request::ClipboardWrite(_) => "clipboard write",
+                Request::ClipboardRead(_) => "clipboard read",
+                _ => "window request",
+            };
+            crate::dlog!("control sequence request in pane {}: {}", pane, kind);
             match r {
                 Request::ClipboardWrite(text) => self.clipboard_write(pane, text),
                 Request::ClipboardRead(pc) => self.clipboard_read(pane, pc),
