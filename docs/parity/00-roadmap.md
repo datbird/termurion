@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 316 | 272 | 33 | 11 |
-| `02-global-settings.md` | 820 | 599 | 51 | 170 |
+| `02-global-settings.md` | 820 | 598 | 52 | 170 |
 | `03-features-and-menus.md` | 647 | 566 | 43 | 38 |
-| Total | 1,783 | 1,437 | 127 | 219 |
+| Total | 1,783 | 1,436 | 128 | 219 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -688,13 +688,14 @@ of its own to start before it asks anything (no "Restart session?" whose OK does
 ended pane say "The session has ended."; the log and archive network check is the one network rule; 13q added no command
 line or open, so the one cmd.exe builder and guard_open still cover every route.
 Milestone 13r built semantic history (01: 3 rows to have, all from partial: Click on a path in a shell prompt to open Navigator (renamed from
-Cmd-click on path opens navigator), Smart Selection actions use interpolated strings, Run Command in Window; 02: 20 rows from missing to have:
+Cmd-click on path opens navigator), Smart Selection actions use interpolated strings, Run Command in Window; 02: 19 rows from missing to have and
+showButtonsForSelectedCommand from missing to partial (the buttons wait for 13s's selecting click):
 cmdClickWhenInactiveInvokesSemanticHistory, enableUnderlineSemanticHistoryOnCmdHover, enableCmdClickPromptForShowCommandInfo,
-showButtonsForSelectedCommand, showURLPreviewForSemanticHistory, ignoreHardNewlinesInURLs, URLCharacterSet, URLCharacterSetExclusions,
+showURLPreviewForSemanticHistory, ignoreHardNewlinesInURLs, URLCharacterSet, URLCharacterSetExclusions,
 filenameCharacterSet, maxSemanticHistoryPrefixOrSuffix, pathsToIgnore, showYellowMarkForJobStoppedBySignal, conservativeURLGuessing,
 trailingPunctuationMarks, defaultURLScheme, urlHandlerCommand, restrictSemanticHistoryPrefixAndSuffixToLogicalWindow,
 enableSemanticHistoryOnNetworkMounts, prioritizeSmartSelectionActions, disableSmartSelectionActionsOnClick; 03 unchanged; 01: 316 rows, 272 have,
-33 partial, 11 missing; 02: 820, 599, 51, 170 (other 4); 03: 647, 566, 43, 38 (other 3); 1,783 rows, 1,437 have, 127 partial, 219 missing).
+33 partial, 11 missing; 02: 820, 598, 52, 170 (other 4); 03: 647, 566, 43, 38 (other 3); 1,783 rows, 1,436 have, 128 partial, 219 missing).
 A Win-click now follows iTerm2's phase order (prompt, link, file, Smart Selection action, raw command, URL-like text) and works in a background
 window only as the inactive-click key says; URL text follows iTerm2's character sets, trailing punctuation, conservative guessing and default scheme;
 text around the click respects hard newlines, soft boundaries and tmux or vim dividers; ignored folders and mapped network drives are not probed;
