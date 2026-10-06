@@ -346,6 +346,10 @@ impl App {
     /// Draws RequestAttention's pane flash and fireworks; says when to draw again.
     pub(super) fn draw_attention(&self, frame: &mut Frame, pane: PaneId, inner: Rect, cell: (f32, f32)) -> Option<Instant> {
         let now = Instant::now();
+        // 13w seam S10: a browser pane's web view (a child window) covers its text area, so its
+        // flash and bell icon draw on the scene-drawn toolbar strip instead.
+        let showing = self.flashes.contains_key(&pane) || self.bell_indicators.contains_key(&pane);
+        let inner = if showing && self.is_browser_pane(pane) { self.browser_flash_rect(pane).unwrap_or(inner) } else { inner };
         let mut next = None;
         let screen = self.panes.get(&pane).map(|p| &p.screen);
         if let (Some(t), Some(s)) = (self.flashes.get(&pane).copied(), screen) {

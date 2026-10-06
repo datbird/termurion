@@ -425,6 +425,12 @@ impl App {
 /// The bar and suggestions of a browser pane: drawing, presses, the field's keys, the menus.
 impl App {
     /// The toolbar's rectangle and the pane's, for a browser pane of the active tab.
+    /// Where a browser pane's flash and bell indicator draw (13w seam S10): its toolbar strip, the
+    /// part of the pane the scene still shows over the web view.
+    pub(super) fn browser_flash_rect(&self, pane: PaneId) -> Option<Rect> {
+        self.browser_bar_rects(pane).map(|(bar, _)| bar)
+    }
+
     fn browser_bar_rects(&self, pane: PaneId) -> Option<(Rect, Rect)> {
         let tab = self.tabs.get(self.active)?;
         let (_, rect) = self.visible(tab).into_iter().find(|(id, _)| *id == pane)?;
@@ -1098,6 +1104,25 @@ pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
 mod tests {
     use super::*;
     use crate::pane::Pane;
+
+    /// 13w seams S10 and S11: the per-pane trigger loop skips a browser pane (its profile may
+    /// carry triggers, its screen is empty), the job watcher finds no shell, no bell can come from
+    /// it (no output feed), and its flash and bell icon draw on the toolbar strip.
+    #[test]
+    fn triggers_and_bells_skip_browser_panes() {
+        let p = Pane::browser(7, 80, 24, BrowserIo::default());
+        assert!(p.shell_pid().is_none(), "jobwatch's ancestry has nothing to read");
+        assert!(!p.screen.pty_backed);
+        assert_eq!(p.screen.bell_count, 0);
+        let t = include_str!("triggers_ui.rs");
+        let body = &t[t.find("let browser = p.browser_io().is_some();").expect("the loop knows browser panes")..];
+        let skip = body.find("if browser {").unwrap();
+        assert!(skip < body.find("s.check_instant_triggers(now)").unwrap() && skip < body.find("s.check_idempotent_triggers(now)").unwrap() && skip < body.find("s.check_event_timers(now)").unwrap());
+        let r = include_str!("requests_ui.rs");
+        let draw = &r[r.find("pub(super) fn draw_attention(").unwrap()..];
+        let draw = &draw[..draw.find("\n    }\n").unwrap()];
+        assert!(draw.find("self.browser_flash_rect(pane)").unwrap() < draw.find("scene::pane_flash(").unwrap(), "the flash rect is the toolbar strip");
+    }
 
     /// Starting a pane with a Browser profile makes a pane with no pty (13x Task 5, `GW:98-111`).
     #[test]

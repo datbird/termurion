@@ -370,6 +370,13 @@ mod tests {
         let me = include_str!("web_popover_app.rs");
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
         assert!(!prod.contains("registry"), "a popover is never registered as a terminal window");
+        // 13w's taskbar badge loop reads only terminal windows (the current one and the parked
+        // ones), so a popover, Quick Look or the icon rasterizer window never gets a badge.
+        let b = include_str!("bell_ui.rs");
+        let badge = &b[b.find("pub(super) fn tick_badge(").unwrap()..];
+        let badge = &badge[..badge.find("\n    }\n").unwrap()];
+        assert!(badge.contains("self.hwnd().into_iter().chain(self.windows.parked()"), "the badge goes on terminal windows only");
+        assert!(!badge.contains("web_popover") && !badge.contains("tool_views"));
         assert!(include_str!("script_ui.rs").contains("WebView { view: ViewId, callback: String, signature: String }"));
         // The pane's going closes its popover.
         let pg = &m[m.find("fn pane_gone").unwrap()..];

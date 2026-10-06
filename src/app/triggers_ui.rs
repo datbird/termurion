@@ -226,11 +226,17 @@ impl App {
             .collect();
         for (id, title, profile) in names {
             let Some(p) = self.panes.get_mut(&id) else { continue };
+            let browser = p.browser_io().is_some();
             let s = p.own_mut();
             s.app_vars.insert("session.name".into(), title);
             s.app_vars.insert("session.profileName".into(), profile);
             let bells = s.bell_count.to_string();
             s.app_vars.insert("session.bellCount".into(), bells);
+            // 13w seam S11: a browser pane has no terminal text, so its profile's triggers never
+            // run and never keep the loop awake.
+            if browser {
+                continue;
+            }
             if s.triggers.list.iter().any(|c| c.trigger.instant && c.trigger.enabled) {
                 s.check_instant_triggers(now);
                 wake = Some(now + Duration::from_millis(500));
