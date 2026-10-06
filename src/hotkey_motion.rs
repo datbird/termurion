@@ -90,11 +90,6 @@ pub fn eases(style: i64) -> bool {
     slides(style) || matches!(style, frames::LEFT_PERCENT | frames::LEFT_CELLS)
 }
 
-/// The pacing of a style's motion.
-pub fn curve(style: i64) -> fn(f32) -> f32 {
-    if eases(style) { ease_in } else { |t| t }
-}
-
 /// The two ways a window can fade, by the surface it presents on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FadePath {
@@ -204,12 +199,12 @@ mod tests {
     fn left_and_off_monitor_fades_ease_in() {
         // iTerm2 eases the left styles in too, and an edge style whose slide is refused keeps its curve.
         for s in [frames::LEFT_PERCENT, frames::LEFT_CELLS, frames::TOP_PERCENT, frames::BOTTOM_CELLS, frames::RIGHT_PERCENT] {
-            assert!((curve(s)(0.25) - ease_in(0.25)).abs() < 1e-6, "{s}");
+            assert!(eases(s), "{s}");
             let m = Motion { from: (5.0, 5.0), to: (5.0, 5.0), duration: DURATION, alpha: (0.0, 1.0), ease: eases(s) };
             assert!((m.at(Duration::from_millis(125)).1 - ease_in(0.5)).abs() < 1e-4, "{s}");
         }
         for s in [frames::NORMAL, frames::CENTERED, frames::MAXIMIZED, frames::FULL_SCREEN] {
-            assert_eq!(curve(s)(0.25), 0.25, "{s}");
+            assert!(!eases(s), "{s}");
         }
     }
 
@@ -243,8 +238,6 @@ mod tests {
         assert!(fades(frames::FULL_SCREEN), "traditional full screen fades (PHK:747-757)");
         assert!(slides(frames::TOP_CELLS) && slides(frames::BOTTOM_PERCENT) && slides(frames::RIGHT_CELLS) && !slides(frames::LEFT_PERCENT));
         // The edges and the left styles ease in, the others are linear.
-        assert!((curve(frames::TOP_PERCENT)(0.5) - ease_in(0.5)).abs() < 1e-6);
-        assert_eq!(curve(frames::NORMAL)(0.5), 0.5);
-        assert!((curve(frames::LEFT_CELLS)(0.25) - ease_in(0.25)).abs() < 1e-6);
+        assert!(eases(frames::TOP_PERCENT) && !eases(frames::NORMAL) && eases(frames::LEFT_CELLS));
     }
 }

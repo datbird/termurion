@@ -187,9 +187,12 @@ pub fn current() -> String {
     String::new()
 }
 
-/// Activates the installed layout with this id for Tandem's own input thread (the UI thread)
-/// only, never the system's or another app's. An id not installed logs and does nothing
-/// (`InputSourceForcer.swift:180-199`).
+/// Activates the installed layout with this id from Tandem's input thread (the UI thread). Under
+/// Windows' default input mode (one input method for every app) this changes the desktop's
+/// layout, other apps' included, until it is restored: on resign and at exit, so with "Only force
+/// once per session" it stays for other apps until Tandem exits. With "Let me use a different
+/// input method for each app window" it is Tandem's alone. An id not installed logs and does
+/// nothing (`InputSourceForcer.swift:180-199`).
 pub fn activate(id: &str) -> bool {
     #[cfg(windows)]
     return win::activate(id);
@@ -256,7 +259,8 @@ mod win {
             eprintln!("input_locale: no installed keyboard layout {id}");
             return false;
         };
-        // Flag 0: the calling thread only (Tandem's windows all run on it).
+        // Flag 0: the calling thread's layout, which under the default input mode is the
+        // desktop's too (restored on resign and at exit).
         !unsafe { ActivateKeyboardLayout(hkl, 0) }.is_null()
     }
 

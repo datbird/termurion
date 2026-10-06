@@ -376,14 +376,16 @@ mod tests {
         // A key mapping on Win+B (the shell's; Win+E is also Tandem's Use Selection for Find, a
         // menu command) yields to Windows only with the option on.
         let g = map("0x62-0x100000", 13);
-        let win_e = win(ChordKey::Char('b'));
-        assert!(!win_chord_bound(&respecting(&ctx(&e, &g)), &win_e));
-        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &g)), &win_e));
+        let win_b = win(ChordKey::Char('b'));
+        assert!(!win_chord_bound(&respecting(&ctx(&e, &g)), &win_b));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &g)), &win_b));
         // A profile mapping yields the same way.
-        assert!(!win_chord_bound(&respecting(&ctx(&g, &e)), &win_e));
-        // A mapping on a chord Windows does not keep stays Tandem's (Win+Y).
-        let j = map("0x6e-0x100000", 13); // Win+N has a menu command in Tandem
-        assert_eq!(win_chord_bound(&respecting(&ctx(&j, &e)), &win(ChordKey::Char('n'))), crate::commands::command_for_chord(&win(ChordKey::Char('n'))).is_some());
+        assert!(!win_chord_bound(&respecting(&ctx(&g, &e)), &win_b));
+        // A mapping on a chord Windows does not keep stays Tandem's: Win+N (a Tandem menu command
+        // too) and Win+Y (nobody's).
+        let win_n = map("0x6e-0x100000", 13);
+        assert!(crate::commands::command_for_chord(&win(ChordKey::Char('n'))).is_some(), "Win+N is a Tandem menu command");
+        assert!(win_chord_bound(&respecting(&ctx(&win_n, &e)), &win(ChordKey::Char('n'))));
         let free = map("0x79-0x100000", 13); // Win+Y is nobody's
         assert!(win_chord_bound(&respecting(&ctx(&free, &e)), &win(ChordKey::Char('y'))));
         // Win+T is New Tab: a menu command wins even with a mapping on it, option on or off.
@@ -393,15 +395,15 @@ mod tests {
         // Ctrl+Win+B is Windows' (wake the display): a mapping on it yields. Ctrl+Win+Left is
         // Move Divider Left in Tandem, a menu command, so it stays Tandem's.
         let desk = map("0x62-0x140000", 13);
-        let ctrl_left = Chord { ctrl: true, ..win(ChordKey::Char('b')) };
+        let ctrl_win_b = Chord { ctrl: true, ..win(ChordKey::Char('b')) };
         let kept = map("0xf702-0x340000", 13);
         assert!(win_chord_bound(&respecting(&ctx(&e, &kept)), &Chord { ctrl: true, ..win(ChordKey::Left) }));
-        assert!(!win_chord_bound(&respecting(&ctx(&e, &desk)), &ctrl_left));
-        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &desk)), &ctrl_left));
+        assert!(!win_chord_bound(&respecting(&ctx(&e, &desk)), &ctrl_win_b));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &desk)), &ctrl_win_b));
         // The Leader and number shortcuts are Tandem's own, not key mappings.
         let mut c = ctx(&e, &e);
         c.leader_on = true;
-        assert!(win_chord_bound(&respecting(&c), &win_e));
+        assert!(win_chord_bound(&respecting(&c), &win_b));
         assert!(win_chord_bound(&respecting(&ctx(&e, &e)), &win(ChordKey::Char('3'))));
     }
 

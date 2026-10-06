@@ -268,6 +268,15 @@ pub struct Written {
     pub stale: Option<Shortcut>,
 }
 
+/// Why a stored session hotkey is not registered (`Book::refused`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotLive {
+    /// The person answered Ignore, or a tmux decision refused it.
+    Ignored,
+    /// The stored value is not the chord the person allowed (that one stays registered).
+    Stale,
+}
+
 /// The most tmux decisions the book keeps (a stranger's server names stay bounded).
 const MAX_DECIDED: usize = 64;
 
@@ -312,10 +321,20 @@ impl Book {
         }
     }
 
-    /// A value is stored for the pane (`has_value`) but is neither live nor waiting for an answer:
-    /// the person said Ignore, or a tmux decision refused it. The row shows it as not registered.
-    pub fn refused(&self, pane: PaneId, has_value: bool) -> bool {
-        has_value && !self.live.iter().any(|(p, _)| *p == pane) && !self.waiting(pane)
+    /// Why the pane's stored `value` is not registered, when it is not and is not waiting for an
+    /// answer: the person said Ignore (or a tmux decision refused it), or the live chord is
+    /// another one (a writer changed the stored value behind the book; the consented chord stays
+    /// registered). The row shows it as not registered.
+    pub fn refused(&self, pane: PaneId, value: Option<&Shortcut>) -> Option<NotLive> {
+        let value = value?;
+        if self.waiting(pane) {
+            return None;
+        }
+        match self.live.iter().find(|(p, _)| *p == pane) {
+            None => Some(NotLive::Ignored),
+            Some((_, live)) if live == value || hotkey::chord(live).is_some_and(|c| hotkey::chord(value) == Some(c)) => None,
+            Some(_) => Some(NotLive::Stale),
+        }
     }
 
     /// The pane's value waits for the person (it shows as not registered, never as live).
@@ -620,25 +639,41 @@ mod tests {
         let a = sc(18, CTRL_ALT, "1");
         let mut b = Book::default();
         // Nothing stored: not refused. Waiting: not refused (the row says waiting). Live: not refused.
-        assert!(!b.refused(1, false));
+        assert_eq!(b.refused(1, None), None);
         b.program_set(1, Some(a.clone()), Origin::Program);
-        assert!(!b.refused(1, true));
+        assert_eq!(b.refused(1, Some(&a)), None);
         b.allow(1, &a);
-        assert!(!b.refused(1, true));
+        assert_eq!(b.refused(1, Some(&a)), None);
         // Ignore: stored and inert, so refused. With no stored value there is nothing to refuse.
         b.program_set(2, Some(a.clone()), Origin::Program);
         b.ignore(2, &a);
-        assert!(b.refused(2, true) && !b.refused(2, false));
+        assert_eq!(b.refused(2, Some(&a)), Some(NotLive::Ignored));
+        assert_eq!(b.refused(2, None), None);
         // A tmux decision that refused the value: the same.
         let t = Origin::Tmux { host: "me@box".into(), name: "h".into() };
         b.program_set(3, Some(a.clone()), t.clone());
         b.ignore(3, &a);
         b.pane_gone(3);
         assert!(b.program_set(4, Some(a.clone()), t).ask.is_none());
-        assert!(b.refused(4, true));
+        assert_eq!(b.refused(4, Some(&a)), Some(NotLive::Ignored));
         // The person setting a value makes it live again.
         b.person_set(2, Some(a.clone()));
-        assert!(!b.refused(2, true));
+        assert_eq!(b.refused(2, Some(&a)), None);
+    }
+
+    #[test]
+    fn a_stored_value_that_is_not_the_live_one_is_not_registered() {
+        // A writer changed the shared profile's value behind the book: the consented chord stays
+        // registered, and the row must not show the new value as live.
+        let (a, other) = (sc(18, CTRL_ALT, "1"), sc(19, CTRL_ALT, "2"));
+        let mut b = Book::default();
+        b.person_set(1, Some(a.clone()));
+        assert_eq!(b.refused(1, Some(&a)), None);
+        assert_eq!(b.refused(1, Some(&other)), Some(NotLive::Stale));
+        assert_eq!(b.live(), &[(1, a.clone())], "registration stays the consented chord");
+        // The same chord with other characters is the same hotkey.
+        let same_chord = Shortcut { chars: "!".into(), chars_ignoring: "!".into(), ..a.clone() };
+        assert_eq!(b.refused(1, Some(&same_chord)), None);
     }
 
     #[test]

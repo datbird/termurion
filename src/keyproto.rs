@@ -470,6 +470,22 @@ pub fn raw_modifiers(mods: Mods) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bucky_reads_the_four_profile_keys() {
+        let mut p = crate::profile::Profile::new("bucky");
+        assert_eq!(Bucky::from_profile(&p), Bucky::default(), "Normal by default");
+        let keys = ["Left Control Key", "Right Control Key", "Left Command Key", "Right Command Key"];
+        for k in keys {
+            assert!(crate::schema::find(k).is_some(), "{k} is a profile key");
+        }
+        for (k, v) in keys.iter().zip([1, 2, 3, 9]) {
+            p.set(k, toml::Value::Integer(v));
+        }
+        assert_eq!(Bucky::from_profile(&p), Bucky { left_ctrl: 1, right_ctrl: 2, left_win: 3, right_win: 3 }, "each key maps its own side; past Super clamps");
+        p.set("Left Control Key", toml::Value::Integer(-4));
+        assert_eq!(Bucky::from_profile(&p).left_ctrl, 0);
+    }
+
     const NONE: Mods = Mods { shift: false, alt: false, ctrl: false, cmd: false };
 
     fn m(shift: bool, alt: bool, ctrl: bool) -> Mods {

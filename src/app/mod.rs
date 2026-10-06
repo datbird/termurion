@@ -3628,7 +3628,7 @@ impl App {
             if s.edit_session.is_none() {
                 s.session_hotkey = None;
                 s.session_hotkey_waiting = false;
-                s.session_hotkey_refused = false;
+                s.session_hotkey_refused = None;
             }
         }
         if self.edit_follow_seen == Some(id) {
@@ -5662,6 +5662,12 @@ impl App {
     /// whose profile has Transparency.
     pub(super) fn see_through_now(&self) -> bool {
         let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
+        self.see_through_with(&alphas)
+    }
+
+    /// `see_through_now` for the active tab's pane alphas already read (`build_frame` and the
+    /// fade gate share it, so they cannot drift apart).
+    fn see_through_with(&self, alphas: &[(PaneId, f32)]) -> bool {
         self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>())
     }
 
@@ -5675,7 +5681,7 @@ impl App {
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
         // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.
         let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
-        let see_through = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>());
+        let see_through = self.see_through_with(&alphas);
         self.frame_alpha = see_through;
         self.warn_transparency_unavailable(&alphas);
         if see_through {
@@ -6120,7 +6126,8 @@ impl App {
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (gpu.config.width, gpu.config.height);
-        let raw = gpu.config.view_formats.first().map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
+        // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
+        let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
         if let Err(e) = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h) {
             if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                 self.fade_failed = true;
@@ -7165,6 +7172,28 @@ fn resize_report_px(rows: u16, cols: u16, (cw, ch): (f32, f32)) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of `name`'s body in `src` (to its closing brace at `indent`).
+    fn fn_body<'a>(src: &'a str, name: &str, indent: &str) -> &'a str {
+        let rest = src.split(name).nth(1).unwrap_or_else(|| panic!("{name}"));
+        rest.split(&format!("\n{indent}}}\n")).next().unwrap()
+    }
+
+    #[test]
+    fn per_frame_paths_do_no_idle_work() {
+        // Adopting session hotkeys runs every pass: with every pane seen it returns before any Vec.
+        let adopt = fn_body(include_str!("session_hotkey_ui.rs"), "fn session_hotkeys_adopt(", "    ");
+        let early = adopt.find("return").expect("an early return");
+        assert!(early < adopt.find("collect").expect("the new panes"), "the early return comes first");
+        // The non-sRGB view of the swap-chain texture is made only while a fade runs.
+        let render = include_str!("mod.rs");
+        let raw = render.split("let raw = ").nth(1).and_then(|r| r.split(';').next()).expect("the raw view");
+        assert!(raw.contains("frame.fade < 1.0"), "the raw view is made only for a fading frame: {raw}");
+        // The fade gate and the frame read see-through from one place.
+        let build = fn_body(render, "fn build_frame(", "    ");
+        assert!(build.contains("self.see_through_with(&alphas)"), "build_frame uses the shared see-through test");
+        assert!(!build.contains("needs_alpha("), "build_frame repeats no see-through expression");
+    }
 
     /// DEC mode 2048 x 13n: the report's pixel size is the grid times the pane's OWN cell (its
     /// face, Make Text Bigger), the same cell its grid was sized from, never the window's.

@@ -215,10 +215,12 @@ fn assign(model: &mut Model, slot: HotkeySlot, s: Option<Shortcut>) {
     }
 }
 
-/// The pane the Session Hotkey row writes: the one Settings was opened to edit (Edit Session), and
-/// no row at all otherwise (`PreferencePanel` shows it only in a session's own editor).
-pub fn session_row_pane(edit_session: Option<crate::layout::PaneId>) -> Option<crate::layout::PaneId> {
-    edit_session
+/// The pane the Session Hotkey row writes: the one Settings was opened to edit (Edit Session),
+/// while the profile that session uses (`session_profile`, its shared Guid) is the one selected;
+/// no row otherwise (`PreferencePanel` shows it only in a session's own editor, and another
+/// profile picked in the list is not that session's).
+pub fn session_row_pane(edit_session: Option<crate::layout::PaneId>, selected: &str, session_profile: Option<&str>) -> Option<crate::layout::PaneId> {
+    edit_session.filter(|_| session_profile == Some(selected))
 }
 
 /// A set or cleared session hotkey as the edit the app takes: the pane's own session value.
@@ -226,21 +228,28 @@ pub fn session_edit(pane: crate::layout::PaneId, s: Option<Shortcut>) -> crate::
     crate::settings_ui::Edit::SessionHotkey(pane, s)
 }
 
+/// The note for a stored session hotkey that is not the chord the person allowed.
+pub const STALE_NOTE: &str = "Not registered: this is not the hotkey you allowed; record it here to turn it on";
+
 /// The note under the Session Hotkey row: a value that waits for the person's answer is not
-/// registered (never shown as live), nor is one the person answered Ignore, and a refused chord says why.
-pub fn session_row_note(has_value: bool, waiting: bool, refused: bool, error: Option<&str>) -> Option<String> {
+/// registered (never shown as live), nor is one the person answered Ignore or one that is not the
+/// allowed chord, and a refused chord says why.
+pub fn session_row_note(has_value: bool, waiting: bool, refused: Option<crate::session_hotkeys::NotLive>, error: Option<&str>) -> Option<String> {
+    use crate::session_hotkeys::NotLive;
     if has_value && waiting {
         return Some("Not registered: waiting for your answer to the question".to_string());
     }
-    if has_value && refused {
-        return Some("Not registered: you chose Ignore".to_string());
+    match refused.filter(|_| has_value) {
+        Some(NotLive::Ignored) => return Some("Not registered: you chose Ignore".to_string()),
+        Some(NotLive::Stale) => return Some(STALE_NOTE.to_string()),
+        None => {}
     }
     error.map(|e| format!("Warning: {e}"))
 }
 
 /// The Session Hotkey row: a recorder for `pane`'s hotkey, with the app's warning when the chord
 /// is not registered. The edit when the person recorded or cleared one.
-pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, waiting: bool, refused: bool, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
+pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Option<&Shortcut>, waiting: bool, refused: Option<crate::session_hotkeys::NotLive>, st: &HotkeyUi, keys: &mut KeysState) -> Option<crate::settings_ui::Edit> {
     let mut out = None;
     if let Some((HotkeySlot::Session, k)) = keys.hotkey_recorded.clone() {
         keys.hotkey_recorded = None;
@@ -619,19 +628,33 @@ mod tests {
 
     #[test]
     fn session_row_marks_a_waiting_value() {
-        assert_eq!(session_row_note(true, true, false, None).as_deref(), Some("Not registered: waiting for your answer to the question"));
-        assert_eq!(session_row_note(true, true, false, Some("Another hotkey uses this shortcut")).as_deref(), Some("Not registered: waiting for your answer to the question"), "waiting comes first");
-        assert_eq!(session_row_note(true, false, false, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Warning: Windows keeps this shortcut for itself"));
-        assert_eq!(session_row_note(true, false, false, None), None);
-        assert_eq!(session_row_note(false, false, false, None), None);
+        assert_eq!(session_row_note(true, true, None, None).as_deref(), Some("Not registered: waiting for your answer to the question"));
+        assert_eq!(session_row_note(true, true, None, Some("Another hotkey uses this shortcut")).as_deref(), Some("Not registered: waiting for your answer to the question"), "waiting comes first");
+        assert_eq!(session_row_note(true, false, None, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Warning: Windows keeps this shortcut for itself"));
+        assert_eq!(session_row_note(true, false, None, None), None);
+        assert_eq!(session_row_note(false, false, None, None), None);
     }
 
     #[test]
     fn a_refused_value_shows_as_not_registered() {
+        use crate::session_hotkeys::NotLive;
         // Answered Ignore (or refused by a tmux decision): stored, not live, and the row says so.
-        assert_eq!(session_row_note(true, false, true, None).as_deref(), Some("Not registered: you chose Ignore"));
-        assert_eq!(session_row_note(true, false, true, Some("Windows keeps this shortcut for itself")).as_deref(), Some("Not registered: you chose Ignore"));
-        assert_eq!(session_row_note(false, false, true, None), None, "no value, no note");
+        assert_eq!(session_row_note(true, false, Some(NotLive::Ignored), None).as_deref(), Some("Not registered: you chose Ignore"));
+        assert_eq!(session_row_note(true, false, Some(NotLive::Ignored), Some("Windows keeps this shortcut for itself")).as_deref(), Some("Not registered: you chose Ignore"));
+        assert_eq!(session_row_note(false, false, Some(NotLive::Ignored), None), None, "no value, no note");
+        // A stored value another writer changed: not the registered one.
+        assert_eq!(session_row_note(true, false, Some(NotLive::Stale), None).as_deref(), Some(STALE_NOTE));
+    }
+
+    #[test]
+    fn the_session_row_shows_only_under_the_edited_sessions_profile() {
+        // Edit Session shows the row for its pane while the session's profile is selected.
+        assert_eq!(session_row_pane(Some(7), "g1", Some("g1")), Some(7));
+        // Another profile selected in the list: no row (its value is not this session's).
+        assert_eq!(session_row_pane(Some(7), "g2", Some("g1")), None);
+        // Settings alone has none.
+        assert_eq!(session_row_pane(None, "g1", Some("g1")), None);
+        assert_eq!(session_row_pane(Some(7), "g1", None), None);
     }
 
     #[test]

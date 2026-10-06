@@ -11,6 +11,7 @@ impl App {
         let tmux = pane.is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
         let Some(s) = self.settings.as_mut() else { return };
         s.edit_session = pane.filter(|_| guid.is_some());
+        s.edit_session_profile = guid.clone().filter(|_| s.edit_session.is_some());
         if let Some(g) = guid {
             s.select(&g);
             // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
@@ -21,7 +22,7 @@ impl App {
         if s.edit_session.is_none() {
             s.session_hotkey = None;
             s.session_hotkey_waiting = false;
-            s.session_hotkey_refused = false;
+            s.session_hotkey_refused = None;
         }
         self.sync_session_hotkey_row();
     }

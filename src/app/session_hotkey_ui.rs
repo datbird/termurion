@@ -69,6 +69,10 @@ impl App {
     /// the first pass after it exists: the value asks like any program's write and is inert until
     /// the person answers Register. Every writer is covered, the next pass after it.
     fn session_hotkeys_adopt(&mut self) {
+        // Every pane seen (the usual pass): nothing to allocate or do.
+        if self.panes.keys().all(|p| self.session_hotkey_seen.contains(p)) {
+            return;
+        }
         let fresh: Vec<PaneId> = self.panes.keys().copied().filter(|p| !self.session_hotkey_seen.contains(p)).collect();
         for pane in fresh {
             self.session_hotkey_seen.insert(pane);
@@ -106,7 +110,7 @@ impl App {
             s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, pane);
             s.session_hotkey = None;
             s.session_hotkey_waiting = false;
-            s.session_hotkey_refused = false;
+            s.session_hotkey_refused = None;
         }
     }
 
@@ -131,7 +135,7 @@ impl App {
         let Some(pane) = self.settings.as_ref().and_then(|s| s.edit_session) else { return };
         let value = self.session_hotkey_value(pane);
         let waiting = self.session_hotkeys.waiting(pane);
-        let refused = self.session_hotkeys.refused(pane, value.is_some());
+        let refused = self.session_hotkeys.refused(pane, value.as_ref());
         if let Some(s) = self.settings.as_mut() {
             s.session_hotkey = value;
             s.session_hotkey_waiting = waiting;

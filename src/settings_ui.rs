@@ -390,6 +390,9 @@ pub struct SettingsWindow {
     /// at the active session unless Pin Edit Session is on (`follow_target`); 13u's "Session
     /// Hotkey" row reads it to know which pane to write.
     pub edit_session: Option<PaneId>,
+    /// The shared Guid of the profile that pane uses: its Session Hotkey row shows only while that
+    /// profile is the one selected.
+    pub edit_session_profile: Option<String>,
     /// Edit Session's Copy to Profile: the destination picked (the shared profile until one is),
     /// the one the question is about, and the confirmed copy the app takes after each frame.
     copy_dest: Option<String>,
@@ -404,9 +407,9 @@ pub struct SettingsWindow {
     pub session_hotkey: Option<crate::hotkey::Shortcut>,
     /// The row's value waits for the person's answer (a program's or a restored value): not registered.
     pub session_hotkey_waiting: bool,
-    /// The row's value is stored but not registered and no question waits (answered Ignore, or refused
-    /// by a tmux decision): the row says so, never shows it as live.
-    pub session_hotkey_refused: bool,
+    /// The row's value is stored but not registered and no question waits (answered Ignore, refused
+    /// by a tmux decision, or not the chord that was allowed): the row says so, never shows it as live.
+    pub session_hotkey_refused: Option<crate::session_hotkeys::NotLive>,
     /// Session > Prevent Sleep's gray line (`PSV:465-482`), set by the app.
     pub sleep_status: String,
     /// Settings > Advanced: the search, the non-default filter and the field being edited.
@@ -564,6 +567,7 @@ impl SettingsWindow {
             special_exceptions: None,
             tmux_session: false,
             edit_session: None,
+            edit_session_profile: None,
             copy_dest: None,
             copy_pending: None,
             copy_request: None,
@@ -571,7 +575,7 @@ impl SettingsWindow {
             title_providers: Vec::new(),
             session_hotkey: None,
             session_hotkey_waiting: false,
-            session_hotkey_refused: false,
+            session_hotkey_refused: None,
             sleep_status: String::new(),
             advanced: Default::default(),
             ai: Default::default(),
@@ -697,6 +701,7 @@ impl SettingsWindow {
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let edit_session = self.edit_session;
+        let edit_session_profile = self.edit_session_profile.clone();
         let copy_dest = &mut self.copy_dest;
         let copy_pending = &mut self.copy_pending;
         let copy_request = &mut self.copy_request;
@@ -1097,7 +1102,7 @@ impl SettingsWindow {
                             }
                             // The session's own hotkey: a row only while Settings edits a session.
                             if s.key == "Session Hotkey" {
-                                if let Some(pane) = crate::settings_hotkey::session_row_pane(edit_session) {
+                                if let Some(pane) = crate::settings_hotkey::session_row_pane(edit_session, &selected, edit_session_profile.as_deref()) {
                                     if let Some(e) = crate::settings_hotkey::session_row(ui, pane, session_hotkey.as_ref(), session_hotkey_waiting, session_hotkey_refused, hk, keys) {
                                         edit = e;
                                     }
@@ -2102,10 +2107,8 @@ mod tests {
 
     #[test]
     fn session_hotkey_row_is_edit_session_only() {
-        use crate::settings_hotkey::{session_edit, session_row_pane};
-        // Edit Session shows the row for its pane; Settings alone has none.
-        assert_eq!(session_row_pane(Some(7)), Some(7));
-        assert_eq!(session_row_pane(None), None);
+        use crate::settings_hotkey::session_edit;
+        // Which pane's row shows: `the_session_row_shows_only_under_the_edited_sessions_profile`.
         // What it records is the pane's own session value, never the shared profile.
         let s = crate::hotkey::Shortcut { keycode: 18, flags: crate::keystroke::CONTROL | crate::keystroke::OPTION, chars: "1".into(), chars_ignoring: "1".into() };
         match session_edit(7, Some(s.clone())) {
