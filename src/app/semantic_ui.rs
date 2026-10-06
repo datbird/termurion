@@ -227,7 +227,8 @@ impl App {
 
     /// The pane's working directory from shell integration, when it is on this machine.
     pub(super) fn pane_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
-        if self.remote_text(id) {
+        // A browser pane has no shell and so no directory (13w seam S14), whatever its screen holds.
+        if self.remote_text(id) || self.is_browser_pane(id) {
             return None;
         }
         let shell = &self.panes.get(&id)?.own().shell;
@@ -1019,6 +1020,25 @@ mod title_menu_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// The 13w merge (S14 and the one locality answer): a browser pane has no directory, and no
+    /// browser code makes its own "is this on this computer" check: a session's locality comes
+    /// only from `statusbar_content::is_this_machine` (the token-aware one).
+    #[test]
+    fn browser_panes_have_no_dir_and_no_own_locality_check() {
+        let me = include_str!("semantic_ui.rs");
+        let body = &me[me.find("pub(super) fn pane_dir(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.find("self.is_browser_pane(id)").unwrap() < body.find("is_this_machine(").unwrap(), "the browser pane answers None before any locality read");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for f in ["browser.rs", "webhost.rs", "webhost_win.rs", "web_popover.rs", "app/browser_app.rs", "app/web_popover_app.rs", "app/webhost_app.rs", "app/tool_web_ui.rs"] {
+            let text = std::fs::read_to_string(root.join(f)).unwrap();
+            let live = text.split("#[cfg(test)]\nmod tests").next().unwrap();
+            for own in ["local_names(", "is_local_session(", "host_identity::", "GetComputerName", "machine_id"] {
+                assert!(!live.contains(own), "{f}: an own locality check ({own}); use statusbar_content::is_this_machine");
+            }
+        }
+    }
     /// Final wave minor 9: Send Text and Smart Selection sendText: do not type at a password prompt.
     #[test]
     fn send_text_refuses_a_password_prompt() {
