@@ -95,7 +95,7 @@ impl App {
         if changed {
             match &r {
                 Runtime::Found(v) => crate::host::log(&format!("webhost: WebView2 Runtime {v}")),
-                Runtime::Missing => crate::host::log(&format!("webhost: no WebView2 Runtime ({})", webhost_win::loader_error().unwrap_or_else(|| "not installed".into()))),
+                Runtime::Missing => crate::host::log("webhost: no WebView2 Runtime (not installed)"),
             }
         }
         *self.web_envs.fixed.borrow_mut() = fixed;

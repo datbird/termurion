@@ -507,25 +507,6 @@ pub fn same_navigation_uri(requested: &str, started: &str) -> bool {
     norm(requested) == norm(started)
 }
 
-/// SHA-256 of the pinned `WebView2Loader.dll` (webview2-com-sys 0.39.1, WebView2 SDK 1.0.3650.58):
-/// the file is refused when it is not this one (the build script and `fetch-webview2-loader.ps1`
-/// ship exactly these two).
-pub const LOADER_SHA256_X64: &str = "86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5";
-pub const LOADER_SHA256_ARM64: &str = "a0de1844933a10c898f833771a85f0ab9a0e3c745d4715f63d2d9730f9416025";
-
-/// The hash this build's loader must have.
-pub fn loader_sha256() -> &'static str {
-    if cfg!(target_arch = "aarch64") { LOADER_SHA256_ARM64 } else { LOADER_SHA256_X64 }
-}
-
-/// Whether `bytes` is the pinned loader.
-pub fn loader_ok(bytes: &[u8]) -> bool {
-    use sha2::{Digest, Sha256};
-    let got = Sha256::digest(bytes);
-    let hex: String = got.iter().map(|b| format!("{b:02x}")).collect();
-    hex == loader_sha256()
-}
-
 // --- The bridge ---
 
 /// iTerm2's `iterm2Invoke.js` with `window.webkit.messageHandlers.iterm2Invoke.postMessage`
@@ -927,9 +908,6 @@ mod tests {
         let list = vec!["http".to_string(), "HTTPS".to_string()];
         assert!(scheme_ok("https://a/", &list) && scheme_ok("HTTP://a/", &list));
         assert!(!scheme_ok("file:///C:/", &list) && !scheme_ok("ms-msdt:id", &list) && !scheme_ok("noscheme", &list));
-        assert!(!loader_ok(b"not the loader"));
-        assert_eq!(LOADER_SHA256_X64.len(), 64);
-        assert_eq!(LOADER_SHA256_ARM64.len(), 64);
     }
 
     /// Every `Event` carries its view, and the droppable set matches the rule.

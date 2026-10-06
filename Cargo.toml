@@ -48,7 +48,7 @@ zeno = "0.3"
 # tree (through wgpu), only these features are new. Win32_System_Variant and Win32_UI_Accessibility are the UI Automation provider (uia_win), each named here on purpose.
 windows = { version = "0.62", features = ["Security_Credentials_UI", "Win32_Foundation", "Win32_Storage_EnhancedStorage", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_System_Variant", "Win32_System_WinRT", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 windows-core = "0.62"
-# The WebView2 host (src/webhost_win.rs). Its loader import is never linked: the exe resolves WebView2Loader.dll itself through dll::load_bundled.
+# The WebView2 host (src/webhost_win.rs). On MSVC the crate links WebView2LoaderStatic.lib into the exe: no WebView2Loader.dll ships.
 webview2-com = "0.39.1"
 windows-future = "0.3"
 windows-sys = { version = "0.59", features = [

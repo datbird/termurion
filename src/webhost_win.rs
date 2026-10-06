@@ -5,9 +5,8 @@
 //! and never a COM pointer.
 //!
 //! Everything here runs on the UI thread (winit's thread is an STA and owns COM: this file never
-//! initializes or uninitializes it). The loader is not imported: `WebView2Loader.dll` is loaded
-//! by full path through `dll::webview2_loader` after `harden_process`, so a missing or planted
-//! file can neither stop Tandem from starting nor run in it (preflight B1). Web content is
+//! initializes or uninitializes it). The loader is webview2-com's static one (`WebView2LoaderStatic.lib`,
+//! linked into tandem.exe): there is no `WebView2Loader.dll` to ship, plant or miss. Web content is
 //! untrusted: pages get no host objects, every page-controlled value is capped before it is queued
 //! (`webhost::ViewGate`), navigations pass the one rule (`webhost::navigation_allowed`), external
 //! protocols are cancelled, permissions are denied, and downloads are left to WebView2's own
@@ -19,7 +18,6 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
@@ -30,41 +28,9 @@ use webview2_com::{
     ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{HWND, RECT};
-use windows::core::{BOOL, HRESULT, Interface, PCWSTR, PWSTR};
+use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
 use crate::webhost::{self, Answer, EnvOptions, Event, Posted, Sink, Store, ViewGate, ViewId};
-
-/// The error code `runtime_version` answers when the loader itself is unavailable (ERROR_FILE_NOT_FOUND
-/// as an HRESULT): the runtime is Missing.
-const LOADER_MISSING: i32 = -2147024894;
-
-// --- The loader ---
-
-fn loader_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
-}
-
-/// The shipped loader, loaded once and verified against the pinned hash; Err says why not.
-fn loader() -> &'static Result<crate::dll::Loader, String> {
-    static LOADER: OnceLock<Result<crate::dll::Loader, String>> = OnceLock::new();
-    LOADER.get_or_init(|| {
-        let dir = loader_dir().ok_or("Tandem's own folder is unknown")?;
-        let mut path = dir.join("WebView2Loader.dll");
-        // The unit-test exe lives in target\debug\deps; the build script copies the loader to the folder above it.
-        if cfg!(test) && !crate::localfs::local_exists(&path) {
-            path = Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor").join("webview2").join("WebView2Loader.dll");
-        }
-        let judged = crate::localfs::LocalPath::judge(&path).ok_or_else(|| format!("{} is not on a local disk", path.display()))?;
-        let bytes = crate::localfs::read(&judged).map_err(|e| format!("{}: {e}", path.display()))?;
-        if !webhost::loader_ok(&bytes) {
-            return Err(format!("{} is not the pinned WebView2 loader", path.display()));
-        }
-        crate::dll::webview2_loader(judged.path())
-    })
-}
-
-type CreateEnvironmentFn = unsafe extern "system" fn(PCWSTR, PCWSTR, *mut c_void, *mut c_void) -> HRESULT;
-type BrowserVersionFn = unsafe extern "system" fn(PCWSTR, *mut PWSTR) -> HRESULT;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -82,25 +48,15 @@ fn bool_out(f: impl FnOnce(*mut BOOL) -> windows::core::Result<()>) -> bool {
 }
 
 /// The WebView2 Runtime's version: the fixed-version folder's when one is given, else the
-/// Evergreen runtime the system has. Err is an HRESULT (or `LOADER_MISSING`): `Runtime::Missing`.
+/// Evergreen runtime the system has. Err is an HRESULT: `Runtime::Missing`.
 pub fn runtime_version(fixed: Option<&Path>) -> Result<String, i32> {
-    let Ok(l) = loader() else { return Err(LOADER_MISSING) };
-    // SAFETY: the address came from GetProcAddress of the pinned loader and has this signature.
-    let f: BrowserVersionFn = unsafe { std::mem::transmute::<usize, BrowserVersionFn>(l.browser_version) };
+    scrub_env();
     let folder = fixed.map(|p| wide(&p.to_string_lossy()));
     let folder_ptr = folder.as_ref().map_or(PCWSTR::null(), |w| PCWSTR(w.as_ptr()));
     let mut out = PWSTR::null();
-    // SAFETY: `folder` outlives the call; `out` is a plain out pointer.
-    let hr = unsafe { f(folder_ptr, &mut out) };
-    if hr.is_err() {
-        return Err(hr.0);
-    }
+    // SAFETY: `folder` outlives the call; `out` is a plain out pointer the crate's helper frees.
+    unsafe { GetAvailableCoreWebView2BrowserVersionString(folder_ptr, &mut out) }.map_err(|e| e.code().0)?;
     Ok(take_pwstr(out))
-}
-
-/// Why the loader is unavailable (the load error), or None when it loaded.
-pub fn loader_error() -> Option<String> {
-    loader().as_ref().err().cloned()
 }
 
 // --- Folders and the environment's inputs ---
@@ -334,10 +290,6 @@ impl Env {
                 f(r);
             }
         };
-        let l = match loader() {
-            Ok(l) => *l,
-            Err(e) => return finish(&done, Err(format!("the WebView2 loader is unavailable: {e}"))),
-        };
         scrub_env();
         if let Err(e) = prepare_folder(folder) {
             return finish(&done, Err(e));
@@ -377,13 +329,13 @@ impl Env {
         }));
         let wfolder = fixed.map(|p| wide(&p.to_string_lossy()));
         let wdata = wide(&folder.to_string_lossy());
-        // SAFETY: the address came from GetProcAddress of the pinned loader and has this signature; the
-        // strings outlive the call, and the loader takes its own references on the two objects.
-        let f: CreateEnvironmentFn = unsafe { std::mem::transmute::<usize, CreateEnvironmentFn>(l.create_environment) };
-        let hr = unsafe { f(wfolder.as_ref().map_or(PCWSTR::null(), |w| PCWSTR(w.as_ptr())), PCWSTR(wdata.as_ptr()), options.as_raw(), handler.as_raw()) };
-        if hr.is_err() {
+        // SAFETY: the strings outlive the call; the loader takes its own references on the two objects.
+        let hr = unsafe {
+            CreateCoreWebView2EnvironmentWithOptions(wfolder.as_ref().map_or(PCWSTR::null(), |w| PCWSTR(w.as_ptr())), PCWSTR(wdata.as_ptr()), &options, &handler)
+        };
+        if let Err(e) = hr {
             // The handler is never called now: say so here.
-            finish(&done, Err(format!("the loader refused to start the environment (0x{:08x})", hr.0 as u32)));
+            finish(&done, Err(format!("the loader refused to start the environment (0x{:08x})", e.code().0 as u32)));
         }
     }
 }
@@ -1183,12 +1135,6 @@ mod tests {
     }
 
     #[test]
-    fn the_loader_dir_is_the_exes_own() {
-        let d = loader_dir().unwrap();
-        assert!(d.is_absolute());
-    }
-
-    #[test]
     fn scrub_removes_the_override_variables() {
         // SAFETY: a test-only name set and removed in this test; no other test reads it.
         unsafe { std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", "C:\\planted") };
@@ -1210,13 +1156,13 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_loader_is_a_missing_runtime() {
-        // The loader may or may not be beside the test exe; either way the call answers and never panics.
+    fn a_missing_runtime_is_an_error_code() {
+        // The runtime may or may not be installed; either way the call answers and never panics.
         match runtime_version(None) {
             Ok(v) => assert!(!v.is_empty()),
             Err(code) => assert!(code != 0),
         }
-        assert_eq!(webhost::runtime_outcome(Err(LOADER_MISSING)), webhost::Runtime::Missing);
+        assert_eq!(webhost::runtime_outcome(Err(-2147024894)), webhost::Runtime::Missing);
     }
 
     #[test]
