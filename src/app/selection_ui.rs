@@ -251,6 +251,15 @@ pub(super) fn release_clears_selection(kind: PressKind, dragged: bool) -> bool {
 }
 
 impl App {
+    /// The selected command's region in buffer rows, inclusive (S6, P15): what Find, Filter
+    /// and Select All search inside and what 13r's buttons sit on. None with no command selected.
+    #[allow(dead_code)] // 13s Task 9 (command selection) is its first caller.
+    pub(super) fn command_region(&mut self, id: PaneId) -> Option<(usize, usize)> {
+        let p = self.panes.get_mut(&id)?;
+        let mark = p.selected_command?;
+        p.screen.command_region(mark)
+    }
+
     /// Whether the cell at `point` is inside any selection of `id`'s pane (`containsAbsCoord:`).
     pub(super) fn cell_is_selected(&self, id: PaneId, point: Point) -> bool {
         let Some(p) = self.panes.get(&id) else { return false };
@@ -506,6 +515,23 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Merge seam (S7): a plain press records 13r's path-mark press before 13s decides between a
+    /// drag of the selection and a new selection, and the frame wake list keeps both milestones'
+    /// timers (13r's Command Info and navigator, 13s's drag autoscroll).
+    #[test]
+    fn press_and_wake_keep_both_milestones() {
+        let code = include_str!("mod.rs");
+        let press = code.find("self.pathnav_press = if count == 1 && plain").unwrap();
+        let drag = code.find("selection_ui::drag_decision(on_selection").unwrap();
+        let commit = code.find("let carried = self.commit_live_selection(id, append, count > 1);").unwrap();
+        assert!(press < drag && drag < commit);
+        let wake = &code[code.find("let wake = [").unwrap()..];
+        let wake = &wake[..wake.find(';').unwrap()];
+        for t in ["cmdinfo_due", "pathnav_due", "sel_scroll_due", "find_due"] {
+            assert!(wake.contains(t), "{t}");
+        }
+    }
 
     /// Review Focus 7: iTerm2's accelerating autoscroll (`iTermSelectionScrollHelper.m:38-90`).
     #[test]

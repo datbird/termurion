@@ -1034,6 +1034,16 @@ impl Screen {
         Some((first, last.max(first)))
     }
 
+    /// Command `id`'s region in buffer rows (row 0 the oldest scrollback row), inclusive: its
+    /// prompt's row through the row before the next prompt mark, else the last row (13s Task 9,
+    /// P15). One rule with `command_grid_lines`, which 13r's buttons read in grid lines. `&mut`
+    /// is the frozen contract (S6, S9: the region may be cached off `tick_digest`).
+    pub fn command_region(&mut self, id: u32) -> Option<(usize, usize)> {
+        let (first, last) = self.command_grid_lines(id)?;
+        let history = self.term.primary_grid().history_size() as i32;
+        Some(((first + history).max(0) as usize, (last + history).max(0) as usize))
+    }
+
     /// The command being typed, else the last command's text (Select Current Command).
     pub fn last_command_range(&self) -> Option<(Point, Point)> {
         if self.marks.in_command {
@@ -1916,6 +1926,31 @@ mod tests {
         assert_eq!(s.command_grid_lines(ids[0].1), Some((ids[0].0, ids[1].0 - 1)));
         assert_eq!(s.command_grid_lines(ids[1].1), Some((ids[1].0, 11)));
         assert_eq!(s.command_grid_lines(999), None);
+    }
+
+    /// Merge seam (S6, Review Focus 8): buffer rows; a manual mark between prompts does not end
+    /// a region; the last runs to the last row.
+    #[test]
+    fn command_region_follows_iterm2() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\r\n\r\n");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07o1\r\n\x1b]1337;SetMark\x07o2\r\no3\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07o\r\no\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07three");
+        let prompts: Vec<(i32, u32)> = s.marks_in_order().iter().filter(|(_, m)| m.kind == Kind::Prompt).map(|(l, m)| (*l, m.id)).collect();
+        assert_eq!(prompts.iter().map(|(l, _)| *l).collect::<Vec<_>>(), [2, 6, 9]);
+        assert_eq!(s.command_region(prompts[0].1), Some((2, 5)));
+        assert_eq!(s.command_region(prompts[1].1), Some((6, 8)));
+        assert_eq!(s.command_region(prompts[2].1), Some((9, 11)));
+        assert_eq!(s.command_region(999), None);
+        // A manual mark is no region.
+        let manual = s.marks_in_order().iter().find(|(_, m)| m.kind != Kind::Prompt).map(|(_, m)| m.id).unwrap();
+        assert_eq!(s.command_region(manual), None);
+        // Scrolled into history: buffer rows keep counting from the oldest row.
+        s.feed(b"\r\n".repeat(5).as_slice());
+        let h = { use alacritty_terminal::grid::Dimensions; s.term().grid().history_size() };
+        assert!(h > 0);
+        assert_eq!(s.command_region(prompts[0].1), Some((2, 5)));
     }
 
     #[test]
