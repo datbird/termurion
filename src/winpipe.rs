@@ -241,6 +241,22 @@ pub fn process_token_facts(pid: u32) -> Result<crate::api_peer::Token, String> {
     token_facts(process_token(pid)?.0)
 }
 
+/// The full path of process `pid`'s program, when it can be read.
+pub fn process_image(pid: u32) -> Option<String> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let h = Owned(h);
+        let mut buf = vec![0u16; 4096];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h.0, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0;
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
 /// The peer check's facts about this process's token.
 pub fn own_token_facts() -> Result<crate::api_peer::Token, String> {
     unsafe {

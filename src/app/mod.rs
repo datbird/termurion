@@ -1580,6 +1580,7 @@ pub fn run() {
     // own request over once more and ends, so it never installs a second keyboard hook, hotkeys
     // or tray icon beside the first (13u S4, R14de-6).
     let url_proxy = proxy.clone();
+    let mut pipe_problem: Option<String> = None;
     let url_listener = match crate::url_launch::listen(Box::new(move |request| {
         let _ = url_proxy.lock().map(|p| {
             p.send_event(match request {
@@ -1595,11 +1596,20 @@ pub fn run() {
             if again.is_empty() {
                 again.push(crate::launch::Request::Reopen);
             }
-            let handed = again.iter().all(|r| matches!(crate::url_launch::hand_to_running(r), crate::url_launch::AfterHand::Exit));
-            if !handed {
-                message_box(&format!("Tandem could not take its launch pipe: {e}"));
+            let after: Vec<_> = again.iter().map(crate::url_launch::hand_to_running).collect();
+            if after.iter().all(|a| matches!(a, crate::url_launch::AfterHand::Exit)) {
+                return;
             }
-            return;
+            // A holder that is not this Tandem (another user, a lower integrity level, another
+            // program) is sent nothing and does not stop Tandem from starting: this one runs
+            // without a listener and says so (review r1, Important 1). Only a holder that may
+            // be Tandem but did not answer ends the launch.
+            if after.iter().any(|a| matches!(a, crate::url_launch::AfterHand::Refuse(_))) || !after.iter().any(|a| matches!(a, crate::url_launch::AfterHand::Start)) {
+                message_box(&format!("Tandem could not take its launch pipe: {e}"));
+                return;
+            }
+            pipe_problem = Some("Another program holds Tandem's launch pipe, so files and links opened with Tandem cannot reach this window.".to_string());
+            None
         }
     };
     let wake = proxy.clone();
@@ -1618,6 +1628,9 @@ pub fn run() {
     });
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
+    if let Some(text) = pipe_problem {
+        banners.set("launch-pipe", text);
+    }
     let api = match conpty::load(&Source::Shipped(exe_dir.clone())) {
         Ok(api) => api,
         Err(e) => match conpty::load(&Source::Inbox) {

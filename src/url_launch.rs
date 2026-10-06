@@ -152,6 +152,19 @@ pub enum Handed {
     Failed(String),
 }
 
+/// Whether the process serving the launch pipe is Tandem: its token passes the peer rule (same
+/// user, same elevation and integrity, no AppContainer or restricted token: `api_peer::judge`)
+/// and its image is this Tandem's own program (case ignored). Anything else, an unreadable image
+/// included, is not Tandem and is sent nothing.
+pub fn server_verdict(theirs: &crate::api_peer::Token, mine: &crate::api_peer::Token, their_image: Option<&str>, my_image: &str) -> Result<(), String> {
+    crate::api_peer::judge(theirs, mine)?;
+    match their_image {
+        Some(i) if i.eq_ignore_ascii_case(my_image) => Ok(()),
+        Some(_) => Err("the launch pipe is held by a program that is not this Tandem".into()),
+        None => Err("the program holding the launch pipe could not be identified".into()),
+    }
+}
+
 /// What a URL launch does after the hand-over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AfterHand {
@@ -180,7 +193,7 @@ pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn 
 }
 
 #[cfg(windows)]
-pub use pipe::{hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on};
+pub use pipe::{hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on};
 
 #[cfg(windows)]
 mod pipe {
@@ -214,6 +227,18 @@ mod pipe {
 
     /// The only writer to the pipe: one message, one connection.
     pub fn hand_request_on(name: &str, request: &crate::launch::Request, grant: &dyn Fn(u32)) -> Handed {
+        hand_request_checked(name, request, grant, &verify_server)
+    }
+
+    /// `server_verdict` for the process `pid` serving the pipe.
+    fn verify_server(pid: u32) -> Result<(), String> {
+        let mine = std::env::current_exe().map_err(|e| e.to_string())?;
+        server_verdict(&winpipe::process_token_facts(pid)?, &winpipe::own_token_facts()?, winpipe::process_image(pid).as_deref(), &mine.to_string_lossy())
+    }
+
+    /// `hand_request_on` with the server check given: a holder `verify` refuses gets nothing, and
+    /// is `OtherOwner` (this Tandem runs without a listener, as when another user holds the name).
+    pub fn hand_request_checked(name: &str, request: &crate::launch::Request, grant: &dyn Fn(u32), verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
         let Some(message) = crate::launch::encode(request) else { return Handed::Failed("the request is not one Tandem accepts".into()) };
         let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
             Ok(Some(p)) => p,
@@ -225,7 +250,12 @@ mod pipe {
             return Handed::OtherOwner(e);
         }
         match pipe.server_pid() {
-            Ok(pid) => grant(pid),
+            Ok(pid) => {
+                if let Err(e) = verify(pid) {
+                    return Handed::OtherOwner(e);
+                }
+                grant(pid)
+            }
             Err(e) => return Handed::Failed(e),
         }
         if let Err(e) = pipe.write_all(&message) {
@@ -427,6 +457,24 @@ mod tests {
         assert!(open_banner(&long).unwrap().chars().count() < 400, "a long name is cut by shown_name");
     }
 
+    /// Review r1 Important 1: a pipe server is Tandem only when its token passes the peer rule
+    /// and its image is this Tandem's own program.
+    #[test]
+    fn the_server_must_be_tandem() {
+        use crate::api_peer::{Token, HIGH_RID, LOW_RID, MEDIUM_RID};
+        let mine = Token { sid: "S-1-5-21-1".into(), elevated: false, integrity: MEDIUM_RID, app_container: false, restricted: false };
+        let exe = r"C:\Tandem\tandem.exe";
+        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TANDEM.EXE"), exe), Ok(()), "same token, same image, case ignored");
+        let low = Token { integrity: LOW_RID, ..mine.clone() };
+        assert!(server_verdict(&low, &mine, Some(exe), exe).is_err(), "a low-integrity squatter");
+        let high = Token { integrity: HIGH_RID, elevated: true, ..mine.clone() };
+        assert!(server_verdict(&high, &mine, Some(exe), exe).is_err());
+        assert!(server_verdict(&Token { app_container: true, ..mine.clone() }, &mine, Some(exe), exe).is_err());
+        assert!(server_verdict(&Token { sid: "S-1-5-21-2".into(), ..mine.clone() }, &mine, Some(exe), exe).is_err());
+        assert!(server_verdict(&mine, &mine, Some(r"C:\Temp\evil.exe"), exe).is_err(), "another image");
+        assert!(server_verdict(&mine, &mine, None, exe).is_err(), "an unreadable image is refused");
+    }
+
     #[cfg(windows)]
     mod windows {
         use super::super::*;
@@ -443,6 +491,22 @@ mod tests {
             }))
             .unwrap();
             rx
+        }
+
+        /// Review r1 Important 1: a holder the verifier refuses is never sent a request, and the
+        /// answer is `OtherOwner` (this Tandem then runs), not a hang or a hand-over.
+        #[test]
+        fn a_server_that_is_not_tandem_gets_no_request() {
+            let name = test_name("squatter");
+            let rx = listening_all(&name, Duration::from_secs(2));
+            let granted = std::cell::Cell::new(false);
+            let open = crate::launch::Request::Open { paths: vec![r"C:\w\a.ps1".into()] };
+            let handed = hand_request_checked(&name, &open, &|_| granted.set(true), &|_| Err("not Tandem".to_string()));
+            assert_eq!(handed, Handed::OtherOwner("not Tandem".into()));
+            assert!(!granted.get(), "no foreground right goes to a stranger");
+            assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "nothing was sent");
+            assert_eq!(hand_request_on(&name, &open, &|_| {}), Handed::Taken, "the real check passes for this very program");
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), open);
         }
 
         #[test]
@@ -494,8 +558,9 @@ mod tests {
             })).unwrap();
             assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Taken, "the first is read and closed");
             let t = Instant::now();
-            assert!(matches!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Failed(_)), "the thread is stuck in the callback: no answer");
-            assert!(t.elapsed() >= Duration::from_secs(2) && t.elapsed() < Duration::from_secs(6));
+            let second = hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {});
+            assert!(matches!(second, Handed::Failed(_)), "the thread is stuck in the callback: no answer: {second:?}");
+            assert!(t.elapsed() >= Duration::from_millis(1900) && t.elapsed() < Duration::from_secs(6), "{:?} {second:?}", t.elapsed());
             let _ = release.send(());
         }
 
