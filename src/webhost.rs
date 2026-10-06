@@ -170,6 +170,9 @@ pub enum Event {
     Request { view: ViewId, token: u64, url: String, context: i32, top_url: String },
     /// A page or redirect asked to open an external protocol; the view always cancels it (B4).
     ExternalUri { view: ViewId, url: String, user: bool },
+    /// A top-level navigation the view refused after a person's click (`refused_click`): the app
+    /// judges the URL itself (a popover link goes through `guard_open`).
+    Refused { view: ViewId, url: String, user: bool },
 }
 
 impl Event {
@@ -184,14 +187,15 @@ impl Event {
             | Event::Key { view, .. }
             | Event::History { view, .. }
             | Event::Request { view, .. }
-            | Event::ExternalUri { view, .. } => *view,
+            | Event::ExternalUri { view, .. }
+            | Event::Refused { view, .. } => *view,
         }
     }
 
     /// An event the queue may drop when a page floods it. Lifecycle, navigation results, focus,
     /// script results and requests (each holds a COM deferral) are never dropped.
     pub fn droppable(&self) -> bool {
-        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
+        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
     }
 
     /// The bytes an event holds that a page chose.
@@ -200,7 +204,7 @@ impl Event {
             Event::Failed(_, s) | Event::Source(_, s) | Event::Title(_, s) => s.len(),
             Event::Favicon(_, b) => b.len(),
             Event::Message { json, source, .. } => json.len() + source.len(),
-            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } => url.len(),
+            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             _ => 0,
@@ -646,6 +650,12 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
     navigation_allowed(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok)
 }
 
+/// Whether a refused navigation is offered to the app: a person's own click on a link (not a
+/// script's navigation, not a redirect, not Tandem's load) that the view's policy cancelled.
+pub fn refused_click(info: &NavInfo, allowed: bool) -> bool {
+    !allowed && info.user && !info.redirect && !info.by_tandem
+}
+
 // --- Focus (Task 1a) ---
 
 /// What a `WindowEvent::Focused` means while web views exist. A click into a web view moves
@@ -1028,6 +1038,24 @@ mod tests {
     /// Final review round 1, item 3: the policy function itself cancels a page's navigation into a
     /// local scheme. Called with the guard off it lets the same navigation through, so the test
     /// fails when the guard is removed.
+    /// Review fix (Task 3, Important 2): a link a person clicked that the view refused is offered to
+    /// the app (which judges it with `guard_open`); a script's or a redirect's refusal is not, and
+    /// neither is a navigation Tandem itself made.
+    #[test]
+    fn a_refused_click_is_offered_to_the_app() {
+        let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem };
+        assert!(refused_click(&info(true, false), false));
+        assert!(!refused_click(&info(false, false), false), "a script's navigation");
+        assert!(!refused_click(&info(true, true), false), "Tandem's own load");
+        assert!(!refused_click(&info(true, false), true), "an allowed navigation is not refused");
+        let redirect = NavInfo { redirect: true, ..info(true, false) };
+        assert!(!refused_click(&redirect, false), "a redirect is no click");
+        let ev = Event::Refused { view: 3, url: "https://a.example/".into(), user: true };
+        assert_eq!(ev.view(), 3);
+        assert!(ev.droppable());
+        assert_eq!(ev.weight(), 18);
+    }
+
     #[test]
     fn nav_verdict_guard_cancels_local_navigations_from_a_page() {
         let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false };

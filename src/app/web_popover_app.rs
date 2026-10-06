@@ -116,8 +116,14 @@ impl App {
         // Only an http or https URL with a host is ever shown or opened here.
         let Some(url) = web_popover::quick_look_target(url) else { return };
         if self.web_runtime() == Runtime::Missing {
-            if let Err(e) = super::semantic_ui::shell_open(&url, false) {
-                self.banners.set("action", format!("Could not open {url}: {e}"));
+            match external_uri_run(&url, true) {
+                ExternalRun::Open(t) => {
+                    if let Err(e) = super::semantic_ui::shell_open(&t, false) {
+                        self.banners.set("action", format!("Could not open {t}: {e}"));
+                    }
+                }
+                ExternalRun::Notice(n) => self.banners.set("action", n),
+                ExternalRun::Nothing => {}
             }
             return;
         }
@@ -182,10 +188,17 @@ impl App {
             Act::Keep => {}
             Act::Close => self.web_popover = None,
             Act::OpenInBrowser => {
-                // Judged again: what the view says now reaches the shell only as http or https.
+                // Judged again, by the one judge: what the view says now reaches the shell only as
+                // http or https (`guard_open`), and only for a person's click.
                 if let Some(target) = p.open_in_target().filter(|t| web_popover::quick_look_scheme_ok(t)) {
-                    if let Err(e) = super::semantic_ui::shell_open(&target, false) {
-                        self.banners.set("action", format!("Could not open {target}: {e}"));
+                    match external_uri_run(&target, true) {
+                        ExternalRun::Open(t) => {
+                            if let Err(e) = super::semantic_ui::shell_open(&t, false) {
+                                self.banners.set("action", format!("Could not open {t}: {e}"));
+                            }
+                        }
+                        ExternalRun::Notice(n) => self.banners.set("action", n),
+                        ExternalRun::Nothing => {}
                     }
                 }
             }
@@ -218,7 +231,9 @@ impl App {
                     self.web_popover = None;
                 }
             }
-            Event::ExternalUri { url, user, .. } => match external_uri_run(url, *user) {
+            // An external protocol, or a link the person clicked that the view refused: both are
+            // opened only on a person's gesture and only through `guard_open`.
+            Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => match external_uri_run(url, *user) {
                 ExternalRun::Open(t) => {
                     if let Err(e) = super::semantic_ui::shell_open(&t, false) {
                         self.banners.set("action", format!("Could not open {t}: {e}"));
@@ -302,6 +317,30 @@ mod tests {
                 other => panic!("{bad}: {other:?}"),
             }
         }
+    }
+
+    /// Review fix (Task 3, Important 2 and Minor 3): a link a person clicks in a popover is refused
+    /// by the view and offered to the app, which opens it only through `guard_open`; "Open in" and
+    /// the no-runtime Quick Look fallback ask the same judge.
+    #[test]
+    fn popover_links_and_open_in_go_through_guard_open() {
+        let me = include_str!("web_popover_app.rs");
+        let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
+        let arm = &prod[prod.find("fn web_popover_view_event").unwrap()..];
+        let arm = &arm[..arm.find("\n    }\n").unwrap()];
+        assert!(arm.contains("Event::Refused"), "the refused click is routed");
+        assert!(arm.contains("external_uri_run(url, *user)"));
+        let open = &prod[prod.find("fn web_popover_event").unwrap()..];
+        let open = &open[..open.find("\n    }\n").unwrap()];
+        assert!(open.contains("external_uri_run(") && !open.contains("shell_open(&target"), "Open in asks guard_open");
+        let ql = &prod[prod.find("fn quick_look_url").unwrap()..];
+        let ql = &ql[..ql.find("\n    }\n").unwrap()];
+        assert!(ql.contains("external_uri_run("), "the fallback asks guard_open");
+        let host = include_str!("../webhost_win.rs");
+        assert_eq!(host.matches("Event::Refused").count(), 1, "one place posts it");
+        assert!(host.find("refused_click(").unwrap() < host.find("Event::Refused").unwrap());
+        assert_eq!(external_uri_run("https://a.example/x", true), ExternalRun::Open("https://a.example/x".to_string()));
+        assert!(matches!(external_uri_run("file:///C:/x.html", true), ExternalRun::Notice(_)));
     }
 
     /// The popover's state is app-wide, its windows are not terminal windows (13w seam S9), and

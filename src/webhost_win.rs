@@ -883,8 +883,13 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
         let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };
-        if !webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge)) {
+        let allowed = webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
+        if !allowed {
             let _ = unsafe { args.SetCancel(true) };
+            if webhost::refused_click(&info, allowed) {
+                let i = inner.borrow();
+                i.poster.post(Event::Refused { view: i.id, url: webhost::cap_url(&uri).0, user });
+            }
             return Ok(());
         }
         let i = inner.borrow();
