@@ -41,45 +41,52 @@ pub fn shell_of(name: Option<&str>) -> Shell {
     }
 }
 
-/// What a refusal for an unnamed shell says.
-pub const UNKNOWN_REFUSED: &str = "Tandem did not write this path to the terminal: it holds a character some shells would read, and the shell is not known.";
+/// What a refusal of a network directory says.
+pub const NETWORK_REFUSED: &str = "Tandem did not write this path to the terminal: it is a network path.";
 
-/// A character special in some supported shell: with no shell named, a path holding one is not
-/// quoted for a guess.
+/// `dir` when it is not a network path (the one rule, `scripts::is_network_path`): writing one
+/// would send the person's credentials to whatever host it names.
+pub fn checked_directory(dir: &str) -> Result<&str, String> {
+    if crate::scripts::is_network_path(dir) {
+        return Err(NETWORK_REFUSED.to_string());
+    }
+    Ok(dir)
+}
+
+/// The program a launch command line names: a quoted path whole, else its first word.
+pub fn launch_program(command: &str) -> Option<&str> {
+    let c = command.trim_start();
+    if let Some(rest) = c.strip_prefix('"') {
+        return rest.split('"').next().filter(|p| !p.is_empty());
+    }
+    c.split_whitespace().next()
+}
+
+/// What the union refusal says.
+pub const UNION_REFUSED: &str = "Tandem did not write this path to the terminal: it holds a character some shells would read.";
+
+/// A character special in some supported shell. The shell a pane runs is only what a program
+/// reported (OSC 1337, RemoteHost) or what it launched, so no name loosens this: a path is
+/// written only when no supported shell reads anything special in it.
 fn special_in_some_shell(c: char) -> bool {
-    matches!(c, '$' | '`' | '\'' | '"' | '%' | '^' | '&' | '|' | '<' | '>' | ';' | '(' | ')' | '!' | '{' | '}' | '*' | '?' | '[' | ']' | '~' | '#' | '\u{2018}' | '\u{2019}' | '\u{201c}' | '\u{201d}')
+    matches!(c, '$' | '`' | '\'' | '"' | '%' | '^' | '&' | '|' | '<' | '>' | ';' | '(' | ')' | '!' | '{' | '}' | '*' | '?' | '[' | ']' | '~' | '#'
+        | '\u{2018}'..='\u{201f}' | '\u{2032}' | '\u{2033}' | '\u{ff02}' | '\u{ff07}')
 }
 
-/// What cmd.exe's refusal says.
-pub const CMD_REFUSED: &str = "Tandem did not write this path to the terminal: cmd.exe would read a special character in it.";
-
-/// The single-quote characters PowerShell reads as one (U+2018 to U+201B and the ASCII one).
-fn powershell_quote(c: char) -> bool {
-    matches!(c, '\'' | '\u{2018}'..='\u{201b}')
-}
-
-/// `path` quoted for `shell`, or Err with the banner when it cannot be quoted safely.
+/// `path` quoted for `shell`, or Err with the banner when it cannot be written safely. The union
+/// refusal, the control-character guard and the network rule come first, for every shell; the
+/// name only picks the quoting of what passes.
 pub fn quote_for(path: &str, shell: Shell) -> Result<String, String> {
     let path = safe_text(path).ok_or_else(|| REFUSED.to_string())?;
-    match shell {
-        Shell::PowerShell => {
-            let mut out = String::from("'");
-            for c in path.chars() {
-                out.push(c);
-                if powershell_quote(c) {
-                    out.push(c);
-                }
-            }
-            out.push('\'');
-            Ok(out)
-        }
-        // Double quotes do not stop %VAR% in cmd.exe, and a quote lookalike may close them in
-        // a shell mistaken for it: such a path is not written.
-        Shell::Cmd if path.chars().any(|c| matches!(c, '%' | '"' | '\u{201c}' | '\u{201d}' | '\u{ff02}')) => Err(CMD_REFUSED.to_string()),
-        Shell::Cmd => Ok(format!("\"{path}\"")),
-        // Double quotes hold a plain path in every shell; anything special in any of them is refused.
-        Shell::Unknown if path.chars().any(special_in_some_shell) => Err(UNKNOWN_REFUSED.to_string()),
-        Shell::Unknown => Ok(format!("\"{path}\"")),
+    checked_directory(path)?;
+    if path.chars().any(special_in_some_shell) || path.ends_with('\\') {
+        return Err(UNION_REFUSED.to_string());
+    }
+    Ok(match shell {
+        Shell::PowerShell => format!("'{path}'"),
+        // The union refusal holds no quote or %, so double quotes are enough for cmd.exe and for
+        // a shell no report names.
+        Shell::Cmd | Shell::Unknown => format!("\"{path}\""),
         Shell::Posix => {
             let mut out = String::new();
             for c in path.chars() {
@@ -88,9 +95,9 @@ pub fn quote_for(path: &str, shell: Shell) -> Result<String, String> {
                 }
                 out.push(c);
             }
-            Ok(out)
+            out
         }
-    }
+    })
 }
 
 /// A path-shaped run in a prompt row: its text and its columns (`start..end`) on the row.
@@ -229,14 +236,17 @@ pub fn choose(value: &str, typed: &str, shell: Option<&str>) -> Result<Choice, S
     let value = safe_text(value).ok_or_else(|| REFUSED.to_string())?;
     let typed = safe_text(typed).ok_or_else(|| REFUSED.to_string())?;
     let kind = shell_of(shell);
+    // Every path passes the one guard, quoted or not (control characters, the union refusal,
+    // the network rule).
+    let quoted = quote_for(value, kind)?;
     if typed.trim().is_empty() {
         // cmd.exe's cd stays on its drive without /d; only a shell known to be cmd gets it.
         let cd = if kind == Shell::Cmd { "cd /d" } else { "cd" };
-        return Ok(Choice::Cd(format!("{cd} {}\r", quote_for(value, kind)?)));
+        return Ok(Choice::Cd(format!("{cd} {quoted}\r")));
     }
     // A path with nothing a shell reads in it is added as it is.
     let plain = value.chars().all(|c| c.is_alphanumeric() && c.is_ascii() || matches!(c, '/' | '\\' | '_' | '.' | '-' | ':'));
-    let path = if plain { value.to_string() } else { quote_for(value, kind)? };
+    let path = if plain { value.to_string() } else { quoted };
     let gap = if typed.ends_with(char::is_whitespace) { "" } else { " " };
     Ok(Choice::Append(format!("{typed}{gap}{path}")))
 }
@@ -273,25 +283,50 @@ mod tests {
 
     #[test]
     fn quote_for_follows_the_shell() {
-        let dir = "C:\\a'b\u{2018}\u{2019}\u{201a}\u{201b}; calc";
-        assert_eq!(quote_for(dir, Shell::PowerShell).unwrap(), "'C:\\a''b\u{2018}\u{2018}\u{2019}\u{2019}\u{201a}\u{201a}\u{201b}\u{201b}; calc'");
         assert_eq!(quote_for(r"C:\a b", Shell::PowerShell).unwrap(), "'C:\\a b'");
         assert_eq!(quote_for(r"C:\a b", Shell::Cmd).unwrap(), "\"C:\\a b\"");
-        assert_eq!(quote_for("/home/a b/it's$x\u{e9}", Shell::Posix).unwrap(), "/home/a\\ b/it\\'s\\$x\\\u{e9}");
+        assert_eq!(quote_for("/home/a b/x\u{e9}", Shell::Posix).unwrap(), "/home/a\\ b/x\\\u{e9}");
         assert_eq!(quote_for("/plain/dir-1_x.y", Shell::Posix).unwrap(), "/plain/dir-1_x.y");
     }
 
+    /// Fix round 2, item 1: the union refusal applies whatever shell is named, because the name
+    /// is program text (OSC 1337 shell=, RemoteHost, the launch program in a spoofed pane).
     #[test]
-    fn quote_for_refuses_what_a_shell_would_still_read() {
-        for bad in ["C:\\100%", "C:\\a\"b", "C:\\a\u{201c}b", "C:\\a\u{ff02}b"] {
-            assert!(quote_for(bad, Shell::Cmd).is_err(), "{bad}");
+    fn the_union_refusal_applies_to_every_shell() {
+        let bad = ["C:\\x$(calc)", "C:\\x`calc`", "C:\\x\\;calc", "C:\\x&calc", "C:\\a'b\u{2019}; calc", "C:\\a\u{201a}b", "C:\\a\u{201b}b", "C:\\a\u{201e} x \u{201e}", "C:\\a\u{201f}b", "C:\\a\u{2032}b", "C:\\a\u{2033}b", "C:\\a\u{ff02}b", "C:\\a\u{ff07}b", "C:\\100%", "C:\\", "/tmp/dir\\", "x\"y"];
+        for shell in [Shell::PowerShell, Shell::Cmd, Shell::Posix, Shell::Unknown] {
+            for b in bad {
+                assert!(quote_for(b, shell).is_err(), "{shell:?} {b}");
+            }
         }
-        for shell in [Shell::PowerShell, Shell::Cmd, Shell::Posix] {
-            assert_eq!(quote_for("a\r b", shell), Err(REFUSED.to_string()));
-            assert_eq!(quote_for("a\nb", shell), Err(REFUSED.to_string()));
-            assert_eq!(quote_for("a\u{1b}b", shell), Err(REFUSED.to_string()));
-            assert_eq!(quote_for("a\u{202e}b", shell), Err(REFUSED.to_string()));
+        // The name only picks the quoting of what passes.
+        assert_eq!(quote_for(r"C:\Program Files\x", Shell::PowerShell).unwrap(), "'C:\\Program Files\\x'");
+        assert!(choose("C:\\x$(calc)", "", Some("cmd")).is_err());
+        assert!(choose("C:\\x;calc", "", Some("bash")).is_err());
+        assert!(choose("C:\\x;calc", "git -C ", Some("sh")).is_err());
+    }
+
+    /// Item 2: a network directory (the one network rule) is never written.
+    #[test]
+    fn a_network_directory_is_never_written() {
+        for dir in ["\\\\evil\\s\\x", "//evil/s/x", "/\\evil/s", "\\??\\UNC\\evil\\s"] {
+            for shell in [Shell::PowerShell, Shell::Cmd, Shell::Posix, Shell::Unknown] {
+                assert_eq!(quote_for(dir, shell), Err(NETWORK_REFUSED.to_string()), "{shell:?} {dir}");
+            }
+            assert!(choose(dir, "", Some("pwsh")).is_err());
+            assert!(checked_directory(dir).is_err());
         }
+        assert_eq!(checked_directory(r"C:\Users\rob"), Ok(r"C:\Users\rob"));
+    }
+
+    /// Minor 4: a quoted launch path names its program.
+    #[test]
+    fn a_quoted_launch_path_names_its_program() {
+        assert_eq!(launch_program(r#""C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo"#), Some(r"C:\Program Files\PowerShell\7\pwsh.exe"));
+        assert_eq!(launch_program("pwsh -NoLogo"), Some("pwsh"));
+        assert_eq!(launch_program(r"C:\Windows\System32\cmd.exe /k x"), Some(r"C:\Windows\System32\cmd.exe"));
+        assert_eq!(launch_program("  "), None);
+        assert_eq!(shell_of(launch_program(r#""C:\Program Files\PowerShell\7\pwsh.exe""#)), Shell::PowerShell);
     }
 
     #[test]

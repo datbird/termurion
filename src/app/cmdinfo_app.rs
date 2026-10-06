@@ -109,8 +109,10 @@ impl App {
         let (pane, info) = (w.pane, w.info().clone());
         match act {
             Act::WriteCommand => self.cmdinfo_write(pane, &info.command),
-            Act::WriteDirectory => match info.directory.as_deref() {
-                Some(d) => self.cmdinfo_write(pane, d),
+            // A network directory is never written (the one rule): the shell would reach for its host.
+            Act::WriteDirectory => match info.directory.as_deref().map(crate::pathnav::checked_directory) {
+                Some(Ok(d)) => self.cmdinfo_write(pane, d),
+                Some(Err(why)) => self.banners.set("action", why),
                 None => {}
             },
             Act::CopyCommand => self.cmdinfo_copy(info.command),
@@ -151,12 +153,12 @@ impl App {
 
     /// The shell that will read the Composer's `cd` line: the one shell integration named, else
     /// the program the local session launched; a remote pane that named none is read as a POSIX
-    /// shell (a remote host is mostly one). None leaves the shell unknown, which refuses any
-    /// path a shell might read.
+    /// shell (a remote host is mostly one). The name is program text and only picks the `cd`
+    /// syntax: the union refusal holds for every shell (`pathnav::quote_for`).
     pub(super) fn composer_shell(&self, pane: PaneId) -> Option<String> {
         let p = self.panes.get(&pane)?;
         let remote = self.remote_text(pane) || p.own().shell.host.as_deref().is_some_and(|h| !self.host_is_this_machine(h));
-        let launch = Some(p.command.as_str()).filter(|c| !c.is_empty()).and_then(|c| c.split_whitespace().next());
+        let launch = crate::pathnav::launch_program(&p.command);
         crate::ai_terminal::detected_shell(p.own().shell.shell.as_deref(), launch, !remote).or_else(|| remote.then(|| "sh".to_string()))
     }
 
@@ -245,6 +247,15 @@ mod tests {
         assert!(code.find("composer_text(").unwrap() < code.find("open_composer_with(").unwrap());
         let snippet = &code[code.find("fn cmdinfo_add_snippet").unwrap()..];
         assert!(snippet.find("cmdinfo::writable").unwrap() < snippet.find("snippets.snippets.push").unwrap());
+    }
+
+    /// Fix round 2: Write directory refuses a network directory before it writes; a quoted launch
+    /// path is parsed whole.
+    #[test]
+    fn write_directory_refuses_a_network_path_and_launch_paths_are_parsed() {
+        let arm = &code()[code().find("Act::WriteDirectory =>").unwrap()..];
+        assert!(arm.find("checked_directory").unwrap() < arm.find("cmdinfo_write(").unwrap());
+        assert!(code().contains("pathnav::launch_program(&p.command)"));
     }
 
     /// Review fix 2: program text is never typed into a password read.
