@@ -43,6 +43,9 @@ pub mod keymaps {
 pub struct Globals {
     pub values: BTreeMap<String, Value>,
     path: PathBuf,
+    /// "Custom Color Presets" as its write point read it (`color_presets::bound_custom`), shared
+    /// by readers; replaced, never changed, so a reader can tell a new write by the pointer.
+    custom_presets: std::sync::Arc<Vec<(String, crate::color_presets::Preset)>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,7 +80,7 @@ fn default_of(key: &str) -> Option<Value> {
 impl Globals {
     /// All defaults, saved at `path`.
     pub fn empty(path: &Path) -> Globals {
-        Globals { values: BTreeMap::new(), path: path.to_path_buf() }
+        Globals { values: BTreeMap::new(), path: path.to_path_buf(), custom_presets: Default::default() }
     }
 
     pub fn load(path: &Path) -> Result<Globals, String> {
@@ -87,7 +90,28 @@ impl Globals {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let file: FileFormat = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Globals { values: file.settings, path: path.to_path_buf() })
+        let mut g = Globals { values: file.settings, path: path.to_path_buf(), custom_presets: Default::default() };
+        g.bound_values();
+        Ok(g)
+    }
+
+    /// Applies the write-point bounds to values written in bulk (the file at load, a remote-prefs
+    /// snapshot), as `set` does for one value.
+    pub fn bound_values(&mut self) {
+        match self.values.remove(crate::color_presets::CUSTOM_KEY) {
+            Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
+            None => self.custom_presets = Default::default(),
+        }
+    }
+
+    /// The custom color presets, sanitized and bounded at the write (`color_presets::custom`).
+    pub fn custom_presets(&self) -> &[(String, crate::color_presets::Preset)] {
+        &self.custom_presets
+    }
+
+    /// The same list, shared: it is replaced on every write of the key.
+    pub fn custom_presets_shared(&self) -> &std::sync::Arc<Vec<(String, crate::color_presets::Preset)>> {
+        &self.custom_presets
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -109,6 +133,14 @@ impl Globals {
     /// Stores a value. A value equal to the default is removed, so the file keeps only changes,
     /// except for a key whose having been set at all is read (`KEPT_WHEN_DEFAULT`).
     pub fn set(&mut self, key: &str, value: Value) {
+        // Custom color presets are bounded and sanitized here, whatever wrote them (B3).
+        let value = if key == crate::color_presets::CUSTOM_KEY {
+            let (value, list) = crate::color_presets::bound_custom(&value);
+            self.custom_presets = std::sync::Arc::new(list);
+            value
+        } else {
+            value
+        };
         // A changed cookie setting is no longer the one the Claude Code setup turned on, so its
         // marker goes; the setup writes the marker after the setting (Task 8 fix round 2).
         if key == crate::api_profile::SET_COOKIE && value.as_bool() != Some(self.bool(key)) {
@@ -130,6 +162,9 @@ impl Globals {
     /// Removes a stored value, so the file drops the key (an optional bool's Unspecified).
     pub fn unset(&mut self, key: &str) {
         self.values.remove(key);
+        if key == crate::color_presets::CUSTOM_KEY {
+            self.custom_presets = Default::default();
+        }
     }
 
     /// A number stored as a float or an integer, else iTerm2's default; None when neither

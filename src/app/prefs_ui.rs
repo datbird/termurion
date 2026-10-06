@@ -164,6 +164,8 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
 /// when it has none, as Tandem always has a profile).
 pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
     rp::apply(snap, &mut g.values);
+    // The snapshot's values are bounded as the one write point bounds them (custom presets).
+    g.bound_values();
     // A start folder naming a network path from the loaded file is emptied: it was not typed
     // in Settings (`start_dir::scrub_map`).
     let mut profiles: Vec<Profile> = snap.profiles.iter().cloned().map(|mut values| {
@@ -771,6 +773,29 @@ mod tests {
         apply_snapshot(&snap, &mut g, &mut store);
         assert_eq!(store.profiles[0].string("Working Directory"), "");
         assert_eq!(store.profiles[0].string("AWDS Tab Directory"), "D:\\ok");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A loaded snapshot's custom color presets are bounded and sanitized as Settings writes are.
+    #[test]
+    fn a_loaded_snapshot_bounds_custom_color_presets() {
+        let dir = std::env::temp_dir().join(format!("tandem-prefs-presets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut g, mut store) = local(&dir, "x");
+        let color = Value::Table(map(&[("r", Value::Float(0.1)), ("g", Value::Float(0.2)), ("b", Value::Float(0.3))]).into_iter().collect());
+        let bad = Value::Table(map(&[("r", Value::Float(f64::NAN)), ("g", Value::Float(0.2)), ("b", Value::Float(0.3))]).into_iter().collect());
+        let mut presets = toml::Table::new();
+        for i in 0..400 {
+            presets.insert(format!("P{i:03}"), Value::Table([("Ansi 0 Color".to_string(), color.clone())].into_iter().collect()));
+        }
+        presets.insert("A bad".into(), Value::Table([("Ansi 0 Color".to_string(), bad)].into_iter().collect()));
+        let profile = map(&[("Guid", Value::String("g1".into())), ("Name", Value::String("R".into()))]);
+        let snap = Snapshot { settings: map(&[(crate::color_presets::CUSTOM_KEY, Value::Table(presets))]), default: "g1".into(), profiles: vec![profile] };
+        apply_snapshot(&snap, &mut g, &mut store);
+        let stored = g.values[crate::color_presets::CUSTOM_KEY].as_table().unwrap();
+        assert_eq!(stored.len(), crate::color_presets::MAX_CUSTOM);
+        assert!(!stored.contains_key("A bad"));
+        assert_eq!(crate::color_presets::custom(&g).len(), crate::color_presets::MAX_CUSTOM);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

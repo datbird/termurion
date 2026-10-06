@@ -67,7 +67,7 @@ pub const COLOR_KEYS: [&str; 29] = [
 
 /// A preset file longer than this is refused (a real one is about 10 KiB).
 pub const MAX_ITERMCOLORS: usize = 1 << 20;
-/// At most this many custom presets are read (extra ones stay stored and unseen).
+/// At most this many custom presets are kept (the write point drops the rest).
 pub const MAX_CUSTOM: usize = 256;
 /// A preset name's longest length, in characters.
 pub const MAX_NAME: usize = 64;
@@ -76,7 +76,7 @@ pub const MAX_NAME: usize = 64;
 const MAX_CONTAINERS: usize = 512;
 
 const SEPARATE: &str = "Use Separate Colors for Light and Dark Mode";
-const CUSTOM_KEY: &str = "Custom Color Presets";
+pub const CUSTOM_KEY: &str = "Custom Color Presets";
 /// The colors a preset may lack: a missing one is removed, not defaulted (`CP:295-299`).
 const OPTIONAL: [&str; 3] = ["Tab Color", "Match Background Color", "Underline Color"];
 const SPACES: [&str; 3] = ["sRGB", "P3", "Calibrated"];
@@ -117,9 +117,11 @@ fn is_preset_key(key: &str) -> bool {
     COLOR_KEYS.contains(&split(key).0)
 }
 
-/// The 87 names a preset may hold: the 29 base keys and their 58 mode keys.
-fn preset_keys() -> impl Iterator<Item = String> {
-    keys_with_modes(false).into_iter().chain(keys_with_modes(true))
+/// The 87 names a preset may hold: the 29 base keys and their 58 mode keys (built once; every
+/// write of the custom presets sanitizes each one).
+fn preset_keys() -> &'static [String] {
+    static KEYS: OnceLock<Vec<String>> = OnceLock::new();
+    KEYS.get_or_init(|| keys_with_modes(false).into_iter().chain(keys_with_modes(true)).collect())
 }
 
 fn make_color(r: f64, g: f64, b: f64, a: Option<f64>, space: Option<&str>) -> Option<PresetColor> {
@@ -158,8 +160,8 @@ fn color_from_plist(v: &plist::Value) -> Option<PresetColor> {
 fn preset_from_plist(d: &plist::Dictionary) -> Option<Preset> {
     let mut p = Preset::new();
     for key in preset_keys() {
-        if let Some(c) = d.get(&key).and_then(color_from_plist) {
-            p.insert(key, c);
+        if let Some(c) = d.get(key).and_then(color_from_plist) {
+            p.insert(key.clone(), c);
         }
     }
     (!p.is_empty()).then_some(p)
@@ -198,11 +200,13 @@ fn value_of(c: &PresetColor) -> Value {
 /// color with finite components in 0 to 1 (alpha clamped, absent is 1) and a known color space.
 /// None when nothing usable is left.
 pub fn sanitize(raw: &Value) -> Option<Preset> {
+    #[cfg(test)]
+    SANITIZED.with(|c| c.set(c.get() + 1));
     let t = raw.as_table()?;
     let mut p = Preset::new();
     for key in preset_keys() {
-        if let Some(c) = t.get(&key).and_then(color_from_value) {
-            p.insert(key, c);
+        if let Some(c) = t.get(key).and_then(color_from_value) {
+            p.insert(key.clone(), c);
         }
     }
     (!p.is_empty()).then_some(p)
@@ -234,32 +238,79 @@ pub fn built_in() -> &'static [(String, Preset)] {
     })
 }
 
-/// The custom presets, sorted by name: sanitized, at most 256, hostile names hidden.
-pub fn custom(g: &Globals) -> Vec<(String, Preset)> {
-    let mut list: Vec<(String, Preset)> = g
-        .table(CUSTOM_KEY)
-        .iter()
-        .filter(|(name, _)| name_ok(name))
-        .filter_map(|(name, v)| Some((name.clone(), sanitize(v)?)))
-        .take(MAX_CUSTOM)
-        .collect();
-    list.sort_by(|a, b| a.0.cmp(&b.0));
-    list
+#[cfg(test)]
+thread_local! {
+    /// Presets read by `sanitize`, swatches made and preset-name lists rebuilt, on this thread.
+    static SANITIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SWATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REMEMBERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// `presetWithName:`: built-ins first, then custom presets.
-pub fn find(g: &Globals, name: &str) -> Option<Preset> {
-    if let Some((_, p)) = built_in().iter().find(|(n, _)| n == name) {
-        return Some(p.clone());
+/// The one write point of "Custom Color Presets" (`Globals::set`, which `Globals::load` and
+/// `Globals::bound_values` also use): at most `MAX_CUSTOM` presets with a shown name and at least
+/// one sane color, each stored as `sanitize` read it. Returns the value to store and the presets,
+/// sorted by name, that readers borrow (`custom`).
+pub fn bound_custom(raw: &Value) -> (Value, Vec<(String, Preset)>) {
+    let mut list: Vec<(String, Preset)> = Vec::new();
+    if let Some(t) = raw.as_table() {
+        for (name, v) in t {
+            if list.len() >= MAX_CUSTOM {
+                break;
+            }
+            if !name_ok(name) {
+                continue;
+            }
+            if let Some(p) = sanitize(v) {
+                list.push((name.clone(), p));
+            }
+        }
     }
-    custom(g).into_iter().find(|(n, _)| n == name).map(|(_, p)| p)
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    let stored: toml::Table = list.iter().map(|(n, p)| (n.clone(), Value::Table(stored_table(p)))).collect();
+    (Value::Table(stored), list)
+}
+
+/// A preset as "Custom Color Presets" stores it.
+fn stored_table(p: &Preset) -> toml::Table {
+    p.iter().filter(|(k, _)| is_preset_key(k)).map(|(k, c)| (k.clone(), value_of(c))).collect()
+}
+
+/// The custom presets, sorted by name: sanitized once at the write, at most 256, hostile names
+/// dropped. Borrowed, never copied.
+pub fn custom(g: &Globals) -> &[(String, Preset)] {
+    g.custom_presets()
+}
+
+/// `presetWithName:`: built-ins first, then custom presets. A borrow (the escape-code path calls
+/// it per frame).
+pub fn find<'a>(g: &'a Globals, name: &str) -> Option<&'a Preset> {
+    if let Some((_, p)) = built_in().iter().find(|(n, _)| n == name) {
+        return Some(p);
+    }
+    let list = custom(g);
+    list.binary_search_by(|(n, _)| n.as_str().cmp(name)).ok().map(|i| &list[i].1)
 }
 
 /// `allColorPresets`: built-in and custom names, a clash listed once, sorted.
 pub fn all_names(g: &Globals) -> Vec<String> {
-    let mut names: BTreeSet<String> = built_in().iter().map(|(n, _)| n.clone()).collect();
-    names.extend(custom(g).into_iter().map(|(n, _)| n));
-    names.into_iter().collect()
+    let mut names: BTreeSet<&str> = built_in().iter().map(|(n, _)| n.as_str()).collect();
+    names.extend(custom(g).iter().map(|(n, _)| n.as_str()));
+    names.into_iter().map(str::to_string).collect()
+}
+
+/// Open Quickly's preset rows, sorted by name, in one pass: each preset's swatch once, a custom
+/// preset named like a built-in left out (the built-in wins, as in `find`).
+pub fn swatches(g: &Globals, dark: bool) -> Vec<(String, crate::palette::Rgb, crate::palette::Rgb)> {
+    let mut rows: BTreeMap<&str, &Preset> = built_in().iter().map(|(n, p)| (n.as_str(), p)).collect();
+    for (n, p) in custom(g) {
+        rows.entry(n.as_str()).or_insert(p);
+    }
+    rows.into_iter()
+        .map(|(n, p)| {
+            let (fg, bg) = swatch(p, dark);
+            (n.to_string(), fg, bg)
+        })
+        .collect()
 }
 
 /// A preset has light and dark colors when it has "Foreground Color (Light)".
@@ -539,7 +590,7 @@ fn same_preset(a: &Preset, b: &Preset) -> bool {
 
 /// `nameOfPresetsEqualTo:`: a custom preset equal to `p`.
 pub fn duplicate_of(g: &Globals, p: &Preset) -> Option<String> {
-    custom(g).into_iter().find(|(_, c)| same_preset(c, p)).map(|(n, _)| n)
+    custom(g).iter().find(|(_, c)| same_preset(c, p)).map(|(n, _)| n.clone())
 }
 
 /// `addColorPreset:withColors:`: stores the preset; a name already taken becomes "Name (2)", "(3)"...
@@ -557,8 +608,7 @@ pub fn add_custom(g: &mut Globals, name: &str, p: Preset) -> Result<String, Stri
         i += 1;
         used = format!("{base} ({i})");
     }
-    let t: toml::Table = p.iter().filter(|(k, _)| is_preset_key(k)).map(|(k, c)| (k.clone(), value_of(c))).collect();
-    stored.insert(used.clone(), Value::Table(t));
+    stored.insert(used.clone(), Value::Table(stored_table(&p)));
     g.set(CUSTOM_KEY, Value::Table(stored));
     Ok(used)
 }
@@ -641,26 +691,40 @@ pub fn escape_tab_color(p: &Preset, dark: bool, current: Option<crate::palette::
 /// An Open Quickly row's swatch: the preset's foreground and background for one appearance (iTerm2's
 /// fallbacks, 0.75 and 0.25 gray, `OQM:629-630`).
 pub fn swatch(p: &Preset, dark: bool) -> (crate::palette::Rgb, crate::palette::Rgb) {
+    #[cfg(test)]
+    SWATCHES.with(|c| c.set(c.get() + 1));
     let gray = |v: u8| crate::palette::Rgb { r: v, g: v, b: v };
     (rgb_of(p, "Foreground Color", dark).unwrap_or(gray(191)), rgb_of(p, "Background Color", dark).unwrap_or(gray(64)))
 }
 
+/// The custom presets the names were built from, and the names.
+type NamesHint = (Option<std::sync::Arc<Vec<(String, Preset)>>>, Vec<String>);
+
 thread_local! {
-    static NAMES_HINT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static NAMES_HINT: std::cell::RefCell<NamesHint> = const { std::cell::RefCell::new((None, Vec::new())) };
 }
 
 /// The settings window records the preset names it can offer, so a key binding's preset combo
-/// (drawn deep inside editors that hold no globals) lists them.
+/// (drawn deep inside editors that hold no globals) lists them. Called per frame: the names are
+/// rebuilt only when the custom presets were written since.
 pub fn remember_names(g: &Globals) {
-    let names = all_names(g);
-    NAMES_HINT.with(|h| *h.borrow_mut() = names);
+    let presets = g.custom_presets_shared();
+    NAMES_HINT.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.0.as_ref().is_some_and(|seen| std::sync::Arc::ptr_eq(seen, presets)) {
+            return;
+        }
+        #[cfg(test)]
+        REMEMBERED.with(|c| c.set(c.get() + 1));
+        *h = (Some(presets.clone()), all_names(g));
+    });
 }
 
 /// The names `remember_names` last recorded, the built-in ones before any.
 pub fn remembered_names() -> Vec<String> {
     NAMES_HINT.with(|h| {
         let h = h.borrow();
-        if h.is_empty() { built_in().iter().map(|(n, _)| n.clone()).collect() } else { h.clone() }
+        if h.1.is_empty() { built_in().iter().map(|(n, _)| n.clone()).collect() } else { h.1.clone() }
     })
 }
 
@@ -796,16 +860,16 @@ mod tests {
         assert_eq!(add_custom(&mut g, "Mine", p.clone()).unwrap(), "Mine (3)");
         assert_eq!(duplicate_of(&g, &p).as_deref(), Some("Mine"));
         delete_custom(&mut g, "Mine (2)");
-        let names: Vec<String> = custom(&g).into_iter().map(|(n, _)| n).collect();
+        let names: Vec<String> = custom(&g).iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(names, ["Mine", "Mine (3)"]);
         let mut other = p.clone();
         other.insert("Foreground Color".into(), color(0.1, 0.2, 0.3));
         assert_eq!(duplicate_of(&g, &other), None);
         // Built-ins win a name clash, and the merged list names a clash once.
         add_custom(&mut g, "Regular", other).unwrap();
-        assert_eq!(find(&g, "Regular"), Some(named("Regular")));
+        assert_eq!(find(&g, "Regular"), Some(&named("Regular")));
         assert_eq!(all_names(&g).iter().filter(|n| *n == "Regular").count(), 1);
-        assert_eq!(find(&g, "Mine"), Some(p));
+        assert_eq!(find(&g, "Mine"), Some(&p));
         assert_eq!(find(&g, "Nope"), None);
         let all = all_names(&g);
         assert_eq!(all.len(), 11 + 2);
@@ -858,7 +922,10 @@ mod tests {
     fn add_custom_stops_at_the_cap() {
         let mut g = globals();
         let p = current(&Profile::new("t"), false);
-        for i in 0..MAX_CUSTOM {
+        // Each write re-reads every stored preset (the write point), so fill most in one write.
+        let full: toml::Table = (0..MAX_CUSTOM - 2).map(|i| (format!("P{i}"), Value::Table(stored_table(&p)))).collect();
+        g.set(CUSTOM_KEY, Value::Table(full));
+        for i in MAX_CUSTOM - 2..MAX_CUSTOM {
             add_custom(&mut g, &format!("P{i}"), p.clone()).unwrap();
         }
         assert!(add_custom(&mut g, "One more", p.clone()).is_err());
@@ -946,7 +1013,7 @@ mod tests {
         stored.insert("bad\u{202e}name".into(), Value::Table([("Ansi 0 Color".to_string(), table(0.1, 0.1, 0.1))].into_iter().collect()));
         stored.insert("not a table".into(), Value::Integer(3));
         stored.insert("x".repeat(65), Value::Table([("Ansi 0 Color".to_string(), table(0.1, 0.1, 0.1))].into_iter().collect()));
-        g.values.insert("Custom Color Presets".into(), Value::Table(stored));
+        g.set("Custom Color Presets", Value::Table(stored));
         let list = custom(&g);
         assert_eq!(list.len(), 256);
         assert!(list.iter().all(|(n, _)| !n.contains('\u{202e}') && n.chars().count() <= 64));
@@ -965,7 +1032,89 @@ mod tests {
         let mut g2 = globals();
         let p = current(&Profile::new("t"), false);
         add_custom(&mut g2, "Mine", p.clone()).unwrap();
-        assert_eq!(find(&g2, "Mine"), Some(p));
+        assert_eq!(find(&g2, "Mine"), Some(&p));
+    }
+
+    /// 300 well-formed presets plus hostile ones: a NaN-only one, a bidi name, a non-table, a long name.
+    fn big_custom_table() -> Value {
+        let mut stored = toml::Table::new();
+        for i in 0..300 {
+            let mut p = toml::Table::new();
+            p.insert("Ansi 0 Color".into(), table(0.1, 0.2, i as f64 / 300.0));
+            stored.insert(format!("P{i:03}"), Value::Table(p));
+        }
+        stored.insert("A nan".into(), Value::Table([("Ansi 0 Color".to_string(), table(f64::NAN, 0.1, 0.1))].into_iter().collect()));
+        stored.insert("bad\u{202e}name".into(), Value::Table([("Ansi 0 Color".to_string(), table(0.1, 0.1, 0.1))].into_iter().collect()));
+        stored.insert("not a table".into(), Value::Integer(3));
+        stored.insert("x".repeat(65), Value::Table([("Ansi 0 Color".to_string(), table(0.1, 0.1, 0.1))].into_iter().collect()));
+        Value::Table(stored)
+    }
+
+    fn stored_len(g: &Globals) -> usize {
+        g.values.get(CUSTOM_KEY).and_then(Value::as_table).map_or(0, |t| t.len())
+    }
+
+    #[test]
+    fn custom_presets_are_bounded_at_every_write() {
+        // Globals::set: Settings, add_custom and an iTerm2 prefs import all write through it.
+        let mut g = globals();
+        g.set(CUSTOM_KEY, big_custom_table());
+        assert_eq!(stored_len(&g), MAX_CUSTOM);
+        let t = g.values[CUSTOM_KEY].as_table().unwrap();
+        assert!(t.keys().all(|n| name_ok(n)) && !t.contains_key("A nan") && !t.contains_key("not a table"));
+        assert_eq!(custom(&g).len(), MAX_CUSTOM);
+        // Globals::load: the settings file.
+        let dir = std::env::temp_dir().join(format!("tandem-cp-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.toml");
+        let mut file = toml::Table::new();
+        file.insert("settings".into(), Value::Table([(CUSTOM_KEY.to_string(), big_custom_table())].into_iter().collect()));
+        std::fs::write(&path, toml::to_string(&file).unwrap()).unwrap();
+        let loaded = Globals::load(&path).unwrap();
+        assert_eq!(stored_len(&loaded), MAX_CUSTOM);
+        assert_eq!(custom(&loaded).len(), MAX_CUSTOM);
+        let _ = std::fs::remove_dir_all(&dir);
+        // A bulk write (the remote-prefs load) is bounded by `bound_values`.
+        let mut bulk = globals();
+        bulk.values.insert(CUSTOM_KEY.into(), big_custom_table());
+        bulk.bound_values();
+        assert_eq!(stored_len(&bulk), MAX_CUSTOM);
+        assert_eq!(custom(&bulk).len(), MAX_CUSTOM);
+    }
+
+    #[test]
+    fn custom_presets_are_read_by_reference() {
+        let mut g = globals();
+        g.set(CUSTOM_KEY, big_custom_table());
+        let before = SANITIZED.with(|c| c.get());
+        for _ in 0..1000 {
+            assert!(find(&g, "P001").is_some());
+            assert!(find(&g, "Tango Dark").is_some());
+            assert_eq!(all_names(&g).len(), built_in().len() + MAX_CUSTOM);
+            assert_eq!(custom(&g).len(), MAX_CUSTOM);
+            remember_names(&g);
+        }
+        assert_eq!(SANITIZED.with(|c| c.get()), before, "no preset is re-read per lookup");
+        assert!(std::ptr::eq(find(&g, "P001").unwrap(), find(&g, "P001").unwrap()), "a borrow, not a copy");
+        assert!(std::ptr::eq(find(&g, "Tango Dark").unwrap(), &built_in().iter().find(|(n, _)| n == "Tango Dark").unwrap().1));
+        assert_eq!(REMEMBERED.with(|c| c.get()), 1, "names are rebuilt only when the presets change");
+    }
+
+    #[test]
+    fn open_quickly_swatches_take_one_pass() {
+        let mut g = globals();
+        g.set(CUSTOM_KEY, big_custom_table());
+        // A custom preset named like a built-in: the built-in wins (`find`), listed once.
+        let mut renamed = g.table(CUSTOM_KEY);
+        let t = renamed.remove("P000").unwrap();
+        renamed.insert("Tango Dark".into(), t);
+        g.set(CUSTOM_KEY, Value::Table(renamed));
+        let before = SWATCHES.with(|c| c.get());
+        let rows = swatches(&g, true);
+        assert_eq!(SWATCHES.with(|c| c.get()) - before, rows.len(), "one swatch per preset");
+        assert_eq!(rows.iter().map(|(n, _, _)| n.clone()).collect::<Vec<_>>(), all_names(&g));
+        let tango = rows.iter().find(|(n, _, _)| n == "Tango Dark").unwrap();
+        assert_eq!((tango.1, tango.2), swatch(&named("Tango Dark"), true));
     }
 
     #[test]

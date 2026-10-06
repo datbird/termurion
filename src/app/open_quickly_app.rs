@@ -267,7 +267,7 @@ impl App {
         s.menu_items.extend(self.quickly_script_menu_items());
         s.scripts = self.scripts_all.clone();
         let dark = self.dark();
-        s.color_presets = if has_window { self.preset_names().into_iter().filter_map(|n| Some((n.clone(), crate::color_presets::find(&self.globals, &n)?))).map(|(n, p)| { let (fg, bg) = crate::color_presets::swatch(&p, dark); (n, fg, bg) }).collect() } else { Vec::new() };
+        s.color_presets = if has_window { crate::color_presets::swatches(&self.globals, dark) } else { Vec::new() };
         s
     }
 

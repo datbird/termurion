@@ -11,13 +11,15 @@ impl App {
         if !self.panes.contains_key(&pane) {
             return false;
         }
-        self.set_session_values(pane, &crate::color_presets::session_values(&preset));
+        let values = crate::color_presets::session_values(preset);
+        self.set_session_values(pane, &values);
         true
     }
 
     /// Key action 40 (`PS:12100-12116`): the session, then the profile behind it, with one save.
     pub(super) fn load_preset_action(&mut self, pane: PaneId, name: &str) {
-        let Some(preset) = crate::color_presets::find(&self.globals, name) else { return };
+        // A key action, not per frame: one copy, so the session load below can borrow self.
+        let Some(preset) = crate::color_presets::find(&self.globals, name).cloned() else { return };
         let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
         let shared = self.store.shared_guid(&guid);
         let divorced = shared != guid;
@@ -33,11 +35,6 @@ impl App {
             self.refresh_panes();
             self.save_due = Some(Instant::now() + SAVE_DELAY);
         }
-    }
-
-    /// Every preset's name, built-in and custom (at most 11 plus 256, sanitized).
-    pub(super) fn preset_names(&self) -> Vec<String> {
-        crate::color_presets::all_names(&self.globals)
     }
 
     /// SetColors `preset=Name` (B5): the preset's named colors become program-set colors on the

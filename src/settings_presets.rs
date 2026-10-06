@@ -83,10 +83,10 @@ impl MenuEntry {
     }
 }
 
-/// Every preset by name, a custom one winning a clash (`allColorPresets`).
-fn all_presets(g: &Globals) -> BTreeMap<String, Preset> {
-    let mut all: BTreeMap<String, Preset> = cp::built_in().iter().cloned().collect();
-    all.extend(cp::custom(g));
+/// Every preset by name, a custom one winning a clash (`allColorPresets`), borrowed.
+fn all_presets(g: &Globals) -> BTreeMap<&str, &Preset> {
+    let mut all: BTreeMap<&str, &Preset> = cp::built_in().iter().map(|(n, p)| (n.as_str(), p)).collect();
+    all.extend(cp::custom(g).iter().map(|(n, p)| (n.as_str(), p)));
     all
 }
 
@@ -130,7 +130,7 @@ pub fn menu(g: &Globals, profile: &Profile, _editing_dark: bool) -> Vec<MenuEntr
     let custom = cp::custom(g);
     if !custom.is_empty() {
         entries.push(MenuEntry::Separator);
-        add(&mut entries, section(&custom));
+        add(&mut entries, section(custom));
     }
     // The check marks: the first exact match is On; with separate colors and no exact match, the
     // presets equal in one mode are Mixed.
@@ -228,16 +228,15 @@ pub fn load(p: &Preset, profile: &mut Profile, both: bool, editing_dark: bool, s
 /// `mostSimilarCustomPresetName`: the custom preset with the least difference from the current
 /// colors, None above `SIMILAR_LIMIT`. The pair is (current, custom), as iTerm2 passes it.
 pub fn most_similar(g: &Globals, current: &Preset) -> Option<String> {
-    let mut custom = cp::custom(g);
-    custom.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut best: Option<(String, f64)> = None;
-    for (name, p) in custom {
-        let d = cp::difference(current, &p);
+    // `custom` is sorted by name.
+    let mut best: Option<(&str, f64)> = None;
+    for (name, p) in cp::custom(g) {
+        let d = cp::difference(current, p);
         if best.as_ref().is_none_or(|(_, b)| d < *b) {
             best = Some((name, d));
         }
     }
-    best.filter(|(_, d)| *d <= SIMILAR_LIMIT).map(|(n, _)| n)
+    best.filter(|(_, d)| *d <= SIMILAR_LIMIT).map(|(n, _)| n.to_string())
 }
 
 /// The Editing selector is enabled only with separate colors (`PCP:370-384`).
@@ -326,12 +325,12 @@ pub enum Click {
 
 /// A click on a preset row: loads it, or names the question to ask, remembering what to load.
 pub fn click(st: &mut State, name: &str, g: &Globals, profile: &mut Profile, system_dark: bool) -> Click {
-    let Some(p) = all_presets(g).remove(name) else { return Click::Missing };
-    let has = cp::has_modes(&p);
+    let Some(p) = all_presets(g).get(name).copied() else { return Click::Missing };
+    let has = cp::has_modes(p);
     let q = question(has, profile.bool(SEPARATE));
     match question_spec(q, st.editing.dark) {
         None => {
-            load(&p, profile, both_without_asking(has), st.editing.dark, system_dark);
+            load(p, profile, both_without_asking(has), st.editing.dark, system_dark);
             Click::Loaded
         }
         Some(spec) => {
@@ -505,11 +504,11 @@ pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &m
                 if waited < PREVIEW_DELAY {
                     ui.ctx().request_repaint_after(PREVIEW_DELAY - waited);
                 } else if st.preview.as_ref().is_none_or(|p| p.name != name) {
-                    if let Some(p) = all_presets(g).remove(&name) {
+                    if let Some(p) = all_presets(g).get(name.as_str()).copied() {
                         let pre = st.preview.take().unwrap_or_else(|| Preview::begin(profile, guid, editing_dark, &name));
                         // The preview loads without asking, as `loadColorPresetWithName:prompt:NO`.
                         pre.restore(profile);
-                        load(&p, profile, false, editing_dark, system_dark);
+                        load(p, profile, false, editing_dark, system_dark);
                         st.preview = Some(Preview { name, ..pre });
                         out.previewed = true;
                     }
@@ -556,7 +555,7 @@ pub fn begin_export(st: &mut State, profile: &Profile) {
 
 /// Save As: asks for a name, prefilled with the most similar custom preset's.
 pub fn begin_save_as(st: &mut State, g: &Globals, profile: &Profile) {
-    let mut names: Vec<String> = cp::custom(g).into_iter().map(|(n, _)| n).collect();
+    let mut names: Vec<String> = cp::custom(g).iter().map(|(n, _)| n.clone()).collect();
     names.sort();
     let name = most_similar(g, &cp::current(profile, st.editing.dark)).unwrap_or_default();
     st.dialog = Some(Dialog::SaveAs { name, names });
@@ -564,7 +563,7 @@ pub fn begin_save_as(st: &mut State, g: &Globals, profile: &Profile) {
 
 /// Delete Preset: a chooser, or the "No deletable color presets." alert.
 pub fn begin_delete(st: &mut State, g: &Globals) {
-    let mut names: Vec<String> = cp::custom(g).into_iter().map(|(n, _)| n).collect();
+    let mut names: Vec<String> = cp::custom(g).iter().map(|(n, _)| n.clone()).collect();
     names.sort();
     st.dialog = Some(if names.is_empty() {
         Dialog::Alert { heading: NO_DELETABLE_HEADING.into(), text: NO_DELETABLE_TEXT.into() }
