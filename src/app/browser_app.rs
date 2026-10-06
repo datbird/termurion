@@ -135,6 +135,7 @@ impl App {
         let name = p.name();
         pane.screen.set_title(Some(browser::shown_title(if name.trim().is_empty() { browser::DEFAULT_NAME } else { &name })));
         self.install_pane(id, pane, p, false);
+        crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
         self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, retried: false, settled: false, bar: BarState::default() });
         true
@@ -384,8 +385,9 @@ impl App {
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, .. } => self.browser_page_key(pane, *vk, *mods, event_loop),
-            Event::Failed(_, why) => {
-                crate::host::log(&format!("webhost: a browser pane's view failed: {why}"));
+            Event::Failed(view, _) => {
+                // The reason is COM's text: only that it happened and which view (13w B8).
+                crate::rlog!("webhost: a browser pane's view {} failed", *view);
                 let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.view = None;

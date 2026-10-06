@@ -96,6 +96,17 @@ pub enum Store {
     BrowserDevNull,
 }
 
+impl Store {
+    /// The store's name in a log line (13w `dlog!`/`rlog!` take only literals and numbers).
+    pub fn log_name(self) -> &'static str {
+        match self {
+            Store::Default => "default",
+            Store::Browser => "browser",
+            Store::BrowserDevNull => "dev null",
+        }
+    }
+}
+
 /// `<LOCALAPPDATA>\Tandem\WebView2\<Default|Browser|DevNull>`. `BrowserDevNull`'s name is the base
 /// the per-run folders live beside; the folder an environment really uses is `dev_null_folder`.
 pub fn data_folder(local_appdata: &Path, store: Store) -> PathBuf {

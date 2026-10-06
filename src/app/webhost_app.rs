@@ -127,8 +127,8 @@ impl App {
         let changed = self.web_envs.runtime.borrow().as_ref().is_none_or(|(_, old)| *old != r);
         if changed {
             match &r {
-                Runtime::Found(v) => crate::host::log(&format!("webhost: WebView2 Runtime {v}")),
-                Runtime::Missing => crate::host::log("webhost: no WebView2 Runtime (not installed)"),
+                Runtime::Found(v) => crate::rlog!("webhost: WebView2 Runtime {}", crate::dlog::name(v)),
+                Runtime::Missing => crate::rlog!("webhost: no WebView2 Runtime (not installed)"),
             }
         }
         *self.web_envs.fixed.borrow_mut() = fixed;
@@ -221,11 +221,12 @@ impl App {
             if let Some((store, result)) = &posted.env {
                 match result {
                     Ok(()) => {
-                        crate::host::log(&format!("webhost: environment {store:?} ready"));
+                        crate::rlog!("webhost: the {} store is ready", store.log_name());
                         // Views waiting for their environment are made on the next frame.
                         self.redraw();
                     }
-                    Err(e) => crate::host::log(&format!("webhost: environment {store:?} failed: {e}")),
+                    // COM's reason stays out of the log (13w B8); the store says which.
+                    Err(_) => crate::rlog!("webhost: the {} store failed to start", store.log_name()),
                 }
             }
             if let Some(event) = &posted.event {
@@ -295,9 +296,9 @@ impl App {
             return;
         }
         match event {
-            Event::Created(v) => crate::host::log(&format!("webhost: view {v} created")),
-            // The text is Tandem's own (an error from COM), never the page's.
-            Event::Failed(v, why) => crate::host::log(&format!("webhost: view {v} failed: {why}")),
+            Event::Created(v) => crate::dlog!("webhost: view {} created", *v),
+            // A view's process failed: which view, never the reason's text (13w B8).
+            Event::Failed(v, _) => crate::rlog!("webhost: view {} failed", *v),
             // A view lost focus: another window may now be in front of a window that held it.
             Event::Focus(_, false) => self.web_focus_recheck(),
             _ => {}
@@ -330,6 +331,33 @@ mod tests {
             assert_eq!(o.custom_schemes, vec!["iterm2-about".to_string()]);
             assert_eq!(o.args, "", "no Chromium switch is composed from anything but the proxy (Task 8)");
         }
+    }
+
+    /// The 13w merge (S1, B8): every web view log site goes through `dlog!`/`rlog!` (LogSafe
+    /// arguments only), never `host::log` with a formatted string; a page's console is logged as
+    /// its origin and length (`dlog::origin`), and a URL never reaches a log any other way.
+    #[test]
+    fn browser_logs_go_through_the_debug_log() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = ["webhost.rs", "webhost_win.rs", "browser.rs", "web_popover.rs", "svg_icon.rs", "svg_raster_win.rs", "app/browser_app.rs", "app/web_popover_app.rs", "app/webhost_app.rs", "app/tool_web_ui.rs"];
+        for f in files {
+            let text = std::fs::read_to_string(root.join(f)).unwrap();
+            let live = text.split("#[cfg(test)]\nmod tests").next().unwrap();
+            assert!(!live.contains("host::log("), "{f}: a web view log line goes through dlog!/rlog!, not host::log");
+            assert!(!live.contains("eprintln!"), "{f}: no stderr fallback (B8)");
+        }
+        // The chat icon's lines (13x Task 4) too.
+        let chat = include_str!("chat_window_app.rs");
+        let icons = &chat[chat.find("fn icon_").unwrap()..chat.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(!icons.contains("host::log("), "the chat icon logs through dlog!");
+        let tool = include_str!("tool_web_ui.rs");
+        assert!(tool.contains("let from = crate::dlog::origin(source);"), "the console line names the page's origin only");
+        // The low-frequency facts are in the retrospective ring (13w Log sites).
+        let me = include_str!("webhost_app.rs");
+        for fact in ["crate::rlog!(\"webhost: WebView2 Runtime {}\"", "crate::rlog!(\"webhost: no WebView2 Runtime", "crate::rlog!(\"webhost: the {} store is ready\"", "crate::rlog!(\"webhost: the {} store failed to start\"", "crate::rlog!(\"webhost: view {} failed\""] {
+            assert!(me.contains(fact), "{fact}");
+        }
+        assert!(include_str!("browser_app.rs").contains("crate::rlog!(\"browser pane {} started: profile {} dev null {}\", id, crate::dlog::name(&name), dev_null);"));
     }
 
     #[test]

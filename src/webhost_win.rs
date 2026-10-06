@@ -456,7 +456,8 @@ impl Poster {
                 let mut last = self.last_log.borrow_mut();
                 if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
                     *last = Some(Instant::now());
-                    crate::host::log(&format!("webhost: view {} dropped {} page events", self.view, self.gate.take_dropped()));
+                    let dropped = self.gate.take_dropped();
+                    crate::dlog!("webhost: view {} dropped {} page events", self.view, dropped);
                 }
             }
         }
@@ -1044,7 +1045,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
         })));
         unsafe { v18.add_LaunchingExternalUriScheme(&external, token) }?;
     } else {
-        crate::host::log("webhost: this WebView2 Runtime cannot cancel external protocol launches");
+        crate::dlog!("webhost: this WebView2 Runtime cannot cancel external protocol launches");
     }
     Ok(())
 }

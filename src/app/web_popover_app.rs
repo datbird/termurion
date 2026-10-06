@@ -69,7 +69,8 @@ impl App {
         match web_popover::popover_document(html) {
             Ok(_) => true,
             Err(why) => {
-                crate::host::log(&format!("webhost: {why}; showing the text popover"));
+                // `why` is one of popover_document's fixed reasons, never the HTML.
+                crate::dlog!("webhost: {}; showing the plain popover", why);
                 false
             }
         }
@@ -149,7 +150,7 @@ impl App {
             return;
         }
         if p.age() > VIEW_WAIT {
-            crate::host::log("webhost: a popover's web view did not start in time");
+            crate::dlog!("webhost: a popover's web view did not start in time");
             self.banners.set("window", "The WebView2 Runtime did not start the popover.");
             self.web_popover = None;
             return;
@@ -230,10 +231,13 @@ impl App {
                 }
             }
             // The one script this module runs is the callback; its failure text is the page's, so only its size is kept.
-            Event::ScriptDone { json: Err(e), .. } => crate::host::log(&format!("webhost: popover callback failed ({} bytes of error text)", e.len())),
+            Event::ScriptDone { json: Err(e), .. } => {
+                let n = e.len();
+                crate::dlog!("webhost: popover callback failed (error length {})", n);
+            }
             Event::Key { vk: 0x1B, .. } => self.web_popover = None,
             Event::Failed(..) => {
-                crate::host::log("webhost: a popover's web view failed");
+                crate::rlog!("webhost: a popover's web view failed");
                 self.banners.set("window", "The popover's web view could not be shown.");
                 self.web_popover = None;
             }

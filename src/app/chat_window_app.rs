@@ -1654,7 +1654,7 @@ impl App {
             match crate::svg_icon::check(&svg) {
                 Ok(()) => queue.push_back(svg),
                 // Never the model's text (13x B8): only that one candidate was refused.
-                Err(_) => crate::host::log("chat icon: a candidate was refused by the SVG check"),
+                Err(_) => crate::dlog!("chat icon: a candidate was refused by the SVG check"),
             }
         }
         if queue.is_empty() {
@@ -1688,7 +1688,7 @@ impl App {
                     self.icon_jobs.insert(chat.to_string(), job);
                     return;
                 }
-                Err(_) => crate::host::log("chat icon: a candidate could not be started"),
+                Err(_) => crate::dlog!("chat icon: a candidate could not be started"),
             }
         }
         self.icon_end(chat, IconEnd::Clear);

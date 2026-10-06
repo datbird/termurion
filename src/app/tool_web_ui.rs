@@ -267,9 +267,11 @@ impl App {
             return false;
         }
         match event {
-            Event::Message { json, .. } => {
+            Event::Message { json, source, .. } => {
+                // B8 ruling: the origin and the length, never what the page logged.
                 if let Some(n) = logged_bytes(json) {
-                    crate::host::log(&format!("webhost: tool view {view} console: {n} bytes"));
+                    let from = crate::dlog::origin(source);
+                    crate::dlog!("webhost: tool view {} console from {}: length {}", view, from, n);
                 }
             }
             Event::Failed(..) => {

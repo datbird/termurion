@@ -156,6 +156,27 @@ pub const fn no_capture(fmt: &str) {
     assert!(!has_capture(fmt), "a log format may not capture a variable inline; pass it as an argument");
 }
 
+/// A URL as a log name: its scheme and host only (13x B8, the 13w merge): never the user
+/// information, port, path, query or fragment, which can carry a token or what a page was given.
+/// A URL with no host (`data:`, `about:blank`) is its scheme alone.
+pub fn origin(url: &str) -> Name {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once(':') else { return name("") };
+    if scheme.is_empty() || !scheme.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) {
+        return name("");
+    }
+    let scheme = scheme.to_ascii_lowercase();
+    let Some(rest) = rest.strip_prefix("//") else { return name(&scheme) };
+    let authority = &rest[..rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len())];
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if hostport.starts_with('[') {
+        hostport.split_once(']').map_or(hostport, |(h, _)| &hostport[..h.len() + 1])
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+    name(&format!("{scheme} {}", host.to_ascii_lowercase()))
+}
+
 /// The program a command line starts, as a log name: the first word (or quoted path), its file
 /// name without folder or ".exe". Arguments are never part of it.
 pub fn program(cmd: &str) -> Name {
@@ -220,6 +241,8 @@ pub fn scrub(text: &str) -> String {
 pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/api_ui.rs", 2),
     ("app/bell_ui.rs", 2),
+    ("app/browser_app.rs", 2),
+    ("app/chat_window_app.rs", 2),
     ("app/clipboard_ui.rs", 1),
     ("app/hotkey_ui.rs", 2),
     ("app/menu.rs", 2),
@@ -227,12 +250,16 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/restore_ui.rs", 2),
     ("app/session_end_ui.rs", 1),
     ("app/tmux_ui.rs", 2),
+    ("app/tool_web_ui.rs", 1),
     ("app/triggers_ui.rs", 1),
+    ("app/web_popover_app.rs", 4),
+    ("app/webhost_app.rs", 6),
     ("app/windows_ui.rs", 3),
     ("globals.rs", 1),
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),
     ("trigger_eval.rs", 1),
+    ("webhost_win.rs", 2),
 ];
 
 
@@ -901,6 +928,15 @@ mod tests {
     #[test]
     fn log_arguments_are_log_safe() {
         assert_eq!(name("menu.copy-1 ok").to_string(), "menu.copy-1 ok");
+        // The 13w x 13x merge: a URL is logged as its scheme and host only.
+        assert_eq!(origin("https://user:pw@Example.COM:8443/p/a?token=x#f").to_string(), "https example.com");
+        assert_eq!(origin("http://[::1]:80/x").to_string(), "http [??1]");
+        assert_eq!(origin("data:text/html,<b>secret</b>").to_string(), "data");
+        assert_eq!(origin("about:blank").to_string(), "about");
+        assert_eq!(origin("iterm2-about:history").to_string(), "iterm2-about");
+        assert_eq!(origin("https://a.test\\x/y").to_string(), "https a.test");
+        assert_eq!(origin("not a url").to_string(), "");
+        assert_eq!(origin("https://h\u{202e}x.test/").to_string(), "https h?x.test");
         assert_eq!(name("a/b:c\u{202e}\r\nx").to_string(), "a?b?c???x");
         assert_eq!(name(&"x".repeat(200)).to_string().len(), 64);
         assert_eq!(format!("{}", name("")), "");
@@ -1081,14 +1117,14 @@ mod tests {
                         }
                         checked.push(c[1].to_string());
                         let args = c[2].replace("&'static str", "");
-                        let allowed = matches!(&c[1], "name" | "names" | "program");
+                        let allowed = matches!(&c[1], "name" | "names" | "program" | "origin");
                         assert!(allowed || !runtime.is_match(&args), "{p:?}: `{}` returns a log-safe value from a runtime string ({})", &c[1], &c[2]);
                     }
                 }
             }
         }
         checked.sort();
-        assert_eq!(checked, ["log_table", "name", "names", "program"], "the log-safe constructors");
+        assert_eq!(checked, ["log_table", "name", "names", "origin", "program"], "the log-safe constructors");
     }
 
     /// T2 m5: `emit` and `emit_retro` are public for the macros only; no other code calls them, so
@@ -1104,7 +1140,7 @@ mod tests {
                     dirs.push(p);
                 } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("dlog.rs") {
                     let t = std::fs::read_to_string(&p).unwrap();
-                    let live = t.split("#[cfg(test)]").next().unwrap_or("");
+                    let live = t.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
                     assert!(!live.contains("dlog::emit(") && !live.contains("dlog::emit_retro("), "{p:?} calls the log's emit directly");
                 }
             }
@@ -1129,8 +1165,10 @@ mod tests {
                 }
                 let rel = p.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
                 let text = std::fs::read_to_string(&p).unwrap();
-                // Tests and docs mention the macros; only the code above them counts.
-                let live = text.split("#[cfg(test)]").next().unwrap_or("");
+                // Tests and docs mention the macros; only the code above them counts. The split is
+                // at the test module, not the first `#[cfg(test)]` (a test-only static above live
+                // code hid webhost_win.rs's sites: the 13w x 13x merge).
+                let live = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
                 for m in call.captures_iter(live) {
                     let mac: &'static str = if &m[1] == "dlog" { "dlog" } else { "rlog" };
                     let rest = &live[m.get(0).unwrap().end()..];
