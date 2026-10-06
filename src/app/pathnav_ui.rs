@@ -295,7 +295,7 @@ impl App {
 
 /// The subfolders of `dir` by name (at most 4096 entries read; names are disk text).
 fn subfolders(dir: &str) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = crate::localfs::read_dir(std::path::Path::new(dir)) else { return Vec::new() };
     rd.flatten().take(4096).filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect()
 }
 

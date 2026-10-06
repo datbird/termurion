@@ -61,6 +61,7 @@ pub mod dll;
 pub mod seltext;
 pub mod wordsel;
 pub mod netpath;
+pub mod localfs;
 pub mod sh_context;
 pub mod copymode;
 pub mod fold;

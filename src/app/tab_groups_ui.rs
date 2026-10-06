@@ -809,7 +809,7 @@ fn icon_dir() -> PathBuf {
 fn read_user_file(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     use crate::tab_icons::MAX_FILE_BYTES;
-    if !crate::tab_icons::readable_path(path, &crate::scripts::read_link) || !std::fs::metadata(path).ok()?.is_file() {
+    if !crate::tab_icons::readable_path(path, &crate::scripts::read_link) || !crate::localfs::metadata(path).ok()?.is_file() {
         return None;
     }
     let file = std::fs::File::open(path).ok()?;

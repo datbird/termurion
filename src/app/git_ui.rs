@@ -816,7 +816,7 @@ impl App {
         };
         // A folder gone since the menu opened: the window would start somewhere else, maybe
         // in another repository.
-        if !Path::new(&dir).is_dir() {
+        if !crate::localfs::is_dir(Path::new(&dir)) {
             self.ask(pane, GONE_BAR, &format!("The folder {dir} no longer exists, so git did not run."), &["OK"], false);
             return;
         }

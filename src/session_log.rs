@@ -94,8 +94,7 @@ pub fn safe_file_name(formatted: &str) -> String {
         return FALLBACK_NAME.to_string();
     }
     let name = cut_name(trimmed);
-    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    if is_device(&stem) {
+    if crate::inert_files::is_device_name(&name) {
         return format!("_{name}");
     }
     name
@@ -140,17 +139,6 @@ fn cut_name(name: &str) -> String {
     }
     let kept = kept.trim_end_matches(['.', ' ']);
     format!("{}{ext}", if kept.is_empty() { "session" } else { kept })
-}
-
-/// A Windows device name as the stem of a file name (upper case, trimmed): `CON`, `PRN`, `AUX`,
-/// `NUL`, `CONIN$`, `CONOUT$`, and `COM`/`LPT` followed by 1 to 9 or a superscript 1, 2 or 3
-/// (Windows opens `COM\u{b9}` as COM1 in every folder).
-fn is_device(stem: &str) -> bool {
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| {
-        let mut chars = n.chars();
-        matches!((chars.next(), chars.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
-    });
-    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
 /// `PSA:160-166`: the folder (empty is the home folder, a leading "~" is the home folder)
@@ -1041,7 +1029,7 @@ pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -
     // question (`folder_action`), so every folder counts as one here, and a refusal is an
     // error instead of a fallback to home.
     let expand = |t: &str| crate::interp::evaluate(t, &segment, &[]).unwrap_or_else(|_| t.to_string());
-    let (dir, refused) = crate::start_dir::resolve(&crate::start_dir::Mode::Custom(raw_dir.to_string()), None, home, &expand, &|_| true);
+    let (dir, refused) = crate::start_dir::resolve_with(&crate::start_dir::Mode::Custom(raw_dir.to_string()), None, home, &expand, &|_| true, &|_| true);
     if refused.is_some() {
         return Err("the log folder is not a local folder".to_string());
     }

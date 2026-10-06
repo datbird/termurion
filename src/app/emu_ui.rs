@@ -269,27 +269,12 @@ fn client_point(screen: (i32, i32), origin: (i32, i32)) -> (f32, f32) {
     ((screen.0 - origin.0) as f32, (screen.1 - origin.1) as f32)
 }
 
-/// `\\host\share` and `//host/share`: never probed as files.
-fn is_network_path(path: &std::path::Path) -> bool {
-    crate::scripts::is_network_path(&path.to_string_lossy())
-}
-
-/// A reserved device name (`NUL`, `CON`, `COM1`, `LPT3`, ...), with or without an extension and
-/// in any case: opening one reads a device, never a file.
-fn is_device_name(path: &std::path::Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
-    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.as_bytes()[3], b'1'..=b'9'))
-}
-
 /// The entry's own metadata (never a link's target) when it is a plain local one: not a network
 /// path, not a device name, not a symbolic link, junction or other reparse point. A link may
 /// point at `\\host\share` or at a device, and nothing of that is probed (invariant 5).
 fn plain_meta(path: &std::path::Path) -> Option<std::fs::Metadata> {
-    if is_network_path(path) || is_device_name(path) {
-        return None;
-    }
-    let m = std::fs::symlink_metadata(path).ok()?;
+    // The one judge first (network and device paths, mapped drives, links to shares), then the entry.
+    let m = crate::localfs::symlink_metadata(path).ok()?;
     #[cfg(windows)]
     let reparse = std::os::windows::fs::MetadataExt::file_attributes(&m) & 0x400 != 0;
     #[cfg(not(windows))]
@@ -299,7 +284,7 @@ fn plain_meta(path: &std::path::Path) -> Option<std::fs::Metadata> {
 
 /// A dropped folder: a plain local directory.
 fn is_plain_dir(path: &std::path::Path) -> bool {
-    plain_meta(path).is_some_and(|m| m.is_dir())
+    plain_meta(path).filter(std::fs::Metadata::is_dir).is_some()
 }
 
 /// A dropped file's size for the budget; None when it is not a plain local file.
@@ -313,7 +298,7 @@ fn read_dropped(path: &std::path::Path) -> Option<Vec<u8>> {
     use std::io::Read;
     dropped_size(path)?;
     let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
+    crate::localfs::open(path).ok()?.take(crate::kitty_dnd::MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
 }
 

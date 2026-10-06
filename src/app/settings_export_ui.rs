@@ -230,7 +230,7 @@ fn stage_scripts(from: &Path, to: &Path) -> Vec<PathBuf> {
 pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
     let marker = appdata_tandem.join(se::MARKER);
     let text = std::fs::read_to_string(&marker).ok();
-    let staging = match se::pending(text.as_deref(), &|p| p.is_dir()) {
+    let staging = match se::pending(text.as_deref(), &|p| crate::localfs::is_dir(p)) {
         Pending::None => return Vec::new(),
         Pending::Stale => {
             let _ = std::fs::remove_file(&marker);

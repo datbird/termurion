@@ -255,7 +255,7 @@ impl App {
             (Some(rest), Ok(home)) => format!("{home}{rest}"),
             _ => set,
         };
-        if !set.is_empty() && crate::prompted::local_path_ok(&set) && std::path::Path::new(&set).is_dir() {
+        if !set.is_empty() && crate::prompted::local_path_ok(&set) && crate::localfs::is_dir(std::path::Path::new(&set)) {
             return Some(set.into());
         }
         desktop()

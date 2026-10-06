@@ -603,7 +603,7 @@ impl App {
             let ssh = crate::profile::is_ssh(&self.profile(guid.as_deref()));
             let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             // An archive starts no shell, so its folder is never checked.
-            let notice = if archive { FolderNotice::Nothing } else { folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| p.is_dir()) };
+            let notice = if archive { FolderNotice::Nothing } else { folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| crate::localfs::is_dir(p)) };
             self.start_dir_override = Some(match notice {
                 FolderNotice::Unavailable => arrangement::Folder::Forced(crate::profile::home().to_string_lossy().into_owned()),
                 _ => arrangement::folder_for(&session, ssh),

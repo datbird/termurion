@@ -1083,7 +1083,7 @@ impl App {
         };
         let cwd = spawn_cwd(a.cwd.as_deref())?;
         if let Some(d) = &cwd {
-            if !std::path::Path::new(d).is_dir() {
+            if !crate::localfs::is_dir(std::path::Path::new(d)) {
                 return Err(OrchError::Malformed(format!("cwd is not a folder: {d}")));
             }
         }

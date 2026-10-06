@@ -36,7 +36,9 @@ pub fn refused_path(path: &str) -> bool {
 /// Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1`
 /// to `LPT9`), which no file may be called, with or without an extension, in any case.
 pub fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', '.']).to_ascii_uppercase();
+    // The one device-name rule (scripts::is_device_name and zip_check::device_name call it): the part
+    // before the first dot, trailing spaces and colons ignored, as Windows reads it.
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', ':']).to_ascii_uppercase();
     // COM and LPT take the superscript digits too (Microsoft's "Naming Files").
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.chars().count() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.chars().nth(3), Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')))
 }
@@ -148,7 +150,7 @@ mod tests {
             assert!(!refused_on_listing(fine), "{fine:?}");
             assert!(!is_device_name(fine), "{fine:?}");
         }
-        assert!(is_device_name("con.txt") && is_device_name("LPT3"));
+        assert!(is_device_name("con.txt") && is_device_name("LPT3") && is_device_name("NUL:"));
         // The superscript digits are devices too, and a device name as a folder is refused.
         for bad in ["COM\u{b9}", "com\u{b2}.txt", "COM\u{b3}", "LPT\u{b9}", "lpt\u{b2}", "LPT\u{b3}.log"] {
             assert!(is_device_name(bad) && refused_on_listing(bad), "{bad:?}");

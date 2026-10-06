@@ -37,7 +37,7 @@ const OUTPUT_PER_PASS: usize = 64 * 1024;
 
 /// A script's first line (`L:677-723` reads it with `fgetln`).
 pub(super) fn first_line(p: &Path) -> Option<String> {
-    let file = std::fs::File::open(p).ok()?;
+    let file = crate::localfs::open(p).ok()?;
     let mut line = Vec::new();
     std::io::BufReader::new(file.take(FIRST_LINE_LIMIT)).read_until(b'\n', &mut line).ok()?;
     (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
@@ -822,12 +822,12 @@ fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
 /// with `setup.cfg`, an environment (the marker, or iTerm2's legacy `iterm2env`) and its
 /// `<name>\<name>.py` (full). None when neither.
 fn export_kind(path: &Path) -> Option<bool> {
-    if path.is_file() && path.extension().is_some_and(|e| e == "py") {
+    if crate::localfs::is_file(path) && path.extension().is_some_and(|e| e == "py") {
         return Some(false);
     }
     let name = path.file_name()?.to_string_lossy().into_owned();
-    let runtime = path.join(rt::MARKER).exists() || path.join("iterm2env").exists();
-    (path.is_dir() && path.join(sa::SETUP_CFG).exists() && runtime && path.join(&name).join(format!("{name}.py")).exists()).then_some(true)
+    let runtime = crate::localfs::exists(&path.join(rt::MARKER)) || crate::localfs::exists(&path.join("iterm2env"));
+    (crate::localfs::is_dir(path) && crate::localfs::exists(&path.join(sa::SETUP_CFG)) && runtime && crate::localfs::exists(&path.join(&name).join(format!("{name}.py")))).then_some(true)
 }
 
 /// Writes `zip` from `<parent>\<name>`'s `setup.cfg` and inner folder (`EX:102-150`); a
@@ -1023,7 +1023,7 @@ impl App {
             Some("py") => {
                 let to = scripts.join(path.file_name().unwrap_or_default());
                 // `copyItemAtURL:` never overwrites: an existing script is an error.
-                let copied = std::fs::File::open(&path).and_then(|mut from| {
+                let copied = crate::localfs::open(&path).and_then(|mut from| {
                     let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&to)?;
                     std::io::copy(&mut from, &mut out).map(|_| ())
                 });
@@ -1639,7 +1639,7 @@ mod tests {
         .map(|(a, b)| (PathBuf::from(a), PathBuf::from(b)))
         .collect();
         let read_link = |p: &Path| links.get(p).cloned();
-        let local = |p: &Path| crate::scripts::link_chain_end(p, &read_link).is_some();
+        let local = |p: &Path| crate::scripts::stays_local_with(p, &read_link, &crate::netpath::LocalDrives);
         let listing: Vec<(String, bool)> = [("share", false), ("hop", false), ("loop", false), ("local", true), ("run.py", false)].into_iter().map(|(n, d)| (n.to_string(), d)).collect();
         let folder = Path::new(r"C:\S\AutoLaunch");
         assert_eq!(autolaunch_targets(&listing, folder, &local), vec![PathBuf::from(r"C:\S\AutoLaunch\local"), PathBuf::from(r"C:\S\AutoLaunch\run.py")]);

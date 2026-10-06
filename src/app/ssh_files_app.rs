@@ -394,7 +394,7 @@ impl App {
         }
         let Some(id) = self.framing(pane).map(|c| c.identity()) else { return };
         let host = if id.hostname.is_empty() { id.host.clone() } else { id.hostname.clone() };
-        let meta = match std::fs::symlink_metadata(file) {
+        let meta = match crate::localfs::symlink_metadata(file) {
             Ok(m) => m,
             Err(e) => return fail(&e.to_string()),
         };
@@ -416,7 +416,7 @@ impl App {
             }
             // Read whole, but never past the cap even if the file grew since the check.
             let mut data = Vec::new();
-            let read = std::fs::File::open(file).and_then(|f| f.take(ssh_files::UPLOAD_MAX + 1).read_to_end(&mut data));
+            let read = crate::localfs::open(file).and_then(|f| f.take(ssh_files::UPLOAD_MAX + 1).read_to_end(&mut data));
             if let Err(e) = read {
                 return fail(&e.to_string());
             }
@@ -465,7 +465,7 @@ impl App {
         match &l.place {
             Place::Downloads { dir, .. } => {
                 l.zip = outcome == Outcome::ZipOfFolder;
-                let (_, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| p.exists());
+                let (_, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| crate::localfs::exists(p));
                 match plain {
                     None => self.ssh_finish_download(job, None),
                     Some(plain) => {
@@ -524,7 +524,7 @@ impl App {
     fn ssh_finish_download(&mut self, job: u64, replace: Option<bool>) {
         let Some(l) = self.ssh_locals.remove(&job) else { return };
         let Place::Downloads { temp, dir } = &l.place else { return };
-        let (free, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| p.exists());
+        let (free, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| crate::localfs::exists(p));
         let dest = match (replace, plain) {
             (Some(true), Some(plain)) => plain,
             _ => free,

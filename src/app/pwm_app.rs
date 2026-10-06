@@ -1222,7 +1222,7 @@ impl App {
             _ => return,
         };
         let path = self.globals.string(key);
-        if !path.is_empty() && (kind == Kind::OnePassword || !std::path::Path::new(&path).is_file()) {
+        if !path.is_empty() && (kind == Kind::OnePassword || !crate::localfs::is_file(std::path::Path::new(&path))) {
             self.globals.values.remove(key);
             self.save_globals();
         }
@@ -1647,7 +1647,7 @@ fn locate_cli(kind: Kind) -> Option<String> {
     let exe = if kind == Kind::OnePassword { "op" } else { "lpass" };
     let path = rfd::FileDialog::new().add_filter(exe, &["exe"]).pick_file()?;
     let stem_ok = path.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(exe));
-    (stem_ok && path.is_file()).then(|| path.to_string_lossy().into_owned())
+    (stem_ok && crate::localfs::is_file(&path)).then(|| path.to_string_lossy().into_owned())
 }
 
 /// A uniform random number below `bound` (`arc4random_uniform`), from the system's random

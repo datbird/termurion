@@ -96,66 +96,17 @@ pub fn read_link(p: &Path) -> Option<PathBuf> {
     std::fs::read_link(p).ok()
 }
 
-/// How many hops of a link chain are followed.
-const LINK_HOPS: usize = 8;
-
-/// Where a chain of symbolic links or junctions from `start` ends, reading each hop with
-/// `read_link` (None: not a link). None when a hop names a network path (it is never followed)
-/// or the chain is longer than `LINK_HOPS`; `start` itself when it is no link. Text rule only;
-/// `link_chain_end_on` also refuses a hop onto a mapped drive.
-pub fn link_chain_end(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Option<PathBuf> {
-    link_chain_end_on(start, read_link, &crate::netpath::LocalDrives)
-}
-
-/// The drive letter of a path as `X:\`, through a `\\?\` or `\??\` prefix.
-fn drive_root(text: &str) -> Option<String> {
-    let b = text.as_bytes();
-    let at = if b.len() >= 4 && matches!(b[0], b'\\' | b'/') && b[2] == b'?' && matches!(b[3], b'\\' | b'/') { 4 } else { 0 };
-    (b.len() >= at + 2 && b[at].is_ascii_alphabetic() && b[at + 1] == b':').then(|| format!("{}:\\", b[at] as char))
-}
-
-/// Whether `path` is on a mapped network drive (`GetDriveTypeW`, no network I/O).
-fn on_remote_drive(path: &Path, drives: &dyn crate::netpath::Drives) -> bool {
-    drive_root(&path.to_string_lossy()).is_some_and(|root| drives.is_remote(&root))
-}
-
 /// Whether any folder or the file of `path` is a Win32 DOS device name (CON, PRN, AUX, NUL, CONIN$,
 /// CONOUT$, COM1-9, LPT1-9, with any extension, trailing spaces or colon): Windows opens the device,
 /// not a file, and an LPTn or COMn may be redirected to a share.
 pub fn is_device_name(path: &Path) -> bool {
-    path.components().any(|c| {
-        let std::path::Component::Normal(name) = c else { return false };
-        let name = name.to_string_lossy();
-        let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', ':']).to_ascii_uppercase();
-        matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-            || ["COM", "LPT"].iter().any(|p| stem.strip_prefix(p).is_some_and(|d| d.len() == 1 && matches!(d.as_bytes()[0], b'1'..=b'9')))
-    })
+    path.components().any(|c| matches!(c, std::path::Component::Normal(name) if crate::inert_files::is_device_name(&name.to_string_lossy())))
 }
 
-/// `link_chain_end` that also refuses a hop landing on a mapped drive.
-pub fn link_chain_end_on(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn crate::netpath::Drives) -> Option<PathBuf> {
-    let mut at = start.to_path_buf();
-    for _ in 0..LINK_HOPS {
-        let Some(target) = read_link(&at) else {
-            // Not a link any more: the end of the chain.
-            return Some(at);
-        };
-        let target = match at.parent() {
-            Some(parent) if target.is_relative() => parent.join(target),
-            _ => target,
-        };
-        if is_network_path(&target.to_string_lossy()) || on_remote_drive(&target, drives) {
-            return None;
-        }
-        at = target;
-    }
-    None
-}
-
-/// Whether a symbolic link or junction leads to a local folder. Each hop of the link is read
-/// first, so a link to a network path is never followed (and never probed).
+/// Whether a symbolic link or junction leads to a local folder: the one judge (every folder from the
+/// root down, the link's target and the target's own folders), then the folder test.
 fn link_is_local_folder(link: &Path) -> bool {
-    link_chain_end(link, &read_link).is_some_and(|end| end.is_dir())
+    stays_local(link) && link.is_dir()
 }
 
 /// Whether `path` is safe to touch as a file without a person asking: not a network path, not
@@ -177,16 +128,12 @@ pub fn ancestors_stay_local(path: &Path, read_link: &dyn Fn(&Path) -> Option<Pat
     ancestors_stay_local_with(path, read_link, &*crate::netpath::real_drives())
 }
 
-/// The one local-path rule: the text rule and the drive type first (nothing is read for a path
-/// that fails them), then every folder ROOT FIRST, so a junction is read before anything goes
-/// through it (a read of `C:\j\f` with `C:\j` a junction to a share would reach the share).
+/// The one local-path rule is `netpath::judge` (the text rule, the device names, the drive type and
+/// SUBST letters first so nothing is read for a path that fails them, then every folder ROOT FIRST and
+/// every link target's folders again root first, so a junction is read before anything goes through
+/// it); this and every wrapper above route to it.
 pub fn ancestors_stay_local_with(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn crate::netpath::Drives) -> bool {
-    if is_network_path(&path.to_string_lossy()) || on_remote_drive(path, drives) || is_device_name(path) {
-        return false;
-    }
-    let mut chain: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
-    chain.reverse();
-    chain.into_iter().all(|a| link_chain_end_on(a, read_link, drives).is_some())
+    crate::netpath::judge(path, read_link, drives)
 }
 
 /// Logged in the app-wide entry when AutoLaunch is skipped because its folder is reached
@@ -717,11 +664,11 @@ mod tests {
     fn dos_device_names_are_never_local_files() {
         let drives = Remote(&[]);
         let none = |_: &Path| None;
-        for p in [r"C:\x\NUL", r"C:\x\nul.ps1", r"C:\x\Con.txt", r"C:\x\aux.tar.gz", r"C:\x\LPT1", r"C:\x\com9.ps1", r"C:\x\prn .ps1", r"C:\x\NUL:", r"C:\x\lpt3\f.ps1", r"CON", r"C:\x\CONIN$", r"C:\x\conout$.ps1"] {
+        for p in [r"C:\x\NUL", r"C:\x\nul.ps1", r"C:\x\Con.txt", r"C:\x\aux.tar.gz", r"C:\x\LPT1", r"C:\x\com9.ps1", r"C:\x\prn .ps1", r"C:\x\NUL:", r"C:\x\lpt3\f.ps1", r"CON", r"C:\x\CONIN$", r"C:\x\conout$.ps1", "C:\\x\\COM\u{b9}", "C:\\x\\lpt\u{b2}.ps1", "C:\\x\\LPT\u{b3}\\f", "C:\\x\\com\u{b3}:"] {
             assert!(is_device_name(Path::new(p)), "{p}");
             assert!(!stays_local_with(Path::new(p), &none, &drives), "{p}");
         }
-        for p in [r"C:\x\console.ps1", r"C:\x\COM0", r"C:\x\COM10", r"C:\x\LPT", r"C:\x\nulx", r"C:\x\a.nul", r"C:\x\s.ps1"] {
+        for p in [r"C:\x\console.ps1", r"C:\x\COM0", r"C:\x\COM10", r"C:\x\LPT", r"C:\x\nulx", r"C:\x\a.nul", r"C:\x\s.ps1", "C:\\x\\COM\u{b9}\u{b9}", "C:\\x\\LPT\u{2074}"] {
             assert!(!is_device_name(Path::new(p)), "{p}");
             assert!(stays_local_with(Path::new(p), &none, &drives), "{p}");
         }

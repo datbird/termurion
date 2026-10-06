@@ -149,7 +149,7 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
     if rp::is_unc(&text) || !rp::local_folder(Path::new(&location), read_link) {
         return Start::Ask(failed_folder(&text));
     }
-    let file = rp::prefs_file(Path::new(&location), &|p| p.is_file());
+    let file = rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_file(p));
     if !rp::local_folder(&file, read_link) {
         return Start::Ask(failed_folder(&text));
     }
@@ -242,7 +242,7 @@ impl App {
         if rp::is_url(&location) || text.trim().is_empty() || rp::is_unc(&text) || !rp::local_folder(Path::new(&location), &read_link) {
             return None;
         }
-        Some(rp::prefs_file(Path::new(&location), &|p| p.is_file())).filter(|file| rp::local_folder(file, &read_link))
+        Some(rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_file(p))).filter(|file| rp::local_folder(file, &read_link))
     }
 
     /// The local settings as the folder would hold them.

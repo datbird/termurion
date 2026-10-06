@@ -37,7 +37,7 @@ pub(super) fn batch_dest(folder: &Path, remote: &RemoteFile) -> PathBuf {
 /// or a folder, is removed before the next one lands at `dest`, so the two never merge. A link
 /// there is removed itself, never followed.
 pub(super) fn clear_earlier(dest: &Path) -> std::io::Result<()> {
-    match std::fs::symlink_metadata(dest) {
+    match crate::localfs::symlink_metadata(dest) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
         Ok(m) if m.file_type().is_symlink() => std::fs::remove_dir(dest).or_else(|_| std::fs::remove_file(dest)),

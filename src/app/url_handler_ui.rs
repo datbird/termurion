@@ -87,7 +87,7 @@ fn work_dir(pane_dir: Option<&Path>, may_probe: &dyn Fn(&str) -> bool) -> Option
         s.as_bytes().get(1) == Some(&b':') && s.as_bytes()[0].is_ascii_alphabetic() && !crate::scripts::is_network_path(&s)
     };
     let home = || std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).filter(|h| drive(h));
-    pane_dir.filter(|d| drive(d) && may_probe(&d.to_string_lossy()) && d.is_dir()).map(Path::to_path_buf).or_else(home)
+    pane_dir.filter(|d| drive(d) && may_probe(&d.to_string_lossy()) && crate::localfs::is_dir(d)).map(Path::to_path_buf).or_else(home)
 }
 
 impl App {

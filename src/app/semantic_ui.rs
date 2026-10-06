@@ -394,7 +394,7 @@ impl App {
                     // CREATE_NO_WINDOW: the command's own windows still show.
                     cmd.raw_arg(semantic::cmd_args(&line)).creation_flags(0x0800_0000);
                 }
-                if let Some(d) = cwd.filter(|d| d.is_dir()) {
+                if let Some(d) = cwd.filter(|d| crate::localfs::is_dir(d)) {
                     cmd.current_dir(d);
                 }
                 if let Err(e) = cmd.spawn() {
@@ -445,7 +445,7 @@ impl App {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        if let Some(d) = cwd.filter(|d| !crate::scripts::is_network_path(&d.to_string_lossy()) && d.is_dir()) {
+        if let Some(d) = cwd.filter(|d| crate::localfs::is_dir(d)) {
             cmd.current_dir(d);
         }
         if let Err(e) = cmd.spawn() {

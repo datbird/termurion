@@ -3703,7 +3703,7 @@ impl App {
         };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
-            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| d.is_dir()) => (PathBuf::from(d), None),
+            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| crate::localfs::is_dir(d)) => (PathBuf::from(d), None),
             // A git command's window runs only in its folder, never the profile's.
             Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
                 return Err(format!("The folder {d} no longer exists, so git did not run."));
@@ -3715,7 +3715,7 @@ impl App {
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
             // A restart reuses the folder the shell first started in, never OSC 7 or the focused
             // pane (`PS:4890-4896`, P13).
-            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| d.is_dir()),
+            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| crate::localfs::is_dir(d)),
             _ => self.profile_start_dir(&p),
         };
         match warning {
@@ -3909,7 +3909,7 @@ impl App {
             None => text.to_string(),
         };
         let mode = crate::start_dir::mode(p, self.start_object);
-        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| d.is_dir())
+        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| crate::localfs::is_dir(d))
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine

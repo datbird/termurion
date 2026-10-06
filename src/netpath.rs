@@ -10,6 +10,11 @@ use std::sync::Arc;
 /// Answers whether a drive root (`Z:\`) is a mapped network drive.
 pub trait Drives {
     fn is_remote(&self, root: &str) -> bool;
+    /// Where a SUBST or `DefineDosDevice` drive letter points (`\??\C:\dir`, `\??\UNC\h\s`),
+    /// None for a letter that is a real volume or network drive. An object-manager query: no I/O.
+    fn subst_target(&self, _root: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Every drive is local: the non-Windows and default answer.
@@ -21,26 +26,25 @@ impl Drives for LocalDrives {
     }
 }
 
-/// `GetDriveTypeW`'s answers that never change for a letter and so are kept for the run: a
-/// mapped network drive and a fixed disk. Any other answer (no root directory, unknown, a card
-/// reader with no card) is asked again, so a drive mapped later (`net use Z:`) is seen.
-#[cfg(any(windows, test))]
+/// `GetDriveTypeW`'s `DRIVE_FIXED`, which is NOT kept: a USB disk reports it, and once unplugged its
+/// letter can be `net use`d, so a fixed answer is asked again on every call (the call is cheap).
+#[cfg(test)]
 const DRIVE_FIXED: u32 = 3;
 /// `DRIVE_REMOTE`.
 #[cfg(any(windows, test))]
 const DRIVE_REMOTE: u32 = 4;
 
-/// Whether drive `letter` (0 for A) is a network drive: the kept answer, else `ask` for its type.
+/// Whether drive `letter` (0 for A) is a network drive. Only a REMOTE answer is kept for the run (the
+/// safe side: a letter once seen as a share stays refused); every other answer is asked again.
 #[cfg(any(windows, test))]
 fn remote_answer(cache: &std::sync::Mutex<[Option<bool>; 26]>, letter: usize, ask: impl FnOnce() -> u32) -> bool {
-    if let Some(known) = cache.lock().ok().and_then(|c| c[letter]) {
-        return known;
+    if cache.lock().ok().and_then(|c| c[letter]) == Some(true) {
+        return true;
     }
-    let kind = ask();
-    let remote = kind == DRIVE_REMOTE;
-    if matches!(kind, DRIVE_REMOTE | DRIVE_FIXED) {
+    let remote = ask() == DRIVE_REMOTE;
+    if remote {
         if let Ok(mut c) = cache.lock() {
-            c[letter] = Some(remote);
+            c[letter] = Some(true);
         }
     }
     remote
@@ -65,6 +69,24 @@ impl Drives for RealDrives {
             // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
             unsafe { GetDriveTypeW(wide.as_ptr()) }
         })
+    }
+
+    fn subst_target(&self, root: &str) -> Option<String> {
+        use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+        let b = root.as_bytes();
+        if !b.first().is_some_and(u8::is_ascii_alphabetic) {
+            return None;
+        }
+        let name: Vec<u16> = format!("{}:", b[0] as char).encode_utf16().chain(Some(0)).collect();
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: `name` is NUL-terminated and `buf` is writable for its length.
+        let n = unsafe { QueryDosDeviceW(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if n == 0 {
+            return None;
+        }
+        let end = buf[..n.min(buf.len())].iter().position(|&c| c == 0).unwrap_or(n.min(buf.len()));
+        let target = String::from_utf16_lossy(&buf[..end]);
+        target.starts_with("\\??\\").then_some(target)
     }
 }
 
@@ -169,22 +191,42 @@ fn without_long_prefix(p: &str) -> &str {
     }
 }
 
-/// The cheap lexical checks, no I/O: not a network path, and (unless network mounts are
-/// allowed, `NFM:20-23`) not under an ignored folder and not on a mapped network drive
-/// (`NFM:17-37`).
-fn lexically_local(path: &str, p: &Probe) -> bool {
-    if crate::scripts::is_network_path(path) {
+/// What one judgement reads: the ignore list, whether network mounts are allowed, the drive answers.
+struct Rule<'a> {
+    ignore: &'a [String],
+    allow_network: bool,
+    drives: &'a dyn Drives,
+}
+
+/// The cheap lexical checks, no I/O: not a network path, not a DOS device name (CON, NUL, COM1, LPT1:
+/// a device may be redirected to a share), and (unless network mounts are allowed, `NFM:20-23`) not
+/// under an ignored folder and not on a mapped network drive (`NFM:17-37`).
+fn lexically_local(path: &str, r: &Rule) -> bool {
+    if crate::scripts::is_network_path(path) || crate::scripts::is_device_name(Path::new(path)) {
         return false;
     }
-    if p.allow_network {
+    if r.allow_network {
         return true;
     }
     let path = without_long_prefix(path);
-    if has_ignored_prefix(path, &p.ignore) {
+    if has_ignored_prefix(path, r.ignore) {
         return false;
     }
     let b = path.as_bytes();
-    !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && p.drives.is_remote(&format!("{}:\\", b[0] as char)))
+    !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && r.drives.is_remote(&format!("{}:\\", b[0] as char)))
+}
+
+/// `path` with a SUBST letter replaced by what it points at, None when the letter is a real drive.
+fn subst_resolved(path: &str, r: &Rule) -> Option<std::path::PathBuf> {
+    let p = without_long_prefix(path);
+    let b = p.as_bytes();
+    if !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
+        return None;
+    }
+    let target = r.drives.subst_target(&format!("{}:\\", b[0] as char))?;
+    let rest = p[2..].trim_start_matches(['\\', '/']);
+    let base = without_long_prefix(&target).trim_end_matches('\\');
+    Some(std::path::PathBuf::from(if rest.is_empty() { base.to_string() } else { format!("{base}\\{rest}") }))
 }
 
 /// Whether a path may be probed on disk. Never a network path or one reached through a link
@@ -192,13 +234,25 @@ fn lexically_local(path: &str, p: &Probe) -> bool {
 /// are read root-first, each one's link before anything below it, every hop checked the same
 /// way, and every read taken from `budget` (B2: a folder that is a link to a share).
 pub fn may_probe_with(path: &str, p: &Probe, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget) -> bool {
-    local_chain(Path::new(path), p, read_link, budget, 0)
+    local_chain(Path::new(path), &Rule { ignore: &p.ignore, allow_network: p.allow_network, drives: &*p.drives }, read_link, budget, 0)
 }
 
-fn local_chain(path: &Path, p: &Probe, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget, depth: usize) -> bool {
+/// THE judge of every path that comes from outside (a file or folder another program named, a
+/// document, saved state, a setting) before Tandem calls `is_dir`, `exists`, `metadata` or opens it
+/// (even `is_dir` on a share path connects to it). Network and device paths, mapped and SUBST drives
+/// that lead to a share, and every folder from the root down and every link target's own folders
+/// (again root first) are checked; nothing is read below a link before the link itself.
+pub fn judge(path: &Path, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, drives: &dyn Drives) -> bool {
+    local_chain(path, &Rule { ignore: &[], allow_network: false, drives }, read_link, &Budget::new(PROBE_LIMIT), 0)
+}
+
+fn local_chain(path: &Path, r: &Rule, read_link: &dyn Fn(&Path) -> Option<std::path::PathBuf>, budget: &Budget, depth: usize) -> bool {
     const HOPS: usize = 8;
-    if depth > HOPS || !lexically_local(&path.to_string_lossy(), p) {
+    if depth > HOPS || !lexically_local(&path.to_string_lossy(), r) {
         return false;
+    }
+    if let Some(real) = subst_resolved(&path.to_string_lossy(), r) {
+        return local_chain(&real, r, read_link, budget, depth + 1);
     }
     let mut chain: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
     chain.reverse();
@@ -214,7 +268,7 @@ fn local_chain(path: &Path, p: &Probe, read_link: &dyn Fn(&Path) -> Option<std::
                 Some(parent) if target.is_relative() => parent.join(target),
                 _ => target,
             };
-            if !local_chain(&target, p, read_link, budget, depth + 1) {
+            if !local_chain(&target, r, read_link, budget, depth + 1) {
                 return false;
             }
         }
@@ -275,7 +329,9 @@ mod tests {
         assert!(remote_answer(&cache, 25, ask(DRIVE_REMOTE)), "mapped later in the session");
         assert!(remote_answer(&cache, 25, ask(1)), "a network answer is kept");
         assert_eq!(asked.get(), 2, "the kept answer asked nothing");
-        assert!(!remote_answer(&cache, 2, ask(DRIVE_FIXED)) && !remote_answer(&cache, 2, ask(DRIVE_REMOTE)), "a fixed disk is kept too");
+        // A fixed answer is NOT kept: a USB disk reports it, and its letter can be mapped later.
+        assert!(!remote_answer(&cache, 2, ask(DRIVE_FIXED)), "fixed");
+        assert!(remote_answer(&cache, 2, ask(DRIVE_REMOTE)), "the same letter, now a share");
     }
 
     #[test]
@@ -370,5 +426,50 @@ mod tests {
     #[test]
     fn real_drives_answer() {
         assert!(!RealDrives.is_remote(r"C:\"));
+    }
+
+    /// Task 3 fix round 2, item 2: a SUBST letter is resolved (QueryDosDeviceW) and its target judged,
+    /// every folder of a link target is walked root first, the leaf never read through a link.
+    struct Subst;
+    impl Drives for Subst {
+        fn is_remote(&self, root: &str) -> bool {
+            root.eq_ignore_ascii_case("Z:\\")
+        }
+        fn subst_target(&self, root: &str) -> Option<String> {
+            match root.to_ascii_uppercase().as_str() {
+                "Y:\\" => Some(r"\??\UNC\h\s".to_string()),
+                "X:\\" => Some(r"\??\C:\ok".to_string()),
+                "W:\\" => Some(r"\??\Z:\x".to_string()),
+                "V:\\" => Some(r"\??\V:\loop".to_string()),
+                "U:\\" => Some(r"\??\C:\j".to_string()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn subst_letters_are_resolved_and_judged() {
+        let none = |_: &Path| None;
+        assert!(judge(Path::new(r"C:\a\f"), &none, &Subst));
+        assert!(!judge(Path::new(r"Y:\a\f"), &none, &Subst), "a letter onto a UNC target");
+        assert!(judge(Path::new(r"X:\a\f"), &none, &Subst), "a letter onto a local folder");
+        assert!(!judge(Path::new(r"W:\a"), &none, &Subst), "a letter onto a mapped drive");
+        assert!(!judge(Path::new(r"V:\a"), &none, &Subst), "a loop ends");
+        // The target is itself judged for links: U: is C:\j, a junction to a share.
+        let read = |p: &Path| (p == Path::new(r"C:\j")).then(|| PathBuf::from(r"\\attacker\share"));
+        assert!(!judge(Path::new(r"U:\f"), &read, &Subst));
+    }
+
+    #[test]
+    fn a_link_targets_own_folders_are_walked_root_first() {
+        // C:\j -> D:\x\y and D:\x -> \\attacker\share: D:\x must be read before D:\x\y is.
+        let seen = RefCell::new(Vec::new());
+        let map: &'static [(&str, &str)] = &[(r"c:\j", r"D:\x\y"), (r"d:\x", r"\\attacker\share")];
+        let rl = links(map, &seen);
+        assert!(!judge(Path::new(r"C:\j\f.txt"), &rl, &Subst));
+        let reads = seen.borrow().clone();
+        let x = reads.iter().position(|r| r == r"d:\x").expect("the folder D: x was read");
+        assert!(reads.iter().position(|r| r == r"d:\x\y").is_none_or(|y| x < y), "root first: {reads:?}");
+        assert!(!reads.iter().any(|r| r.ends_with("f.txt")), "{reads:?}");
     }
 }
