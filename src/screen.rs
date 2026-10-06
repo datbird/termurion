@@ -240,6 +240,8 @@ pub struct Screen {
     cell_px: (u16, u16),
     osc: crate::osc::Scanner,
     pub marks: crate::marks::Marks,
+    /// Ignored folders and mapped drives for the prompt path sniff (Task 9); a plain value, no I/O.
+    pub(crate) path_probe: crate::netpath::Probe,
     /// New prompt marks are line-style (Auto Composer on, or `AlwaysUseLineStyleMarks`); the
     /// app sets it (`S:18934`).
     pub line_style_marks: bool,
@@ -602,6 +604,7 @@ impl Screen {
             cell_px: (0, 0),
             osc: crate::osc::Scanner::default(),
             marks: crate::marks::Marks::default(),
+            path_probe: crate::netpath::Probe::default(),
             line_style_marks: false,
             shell: crate::marks::Shell::default(),
             place_prompt_first_column: true,

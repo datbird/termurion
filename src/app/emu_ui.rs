@@ -271,8 +271,7 @@ fn client_point(screen: (i32, i32), origin: (i32, i32)) -> (f32, f32) {
 
 /// `\\host\share` and `//host/share`: never probed as files.
 fn is_network_path(path: &std::path::Path) -> bool {
-    let s = path.to_string_lossy();
-    s.starts_with("\\\\") || s.starts_with("//")
+    crate::scripts::is_network_path(&path.to_string_lossy())
 }
 
 /// A reserved device name (`NUL`, `CON`, `COM1`, `LPT3`, ...), with or without an extension and

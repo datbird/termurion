@@ -75,7 +75,7 @@ impl App {
         p.scroll(Scroll::Delta(want - now));
     }
 
-    fn select(&mut self, id: PaneId, (a, b): (Point, Point)) {
+    pub(super) fn select(&mut self, id: PaneId, (a, b): (Point, Point)) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
         sel.update(b, Side::Right);
@@ -351,6 +351,8 @@ mod tests {
             prompt_end: None,
             output_start: None,
             directory: None,
+            host: None,
+            user: None,
             line_style: false,
             clear_count: 0,
         };

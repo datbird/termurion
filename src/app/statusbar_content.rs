@@ -610,13 +610,29 @@ impl App {
     /// string names one, and the selection only when it names `selection` or
     /// `selectionLength`.
     pub(super) fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
+        self.evaluate_with_matches(pane, expression, &[])
+    }
+
+    /// `evaluate_for` with `matches` (a Smart Selection action's captures, `CAP:188-225`).
+    pub(super) fn evaluate_with_matches(&self, pane: PaneId, template: &str, matches: &[Option<&str>]) -> Result<String, String> {
+        self.evaluate_matches_with(pane, template, matches, false)
+    }
+
+    /// `evaluate_with_matches` for a template that becomes a cmd.exe command line (`cmd`): built
+    /// by the one builder (`interp::evaluate_cmd`: every value refused by the context-free list,
+    /// or quoted unless the template's own quotes enclose it, B3).
+    pub(super) fn evaluate_matches_with(&self, pane: PaneId, template: &str, matches: &[Option<&str>], cmd: bool) -> Result<String, String> {
         let (light, full) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
         let lookup = |n: &str| {
             let n = n.strip_prefix("session.").unwrap_or(n);
             let vars = if crate::prompted::names_selection(n) { full.get_or_init(|| self.variables_with(pane, true)) } else { light.get_or_init(|| self.variables_with(pane, false)) };
             crate::prompted::variable(n, vars)
         };
-        crate::interp::evaluate_lax(expression, &lookup, &[], self.globals.bool("laxNilPolicyInInterpolatedStrings"))
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        if cmd {
+            return crate::interp::evaluate_cmd(template, &lookup, matches, lax);
+        }
+        crate::interp::evaluate_lax(template, &lookup, matches, lax)
     }
 
     /// A script component's content (`RPC:341-349`): its variants ("" before the first

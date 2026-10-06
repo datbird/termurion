@@ -449,4 +449,73 @@ mod tests {
         assert!(pane.contains("log.cooked(bytes, &self.screen.own().palette, ") || pane.contains("log.cooked(bytes, &own_palette, "), "log_cooked reads the own palette");
         assert!(pane.contains("log.cooked_text(text, &own_palette, "), "so does compact logging's text");
     }
+
+    /// 13r P20 x 13q: a Run Command in Window pane is single-use, never short-lived, owned by the
+    /// clicked pane; its end follows the default profile's "After a session ends"; and being
+    /// single-use it is never restarted (a restart would run the profile's shell, not the command).
+    #[test]
+    fn run_in_window_follows_the_profile_end_action() {
+        use super::super::git_ui::run_window_single_use;
+        for (v, a) in [(0, EndAction::NoAction), (1, EndAction::Close), (2, EndAction::Restart), (9, EndAction::NoAction)] {
+            let su = run_window_single_use(7, v);
+            assert_eq!((su.owner, su.short_lived, su.end_action), (7, false, a), "{v}");
+            // The record decides, whatever the pane's own profile says.
+            assert_eq!(end_action_for(Some(su.end_action), false, 1), a);
+            let exit = Exit { action: su.end_action, restartable: restartable_for(false, false, true, false), short_lived_single_use: false };
+            let (message, outcome) = se::after_exit(exit, false);
+            assert_eq!(message, Message::Ended, "not a git window's Finished");
+            let want = match a {
+                EndAction::Close => Outcome::Close,
+                _ => Outcome::Keep { offer_restart: false },
+            };
+            assert_eq!(outcome, want, "{v}: no restart, no offer");
+        }
+        let run = body(include_str!("semantic_ui.rs"), "    fn run_in_new_window(");
+        assert!(run.contains("self.store.default_profile().int(crate::session_end::END_ACTION_KEY)"), "the default profile's value");
+        assert!(run.contains("run_window_single_use(owner, end)"));
+        assert!(!run.contains("SingleUse {"), "one constructor");
+    }
+
+    /// 13q restart_via x 13r Run Command in Window: every route (menu, bar, timer, API, AI tool)
+    /// goes through `restart_via`, which refuses a pane that cannot restart before it asks
+    /// anything; the AI tool reports the refusal as not restartable.
+    #[test]
+    fn restart_via_refuses_single_use_windows_first() {
+        let v = body(include_str!("mod.rs"), "    pub(super) fn restart_via(");
+        let first = v.find("restart_first(self.restartable(id),").expect("restart_via asks restartable first");
+        assert!(first < v.find("self.ask_scripts(").unwrap() && first < v.find("self.offer_restart(id)").unwrap());
+        assert!(v.contains("RestartStep::Refused => {}"), "a refused restart does nothing");
+        let ai = include_str!("ai_tools_app.rs");
+        assert!(ai.contains("RestartStep::Refused => done(ai_actions::NOT_RESTARTABLE"));
+    }
+
+    /// 13q S6/P11 x 13r: Send Text and Run Coprocess on an ended pane show "The session has
+    /// ended." instead of a silent drop; the pane's text stays clickable (nothing else is refused).
+    #[test]
+    fn semantic_actions_on_an_ended_pane_say_so() {
+        let e = body(include_str!("semantic_ui.rs"), "    pub(super) fn execute_with(");
+        let check = e.find("semantic::needs_live_session(&run)").expect("checked");
+        assert!(check < e.find("match run {").unwrap(), "before anything runs");
+        assert!(e.contains("p.exited.is_some() || p.ended") && e.contains("\"The session has ended.\""));
+    }
+
+    /// 13q S9 x 13r: every pane construction path (start, restart, session restore, archive
+    /// restore, recording) goes through `install_pane`, which gives the screen the path probe.
+    #[test]
+    fn every_pane_gets_the_path_probe() {
+        assert!(body(include_str!("mod.rs"), "    fn install_pane(").contains("pane.screen.set_path_probe(self.path_probe());"));
+        assert!(body(include_str!("arrange_ui.rs"), "    fn archived_pane(").contains("self.install_pane(id, Pane::archived(id, cols, rows), &p, false);"));
+        assert!(include_str!("replay_ui.rs").contains("self.install_pane(id, Pane::recording(id, cols, rows), &profile, false);"));
+        assert!(include_str!("restore_ui.rs").contains("self.install_pane(id, pane, &p, false);"));
+        assert!(body(include_str!("mod.rs"), "    fn restart_confirmed(").contains("self.install_pane(id, pane, &profile, true);"));
+        for (file, src) in [("arrange_ui.rs", include_str!("arrange_ui.rs")), ("replay_ui.rs", include_str!("replay_ui.rs")), ("restore_ui.rs", include_str!("restore_ui.rs")), ("mod.rs", include_str!("mod.rs"))] {
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            for ctor in ["Pane::archived(", "Pane::recording("] {
+                for (i, _) in code.match_indices(ctor) {
+                    let line = &code[code[..i].rfind('\n').unwrap_or(0)..i];
+                    assert!(line.contains("install_pane("), "{file}: {ctor} outside install_pane");
+                }
+            }
+        }
+    }
 }

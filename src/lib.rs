@@ -28,6 +28,7 @@ pub mod recording;
 pub mod cadence;
 pub mod perf_stats;
 pub mod underline;
+pub mod url_guess;
 pub mod fonts;
 pub mod margins;
 pub mod power;
@@ -59,6 +60,8 @@ pub mod seltools;
 pub mod dll;
 pub mod seltext;
 pub mod wordsel;
+pub mod netpath;
+pub mod sh_context;
 pub mod copymode;
 pub mod fold;
 pub mod annotations;
@@ -68,6 +71,9 @@ pub mod inline_file;
 pub mod sixel;
 pub mod kitty;
 pub mod stamps;
+pub mod cmdbuttons;
+pub mod cmdinfo;
+pub mod pathnav;
 pub mod session_log;
 pub mod archive;
 pub mod styled_copy;
@@ -263,6 +269,8 @@ pub mod note_ui;
 pub mod git_log_ui;
 #[cfg(windows)]
 pub mod status_popover_ui;
+#[cfg(windows)]
+pub mod cmdinfo_ui;
 #[cfg(windows)]
 pub mod shot_ui;
 #[cfg(windows)]

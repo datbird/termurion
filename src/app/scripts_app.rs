@@ -392,8 +392,9 @@ impl App {
     pub(super) fn reveal_path(&self, path: &Path) {
         use std::os::windows::process::CommandExt;
         let text = path.to_string_lossy().replace('/', "\\");
+        let Some(arg) = crate::semantic::explorer_select_arg(&text) else { return };
         let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.raw_arg(format!("/select,{}", crate::semantic::cmd_quote(&text)));
+        cmd.raw_arg(arg);
         // Explorer shows its own message for a path it cannot select.
         let _ = cmd.spawn();
     }

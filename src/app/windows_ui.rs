@@ -17,6 +17,10 @@ pub(super) struct WinSlot {
     drag: Drag,
     pointer_down: Option<PointerDown>,
     hover: Option<(PaneId, crate::find::Match)>,
+    /// A Win-click target is under the pointer (the hand shows even with the underline off).
+    hover_hand: bool,
+    /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
+    hover_key: Option<(PaneId, i32, usize, bool, bool)>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
     /// The title bars drawn last frame (pane, geometry), for clicks.
@@ -65,6 +69,7 @@ pub(super) struct WinSlot {
     overlay_drawn: Vec<(mouse::Overlay, Rect)>,
     /// The session picker's buttons this window drew (`chat_session_app`).
     picker_hits: Vec<(PaneId, Rect)>,
+    cmd_button_hits: Vec<(PaneId, Rect, crate::cmdbuttons::Button)>,
     /// The offscreen command lines this window drew (`offscreen_ui`).
     offscreen_hits: Vec<(PaneId, Rect, i32)>,
     /// The inline chat panels' rectangles this window drew (`inline_chat_ui`).
@@ -156,6 +161,8 @@ impl WinSlot {
             drag: Drag::None,
             pointer_down: None,
             hover: None,
+            hover_hand: false,
+            hover_key: None,
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),
@@ -183,6 +190,7 @@ impl WinSlot {
             porthole_hits: Vec::new(),
             overlay_drawn: Vec::new(),
             picker_hits: Vec::new(),
+            cmd_button_hits: Vec::new(),
             offscreen_hits: Vec::new(),
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),
@@ -276,6 +284,8 @@ impl App {
         swap(&mut self.drag, &mut s.drag);
         swap(&mut self.pointer_down, &mut s.pointer_down);
         swap(&mut self.hover, &mut s.hover);
+        swap(&mut self.hover_hand, &mut s.hover_hand);
+        swap(&mut self.hover_key, &mut s.hover_key);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
         swap(&mut self.title_bars, &mut s.title_bars);
@@ -303,6 +313,7 @@ impl App {
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
         swap(&mut self.overlay_drawn, &mut s.overlay_drawn);
         swap(&mut self.picker_hits, &mut s.picker_hits);
+        swap(&mut self.cmd_button_hits, &mut s.cmd_button_hits);
         swap(&mut self.offscreen_hits, &mut s.offscreen_hits);
         swap(&mut self.inline_hits, &mut s.inline_hits);
         swap(&mut self.chat_indicator_hits, &mut s.chat_indicator_hits);
@@ -960,6 +971,8 @@ impl WinSlot {
             drag: Drag::None,
             pointer_down: None,
             hover: None,
+            hover_hand: false,
+            hover_key: None,
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),
@@ -987,6 +1000,7 @@ impl WinSlot {
             porthole_hits: Vec::new(),
             overlay_drawn: Vec::new(),
             picker_hits: Vec::new(),
+            cmd_button_hits: Vec::new(),
             offscreen_hits: Vec::new(),
             inline_hits: Vec::new(),
             chat_indicator_hits: Vec::new(),

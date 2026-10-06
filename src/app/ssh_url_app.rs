@@ -29,6 +29,12 @@ pub(super) fn click_plan(remote: bool, url: &str, bound: Option<&str>) -> Option
     url_plan_for_click(url, bound)
 }
 
+/// Whether hovering `url` shows a link (underline, hand): an ssh: URL only when the click would
+/// open it, so hover agrees with the click (final wave ruling). Other URLs are not decided here.
+pub(super) fn hover_open(remote: bool, url: &str, bound: Option<&str>) -> bool {
+    !is_ssh(url) || click_plan(remote, url, bound).is_some()
+}
+
 /// The profile keys a URL changes on `base`, as a session copy sets them (None: the profile is
 /// used unchanged). The URL path is never a profile key: it is a remote folder, and the copy's
 /// Working Directory feeds the local folder check (ruling r1, revised P9).
@@ -151,12 +157,21 @@ impl App {
     }
 }
 
-fn is_ssh(url: &str) -> bool {
+pub(super) fn is_ssh(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_ssh_link_shows_as_a_link_only_when_the_click_would_open_it() {
+        assert!(!hover_open(false, "ssh://h", None), "unbound: no underline, no hand");
+        assert!(hover_open(false, "ssh://h", Some("G")), "bound: it opens a tab");
+        assert!(!hover_open(true, "ssh://h", Some("G")), "a remote pane never opens an ssh tab (P4)");
+        assert!(hover_open(true, "https://h", None), "other links are not decided here");
+        assert!(hover_open(false, "SSH://h", Some("G")));
+    }
+
     use super::*;
 
     #[test]

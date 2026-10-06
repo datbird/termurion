@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 269 | 36 | 11 |
-| `02-global-settings.md` | 820 | 579 | 51 | 190 |
+| `01-profile-settings.md` | 316 | 272 | 33 | 11 |
+| `02-global-settings.md` | 820 | 598 | 52 | 170 |
 | `03-features-and-menus.md` | 647 | 566 | 43 | 38 |
-| Total | 1,783 | 1,414 | 130 | 239 |
+| Total | 1,783 | 1,436 | 128 | 219 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -680,6 +680,35 @@ log names and folders cannot be steered by a program's title, a downloaded archi
 10,000,000 lines a pane), and logs and archives are written out before Tandem exits (and at logoff), a Restart session answer is only for the shell it was asked about, an archived pane never revives as a live shell at launch, and every automatic log name ends in .log. Deferred: the minors listed in
 `docs/superpowers/rulings/m13q-rulings.txt`. Nothing of 13q was checked on screen during the build. Every kept quirk is listed in
 `docs/acceptance/m13q-checklist.md` and ruled on in that file.
+On the m13r branch, main (13q) merged into 13r's Tasks 1-6 (2026-10-05): 13r changes no parity row before its docs task, so
+the union is 13q's (01: 316 rows, 269 have, 36 partial, 11 missing; 02: 820, 579, 51, 190; 03: 647, 566, 43, 38; 1,783 rows,
+1,414 have, 130 partial, 239 missing). Seams wired at the merge: a Run Command in Window pane is a single-use window that
+follows the default profile's "After a session ends" and is never restarted; every restart route refuses a pane with nothing
+of its own to start before it asks anything (no "Restart session?" whose OK does nothing); Send Text and Run Coprocess on an
+ended pane say "The session has ended."; the log and archive network check is the one network rule; 13q added no command
+line or open, so the one cmd.exe builder and guard_open still cover every route.
+Milestone 13r built semantic history (01: 3 rows to have, all from partial: Click on a path in a shell prompt to open Navigator (renamed from
+Cmd-click on path opens navigator), Smart Selection actions use interpolated strings, Run Command in Window; 02: 19 rows from missing to have and
+showButtonsForSelectedCommand from missing to partial (the buttons wait for 13s's selecting click):
+cmdClickWhenInactiveInvokesSemanticHistory, enableUnderlineSemanticHistoryOnCmdHover, enableCmdClickPromptForShowCommandInfo,
+showURLPreviewForSemanticHistory, ignoreHardNewlinesInURLs, URLCharacterSet, URLCharacterSetExclusions,
+filenameCharacterSet, maxSemanticHistoryPrefixOrSuffix, pathsToIgnore, showYellowMarkForJobStoppedBySignal, conservativeURLGuessing,
+trailingPunctuationMarks, defaultURLScheme, urlHandlerCommand, restrictSemanticHistoryPrefixAndSuffixToLogicalWindow,
+enableSemanticHistoryOnNetworkMounts, prioritizeSmartSelectionActions, disableSmartSelectionActionsOnClick; 03 unchanged; 01: 316 rows, 272 have,
+33 partial, 11 missing; 02: 820, 598, 52, 170 (other 4); 03: 647, 566, 43, 38 (other 3); 1,783 rows, 1,436 have, 128 partial, 219 missing).
+A Win-click now follows iTerm2's phase order (prompt, link, file, Smart Selection action, raw command, URL-like text) and works in a background
+window only as the inactive-click key says; URL text follows iTerm2's character sets, trailing punctuation, conservative guessing and default scheme;
+text around the click respects hard newlines, soft boundaries and tmux or vim dividers; ignored folders and mapped network drives are not probed;
+Win-click on a prompt opens Command Info, a click on a path in the prompt opens a folder navigator, and a selected command shows six buttons (the
+click that selects one is 13s's). Security fixes found by four rounds of review: every command line Tandem builds from program text (Semantic History,
+Smart Selection, triggers, Capture Output, coprocesses, the file-drop coprocess, the URL handler, Explorer reveals) goes through one cmd.exe builder
+that refuses cmd metacharacters, quote lookalikes and controls in any substituted value (so a value such as C:\Program Files (x86)\x is refused); a
+Smart Selection openFile or openUrl action never reaches ShellExecute with a protocol, a share or a program; one network rule (scripts::is_network_path,
+plus ancestor links) covers every probe, hover included, and a remote pane probes nothing; the URL handler takes a literal program token and one
+argument per variable and refuses shells and forwarders; Command Info and the navigator never type a control character, a path some shell would read as
+syntax, or anything into a password prompt or an ended pane. Rulings and deferred minors are in `docs/superpowers/rulings/m13r-rulings.txt`; what a
+person must see on screen is in `docs/acceptance/m13r-checklist.md`. Nothing of 13r was checked on screen during the build. Open: ssh:// text underlines
+and then the guard refuses (milestone 14e's handler owns it), and 13s's command-selection click must call the path-mark check first.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

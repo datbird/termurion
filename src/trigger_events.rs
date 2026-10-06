@@ -302,13 +302,24 @@ impl Screen {
         let value = if crate::trigger_eval::raw_parameter(&c.trigger.action) {
             param.clone()
         } else if self.triggers.prefs.interpolated && param.contains("\\(") {
-            match crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &groups) {
+            // A command line through the one builder: its values refused or quoted (B3).
+            let var = |n: &str| self.trigger_var(n, 0);
+            let evaluated = if triggers::runs_command(&c.trigger.action) { crate::interp::evaluate_cmd(&param, &var, &groups, true) } else { crate::interp::evaluate(&param, &var, &groups) };
+            match evaluated {
                 Ok(v) => v,
                 Err(e) => {
                     if self.triggers.list[i].error.as_ref() != Some(&e) {
                         self.requests.push(crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::ParameterError { trigger: i, text: e.clone() }));
                         self.triggers.list[i].error = Some(e);
                     }
+                    return false;
+                }
+            }
+        } else if triggers::runs_command(&c.trigger.action) {
+            match triggers::substitute_cmd(&param, &groups) {
+                Some(v) => v,
+                None => {
+                    self.refuse_command(i);
                     return false;
                 }
             }
@@ -496,6 +507,27 @@ mod tests {
         assert_eq!(job_events(&before, &after), (vec!["Vim".to_string()], vec![]));
         assert_eq!(job_events(&after, &before), (vec![], vec!["Vim".to_string()]));
         assert_eq!(job_events(&["CMD".to_string()], &before), (vec![], vec![]), "case does not make a change");
+    }
+
+    /// An event's Capture Output command goes through the one cmd.exe refusal too (a directory
+    /// a program reported, plain or interpolated).
+    #[test]
+    fn event_capture_commands_pass_the_cmd_refusal() {
+        for (param, interpolated) in [("notepad \\0", false), ("notepad \\(matches[0])", true), ("notepad \\(session.path)", true)] {
+            let mut s = Screen::new(40, 6);
+            let mut t = event(EventKind::DirectoryChanged, param, &[]);
+            t.action = "CaptureTrigger".into();
+            s.set_triggers(vec![t], TriggerPrefs { interactive: false, interpolated });
+            s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
+            s.feed(b"\x1b]1337;CurrentDir=/a&calc\x07");
+            let commands: Vec<Option<String>> = s.last_command_mark().map(|m| m.captured.iter().map(|c| c.command.clone()).collect()).unwrap_or_default();
+            let got: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
+                Request::Trigger(t) => Some(t),
+                _ => None,
+            }).collect();
+            assert!(commands.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))), "{param}: {commands:?}");
+            assert!(got.iter().any(|r| matches!(r, TriggerRequest::ParameterError { text, .. } if text == crate::semantic::CMD_REFUSED)), "{param}: {got:?}");
+        }
     }
 
     #[test]

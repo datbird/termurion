@@ -3782,6 +3782,58 @@ mod tests {
         assert_eq!(row.label, label);
         assert_eq!(row.help, format!("{label}\nThis is also known as the terminfo E3 capability."));
     }
+    #[test]
+    fn semantic_rows_follow_iterm2() {
+        use crate::advanced_pane::{rows, RowKind};
+        enum D {
+            B(bool),
+            S(&'static str),
+            I(i64),
+        }
+        // (key, section, default, help); the label is the help's first line.
+        let table: Vec<(&str, &str, D, String)> = vec![
+            ("CmdClickWhenInactiveInvokesSemanticHistory", "Mouse", D::B(false), "Win-click in an active pane while Tandem isn't the active app invokes Semantic History.\nBy default, Tandem respects the OS standard that Win-click in an app that doesn't have keyboard focus behaves like a non-Win click that does not raise the window.".into()),
+            ("EnableUnderlineSemanticHistoryOnCmdHover", "Mouse", D::B(true), "Underline Semantic History-selectable items under the cursor while holding Win?".into()),
+            ("EnableCmdClickPromptForShowCommandInfo", "Mouse", D::B(true), "Win-click in the prompt shows the Command Info window".into()),
+            ("ShowButtonsForSelectedCommand", "General", D::B(true), "Show buttons at the top of a selected command?\nWhen you select a command by single clicking the command line or its output, buttons are shown on the top right with options like Copy and Share. Note that this setting only applies when marks are not \u{201c}line style\u{201d} such as when using Auto Composer.".into()),
+            ("ShowURLPreviewForSemanticHistory", "Drawing", D::B(true), "Show URL preview on Win-hover for semantic history matches.".into()),
+            ("IgnoreHardNewlinesInURLs", "Semantic History", D::B(false), "Ignore hard newlines for the purposes of locating URLs and file names for Semantic History.\nIf a hard newline occurs at the end of a line then Win-click will not see it all unless this setting is turned on. This is useful for some interactive applications. Turning this on will remove newlines from the \\3 and \\4 substitutions.".into()),
+            ("URLCharacterSet", "Semantic History", D::S(".?\\/:;$%=&_-,+~#@!*'(\u{ff08})\u{ff09}|[]"), "Non-alphanumeric characters considered part of a URL or file name for Semantic History.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a URL begins and ends. You must restart Tandem for changes to this setting to take effect.".into()),
+            ("URLCharacterSetExclusions", "Semantic History", D::S("\u{ac}"), "Characters never considered part of a URL.\nThe characters in this string may never occur in a URL; when one is seen that delineates the beginning or end of a URL.".into()),
+            ("FilenameCharacterSet", "Semantic History", D::S("$@"), "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a file begins and ends. You must restart Tandem for changes to this setting to take effect.".into()),
+            ("MaxSemanticHistoryPrefixOrSuffix", "Semantic History", D::I(2000), "Maximum number of bytes of text before and after click location to take into account.\nThis also limits the size of the \\3 and \\4 substitutions.".into()),
+            ("PathsToIgnore", "Semantic History", D::S(""), "Paths to ignore for Semantic History.\nSeparate paths with a comma. Any file under one of these paths will not be openable with Semantic History. It is wise to add network file systems to this list, since they can be very slow.".into()),
+            ("ShowYellowMarkForJobStoppedBySignal", "Semantic History", D::B(true), "Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal.".into()),
+            ("ConservativeURLGuessing", "Semantic History", D::B(false), "URLs must contain a scheme?\nEnable this to reduce the number of false positives that semantic history thinks are a URL".into()),
+            ("TrailingPunctuationMarks", "Semantic History", D::S("!?\u{2026})].\"';:,"), "Characters to ignore at the end of a URL".into()),
+            ("DefaultURLScheme", "Semantic History", D::S("https"), "Default URL scheme.\nThis is applied to hostnames that are not a single word.".into()),
+            ("UrlHandlerCommand", "Semantic History", D::S(""), "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Tandem would otherwise hand to the system. Tandem splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u{201c}explorer.exe \\(url)\u{201d} to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Tandem-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected.".into()),
+            ("RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow", "Semantic History", D::B(true), "Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands?\nDue to a long-standing bug this did not used to be respected. Soft boundaries were always respected for deciding what text was clicked on, but the prefix and suffix did not. If you have a semantic history command that depends on the bug, you can switch this off to get the pre-3.1.2 behavior.".into()),
+            ("EnableSemanticHistoryOnNetworkMounts", "Semantic History", D::B(false), "Enable semantic history for network-mounted filesystems?\nOnly enable this if you know your network-mounted filesystems are really fast and reliable. A slow filesystem may cause the entire Tandem app to hang.".into()),
+            ("PrioritizeSmartSelectionActions", "Semantic History", D::B(false), "Check smart selection actions before existing files on Win-click?".into()),
+            ("DisableSmartSelectionActionsOnClick", "Semantic History", D::B(false), "Disable performing the first matching Smart Selection\u{2019}s Action on Win-click?".into()),
+        ];
+        assert_eq!(table.len(), 20);
+        let advanced = rows();
+        for (key, section, default, help) in &table {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} has no row"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", *section), "{key}");
+            let label = help.lines().next().unwrap();
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            let (kind, value, rk) = match default {
+                D::B(b) => (Kind::Bool, Value::Boolean(*b), RowKind::Bool),
+                D::S(s) => (Kind::String, Value::String(s.to_string()), RowKind::Text),
+                D::I(n) => (Kind::Int, Value::Integer(*n), RowKind::Int),
+            };
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(value), "{key}");
+            let shown = advanced.iter().find(|r| r.key == *key).unwrap_or_else(|| panic!("{key} is not in the Advanced pane"));
+            assert_eq!(shown.kind, rk, "{key}");
+        }
+        let nav = schema::find("Prompt Path Click Opens Navigator").unwrap();
+        assert_eq!(nav.label, "Click on a path in a shell prompt to open Navigator");
+        assert_eq!(nav.help, "Whether clicking path in prompt opens file navigator");
+    }
 
     /// 13q Task 1 (`AS:661-682`, `AS:733`, `AS:769`, `AS:853-896`): the session-end Advanced
     /// rows with iTerm2's sections, kinds, defaults and texts; the label is the help's first line.

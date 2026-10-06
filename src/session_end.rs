@@ -278,6 +278,8 @@ pub enum RestartStep {
     AskSurvivors,
     /// The timer never ends them unasked: show the restart offer instead of restarting.
     Offer,
+    /// The pane has no program of its own to start again (`isRestartable`): nothing happens.
+    Refused,
 }
 
 /// The first step of a restart (13q B7, P8: a restart never silently ends running programs).
@@ -290,6 +292,16 @@ pub fn restart_step(via: Via, exited: bool, survivors: usize) -> RestartStep {
         (_, Via::Timer) => RestartStep::Offer,
         _ => RestartStep::AskSurvivors,
     }
+}
+
+/// The first step of a restart of a pane that may have nothing to restart: a single-use window
+/// (git, Run Command in Window), a kept-open pane, a tmux client or a recording is refused on
+/// every route before any question is asked (13q x 13r merge).
+pub fn restart_first(restartable: bool, via: Via, exited: bool, survivors: usize) -> RestartStep {
+    if !restartable {
+        return RestartStep::Refused;
+    }
+    restart_step(via, exited, survivors)
 }
 
 /// Which shell a "Restart session?" question was asked about: the pane's shell generation and
@@ -598,5 +610,21 @@ mod tests {
         let spawn = &spawn[..spawn.find("\n    }\n").unwrap()];
         assert!(spawn.contains("pane.start_dir = Some(cwd);"), "every spawned shell records its folder");
         assert!(spawn.contains("_ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir"), "a restart never reads the focused pane");
+    }
+
+    /// 13q x 13r merge: a pane with no program of its own to start again (a git or Run Command
+    /// in Window single-use window, a kept-open pane, a tmux client, a recording) is refused on
+    /// every route before any question: no "Restart session?" whose OK does nothing, no offer.
+    #[test]
+    fn a_pane_that_cannot_restart_is_refused_on_every_route() {
+        use Via::*;
+        for via in [Menu, Bar, Timer, Api] {
+            for exited in [false, true] {
+                for left in [0, 2] {
+                    assert_eq!(restart_first(false, via, exited, left), RestartStep::Refused, "{via:?} {exited} {left}");
+                    assert_eq!(restart_first(true, via, exited, left), restart_step(via, exited, left), "{via:?} {exited} {left}");
+                }
+            }
+        }
     }
 }

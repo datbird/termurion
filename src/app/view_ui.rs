@@ -138,6 +138,7 @@ impl App {
         if !locations {
             return Default::default();
         }
+        let yellow = self.globals.bool("ShowYellowMarkForJobStoppedBySignal");
         // Marks and notes belong to the main screen: a full-screen app's screen shows none (and
         // its line count is not theirs).
         let alt = p.screen.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
@@ -145,7 +146,7 @@ impl App {
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (locations, show_marks, alt, p.screen.tick_digest(), found.len()).hash(&mut h);
+            (locations, show_marks, yellow, alt, p.screen.tick_digest(), found.len()).hash(&mut h);
             for m in found {
                 m.start.row.hash(&mut h);
             }
@@ -155,7 +156,7 @@ impl App {
             let history = p.screen.term().primary_grid().history_size() as i32;
             let search: Vec<usize> = found.iter().map(|m| m.start.row).collect();
             let (marks, notes) = if show_marks && !alt {
-                let marks = p.screen.row_marks().into_iter().filter_map(|(line, mid)| Some((scrollbar::series_of_mark(p.screen.mark_code(mid)?), (line + history).max(0) as usize))).collect();
+                let marks = p.screen.row_marks().into_iter().filter_map(|(line, mid)| Some((scrollbar::series_of_mark(p.screen.mark_code(mid)?, yellow), (line + history).max(0) as usize))).collect();
                 (marks, self.note_cells(id).into_iter().map(|(m, _, _)| m.start.row).collect())
             } else {
                 (Vec::new(), Vec::new())

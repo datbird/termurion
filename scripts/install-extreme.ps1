@@ -5,7 +5,7 @@
 $ErrorActionPreference = 'Stop'
 $src = 'C:\Users\datbi\src\tandem\target\release'
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\Tandem'
-$files = 'tandem.exe', 'tandem-host.exe', 'tandem-git.exe', 'conpty.dll', 'OpenConsole.exe'
+$files = 'tandem.exe', 'tandem-host.exe', 'tandem-git.exe', 'tandem-utils.exe', 'cc-status.exe', 'conpty.dll', 'OpenConsole.exe'
 
 $running = Get-Process tandem, tandem-host -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and $_.Path.StartsWith($dest, [StringComparison]::OrdinalIgnoreCase) }

@@ -234,6 +234,11 @@ impl Drop for Coprocess {
     }
 }
 
+/// The command line handed to CreateProcess: cmd.exe through the one builder.
+fn command_line(command: &str) -> String {
+    crate::semantic::cmd_command_line(command)
+}
+
 /// Creates the job and the process in it. Returns (job, pid).
 unsafe fn spawn(command: &str, cwd: &std::path::Path, ends: [HANDLE; 3]) -> Result<(HANDLE, u32), String> {
     unsafe {
@@ -272,8 +277,7 @@ unsafe fn spawn(command: &str, cwd: &std::path::Path, ends: [HANDLE; 3]) -> Resu
         si.StartupInfo.hStdError = ends[2];
         si.lpAttributeList = attrs;
         let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
-        // /s: cmd strips exactly the outer quotes, so the command is passed as typed.
-        let line = format!("cmd.exe /d /s /c \"{command}\"");
+        let line = command_line(command);
         let mut cmd: Vec<u16> = OsStr::new(&line).encode_wide().chain(Some(0)).collect();
         let dir: Vec<u16> = cwd.as_os_str().encode_wide().chain(Some(0)).collect();
         let ok = CreateProcessW(null(), cmd.as_mut_ptr(), null(), null(), 1, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_SUSPENDED, null(), dir.as_ptr(), &si.StartupInfo, &mut pi);
@@ -298,6 +302,12 @@ unsafe fn spawn(command: &str, cwd: &std::path::Path, ends: [HANDLE; 3]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coprocess_line_is_the_one_cmd_builder() {
+        assert_eq!(command_line("cat"), r#"cmd.exe /d /v:off /s /c "cat""#);
+        assert_eq!(command_line(r#""a&b" x"#), crate::semantic::cmd_command_line(r#""a&b" x"#));
+    }
     use std::time::{Duration, Instant};
 
     fn wait_for(co: &mut Coprocess, secs: u64) -> Vec<u8> {
@@ -359,12 +369,10 @@ mod tests {
     }
 
     #[test]
-    fn quoted_drop_names_stay_text_in_cmd() {
-        let name = crate::coprocess::cmd_safe(r"C:\d\a&echo INJECTED&%PATH%.txt");
-        let mut co = Coprocess::start(&format!("echo {name}"), false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+    fn dropped_names_reach_cmd_as_one_argument() {
+        let line = crate::coprocess::drop_command("echo \\(filenames)", &[r"C:\d\a b.txt".to_string()]).unwrap().unwrap();
+        let mut co = Coprocess::start(&line, false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
         let out = String::from_utf8_lossy(&wait_for(&mut co, 10)).to_string();
-        // echo shows the quote marks; a program's own argument parsing joins the pieces.
-        assert!(out.contains("&echo INJECTED&") && out.contains("%\"PATH\"%") && !out.to_lowercase().contains("system32"), "{out}");
-        assert!(!out.lines().any(|l| l.trim() == "INJECTED"), "{out}");
+        assert!(out.contains(r#""C:\d\a b.txt""#), "{out}");
     }
 }

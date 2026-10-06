@@ -158,6 +158,7 @@ impl App {
                     // Programs the ended shell left are named to the person first.
                     crate::session_end::RestartStep::AskRunningJobs | crate::session_end::RestartStep::AskSurvivors | crate::session_end::RestartStep::Offer => done(ai_actions::WAITING, "AI asked to restart the session; waiting for the person."),
                     crate::session_end::RestartStep::Now => done(ai_actions::RESTARTING, "Session restarted by AI."),
+                    crate::session_end::RestartStep::Refused => done(ai_actions::NOT_RESTARTABLE, "AI tried to restart the session but it is not restartable."),
                 }
             }
             Call::GetManPage { cmd } => {

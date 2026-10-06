@@ -87,7 +87,7 @@ fn place(at: (f64, f64), pw: f64, ph: f64, work: Option<Rect>) -> (f64, f64) {
 
 /// Whether a popover event closes it: its own close, or a focus loss after it had focus (the
 /// first loss can be the window being made).
-fn closes(event: &WindowEvent, focused: &mut bool, hold: bool) -> Option<bool> {
+pub(crate) fn closes(event: &WindowEvent, focused: &mut bool, hold: bool) -> Option<bool> {
     match event {
         WindowEvent::CloseRequested => Some(true),
         WindowEvent::Focused(true) => {

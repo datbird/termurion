@@ -66,6 +66,7 @@ mod snippets_ui;
 mod clippings_ui;
 mod inline_chat_ui;
 mod completion_ui;
+mod pathnav_ui;
 mod composer_ui;
 mod annotations_ui;
 mod activity_ui;
@@ -88,6 +89,9 @@ mod fold_ui;
 mod labels_ui;
 mod screenshot_ui;
 mod semantic_ui;
+mod url_handler_ui;
+mod cmdinfo_app;
+mod cmdbuttons_ui;
 mod session_end_ui;
 mod log_ui;
 mod archive_ui;
@@ -409,6 +413,10 @@ pub struct App {
     pane_move: Option<pane_move_ui::PaneMove>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
+    /// A Win-click target is under the pointer (the hand shows even with the underline off).
+    hover_hand: bool,
+    /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
+    hover_key: Option<(PaneId, i32, usize, bool, bool)>,
     /// The annotation or session note window: its pane and note (None for the session note).
     note_win: Option<(crate::note_ui::NoteWindow, PaneId, Option<u32>)>,
     /// Annotation navigation: the row each pane is at.
@@ -735,6 +743,8 @@ pub struct App {
     trigger_alerts: HashMap<PaneId, usize>,
     trigger_pool: crate::triggers::CommandPool,
     trigger_children: Vec<(PaneId, String, std::process::Child)>,
+    /// URL handler commands that finished (`url_handler_ui`), drained with the triggers' tick.
+    handler_inbox: url_handler_ui::HandlerInbox,
     /// Each pane's bell state, and the panes whose tab shows a bell icon.
     bells: HashMap<PaneId, crate::bell::Bell>,
     bell_icons: std::collections::HashSet<PaneId>,
@@ -800,6 +810,13 @@ pub struct App {
     /// Jobs' Inspect popover (and when it last closed), and the signal question with what it
     /// will send (the window opens on the next loop turn) and, in the remembered mode, the
     /// saved answer.
+    /// The Command Info window of a Win-clicked command line; one at a time, app-wide.
+    cmdinfo: Option<crate::cmdinfo_ui::CmdInfoWindow>,
+    /// The prompt path navigator's workers (app-wide), the click waiting out the double-click
+    /// time (when, pane, index of the path mark) and the path mark a press landed on.
+    pathnav: pathnav_ui::PathNav,
+    pathnav_due: Option<(Instant, PaneId, usize)>,
+    pathnav_press: Option<(PaneId, usize)>,
     jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
     jobs_popover_closed: Option<Instant>,
     jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest, Option<String>)>,
@@ -1242,6 +1259,10 @@ pub struct App {
     chat_picker: Option<chat_session_app::Pick>,
     /// The picker buttons this window drew, per pane (this window's, in `WinSlot`).
     picker_hits: Vec<(PaneId, Rect)>,
+    /// The selected command's buttons from the last frame (this window's; `swap_live`).
+    cmd_button_hits: Vec<(PaneId, Rect, crate::cmdbuttons::Button)>,
+    /// The pane, mark and button whose menu is open (the pick arrives later).
+    cmd_button_menu: Option<(PaneId, u32, crate::cmdbuttons::Button)>,
     /// The offscreen command lines this window drew: pane, band, line to reveal (13p; in `WinSlot`).
     offscreen_hits: Vec<(PaneId, Rect, i32)>,
     /// Each visible pane's prompt facts for this frame (`prepare_offscreen`); scratch, not swapped.
@@ -1644,6 +1665,7 @@ pub fn run() {
     // Discovered Ollama models from the last run resolve at once while a refresh runs.
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
+    let pathnav = pathnav_ui::PathNav::new(notify.clone());
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
@@ -1695,6 +1717,8 @@ pub fn run() {
         title_press: None,
         pane_move: None,
         hover: None,
+        hover_hand: false,
+        hover_key: None,
         popup_menu: None,
         color_pick: None,
         shortcuts: None,
@@ -1842,6 +1866,7 @@ pub fn run() {
         trigger_alerts: HashMap::new(),
         trigger_pool: crate::triggers::CommandPool::new(16),
         trigger_children: Vec::new(),
+        handler_inbox: Default::default(),
         bells: HashMap::new(),
         bell_icons: std::collections::HashSet::new(),
         activity: HashMap::new(),
@@ -1874,6 +1899,10 @@ pub fn run() {
         jobs_wanting: Default::default(),
         jobs_tree_seen: 0,
         jobs_watch_at: None,
+        cmdinfo: None,
+        pathnav,
+        pathnav_due: None,
+        pathnav_press: None,
         jobs_popover: None,
         jobs_popover_closed: None,
         jobs_confirm: None,
@@ -2098,6 +2127,8 @@ pub fn run() {
         chat_convo_dirty: true,
         chat_picker: None,
         picker_hits: Vec::new(),
+        cmd_button_hits: Vec::new(),
+        cmd_button_menu: None,
         offscreen_hits: Vec::new(),
         offscreen_prepared: HashMap::new(),
         inline_hits: Vec::new(),
@@ -3216,10 +3247,12 @@ impl App {
     /// on every route, and the timer shows the offer instead. Returns what it did first, so a caller
     /// can tell a restart from a question that is waiting for the person.
     pub(super) fn restart_via(&mut self, id: PaneId, via: crate::session_end::Via) -> crate::session_end::RestartStep {
-        use crate::session_end::{restart_step, RestartStep};
+        use crate::session_end::{restart_first, RestartStep};
         let Some(p) = self.panes.get(&id) else { return RestartStep::Offer };
         let left = if p.exited.is_some() { p.live_survivors() } else { Vec::new() };
-        let step = restart_step(via, p.exited.is_some(), left.len());
+        // A single-use window (git, Run Command in Window) and the other panes with nothing of
+        // their own to start are refused before any question.
+        let step = restart_first(self.restartable(id), via, p.exited.is_some(), left.len());
         match step {
             RestartStep::Now => self.restart_pane(id),
             RestartStep::AskRunningJobs => {
@@ -3235,6 +3268,7 @@ impl App {
                 }
             }
             RestartStep::Offer => self.offer_restart(id),
+            RestartStep::Refused => {}
         }
         step
     }
@@ -3663,6 +3697,7 @@ impl App {
         pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
         pane.set_copy_options(crate::seltext::Options::from_globals(&self.globals));
         screen_follows_profile(&mut pane.screen, p);
+        pane.screen.set_path_probe(self.path_probe());
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
         if !relaunch {
@@ -3899,8 +3934,13 @@ impl App {
         self.apply_border_everywhere();
         // An emulation knob (Advanced > Terminal) may have changed.
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        // PathsToIgnore or EnableSemanticHistoryOnNetworkMounts may have changed.
+        let probe = self.path_probe();
         for id in ids {
             self.apply_emu_rules(id);
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.screen.set_path_probe(probe.clone());
+            }
         }
         self.tmux_resend_colors();
         // AllowLiveResize may have changed.
@@ -4239,6 +4279,15 @@ impl App {
         // Dependencies' pip command.
         self.single_use_ended(id);
         self.deps_command_ended(id);
+        // Its Command Info window goes with it.
+        self.cmd_button_hits.retain(|(p, ..)| *p != id);
+        if self.pathnav_due.is_some_and(|(_, p, _)| p == id) {
+            self.pathnav_due = None;
+        }
+        self.pathnav_press = self.pathnav_press.filter(|(p, _)| *p != id);
+        if self.cmdinfo.as_ref().is_some_and(|w| w.pane == id) {
+            self.cmdinfo = None;
+        }
         // A timed restart of a pane that is gone must not fire.
         self.pending_restarts.remove(&id);
         self.restart_history.remove(&id);
@@ -4888,6 +4937,10 @@ impl App {
         // last click's hold ends; the terminal part applies it after every UI hit test (B6).
         let first = self.first_mouse();
         self.first_mouse_down = false;
+        // Any press ends a navigator click waiting out the double-click time: a second click
+        // cancels it (`TV:7924-7933`).
+        self.pathnav_due = None;
+        self.pathnav_press = None;
         self.hide_tab_tip();
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
@@ -4945,7 +4998,10 @@ impl App {
         if self.clip_split_hit(x, y) || self.inline_split_hit(x, y) {
             return;
         }
-        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
+        if button == MouseButton::Left && self.navigator_press(x, y) {
+            return;
+        }
+        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y) || self.cmd_button_press(x, y, event_loop)) {
             return;
         }
         // A divider's grab zone is Tandem's for every button: the left drags it, the others
@@ -4991,6 +5047,8 @@ impl App {
         let b = button_number(button);
         // The click that activated the window (`mouseDownImpl:`): only now, so a divider, title
         // bar or status bar press is never swallowed and never counts as first mouse.
+        // Captured before the press focuses the pane (`MH:278-295`).
+        let was_focused = self.focused_id() == Some(id);
         let (kind, counts) = mouse::first_click(first, self.mods.cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(id));
         self.first_mouse_down = counts;
         match kind {
@@ -5038,11 +5096,13 @@ impl App {
         }
         // Win-click opens the file or URL under the pointer (Semantic History). Windows
         // would open the Start menu when Win comes up, so that is masked.
-        if b == 0 && mods.cmd && !mods.ctrl && self.globals.bool("CommandSelection") {
+        // A click that only brought the window forward is a plain click (`MH:278-295`).
+        let acts = crate::semantic::win_click_acts(self.first_mouse_down, was_focused, self.globals.bool("CmdClickWhenInactiveInvokesSemanticHistory"));
+        if b == 0 && mods.cmd && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
             #[cfg(windows)]
             crate::winkeys::mask_start_menu();
             let point = self.grid_point(id, col, row);
-            if self.open_target(id, point, false) {
+            if self.open_target(id, point, false, event_loop) {
                 return self.redraw();
             }
         }
@@ -5062,6 +5122,8 @@ impl App {
                 if count == 1 && plain && (self.click_unfold(id, point) || self.click_note(id, point, event_loop)) {
                     return;
                 }
+                // The path mark under a plain single click: the release decides (no drag).
+                self.pathnav_press = if count == 1 && plain { self.path_mark_index(id, point).map(|i| (id, i)) } else { None };
                 // Win without Alt adds a selection (`MH:360-431`); the earlier ones are held while the new
                 // one is made and put back beside it. Win with Ctrl did not reach the open above.
                 let append = mods.cmd && !mods.alt;
@@ -5150,6 +5212,7 @@ impl App {
             return;
         }
         let b = button_number(button);
+        let nav_press = self.pathnav_press.take();
         if let Some(pd) = self.pointer_down.take() {
             if pd.button == b {
                 let modes = self.modes(pd.pane);
@@ -5195,6 +5258,11 @@ impl App {
                     }
                     if let Some((p, cell)) = alt_click.filter(|(p, _)| *p == pane) {
                         self.alt_click_moves_cursor(p, cell);
+                    }
+                    // A click with no drag on a path in the prompt opens the navigator after the
+                    // double-click time, ahead of the command selection (`TV:7897-7934`).
+                    if let Some((p, i)) = nav_press.filter(|(p, _)| *p == pane) {
+                        self.start_navigator_click(p, i);
                     }
                     // A click (no drag) that comes up on the key cursor opens the password
                     // manager.
@@ -5475,6 +5543,7 @@ impl App {
         let mut block_buttons = Vec::new();
         let mut fps_rect: Option<Rect> = None;
         let mut picker_hits = Vec::new();
+        let mut cmd_button_hits = Vec::new();
         let mut offscreen_hits: Vec<(PaneId, Rect, i32)> = Vec::new();
         let mut band_jobs: Vec<(PaneId, Rect, (f32, f32))> = Vec::new();
         let mut indicator_hits = Vec::new();
@@ -5600,6 +5669,7 @@ impl App {
                 }
                 indicator_hits.extend(self.draw_coprocess_indicator(&mut frame, id, self.text_rect(id, rect), cell, (sends, receives)));
                 picker_hits.extend(self.draw_session_picker(&mut frame, id, self.text_rect(id, rect), cell));
+                cmd_button_hits.extend(self.draw_command_buttons(&mut frame, id, self.text_rect(id, rect), cell));
                 overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::InfoBar, r)));
                 if let Some(t) = self.draw_attention(&mut frame, id, self.text_rect(id, rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -5619,7 +5689,7 @@ impl App {
                         if block_rows.contains(&row) || !(show || m.name.is_some()) {
                             continue;
                         }
-                        let color = crate::marks::color(&m);
+                        let color = crate::marks::color(&m, self.globals.bool("ShowYellowMarkForJobStoppedBySignal"));
                         // A line-style mark draws a line, and no bar unless its row is folded.
                         if m.line_style {
                             if !scene::line_mark_hidden(row, None) {
@@ -5711,6 +5781,7 @@ impl App {
         self.block_buttons = block_buttons;
         self.porthole_hits = porthole_hits;
         self.picker_hits = picker_hits;
+        self.cmd_button_hits = cmd_button_hits;
         self.inline_hits = inline_hits;
         self.chat_indicator_hits = indicator_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
@@ -5726,6 +5797,7 @@ impl App {
         holes.extend(self.porthole_hits.iter().map(|h| h.3));
         holes.extend(self.block_buttons.iter().map(|b| b.0));
         holes.extend(self.picker_hits.iter().map(|h| h.1));
+        holes.extend(self.cmd_button_hits.iter().map(|h| h.1));
         holes.extend(self.chat_indicator_hits.iter().map(|h| h.1));
         holes.extend(self.find_bar_rect.into_iter().chain(self.find_mode_rect));
         // The tab tooltip, the fps meter, the clippings panels and preview and the inline chat
@@ -6082,6 +6154,7 @@ impl ApplicationHandler<UserEvent> for App {
         // A selection made or cleared at an idle prompt moves Explain Output's state.
         self.explain_follows();
         let active = hotkey_ui::tandem_in_front();
+        let edge = active != self.app_active;
         if active && !self.app_active {
             self.hotkey_reactivated();
             self.ffm_became_active();
@@ -6089,6 +6162,10 @@ impl ApplicationHandler<UserEvent> for App {
             self.ffm_became_inactive();
         }
         self.app_active = active;
+        // The Win-hover underline follows the window's key state (`TVA:466-472`).
+        if edge {
+            self.update_hover();
+        }
         // Again after 13j's edge (S9): a pane focused by aggressive focus follows mouse stamps in
         // this pass, and the inferrer's focus check runs inside it (P20).
         self.sync_pane_activity();
@@ -6207,7 +6284,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.log_tick();
         self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
-        let wake = [ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let cmdinfo_due = self.cmdinfo_tick();
+        let pathnav_due = self.pathnav_tick();
+        let wake = [cmdinfo_due, pathnav_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6310,7 +6389,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

@@ -166,22 +166,30 @@ pub fn trigger_warning(action_title: &str) -> String {
     format!("{} trigger: Can't run two coprocesses at once.", action_title.trim_end_matches('\u{2026}').trim_end_matches("..."))
 }
 
-/// A path for a cmd.exe command line: quoted, so `&`, `|`, `^`, and parentheses are text,
-/// and each `%` escaped outside the quotes (`"^%"`), since cmd expands %VAR% even inside
-/// them. A path cannot hold a `"`.
-pub fn cmd_safe(path: &str) -> String {
-    format!("\"{}\"", path.replace('%', "\"^%\""))
-}
-
-/// `fileDropCoprocess`: the command for dropped files, `\(filenames)` filled with the
-/// paths (quoted when they hold a space). None when the setting is empty.
-pub fn drop_command(template: &str, files: &[String]) -> Option<String> {
+/// `fileDropCoprocess`: the command for dropped files, `\\(filenames)` filled with the paths,
+/// each a value for the one cmd.exe builder (`semantic::build_cmd_line`: quoted, or bare inside
+/// the template's own quotes). None when the setting is empty; Err (`CMD_REFUSED`) when a
+/// dropped name holds what cmd.exe would read (a downloaded `a&calc&.txt`, `%`, parentheses,
+/// a drive root's trailing backslash): nothing runs.
+pub fn drop_command(template: &str, files: &[String]) -> Option<Result<String, String>> {
+    use crate::semantic::CmdPiece;
     let t = template.trim();
     if t.is_empty() {
         return None;
     }
-    let names = files.iter().map(|f| cmd_safe(f)).collect::<Vec<_>>().join(" ");
-    Some(t.replace("\\(filenames)", &names))
+    let mut pieces = Vec::new();
+    for (i, text) in t.split("\\(filenames)").enumerate() {
+        if i > 0 {
+            for (n, f) in files.iter().enumerate() {
+                if n > 0 {
+                    pieces.push(CmdPiece::Text(" ".into()));
+                }
+                pieces.push(CmdPiece::Value(f.clone()));
+            }
+        }
+        pieces.push(CmdPiece::Text(text.to_string()));
+    }
+    Some(crate::semantic::build_cmd_line(&pieces).ok_or_else(|| crate::semantic::CMD_REFUSED.to_string()))
 }
 
 /// Dropped filenames as text for the shell prompt (`NSPasteboard+iTerm.m:31-35`): every name
@@ -285,13 +293,24 @@ mod tests {
     fn file_drop_command() {
         let files = vec![r"C:\a b\x.txt".to_string(), r"C:\y.txt".to_string()];
         assert_eq!(drop_command("", &files), None, "no fileDropCoprocess: a drop pastes as usual");
-        assert_eq!(drop_command("upload \\(filenames)", &files).as_deref(), Some(r#"upload "C:\a b\x.txt" "C:\y.txt""#));
-        assert_eq!(drop_command("upload", &files).as_deref(), Some("upload"));
+        assert_eq!(drop_command("upload \\(filenames)", &files), Some(Ok(r#"upload "C:\a b\x.txt" "C:\y.txt""#.into())));
+        assert_eq!(drop_command("upload", &files), Some(Ok("upload".into())));
     }
 
+    /// The one cmd.exe builder and its refusal: a dropped name cmd.exe would read is refused
+    /// (with the message), whether or not the template quotes the placeholder; a pre-quoted
+    /// placeholder gets the path bare, one argument.
     #[test]
     fn dropped_names_cannot_run_commands() {
-        let files = vec![r"C:\d\notes&calc.txt".to_string(), r"C:\d\%PATH%.txt".to_string()];
-        assert_eq!(drop_command("x \\(filenames)", &files).as_deref(), Some(r#"x "C:\d\notes&calc.txt" "C:\d\"^%"PATH"^%".txt""#));
+        let refused = Some(Err(crate::semantic::CMD_REFUSED.to_string()));
+        for name in [r"C:\d\a&calc&.txt", r"C:\d\%PATH%.txt", r"C:\d\a(1).txt", "C:\\d\\"] {
+            let files = vec![r"C:\ok.txt".to_string(), name.to_string()];
+            assert_eq!(drop_command("x \\(filenames)", &files), refused, "{name}");
+            assert_eq!(drop_command("x \"\\(filenames)\"", &files), refused, "{name}");
+        }
+        assert_eq!(drop_command("x \\(filenames)", &["C:\\".to_string()]), Some(Ok("x \"C:\\.\"".into())), "a dropped drive root is written as X:\\.");
+        let line = drop_command("upload \"\\(filenames)\"", &[r"C:\a b\x.txt".to_string()]).unwrap().unwrap();
+        assert_eq!(crate::semantic::cmd_command_line(&line), r#"cmd.exe /d /v:off /s /c "upload "C:\a b\x.txt"""#);
+        assert_eq!(crate::semantic::split_command_line(&line), ["upload", r"C:\a b\x.txt"]);
     }
 }

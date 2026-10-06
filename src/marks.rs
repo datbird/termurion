@@ -22,6 +22,32 @@ pub enum Kind {
     Manual,
 }
 
+/// Most rows a prompt may span for its paths to be looked at (`MS:4786-4789`).
+const MAX_PROMPT_ROWS: i64 = 5;
+/// How many rows above a hovered or clicked cell the Command Info hit test reads for a prompt
+/// mark: a command line spans a few rows, so a cell farther below one is not on a command.
+const HIT_WALK_ROWS: i32 = 64;
+
+/// The nearest marked row at or above `line` (down to `top`), reading at most `cap` rows.
+fn nearest_mark(line: i32, top: i32, cap: i32, mark_at: impl Fn(i32) -> u32) -> Option<(u32, i32)> {
+    let mut at = line;
+    for _ in 0..cap {
+        let id = mark_at(at);
+        if id != 0 {
+            return Some((id, at));
+        }
+        if at <= top {
+            return None;
+        }
+        at -= 1;
+    }
+    None
+}
+/// Most path candidates kept per prompt (B4).
+const MAX_PATH_CANDIDATES: usize = 4;
+/// Most path marks kept per pane.
+const MAX_PATH_MARKS: usize = 64;
+
 /// A place in the text, relative to a marked row: whole lines after the mark's line, then
 /// cells into that line. Reflow moves rows but keeps lines and cells, so this survives a
 /// resize.
@@ -57,6 +83,9 @@ pub struct Mark {
     pub output_start: Option<Anchor>,
     /// The directory at the prompt's end.
     pub directory: Option<String>,
+    /// The host and user shell integration reported at the prompt's end (Command Info's URL).
+    pub host: Option<String>,
+    pub user: Option<String>,
     /// Drawn as a line across the pane instead of a bar in the margin; decided when the
     /// prompt mark is made (`MS:3578-3641`) and never changed after.
     pub line_style: bool,
@@ -64,7 +93,7 @@ pub struct Mark {
 
 impl Mark {
     pub fn new(id: u32, kind: Kind) -> Mark {
-        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None, line_style: false }
+        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None, host: None, user: None, line_style: false }
     }
 }
 
@@ -79,10 +108,15 @@ pub enum MarkColor {
 }
 
 /// iTerm2's mark color by exit code (iTermTextDrawingHelper).
-pub fn color(m: &Mark) -> MarkColor {
-    match m.code {
+pub fn color(m: &Mark, yellow_for_signals: bool) -> MarkColor {
+    color_for_code(m.code, yellow_for_signals)
+}
+
+/// The same by exit code alone (P5: the gutter bar and the scrollbar tick share it).
+pub fn color_for_code(code: Option<i32>, yellow_for_signals: bool) -> MarkColor {
+    match code {
         None | Some(0) => MarkColor::Success,
-        Some(128..=160) => MarkColor::Other,
+        Some(128..=160) if yellow_for_signals => MarkColor::Other,
         Some(_) => MarkColor::Error,
     }
 }
@@ -152,6 +186,13 @@ pub struct Marks {
     /// The prompt start (set with the range at A) and the command start (at B) as anchors,
     /// which survive reflow: the range is derived from them again when rows move.
     prompt_anchors: (Option<Anchor>, Option<Anchor>),
+    /// Path-shaped text in the newest prompt, waiting for the app to ask the disk (B4): text
+    /// only, nothing here probes anything.
+    path_candidates: Vec<crate::pathnav::PathCandidate>,
+    /// The prompt mark whose paths were recorded (one record per mark).
+    path_for: Option<u32>,
+    /// Folders in prompts a click opens the navigator on, anchored so reflow keeps them.
+    pub path_marks: Vec<crate::pathnav::PathMark>,
 }
 
 /// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
@@ -285,10 +326,103 @@ impl Marks {
     pub(crate) fn program_ended(&mut self) {
         self.in_command = false;
         self.running = false;
+        // An ended or restarted pane's old prompt must not offer a cd into the new shell (S5).
+        self.path_candidates.clear();
+        self.path_marks.clear();
+        self.path_for = None;
     }
 }
 
 impl Screen {
+    /// The candidates recorded at the newest prompt's end, once (B4).
+    pub fn take_path_candidates(&mut self) -> Vec<crate::pathnav::PathCandidate> {
+        std::mem::take(&mut self.marks.path_candidates)
+    }
+
+    /// Whether `take_path_candidates` has anything.
+    pub fn has_path_candidates(&self) -> bool {
+        !self.marks.path_candidates.is_empty()
+    }
+
+    /// Records the path-shaped text of the prompt that just ended (133;B), text only: at most
+    /// five rows (`MS:4786-4789`), at most `MAX_PATH_CANDIDATES` paths, one record per prompt
+    /// mark. Nothing here asks a disk or a drive (B4); the app does, off the UI thread.
+    fn record_path_candidates(&mut self, start: (i64, usize), end: (i64, usize)) {
+        let Some(mark) = self.marks.current else { return };
+        if self.marks.path_for == Some(mark) {
+            return;
+        }
+        self.marks.path_for = Some(mark);
+        self.marks.path_candidates.clear();
+        let g = self.term.primary_grid();
+        let (off, cols) = (g.scrolled_off() as i64, g.columns());
+        let ((sl, sc), (el, ec)) = (start, end);
+        if el < sl || el - sl + 1 > MAX_PROMPT_ROWS {
+            return;
+        }
+        let (top, bottom) = (-(g.history_size() as i64), g.screen_lines() as i64 - 1);
+        let mut found = Vec::new();
+        'rows: for abs in sl..=el {
+            let line = abs - off;
+            if line < top || line > bottom {
+                continue;
+            }
+            let row = &g[Line(line as i32)];
+            let first = if abs == sl { sc } else { 0 };
+            let last = if abs == el { ec.min(cols) } else { cols };
+            let chars: Vec<char> = (0..cols)
+                .map(|c| {
+                    let cell = &row[Column(c)];
+                    let spacer = cell.flags.intersects(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER);
+                    if c < first || c >= last || spacer { ' ' } else { cell.c }
+                })
+                .collect();
+            for cand in crate::pathnav::candidates(&chars) {
+                if found.len() >= MAX_PATH_CANDIDATES {
+                    break 'rows;
+                }
+                if let Some(anchor) = self.anchor_at(mark, Point::new(Line(line as i32), Column(cand.start))) {
+                    found.push(crate::pathnav::PathCandidate { anchor, start: cand.start, end: cand.end, text: cand.text });
+                }
+            }
+        }
+        self.marks.path_candidates = found;
+    }
+
+    /// The folders the app found among the candidates. Newest last, at most `MAX_PATH_MARKS`.
+    pub fn add_path_marks(&mut self, found: Vec<crate::pathnav::PathMark>) {
+        let marks = &mut self.marks;
+        marks.path_marks.extend(found.into_iter().filter(|m| marks.records.contains_key(&m.row_anchor.mark)));
+        let extra = marks.path_marks.len().saturating_sub(MAX_PATH_MARKS);
+        marks.path_marks.drain(..extra);
+    }
+
+    /// Drops the path marks whose prompt mark left the buffer.
+    fn prune_path_marks(&mut self) {
+        let records = &self.marks.records;
+        self.marks.path_marks.retain(|m| records.contains_key(&m.row_anchor.mark));
+    }
+
+    /// The path marks, newest last.
+    pub fn path_marks(&self) -> &[crate::pathnav::PathMark] {
+        &self.marks.path_marks
+    }
+
+    /// The path mark under a cell (its index and a copy).
+    pub fn path_mark_at(&self, p: Point) -> Option<(usize, crate::pathnav::PathMark)> {
+        self.marks.path_marks.iter().enumerate().find_map(|(i, m)| {
+            let at = self.resolve(m.row_anchor)?;
+            (at.line == p.line && p.column.0 >= at.column.0 && p.column.0 < at.column.0 + (m.end - m.start)).then(|| (i, m.clone()))
+        })
+    }
+}
+
+impl Screen {
+    /// The probe rules the prompt path sniff reads (`App::path_probe`).
+    pub fn set_path_probe(&mut self, p: crate::netpath::Probe) {
+        self.path_probe = p;
+    }
+
     /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
     /// cursor's row (the prompt) goes to the top of the screen, and the rows kept above move
     /// into history, so the screen matches ConPTY after its own clear (which keeps only the
@@ -697,6 +831,7 @@ impl Screen {
     pub fn prune_marks(&mut self) {
         let live: std::collections::HashSet<u32> = self.row_marks().into_iter().map(|(_, id)| id).collect();
         self.marks.records.retain(|id, _| live.contains(id));
+        self.prune_path_marks();
     }
 
     /// The prompt marks in the buffer as the offscreen command line's rules read them, oldest
@@ -758,6 +893,7 @@ impl Screen {
         let rows = self.row_marks();
         let live: std::collections::HashSet<u32> = rows.iter().map(|(_, id)| *id).collect();
         self.marks.records.retain(|id, _| live.contains(id));
+        self.prune_path_marks();
         rows.into_iter().filter_map(|(l, id)| Some((l, self.marks.records.get(&id)?.clone()))).collect()
     }
 
@@ -808,6 +944,94 @@ impl Screen {
         }
         let start = self.resolve(self.marks.output_start?)?;
         Some((start, self.before(self.cursor_point())))
+    }
+
+    /// The prompt mark whose command line holds `point`, and that line's range (from the end of
+    /// the prompt to where output began, `UAF:275-286`). A mark with no command text is no hit,
+    /// nor is anything while a full-screen program shows the alternate screen (P7).
+    pub fn command_hit(&self, point: Point) -> Option<(u32, (Point, Point))> {
+        if self.alt_screen() {
+            return None;
+        }
+        // The command a point can belong to is the nearest prompt mark at or above its row, so a
+        // hover never reads the whole buffer for marks.
+        let grid = self.term.primary_grid();
+        let top = -(grid.history_size() as i32);
+        let line = point.line.0;
+        if line < top || line >= grid.screen_lines() as i32 {
+            return None;
+        }
+        let (id, line) = nearest_mark(line, top, HIT_WALK_ROWS, |l| grid[Line(l)].mark())?;
+        let m = self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt && !m.command.trim().is_empty())?;
+        let (a, b) = m.command_range?;
+        let (start, end) = (self.resolve_from(line, a)?, self.resolve_from(line, b)?);
+        let end = self.before(end);
+        (point >= start && point <= end).then_some((id, (start, end)))
+    }
+
+    /// Prompt command `id`'s record, while its row is in the buffer.
+    pub fn command_mark(&self, id: u32) -> Option<&Mark> {
+        self.row_marks().into_iter().any(|(_, m)| m == id).then(|| self.marks.records.get(&id)).flatten()
+    }
+
+    /// Prompt command `id`'s record without looking for its row (the open window's tick: no scan of
+    /// the buffer per frame).
+    pub fn command_record(&self, id: u32) -> Option<&Mark> {
+        self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)
+    }
+
+    /// Whether `id` is the command whose output is being printed now.
+    pub fn command_is_running(&self, id: u32) -> bool {
+        self.marks.running && self.marks.last_command == Some(id)
+    }
+
+    /// The rows of command `id`'s output: from where it began to the row before the next
+    /// prompt mark, or for the newest command to the cursor (`rangeOfOutputForCommandMark:`,
+    /// `VSS:1045-1080`). None for a command with no output start, or under the alternate screen
+    /// (the marks are the main screen's).
+    pub fn output_range_of(&self, id: u32) -> Option<(Point, Point)> {
+        if self.alt_screen() {
+            return None;
+        }
+        let rows = self.row_marks();
+        let mine = rows.iter().find(|(_, m)| *m == id)?.0;
+        let m = self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)?;
+        let first = self.resolve_from(mine, m.output_start?)?;
+        let next = rows.iter().filter(|(l, other)| *l > mine && self.marks.records.get(other).is_some_and(|r| r.kind == Kind::Prompt)).map(|(l, _)| *l).min();
+        let last = match next {
+            Some(l) => Point::new(Line(l - 1), Column(self.term.columns() - 1)),
+            None => self.before(self.cursor_point()),
+        };
+        (last >= first).then_some((first, last))
+    }
+
+    /// Command `id`'s output as text: each row without its trailing blanks, no trailing blank
+    /// rows (what Command Info counts and copies).
+    pub fn output_text(&self, id: u32) -> Option<String> {
+        let (a, b) = self.output_range_of(id)?;
+        let text = self.term.bounds_to_string(a, b);
+        let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches([' ', '\0', '\r'])).collect();
+        let end = lines.iter().rposition(|l| !l.is_empty()).map_or(0, |i| i + 1);
+        Some(lines[..end].join("\n"))
+    }
+
+    /// The fold sitting on the row where command `id`'s output begins: the row `fold` puts its
+    /// summary on and the only one the Unfold button looks at (iTerm2 reads the button's line).
+    pub fn command_fold(&self, id: u32) -> Option<u32> {
+        let (first, _) = self.output_range_of(id)?;
+        self.fold_at(first.line.0)
+    }
+
+    /// The grid lines of command `id`'s region: its prompt's line through the line before the next
+    /// prompt mark, else the last screen line (`PTYSession.m` command region). None when the mark
+    /// is gone or is not a prompt.
+    pub fn command_grid_lines(&self, id: u32) -> Option<(i32, i32)> {
+        let rows = self.row_marks();
+        let first = rows.iter().find(|(_, m)| *m == id)?.0;
+        self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)?;
+        let next = rows.iter().filter(|(l, other)| *l > first && self.marks.records.get(other).is_some_and(|r| r.kind == Kind::Prompt)).map(|(l, _)| *l).min();
+        let last = next.map_or(self.term.primary_grid().screen_lines() as i32 - 1, |l| l - 1);
+        Some((first, last.max(first)))
     }
 
     /// The command being typed, else the last command's text (Select Current Command).
@@ -1053,13 +1277,18 @@ impl Screen {
                 self.marks.in_command = true;
                 self.marks.command_start = self.marks.current.and_then(|c| self.anchor_here(c));
                 let (end, cwd) = (self.marks.command_start, self.shell.cwd.clone());
+                let (host, user) = (self.shell.host.clone(), self.shell.user.clone());
                 if let Some(m) = self.marks.current.and_then(|c| self.marks.records.get_mut(&c)) {
                     m.prompt_end = end;
                     m.directory = cwd;
+                    m.host = host;
+                    m.user = user;
                 }
                 self.composer_from = Some(self.abs_cursor());
                 // The prompt is captured unless its range did not change (`MS:4749-4777`).
-                let range = crate::prompt_state::prompt_range(self.marks.prompt_range.0, self.abs_cursor());
+                // The prompt's real extent, before the range is cut for a long prompt.
+                let raw = (self.marks.prompt_range.0, self.abs_cursor());
+                let range = crate::prompt_state::prompt_range(raw.0, raw.1);
                 if range != self.marks.prompt_range {
                     self.marks.prompt_range = range;
                     self.marks.prompt_anchors.1 = self.marks.command_start;
@@ -1067,6 +1296,7 @@ impl Screen {
                     let events = self.prompt_state.captured(rows, text);
                     self.composer_events.extend(events);
                 }
+                self.record_path_candidates(raw.0, raw.1);
                 // The API's PROMPT, at the prompt's end (`PS:16709-16726`).
                 if self.api_watch {
                     self.api_events.push(crate::api_notify::ApiEvent::Prompt(self.marks.current));
@@ -1464,6 +1694,21 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    /// Final wave item 6: the hit test reads a bounded number of rows however long the scrollback.
+    #[test]
+    fn the_command_hit_walk_is_bounded() {
+        let reads = std::cell::Cell::new(0);
+        let none = |_: i32| {
+            reads.set(reads.get() + 1);
+            0
+        };
+        assert_eq!(nearest_mark(0, -1_000_000, HIT_WALK_ROWS, none), None);
+        assert_eq!(reads.get(), HIT_WALK_ROWS as usize, "no marks in a million rows: 64 reads, not a million");
+        assert_eq!(nearest_mark(10, -100, HIT_WALK_ROWS, |l| if l == 4 { 7 } else { 0 }), Some((7, 4)), "a mark a few rows up is found");
+        assert_eq!(nearest_mark(0, -100, HIT_WALK_ROWS, |l| if l == -100 { 7 } else { 0 }), None, "a mark farther than the cap is not a hit");
+        assert_eq!(nearest_mark(0, -3, HIT_WALK_ROWS, |_| 0), None, "the top of the buffer ends the walk");
+    }
+
     use super::*;
     use crate::screen::Screen;
 
@@ -1483,7 +1728,7 @@ mod tests {
         assert_eq!(marks[0].1.command, "ls -l");
         assert_eq!(marks[0].1.code, Some(2));
         assert!(marks[0].1.start.is_some() && marks[0].1.end.is_some());
-        assert_eq!(color(&marks[0].1), MarkColor::Error);
+        assert_eq!(color(&marks[0].1, true), MarkColor::Error);
         assert_eq!(s.shell.history[0].command, "ls -l");
         assert_eq!(s.shell.history[0].code, Some(2));
     }
@@ -1523,6 +1768,201 @@ mod tests {
         assert_eq!(s.term().bounds_to_string(a, b).trim_end(), "output");
         let (a, b) = s.last_command_range().unwrap();
         assert_eq!(s.term().bounds_to_string(a, b).trim_end(), "echo hi");
+    }
+
+    fn drain(s: &mut Screen) -> Vec<(String, usize, usize)> {
+        s.take_path_candidates().into_iter().map(|c| (c.text, c.start, c.end)).collect()
+    }
+
+    #[test]
+    fn prompt_paths_are_recorded_as_text() {
+        let mut s = Screen::new(80, 10);
+        s.feed(b"\x1b]133;A\x07PS C:\\Users\\rob> \x1b]133;B\x07");
+        assert!(s.has_path_candidates());
+        let got = s.take_path_candidates();
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].text.as_str(), got[0].start, got[0].end), ("C:\\Users\\rob", 3, 15));
+        assert_eq!(s.resolve(got[0].anchor), Some(Point::new(Line(0), Column(3))), "the anchor names the first cell");
+        assert!(drain(&mut s).is_empty(), "taken once");
+        assert!(!s.has_path_candidates());
+        // A redrawn prompt (a second 133;B on the same mark) records nothing new.
+        s.feed(b"\x1b]133;B\x07");
+        assert!(drain(&mut s).is_empty());
+        // The next prompt records its own.
+        s.feed(b"\r\n\x1b]133;A\x07rob@box:~/src$ \x1b]133;B\x07");
+        assert_eq!(drain(&mut s), [("~/src".to_string(), 8, 13)]);
+    }
+
+    #[test]
+    fn a_prompt_of_six_rows_records_none() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07/a\r\n/b\r\n/c\r\n/d\r\n/e\r\n/f> \x1b]133;B\x07");
+        assert!(drain(&mut s).is_empty(), "MS:4786-4789: a long prompt is not looked at");
+        let mut five = Screen::new(40, 12);
+        five.feed(b"\x1b]133;A\x07/a\r\n/b\r\n/c\r\n/d\r\n/e> \x1b]133;B\x07");
+        assert_eq!(drain(&mut five).len(), 4, "five rows are looked at, four paths kept");
+    }
+
+    #[test]
+    fn sniff_never_probes_on_the_parse_path() {
+        struct Panics;
+        impl crate::netpath::Drives for Panics {
+            fn is_remote(&self, _: &str) -> bool {
+                panic!("the parse path asked a drive");
+            }
+        }
+        let mut s = Screen::new(80, 10);
+        s.set_path_probe(crate::netpath::Probe { drives: std::sync::Arc::new(Panics), ..crate::netpath::Probe::default() });
+        for i in 0..10_000 {
+            s.feed(b"\x1b]133;A\x07PS /a /b /c /d /e> \x1b]133;B\x07\r\n");
+            if i % 997 == 0 {
+                assert!(s.take_path_candidates().len() <= 4);
+            }
+        }
+        let last = s.take_path_candidates();
+        assert_eq!(last.len(), 4, "at most four per prompt, and only the newest prompt waits");
+        assert!(s.marks.path_marks.is_empty(), "nothing became a mark: the app resolves them");
+    }
+
+    #[test]
+    fn path_marks_move_with_rows_and_end_with_the_program() {
+        let mut s = Screen::new(80, 5);
+        s.feed(b"\x1b]133;A\x07PS C:\\Users\\rob> \x1b]133;B\x07");
+        let c = s.take_path_candidates().remove(0);
+        s.add_path_marks(vec![crate::pathnav::PathMark { row_anchor: c.anchor, start: c.start, end: c.end, path: c.text.clone() }]);
+        let at = |line: i32, col: usize| Point::new(Line(line), Column(col));
+        assert_eq!(s.path_mark_at(at(0, 3)).map(|(i, m)| (i, m.path)), Some((0, "C:\\Users\\rob".to_string())));
+        assert_eq!(s.path_mark_at(at(0, 14)).map(|(i, _)| i), Some(0));
+        for p in [at(0, 2), at(0, 15), at(1, 3)] {
+            assert_eq!(s.path_mark_at(p), None, "{p:?}");
+        }
+        // Rows scrolling up keep the mark: the anchor follows its prompt mark.
+        for _ in 0..5 {
+            s.feed(b"\r\n");
+        }
+        assert_eq!(s.path_mark_at(Point::new(Line(-1), Column(4))).map(|(i, _)| i), Some(0));
+        assert_eq!(s.path_marks().len(), 1);
+        s.program_ended();
+        assert!(s.path_marks().is_empty(), "S5: an ended program's old prompt offers no cd");
+        assert!(!s.has_path_candidates());
+    }
+
+    #[test]
+    fn command_hit_follows_iterm2() {
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]133;A\x07PS> \x1b]133;B\x07dir\r\n\x1b]133;C\x07x\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07PS> \x1b]133;B\x07");
+        let at = |line: i32, col: usize| Point::new(Line(line), Column(col));
+        let id = s.marks_in_order().iter().find(|(_, m)| m.command == "dir").map(|(_, m)| m.id).unwrap();
+        // Each cell of "dir" hits the mark with the command's range.
+        for col in 4..7 {
+            let (hit, (a, b)) = s.command_hit(at(0, col)).unwrap_or_else(|| panic!("col {col}"));
+            assert_eq!(hit, id);
+            assert_eq!(a, at(0, 4));
+            assert!(b >= at(0, 6), "{b:?}");
+        }
+        // The prompt text, the output and the new prompt are not the command.
+        for p in [at(0, 0), at(0, 3), at(1, 0), at(2, 1), at(2, 5)] {
+            assert_eq!(s.command_hit(p), None, "{p:?}");
+        }
+        // A prompt with an empty command (Enter at once) is no hit.
+        let mut e = Screen::new(40, 10);
+        e.feed(b"\x1b]133;A\x07PS> \x1b]133;B\x07\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07PS> \x1b]133;B\x07");
+        for p in [at(0, 3), at(0, 4), at(0, 6), at(1, 0)] {
+            assert_eq!(e.command_hit(p), None, "{p:?}");
+        }
+        // The next command is its own mark: each point belongs to the prompt above it.
+        s.feed(b"ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+        let second = s.command_hit(at(2, 5)).map(|(m, _)| m).unwrap();
+        assert_ne!(second, id);
+        assert_eq!(s.command_hit(at(0, 5)).map(|(m, _)| m), Some(id));
+        assert_eq!(s.command_hit(at(3, 0)), None);
+        // Not under a full-screen program (P7).
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.command_hit(at(0, 5)), None);
+    }
+
+    #[test]
+    fn a_commands_output_is_its_rows() {
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2  \r\n\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07partial");
+        let ids: Vec<u32> = s.marks_in_order().iter().map(|(_, m)| m.id).collect();
+        assert_eq!(ids.len(), 2);
+        // The finished command ends at the row before the next prompt; blanks are trimmed.
+        assert_eq!(s.output_text(ids[0]).as_deref(), Some("l1\nl2"));
+        assert!(!s.command_is_running(ids[0]));
+        // The newest runs to the cursor.
+        assert_eq!(s.output_text(ids[1]).as_deref(), Some("partial"));
+        assert!(s.command_is_running(ids[1]));
+        assert_eq!(s.command_mark(ids[1]).map(|m| m.command.as_str()), Some("two"));
+        assert_eq!(s.command_mark(999).map(|m| m.id), None);
+        // A command that printed nothing has no output start.
+        let mut e = Screen::new(40, 10);
+        e.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        let id = e.marks_in_order().first().map(|(_, m)| m.id);
+        assert!(id.is_none_or(|id| e.output_text(id).is_none()));
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.output_text(ids[0]), None);
+    }
+
+    #[test]
+    fn command_grid_lines_run_to_the_next_prompt() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07x\r\n\x1b]133;D;0\x07");
+        let ids: Vec<(i32, u32)> = s.marks_in_order().iter().map(|(l, m)| (*l, m.id)).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(s.command_grid_lines(ids[0].1), Some((ids[0].0, ids[1].0 - 1)));
+        assert_eq!(s.command_grid_lines(ids[1].1), Some((ids[1].0, 11)));
+        assert_eq!(s.command_grid_lines(999), None);
+    }
+
+    #[test]
+    fn a_commands_output_folds_inside_its_region() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\nl3\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two");
+        let id = s.marks_in_order().iter().map(|(_, m)| m.id).next().unwrap();
+        let (a, b) = s.output_range_of(id).unwrap();
+        assert!(s.fold(a.line.0, b.line.0).is_some());
+        let (first, last) = s.command_grid_lines(id).unwrap();
+        let fold = (first..=last).find_map(|l| s.fold_at(l));
+        assert!(fold.is_some(), "the Unfold button finds the fold in the region");
+        assert!(s.unfold(fold.unwrap()));
+        assert!((first..=s.command_grid_lines(id).unwrap().1).all(|l| s.fold_at(l).is_none()));
+    }
+
+    /// Final wave minor 12: a fold elsewhere in the region is not the command's own.
+    #[test]
+    fn unfold_looks_only_at_the_row_the_fold_summary_is_on() {
+        let mut s = Screen::new(40, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\nl3\r\nl4\r\n\x1b]133;D;0\x07");
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two");
+        let id = s.marks_in_order().iter().map(|(_, m)| m.id).next().unwrap();
+        let (a, b) = s.output_range_of(id).unwrap();
+        assert_eq!(s.command_fold(id), None, "nothing folded");
+        assert!(s.fold(a.line.0 + 2, b.line.0).is_some(), "the tail of the output");
+        assert_eq!(s.command_fold(id), None, "a fold below the output's first row is not asked about");
+        let mut t = Screen::new(40, 12);
+        t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\nl3\r\n\x1b]133;D;0\x07");
+        t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two");
+        let id = t.marks_in_order().iter().map(|(_, m)| m.id).next().unwrap();
+        let (a, b) = t.output_range_of(id).unwrap();
+        let fold = t.fold(a.line.0, b.line.0).unwrap();
+        assert_eq!(t.command_fold(id), Some(fold), "the fold on the output's first row is found");
+    }
+
+    #[test]
+    fn a_command_mark_keeps_its_host_and_user() {
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;RemoteHost=rob@box\x07\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07");
+        let m = s.marks_in_order().pop().unwrap().1;
+        assert_eq!((m.user.as_deref(), m.host.as_deref()), (Some("rob"), Some("box")));
+        let mut t = Screen::new(40, 10);
+        prompt(&mut t, "ls", 0);
+        let m = t.marks_in_order().pop().unwrap().1;
+        assert_eq!((m.user, m.host), (None, None));
     }
 
     #[test]
@@ -1812,10 +2252,10 @@ mod tests {
     #[test]
     fn colors_follow_the_exit_code() {
         let m = |code| Mark { code, ..Mark::new(1, Kind::Prompt) };
-        assert_eq!(color(&m(None)), MarkColor::Success);
-        assert_eq!(color(&m(Some(0))), MarkColor::Success);
-        assert_eq!(color(&m(Some(130))), MarkColor::Other);
-        assert_eq!(color(&m(Some(1))), MarkColor::Error);
+        assert_eq!(color(&m(None), true), MarkColor::Success);
+        assert_eq!(color(&m(Some(0)), true), MarkColor::Success);
+        assert_eq!(color(&m(Some(130)), true), MarkColor::Other);
+        assert_eq!(color(&m(Some(1)), true), MarkColor::Error);
     }
     #[test]
     fn composer_events_follow_osc_133() {
@@ -2333,4 +2773,22 @@ mod tests {
         assert_eq!(fg(&s), Color::Named(NamedColor::Foreground));
     }
 
+    #[test]
+    fn mark_color_follows_the_key() {
+        for yellow in [true, false] {
+            assert_eq!(color_for_code(None, yellow), MarkColor::Success);
+            assert_eq!(color_for_code(Some(0), yellow), MarkColor::Success);
+            assert_eq!(color_for_code(Some(127), yellow), MarkColor::Error);
+            assert_eq!(color_for_code(Some(161), yellow), MarkColor::Error);
+        }
+        for code in [128, 143, 160] {
+            assert_eq!(color_for_code(Some(code), true), MarkColor::Other, "{code}");
+            assert_eq!(color_for_code(Some(code), false), MarkColor::Error, "{code}");
+        }
+        let mut m = Mark::new(0, Kind::Prompt);
+        m.code = Some(143);
+        assert_eq!((color(&m, true), color(&m, false)), (MarkColor::Other, MarkColor::Error));
+        assert_eq!(crate::scrollbar::series_of_mark(Some(143), true), crate::scrollbar::Series::Other);
+        assert_eq!(crate::scrollbar::series_of_mark(Some(143), false), crate::scrollbar::Series::Error);
+    }
 }

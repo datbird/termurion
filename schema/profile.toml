@@ -2244,10 +2244,10 @@ macos_only = false
 key = "Prompt Path Click Opens Navigator"
 tab = "Terminal"
 section = "Shell Integration"
-label = "Cmd-click on path opens navigator"
+label = "Click on a path in a shell prompt to open Navigator"
 type = "bool"
 default = false
-help = "Makes a click on a shell-integration-reported path open it in the file navigator."
+help = "Whether clicking path in prompt opens file navigator"
 light_dark = false
 macos_only = false
 

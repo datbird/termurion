@@ -11,6 +11,8 @@ pub enum Kind {
     Autocomplete,
     /// Commands starting with what is typed at the prompt.
     Commands { typed: String },
+    /// The prompt path navigator (13r): the folders around `base`, picked with Enter.
+    Paths { base: String },
 }
 
 /// One row: what is shown before the value (the prefix), and the value.
@@ -39,6 +41,8 @@ pub enum Reply {
     Insert(String),
     /// Type this, then Enter, and close.
     InsertAndRun(String),
+    /// A navigator row was picked: its path.
+    Navigate(String),
     /// Search again with the list's query (Tab, Shift+Tab).
     Search,
     Close,
@@ -109,6 +113,11 @@ impl List {
                     }
                     None => Reply::Handled,
                 },
+                _ => Reply::CloseAndPass,
+            },
+            Kind::Paths { .. } => match (key, chosen) {
+                (Key::Enter, Some(v)) if !v.is_empty() => Reply::Navigate(v),
+                (Key::Enter, _) => Reply::Close,
                 _ => Reply::CloseAndPass,
             },
             Kind::Commands { typed } => {
@@ -264,6 +273,13 @@ mod tests {
         assert_eq!(c.key(Key::Tab), Reply::Pass, "Tab goes to the shell");
         assert_eq!(c.key(Key::Other), Reply::Pass, "typing goes on; the list follows it");
         assert_eq!(c.key(Key::Esc), Reply::Close);
+        let mut nav = List::new(Kind::Paths { base: "C:\\a".into() }, Query::default(), vec![row("C:\\"), row("C:\\a\\b")]);
+        assert_eq!(nav.key(Key::Down), Reply::Handled);
+        assert_eq!(nav.key(Key::Enter), Reply::Navigate("C:\\a\\b".into()));
+        assert_eq!(nav.key(Key::Tab), Reply::CloseAndPass);
+        assert_eq!(nav.key(Key::Esc), Reply::Close);
+        let mut waiting = List::new(Kind::Paths { base: "C:\\a".into() }, Query::default(), vec![row("")]);
+        assert_eq!(waiting.key(Key::Enter), Reply::Close, "the placeholder row picks nothing");
         let mut empty = List::new(Kind::Autocomplete, Query::default(), vec![]);
         assert_eq!(empty.key(Key::Enter), Reply::Close);
     }

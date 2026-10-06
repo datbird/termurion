@@ -573,13 +573,28 @@ impl Screen {
                 let value = if raw {
                     param.clone()
                 } else if self.triggers.prefs.interpolated && param.contains("\\(") {
-                    match crate::interp::evaluate(&param, &|n| self.trigger_var(n, row), &groups) {
+                    // A command line through the one builder: its values refused or quoted (B3).
+                    let var = |n: &str| self.trigger_var(n, row);
+                    let evaluated = if triggers::runs_command(&self.triggers.list[i].trigger.action) {
+                        crate::interp::evaluate_cmd(&param, &var, &groups, true)
+                    } else {
+                        crate::interp::evaluate(&param, &var, &groups)
+                    };
+                    match evaluated {
                         Ok(v) => v,
                         Err(e) => {
                             if self.triggers.list[i].error.as_ref() != Some(&e) {
                                 self.requests.push(Request::Trigger(TriggerRequest::ParameterError { trigger: i, text: e.clone() }));
                                 self.triggers.list[i].error = Some(e);
                             }
+                            break;
+                        }
+                    }
+                } else if triggers::runs_command(&self.triggers.list[i].trigger.action) {
+                    match triggers::substitute_cmd(&param, &groups) {
+                        Some(v) => v,
+                        None => {
+                            self.refuse_command(i);
                             break;
                         }
                     }
@@ -602,6 +617,16 @@ impl Screen {
             if stop {
                 break;
             }
+        }
+    }
+
+    /// A command trigger whose capture the one cmd.exe builder refuses does not run; said once
+    /// per trigger, as a parameter error is (B3).
+    pub(crate) fn refuse_command(&mut self, i: usize) {
+        let text = crate::semantic::CMD_REFUSED.to_string();
+        if self.triggers.list[i].error.as_ref() != Some(&text) {
+            self.requests.push(Request::Trigger(TriggerRequest::ParameterError { trigger: i, text: text.clone() }));
+            self.triggers.list[i].error = Some(text);
         }
     }
 
@@ -1234,6 +1259,81 @@ mod tests {
         assert_eq!(s.triggers.lines_checked, 1);
     }
 
+    fn requests(s: &mut Screen) -> Vec<TriggerRequest> {
+        s.take_requests().into_iter().filter_map(|r| match r {
+            Request::Trigger(t) => Some(t),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn captures_never_add_a_command_to_a_cmd_line() {
+        for (action, silent) in [("ScriptTrigger", None), ("CoprocessTrigger", Some(false)), ("MuteCoprocessTrigger", Some(true))] {
+            let want = |c: &str| match silent {
+                None => TriggerRequest::RunCommand(c.into()),
+                Some(silent) => TriggerRequest::Coprocess { cmd: c.into(), silent },
+            };
+            // A capture is quoted (the line runs under /s).
+            let mut s = one(r"x(\S+)", action, "run \\1", b"xfoo\r\n");
+            assert_eq!(requests(&mut s), vec![want("run \"foo\"")], "{action}");
+            // A capture that cmd.exe would expand or unquote is refused, not run.
+            for text in [&b"x%COMSPEC%\r\n"[..], b"xa\"&calc\r\n", b"xfoo&calc\r\n"] {
+                let mut s = one(r"x(\S+)", action, "run \\1", text);
+                let got = requests(&mut s);
+                assert!(matches!(&got[..], [TriggerRequest::ParameterError { text, .. }] if text == crate::semantic::CMD_REFUSED), "{action}: {got:?}");
+            }
+            // A capture the parameter does not use does not matter.
+            let mut s = one(r"x(\S+)", action, "run", b"xa%b\r\n");
+            assert_eq!(requests(&mut s), vec![want("run")], "{action}");
+        }
+        // Other actions keep the capture as it is.
+        let mut s = one(r"x(\S+)", "SendTextTrigger", "\\1", b"xa%b\r\n");
+        assert_eq!(requests(&mut s), vec![TriggerRequest::SendText("a%b".into())]);
+    }
+
+    #[test]
+    fn interpolated_captures_are_quoted_for_a_cmd_line() {
+        let run = |text: &[u8]| {
+            let mut s = Screen::with_scrollback(40, 6, 100);
+            s.set_triggers(vec![trig(r"x(\S+)", "ScriptTrigger", "run \\(matches[1])", false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
+            s.feed(text);
+            requests(&mut s)
+        };
+        assert_eq!(run(b"xfoo\r\n"), vec![TriggerRequest::RunCommand("run \"foo\"".into())]);
+        assert!(matches!(&run(b"xfoo&calc\r\n")[..], [TriggerRequest::ParameterError { .. }]));
+        assert!(matches!(&run(b"x%COMSPEC%\r\n")[..], [TriggerRequest::ParameterError { .. }]));
+    }
+
+    /// An interpolated value inside the parameter's own quotes goes in bare (one argument), and
+    /// one outside them gets quotes: captures and variables alike.
+    #[test]
+    fn interpolated_values_in_the_templates_quotes_stay_one_argument() {
+        let mut s = Screen::with_scrollback(40, 6, 100);
+        s.set_triggers(vec![trig(r"x (.+)", "ScriptTrigger", "git log \"\\(matches[1])\" \\(session.path) \"\\(session.path)\"", false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
+        s.shell.cwd = Some("C:\\a b".into());
+        s.feed(b"x a --flag\r\n");
+        let got = requests(&mut s);
+        assert_eq!(got, vec![TriggerRequest::RunCommand("git log \"a --flag\" \"C:\\a b\" \"C:\\a b\"".into())]);
+    }
+
+    #[test]
+    fn interpolated_variables_never_add_a_command_to_a_cmd_line() {
+        for action in ["ScriptTrigger", "CoprocessTrigger", "MuteCoprocessTrigger"] {
+            for (param, name, value) in [("run \\(session.path)", "cwd", "C:\\a&calc"), ("run \"\\(session.path)\"", "cwd", "C:\\a&calc"), ("run \\(user.x)", "x", "a|b"), ("run \\(session.path)", "cwd", "C:\\dir\\")] {
+                let mut s = Screen::with_scrollback(40, 6, 100);
+                s.set_triggers(vec![trig("go", action, param, false)], TriggerPrefs { interpolated: true, ..TriggerPrefs::default() });
+                if name == "cwd" {
+                    s.shell.cwd = Some(value.into());
+                } else {
+                    s.shell.vars.insert(name.into(), value.into());
+                }
+                s.feed(b"go\r\n");
+                let got = requests(&mut s);
+                assert!(matches!(&got[..], [TriggerRequest::ParameterError { text, .. }] if text == crate::semantic::CMD_REFUSED), "{action} {param} {value}: {got:?}");
+            }
+        }
+    }
+
     #[test]
     fn user_variable_names() {
         let s = one("x", "iTermSetUserVariableTrigger", "user.a\u{1}v", b"x\r\n");
@@ -1449,6 +1549,31 @@ mod tests {
         assert_eq!(text(&s, list[1].abs_line), "error: y");
     }
 
+    /// A Capture Output trigger's parameter is the coprocess a double-click in Captured Output
+    /// runs through cmd.exe: its captures and `\(...)` values pass the one refusal before it is
+    /// stored, plain and interpolated.
+    #[test]
+    fn capture_output_commands_pass_the_cmd_refusal() {
+        let stored = |param: &str, interpolated: bool, cwd: Option<&str>, out: &[u8]| {
+            let mut s = Screen::new(40, 10);
+            s.set_triggers(vec![trig(r"error: (.*)", "CaptureTrigger", param, false)], TriggerPrefs { interpolated, ..TriggerPrefs::default() });
+            s.shell.cwd = cwd.map(str::to_string);
+            s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
+            s.feed(out);
+            let commands: Vec<Option<String>> = s.last_command_mark().map(|m| m.captured.iter().map(|c| c.command.clone()).collect()).unwrap_or_default();
+            (commands, trigger_requests(&mut s))
+        };
+        let refused = |r: &[TriggerRequest]| matches!(r, [TriggerRequest::ParameterError { text, .. }] if text == crate::semantic::CMD_REFUSED);
+        let (cmds, _) = stored("notepad \\1", false, None, b"error: x\r\n");
+        assert_eq!(cmds, vec![Some("notepad \"x\"".to_string())], "a clean capture is quoted");
+        let (cmds, r) = stored("notepad \\1", false, None, b"error: x&calc\r\n");
+        assert!(cmds.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))) && refused(&r), "{cmds:?} {r:?}");
+        let (cmds, r) = stored("notepad \\(matches[1])", true, None, b"error: x&calc\r\n");
+        assert!(cmds.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))) && refused(&r), "{cmds:?} {r:?}");
+        let (cmds, r) = stored("notepad \\(session.path)\\\\x", true, Some("C:\\a&calc"), b"error: y\r\n");
+        assert!(cmds.iter().all(|c| c.as_deref().is_none_or(|c| !c.contains('&'))) && refused(&r), "{cmds:?} {r:?}");
+    }
+
     #[test]
     fn capture_follows_iterm2() {
         let mut s = Screen::new(40, 10);
@@ -1468,7 +1593,7 @@ mod tests {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].line, "see error: x here");
         assert_eq!(captured[0].values, vec!["error: x".to_string(), "x".to_string()], "group 0 (the match), then the numbered groups");
-        assert_eq!(captured[0].command.as_deref(), Some("run x"));
+        assert_eq!(captured[0].command.as_deref(), Some("run \"x\""), "quoted by the one cmd builder");
         assert_eq!(captured[0].mark, mark_id);
         assert!(!captured[0].state);
         assert_eq!(trigger_requests(&mut s), vec![TriggerRequest::Captured { needs_shell_integration: false }]);
