@@ -178,8 +178,12 @@ impl App {
             return self.banners.set("action", PASSWORD_PROMPT);
         }
         p.scroll(Scroll::Bottom);
-        // Broadcast input applies, as `commandInfoSend` writes to the session.
-        self.user_write(pane, text.as_bytes(), crate::broadcast::Write::SendText);
+        // Broadcast input applies, as `commandInfoSend` writes to the session; a broadcast
+        // target that is ended or at a password prompt is skipped, as the source pane is.
+        let skipped = self.program_write(pane, text.as_bytes(), crate::broadcast::Write::SendText);
+        if skipped > 0 {
+            self.banners.set("action", format!("Skipped {skipped} broadcast pane(s) that are ended or waiting for a password."));
+        }
     }
 
     pub(super) fn cmdinfo_copy(&mut self, text: String) {
@@ -239,10 +243,10 @@ mod tests {
     #[test]
     fn text_reaches_the_terminal_only_through_the_guard() {
         let code = code();
-        assert_eq!(code.matches("user_write(").count(), 1, "one write, in cmdinfo_write");
+        assert_eq!(code.matches("program_write(").count(), 1, "one write, in cmdinfo_write");
         assert!(!code.contains(".input("));
         let write = &code[code.find("fn cmdinfo_write").unwrap()..];
-        let (guard, ended, send) = (write.find("cmdinfo::writable").unwrap(), write.find("ENDED").unwrap(), write.find("user_write(").unwrap());
+        let (guard, ended, send) = (write.find("cmdinfo::writable").unwrap(), write.find("ENDED").unwrap(), write.find("program_write(").unwrap());
         assert!(guard < ended && ended < send, "refuse the text, then an ended session, then write");
         assert!(code.find("composer_text(").unwrap() < code.find("open_composer_with(").unwrap());
         let snippet = &code[code.find("fn cmdinfo_add_snippet").unwrap()..];
@@ -262,7 +266,7 @@ mod tests {
     #[test]
     fn a_write_refuses_a_password_prompt() {
         let write = &code()[code().find("fn cmdinfo_write").unwrap()..];
-        let (guard, send) = (write.find("at_password_prompt()").expect("asks the pane"), write.find("user_write(").unwrap());
+        let (guard, send) = (write.find("at_password_prompt()").expect("asks the pane"), write.find("program_write(").unwrap());
         assert!(guard < send && write.contains("PASSWORD_PROMPT"));
     }
 

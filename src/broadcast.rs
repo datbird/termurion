@@ -342,6 +342,30 @@ pub fn write_targets(b: &Broadcast, v: &View, sender: PaneId, what: Write, gatew
     without_gateways(targets, sender, gateways)
 }
 
+/// What a program-chosen write checks on each target pane before it is typed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TargetState {
+    pub exited: bool,
+    pub ended: bool,
+    pub password: bool,
+}
+
+/// Program-chosen text (Command Info, the navigator, the buttons) is never typed into a pane
+/// that is ended or reading a password, also when broadcast input carries it there. Returns the
+/// panes to write and how many were skipped. A pane that is gone is dropped silently.
+pub fn program_targets(targets: Vec<PaneId>, state: impl Fn(PaneId) -> Option<TargetState>) -> (Vec<PaneId>, usize) {
+    let mut skipped = 0;
+    let mut keep = Vec::new();
+    for t in targets {
+        match state(t) {
+            None => {}
+            Some(s) if s.exited || s.ended || s.password => skipped += 1,
+            Some(_) => keep.push(t),
+        }
+    }
+    (keep, skipped)
+}
+
 /// Writes that are typing (iTerm2's writeTask): a tmux gateway reads them as its Command
 /// Menu's keys. The rest never reach a gateway.
 pub fn typed(w: Write) -> bool {
@@ -618,6 +642,22 @@ mod tests {
         assert_eq!(write_targets(&b, &v, 7, Write::Agent, &none), vec![7]);
         let gateways: BTreeSet<u64> = [7].into();
         assert_eq!(write_targets(&b, &v, 7, Write::Agent, &gateways), vec![7], "without_gateways keeps the sender");
+    }
+
+    #[test]
+    fn program_text_skips_panes_at_a_password_prompt_or_ended() {
+        let b = Broadcast { raw: Mode::AllPanes, ..Default::default() };
+        let v = View { tabs: vec![TabView { broadcasting: true, panes: vec![7, 8, 9] }], current_tab: 0, current: 7, exited: BTreeSet::new() };
+        let none = BTreeSet::new();
+        let targets = write_targets(&b, &v, 7, Write::SendText, &none);
+        assert_eq!(targets, vec![7, 8, 9], "the control: all three receive a broadcast");
+        let state = |p: PaneId| match p {
+            8 => Some(TargetState { password: true, ..Default::default() }),
+            9 => Some(TargetState { ended: true, ..Default::default() }),
+            _ => Some(TargetState::default()),
+        };
+        assert_eq!(program_targets(targets, state), (vec![7], 2), "the password pane and the ended pane are skipped and counted");
+        assert_eq!(program_targets(vec![7, 5], |p| (p == 7).then(TargetState::default)), (vec![7], 0), "a pane that is gone is dropped");
     }
 
     #[test]

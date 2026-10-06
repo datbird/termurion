@@ -36,8 +36,25 @@ impl App {
     /// User input from `sender`: to every session of its broadcast domain (the same bytes,
     /// as the sender encoded them), or to the sender alone.
     pub(super) fn user_write(&mut self, sender: PaneId, bytes: &[u8], what: Write) {
+        self.write_to_domain(sender, bytes, what, false);
+    }
+
+    /// Program-chosen text (Command Info, the navigator, the buttons): as `user_write`, but a
+    /// target that is ended or reading a password is skipped. Returns how many were skipped.
+    pub(super) fn program_write(&mut self, sender: PaneId, bytes: &[u8], what: Write) -> usize {
+        self.write_to_domain(sender, bytes, what, true)
+    }
+
+    fn write_to_domain(&mut self, sender: PaneId, bytes: &[u8], what: Write, program: bool) -> usize {
         let gateways = self.tmux_gateways();
-        let targets = broadcast::write_targets(&self.broadcast, &self.broadcast_view(), sender, what, &gateways);
+        let mut targets = broadcast::write_targets(&self.broadcast, &self.broadcast_view(), sender, what, &gateways);
+        let mut skipped = 0;
+        if program {
+            let panes = &self.panes;
+            (targets, skipped) = broadcast::program_targets(targets, |t| {
+                panes.get(&t).map(|p| broadcast::TargetState { exited: p.exited.is_some(), ended: p.ended, password: p.at_password_prompt() })
+            });
+        }
         for t in targets {
             // The person's own typing makes the line theirs: a model's held text no longer
             // describes it (Task 10 fix round 2).
@@ -58,8 +75,8 @@ impl App {
         }
         // tmux panes' typing goes out as send-keys now.
         self.tmux_send_input();
+        skipped
     }
-
 
     /// Shell > Broadcast Input's items. False for other selectors.
     /// Turning broadcasting on asks the warning (`BroadcastInput`) first, whose OK
