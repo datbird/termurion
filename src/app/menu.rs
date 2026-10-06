@@ -145,13 +145,9 @@ impl App {
         let mut ssh_download_files = None;
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
         let mut suppressed = None;
-        for item in menus::items() {
+        for item in menus::shown_items() {
             // With the recents off at launch the item is removed (`AD:1340-1342`).
             if item.selector == "removeRecentProfilesFromDockMenu:" && !self.globals.bool(super::jumplist_ui::KEY) {
-                continue;
-            }
-            // Debug-only items are never built into a release menu (`AD:402-419`).
-            if hidden_in_menu(&item.selector, cfg!(debug_assertions)) {
                 continue;
             }
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
@@ -276,12 +272,12 @@ impl App {
         self.apply_theme();
     }
 
-    /// A copy of the main menu built from `menus::items()` by the rule `install_menus` uses
+    /// A copy of the main menu built from `menus::shown_items()` by the rule `install_menus` uses
     /// (check marks are not copied): the notification area icon's Main Menu submenu.
     pub(super) fn main_menu_tree(&self) -> Submenu {
         let root = Submenu::new("Main Menu", true);
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
-        for item in menus::items() {
+        for item in menus::shown_items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
             } else if item.submenu {
@@ -598,7 +594,7 @@ impl App {
                 c.set_checked(self.is_checked(selector));
             }
         }
-        for item in menus::items().iter().filter(|i| matches!(i.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:")) {
+        for item in menus::shown_items().filter(|i| matches!(i.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:")) {
             if let (Some(c), Some(on)) = (bar.checks.get(item.label()), self.paste_checked(item.label())) {
                 c.set_checked(on);
             }
@@ -1220,17 +1216,6 @@ pub(super) enum ColorTarget {
     Group(String),
 }
 
-/// Items iTerm2 removes from the menu (`AD:402-419`): Capture GPU Frame in release builds, and
-/// Check Settings Control Truncation unless built for development (Tandem's Settings wrap text,
-/// so it is never built, R5).
-pub(super) fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
-    match selector {
-        "captureNextMetalFrame:" => !debug_build,
-        "debugCheckSettingsControlTruncation:" => true,
-        _ => false,
-    }
-}
-
 /// A context menu entry as a muda item: a check item when it has a check mark, a submenu with
 /// its entries (their append results go to `results`), or a separator.
 fn entry_item(e: &crate::tab_menu::Entry, results: &mut Vec<muda::Result<()>>) -> Box<dyn IsMenuItem> {
@@ -1637,12 +1622,12 @@ mod tests {
     /// Tandem build) remove Check Settings Control Truncation.
     #[test]
     fn debug_items_follow_iterm2() {
-        assert!(super::hidden_in_menu("captureNextMetalFrame:", false));
-        assert!(!super::hidden_in_menu("captureNextMetalFrame:", true));
-        assert!(super::hidden_in_menu("debugCheckSettingsControlTruncation:", false));
-        assert!(super::hidden_in_menu("debugCheckSettingsControlTruncation:", true));
-        assert!(!super::hidden_in_menu("debugLogging:", false));
-        assert!(!super::hidden_in_menu("copyPerformanceStats:", true));
+        assert!(crate::menus::hidden_in_menu("captureNextMetalFrame:", false));
+        assert!(!crate::menus::hidden_in_menu("captureNextMetalFrame:", true));
+        assert!(crate::menus::hidden_in_menu("debugCheckSettingsControlTruncation:", false));
+        assert!(crate::menus::hidden_in_menu("debugCheckSettingsControlTruncation:", true));
+        assert!(!crate::menus::hidden_in_menu("debugLogging:", false));
+        assert!(!crate::menus::hidden_in_menu("copyPerformanceStats:", true));
     }
 
     use crate::warnings::{Kind, checkbox_label};

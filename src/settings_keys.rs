@@ -407,7 +407,7 @@ fn preset_combo(ui: &mut egui::Ui, salt: &str, name: &mut String) -> bool {
 
 /// Menu items a binding can select, with their title and id.
 fn menu_items() -> Vec<(&'static str, String)> {
-    crate::menus::items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()).map(|i| (i.label(), i.id())).collect()
+    crate::menus::shown_items().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()).map(|i| (i.label(), i.id())).collect()
 }
 
 /// `pointer`: pointer bindings store "identifier\ntitle"; key bindings "title\nidentifier".

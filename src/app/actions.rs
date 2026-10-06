@@ -78,7 +78,7 @@ pub(super) fn menu_item_parts(text: &str, pointer: bool) -> (String, Option<Stri
 fn find_menu_item(text: &str, pointer: bool) -> Option<&'static menus::Item> {
     let (title, id) = menu_item_parts(text, pointer);
     id.and_then(|id| menus::by_id(&id))
-        .or_else(|| menus::items().iter().find(|i| !i.separator && !i.submenu && i.label() == title))
+        .or_else(|| menus::shown_items().find(|i| !i.separator && !i.submenu && i.label() == title))
 }
 
 impl App {
