@@ -244,6 +244,7 @@ impl App {
                     self.start_pane_move(id, true, event_loop);
                 }
             }
+            44 => self.undo_key_action(),
             35 => {
                 if let Some(id) = self.focused_id() {
                     self.start_coprocess(id, &b.text, false, crate::coprocess::Entry::KeyBinding);

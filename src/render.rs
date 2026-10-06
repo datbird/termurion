@@ -14,6 +14,8 @@ use crate::scene::{Frame, Quad, Span, TextRow};
 /// Rectangles: two triangles each, position and color per vertex.
 struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
+    /// Scales what is already in the target by the blend constant (the fade pass).
+    fader: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -54,8 +56,8 @@ impl QuadPipeline {
             ..Default::default()
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("quad"),
+        let make = |label: &'static str, format: wgpu::TextureFormat, blend: wgpu::BlendState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -76,14 +78,21 @@ impl QuadPipeline {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             multiview_mask: None,
             cache: None,
         });
-        QuadPipeline { pipeline, uniform, bind_group }
+        let pipeline = make("quad", format, wgpu::BlendState::ALPHA_BLENDING);
+        // result = destination * constant, in every channel: a premultiplied target scaled whole.
+        let scale = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::Constant, operation: wgpu::BlendOperation::Add };
+        // Run on the target's non-sRGB view: the stored values are what DirectComposition reads as
+        // premultiplied, so they are scaled as stored (an sRGB view would scale in linear space and
+        // leave the color above the alpha).
+        let fader = make("quad fade", format.remove_srgb_suffix(), wgpu::BlendState { color: scale, alpha: scale });
+        QuadPipeline { pipeline, fader, uniform, bind_group }
     }
 
     fn vertices(quads: &[Quad]) -> Vec<f32> {
@@ -1039,10 +1048,11 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+            view_formats: &[self.format.remove_srgb_suffix()],
         });
         let view = tex.create_view(&Default::default());
-        self.draw(frame, &view, w, h)?;
+        let raw = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(self.format.remove_srgb_suffix()), ..Default::default() });
+        self.draw_with(frame, &view, Some(&raw), w, h)?;
         // Rows are copied out padded to 256 bytes, then the padding is dropped.
         let row = w * 4;
         let padded = row.div_ceil(256) * 256;
@@ -1221,6 +1231,13 @@ impl Renderer {
     }
 
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
+        self.draw_with(frame, view, None, width, height)
+    }
+
+    /// `draw`, with `raw` a view of the same target in its non-sRGB format. A fading frame needs it
+    /// on an sRGB target (the target must list that format in its view formats); without it the
+    /// fade runs on `view`, which is exact only on a non-sRGB target.
+    pub fn draw_with(&mut self, frame: &Frame, view: &wgpu::TextureView, raw: Option<&wgpu::TextureView>, width: u32, height: u32) -> Result<(), String> {
         let (_, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
         let mixed = frame.rows.iter().any(|r| r.spans.windows(2).any(|w| w[0].ligatures != w[1].ligatures));
@@ -1439,6 +1456,31 @@ impl Renderer {
                 pass.draw(0..(over.len() / 6) as u32, 0..1);
             }
         }
+        // A fading window: the whole target, premultiplied, scaled by the fade, in a pass of its own
+        // on the non-sRGB view.
+        if frame.fade < 1.0 {
+            let f = frame.fade.clamp(0.0, 1.0) as f64;
+            let cover = QuadPipeline::vertices(&[Quad { rect: crate::layout::Rect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 }, color: [0.0; 4] }]);
+            let cover_buf = make(&cover);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: raw.unwrap_or(view),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.quads.fader);
+            pass.set_bind_group(0, &self.quads.bind_group, &[]);
+            pass.set_blend_constant(wgpu::Color { r: f, g: f, b: f, a: f });
+            pass.set_vertex_buffer(0, cover_buf.slice(..));
+            pass.draw(0..6, 0..1);
+        }
         self.queue.submit(Some(encoder.finish()));
         self.atlas.trim();
         Ok(())
@@ -1493,18 +1535,23 @@ pub(crate) mod test_gpu {
 
     /// Serializes anything that makes its own instance against the shared one's creation.
     pub(crate) static LOCK: Mutex<()> = Mutex::new(());
-    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+    static GPU: OnceLock<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> = OnceLock::new();
 
     pub(crate) fn shared() -> (wgpu::Device, wgpu::Queue) {
+        let (_, _, device, queue) = shared_all();
+        (device, queue)
+    }
+
+    /// The shared instance and adapter with the device and queue (a probe that needs a surface).
+    pub(crate) fn shared_all() -> (wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue) {
         GPU.get_or_init(|| {
             let _gpu = LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
             let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
             // Kept for the life of the process: dropping an instance is the racy call.
-            std::mem::forget(instance);
-            std::mem::forget(adapter);
-            made
+            let (device, queue) = made;
+            (instance, adapter, device, queue)
         })
         .clone()
     }
@@ -1516,6 +1563,51 @@ mod tests {
     use crate::layout::Rect;
     use crate::palette::rgb;
     use crate::scene::{Quad, Span, rgba};
+
+    #[test]
+    fn fade_scales_the_premultiplied_target() {
+        // A faded frame is the same frame with every channel (alpha too) scaled: the see-through
+        // window's fade, on the shared device (no new GPU instance).
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm, "Consolas", 16.0);
+        r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
+        let at = |r: &mut Renderer, fade: f32| {
+            let frame = Frame { clear: [0.8, 0.4, 0.2, 1.0], fade, ..Default::default() };
+            let px = r.draw_offscreen(&frame, 8, 8).unwrap();
+            [px[0], px[1], px[2], px[3]]
+        };
+        assert_eq!(at(&mut r, 1.0), [204, 102, 51, 255], "no fade draws as before");
+        let half = at(&mut r, 0.5);
+        for (got, want) in half.iter().zip([102i32, 51, 26, 128]) {
+            assert!((*got as i32 - want).abs() <= 1, "{half:?}");
+        }
+        assert_eq!(at(&mut r, 0.0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn fade_on_an_srgb_target_scales_the_stored_values() {
+        // The app's alpha surface is sRGB. DirectComposition reads the stored (encoded) values as
+        // premultiplied, so a fade must scale them as stored: encoded color times f beside alpha
+        // times f. Scaling in linear space would leave the color above alpha and brighten the window.
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Consolas", 16.0);
+        r.set_fonts("Consolas", None, 16.0, 1.0, 1.0);
+        let at = |r: &mut Renderer, fade: f32| {
+            let frame = Frame { clear: [0.8, 0.4, 0.2, 1.0], fade, ..Default::default() };
+            let px = r.draw_offscreen(&frame, 8, 8).unwrap();
+            [px[0], px[1], px[2], px[3]]
+        };
+        let full = at(&mut r, 1.0);
+        for f in [0.5f32, 0.25] {
+            let faded = at(&mut r, f);
+            for i in 0..3 {
+                let want = full[i] as f32 * f;
+                assert!((faded[i] as f32 - want).abs() <= 1.5, "channel {i} at {f}: {faded:?} from {full:?}");
+            }
+            assert!((faded[3] as f32 - 255.0 * f).abs() <= 1.5, "alpha at {f}: {faded:?}");
+        }
+        assert_eq!(at(&mut r, 0.0), [0, 0, 0, 0]);
+    }
 
     #[test]
     fn cell_metrics_keep_the_spacing_free_cell() {
@@ -2004,6 +2096,7 @@ mod tests {
         let n = 40;
         let frame = Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),
+            fade: 1.0,
             quads: vec![],
             images: vec![],
             rows: vec![TextRow {
@@ -2062,6 +2155,7 @@ mod tests {
         let view = tex.create_view(&Default::default());
         let frame = Frame {
             clear: rgba(rgb(0, 0, 0), 1.0),
+            fade: 1.0,
             quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 32.0, h: 32.0 }, color: rgba(rgb(255, 0, 0), 1.0) }],
             images: vec![],
             rows: vec![TextRow {

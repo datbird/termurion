@@ -131,6 +131,7 @@ impl super::App {
         if let Some(host) = &self.host {
             host.kill_all_and_wait(Duration::from_secs(2));
         }
+        super::teardown_process();
         done.store(true, Ordering::Release);
     }
 }

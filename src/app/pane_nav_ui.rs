@@ -83,7 +83,7 @@ impl App {
     pub(super) fn ordered_panes(&self, tab: &Tab) -> Vec<PaneId> {
         if order_source(self.globals.bool("NavigatePanesInReadingOrder")) == "reading" {
             let side_by_side = matches!(tab.layout.tree(), Tree::Split { axis: Axis::Row, .. });
-            pane_order::reading_order(&tab.layout.rects(self.content_area_for(tab), self.gap()), side_by_side, self.scale())
+            pane_order::reading_order(&tab.layout.rects(self.pane_area_for(tab), self.gap()), side_by_side, self.scale())
         } else {
             pane_order::activity_order(&tab.layout.panes(), &|id| self.panes.get(&id).map_or(0, |p| p.activity))
         }
@@ -102,7 +102,7 @@ impl App {
     /// The pane in direction `dir` from the tab's focus (`sessionAdjacentTo:`): the most recent
     /// adjacent pane, else the far edge with WrapFocus. The margin is 1 point times the scale.
     pub(super) fn pane_in_direction(&self, tab: &Tab, dir: Dir) -> Option<PaneId> {
-        let (area, margin) = (self.content_area_for(tab), self.scale());
+        let (area, margin) = (self.pane_area_for(tab), self.scale());
         let activity = |id: PaneId| self.panes.get(&id).map_or(0, |p| p.activity);
         let adjacent = tab.layout.adjacent(tab.focused, dir, area, self.gap(), margin);
         let wrap = if adjacent.is_empty() { tab.layout.wraparound(tab.focused, dir, area, self.gap(), margin) } else { Vec::new() };

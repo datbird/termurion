@@ -33,6 +33,12 @@ impl App {
     pub(super) fn set_session_values(&mut self, pane: PaneId, values: &[(String, Option<toml::Value>)]) {
         let Some(guid) = self.divorce(pane) else { return };
         self.store.set_session(&guid, values);
+        // A hotkey works in every app: one a program wrote is stored but inert until the person
+        // allows it (the person's own edit goes through `set_session_hotkey`).
+        if let Some((_, v)) = values.iter().find(|(k, _)| k == "Session Hotkey") {
+            let s = v.as_ref().and_then(crate::hotkey::Shortcut::from_value);
+            self.session_hotkey_from_program(pane, s, crate::session_hotkeys::Origin::Program);
+        }
         self.refresh_panes();
         // Show Status Bar on a pane that is not focused, or in another window, changes
         // that pane's room only.

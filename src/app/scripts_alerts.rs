@@ -91,7 +91,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
         // No, Deny, Don't Copy and Discard Local Changes.
-        Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
+        Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
     }
 }
@@ -100,6 +100,9 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Then {
     Nothing,
+    /// "Register a hotkey?" for a session hotkey a program supplied: Register (0) turns it on;
+    /// Ignore (1) leaves it stored and inert. Register is never remembered.
+    SessionHotkey { pane: crate::layout::PaneId, shortcut: crate::hotkey::Shortcut },
     /// A download consent: the first button (OK) submits the jobs in order, each with what
     /// follows it; any other answer (or the ask dropped) cancels them: silent, but what waited
     /// on them hears so (an import restores what it replaced).
@@ -279,6 +282,8 @@ impl Then {
             Then::SshKeepOrReplace { .. } => vec![1],
             // A remembered Reinstall would rewrite the person's settings.json unasked.
             Then::ClaudeRepair => vec![0],
+            // A remembered Register would let every later program claim a system-wide hotkey.
+            Then::SessionHotkey { .. } => vec![0],
             _ => Vec::new(),
         }
     }
@@ -287,7 +292,7 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_))
     }
 }
 
@@ -354,6 +359,11 @@ impl App {
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
             _ => {}
         }
+    }
+
+    /// Drops the queued asks that `about` picks (one already showing is left; its answer is stale).
+    pub(super) fn alert_drop_queued(&mut self, about: impl Fn(&Then) -> bool) {
+        self.scripts_alerts.retain(|a| !about(&a.then));
     }
 
     /// Whether an ask that `about` picks is queued or showing.
@@ -459,6 +469,7 @@ impl App {
     /// Acts on an answer: the button's place in the alert's buttons.
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
+            Then::SessionHotkey { pane, shortcut } => self.session_hotkey_answered(pane, shortcut, index),
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem => {}
             Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),
             Then::LogExists { pane, path } => self.log_exists_answered(pane, path, index),

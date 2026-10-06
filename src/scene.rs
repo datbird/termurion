@@ -93,7 +93,7 @@ pub struct CellGlyph {
 }
 
 /// Draw order: `quads`, then `images`, then `rows`, then `underlines` and `strikes`, then `overlay`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     pub clear: [f32; 4],
     /// Background images, drawn before everything else.
@@ -121,6 +121,30 @@ pub struct Frame {
     /// what `cut_out` and `cut_rows_from` measure a pane row by, since a zoomed pane's rows are
     /// taller than the chrome's line.
     pub face_heights: Vec<(u16, f32)>,
+    /// The whole drawn target's opacity, 1.0 unless a hotkey window fades on an alpha surface
+    /// (the renderer's last pass scales the premultiplied target by it).
+    pub fade: f32,
+}
+
+impl Default for Frame {
+    fn default() -> Frame {
+        Frame {
+            clear: [0.0; 4],
+            backgrounds: Vec::new(),
+            quads: Vec::new(),
+            images: Vec::new(),
+            rows: Vec::new(),
+            glyphs: Vec::new(),
+            overlay: Vec::new(),
+            underlines: Vec::new(),
+            strikes: Vec::new(),
+            gap_underlines: false,
+            popups: Vec::new(),
+            scrollbars: Vec::new(),
+            face_heights: Vec::new(),
+            fade: 1.0,
+        }
+    }
 }
 
 /// A row's height for the cuts: its own face's line (times its scale) for a pane's row, else the
@@ -1839,8 +1863,37 @@ pub fn contrasting(c: Rgb) -> Rgb {
     if luma < 0.55 { rgb(0xff, 0xff, 0xff) } else { rgb(0, 0, 0) }
 }
 
+/// The color under a tmux window that is smaller than its tab (`PTYTab.m:1189-1208`): black in
+/// full screen when the Advanced key says so, else the background 10% of the way toward white
+/// when it is dark and toward black when it is light (half rounds up).
+pub fn filler_color(bg: Rgb, dark_bg: bool, black: bool) -> Rgb {
+    if black {
+        return rgb(0, 0, 0);
+    }
+    // 0.1 * mix + 0.9 * component, in tenths so half rounds up exactly.
+    let toward = if dark_bg { 255u32 } else { 0 };
+    let mixed = |c: u8| ((toward + 9 * c as u32 + 5) / 10) as u8;
+    rgb(mixed(bg.r), mixed(bg.g), mixed(bg.b))
+}
+
+/// Whether a background is dark for the filler: its brightness (the largest component) is under one half.
+pub fn filler_dark(bg: Rgb) -> bool {
+    bg.r.max(bg.g).max(bg.b) < 128
+}
+
 /// A pinned tab's mark (Segoe Fluent Icons "Pin"; iTerm2's SF Symbol "pin.fill").
 pub const PIN_GLYPH: char = '\u{E718}';
+/// The hover text of the indicator under (`x`, `y`) among a frame's indicator rectangles
+/// (`IH:392`); None off every indicator and on those with no text.
+pub fn indicator_tip<T>(hits: &[(T, Rect, IndicatorKind)], x: f32, y: f32) -> Option<&'static str> {
+    match hits.iter().find(|(_, r, _)| r.contains(x, y))?.2 {
+        IndicatorKind::Pin => Some(PIN_HOVER),
+        _ => None,
+    }
+}
+
+/// The pinned hotkey window indicator's hover text (`IH:392`).
+pub const PIN_HOVER: &str = "This Hotkey Window is pinned.";
 /// `PinnedTabWidth`'s default in points (`AS:321`); the drawn width comes from the key.
 pub const PINNED_TAB_WIDTH: f32 = 64.0;
 /// The pin's alpha in a key window and otherwise (`YS:922`).
@@ -1871,9 +1924,9 @@ pub const BROADCAST_GLYPH: char = '\u{EC05}';
 pub const RECEIVE_ONLY_GLYPH: char = '\u{E701}';
 
 /// The top-right glyphs in iTerm2's order (right to left): broadcast or receive-only,
-/// then the coprocess.
-pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool) -> Vec<char> {
-    indicators(sends, receives, coprocess, linked, streaming).into_iter().map(|(g, _)| g).collect()
+/// then the coprocess, then the pin of a pinned hotkey window.
+pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool) -> Vec<char> {
+    indicators(sends, receives, coprocess, linked, streaming, pinned).into_iter().map(|(g, _)| g).collect()
 }
 
 /// What a press on an indicator glyph does.
@@ -1882,10 +1935,11 @@ pub enum IndicatorKind {
     Other,
     AiLinked,
     AiStreaming,
+    Pin,
 }
 
 /// The glyphs with their kinds, in the same order.
-pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool) -> Vec<(char, IndicatorKind)> {
+pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool) -> Vec<(char, IndicatorKind)> {
     let mut out = Vec::new();
     if sends {
         out.push((BROADCAST_GLYPH, IndicatorKind::Other));
@@ -1894,6 +1948,9 @@ pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, st
     }
     if coprocess {
         out.push((COPROCESS_GLYPH, IndicatorKind::Other));
+    }
+    if pinned {
+        out.push((PIN_GLYPH, IndicatorKind::Pin));
     }
     if linked {
         out.push((AI_LINKED_GLYPH, IndicatorKind::AiLinked));
@@ -4368,21 +4425,38 @@ mod broadcast_tests {
 
     #[test]
     fn indicators_keep_iterm2_order() {
-        assert_eq!(indicator_glyphs(true, true, true, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
-        assert_eq!(indicator_glyphs(false, true, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, true, false, false), vec![COPROCESS_GLYPH]);
-        assert!(indicator_glyphs(false, false, false, false, false).is_empty());
+        assert_eq!(indicator_glyphs(true, true, true, false, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
+        assert_eq!(indicator_glyphs(false, true, false, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, true, false, false, false), vec![COPROCESS_GLYPH]);
+        assert!(indicator_glyphs(false, false, false, false, false, false).is_empty());
+        // The pin follows the coprocess and comes before the AI glyphs (P2).
+        assert_eq!(indicator_glyphs(true, false, true, false, false, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, PIN_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, true, true), vec![PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        let kinds: Vec<IndicatorKind> = indicators(false, false, false, false, false, true).into_iter().map(|(_, k)| k).collect();
+        assert_eq!(kinds, vec![IndicatorKind::Pin]);
+    }
+
+    /// 13u Task 1 fix 1: hovering the pin shows its text; elsewhere nothing.
+    #[test]
+    fn pin_hover_follows_the_pointer() {
+        let pin = Rect { x: 100.0, y: 10.0, w: 12.0, h: 16.0 };
+        let hits = [(7u64, Rect { x: 80.0, y: 10.0, w: 12.0, h: 16.0 }, IndicatorKind::AiLinked), (7, pin, IndicatorKind::Pin)];
+        assert_eq!(indicator_tip(&hits, 105.0, 15.0), Some("This Hotkey Window is pinned."));
+        assert_eq!(indicator_tip(&hits, 99.0, 15.0), None, "left of the pin");
+        assert_eq!(indicator_tip(&hits, 105.0, 40.0), None, "below the pin");
+        assert_eq!(indicator_tip(&hits, 85.0, 15.0), None, "another glyph has no text");
+        assert_eq!(indicator_tip::<u64>(&[], 105.0, 15.0), None);
     }
 
     #[test]
     fn indicator_glyphs_follow_iterm2() {
-        assert_eq!(indicator_glyphs(true, true, true, true, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, false, true, false), vec![AI_LINKED_GLYPH]);
+        assert_eq!(indicator_glyphs(true, true, true, true, true, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, false, false), vec![AI_LINKED_GLYPH]);
         assert_eq!(AI_STREAMING_GLYPH, RECEIVE_ONLY_GLYPH, "iTerm2 uses one symbol for both");
         assert_eq!(AI_LINKED_GLYPH, '\u{E8BD}');
         // Each glyph knows what a press on it means; the streaming glyph is told apart from
         // receive-only by its kind, not its character.
-        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true).into_iter().map(|(_, k)| k).collect();
+        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true, false).into_iter().map(|(_, k)| k).collect();
         assert_eq!(kinds, vec![IndicatorKind::Other, IndicatorKind::Other, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
         let hits = top_right_indicators(&mut Frame::default(), Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, &[BROADCAST_GLYPH, AI_LINKED_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
         assert_eq!(hits.len(), 2);
@@ -8670,5 +8744,19 @@ mod drawn_overlay_tests {
         }
         let right = f.overlay.iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max);
         assert!((right - (cell.x + cell.w / 2.0)).abs() < 0.01, "half the cell: {right} of {cell:?}");
+    }
+
+    #[test]
+    fn filler_follows_iterm2() {
+        // Black on a dark background: 10% toward white (half rounds up).
+        assert_eq!(filler_color(rgb(0, 0, 0), true, false), rgb(26, 26, 26));
+        assert_eq!(filler_color(rgb(255, 255, 255), false, false), rgb(230, 230, 230));
+        // The key makes it black whatever the background.
+        assert_eq!(filler_color(rgb(255, 255, 255), false, true), rgb(0, 0, 0));
+        assert_eq!(filler_color(rgb(30, 30, 30), true, true), rgb(0, 0, 0));
+        // A mid dark color: 0.9 * 100 + 0.1 * 255 = 115.5 rounds up.
+        assert_eq!(filler_color(rgb(100, 100, 100), true, false), rgb(116, 116, 116));
+        // Dark is brightness (the largest component) under one half.
+        assert!(filler_dark(rgb(127, 0, 0)) && !filler_dark(rgb(128, 0, 0)) && filler_dark(rgb(0, 0, 0)));
     }
 }

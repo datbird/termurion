@@ -141,7 +141,7 @@ impl App {
         // the pane's own background takes it; an opaque window draws every bar opaque.
         let alphas = if self.frame_alpha { self.pane_alphas(tab) } else { Vec::new() };
         let mut drawn = Vec::new();
-        for (id, rect) in visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()) {
+        for (id, rect) in visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()) {
             let chrome = self.pane_chrome(tab, id, rect);
             let (Some(title), Some(p)) = (chrome.title, self.panes.get(&id)) else { continue };
             // A status bar in the title bar replaces the label (`STV:190-194`) and may color it.

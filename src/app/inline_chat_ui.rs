@@ -188,7 +188,7 @@ impl App {
             return Vec::new();
         }
         let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()).into_iter().filter_map(|(id, r)| self.gutter_split(id, self.pane_bar_split(tab, id, r).0).2.map(|p| (id, p))).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()).into_iter().filter_map(|(id, r)| self.gutter_split(id, self.pane_bar_split(tab, id, r).0).2.map(|p| (id, p))).collect()
     }
 
     /// Whether the focused pane's inline chat shows (the View menu's check mark).

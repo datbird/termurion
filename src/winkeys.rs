@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, GetMessageW, GetSystemMetrics, SM_SWAPBUTTON, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
+    CallNextHookEx, GetForegroundWindow, GetMessageW, GetSystemMetrics, SM_SWAPBUTTON, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN,
     WM_SYSKEYDOWN,
 };
 
@@ -136,73 +136,62 @@ static HOOK: OnceLock<Hook> = OnceLock::new();
 static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 fn is_tandem(hwnd: isize) -> bool {
-    WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&WINDOWS).contains(&hwnd)
 }
 
 /// A terminal window closed.
 pub fn remove_window(hwnd: isize) {
-    if let Ok(mut w) = WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&WINDOWS).retain(|h| *h != hwnd);
 }
 /// Password manager windows: Win+B, Win+U and Win+C go to them (Windows keeps those chords
 /// for itself otherwise).
 static PWM_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 pub fn add_pwm_window(hwnd: isize) {
-    if let Ok(mut w) = PWM_WINDOWS.lock() {
-        if !w.contains(&hwnd) {
-            w.push(hwnd);
-        }
+    let mut w = locked(&PWM_WINDOWS);
+    if !w.contains(&hwnd) {
+        w.push(hwnd);
     }
 }
 
 pub fn remove_pwm_window(hwnd: isize) {
-    if let Ok(mut w) = PWM_WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&PWM_WINDOWS).retain(|h| *h != hwnd);
 }
 
 /// The AI Chat window: Win+W and Shift+Win+Y go to it (Windows keeps Win+W for itself).
 static CHAT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 pub fn add_chat_window(hwnd: isize) {
-    if let Ok(mut w) = CHAT_WINDOWS.lock() {
-        if !w.contains(&hwnd) {
-            w.push(hwnd);
-        }
+    let mut w = locked(&CHAT_WINDOWS);
+    if !w.contains(&hwnd) {
+        w.push(hwnd);
     }
 }
 
 pub fn remove_chat_window(hwnd: isize) {
-    if let Ok(mut w) = CHAT_WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&CHAT_WINDOWS).retain(|h| *h != hwnd);
 }
 
 fn is_chat(hwnd: isize) -> bool {
-    CHAT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&CHAT_WINDOWS).contains(&hwnd)
 }
 
 /// The Cockpit window: Window > Cockpit (Alt+Win+Shift+C) works while it has the focus.
 static COCKPIT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 pub fn add_cockpit_window(hwnd: isize) {
-    if let Ok(mut w) = COCKPIT_WINDOWS.lock() {
-        if !w.contains(&hwnd) {
-            w.push(hwnd);
-        }
+    let mut w = locked(&COCKPIT_WINDOWS);
+    if !w.contains(&hwnd) {
+        w.push(hwnd);
     }
 }
 
 pub fn remove_cockpit_window(hwnd: isize) {
-    if let Ok(mut w) = COCKPIT_WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&COCKPIT_WINDOWS).retain(|h| *h != hwnd);
 }
 
 fn is_cockpit(hwnd: isize) -> bool {
-    COCKPIT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&COCKPIT_WINDOWS).contains(&hwnd)
 }
 
 /// The one chord the Cockpit window takes: Window > Cockpit, Alt+Win+Shift+C.
@@ -219,7 +208,7 @@ pub fn chord_foreground() -> isize {
 }
 
 fn is_pwm(hwnd: isize) -> bool {
-    PWM_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&PWM_WINDOWS).contains(&hwnd)
 }
 
 /// The chords a password manager window takes: Win+B, Win+U, Win+C with no other modifier
@@ -255,6 +244,9 @@ pub fn set_recording(on: bool) {
 pub fn set_settings_window(hwnd: isize) {
     SETTINGS.store(hwnd, Ordering::Relaxed);
 }
+/// Remap modifiers globally (iTerm2's RemapModifiersGlobally, default on). Read by the hook, so an atomic.
+static REMAP_GLOBAL: AtomicBool = AtomicBool::new(true);
+
 /// Marks the mask key Tandem sends, so the hook passes it and nothing else injected.
 /// Other software (a KVM tool such as bumbles) injects real keystrokes; those are handled.
 const MAGIC: usize = 0x5441_4E44;
@@ -301,21 +293,92 @@ fn is_modifier(vk: u16) -> bool {
     matches!(vk, 0x10..=0x12 | 0xA0..=0xA5 | VK_LWIN | VK_RWIN)
 }
 
+/// The text a key types under `mods` in the keyboard layout `hkl` (0: the calling thread's), or
+/// None for a key that types nothing or a dead key. The keyboard state is built from `mods`, not
+/// from the keys held, so a remapped modifier types what the key it stands for would. Flag 0x4
+/// leaves the layout's pending dead key alone, and a dead key itself yields None.
+pub fn text_for_layout(hkl: isize, vk: u16, scan: u32, mods: Mods) -> Option<String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, ToUnicodeEx};
+    let mut state = [0u8; 256];
+    for (on, key) in [(mods.shift, 0x10), (mods.ctrl, 0x11), (mods.alt, 0x12)] {
+        if on {
+            state[key] = 0x80;
+        }
+    }
+    let hkl = if hkl == 0 { unsafe { GetKeyboardLayout(0) } } else { hkl as *mut std::ffi::c_void };
+    let mut buf = [0u16; 8];
+    let n = unsafe { ToUnicodeEx(vk as u32, scan, state.as_ptr(), buf.as_mut_ptr(), buf.len() as i32, 0x4, hkl) };
+    if n <= 0 {
+        return None;
+    }
+    String::from_utf16(&buf[..n as usize]).ok()
+}
+
+/// `text_for_layout` in the calling thread's current layout. UI thread only, never the hook's.
+pub fn text_for(vk: u16, scan: u32, mods: Mods) -> Option<String> {
+    text_for_layout(0, vk, scan, mods)
+}
+
+/// Turns Remap modifiers globally on or off. Turning it off hands back every key the hook is
+/// still holding down for a remapped modifier, so none stays down in Windows. The hook reads the
+/// flag atomically; this takes the remapper's lock only for the release.
+pub fn set_remap_global(on: bool) {
+    if REMAP_GLOBAL.swap(on, Ordering::Relaxed) == on || on {
+        return;
+    }
+    if let Some(h) = HOOK.get() {
+        let keys = locked(&h.remapper).flush();
+        inject(&keys);
+    }
+}
+
+/// Removes the keyboard hook and the hotkeys, first releasing any remapped key still held. Called
+/// when Tandem ends and from the panic hook; a crash or kill needs nothing, as Windows removes a
+/// low-level hook and its hotkeys when the process dies. Waits a moment for the hook thread.
+pub fn uninstall() {
+    let thread = HOOK_THREAD.swap(0, Ordering::AcqRel);
+    if thread == 0 {
+        return;
+    }
+    if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(thread, WM_APP_UNHOOK, 0, 0) } == 0 {
+        return;
+    }
+    for _ in 0..40 {
+        if UNHOOKED.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Locks a hook mutex through a poison: after a panic in the hook (caught by `guarded`) the data
+/// is still consistent for a key press, and unwrapping here would panic on every later keystroke.
+/// Every lock in this module is taken here (a source test holds it).
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The Remap Modifiers settings, read through a poison (a panic while the settings side held the
+/// write lock leaves the last whole value in place).
+fn read_tags(t: &RwLock<Tags>) -> Tags {
+    *t.read().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Remapping, and Do Not Remap Modifiers. True when the event was swallowed.
 fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
     let fg = unsafe { GetForegroundWindow() } as isize;
     let focused = is_tandem(fg) || fg == SETTINGS.load(Ordering::Relaxed);
-    let tags = *h.tags.read().unwrap();
-    let mut r = h.remapper.lock().unwrap();
-    if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags) {
+    let tags = read_tags(&h.tags);
+    let mut r = locked(&h.remapper);
+    if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags, REMAP_GLOBAL.load(Ordering::Relaxed)) {
         inject(&keys);
         return true;
     }
     if is_modifier(vk) {
         return false;
     }
-    let mut exempting = h.exempting.lock().unwrap();
+    let mut exempting = locked(&h.exempting);
     if down && r.active() && (*exempting == Some(vk) || (h.exempt)(vk, r.physical_mods())) {
         *exempting = Some(vk);
         inject(&r.exempt_down(vk));
@@ -330,6 +393,59 @@ fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // A panic must never unwind out of this callback (that aborts the process with a remapped key
+    // still down): the key goes on to Windows and every key held for a remap is released.
+    guarded(|| unsafe { hook_body(code, wparam, lparam) }, || {
+        release_remapped();
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    })
+}
+
+/// Whether the hook thread's message loop goes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flow {
+    Go,
+    Stop,
+}
+
+/// Runs one message-loop arm; a panic in it is caught and the loop goes on.
+fn pump_guarded(arm: impl FnOnce() -> Flow) -> Flow {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(arm)).unwrap_or(Flow::Go)
+}
+
+/// Runs its closure when dropped: on a normal end and while unwinding. A panic in the closure is
+/// caught (a second panic during an unwind would abort).
+struct OnEnd<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> OnEnd<F> {
+    fn new(f: F) -> Self {
+        OnEnd(Some(f))
+    }
+}
+
+impl<F: FnOnce()> Drop for OnEnd<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        }
+    }
+}
+
+/// Runs `body`; a panic in it runs `recover` instead.
+fn guarded(body: impl FnOnce() -> LRESULT, recover: impl FnOnce() -> LRESULT) -> LRESULT {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| recover())
+}
+
+/// Hands back every key the hook holds down for a remapped modifier (a poisoned lock is read
+/// anyway: this runs after a panic).
+fn release_remapped() {
+    if let Some(h) = HOOK.get() {
+        let keys = locked(&h.remapper).flush();
+        inject(&keys);
+    }
+}
+
+unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         if let Some(h) = HOOK.get() {
             let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
@@ -356,14 +472,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
                     down,
-                    win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
+                    // Remapping off and a Win side remapped away: that key is read in the app as its
+                    // target, so it makes no Win chord here (`APP:252-285`).
+                    win_held: crate::remap::win_chord_held(&read_tags(&h.tags), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
                     focused: is_tandem(fg) || recording || pwm || chat || cockpit,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
                 let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else if cockpit { cockpit_chord(c) } else { (h.bound)(c) };
-                let verdict = h.gate.lock().unwrap().on_key(e, &bound);
+                let verdict = locked(&h.gate).on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
                         mask_start_menu();
@@ -390,7 +508,8 @@ pub fn install(
     tags: Arc<RwLock<Tags>>,
     exempt: Box<dyn Fn(u16, Mods) -> bool + Send + Sync>,
 ) -> Result<(), String> {
-    if let Ok(mut w) = WINDOWS.lock() {
+    {
+        let mut w = locked(&WINDOWS);
         if !w.contains(&hwnd) {
             w.push(hwnd);
         }
@@ -408,6 +527,15 @@ pub fn install(
                 let _ = tx.send(Err(format!("SetWindowsHookExW failed: {}", std::io::Error::last_os_error())));
                 return;
             }
+            // However this thread ends (the unhook message, a failed GetMessageW, an unwind), the
+            // hook goes first: a low-level hook with no thread pumping its messages makes every
+            // keystroke on the machine wait for LowLevelHooksTimeout.
+            let _unhook = OnEnd::new(move || {
+                release_remapped();
+                unsafe { UnhookWindowsHookEx(h) };
+                HOOK_THREAD.store(0, Ordering::Release);
+                UNHOOKED.store(true, Ordering::Release);
+            });
             HOOK_THREAD.store(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }, Ordering::Release);
             let _ = tx.send(Ok(()));
             let mut msg: MSG = unsafe { std::mem::zeroed() };
@@ -416,17 +544,32 @@ pub fn install(
             let mut last: Vec<(u32, crate::hotkey::Chord)> = Vec::new();
             const WM_HOTKEY: u32 = 0x0312;
             while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
-                match msg.message {
-                    WM_APP_HOTKEYS => apply_pending(&mut registered, &mut last),
+                // A panic in one message (a registration, a hotkey's sink) must not end the loop
+                // while the hook is installed.
+                let flow = pump_guarded(|| match msg.message {
+                    WM_APP_HOTKEYS => {
+                        apply_pending(&mut registered, &mut last);
+                        Flow::Go
+                    }
                     WM_APP_RECORDING => {
                         let _ = register(&mut registered, &last, RECORDING.load(Ordering::Relaxed));
+                        Flow::Go
                     }
                     WM_HOTKEY => {
                         if let Some((_, ids)) = registered.iter().find(|(rid, _)| *rid as usize == msg.wParam) {
                             fire(ids);
                         }
+                        Flow::Go
                     }
-                    _ => {}
+                    WM_APP_UNHOOK => {
+                        // The hotkeys go here; the guard then releases held keys and the hook.
+                        let _ = register(&mut registered, &last, true);
+                        Flow::Stop
+                    }
+                    _ => Flow::Go,
+                });
+                if flow == Flow::Stop {
+                    break;
                 }
             }
         })
@@ -549,19 +692,71 @@ pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
     if chord.mods & MOD_WIN == 0 {
         return false;
     }
+    let shift = chord.mods & MOD_SHIFT != 0;
     let extra = chord.mods & !(MOD_WIN | MOD_SHIFT);
     // Win (+Shift) with a letter but Y, a digit, or the shell's other keys.
     const LETTERS: &[u32] = &[0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x2C];
     const OTHERS: &[u32] = &[0x39, 0x0F, 0x33, 0x34, 0x27, 0x1C, 0x0C, 0x0D, 0x01, 0xE04B, 0xE04D, 0xE048, 0xE050, 0xE047, 0xE037, 0x45];
+    // Win+1..0, and Win+Ctrl or Win+Alt with 1..9 (the pinned apps' last window and jump lists).
     let digit = (0x02..=0x0B).contains(&scan);
-    match extra {
-        0 => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
-        // Virtual desktops (Win+Ctrl+D, F4, Left, Right) and the like.
-        MOD_CONTROL => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E),
-        // Game Bar and pen shortcuts (Win+Alt+G, R, T, M, B, D, K, H, PrtSc).
-        MOD_ALT => matches!(scan, 0x22 | 0x13 | 0x14 | 0x32 | 0x30 | 0x20 | 0x25 | 0x23 | 0xE037),
+    let digit9 = (0x02..=0x0A).contains(&scan);
+    // The modifiers match exactly, as iTerm2's symbolic hotkeys do: Win+Shift is the shell's for
+    // Snipping (S), Restore (M), Notifications (V), Cycle taskbar (T), Reverse language (Space),
+    // new instance (1..0) and moving, stretching or restoring a window (Left, Right, Up, Down), not
+    // every letter.
+    match (extra, shift) {
+        (0, false) => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
+        (0, true) => matches!(scan, 0x1F | 0x32 | 0x2F | 0x14 | 0x39 | 0xE04B | 0xE04D | 0xE048 | 0xE050) || digit,
+        // Virtual desktops (Win+Ctrl+D, F4, Left, Right), Quick Assist (Q), Narrator (N), speech
+        // (S), sound output (V), the input language (Space), and the like.
+        (MOD_CONTROL, false) => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E | 0x10 | 0x31 | 0x1F | 0x2F | 0x39) || digit9,
+        // Reset the graphics driver (Win+Ctrl+Shift+B).
+        (MOD_CONTROL, true) => scan == 0x30,
+        // Game Bar and pen shortcuts (Win+Alt+G, R, T, M, B, D, K, H, PrtSc) and jump lists.
+        (MOD_ALT, false) => matches!(scan, 0x22 | 0x13 | 0x14 | 0x32 | 0x30 | 0x20 | 0x25 | 0x23 | 0xE037) || digit9,
         _ => false,
     }
+}
+
+/// `shell_owned` for a Win chord as the hook reports it, with no Win32 call: the hook thread
+/// asks this for every Win chord, so the key goes to its (U.S. layout independent) scan code
+/// through a table. A key with no entry is not the shell's.
+pub fn shell_owned_chord(c: &crate::menus::Chord) -> bool {
+    use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+    use crate::menus::ChordKey as K;
+    if !c.cmd {
+        return false;
+    }
+    let scan: u32 = match c.key {
+        K::Char(ch) => {
+            // U.S. scan codes (set 1): the top row, then the three letter rows.
+            const ROWS: [(&str, u32); 5] = [("1234567890-=", 0x02), ("qwertyuiop", 0x10), ("asdfghjkl;", 0x1E), ("zxcvbnm,.", 0x2C), ("/", 0x35)];
+            match ROWS.iter().find_map(|(row, base)| row.find(ch.to_ascii_lowercase()).map(|i| base + i as u32)) {
+                Some(n) => n,
+                None => return false,
+            }
+        }
+        K::Space => 0x39,
+        K::Tab => 0x0F,
+        K::Enter => 0x1C,
+        K::Escape => 0x01,
+        K::Backspace => 0x0E,
+        K::Left => 0xE04B,
+        K::Right => 0xE04D,
+        K::Up => 0xE048,
+        K::Down => 0xE050,
+        K::Home => 0xE047,
+        K::End => 0xE04F,
+        K::PageUp => 0xE049,
+        K::PageDown => 0xE051,
+        K::Delete => 0xE053,
+        K::F(n @ 1..=10) => 0x3A + n as u32,
+        K::F(11) => 0x57,
+        K::F(12) => 0x58,
+        K::F(_) => return false,
+    };
+    let mods = MOD_WIN | if c.shift { MOD_SHIFT } else { 0 } | if c.ctrl { MOD_CONTROL } else { 0 } | if c.alt { MOD_ALT } else { 0 };
+    shell_owned(HChord { key: HKey::Scan(scan), mods })
 }
 
 type Global = HookHotkeys;
@@ -573,6 +768,9 @@ type Pending = (Vec<(u32, crate::hotkey::Chord)>, std::sync::mpsc::Sender<Vec<(u
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 const WM_APP_HOTKEYS: u32 = 0x8000 + 0x48;
 const WM_APP_RECORDING: u32 = 0x8000 + 0x49;
+const WM_APP_UNHOOK: u32 = 0x8000 + 0x4A;
+/// The hook thread has removed its hook and hotkeys.
+static UNHOOKED: AtomicBool = AtomicBool::new(false);
 
 /// Where hotkey presses go (their ids).
 pub fn set_hotkey_sink(sink: Box<dyn Fn(Vec<u32>) + Send + Sync>) {
@@ -598,9 +796,9 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
         return Err("the keyboard hook is not running".into());
     }
     let paused = RECORDING.load(Ordering::Relaxed);
-    *GLOBAL.lock().unwrap() = Some(Global { taps: taps.into_iter().map(|(id, m)| (crate::doubletap::Machine::new(m, min, max), id)).collect(), paused, ..Default::default() });
+    *locked(&GLOBAL) = Some(Global { taps: taps.into_iter().map(|(id, m)| (crate::doubletap::Machine::new(m, min, max), id)).collect(), paused, ..Default::default() });
     let (tx, rx) = std::sync::mpsc::channel();
-    *PENDING.lock().unwrap() = Some((chords, tx));
+    *locked(&PENDING) = Some((chords, tx));
     if unsafe { PostThreadMessageW(thread, WM_APP_HOTKEYS, 0, 0) } == 0 {
         return Err(format!("could not reach the keyboard hook: {}", std::io::Error::last_os_error()));
     }
@@ -609,7 +807,7 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
 
 /// On the hook thread: registers the pending chords (RegisterHotKey is per thread).
 fn apply_pending(registered: &mut Vec<(i32, Vec<u32>)>, last: &mut Vec<(u32, crate::hotkey::Chord)>) {
-    let Some((chords, reply)) = PENDING.lock().unwrap().take() else { return };
+    let Some((chords, reply)) = locked(&PENDING).take() else { return };
     *last = chords.clone();
     let out = register(registered, &chords, RECORDING.load(Ordering::Relaxed));
     let _ = reply.send(out);
@@ -623,7 +821,8 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
         unsafe { UnregisterHotKey(std::ptr::null_mut(), rid) };
     }
     if paused {
-        if let Some(g) = GLOBAL.lock().unwrap().as_mut() {
+        // A poisoned lock (the app panicked holding it) must not stop the unhook's cleanup.
+        if let Some(g) = locked(&GLOBAL).as_mut() {
             g.paused = true;
         }
         return Vec::new();
@@ -655,7 +854,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
         };
         out.extend(ids.iter().map(|id| (*id, result.clone())));
     }
-    if let Some(g) = GLOBAL.lock().unwrap().as_mut() {
+    if let Some(g) = locked(&GLOBAL).as_mut() {
         g.hooked = hooked;
         g.system = system;
         g.paused = false;
@@ -666,7 +865,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
 /// The hook's part of system-wide hotkeys.
 fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
-    let mut guard = GLOBAL.lock().unwrap();
+    let mut guard = locked(&GLOBAL);
     let Some(g) = guard.as_mut() else { return HookVerdict::Continue };
     const LLKHF_EXTENDED: u32 = 0x01;
     let mods = [(held(VK_LWIN as i32) || held(VK_RWIN as i32), crate::hotkey::MOD_WIN), (held(0x12), crate::hotkey::MOD_ALT), (held(0x11), crate::hotkey::MOD_CONTROL), (held(0x10), crate::hotkey::MOD_SHIFT)]
@@ -688,6 +887,28 @@ fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
 mod tests {
     use super::*;
     use crate::menus::ChordKey;
+
+    #[test]
+    fn text_follows_remapped_mods() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList, MapVirtualKeyW};
+        // The US layout (id "04090409") from the layouts already installed, or the one this thread
+        // already has (a session without a desktop lists none); never loaded here.
+        let n = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+        let mut list = vec![std::ptr::null_mut(); n.max(0) as usize];
+        unsafe { GetKeyboardLayoutList(n, list.as_mut_ptr()) };
+        list.push(unsafe { GetKeyboardLayout(0) });
+        let Some(hkl) = list.iter().map(|h| *h as isize).find(|h| (*h as usize & 0xFFFF_FFFF) == 0x0409_0409) else {
+            eprintln!("US keyboard layout not installed; skipped");
+            return;
+        };
+        let scan = unsafe { MapVirtualKeyW(0x43, 0) };
+        let none = Mods::default();
+        assert_eq!(text_for_layout(hkl, 0x43, scan, none).as_deref(), Some("c"));
+        assert_eq!(text_for_layout(hkl, 0x43, scan, Mods { ctrl: true, ..none }).as_deref(), Some("\u{3}"));
+        assert_eq!(text_for_layout(hkl, 0x43, scan, Mods { shift: true, ..none }).as_deref(), Some("C"));
+        // A key with no text types nothing.
+        assert_eq!(text_for_layout(hkl, 0x10, 0x2A, none), None);
+    }
 
     fn key(vk: u16, down: bool) -> KeyEvent {
         KeyEvent { vk, down, win_held: true, focused: true, shift: false, alt: false, ctrl: false }
@@ -741,6 +962,94 @@ mod tests {
         assert!(!shell_owned(HChord { key: HKey::Scan(0x15), mods: MOD_WIN }), "Win+Y is free");
         assert!(!shell_owned(HChord { key: HKey::Scan(0x24), mods: MOD_WIN | crate::hotkey::MOD_ALT | MOD_CONTROL }), "Win+Ctrl+Alt+J");
         assert_eq!(fallback(HChord { key: HKey::Scan(0x15), mods: MOD_WIN }, 1409), Err("Another app uses this shortcut".to_string()));
+    }
+
+    #[test]
+    fn shell_owned_chord_matches_shell_owned() {
+        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_CONTROL, MOD_WIN};
+        use crate::menus::{Chord, ChordKey as MKey};
+        let chord = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
+        let chars = |s: &str| s.chars().map(MKey::Char).collect::<Vec<_>>();
+        // Win+letter: the shell keeps every letter but Y.
+        for k in chars("abcdefghijklmnopqrstuvwxz") {
+            assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
+        }
+        // Win+Shift is exact: the shell's own few, not every letter.
+        for k in [MKey::Char('s'), MKey::Char('m'), MKey::Char('v'), MKey::Char('t'), MKey::Space, MKey::Left, MKey::Right, MKey::Up, MKey::Down, MKey::Char('3')] {
+            assert!(shell_owned_chord(&chord(k.clone(), false, false, true)), "Win+Shift+{k:?}");
+        }
+        for k in "qwazxe".chars() {
+            assert!(!shell_owned_chord(&chord(MKey::Char(k), false, false, true)), "Win+Shift+{k}");
+        }
+        assert!(shell_owned_chord(&chord(MKey::Char('b'), true, false, true)), "Win+Ctrl+Shift+B");
+        assert!(!shell_owned_chord(&chord(MKey::Char('y'), false, false, false)), "Win+Y is free");
+        for k in chars("1234567890") {
+            assert!(shell_owned_chord(&chord(k, false, false, false)));
+        }
+        for k in [MKey::Space, MKey::Tab, MKey::Enter, MKey::Escape, MKey::Up, MKey::Down, MKey::Left, MKey::Right, MKey::Home, MKey::Char(','), MKey::Char('.'), MKey::Char(';'), MKey::Char('-'), MKey::Char('=')] {
+            assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
+        }
+        assert!(!shell_owned_chord(&chord(MKey::End, false, false, false)));
+        assert!(!shell_owned_chord(&chord(MKey::PageUp, false, false, false)));
+        assert!(!shell_owned_chord(&chord(MKey::Backspace, false, false, false)));
+        // Win+Ctrl: virtual desktops and the like.
+        for k in [MKey::Char('d'), MKey::F(4), MKey::Left, MKey::Right, MKey::Enter, MKey::Char('f'), MKey::Char('b'), MKey::Char('c')] {
+            assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
+        }
+        // Windows 11: Quick Assist, Narrator, speech, sound output, the input language, the last
+        // window of a pinned app.
+        for k in [MKey::Char('q'), MKey::Char('n'), MKey::Char('s'), MKey::Char('v'), MKey::Space, MKey::Char('1'), MKey::Char('9')] {
+            assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
+        }
+        assert!(!shell_owned_chord(&chord(MKey::Char('e'), true, false, false)));
+        assert!(!shell_owned_chord(&chord(MKey::Char('0'), true, false, false)), "Win+Ctrl+0 is nobody's");
+        // Win+Alt: Game Bar and pen.
+        for k in "grtmbdkh".chars() {
+            assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k}");
+        }
+        for k in ['1', '5', '9'] {
+            assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k} (jump list)");
+        }
+        assert!(!shell_owned_chord(&chord(MKey::Char('e'), false, true, false)));
+        assert!(!shell_owned_chord(&chord(MKey::Char('d'), true, true, false)), "Win+Ctrl+Alt+D");
+        // The hotkey form agrees on the new chords.
+        let scan = |key, mods| shell_owned(HChord { key: HKey::Scan(key), mods });
+        assert!(scan(0x39, MOD_WIN | MOD_CONTROL) && scan(0x10, MOD_WIN | MOD_CONTROL) && scan(0x02, MOD_WIN | crate::hotkey::MOD_ALT));
+        assert!(!scan(0x10, MOD_WIN | crate::hotkey::MOD_SHIFT), "Win+Shift+Q");
+        // Not a Win chord at all.
+        assert!(!shell_owned_chord(&Chord { cmd: false, ..chord(MKey::Char('d'), false, false, false) }));
+        // The two agree on every scan code both can name.
+        for (key, scan) in [(MKey::Char('a'), 0x1E_u32), (MKey::Char('t'), 0x14), (MKey::Char('y'), 0x15), (MKey::Left, 0xE04B), (MKey::Space, 0x39)] {
+            let h = HChord { key: HKey::Scan(scan), mods: MOD_WIN };
+            assert_eq!(shell_owned_chord(&chord(key, false, false, false)), shell_owned(h));
+        }
+    }
+
+    #[test]
+    fn a_poisoned_hook_lock_is_recovered() {
+        let m = Mutex::new(5u8);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap();
+            panic!("poison it");
+        }));
+        assert!(m.is_poisoned());
+        // Every later key press still reads it.
+        assert_eq!(*locked(&m), 5);
+        *locked(&m) = 6;
+        assert_eq!(*locked(&m), 6);
+    }
+
+    #[test]
+    fn a_hook_panic_passes_the_key_on_and_releases_remapped_keys() {
+        // A body that completes returns its own answer and recovers nothing.
+        let mut recovered = false;
+        assert_eq!(guarded(|| 7, || { recovered = true; 9 }), 7);
+        assert!(!recovered);
+        // A panic in the body never unwinds out: the recovery's answer (the key passed on) stands.
+        let released = std::cell::Cell::new(false);
+        let r = guarded(|| panic!("forced panic in the hook body"), || { released.set(true); 9 });
+        assert_eq!(r, 9);
+        assert!(released.get(), "the held remapped keys are released");
     }
 
     #[test]
@@ -839,5 +1148,132 @@ mod tests {
         assert!(is_cockpit(79));
         remove_cockpit_window(79);
         assert!(!is_cockpit(79));
+    }
+
+    /// Leaves `m` poisoned, as a panic while holding it would.
+    fn poison<T>(m: &Mutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("poison it");
+        }));
+        assert!(m.is_poisoned());
+    }
+
+    fn kb(vk: u32) -> KBDLLHOOKSTRUCT {
+        KBDLLHOOKSTRUCT { vkCode: vk, scanCode: 0x1E, flags: 0, time: 0, dwExtraInfo: 0 }
+    }
+
+    #[test]
+    fn every_poisoned_hook_thread_lock_still_registers_and_passes_keys() {
+        // One test owns the module's statics, so no other test sees them poisoned.
+        for m in [&WINDOWS, &PWM_WINDOWS, &CHAT_WINDOWS, &COCKPIT_WINDOWS] {
+            poison(m);
+        }
+        poison(&GLOBAL);
+        poison(&PENDING);
+        // The window lists still answer (a poisoned list read as empty would drop Win chords).
+        add_pwm_window(91);
+        add_chat_window(92);
+        add_cockpit_window(93);
+        locked(&WINDOWS).push(94);
+        assert!(is_pwm(91) && is_chat(92) && is_cockpit(93) && is_tandem(94));
+        remove_pwm_window(91);
+        remove_chat_window(92);
+        remove_cockpit_window(93);
+        remove_window(94);
+        assert!(!is_pwm(91) && !is_chat(92) && !is_cockpit(93) && !is_tandem(94));
+        // A key press reads the hotkeys through the poison (empty chords: nothing registers for real).
+        *locked(&GLOBAL) = Some(Global::default());
+        assert_eq!(global_hotkeys(&kb(0x41), true), HookVerdict::Continue);
+        assert_eq!(global_hotkeys(&kb(0x41), false), HookVerdict::Continue);
+        // Registration (a settings change) and its pause run on the message loop.
+        let mut registered = Vec::new();
+        assert!(register(&mut registered, &[], true).is_empty());
+        assert!(locked(&GLOBAL).as_ref().is_some_and(|g| g.paused));
+        assert!(register(&mut registered, &[], false).is_empty());
+        assert!(locked(&GLOBAL).as_ref().is_some_and(|g| !g.paused));
+        let (tx, rx) = std::sync::mpsc::channel();
+        *locked(&PENDING) = Some((Vec::new(), tx));
+        let mut last = Vec::new();
+        apply_pending(&mut registered, &mut last);
+        assert_eq!(rx.try_recv().ok(), Some(Vec::new()), "the settings side gets its answer");
+        *locked(&GLOBAL) = None;
+        for m in [&WINDOWS, &PWM_WINDOWS, &CHAT_WINDOWS, &COCKPIT_WINDOWS] {
+            m.clear_poison();
+        }
+        GLOBAL.clear_poison();
+        PENDING.clear_poison();
+    }
+
+    #[test]
+    fn poisoned_remap_locks_still_pass_keys() {
+        let tags = Arc::new(RwLock::new(Tags::identity()));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = tags.write().unwrap_or_else(|e| e.into_inner());
+            panic!("poison it");
+        }));
+        assert!(tags.is_poisoned());
+        let h = Hook {
+            gate: Mutex::new(Gate::default()),
+            send: Box::new(|_| {}),
+            bound: Box::new(|_| false),
+            remapper: Mutex::new(Remapper::default()),
+            tags,
+            exempt: Box::new(|_, _| false),
+            exempting: Mutex::new(None),
+        };
+        poison(&h.remapper);
+        poison(&h.exempting);
+        poison(&h.gate);
+        // Identity tags and a plain letter: nothing is replaced, so nothing is injected.
+        assert!(!remap(&h, &kb(0x41), true));
+        assert!(!remap(&h, &kb(0x41), false));
+        assert_eq!(read_tags(&h.tags), Tags::identity());
+    }
+
+    #[test]
+    fn the_hook_thread_never_unwraps_a_lock_and_never_outlives_its_pump() {
+        let src = include_str!("winkeys.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        // Every lock is taken through `locked` or `read_tags`, which read through a poison.
+        for bad in [".lock().unwrap()", ".read().unwrap()", ".write().unwrap()", ".lock().ok()", ".lock().map(", ".read().map", "if let Ok(mut w) = ", ".lock().is_ok_and"] {
+            assert!(!code.contains(bad), "winkeys.rs takes a lock with {bad}");
+        }
+        assert_eq!(code.matches(".lock()").count(), 1, "only `locked` calls lock()");
+        assert_eq!(code.matches(".read()").count(), 1, "only `read_tags` calls read()");
+        // Each message-loop arm runs inside catch_unwind, and the thread's hook is removed when
+        // the thread ends for any reason.
+        let pump = code.split("fn install(").nth(1).expect("install");
+        assert!(pump.contains("pump_guarded("), "the message loop dispatches through pump_guarded");
+        assert!(pump.contains("OnEnd::new("), "the hook thread holds an unhook guard");
+    }
+
+    #[test]
+    fn the_hook_closures_read_their_locks_through_a_poison() {
+        // `send`, `bound`, `exempt` and the hotkey sink run on the hook thread, inside every key.
+        let src = include_str!("app/menu.rs");
+        let start = src.find("let send = Box::new(").expect("send");
+        let end = src.find("crate::winkeys::set_remap_global(").expect("set_remap_global");
+        let closures = &src[start..end];
+        assert!(closures.contains("set_hotkey_sink("));
+        assert!(!closures.contains(".unwrap()"), "a hook closure unwraps a lock");
+        assert!(!closures.contains(".expect("), "a hook closure can panic");
+    }
+
+    #[test]
+    fn a_panicking_message_arm_keeps_the_loop_and_the_guard_unhooks_on_any_end() {
+        assert_eq!(pump_guarded(|| Flow::Go), Flow::Go);
+        assert_eq!(pump_guarded(|| Flow::Stop), Flow::Stop);
+        assert_eq!(pump_guarded(|| panic!("forced panic in a message arm")), Flow::Go, "the loop goes on");
+        let ran = std::cell::Cell::new(0);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = OnEnd::new(|| ran.set(ran.get() + 1));
+            panic!("the thread unwinds");
+        }));
+        assert_eq!(ran.get(), 1, "the unhook runs when the thread unwinds");
+        {
+            let _g = OnEnd::new(|| ran.set(ran.get() + 1));
+        }
+        assert_eq!(ran.get(), 2, "and when the loop ends normally");
     }
 }

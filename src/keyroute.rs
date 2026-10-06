@@ -136,6 +136,13 @@ pub struct Snapshot {
     /// A composer has the keyboard: its own Win chords (`composer::chord`) are Tandem's even
     /// when nothing else binds them (Win+Y).
     pub composer: bool,
+    /// The forms of mappings the person wrote or edited. A hit that is in `keys` but not here
+    /// is one of Tandem's stock global mappings (Win+Arrows, Win+Home): Tandem's own, never
+    /// yielded to Windows.
+    user: HashSet<String>,
+    /// Respect shortcuts from Windows keyboard shortcuts (AllowSymbolicHotKeys): Win chords the
+    /// shell keeps for itself go to Windows over the person's own key mappings.
+    pub respect_system: bool,
     /// The keys (A-Z, 0-9) some saved profile's Shortcut claims for Ctrl+Win+<key>
     /// (`claimed_shortcuts`), rebuilt with the Profiles menu.
     pub profile_shortcuts: Vec<char>,
@@ -144,17 +151,34 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn new(ctx: &Context) -> Snapshot {
         let mut keys = HashSet::new();
-        for map in [ctx.profile_map, ctx.global_map] {
+        let mut user = HashSet::new();
+        let stock = crate::globals::keymaps::factory_global();
+        for (is_global, map) in [(false, ctx.profile_map), (true, ctx.global_map)] {
             for (k, v) in map {
                 let (Some(stroke), Some(b)) = (keystroke::parse(k), Binding::from_value(v)) else { continue };
                 if stroke.flags & COMMAND != 0 && !matches!(b.action, 22 | 24) {
-                    keys.insert(stroke.legacy());
-                    keys.insert(stroke.modified_key());
+                    // Byte for byte Tandem's shipped global entry, or (in a profile) one of its key
+                    // mapping presets' entries: not the person's mapping.
+                    let is_stock = if is_global { stock.get(k) == Some(v) } else { crate::globals::keymaps::presets().iter().any(|(_, t)| t.get(k) == Some(v)) };
+                    for form in [stroke.legacy(), stroke.modified_key()] {
+                        if !is_stock {
+                            user.insert(form.clone());
+                        }
+                        keys.insert(form);
+                    }
                 }
             }
         }
-        Snapshot { keys, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, profile_shortcuts: Vec::new() }
+        Snapshot { keys, user, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, respect_system: false, profile_shortcuts: Vec::new() }
     }
+}
+
+/// Whether a Win chord goes to Windows instead of a key mapping (R3 under ruling R7: iTerm2's
+/// default "Respect shortcuts from System Settings" lets the system's shortcuts win). Only
+/// with the option on, only for a chord the shell keeps, and never when a Tandem menu command
+/// (or one of Tandem's own stock mappings) owns it.
+pub fn yields_to_system(respect: bool, shell_owned: bool, menu_command: bool) -> bool {
+    respect && shell_owned && !menu_command
 }
 
 /// True when Tandem has something for this Win chord: the Leader, a number shortcut,
@@ -169,7 +193,17 @@ pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     }
     let mut typed = p.stroke.clone();
     typed.char_is_modified = true;
-    s.keys.contains(&p.stroke.legacy()) || s.keys.contains(&typed.modified_key()) || crate::commands::command_for_chord(chord).is_some() || profile_chord(chord).is_some_and(|(k, _)| s.profile_shortcuts.contains(&k))
+    let (a, b) = (p.stroke.legacy(), typed.modified_key());
+    let menu = crate::commands::command_for_chord(chord).is_some();
+    // 13t: a profile shortcut claims Ctrl+Win+<key> and counts as a menu command (R7);
+    // `claimed_shortcuts` never holds a chord the shell keeps, so it never takes one from Windows.
+    let profile = profile_chord(chord).is_some_and(|(k, _)| s.profile_shortcuts.contains(&k));
+    if s.keys.contains(&a) || s.keys.contains(&b) {
+        // A stock mapping is Tandem's own, like a menu command.
+        let stock_only = !s.user.contains(&a) && !s.user.contains(&b);
+        return !yields_to_system(s.respect_system, crate::winkeys::shell_owned_chord(chord), menu || stock_only || profile);
+    }
+    menu || profile
 }
 
 /// The key of a profile shortcut chord: Ctrl+Win+<A-Z or 0-9>, with Alt for the alternate
@@ -195,20 +229,10 @@ pub fn claimed_shortcuts(keys: impl IntoIterator<Item = Option<char>>) -> Vec<ch
     out
 }
 
-/// Whether Windows keeps Ctrl+Win+`key` (the key on its U.S. position).
+/// Whether Windows keeps Ctrl+Win+`key` (the key on its U.S. position): 13u's
+/// `winkeys::shell_owned_chord`, the one table the hook's yield check reads too.
 fn windows_keeps(key: char) -> bool {
-    #[cfg(windows)]
-    {
-        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_CONTROL, MOD_WIN};
-        const ROWS: [(&str, u32); 4] = [("1234567890", 0x02), ("QWERTYUIOP", 0x10), ("ASDFGHJKL", 0x1E), ("ZXCVBNM", 0x2C)];
-        let Some(scan) = ROWS.iter().find_map(|(row, first)| row.find(key).map(|i| first + i as u32)) else { return false };
-        crate::winkeys::shell_owned(HChord { key: HKey::Scan(scan), mods: MOD_WIN | MOD_CONTROL })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = key;
-        false
-    }
+    crate::winkeys::shell_owned_chord(&Chord { key: ChordKey::Char(key.to_ascii_lowercase()), cmd: true, ctrl: true, alt: false, shift: false })
 }
 
 /// What a Win chord does once no key mapping and no number shortcut took it. One place for the
@@ -338,6 +362,101 @@ mod tests {
         assert!(matches!(route(&ctx(&bang, &e), &press_from_chord(&Chord { shift: true, ..win(ChordKey::Char('1')) })), Route::Binding(_)));
     }
 
+    fn respecting(c: &Context) -> Snapshot {
+        Snapshot { respect_system: true, ..Snapshot::new(c) }
+    }
+
+    #[test]
+    fn symbolic_shortcuts_follow_the_option() {
+        assert!(yields_to_system(true, true, false));
+        assert!(!yields_to_system(true, true, true), "a Tandem menu command still wins");
+        assert!(!yields_to_system(false, true, false));
+        assert!(!yields_to_system(true, false, false));
+        let e = toml::Table::new();
+        // A key mapping on Win+B (the shell's; Win+E is also Tandem's Use Selection for Find, a
+        // menu command) yields to Windows only with the option on.
+        let g = map("0x62-0x100000", 13);
+        let win_b = win(ChordKey::Char('b'));
+        assert!(!win_chord_bound(&respecting(&ctx(&e, &g)), &win_b));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &g)), &win_b));
+        // A profile mapping yields the same way.
+        assert!(!win_chord_bound(&respecting(&ctx(&g, &e)), &win_b));
+        // A mapping on a chord Windows does not keep stays Tandem's: Win+N (a Tandem menu command
+        // too) and Win+Y (nobody's).
+        let win_n = map("0x6e-0x100000", 13);
+        assert!(crate::commands::command_for_chord(&win(ChordKey::Char('n'))).is_some(), "Win+N is a Tandem menu command");
+        assert!(win_chord_bound(&respecting(&ctx(&win_n, &e)), &win(ChordKey::Char('n'))));
+        let free = map("0x79-0x100000", 13); // Win+Y is nobody's
+        assert!(win_chord_bound(&respecting(&ctx(&free, &e)), &win(ChordKey::Char('y'))));
+        // Win+T is New Tab: a menu command wins even with a mapping on it, option on or off.
+        let t = map("0x74-0x100000", 13);
+        assert!(win_chord_bound(&respecting(&ctx(&t, &e)), &win(ChordKey::Char('t'))));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&t, &e)), &win(ChordKey::Char('t'))));
+        // Ctrl+Win+B is Windows' (wake the display): a mapping on it yields. Ctrl+Win+Left is
+        // Move Divider Left in Tandem, a menu command, so it stays Tandem's.
+        let desk = map("0x62-0x140000", 13);
+        let ctrl_win_b = Chord { ctrl: true, ..win(ChordKey::Char('b')) };
+        let kept = map("0xf702-0x340000", 13);
+        assert!(win_chord_bound(&respecting(&ctx(&e, &kept)), &Chord { ctrl: true, ..win(ChordKey::Left) }));
+        assert!(!win_chord_bound(&respecting(&ctx(&e, &desk)), &ctrl_win_b));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &desk)), &ctrl_win_b));
+        // The Leader and number shortcuts are Tandem's own, not key mappings.
+        let mut c = ctx(&e, &e);
+        c.leader_on = true;
+        assert!(win_chord_bound(&respecting(&c), &win_b));
+        assert!(win_chord_bound(&respecting(&ctx(&e, &e)), &win(ChordKey::Char('3'))));
+    }
+
+    #[test]
+    fn stock_global_win_arrows_stay_tandems() {
+        let e = toml::Table::new();
+        let stock = crate::globals::keymaps::factory_global().clone();
+        let s = respecting(&ctx(&e, &stock));
+        for c in [win(ChordKey::Left), win(ChordKey::Right), win(ChordKey::Up), win(ChordKey::Down), win(ChordKey::Home), Chord { shift: true, ..win(ChordKey::Left) }, Chord { shift: true, ..win(ChordKey::Right) }] {
+            assert!(win_chord_bound(&s, &c), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn natural_text_editing_win_arrows_stay_tandems() {
+        let e = toml::Table::new();
+        // The shipped preset, picked in a profile's Keys, is entries verbatim: Tandem's own.
+        let natural = &crate::globals::keymaps::presets().iter().find(|(n, _)| n == "Natural Text Editing").expect("the preset").1;
+        let s = respecting(&ctx(natural, &e));
+        assert!(win_chord_bound(&s, &win(ChordKey::Left)));
+        assert!(win_chord_bound(&s, &win(ChordKey::Right)));
+        // Edited, the entry is the person's and yields.
+        let mut edited = natural.clone();
+        edited.extend(map("0xf702-0x300000", 13));
+        let s = respecting(&ctx(&edited, &e));
+        assert!(!win_chord_bound(&s, &win(ChordKey::Left)));
+        assert!(win_chord_bound(&s, &win(ChordKey::Right)), "the others stay the preset's");
+    }
+
+    #[test]
+    fn edited_stock_mapping_yields() {
+        let e = toml::Table::new();
+        // The person rebinds Win+Left (stock: action 7) to another action.
+        let mut g = crate::globals::keymaps::factory_global().clone();
+        g.insert("0xf702-0x300000".into(), map("0xf702-0x300000", 13)["0xf702-0x300000"].clone());
+        let s = respecting(&ctx(&e, &g));
+        assert!(!win_chord_bound(&s, &win(ChordKey::Left)));
+        assert!(win_chord_bound(&s, &win(ChordKey::Right)), "the others stay stock");
+        // A profile mapping on a stock chord is the person's too.
+        let p = map("0xf703-0x300000", 13);
+        assert!(!win_chord_bound(&respecting(&ctx(&p, crate::globals::keymaps::factory_global())), &win(ChordKey::Right)));
+    }
+
+    #[test]
+    fn user_mapping_on_win_e_yields() {
+        let e = toml::Table::new();
+        let mut g = crate::globals::keymaps::factory_global().clone();
+        g.extend(map("0x62-0x100000", 13));
+        let s = respecting(&ctx(&e, &g));
+        assert!(!win_chord_bound(&s, &win(ChordKey::Char('b'))));
+        assert!(win_chord_bound(&s, &win(ChordKey::Left)));
+    }
+
     #[test]
     fn with_the_leader_on_every_win_chord_is_bound() {
         let e = toml::Table::new();
@@ -363,9 +482,12 @@ mod tests {
 
     #[test]
     fn claimed_shortcuts_skip_windows_chords_and_repeats() {
-        // Ctrl+Win+D, F, B and C belong to Windows (virtual desktops, Feedback, ...).
-        let keys = [Some('Q'), None, Some('q'), Some('D'), Some('7'), Some('F'), Some('#'), Some('Q'), Some('B'), Some('C'), Some('X')];
-        assert_eq!(claimed_shortcuts(keys), vec!['Q', '7', 'X']);
+        // Ctrl+Win+D, F, B and C belong to Windows (virtual desktops, Feedback, ...), and since
+        // the 13u merge so do Q (Quick Assist), N, S, V and 1-9 (`winkeys::shell_owned_chord`, the one list the hook reads).
+        let keys = [Some('K'), None, Some('k'), Some('D'), Some('0'), Some('F'), Some('#'), Some('K'), Some('B'), Some('C'), Some('X')];
+        assert_eq!(claimed_shortcuts(keys), vec!['K', '0', 'X']);
+        let win11 = [Some('Q'), Some('N'), Some('S'), Some('V'), Some('1'), Some('7'), Some('9')];
+        assert_eq!(claimed_shortcuts(win11), Vec::<char>::new());
     }
 
     #[test]
@@ -379,6 +501,84 @@ mod tests {
         assert!(win_chord_bound(&snap, &Chord { alt: true, ..ctrl_win('q') }), "Alt opens a window");
         assert!(!win_chord_bound(&snap, &ctrl_win('w')), "an unbound key stays with Windows");
         assert!(!win_chord_bound(&snap, &win(ChordKey::Char('b'))), "Win+B alone is not a profile shortcut");
+    }
+
+    /// Ctrl+Win+D (new virtual desktop) is the shell's. 13t never claims it for a profile, so
+    /// R7's profile half is moot: a profile with Shortcut D does not take it whether Respect
+    /// Windows shortcuts is on or off; a person's own mapping on it yields with the option on and
+    /// takes it with the option off; a menu command or stock mapping is not involved.
+    #[test]
+    fn profile_shortcut_ctrl_win_d_stays_with_windows() {
+        let e = toml::Table::new();
+        let d = Chord { ctrl: true, ..win(ChordKey::Char('d')) };
+        let claimed = claimed_shortcuts([Some('D'), Some('X')]);
+        assert_eq!(claimed, vec!['X'], "stored and shown, never claimed");
+        for respect in [true, false] {
+            let mut snap = Snapshot::new(&ctx(&e, &e));
+            snap.profile_shortcuts = claimed.clone();
+            snap.respect_system = respect;
+            assert!(!win_chord_bound(&snap, &d), "respect {respect}: Windows keeps Ctrl+Win+D");
+            assert!(win_chord_bound(&snap, &Chord { ctrl: true, ..win(ChordKey::Char('x')) }), "respect {respect}: Ctrl+Win+X is the profile's");
+        }
+        // The person's own mapping on Ctrl+Win+D: R7 decides.
+        assert!(crate::commands::command_for_chord(&d).is_none(), "no menu command owns Ctrl+Win+D");
+        let mapped = map("0x64-0x140000", 13);
+        let mut snap = Snapshot::new(&ctx(&e, &mapped));
+        snap.profile_shortcuts = claimed.clone();
+        assert!(win_chord_bound(&snap, &d), "option off: the mapping takes it");
+        snap.respect_system = true;
+        assert!(!win_chord_bound(&snap, &d), "option on: Windows takes it");
+        // Even a snapshot that held 'D' (a path that skipped `claimed_shortcuts`) counts it as
+        // Tandem's own, like a menu command: the profile shortcut is never yielded.
+        snap.profile_shortcuts = vec!['D'];
+        assert!(win_chord_bound(&snap, &d));
+    }
+
+    /// One list of the shell's chords (13u Task 6 review): the profile-shortcut claim reads the
+    /// same table as the hook's yield check, so the two can never disagree.
+    #[test]
+    fn profile_claims_read_the_one_shell_list() {
+        let src = include_str!("keyroute.rs");
+        let body = src.split("fn windows_keeps(").nth(1).and_then(|r| r.split("\n}").next()).expect("windows_keeps");
+        assert!(body.contains("winkeys::shell_owned_chord("), "windows_keeps goes through shell_owned_chord");
+        for k in ('A'..='Z').chain('0'..='9') {
+            let c = Chord { key: ChordKey::Char(k.to_ascii_lowercase()), cmd: true, ctrl: true, alt: false, shift: false };
+            assert_eq!(claimed_shortcuts([Some(k)]).is_empty(), crate::winkeys::shell_owned_chord(&c), "Ctrl+Win+{k}");
+        }
+    }
+
+    /// S2: the whole chain for a Ctrl+Win chord, in the order Tandem asks. The hook: a registered
+    /// global hotkey (hotkey windows, the app hotkey, session hotkeys) first, then a modifier
+    /// remap, then the Win-chord gate (`win_chord_bound`). In the gate: a key mapping (the
+    /// person's own yields to a shell chord while Respect Windows shortcuts is on; a stock
+    /// mapping, a menu command or a profile shortcut never yields), then a menu command, then a
+    /// profile shortcut; anything else is Windows'. In the app (`route`, then `dispatch`): the
+    /// mapping runs first, then `terminal_chord` (menu, then profile).
+    #[test]
+    fn ctrl_win_chord_precedence_chain() {
+        let hook = include_str!("winkeys.rs");
+        let body = hook.split("unsafe fn hook_body(").nth(1).expect("hook_body");
+        let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("hook_body calls {needle}"));
+        assert!(at("global_hotkeys(") < at("remap(h, kb, down)"), "a registered hotkey before a remap");
+        assert!(at("remap(h, kb, down)") < at("(h.bound)(c)"), "a remap before the Win-chord gate");
+        let gate = include_str!("keyroute.rs").split("pub fn win_chord_bound(").nth(1).and_then(|r| r.split("\n}").next()).expect("win_chord_bound");
+        assert!(gate.find("s.keys.contains").unwrap() < gate.find("menu || profile").unwrap(), "a key mapping before a menu command or profile shortcut");
+        let e = toml::Table::new();
+        let x = Chord { ctrl: true, ..win(ChordKey::Char('x')) };
+        // A mapping and a profile shortcut on the same Ctrl+Win chord: Tandem takes it with
+        // Respect on or off (the profile shortcut counts as a menu command), and `route` runs
+        // the mapping (13t P8: a mapping beats a profile shortcut).
+        let mapped = map("0x78-0x140000", 13);
+        for respect in [true, false] {
+            let mut s = Snapshot::new(&ctx(&e, &mapped));
+            s.profile_shortcuts = vec!['X'];
+            s.respect_system = respect;
+            assert!(win_chord_bound(&s, &x));
+        }
+        let terminal = |c: &Chord| crate::keyroute::route(&ctx(&e, &mapped), &press_from_chord(c));
+        assert!(matches!(terminal(&x), Route::Binding(_)), "the mapping runs, not the profile");
+        // A menu chord beats a profile shortcut in the app.
+        assert!(matches!(terminal_chord(&['T'], &win(ChordKey::Char('t'))), ChordAction::Menu(_)));
     }
 
     /// The Ctrl+Win+key opens the profile in a tab, Alt in a window; a menu chord wins over it,

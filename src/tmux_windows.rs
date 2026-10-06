@@ -25,6 +25,12 @@ pub fn open_list(session: u32, w: u32, h: u32, detailed_format: &str) -> Vec<Str
     ]
 }
 
+/// Whether a tmux window or tab that opens takes the selection (`TmuxWindowsOpenInBackground`
+/// off), or opens behind it (`PT:3992`, `PT:13548-13552`).
+pub fn open_active(background_key: bool) -> bool {
+    !background_key
+}
+
 /// The height sent for the client: tmux 2.9 and 2.9a count the status bar inside it.
 pub fn client_height(h: u32, status_bar: bool, version: Option<f64>) -> u32 {
     let buggy = version.is_some_and(|v| v == 2.9 || v == 2.91);
@@ -436,5 +442,12 @@ mod tests {
         assert_eq!(l[4], "refresh-client -A '%7:continue'");
         assert_eq!(l.len(), 5);
         assert_eq!((max_history(24, 1000, false), max_history(50, 10, false), max_history(24, 0, true)), (1000, 50, 10_000_000));
+    }
+
+    #[test]
+    fn tmux_background_follows_iterm2() {
+        // The key on: a new tmux tab opens behind the selected one; off: it is selected.
+        assert!(!open_active(true));
+        assert!(open_active(false));
     }
 }

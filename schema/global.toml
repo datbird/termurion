@@ -147,7 +147,43 @@ section = "Remap Modifiers"
 label = "Remap modifiers globally"
 type = "bool"
 default = true
-help = "iTerm2 applies the remapping only while it is the active app either way; Tandem does the same."
+help = "When off, Tandem remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys."
+
+[[setting]]
+key = "ForceKeyboard"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Force keyboard"
+type = "bool"
+default = false
+help = "Forces Tandem to use the selected keyboard layout while it is active."
+
+[[setting]]
+key = "ForceKeyboardOncePerSession"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Only force once per session when it first receives keyboard focus"
+type = "bool"
+default = false
+help = "When \u201cForce keyboard\u201d is on, Tandem continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward."
+
+[[setting]]
+key = "KeyboardLocale"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Keyboard locale"
+type = "string"
+default = ""
+help = "Keyboard locale"
+
+[[setting]]
+key = "AllowSymbolicHotKeys"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Respect shortcuts from Windows keyboard shortcuts"
+type = "bool"
+default = true
+help = "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Tandem's own menu shortcuts still work."
 
 [[setting]]
 key = "CommandSelection"
@@ -5007,6 +5043,42 @@ label = "Disable performing the first matching Smart Selection\u2019s Action on 
 type = "bool"
 default = false
 help = "Disable performing the first matching Smart Selection\u2019s Action on Win-click?"
+
+[[setting]]
+key = "ShowPinnedIndicator"
+tab = "Advanced"
+section = "Hotkey"
+label = "Show indicator for pinned hotkey windows."
+type = "bool"
+default = false
+help = "Show indicator for pinned hotkey windows."
+
+[[setting]]
+key = "UseBlackFillerColorForTmuxInFullScreen"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Use black for filler area in tmux windows in full screen."
+type = "bool"
+default = false
+help = "Use black for filler area in tmux windows in full screen."
+
+[[setting]]
+key = "TmuxWindowsOpenInBackground"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Open tmux windows and tabs in the background?"
+type = "bool"
+default = false
+help = "Open tmux windows and tabs in the background?\nWhen enabled, attaching with tmux -CC (or when tmux creates a new window) will reveal the window or tab without moving keyboard focus to it. Focus stays on the attaching session."
+
+[[setting]]
+key = "SupportDecsetMetaSendsEscape"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Support DECSET 1036?"
+type = "bool"
+default = false
+help = "Support DECSET 1036?\nThis allows apps in the terminal to control whether the Alt key sends esc+ or acts like a regular Alt key."
 
 [[setting]]
 key = "Custom Color Presets"

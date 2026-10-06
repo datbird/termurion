@@ -378,7 +378,7 @@ impl App {
         if !self.per_pane_bars(tab) {
             return Vec::new();
         }
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()).into_iter().filter_map(|(id, r)| self.pane_bar_split(tab, id, r).1.map(|rect| Bar { pane: id, rect })).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()).into_iter().filter_map(|(id, r)| self.pane_bar_split(tab, id, r).1.map(|rect| Bar { pane: id, rect })).collect()
     }
 
     /// The session's profile layout (what edits change).

@@ -344,7 +344,7 @@ impl App {
     /// overlay covers the whole session view).
     fn pick_rects(&self) -> Vec<(PaneId, Rect)> {
         let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap())
+        visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap())
     }
 
     /// A press while the pick is on. Left presses are all taken: on a pane it drops with the

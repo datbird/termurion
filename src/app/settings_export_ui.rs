@@ -436,7 +436,8 @@ impl App {
         for path in &list {
             super::scripts_app::remove_path(path);
         }
-        crate::notify::remove(0);
+        // Every exit tears the process down: the keyboard hook, the layout, the icon.
+        super::teardown_process();
         std::process::exit(0);
     }
 

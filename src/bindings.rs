@@ -390,6 +390,24 @@ mod tests {
         toml::Value::Table(t)
     }
 
+    /// S4 (13t x 13u): a binding can come from an import or a script, and a bound Session Hotkey
+    /// would register a system-wide hotkey with no consent (13u B3), as a bound Shortcut would
+    /// claim a Ctrl+Win chord: neither is bindable, and a table naming them evaluates nothing.
+    #[test]
+    fn bindings_never_name_a_hotkey() {
+        for key in ["Session Hotkey", "Shortcut", "HotKey Key Code", "HotKey Modifier Flags", "HotKey Characters"] {
+            assert!(!bindable(key), "{key}");
+        }
+        // The hotkey window checkboxes are bindable checkboxes, but a binding writes the session's
+        // own copy (`set_session_values`) and hotkey windows register from the saved profiles
+        // only, so a binding cannot register one.
+        let prefs = include_str!("app/hotkey_ui.rs").split("fn hotkey_prefs(").nth(1).and_then(|r| r.split("\n    }").next()).expect("hotkey_prefs");
+        assert!(prefs.contains("self.store.profiles.iter()") && !prefs.contains("sessions"));
+        let (hk, sc) = ("Session Hotkey".to_string(), "Shortcut".to_string());
+        let v = tbl("\"x\"", "user");
+        assert!(bound_from([(&hk, &v), (&sc, &v)].into_iter()).is_empty());
+    }
+
     fn with(entries: &[(&str, toml::Value)]) -> Profile {
         let mut p = Profile::default();
         let mut t = toml::Table::new();

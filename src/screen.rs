@@ -1949,6 +1949,11 @@ impl Screen {
         self.answerback_cp = cp;
     }
 
+    /// DECSET 1036 (a program asks Alt to send Esc+) is set.
+    pub fn meta_sends_escape(&self) -> bool {
+        self.term.mode().contains(TermMode::META_SENDS_ESCAPE)
+    }
+
     /// DEC mode 2048 (in-band resize reports) is set.
     pub fn resize_reports(&self) -> bool {
         self.term.resize_reports
@@ -2473,7 +2478,7 @@ impl Screen {
         // The person's Reset ends a print job that is collecting; it must reach the parser.
         self.print_capture = None;
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
-            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b(B";
+            \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b[?1036l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
         // DECSTBM (the `r`) homes the cursor; a soft reset leaves it where it was.
         let c = self.term.grid().cursor.point;
@@ -3653,8 +3658,10 @@ mod tests {
     #[test]
     fn soft_reset_keeps_the_text_and_drops_the_modes() {
         let mut s = Screen::new(20, 5);
-        s.feed(b"keep me\r\n\x1b[?1002h\x1b[?1006h\x1b[?25l\x1b[?2004h\x1b[1;31m");
+        s.feed(b"keep me\r\n\x1b[?1002h\x1b[?1006h\x1b[?25l\x1b[?2004h\x1b[?1036h\x1b[1;31m");
+        assert!(s.meta_sends_escape());
         s.soft_reset();
+        assert!(!s.meta_sends_escape(), "DECSTR clears 1036 (VT100Terminal softReset)");
         assert!(s.all_text().contains("keep me"));
         assert_eq!(s.mouse_modes(), Modes { tracking: Tracking::Off, sgr: false });
         let mode = *s.term().mode();
@@ -4396,6 +4403,25 @@ mod tests {
         s.set_answerback("\u{e9}".repeat(200));
         let r = s.feed(b"\x05");
         assert!(r.len() <= 256 && String::from_utf8(r).is_ok(), "cut on a character");
+    }
+
+    /// 13u Task 2 (Review Focus 2): DECSET 1036 follows xterm.
+    #[test]
+    fn meta_sends_escape_mode_follows_xterm() {
+        let mut s = Screen::new(20, 3);
+        assert!(!s.meta_sends_escape());
+        assert_eq!(s.feed(b"\x1b[?1036$p"), b"\x1b[?1036;2$y");
+        assert_eq!(s.feed(b"\x1b[?1036h"), b"", "no report on enabling");
+        assert!(s.meta_sends_escape());
+        assert_eq!(s.feed(b"\x1b[?1036$p"), b"\x1b[?1036;1$y");
+        s.feed(b"\x1b[?1036l");
+        assert!(!s.meta_sends_escape());
+        assert_eq!(s.feed(b"\x1b[?1036$p"), b"\x1b[?1036;2$y");
+        s.feed(b"\x1b[?1036h\x1bc");
+        assert!(!s.meta_sends_escape(), "RIS");
+        s.feed(b"\x1b[?1;1036h");
+        assert!(s.meta_sends_escape(), "inside a parameter list");
+        assert!(s.term().mode().contains(TermMode::APP_CURSOR), "other modes untouched");
     }
 
     /// 13o Task 6 (Review Focus 10, R8): DEC mode 2048.

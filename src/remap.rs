@@ -3,6 +3,7 @@
 //! These are the hook's decisions, kept apart from Win32 so they can be tested.
 
 use crate::globals::Globals;
+use crate::keyproto::Sides;
 use crate::mouse::Mods;
 
 const LCTRL: u16 = 0xA2;
@@ -72,6 +73,58 @@ pub fn targets(tag: i64) -> Vec<u16> {
     }
 }
 
+/// Whether the hook's Win-chord gate may treat Win as held: with Remap modifiers globally off, a
+/// Win key remapped to something else is not a Win for Tandem's menu chords (it reaches the window
+/// and is read as its target, `APP:252-285`), so only a Win side still acting as Win counts.
+pub fn win_chord_held(tags: &Tags, global: bool, lwin: bool, rwin: bool) -> bool {
+    // A side counts while it still acts as a Win key: its tag targets Left or Right Win (the
+    // identity, either Command, or the other Win side).
+    let acts = |held: bool, tag: i64| held && (global || targets(tag).iter().any(|v| *v == LWIN || *v == RWIN));
+    acts(lwin, tags.left_command) || acts(rwin, tags.right_command)
+}
+
+/// What Tandem itself reads when Remap modifiers globally is off (`iTermApplication.m:252-285`):
+/// the physical modifiers, rewritten through the tags. Which Alt, Control and Win keys are down comes
+/// from `sides`; a modifier in `physical` with no side known counts as the left key. Shift is never
+/// remapped. Windows' AltGr (Right Alt with its fake Left Control) is left alone, as the hook does.
+pub fn remap_in_app(tags: &Tags, physical: Mods, sides: Sides) -> (Mods, Sides) {
+    if *tags == Tags::identity() {
+        return (physical, sides);
+    }
+    let altgr = sides.ralt && sides.lctrl && !sides.rctrl;
+    let mut down: Vec<u16> = Vec::new();
+    for (on, vk) in [(sides.lctrl, LCTRL), (sides.rctrl, RCTRL), (sides.lalt, LALT), (sides.ralt, RALT), (sides.lwin, LWIN), (sides.rwin, RWIN)] {
+        if on {
+            down.push(vk);
+        }
+    }
+    for (flag, left, right) in [(physical.ctrl, LCTRL, RCTRL), (physical.alt, LALT, RALT), (physical.cmd, LWIN, RWIN)] {
+        if flag && !down.contains(&left) && !down.contains(&right) {
+            down.push(left);
+        }
+    }
+    let mut out: Vec<u16> = Vec::new();
+    for vk in down {
+        let targets = if vk == LCTRL && altgr { vec![vk] } else { tags.tag_for(vk).map_or_else(|| vec![vk], targets) };
+        for t in targets {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    let has = |vk: u16| out.contains(&vk);
+    let sides = Sides {
+        lalt: has(LALT),
+        ralt: has(RALT),
+        lctrl: has(LCTRL),
+        rctrl: has(RCTRL),
+        lwin: has(LWIN),
+        rwin: has(RWIN),
+    };
+    let mods = Mods { shift: physical.shift, alt: sides.lalt || sides.ralt, ctrl: sides.lctrl || sides.rctrl, cmd: sides.lwin || sides.rwin };
+    (mods, sides)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Pass,
@@ -94,7 +147,10 @@ impl Remapper {
         !self.active.is_empty()
     }
 
-    pub fn on_key(&mut self, vk: u16, scan: u32, down: bool, focused: bool, tags: &Tags) -> Verdict {
+    /// `global` is Remap modifiers globally: off, no new key is remapped (the hook injects nothing;
+    /// Tandem reads its own keys through `remap_in_app`). A key remapped before it went off still
+    /// comes up cleanly.
+    pub fn on_key(&mut self, vk: u16, scan: u32, down: bool, focused: bool, tags: &Tags, global: bool) -> Verdict {
         // AltGr's fake Left Control is never ours, even while a real Left Control is remapped.
         if vk == LCTRL && scan == ALTGR_FAKE_CTRL_SCAN {
             return Verdict::Pass;
@@ -121,7 +177,7 @@ impl Remapper {
             }
             return Verdict::Replace(keys.into_iter().rev().map(|k| (k, false)).collect());
         }
-        if !down || !focused || was_down {
+        if !down || !focused || !global || was_down {
             return Verdict::Pass;
         }
         let Some(tag) = tags.tag_for(vk) else { return Verdict::Pass };
@@ -131,6 +187,13 @@ impl Remapper {
         }
         self.active.push((vk, keys.clone()));
         Verdict::Replace(keys.into_iter().map(|k| (k, true)).collect())
+    }
+
+    /// Key-ups for every injected key still down, and forgets them: called when the remap
+    /// is turned off, so no modifier stays down in Windows.
+    pub fn flush(&mut self) -> Vec<(u16, bool)> {
+        self.exempt = false;
+        self.active.drain(..).flat_map(|(_, t)| t.into_iter().rev().map(|k| (k, false))).collect()
     }
 
     /// The modifiers as the keys are physically held, before remapping.
@@ -170,87 +233,87 @@ mod tests {
     #[test]
     fn an_identity_map_passes_everything() {
         let mut r = Remapper::default();
-        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &Tags::identity()), Verdict::Pass);
+        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &Tags::identity(), true), Verdict::Pass);
         assert!(!r.active());
     }
 
     #[test]
     fn left_control_becomes_left_win() {
         let mut r = Remapper::default();
-        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &swapped()), Verdict::Replace(vec![(0x5B, true)]));
+        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &swapped(), true), Verdict::Replace(vec![(0x5B, true)]));
         assert!(r.active());
         // Auto-repeat of a held key repeats the target.
-        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &swapped()), Verdict::Replace(vec![(0x5B, true)]));
-        assert_eq!(r.on_key(0xA2, 0x1D, false, true, &swapped()), Verdict::Replace(vec![(0x5B, false)]));
+        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &swapped(), true), Verdict::Replace(vec![(0x5B, true)]));
+        assert_eq!(r.on_key(0xA2, 0x1D, false, true, &swapped(), true), Verdict::Replace(vec![(0x5B, false)]));
         assert!(!r.active());
     }
 
     #[test]
     fn a_remapped_key_is_released_even_after_focus_leaves() {
         let mut r = Remapper::default();
-        r.on_key(0x5B, 0x5B, true, true, &swapped());
-        assert_eq!(r.on_key(0x5B, 0x5B, false, false, &swapped()), Verdict::Replace(vec![(0xA2, false)]));
+        r.on_key(0x5B, 0x5B, true, true, &swapped(), true);
+        assert_eq!(r.on_key(0x5B, 0x5B, false, false, &swapped(), true), Verdict::Replace(vec![(0xA2, false)]));
     }
 
     #[test]
     fn nothing_is_remapped_while_another_app_is_in_front() {
         let mut r = Remapper::default();
-        assert_eq!(r.on_key(0xA2, 0x1D, true, false, &swapped()), Verdict::Pass);
-        assert_eq!(r.on_key(0xA2, 0x1D, false, false, &swapped()), Verdict::Pass);
+        assert_eq!(r.on_key(0xA2, 0x1D, true, false, &swapped(), true), Verdict::Pass);
+        assert_eq!(r.on_key(0xA2, 0x1D, false, false, &swapped(), true), Verdict::Pass);
     }
 
     #[test]
     fn altgr_fake_control_is_never_remapped() {
         let mut r = Remapper::default();
-        assert_eq!(r.on_key(0xA2, 0x21D, true, true, &swapped()), Verdict::Pass);
+        assert_eq!(r.on_key(0xA2, 0x21D, true, true, &swapped(), true), Verdict::Pass);
     }
 
     #[test]
     fn none_swallows_the_key() {
         let mut r = Remapper::default();
         let t = Tags { right_option: 9, ..Tags::identity() };
-        assert_eq!(r.on_key(0xA5, 0x38, true, true, &t), Verdict::Replace(vec![]));
-        assert_eq!(r.on_key(0xA5, 0x38, false, true, &t), Verdict::Replace(vec![]));
+        assert_eq!(r.on_key(0xA5, 0x38, true, true, &t, true), Verdict::Replace(vec![]));
+        assert_eq!(r.on_key(0xA5, 0x38, false, true, &t, true), Verdict::Replace(vec![]));
     }
 
     #[test]
     fn win_and_alt_target_presses_both() {
         let mut r = Remapper::default();
         let t = Tags { right_control: 6, ..Tags::identity() };
-        assert_eq!(r.on_key(0xA3, 0x1D, true, true, &t), Verdict::Replace(vec![(0x5B, true), (0xA4, true)]));
-        assert_eq!(r.on_key(0xA3, 0x1D, false, true, &t), Verdict::Replace(vec![(0xA4, false), (0x5B, false)]));
+        assert_eq!(r.on_key(0xA3, 0x1D, true, true, &t, true), Verdict::Replace(vec![(0x5B, true), (0xA4, true)]));
+        assert_eq!(r.on_key(0xA3, 0x1D, false, true, &t, true), Verdict::Replace(vec![(0xA4, false), (0x5B, false)]));
     }
 
     #[test]
     fn other_keys_pass() {
         let mut r = Remapper::default();
-        assert_eq!(r.on_key(0x41, 0x1E, true, true, &swapped()), Verdict::Pass);
+        assert_eq!(r.on_key(0x41, 0x1E, true, true, &swapped(), true), Verdict::Pass);
     }
 
     #[test]
     fn a_key_held_before_focus_arrives_is_never_remapped() {
         let mut r = Remapper::default();
-        assert_eq!(r.on_key(0x5B, 0x5B, true, false, &swapped()), Verdict::Pass);
+        assert_eq!(r.on_key(0x5B, 0x5B, true, false, &swapped(), true), Verdict::Pass);
         // Auto-repeat after Tandem came to the front.
-        assert_eq!(r.on_key(0x5B, 0x5B, true, true, &swapped()), Verdict::Pass);
-        assert_eq!(r.on_key(0x5B, 0x5B, false, true, &swapped()), Verdict::Pass);
+        assert_eq!(r.on_key(0x5B, 0x5B, true, true, &swapped(), true), Verdict::Pass);
+        assert_eq!(r.on_key(0x5B, 0x5B, false, true, &swapped(), true), Verdict::Pass);
     }
 
     #[test]
     fn releasing_the_modifier_first_during_an_exempt_key_releases_it() {
         let mut r = Remapper::default();
-        r.on_key(0xA2, 0x1D, true, true, &swapped());
+        r.on_key(0xA2, 0x1D, true, true, &swapped(), true);
         r.exempt_down(0x43);
         // Left Control comes up before C: the injected physical Left Control must come up.
-        assert_eq!(r.on_key(0xA2, 0x1D, false, true, &swapped()), Verdict::Replace(vec![(0xA2, false)]));
+        assert_eq!(r.on_key(0xA2, 0x1D, false, true, &swapped(), true), Verdict::Replace(vec![(0xA2, false)]));
         assert_eq!(r.exempt_up(0x43), vec![(0x43, false)]);
     }
 
     #[test]
     fn physical_modifiers_are_tracked() {
         let mut r = Remapper::default();
-        r.on_key(0xA2, 0x1D, true, true, &swapped());
-        r.on_key(0xA0, 0x2A, true, true, &swapped()); // Left Shift, not remapped
+        r.on_key(0xA2, 0x1D, true, true, &swapped(), true);
+        r.on_key(0xA0, 0x2A, true, true, &swapped(), true); // Left Shift, not remapped
         let m = r.physical_mods();
         assert!(m.ctrl && m.shift && !m.cmd && !m.alt);
     }
@@ -258,9 +321,89 @@ mod tests {
     #[test]
     fn an_exempt_key_sees_the_physical_modifiers() {
         let mut r = Remapper::default();
-        r.on_key(0xA2, 0x1D, true, true, &swapped()); // Left Control down, injected as Left Win
+        r.on_key(0xA2, 0x1D, true, true, &swapped(), true); // Left Control down, injected as Left Win
         assert_eq!(r.exempt_down(0x43), vec![(0x5B, false), (0xA2, true), (0x43, true)]);
         assert_eq!(r.exempt_up(0x43), vec![(0x43, false), (0xA2, false), (0x5B, true)]);
+    }
+
+    #[test]
+    fn win_chords_follow_the_remap_when_not_global() {
+        let identity = Tags::identity();
+        let win_as_ctrl = Tags { left_command: 11, ..Tags::identity() };
+        // Global on: the hook handles remapping itself; the gate sees the physical Win.
+        assert!(win_chord_held(&win_as_ctrl, true, true, false));
+        // Off, Left Win as Control: it is not a Win for Tandem's menu chords.
+        assert!(!win_chord_held(&win_as_ctrl, false, true, false));
+        // The right Win still acts as Win.
+        assert!(win_chord_held(&win_as_ctrl, false, true, true));
+        assert!(win_chord_held(&win_as_ctrl, false, false, true));
+        // Nothing remapped: unchanged either way.
+        assert!(win_chord_held(&identity, false, true, false));
+        assert!(!win_chord_held(&identity, false, false, false));
+        // Either Command (tag 4) and a side swapped to the other Win still act as Win.
+        assert!(win_chord_held(&Tags { left_command: 4, ..identity }, false, true, false));
+        assert!(win_chord_held(&Tags { left_command: 8, ..identity }, false, true, false));
+        assert!(win_chord_held(&Tags { right_command: 7, ..identity }, false, false, true));
+        assert!(win_chord_held(&Tags { right_command: 4, ..identity }, false, false, true));
+    }
+
+    #[test]
+    fn in_app_remap_follows_iterm2() {
+        let left_alt = |m: Mods| Sides { lalt: m.alt, ..Sides::default() };
+        let as_ctrl = Tags { left_option: 11, ..Tags::identity() };
+        // Left Alt as Control: Ctrl on, Alt off.
+        let alt = Mods { alt: true, ..Mods::default() };
+        let (m, s) = remap_in_app(&as_ctrl, alt, left_alt(alt));
+        assert!(m.ctrl && !m.alt, "{m:?}");
+        assert!(s.lctrl && !s.lalt && !s.rctrl, "{s:?}");
+        // Right Alt untouched.
+        let ralt = Sides { ralt: true, ..Sides::default() };
+        let (m, s) = remap_in_app(&as_ctrl, alt, ralt);
+        assert!(m.alt && !m.ctrl && s.ralt && !s.lctrl);
+        // Identity tags: unchanged, whatever the sides.
+        let (m, s) = remap_in_app(&Tags::identity(), alt, left_alt(alt));
+        assert_eq!((m, s), (alt, left_alt(alt)));
+        // Shift is never remapped.
+        let shift_alt = Mods { shift: true, alt: true, ..Mods::default() };
+        assert!(remap_in_app(&as_ctrl, shift_alt, left_alt(shift_alt)).0.shift);
+        // Swapping Left Control and Left Win swaps both flags.
+        let (m, s) = remap_in_app(&swapped(), Mods { ctrl: true, ..Mods::default() }, Sides { lctrl: true, ..Sides::default() });
+        assert!(m.cmd && !m.ctrl && s.lwin && !s.lctrl);
+        // Either-key tags use the left key; a Win and Alt target sets both.
+        let t = Tags { right_control: 6, ..Tags::identity() };
+        let (m, _) = remap_in_app(&t, Mods { ctrl: true, ..Mods::default() }, Sides { rctrl: true, ..Sides::default() });
+        assert!(m.cmd && m.alt && !m.ctrl);
+        // None swallows the modifier.
+        let none = Tags { left_option: 9, ..Tags::identity() };
+        assert!(!remap_in_app(&none, alt, left_alt(alt)).0.alt);
+        // AltGr (Right Alt with Windows' fake Left Control) is never remapped.
+        let altgr_mods = Mods { ctrl: true, alt: true, ..Mods::default() };
+        let altgr = Sides { lctrl: true, ralt: true, ..Sides::default() };
+        let swap_ctrl = Tags { left_control: 7, ..Tags::identity() };
+        assert_eq!(remap_in_app(&swap_ctrl, altgr_mods, altgr), (altgr_mods, altgr));
+    }
+
+    #[test]
+    fn a_remapper_does_nothing_when_not_global() {
+        let mut r = Remapper::default();
+        for (vk, scan) in [(0xA2u16, 0x1Du32), (0x5B, 0x5B), (0xA4, 0x38), (0xA5, 0x38), (0x41, 0x1E)] {
+            assert_eq!(r.on_key(vk, scan, true, true, &swapped(), false), Verdict::Pass, "vk {vk:#x}");
+            assert_eq!(r.on_key(vk, scan, false, true, &swapped(), false), Verdict::Pass, "vk {vk:#x} up");
+        }
+        assert!(!r.active());
+        // With the flag on the same keys are replaced, as before.
+        assert_eq!(r.on_key(0xA2, 0x1D, true, true, &swapped(), true), Verdict::Replace(vec![(0x5B, true)]));
+    }
+
+    #[test]
+    fn turning_it_off_releases_what_is_held() {
+        let mut r = Remapper::default();
+        r.on_key(0xA2, 0x1D, true, true, &swapped(), true);
+        assert_eq!(r.flush(), vec![(0x5B, false)]);
+        assert!(!r.active());
+        assert!(r.flush().is_empty());
+        // The physical release afterwards is a plain pass-through.
+        assert_eq!(r.on_key(0xA2, 0x1D, false, true, &swapped(), false), Verdict::Pass);
     }
 
     #[test]

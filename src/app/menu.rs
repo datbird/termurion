@@ -203,23 +203,26 @@ impl App {
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(e.id.0));
         }));
+        // These closures run on the hook thread inside every key: a poisoned lock is read through.
         let proxy = self.proxy.clone();
         let send = Box::new(move |c| {
-            let _ = proxy.lock().unwrap().send_event(UserEvent::Chord(c));
+            let _ = proxy.lock().unwrap_or_else(|e| e.into_inner()).send_event(UserEvent::Chord(c));
         });
         let snapshot = self.route_snapshot.clone();
-        let bound = Box::new(move |c: &Chord| crate::keyroute::win_chord_bound(&snapshot.read().unwrap(), c));
+        let bound = Box::new(move |c: &Chord| crate::keyroute::win_chord_bound(&snapshot.read().unwrap_or_else(|e| e.into_inner()), c));
         let exempt_map = self.exempt_map.clone();
         let exempt = Box::new(move |vk: u16, m: crate::mouse::Mods| {
             let Some(key) = crate::winkeys::vk_to_key(vk) else { return false };
             let chord = Chord { key, cmd: m.cmd, alt: m.alt, shift: m.shift, ctrl: m.ctrl };
-            crate::keyroute::press_from_chord(&chord).stroke.find(&exempt_map.read().unwrap(), false).is_some()
+            crate::keyroute::press_from_chord(&chord).stroke.find(&exempt_map.read().unwrap_or_else(|e| e.into_inner()), false).is_some()
         });
         self.refresh_route();
         let hotkeys = self.proxy.clone();
         crate::winkeys::set_hotkey_sink(Box::new(move |ids| {
-            let _ = hotkeys.lock().unwrap().send_event(UserEvent::Hotkey(ids));
+            let _ = hotkeys.lock().unwrap_or_else(|e| e.into_inner()).send_event(UserEvent::Hotkey(ids));
         }));
+        // Remap modifiers globally, before the hook sees its first key.
+        crate::winkeys::set_remap_global(self.globals.bool("RemapModifiersGlobally"));
         match crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             Err(e) => self.banners.set("keys", format!("Win chords are unavailable: {e}")),
             Ok(()) if !self.hotkeys_registered => {
@@ -1130,7 +1133,7 @@ impl App {
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
     /// Each shown pane's terminal rectangle (Clippings and the inline chat take the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
-        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), self.gap()).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
 }
 

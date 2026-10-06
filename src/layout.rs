@@ -128,6 +128,18 @@ enum Node {
     Split { axis: Axis, ratio: f32, a: Box<Node>, b: Box<Node> },
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many shapes `Layout::tree` built on this thread (tests of per-frame paths).
+    static TREE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many shapes `Layout::tree` built on this thread.
+#[cfg(test)]
+pub fn tree_builds() -> usize {
+    TREE_BUILDS.with(|n| n.get())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
     root: Node,
@@ -162,6 +174,8 @@ impl Layout {
 
     /// The layout's shape.
     pub fn tree(&self) -> Tree<PaneId> {
+        #[cfg(test)]
+        TREE_BUILDS.with(|n| n.set(n.get() + 1));
         fn go(n: &Node) -> Tree<PaneId> {
             match n {
                 Node::Leaf(p) => Tree::Leaf(*p),
@@ -502,28 +516,35 @@ pub fn most_recent(candidates: &[PaneId], activity: &dyn Fn(PaneId) -> u64) -> O
 }
 
 /// The most panes a line along `axis` crosses: for `Axis::Column`, the tallest column's pane
-/// count. A split on the same axis adds its sides, a split on the other takes the larger.
-pub fn max_stack(tree: &Tree<PaneId>, axis: Axis) -> usize {
-    match tree {
-        Tree::Leaf(_) => 1,
-        Tree::Split { axis: a, a: x, b: y, .. } => {
-            let (x, y) = (max_stack(x, axis), max_stack(y, axis));
-            if *a == axis { x + y } else { x.max(y) }
+/// count. A split on the same axis adds its sides, a split on the other takes the larger. Walks
+/// the layout in place (a per-frame path).
+pub fn max_stack(layout: &Layout, axis: Axis) -> usize {
+    fn go(n: &Node, axis: Axis) -> usize {
+        match n {
+            Node::Leaf(_) => 1,
+            Node::Split { axis: a, a: x, b: y, .. } => {
+                let (x, y) = (go(x, axis), go(y, axis));
+                if *a == axis { x + y } else { x.max(y) }
+            }
         }
     }
+    go(&layout.root, axis)
 }
 
 /// The most room a row of side by side panes gives up at their right edges: each leaf's `room`,
 /// summed along `Axis::Row` splits, the larger side across the other axis (tmux's width report
-/// takes it from the widest row).
-pub fn widest_row_room(tree: &Tree<PaneId>, room: &impl Fn(PaneId) -> f32) -> f32 {
-    match tree {
-        Tree::Leaf(id) => room(*id),
-        Tree::Split { axis, a, b, .. } => {
-            let (x, y) = (widest_row_room(a, room), widest_row_room(b, room));
-            if *axis == Axis::Row { x + y } else { x.max(y) }
+/// takes it from the widest row). Walks the layout in place (a per-frame path).
+pub fn widest_row_room(layout: &Layout, room: &impl Fn(PaneId) -> f32) -> f32 {
+    fn go(n: &Node, room: &dyn Fn(PaneId) -> f32) -> f32 {
+        match n {
+            Node::Leaf(id) => room(*id),
+            Node::Split { axis, a, b, .. } => {
+                let (x, y) = (go(a, room), go(b, room));
+                if *axis == Axis::Row { x + y } else { x.max(y) }
+            }
         }
     }
+    go(&layout.root, room)
 }
 
 /// The rectangles a tab shows: only the zoomed pane when one is zoomed and still here.
@@ -547,10 +568,10 @@ mod tests {
             a: Box::new(Tree::Leaf(1)),
             b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(2)), b: Box::new(Tree::Leaf(3)) }),
         };
-        assert_eq!(widest_row_room(&t, &room), 15.0 + 150.0, "the left pane and the larger of the stacked pair");
-        assert_eq!(widest_row_room(&Tree::Leaf(2), &room), 15.0);
+        assert_eq!(widest_row_room(&Layout::from_tree(t.clone()), &room), 15.0 + 150.0, "the left pane and the larger of the stacked pair");
+        assert_eq!(widest_row_room(&Layout::from_tree(Tree::Leaf(2)), &room), 15.0);
         let stacked: Tree<PaneId> = Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(2)), b: Box::new(Tree::Leaf(3)) };
-        assert_eq!(widest_row_room(&stacked, &room), 150.0, "stacked panes do not add");
+        assert_eq!(widest_row_room(&Layout::from_tree(stacked), &room), 150.0, "stacked panes do not add");
     }
 
     #[test]
@@ -790,13 +811,13 @@ mod tests {
     fn the_tallest_stack() {
         let leaf = |p: PaneId| Box::new(Tree::Leaf(p));
         let t = Tree::Split { axis: Axis::Row, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
-        assert_eq!(max_stack(&t, Axis::Column), 2);
-        assert_eq!(max_stack(&t, Axis::Row), 2);
-        assert_eq!(max_stack(&Tree::Leaf(1), Axis::Column), 1);
-        assert_eq!(max_stack(&Tree::Leaf(1), Axis::Row), 1);
+        assert_eq!(max_stack(&Layout::from_tree(t.clone()), Axis::Column), 2);
+        assert_eq!(max_stack(&Layout::from_tree(t.clone()), Axis::Row), 2);
+        assert_eq!(max_stack(&Layout::from_tree(Tree::Leaf(1)), Axis::Column), 1);
+        assert_eq!(max_stack(&Layout::from_tree(Tree::Leaf(1)), Axis::Row), 1);
         let t = Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(2), b: leaf(3) }) };
-        assert_eq!(max_stack(&t, Axis::Column), 3);
-        assert_eq!(max_stack(&t, Axis::Row), 1);
+        assert_eq!(max_stack(&Layout::from_tree(t.clone()), Axis::Column), 3);
+        assert_eq!(max_stack(&Layout::from_tree(t.clone()), Axis::Row), 1);
     }
 
     #[test]

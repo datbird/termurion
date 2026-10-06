@@ -82,6 +82,8 @@ bitflags! {
         const REPORT_ALTERNATE_KEYS   = 1 << 20;
         const REPORT_ALL_KEYS_AS_ESC  = 1 << 21;
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
+        // Tandem patch: DECSET 1036 (a program asks Alt to send Esc+).
+        const META_SENDS_ESCAPE       = 1 << 23;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
                                       | Self::REPORT_EVENT_TYPES.bits()
@@ -2485,6 +2487,11 @@ impl<T: EventListener> Handler for Term<T> {
                 self.resize_reports = true;
                 return;
             },
+            PrivateMode::Unknown(1036) => {
+                // Tandem patch: DECSET 1036, metaSendsEscape.
+                self.mode.insert(TermMode::META_SENDS_ESCAPE);
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2563,6 +2570,11 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(2048) => {
                 // Tandem patch: DEC mode 2048, in-band resize reports.
                 self.resize_reports = false;
+                return;
+            },
+            PrivateMode::Unknown(1036) => {
+                // Tandem patch: DECSET 1036, metaSendsEscape.
+                self.mode.remove(TermMode::META_SENDS_ESCAPE);
                 return;
             },
             PrivateMode::Unknown(mode) => {
@@ -2658,6 +2670,8 @@ impl<T: EventListener> Handler for Term<T> {
             },
             // Tandem patch: DEC mode 2048 answers set or reset.
             PrivateMode::Unknown(2048) => self.resize_reports.into(),
+            // Tandem patch: DECSET 1036 answers set or reset.
+            PrivateMode::Unknown(1036) => self.mode.contains(TermMode::META_SENDS_ESCAPE).into(),
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 

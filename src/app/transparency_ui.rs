@@ -24,7 +24,8 @@ fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Resul
         height: size.height.max(1),
         present_mode: wgpu::PresentMode::Fifo,
         alpha_mode: transparency::pick_alpha_mode(&caps.alpha_modes, false),
-        view_formats: vec![],
+        // The fade pass scales the stored values on a non-sRGB view of the target (render.rs).
+        view_formats: if format.is_srgb() { vec![format.remove_srgb_suffix()] } else { vec![] },
         desired_maximum_frame_latency: 2,
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
@@ -349,6 +350,8 @@ impl App {
         let (old_id, new_id) = (old.id(), window.id());
         let old_gpu = self.gpu.replace(gpu);
         self.win_alpha_surface = SurfaceKind::Alpha;
+        // A hotkey window that was fading shows at once on its new window.
+        self.end_fade_on_recreate();
         // The new handle has no backdrop yet.
         self.blur_applied = false;
         self.look_seen = None;

@@ -145,7 +145,7 @@ fn encode_with(key: &Key, mods: Mods, app_cursor: bool, e: Enc) -> Option<Vec<u8
 /// wins, except when Ctrl makes a control code. Windows reports AltGr as Ctrl+Alt;
 /// it is AltGr when the text differs from the base key.
 pub fn press_bytes(key: &Key, base: Option<&Key>, text: Option<&str>, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
-    let xterm = KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false };
+    let xterm = KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false, left_changeable: true, right_changeable: false, right_unset: false };
     press_bytes_with(key, base, text, mods, AltSide::Left, app_cursor, false, false, &xterm)
 }
 
@@ -166,6 +166,11 @@ pub struct KeyOptions {
     pub option_is_alt: bool,
     /// Application Keypad Allowed: apps may put the keypad in application mode.
     pub app_keypad_allowed: bool,
+    /// Left/Right Option Key Changeable: a program's DECSET 1036 may switch that side to Esc+.
+    pub left_changeable: bool,
+    pub right_changeable: bool,
+    /// The profile has no Right Option Key Sends of its own (the right side follows the left).
+    pub right_unset: bool,
 }
 
 impl KeyOptions {
@@ -173,7 +178,24 @@ impl KeyOptions {
         let left = p.int("Option Key Sends");
         // A missing right-side setting follows the left one (PTYSession).
         let right = p.values.get("Right Option Key Sends").and_then(|v| v.as_integer()).unwrap_or(left);
-        KeyOptions { left_option: left, right_option: right, option_is_alt: p.bool("Treat Option as Alt"), app_keypad_allowed: p.bool("Application Keypad Allowed") }
+        KeyOptions { left_option: left, right_option: right, option_is_alt: p.bool("Treat Option as Alt"), app_keypad_allowed: p.bool("Application Keypad Allowed"), left_changeable: p.bool("Left Option Key Changeable"), right_changeable: p.bool("Right Option Key Changeable"), right_unset: p.values.get("Right Option Key Sends").and_then(|v| v.as_integer()).is_none() }
+    }
+
+    /// The Option Key Sends value for `side` once a program's DECSET 1036 is counted (`PS:12940-12972`).
+    /// `support` is the Advanced SupportDecsetMetaSendsEscape key. A side whose own setting is
+    /// Esc+ already, or any Esc+ side at all, keeps the profile's values.
+    pub fn effective(&self, side: AltSide, meta_sends_escape: bool, support: bool) -> i64 {
+        let (own, changeable) = match side {
+            AltSide::Left => (self.left_option, self.left_changeable),
+            AltSide::Right => (self.right_option, self.right_changeable),
+        };
+        // A right side with no setting of its own follows the left side's switch (PS rightOptionKey).
+        let follows_left = side == AltSide::Right && !changeable && self.right_unset && self.left_changeable;
+        if support && self.left_option != 2 && self.right_option != 2 && meta_sends_escape && (changeable || follows_left) {
+            2
+        } else {
+            own
+        }
     }
 }
 
@@ -313,7 +335,7 @@ mod tests {
         Key::Text(s.into())
     }
 
-    const OPTS: KeyOptions = KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false };
+    const OPTS: KeyOptions = KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false, left_changeable: true, right_changeable: false, right_unset: false };
 
     fn with(key: Key, text: Option<&str>, mods: Mods, side: AltSide, app_keypad: bool, keypad: bool, o: &KeyOptions) -> Option<Vec<u8>> {
         let base = match &key {
@@ -321,6 +343,35 @@ mod tests {
             k => Some(k.clone()),
         };
         press_bytes_with(&key, base.as_ref(), text, mods, side, false, app_keypad, keypad, o)
+    }
+
+    /// 13u Task 2 (Review Focus 2): `PS:12940-12972`.
+    #[test]
+    fn effective_option_follows_iterm2() {
+        let base = KeyOptions { left_option: 0, right_option: 0, left_changeable: true, right_changeable: false, ..OPTS };
+        assert_eq!(base.effective(AltSide::Left, true, true), 2);
+        assert_eq!(base.effective(AltSide::Left, true, false), 0, "support off");
+        assert_eq!(base.effective(AltSide::Left, false, true), 0, "mode off");
+        assert_eq!(base.effective(AltSide::Right, true, true), 0, "right not changeable");
+        let right = KeyOptions { right_changeable: true, ..base };
+        assert_eq!(right.effective(AltSide::Right, true, true), 2);
+        let none = KeyOptions { left_changeable: false, ..base };
+        assert_eq!(none.effective(AltSide::Left, true, true), 0, "left not changeable");
+        let esc = KeyOptions { left_option: 2, right_option: 2, ..base };
+        assert_eq!(esc.effective(AltSide::Left, true, true), 2);
+        assert_eq!(esc.effective(AltSide::Right, true, true), 2);
+        // Right set to Esc+: the mode never changes the left side.
+        let r_esc = KeyOptions { right_option: 2, ..base };
+        assert_eq!(r_esc.effective(AltSide::Left, true, true), 0);
+        // Right side with no setting of its own follows the left's changeability (PS rightOptionKey).
+        let follow = KeyOptions { right_unset: true, ..base };
+        assert_eq!(follow.effective(AltSide::Right, true, true), 2, "unset right, left changeable");
+        assert_eq!(KeyOptions { left_changeable: false, ..follow }.effective(AltSide::Right, true, true), 0);
+        assert_eq!(KeyOptions { right_unset: false, ..base }.effective(AltSide::Right, true, true), 0, "own setting");
+        // Meta (1) is its own setting and is changed to Esc+ like Normal.
+        let meta = KeyOptions { left_option: 1, ..base };
+        assert_eq!(meta.effective(AltSide::Left, true, true), 2);
+        assert_eq!(meta.effective(AltSide::Left, false, true), 1);
     }
 
     #[test]

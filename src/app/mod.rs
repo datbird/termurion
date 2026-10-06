@@ -86,6 +86,7 @@ mod files_ui;
 mod find_ui;
 mod infobar_ui;
 mod keyproto_ui;
+mod keys_ui;
 mod fold_ui;
 mod labels_ui;
 mod screenshot_ui;
@@ -133,6 +134,7 @@ mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
 mod hotkey_ui;
+mod session_hotkey_ui;
 mod broadcast_ui;
 mod tmux_ui;
 mod tmux_tabs_ui;
@@ -246,12 +248,15 @@ struct Tab {
     pinned: bool,
     /// The tab's group; its definition rides every member (`TABH:99-115`).
     group: Option<crate::tab_groups::TabGroup>,
+    /// A tmux tab's window layout as tmux last sent it: what the tab draws at when it is smaller
+    /// than the area (the filler fills the rest, 13u Task 10).
+    tmux_node: Option<crate::tmux_layout::Node>,
 }
 
 impl Tab {
     /// A tab with no title, not pinned and in no group.
     pub(super) fn new(id: u64, layout: Layout, focused: PaneId) -> Tab {
-        Tab { id, layout, focused, zoomed: None, title: None, pinned: false, group: None }
+        Tab { id, layout, focused, zoomed: None, title: None, pinned: false, group: None, tmux_node: None }
     }
 }
 
@@ -384,6 +389,16 @@ pub struct App {
     /// The modifiers of a Cycle Tabs chord; letting go of them ends the cycle.
     mru_mods: Option<Mods>,
     alt_side: AltSide,
+    /// Which Alt, Control and Win keys are down, left and right apart (kitty's Hyper, Meta and Super
+    /// mapping), as the key readers see them: remapped in the app when Remap modifiers globally is off.
+    sides: crate::keyproto::Sides,
+    /// The modifiers as the keys are physically held, before an in-app remap.
+    phys_mods: Mods,
+    phys_sides: crate::keyproto::Sides,
+    /// Force keyboard: app-wide (nothing here is per window).
+    locale: crate::input_locale::Forcer,
+    /// The layout last seen (or forced), to notice the person changing it.
+    locale_seen: String,
     pointer_clicks: pointer::Clicks,
     /// The last press for the pointer multi-click count: when, button, where, count.
     pointer_last: Option<(Instant, u8, (f32, f32), u8)>,
@@ -618,6 +633,8 @@ pub struct App {
     group_prompt: Option<(crate::prompt_ui::PromptWindow, tab_groups_ui::GroupPrompt)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
+    /// Tabs (by id) whose new window opens behind the active one (`TmuxWindowsOpenInBackground`).
+    background_windows: std::collections::HashSet<u64>,
     /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
     pending_urls_at_start: Vec<String>,
     /// The URL pipe's listener thread, when this Tandem owns the pipe (it ends with the process).
@@ -663,6 +680,14 @@ pub struct App {
     hotkey_ids: Vec<String>,
     hotkey_errors: std::collections::HashMap<String, String>,
     hotkeys_registered: bool,
+    /// Session hotkeys: the ones the person set or allowed (the only ones that register) and those
+    /// waiting for an answer; the sessions of each registered group, by id from
+    /// `SESSION_HOTKEY_BASE`; and a pass is due to register them again. App-wide.
+    session_hotkeys: crate::session_hotkeys::Book,
+    session_hotkey_ids: Vec<Vec<PaneId>>,
+    session_hotkeys_dirty: bool,
+    /// Panes whose own session hotkey value was looked at once (`session_hotkeys_adopt`).
+    session_hotkey_seen: std::collections::HashSet<PaneId>,
     /// A Tandem window was in front at the last check (Reopen on activation).
     app_active: bool,
     /// Focus follows mouse: the pointer's screen point when Tandem lost the foreground, then
@@ -1480,6 +1505,8 @@ pub struct App {
     transparency_banner: bool,
     /// The frame just built has a see-through pane (the surface wants a premultiplied mode).
     frame_alpha: bool,
+    /// A present failed during a hotkey window's fade: fades are off for the rest of the run (app-wide).
+    fade_failed: bool,
     /// The custom folder's location as typed at launch; None once it was edited this session,
     /// which skips the quit step (`customFolderChanged`).
     prefs_launch_folder: Option<String>,
@@ -1504,6 +1531,17 @@ fn message_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
+/// What ends with the process, on EVERY way out of it (Quit, Erase All, a logoff, a panic on the
+/// main thread): the keyboard hook and its hotkeys come off (a held remapped key is released),
+/// the person's keyboard layout comes back, and the notification area icon goes. A crash or kill
+/// needs nothing of it that Windows does not do (the hook, hotkeys and the per-thread layout end
+/// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
+pub(crate) fn teardown_process() {
+    crate::winkeys::uninstall();
+    crate::input_locale::restore_after_panic();
+    crate::notify::remove(0);
 }
 
 pub fn run() {
@@ -1562,6 +1600,15 @@ pub fn run() {
             }
         }
     }
+    // A panic on the main thread (it ends Tandem) takes the keyboard hook down first, so no remap
+    // outlives it; a worker thread's panic leaves the hook alone.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some("main") {
+            teardown_process();
+        }
+        previous_hook(info);
+    }));
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
@@ -1766,6 +1813,10 @@ pub fn run() {
         hotkey_ids: Vec::new(),
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
+        session_hotkeys: Default::default(),
+        session_hotkey_ids: Vec::new(),
+        session_hotkeys_dirty: false,
+        session_hotkey_seen: Default::default(),
         app_active: false,
         ffm_saved: None,
         magnifier: Default::default(),
@@ -1784,6 +1835,11 @@ pub fn run() {
         next_tab_id: 1,
         mru_mods: None,
         alt_side: AltSide::Left,
+        sides: crate::keyproto::Sides::default(),
+        phys_mods: Mods::default(),
+        phys_sides: crate::keyproto::Sides::default(),
+        locale: Default::default(),
+        locale_seen: String::new(),
         pointer_clicks: pointer::Clicks::default(),
         pointer_last: None,
         pointer_down: None,
@@ -1895,6 +1951,7 @@ pub fn run() {
         undo_capture: None,
         archive_results: Default::default(),
         pending_windows: Vec::new(),
+        background_windows: Default::default(),
         pending_urls_at_start,
         url_listener,
         url_flood: Default::default(),
@@ -2311,6 +2368,7 @@ pub fn run() {
         alpha_pending: Vec::new(),
         transparency_banner: false,
         frame_alpha: false,
+        fade_failed: false,
         prefs_launch_folder,
         relaunch_on_exit: false,
         relaunch_due: false,
@@ -2322,8 +2380,7 @@ pub fn run() {
     }
     // Stop browsing: the callbacks end before the process does.
     app.bonjour = None;
-    // Every exit that is not a crash takes the notification area icon with it.
-    crate::notify::remove(0);
+    teardown_process();
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
     if app.relaunch_on_exit {
         drop(app);
@@ -3383,7 +3440,7 @@ impl App {
         }
         let in_tab = || {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
-            tab.layout.rects(self.content_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+            tab.layout.rects(self.pane_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
         let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
         // A timer for this pane is stale now (`maybeReplaceTerminatedShellWithNewInstance` checks `_exited`).
@@ -3643,6 +3700,12 @@ impl App {
         self.bindings.retain(|(p, _), _| *p != id);
         if let Some(s) = self.settings.as_mut() {
             s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, id);
+            // The Session Hotkey row (13u) goes with the session it showed.
+            if s.edit_session.is_none() {
+                s.session_hotkey = None;
+                s.session_hotkey_waiting = false;
+                s.session_hotkey_refused = None;
+            }
         }
         if self.edit_follow_seen == Some(id) {
             self.edit_follow_seen = None;
@@ -3994,6 +4057,7 @@ impl App {
         }
         match edit {
             Edit::None | Edit::Preview => return,
+            Edit::SessionHotkey(pane, s) => self.set_session_hotkey(pane, s),
             Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how, crate::settings_ui::Opener::ProfilesWindow),
             // Taken by the window's redraw handler, which has the event loop.
             Edit::EditProfiles(_) => return,
@@ -4049,6 +4113,8 @@ impl App {
         self.settle_action_undo();
         self.menus_dirty = true;
         self.sync_checks();
+        self.remap_setting_changed();
+        self.locale_update();
         self.register_hotkeys();
         self.scripts_folder_changed();
         // The Theme may have changed: every window follows the forced mode (or Windows' again).
@@ -4460,6 +4526,7 @@ impl App {
             }
         }
         self.tmux_pane_closed(id);
+        self.session_hotkey_pane_gone(id);
         self.aps.remove(&id);
         self.focus_order.remove(&id);
         self.forget_scrollbar(id);
@@ -4819,6 +4886,7 @@ impl App {
     fn refresh_route(&mut self) {
         let mut snapshot = self.with_route(keyroute::Snapshot::new);
         snapshot.composer = self.composer_has_keys();
+        snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
         snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
@@ -4904,11 +4972,18 @@ impl App {
         let t = self.tabs.get(self.active)?;
         let pane = self.panes.get(&t.focused)?;
         let mode = *pane.own().term().mode();
-        let opts = self.store.get(&pane.profile).map_or(KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false }, KeyOptions::from_profile);
+        let opts = self.store.get(&pane.profile).map_or(KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false, left_changeable: true, right_changeable: false, right_unset: false }, KeyOptions::from_profile);
+        // DECSET 1036 (Advanced SupportDecsetMetaSendsEscape): a program may switch a changeable side to Esc+.
+        let support = self.globals.bool("SupportDecsetMetaSendsEscape");
+        let meta = pane.own().meta_sends_escape();
+        let opts = KeyOptions { left_option: opts.effective(AltSide::Left, meta, support), right_option: opts.effective(AltSide::Right, meta, support), ..opts };
         keys::press_bytes_with(key, base, text, self.mods, self.alt_side, mode.contains(TermMode::APP_CURSOR), mode.contains(TermMode::APP_KEYPAD), keypad, &opts)
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // Remap modifiers globally off: this key is read with the remapped modifiers.
+        let remapped = self.remapped_key(ev);
+        let ev = remapped.as_ref().unwrap_or(ev);
         // iTerm2's `didHandleKeystroke`: an echo within 0.1 s of it draws at once.
         if ev.state == ElementState::Pressed {
             self.last_keystroke = Some(Instant::now());
@@ -4943,6 +5018,13 @@ impl App {
         self.api_key_early(ev);
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
+        }
+        // A Win chord made by an in-app remap never passed the hook, which takes real Win chords
+        // for the menu commands: it takes the same road.
+        if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd {
+            if let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
+                return self.run_chord(&chord, event_loop);
+            }
         }
         if self.bar_key(ev, event_loop) || self.upload_key(ev) {
             return;
@@ -5652,6 +5734,19 @@ impl App {
         scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale())
     }
 
+    /// This window draws see-through now (as `build_frame` decides it): an alpha surface, with a pane
+    /// whose profile has Transparency.
+    pub(super) fn see_through_now(&self) -> bool {
+        let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
+        self.see_through_with(&alphas)
+    }
+
+    /// `see_through_now` for the active tab's pane alphas already read (`build_frame` and the
+    /// fade gate share it, so they cannot drift apart).
+    fn see_through_with(&self, alphas: &[(PaneId, f32)]) -> bool {
+        self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>())
+    }
+
     fn build_frame(&mut self) -> Frame {
         let mut attention: Option<Instant> = None;
         // Every pane's face is measured before the frame (`pane_cell` only reads).
@@ -5662,11 +5757,13 @@ impl App {
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), gap_underlines: !draw.solid_underlines, ..Default::default() };
         // Only a window made for alpha draws see-through; its panes' alphas come from their profiles.
         let alphas = self.tabs.get(self.active).map(|t| self.pane_alphas(t)).unwrap_or_default();
-        let see_through = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha && !self.transparency_unavailable && crate::transparency::needs_alpha(&alphas.iter().map(|(_, a)| *a).collect::<Vec<_>>());
+        let see_through = self.see_through_with(&alphas);
         self.frame_alpha = see_through;
         self.warn_transparency_unavailable(&alphas);
         if see_through {
             frame.clear = [0.0; 4];
+            // A hotkey window fading on the alpha surface: the renderer scales the whole target.
+            frame.fade = self.hotkey.as_ref().filter(|h| h.fading()).map_or(1.0, |h| h.fade);
         }
         self.note_tab_changes();
         // A Minimal or Compact window's caption strip is under the tab bar and the sessions.
@@ -5731,6 +5828,20 @@ impl App {
         self.draw_caption_content(&mut frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
+        // A tmux window smaller than its tab leaves the rest to the filler (`PTYTab.m:1189-1208`).
+        if let Some(tab) = self.tabs.get(self.active) {
+            let strips = self.tmux_filler(tab);
+            if strips.iter().any(Option::is_some) {
+                let bg = self.panes.get(&tab.focused).map_or(palette_bg, |p| p.screen.palette.bg);
+                let black = self.full_screen() && self.globals.bool("UseBlackFillerColorForTmuxInFullScreen");
+                let color = scene::filler_color(bg, scene::filler_dark(bg), black);
+                let alpha = if see_through { alphas.iter().find(|(a, _)| *a == tab.focused).map_or(1.0, |(_, a)| *a) } else { 1.0 };
+                let color = if see_through { crate::transparency::premultiplied([color.r, color.g, color.b], alpha) } else { scene::rgba(color, 1.0) };
+                for rect in strips.into_iter().flatten() {
+                    frame.quads.push(scene::Quad { rect, color });
+                }
+            }
+        }
         let mut block_buttons = Vec::new();
         let mut fps_rect: Option<Rect> = None;
         let mut picker_hits = Vec::new();
@@ -5971,6 +6082,13 @@ impl App {
             let (x, y) = self.cursor;
             tip_rect = Some(scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
         }
+        // A pinned hotkey window's pin shows its hover text (the tab tip wins while it shows).
+        if tip_rect.is_none() {
+            let (x, y) = self.cursor;
+            if let Some(text) = scene::indicator_tip(&indicator_hits, x, y) {
+                tip_rect = Some(scene::tab_tooltip(&mut frame, text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
+            }
+        }
         if see_through {
             let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             let chrome = rgba(palette_bg, 1.0);
@@ -6060,6 +6178,10 @@ impl App {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
+                // A fade running now stops, and fades stay off for the run.
+                if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                    self.fade_failed = true;
+                }
                 match gpu.render_instance().create_surface(gpu.window.clone()) {
                     Ok(s) => gpu.surface = s,
                     Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
@@ -6071,13 +6193,21 @@ impl App {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
+                if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                    self.fade_failed = true;
+                }
                 self.banners.set("gpu", "GPU validation error");
                 return;
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (gpu.config.width, gpu.config.height);
-        if let Err(e) = gpu.renderer.draw(&frame, &view, w, h) {
+        // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
+        let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
+        if let Err(e) = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h) {
+            if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
+                self.fade_failed = true;
+            }
             self.banners.set("gpu", e);
         }
         if let Some(gpu) = self.gpu.as_ref() {
@@ -6322,6 +6452,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.enter(w);
         }
         self.sync_pane_activity();
+        self.session_hotkeys_flush();
         self.flush_dropped();
         self.ssh_suggest_purge();
         for w in std::mem::take(&mut self.pending_windows) {
@@ -6364,6 +6495,9 @@ impl ApplicationHandler<UserEvent> for App {
         } else if !active && self.app_active {
             self.ffm_became_inactive();
         }
+        self.locale_focus(self.app_active, active);
+        self.locale_tick();
+        self.force_for_session();
         self.app_active = active;
         // The Win-hover underline follows the window's key state (`TVA:466-472`).
         if edge {
@@ -6818,20 +6952,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
-                self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                self.phys_mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                self.phys_sides = crate::keyproto::Sides { lalt: m.lalt_state() == ModifiersKeyState::Pressed, ralt: m.ralt_state() == ModifiersKeyState::Pressed, lctrl: m.lcontrol_state() == ModifiersKeyState::Pressed, rctrl: m.rcontrol_state() == ModifiersKeyState::Pressed, lwin: m.lsuper_state() == ModifiersKeyState::Pressed, rwin: m.rsuper_state() == ModifiersKeyState::Pressed };
+                // What every key reader sees: remapped here when Remap modifiers globally is off.
+                self.apply_remapped_mods();
                 // A held Win key keeps a flashing tab bar up (`PT flagsChanged:`, `PT:13278`).
                 let was = self.tab_flash.state();
-                self.tab_flash.set_win_held(s.super_key(), Instant::now());
+                self.tab_flash.set_win_held(self.mods.cmd, Instant::now());
                 if was != self.tab_flash.state() {
                     self.redraw();
                 }
                 self.update_hover();
-                if s.alt_key() {
-                    self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };
-                }
                 // Cycle Tabs ends when the chord's modifiers come up.
                 if let Some(c) = self.mru_mods {
-                    if !((c.ctrl && s.control_key()) || (c.alt && s.alt_key()) || (c.cmd && s.super_key())) {
+                    if !((c.ctrl && self.mods.ctrl) || (c.alt && self.mods.alt) || (c.cmd && self.mods.cmd)) {
                         self.mru_mods = None;
                         self.mru.commit();
                     }
@@ -7118,6 +7252,28 @@ fn resize_report_px(rows: u16, cols: u16, (cw, ch): (f32, f32)) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of `name`'s body in `src` (to its closing brace at `indent`).
+    fn fn_body<'a>(src: &'a str, name: &str, indent: &str) -> &'a str {
+        let rest = src.split(name).nth(1).unwrap_or_else(|| panic!("{name}"));
+        rest.split(&format!("\n{indent}}}\n")).next().unwrap()
+    }
+
+    #[test]
+    fn per_frame_paths_do_no_idle_work() {
+        // Adopting session hotkeys runs every pass: with every pane seen it returns before any Vec.
+        let adopt = fn_body(include_str!("session_hotkey_ui.rs"), "fn session_hotkeys_adopt(", "    ");
+        let early = adopt.find("return").expect("an early return");
+        assert!(early < adopt.find("collect").expect("the new panes"), "the early return comes first");
+        // The non-sRGB view of the swap-chain texture is made only while a fade runs.
+        let render = include_str!("mod.rs");
+        let raw = render.split("let raw = ").nth(1).and_then(|r| r.split(';').next()).expect("the raw view");
+        assert!(raw.contains("frame.fade < 1.0"), "the raw view is made only for a fading frame: {raw}");
+        // The fade gate and the frame read see-through from one place.
+        let build = fn_body(render, "fn build_frame(", "    ");
+        assert!(build.contains("self.see_through_with(&alphas)"), "build_frame uses the shared see-through test");
+        assert!(!build.contains("needs_alpha("), "build_frame repeats no see-through expression");
+    }
 
     /// DEC mode 2048 x 13n: the report's pixel size is the grid times the pane's OWN cell (its
     /// face, Make Text Bigger), the same cell its grid was sized from, never the window's.

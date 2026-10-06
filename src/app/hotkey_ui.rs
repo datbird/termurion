@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::*;
 use super::windows_ui::NewWindow;
 use crate::hotkey::{self, Act, Prefs, Win};
-use crate::hotkey_motion::{self, Motion};
+use crate::hotkey_motion::{self, FadePath, Motion};
 
 /// A hotkey window's own state (kept in its `WinSlot`).
 pub(super) struct HotkeyWin {
@@ -21,10 +21,14 @@ pub(super) struct HotkeyWin {
     pub was_auto_hidden: bool,
     /// The window in front before it showed, to get focus back when the hotkey hides it.
     pub previous: Option<isize>,
+    /// The opacity the renderer draws the frame at on an alpha surface (1.0 outside a fade).
+    pub fade: f32,
 }
 
 pub(super) struct Roll {
     motion: Motion,
+    /// How the window fades during the roll, None when it only slides.
+    fade: Option<FadePath>,
     start: Instant,
     hiding: bool,
     /// A hide by the hotkey returns focus to the previous window; an auto-hide does not.
@@ -32,8 +36,13 @@ pub(super) struct Roll {
 }
 
 impl HotkeyWin {
+    /// A fade is running (a present error now stops fading).
+    pub(super) fn fading(&self) -> bool {
+        self.roll.as_ref().is_some_and(|r| r.fade.is_some())
+    }
+
     pub(super) fn new(guid: String) -> HotkeyWin {
-        HotkeyWin { guid, shown: false, roll: None, was_auto_hidden: false, previous: None }
+        HotkeyWin { guid, shown: false, roll: None, was_auto_hidden: false, previous: None, fade: 1.0 }
     }
 }
 
@@ -46,6 +55,30 @@ fn cloak(hwnd: isize, on: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
     let v: i32 = on as i32;
     unsafe { DwmSetWindowAttribute(hwnd as _, DWMWA_CLOAK as u32, (&v as *const i32).cast(), 4) };
+}
+
+/// Sets the window's opacity for a fade: `WS_EX_LAYERED` is added for the animation and
+/// removed again at full opacity, so the swap chain keeps its normal path outside a fade.
+/// False when Windows refused the attribute (the fade then stops).
+pub(super) fn set_window_alpha(hwnd: isize, alpha: f32) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, IsWindow, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW, WS_EX_LAYERED};
+    unsafe {
+        if IsWindow(hwnd as _) == 0 {
+            return false;
+        }
+        let ex = GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE);
+        let layered = ex & WS_EX_LAYERED as isize != 0;
+        if alpha >= 1.0 {
+            if layered {
+                SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as isize));
+            }
+            return true;
+        }
+        if !layered {
+            SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+        }
+        SetLayeredWindowAttributes(hwnd as _, 0, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8, LWA_ALPHA) != 0
+    }
 }
 
 /// A window of Tandem is in front.
@@ -86,9 +119,15 @@ impl App {
         if let Some(c) = crate::settings_hotkey::quickly_hotkey(&self.globals).as_ref().and_then(hotkey::chord) {
             chords.push((OPEN_QUICKLY_HOTKEY, c));
         }
+        // Profile ids stay below the session ids.
+        let mut too_many = false;
         for (guid, prefs) in self.hotkey_prefs() {
             if !prefs.active() {
                 continue;
+            }
+            if self.hotkey_ids.len() + 1 >= crate::session_hotkeys::SESSION_HOTKEY_BASE as usize {
+                too_many = true;
+                break;
             }
             self.hotkey_ids.push(guid);
             let id = self.hotkey_ids.len() as u32;
@@ -97,9 +136,22 @@ impl App {
                 taps.push((id, m));
             }
         }
+        // The sessions' hotkeys the person set or allowed, after every other hotkey (those win a
+        // clash), at most 16 chords; a refused one is shown in its row.
+        let reserved: Vec<hotkey::Chord> = chords.iter().map(|(_, c)| *c).collect();
+        let live: Vec<(PaneId, hotkey::Shortcut)> = self.session_hotkeys.live().iter().filter(|(p, _)| self.panes.contains_key(p)).cloned().collect();
+        let plan = crate::session_hotkeys::plan(&live, &reserved);
+        self.session_hotkey_ids.clear();
+        for (i, (chord, panes)) in plan.groups.into_iter().enumerate() {
+            chords.push((crate::session_hotkeys::SESSION_HOTKEY_BASE + i as u32, chord));
+            self.session_hotkey_ids.push(panes);
+        }
         let secs = |k: &str, d: f64| Duration::from_secs_f64(self.globals.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(d).clamp(0.0, 5.0));
         let (min, max) = (secs("hotKeyDoubleTapMinDelay", 0.01), secs("hotKeyDoubleTapMaxDelay", 0.3));
         self.hotkey_errors.clear();
+        for (pane, why) in plan.refused {
+            self.hotkey_errors.insert(crate::session_hotkeys::error_key(pane), why.text().to_string());
+        }
         match crate::winkeys::set_hotkeys(chords, taps, min, max) {
             Ok(results) => {
                 for (id, r) in results {
@@ -107,7 +159,14 @@ impl App {
                         let owner = match id {
                             APP_HOTKEY => "App Hotkey".to_string(),
                             OPEN_QUICKLY_HOTKEY => "Open Quickly Hotkey".to_string(),
-                            _ => self.hotkey_ids.get(id as usize - 1).cloned().unwrap_or_default(),
+                            // A refused session chord is shown on each session that uses it.
+                            id if crate::session_hotkeys::is_session_id(id) => {
+                                for key in crate::session_hotkeys::error_keys(id, &self.session_hotkey_ids) {
+                                    self.hotkey_errors.insert(key, e.clone());
+                                }
+                                continue;
+                            }
+                            _ => self.hotkey_ids.get((id as usize).wrapping_sub(1)).cloned().unwrap_or_default(),
                         };
                         self.hotkey_errors.insert(owner, e);
                     }
@@ -115,6 +174,9 @@ impl App {
                 self.banners.clear("hotkeys");
             }
             Err(e) => self.banners.set("hotkeys", format!("Hotkeys are unavailable: {e}")),
+        }
+        if too_many {
+            self.banners.set("hotkeys", "Too many profiles have a hotkey: the rest are not registered.");
         }
         for s in [self.settings.as_mut(), self.profiles_win.as_mut()].into_iter().flatten() {
             s.hotkeys.errors = self.hotkey_errors.clone();
@@ -173,6 +235,16 @@ impl App {
     /// A registered hotkey was pressed.
     /// A press, with every hotkey it matched (siblings share a chord or a double tap).
     pub(super) fn hotkey_pressed(&mut self, ids: &[u32], event_loop: &ActiveEventLoop) {
+        // A session's hotkey brings its window forward, so it is routed first and never meets the
+        // tail below that returns to the window before.
+        let route = crate::session_hotkeys::route(ids);
+        for index in &route.sessions {
+            self.session_hotkey_pressed(*index);
+        }
+        if !route.tail_applies() {
+            return;
+        }
+        let ids = &route.others[..];
         if ids.contains(&APP_HOTKEY) {
             self.app_hotkey_pressed();
         }
@@ -281,16 +353,50 @@ impl App {
         self.move_to_preferred_screen(&guid);
         let Some(g) = &self.gpu else { return };
         let shown = Self::outer_rect(g);
-        let motion = self.slide_for(shown, animates).map(|hidden| Motion { from: hidden, to: (shown.x, shown.y), duration: self.hotkey_duration() });
+        let fade = self.fade_path_now(animates);
+        let slide = self.slide_for(shown, animates);
+        let duration = self.hotkey_duration();
+        // A fade with no slide (left, normal, centered...) runs from the shown place to itself.
+        let motion = (slide.is_some() || fade.is_some()).then(|| Motion { from: slide.unwrap_or((shown.x, shown.y)), to: (shown.x, shown.y), duration, alpha: (if fade.is_some() { 0.0 } else { 1.0 }, 1.0), ease: hotkey_motion::eases(self.win_style) });
         if let Some(m) = &motion {
             g.window.set_outer_position(winit::dpi::PhysicalPosition::new(m.from.0.round() as i32, m.from.1.round() as i32));
         }
+        // The first frame is already transparent: nothing flashes at full opacity.
+        match fade {
+            Some(FadePath::Layered) => {
+                if !set_window_alpha(hwnd, 0.0) {
+                    self.fade_failed = true;
+                }
+            }
+            Some(FadePath::Composed) => {
+                if let Some(h) = self.hotkey.as_mut() {
+                    h.fade = 0.0;
+                }
+            }
+            None => {}
+        }
+        // A refused attribute ends fading for the run: the window shows at once (a slide still runs).
+        let (motion, fade) = if self.fade_failed && fade.is_some() {
+            self.end_fade();
+            (slide.map(|from| Motion { from, to: (shown.x, shown.y), duration, alpha: (1.0, 1.0), ease: hotkey_motion::eases(self.win_style) }), None)
+        } else {
+            (motion, fade)
+        };
+        if fade == Some(FadePath::Composed) {
+            // Drawn at opacity 0 before the window shows, so the last frame it hid with does not flash.
+            if let Some(h) = self.hotkey.as_mut() {
+                h.shown = true;
+                h.roll = motion.map(|motion| Roll { motion, fade, start: Instant::now(), hiding: false, by_key: true });
+            }
+            self.render();
+        }
+        let Some(g) = &self.gpu else { return };
         cloak(hwnd, false);
         g.window.focus_window();
         let now = Instant::now();
         if let Some(h) = self.hotkey.as_mut() {
             h.shown = true;
-            h.roll = motion.map(|motion| Roll { motion, start: now, hiding: false, by_key: true });
+            h.roll = motion.map(|motion| Roll { motion, fade, start: now, hiding: false, by_key: true });
         }
         if let Some(w) = self.current_window() {
             self.last_window = Some(w);
@@ -308,15 +414,52 @@ impl App {
         let animates = self.store.get(&guid).is_some_and(|p| Prefs::from_profile(p).animates);
         let Some(g) = &self.gpu else { return };
         let shown = Self::outer_rect(g);
-        match self.slide_for(shown, animates) {
-            Some(hidden) => {
-                let motion = Motion { from: (shown.x, shown.y), to: hidden, duration: self.hotkey_duration() };
-                if let Some(h) = self.hotkey.as_mut() {
-                    h.roll = Some(Roll { motion, start: Instant::now(), hiding: true, by_key });
-                }
-            }
-            None => self.finish_hide(by_key, None),
+        let fade = self.fade_path_now(animates);
+        let slide = self.slide_for(shown, animates);
+        if slide.is_none() && fade.is_none() {
+            return self.finish_hide(by_key, None);
         }
+        let motion = Motion { from: (shown.x, shown.y), to: slide.unwrap_or((shown.x, shown.y)), duration: self.hotkey_duration(), alpha: (1.0, if fade.is_some() { 0.0 } else { 1.0 }), ease: hotkey_motion::eases(self.win_style) };
+        if let Some(h) = self.hotkey.as_mut() {
+            h.fade = 1.0;
+            h.roll = Some(Roll { motion, fade, start: Instant::now(), hiding: true, by_key });
+        }
+    }
+
+    /// How the current window fades, or None to show and hide it at once: "Animate hotkey window"
+    /// on, the style fades, the probe passed for the surface it presents on, and no present has
+    /// failed this run.
+    fn fade_path_now(&self, animates: bool) -> Option<FadePath> {
+        if !animates || !hotkey_motion::fades(self.win_style) {
+            return None;
+        }
+        let alpha_surface = self.win_alpha_surface == crate::transparency::SurfaceKind::Alpha;
+        // An alpha-surface window that is not drawing see-through has an opaque alpha mode: scaling
+        // its target would darken it, not fade it.
+        if alpha_surface && !self.see_through_now() {
+            return None;
+        }
+        hotkey_motion::fade_path(alpha_surface, hotkey_motion::FADE_LAYERED, hotkey_motion::FADE_COMPOSED, self.fade_failed)
+    }
+
+    /// Puts the current window back to full opacity (the layered style off, the renderer's fade 1).
+    fn end_fade(&mut self) {
+        if let Some(hwnd) = self.hwnd() {
+            set_window_alpha(hwnd, 1.0);
+        }
+        if let Some(h) = self.hotkey.as_mut() {
+            h.fade = 1.0;
+        }
+    }
+
+    /// The window was recreated (its surface kind changed) while it faded: the fade ends and the
+    /// window is shown at once; a slide still finishes.
+    pub(super) fn end_fade_on_recreate(&mut self) {
+        if let Some(r) = self.hotkey.as_mut().and_then(|h| h.roll.as_mut()) {
+            r.fade = None;
+            r.motion.alpha = (1.0, 1.0);
+        }
+        self.end_fade();
     }
 
     /// Moves the current window onto its profile's Screen (-1: the one with the pointer) and
@@ -365,6 +508,8 @@ impl App {
     fn finish_hide(&mut self, by_key: bool, back: Option<(f32, f32)>) {
         let Some(hwnd) = self.hwnd() else { return };
         cloak(hwnd, true);
+        // Full opacity again, while it is cloaked: the next show starts from its own first frame.
+        self.end_fade();
         if let Some(g) = &self.gpu {
             if let Some((x, y)) = back {
                 g.window.set_outer_position(winit::dpi::PhysicalPosition::new(x.round() as i32, y.round() as i32));
@@ -400,17 +545,44 @@ impl App {
         for w in moving {
             self.enter(w);
             let Some(roll) = self.hotkey.as_ref().and_then(|h| h.roll.as_ref()) else { continue };
-            let ((x, y), done) = roll.motion.at(roll.start.elapsed());
-            let (hiding, by_key, origin) = (roll.hiding, roll.by_key, roll.motion.from);
+            let (motion, hiding, by_key, fade) = (roll.motion, roll.hiding, roll.by_key, roll.fade);
+            let (mut pos, alpha, mut done) = motion.at(roll.start.elapsed());
+            let origin = motion.from;
+            // A fade that failed ends at once: shown or hidden where it was going.
+            if fade.is_some() && self.fade_failed {
+                (pos, done) = (motion.to, true);
+                self.end_fade();
+            } else if fade == Some(FadePath::Layered) {
+                let hwnd = self.hwnd();
+                // The last step of a show is full opacity (the style comes off); a hide ends at 0.
+                if hwnd.is_none_or(|h| !set_window_alpha(h, alpha)) {
+                    self.fade_failed = true;
+                    (pos, done) = (motion.to, true);
+                    self.end_fade();
+                }
+            } else if fade == Some(FadePath::Composed) {
+                if let Some(h) = self.hotkey.as_mut() {
+                    h.fade = alpha;
+                }
+                self.redraw();
+            }
+            let (x, y) = pos;
             if let Some(g) = &self.gpu {
-                g.window.set_outer_position(winit::dpi::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+                let (cx, cy) = (x.round() as i32, y.round() as i32);
+                if g.window.outer_position().map_or(true, |p| (p.x, p.y) != (cx, cy)) {
+                    g.window.set_outer_position(winit::dpi::PhysicalPosition::new(cx, cy));
+                }
             }
             if !done {
                 next = Some(Instant::now() + Duration::from_millis(8));
             } else if hiding {
                 self.finish_hide(by_key, Some(origin));
-            } else if let Some(h) = self.hotkey.as_mut() {
-                h.roll = None;
+            } else {
+                self.end_fade();
+                if let Some(h) = self.hotkey.as_mut() {
+                    h.roll = None;
+                }
+                self.redraw();
             }
         }
         if let Some(b) = back {
@@ -537,6 +709,12 @@ impl App {
         self.hotkey.as_ref().and_then(|h| self.store.get(&h.guid)).is_some_and(|p| !p.bool("HotKey Window AutoHides"))
     }
 
+    /// Whether the pin indicator shows on this window's panes: the Advanced switch is on and
+    /// this is a hotkey window whose profile does not auto-hide (`PS:14295-14304`).
+    pub(super) fn in_pinned_hotkey_window(&self) -> bool {
+        self.globals.bool("ShowPinnedIndicator") && self.hotkey_pinned()
+    }
+
     /// A window the switcher and Next Window skip: a hidden hotkey window.
     pub(super) fn hidden_hotkey_key(&self, k: u64) -> bool {
         if self.windows.current() == Some(k) {
@@ -591,6 +769,37 @@ impl App {
                 }
             }
             hotkey::AppAct::OpenWindow => self.pending_windows.push(NewWindow::Profile(None)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+    #[test]
+    fn window_alpha_adds_and_removes_the_layered_style() {
+        unsafe {
+            let class: Vec<u16> = "TandemAlphaTest\0".encode_utf16().collect();
+            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() });
+            // A tool window that is never shown, off every monitor.
+            let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class.as_ptr(), class.as_ptr(), WS_POPUP, -30000, -30000, 16, 16, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            assert!(!h.is_null());
+            let layered = || GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_LAYERED as isize != 0;
+            assert!(!layered());
+            assert!(set_window_alpha(h as isize, 0.5));
+            assert!(layered(), "a fade adds the layered style");
+            let (mut key, mut alpha, mut flags) = (0u32, 0u8, 0u32);
+            GetLayeredWindowAttributes(h, &mut key, &mut alpha, &mut flags);
+            assert_eq!((alpha, flags), (128, LWA_ALPHA));
+            // Later steps of a fade are the same call; a desktop-less ssh session (0) refuses a second
+            // `SetLayeredWindowAttributes` on a window (error 31), so they are checked on the checklist.
+            assert!(set_window_alpha(h as isize, 1.0));
+            assert!(!layered(), "full opacity removes the style");
+            assert!(set_window_alpha(h as isize, 1.0), "removing twice is fine");
+            DestroyWindow(h);
+            assert!(!set_window_alpha(h as isize, 0.5), "a destroyed window refuses");
         }
     }
 }
