@@ -52,8 +52,6 @@ pub enum Edit {
     Changed(String),
     Imported(usize),
     Error(String),
-    /// Open a session with this profile Guid.
-    Open(String, How),
     /// Open these profiles (the Profiles window's selection, in list order) as `How`.
     OpenMany(Vec<String>, How),
     /// "Edit Profiles\u{2026}": Settings on this profile's General tab, or on the Profiles page.
@@ -173,9 +171,10 @@ pub fn profiles_context_menu(selected: usize) -> Vec<&'static str> {
 }
 
 /// Whether "Close this window after opening a profile." closes the window after `how`
-/// (`PWC:285-340`): not after a split into the current window (an empty branch in iTerm2, kept).
-pub fn closes_after(key: bool, how: How) -> bool {
-    key && !matches!(how, How::SplitRight | How::SplitDown)
+/// (`PWC:285-340`): after every kind of opening, splits into the current window included
+/// (`openBookmarkInVerticalPane:` and `openBookmarkInHorizontalPane:` close it too, `PWC:298-301`, `:311-314`).
+pub fn closes_after(key: bool, _how: How) -> bool {
+    key
 }
 
 /// The General tab's Shortcut popup (`PGP:1329-1418`): "none", A-Z and 0-9, each titled
@@ -326,10 +325,11 @@ pub fn open_plan(guids: &[String], how: How, window_exists: bool) -> Vec<Step> {
     }
 }
 
-/// What Enter (or a double click) opens (`updateKeyEquivalents`, `profileTableRowSelected:`):
-/// tabs, windows with Shift; Enter opens windows when the profiles refuse tabs.
-pub fn enter_opens(buttons: &Buttons, shift: bool) -> How {
-    if shift || !buttons.new_tab { How::Window } else { How::Tab }
+/// What Enter in the search field or a double click opens (`profileTableRowSelected:`): tabs, or
+/// windows with Shift. Each profile is launched on its own, so one that refuses tabs still gets a
+/// window (`App::new_tab`), whatever the rest of the selection are.
+pub fn row_opens(shift: bool) -> How {
+    if shift { How::Window } else { How::Tab }
 }
 
 /// The settings editor, or iTerm2's Profiles window (Cmd+O): a list to start sessions from.
@@ -845,7 +845,7 @@ impl SettingsWindow {
                     let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
                     let open = |how: How| Edit::OpenMany(ordered.clone(), how);
                     match event {
-                        crate::profile_list_ui::ListEvent::Activated(_) if !ordered.is_empty() => edit = open(if shift { How::Window } else { enter_opens(&b, false) }),
+                        crate::profile_list_ui::ListEvent::Activated(_) if !ordered.is_empty() => edit = open(row_opens(shift)),
                         crate::profile_list_ui::ListEvent::MenuItem(label) => {
                             edit = match label {
                                 "Edit Profile\u{2026}" => Edit::EditProfiles(ordered.first().cloned()),
@@ -2098,8 +2098,9 @@ mod tests {
             assert!(closes_after(true, how), "{how:?}");
             assert!(!closes_after(false, how), "{how:?} with the key off");
         }
-        assert!(!closes_after(true, How::SplitRight), "kept quirk: a split into the current window");
-        assert!(!closes_after(true, How::SplitDown));
+        // iTerm2 closes after a split into the current window too (`PWC:298-301`, `:311-314`).
+        assert!(closes_after(true, How::SplitRight));
+        assert!(closes_after(true, How::SplitDown));
         assert!(!closes_after(false, How::SplitDown));
     }
 
@@ -2125,12 +2126,18 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_follows_iterm2() {
-        let ok = profiles_buttons(1, true, false);
-        assert_eq!(enter_opens(&ok, false), How::Tab);
-        assert_eq!(enter_opens(&ok, true), How::Window);
-        let refuses = profiles_buttons(1, true, true);
-        assert_eq!(enter_opens(&refuses, false), How::Window, "the Window button takes Enter when New Tab is disabled");
+    fn row_opens_follows_iterm2() {
+        assert_eq!(row_opens(false), How::Tab);
+        assert_eq!(row_opens(true), How::Window);
+    }
+
+    /// `profileTableRowSelected:` launches each bookmark on its own, so a profile that refuses
+    /// tabs gets a window while the rest of a mixed selection follow the chosen mode: the row
+    /// action asks for tabs and `new_tab` applies the per-profile rule.
+    #[test]
+    fn a_mixed_selection_opens_per_profile() {
+        let tabs = |how: How| open_plan(&["a".into(), "b".into()], how, true);
+        assert_eq!(tabs(row_opens(false)), vec![Step::Tab("a".into()), Step::Tab("b".into())]);
     }
 
     struct Reg(Option<String>);

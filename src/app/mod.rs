@@ -3907,7 +3907,6 @@ impl App {
         }
         match edit {
             Edit::None | Edit::Preview => return,
-            Edit::Open(guid, how) => self.open_selected_profiles(vec![guid], how),
             Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how),
             // Taken by the window's redraw handler, which has the event loop.
             Edit::EditProfiles(_) => return,

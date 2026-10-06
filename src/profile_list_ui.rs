@@ -1,7 +1,7 @@
 //! The profile list: a search field, a "Tags >" button, the tag sidebar and the rows, shared by
 //! the Settings window and the Profiles window (`ProfileListView.m`, `ProfileTagsView.m`).
 
-use crate::profile_list::{all_tags, arrow, follow_filter, click_selection, click_tags, display_text, filter, tag_query, TagTreeCache};
+use crate::profile_list::{arrow, follow_filter, click_selection, click_tags, display_text, filter, tag_query, TagTreeCache};
 
 /// The list's state; the window that owns the list keeps it.
 #[derive(Default)]
@@ -98,14 +98,18 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
             ui.allocate_ui(egui::vec2(TAGS_WIDTH, LIST_HEIGHT), |ui| {
                 ui.set_width(TAGS_WIDTH);
                 ui.label(egui::RichText::new("Tag Name").strong());
-                let tags = all_tags(&rows.iter().map(|r| (r.0.clone(), r.2.clone())).collect::<Vec<_>>());
                 egui::ScrollArea::vertical().id_salt("profile-tags").max_height(LIST_HEIGHT - 20.0).show(ui, |ui| {
-                    for (label, path) in st.tree.get(&tags).to_vec() {
-                        let on = st.selected_tags.contains(&path);
-                        if ui.selectable_label(on, label).clicked() {
-                            st.selected_tags = click_tags(&st.selected_tags, &path, mods.ctrl || mods.command);
-                            st.query = tag_query(&st.selected_tags);
+                    // The tree is built when some tag changes, not every frame; a click is applied
+                    // after the loop, which borrows the tree.
+                    let mut clicked = None;
+                    for (label, path) in st.tree.for_profiles(rows.iter().map(|r| &r.2)) {
+                        if ui.selectable_label(st.selected_tags.contains(path), label).clicked() {
+                            clicked = Some(path.clone());
                         }
+                    }
+                    if let Some(path) = clicked {
+                        st.selected_tags = click_tags(&st.selected_tags, &path, mods.ctrl || mods.command);
+                        st.query = tag_query(&st.selected_tags);
                     }
                 });
             });

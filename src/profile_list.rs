@@ -28,11 +28,30 @@ pub fn tag_tree(tags: &[String]) -> Vec<(String, String)> {
 pub struct TagTreeCache {
     tags: Vec<String>,
     tree: Vec<(String, String)>,
+    /// The hash of every profile's tags the tree was built from (`for_profiles`).
+    signature: u64,
     /// How many times the tree was built (the tests count it).
     pub builds: usize,
 }
 
 impl TagTreeCache {
+    /// The tree for every profile's tags, rebuilt only when some tag changed: the list asks each
+    /// frame, so it compares a hash of the tags and builds `all_tags` and the tree on a change only.
+    pub fn for_profiles<'a>(&mut self, tag_lists: impl Iterator<Item = &'a Vec<String>>) -> &[(String, String)] {
+        use std::hash::{Hash, Hasher};
+        let lists: Vec<&Vec<String>> = tag_lists.collect();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        lists.hash(&mut hasher);
+        let signature = hasher.finish();
+        if self.builds == 0 || self.signature != signature {
+            let all: Vec<(String, Vec<String>)> = lists.into_iter().map(|t| (String::new(), t.clone())).collect();
+            self.tree = tag_tree(&all_tags(&all));
+            self.signature = signature;
+            self.builds += 1;
+        }
+        &self.tree
+    }
+
     pub fn get(&mut self, tags: &[String]) -> &[(String, String)] {
         if self.builds == 0 || self.tags != tags {
             self.tree = tag_tree(tags);
@@ -314,5 +333,19 @@ mod tests {
         assert_eq!(click_tags(&s(&["x"]), "y", false), s(&["y"]));
         assert_eq!(click_tags(&s(&["x"]), "y", true), s(&["x", "y"]));
         assert_eq!(click_tags(&s(&["x", "y"]), "y", true), s(&["x"]));
+    }
+
+    #[test]
+    fn the_sidebar_tree_is_built_once_while_tags_stay() {
+        let a = vec!["work".to_string(), "work/db".to_string()];
+        let b = vec!["home".to_string()];
+        let mut cache = TagTreeCache::default();
+        for _ in 0..3 {
+            assert_eq!(cache.for_profiles([&a, &b].into_iter()).len(), 3);
+        }
+        assert_eq!(cache.builds, 1, "three frames with the same tags build once");
+        let c = vec!["play".to_string()];
+        assert_eq!(cache.for_profiles([&a, &b, &c].into_iter()).len(), 4);
+        assert_eq!(cache.builds, 2);
     }
 }
