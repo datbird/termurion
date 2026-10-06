@@ -291,6 +291,11 @@ impl Then {
     }
 }
 
+/// How many ignored files a question that never shows stands for (the opened-file questions).
+pub(super) fn dropped_open_files(then: &Then) -> usize {
+    matches!(then, Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_)) as usize
+}
+
 /// The queue holds at most this many capped asks (`Then::capped`); later ones are dropped (a
 /// flood of the same question must not open windows forever). The person's own asks always
 /// queue.
@@ -333,6 +338,10 @@ impl App {
     /// An ask that will never show: the slow-scan question answers Continue, so the scan
     /// worker does not wait for ever; any other is dropped.
     fn scripts_dropped(&mut self, then: Then) {
+        let files = dropped_open_files(&then);
+        if files > 0 {
+            return self.open_files_ignored(files);
+        }
         match then {
             Then::SlowScan => self.scripts_answered(then, 1),
             // Canceled: what waits on a consent or on the replace question hears so.
@@ -818,5 +827,30 @@ mod tests {
             }
         }
         assert_eq!((queue.len(), dropped), (LIMIT, 40 - LIMIT));
+    }
+
+    /// Review fix 2: an "OK to run" (or duplicate-preset question) past the queue's cap is counted
+    /// into the one "N files ignored" banner, never dropped silently; a closed one is a Cancel and
+    /// is not counted.
+    #[test]
+    fn a_capped_open_question_is_counted_not_dropped_silently() {
+        let launch = crate::open_file::Launch { guid: "G".into(), dir: None, text: Some("x".into()), style: crate::open_file::Style::Tab, new_window: false };
+        let mut queue = VecDeque::new();
+        let mut tally = crate::open_file::IgnoredCount::default();
+        let t0 = std::time::Instant::now();
+        let mut banner = String::new();
+        for i in 0..(LIMIT + 3) {
+            let then = if i % 2 == 0 { Then::RunOpenedFile(launch.clone()) } else { Then::AddDuplicateColorPreset(std::path::PathBuf::from(r"C:\a.itermcolors")) };
+            if let Some(over) = push_capped(&mut queue, ask("", "x", &["OK", "Cancel"], None, Kind::Persistent, then)) {
+                assert_eq!(dropped_open_files(&over.then), 1);
+                banner = crate::open_file::ignored_banner(tally.add(t0, 1));
+            }
+        }
+        assert_eq!(banner, "3 files ignored");
+        assert_eq!(dropped_open_files(&Then::Nothing), 0);
+        assert_eq!(dropped_open_files(&Then::SlowScan), 0);
+        let src = include_str!("scripts_alerts.rs");
+        let body = &src[src.find("fn scripts_dropped").unwrap()..];
+        assert!(body.contains("dropped_open_files(&then)"), "scripts_dropped counts them");
     }
 }

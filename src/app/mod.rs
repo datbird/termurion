@@ -632,6 +632,7 @@ pub struct App {
     /// Files and folders opened with Tandem: the batch gathering, the workers that check them and
     /// the scripts the person said OK to run (app-wide, not in `swap_live`; m13v1 Task 2).
     open_batch: crate::open_file::Batch,
+    open_ignored: crate::open_file::IgnoredCount,
     open_work: open_file_ui::OpenWork,
     open_runs: Vec<crate::open_file::Launch>,
     open_with_done: bool,
@@ -1898,6 +1899,7 @@ pub fn run() {
         launch_queue,
         launch_flood: Default::default(),
         open_batch: Default::default(),
+        open_ignored: Default::default(),
         open_work,
         open_runs: Vec::new(),
         open_with_done: false,

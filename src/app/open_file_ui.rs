@@ -79,6 +79,13 @@ fn read_color_file(path: &Path) -> Option<Vec<u8>> {
 }
 
 impl App {
+    /// Files that were not opened, from any layer: ONE banner whose count adds up.
+    pub(super) fn open_files_ignored(&mut self, n: usize) {
+        let total = self.open_ignored.add(Instant::now(), n);
+        self.banners.set("open-ignored", open_file::ignored_banner(total));
+        self.redraw();
+    }
+
     fn open_file_banner(&mut self, text: String) {
         self.banners.set(BANNER, text);
         self.redraw();
@@ -102,8 +109,7 @@ impl App {
         if self.gpu.is_some() {
             if let Some((paths, ignored)) = self.open_batch.take(Instant::now()) {
                 if ignored > 0 {
-                    self.banners.set("open-ignored", open_file::ignored_banner(ignored));
-                    self.redraw();
+                    self.open_files_ignored(ignored);
                 }
                 if !paths.is_empty() {
                     self.open_paths(paths, event_loop);
@@ -139,7 +145,7 @@ impl App {
 
     fn spawn_inspect(&mut self, paths: Vec<PathBuf>, recheck: bool) {
         if self.open_work.inflight.load(Ordering::SeqCst) >= MAX_WORKERS {
-            return self.open_file_banner(open_file::ignored_banner(paths.len()));
+            return self.open_files_ignored(paths.len());
         }
         self.open_work.inflight.fetch_add(1, Ordering::SeqCst);
         let (tx, notify, inflight) = (self.open_work.tx.clone(), self.open_work.notify.clone(), self.open_work.inflight.clone());

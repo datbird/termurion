@@ -296,6 +296,26 @@ pub fn ignored_banner(n: usize) -> String {
     format!("{n} file{} ignored", if n == 1 { "" } else { "s" })
 }
 
+/// The files ignored lately, from every place that drops one (the batch, the workers, the alert
+/// queue), so the one banner adds up. A count older than `OPEN_SPAN` starts again.
+#[derive(Debug, Default)]
+pub struct IgnoredCount {
+    n: usize,
+    at: Option<Instant>,
+}
+
+impl IgnoredCount {
+    /// Adds `k` ignored files seen at `now`; the total for the banner.
+    pub fn add(&mut self, now: Instant, k: usize) -> usize {
+        if self.at.is_none_or(|t| now.saturating_duration_since(t) > OPEN_SPAN) {
+            self.n = 0;
+        }
+        self.n = self.n.saturating_add(k);
+        self.at = Some(now);
+        self.n
+    }
+}
+
 /// Paths waiting for their batch window, and the budget of files opened lately.
 #[derive(Debug, Default)]
 pub struct Batch {
@@ -603,5 +623,16 @@ mod tests {
         for banned in ["Command::new", "ShellExecute", "CreateProcess", "cmd /c", "std::process"] {
             assert!(!src.contains(banned), "{banned}");
         }
+    }
+
+    /// Review fix 2: one count for every way a file is ignored (the batch, the workers, the alert
+    /// queue), kept for `OPEN_SPAN` after the last one so the one banner adds up.
+    #[test]
+    fn ignored_files_add_up_in_one_banner() {
+        let t0 = std::time::Instant::now();
+        let mut c = IgnoredCount::default();
+        assert_eq!(c.add(t0, 2), 2);
+        assert_eq!(c.add(t0 + Duration::from_secs(5), 1), 3);
+        assert_eq!(c.add(t0 + Duration::from_secs(5) + OPEN_SPAN + Duration::from_millis(1), 1), 1, "a new burst starts again");
     }
 }
