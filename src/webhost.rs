@@ -1,0 +1,944 @@
+//! The WebView2 host's pure model (milestone 13x, Task 1): the runtime check's outcome, the user
+//! data folders, environment options, the events a view posts, the one navigation rule, the
+//! bridge's message and reply texts, the caps on everything a page can post, and bounds math.
+//! Nothing here touches COM (`webhost_win`) or the App (`app::webhost_app`). Web content is
+//! untrusted: every size, rate and shape a page controls is bounded here, before it is queued.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use crate::layout::Rect;
+
+pub type ViewId = u64;
+
+/// Whether a WebView2 runtime exists: its version string, or no runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Runtime {
+    Found(String),
+    Missing,
+}
+
+/// iTerm2's plugin check: a version is a runtime, an empty one or any failure is none
+/// (`GW:98-111`).
+pub fn runtime_outcome(result: Result<String, i32>) -> Runtime {
+    match result {
+        Ok(v) if !v.trim().is_empty() => Runtime::Found(v),
+        _ => Runtime::Missing,
+    }
+}
+
+/// The longest fixed-runtime hint (a Windows path).
+pub const MAX_HINT: usize = 260;
+
+/// The fixed-version runtime folder `BrowserPluginPathHint` names (preflight B2): trimmed, not
+/// empty, at most 260 characters, no control character, an absolute drive path with no `..` or
+/// `.` step, no share (the no-UNC invariant), and `judge` (the one path judge, `LocalPath`) accepts
+/// it. The window's callers add the owner, ACL and signature checks (`webhost_win`), which need
+/// the disk. None means the hint is not used.
+pub fn fixed_runtime_folder(hint: &str, judge: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    refused_hint(hint, judge).ok().map(PathBuf::from)
+}
+
+/// Why a hint is refused (the banner text), or the trimmed folder.
+pub fn refused_hint(hint: &str, judge: &dyn Fn(&Path) -> bool) -> Result<String, &'static str> {
+    let h = hint.trim();
+    if h.is_empty() {
+        return Err("the folder is not set");
+    }
+    if h.chars().count() > MAX_HINT {
+        return Err("the folder name is too long");
+    }
+    if h.chars().any(|c| c.is_control()) {
+        return Err("the folder name holds a control character");
+    }
+    let b = h.as_bytes();
+    if !(b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')) {
+        return Err("the folder is not an absolute local path");
+    }
+    if h[2..].split(['\\', '/']).any(|s| s == ".." || s == ".") {
+        return Err("the folder name has a relative step");
+    }
+    if h[2..].contains(':') {
+        return Err("the folder name has a stream or device part");
+    }
+    if !judge(Path::new(h)) {
+        return Err("the folder is on a share, a mapped drive or behind a link");
+    }
+    Ok(h.to_string())
+}
+
+/// The two settings the host reads that are text a settings import, a remote-prefs snapshot or a
+/// script could write.
+pub const BOUNDED_KEYS: [&str; 2] = ["BrowserPluginPathHint", "WebUserAgent"];
+
+/// The write-point bound (`Globals::set`, `bound_values`): a hint over 260 characters or holding a
+/// control character is stored empty (a cut path could name another folder); a user agent loses its
+/// control characters and is cut to 512 characters. Any other key passes unchanged.
+pub fn bound_global(key: &str, value: toml::Value) -> toml::Value {
+    match (key, &value) {
+        ("BrowserPluginPathHint", toml::Value::String(s)) => toml::Value::String(if s.chars().count() > MAX_HINT || s.chars().any(|c| c.is_control()) { String::new() } else { s.clone() }),
+        ("WebUserAgent", toml::Value::String(s)) => toml::Value::String(s.chars().filter(|c| !c.is_control()).take(512).collect()),
+        _ => value,
+    }
+}
+
+/// Which user data folder an environment owns. WebView2 refuses a second environment on one
+/// folder with different options, so each store has its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Store {
+    /// Tool views, popovers, Quick Look and the icon rasterizer.
+    Default,
+    /// Browser panes (the proxy arguments, the `iterm2-about` scheme).
+    Browser,
+    /// Dev Null Mode: every view is InPrivate; the folder is fresh for each run (`dev_null_folder`).
+    BrowserDevNull,
+}
+
+/// `<LOCALAPPDATA>\Tandem\WebView2\<Default|Browser|DevNull>`. `BrowserDevNull`'s name is the base
+/// the per-run folders live beside; the folder an environment really uses is `dev_null_folder`.
+pub fn data_folder(local_appdata: &Path, store: Store) -> PathBuf {
+    let name = match store {
+        Store::Default => "Default",
+        Store::Browser => "Browser",
+        Store::BrowserDevNull => "DevNull",
+    };
+    local_appdata.join("Tandem").join("WebView2").join(name)
+}
+
+/// The folder every per-run Dev Null folder lives in.
+pub fn tmp_folder(local_appdata: &Path) -> PathBuf {
+    local_appdata.join("Tandem").join("WebView2").join("Tmp")
+}
+
+/// `Tmp\DevNull-<pid>-<hex8>` (preflight P4): fresh for each run, so nothing a Dev Null view stored
+/// outlives the process that made it.
+pub fn dev_null_folder(local_appdata: &Path, pid: u32, nonce: u32) -> PathBuf {
+    tmp_folder(local_appdata).join(format!("DevNull-{pid}-{nonce:08x}"))
+}
+
+/// The pid in a per-run folder name; None for any other name.
+pub fn dev_null_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("DevNull-")?;
+    let (pid, nonce) = rest.split_once('-')?;
+    (nonce.len() == 8 && nonce.bytes().all(|b| b.is_ascii_hexdigit()) && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())).then(|| pid.parse().ok())?
+}
+
+/// The names in `Tmp` a launch sweep removes: per-run folders whose process is gone (and that are
+/// not `me`).
+pub fn stale_dev_null(names: &[String], me: u32, alive: &dyn Fn(u32) -> bool) -> Vec<String> {
+    names.iter().filter(|n| dev_null_pid(n).is_some_and(|p| p == me || !alive(p))).cloned().collect()
+}
+
+/// What an environment is created with. InPrivate is per controller (`ViewSetup.in_private`), not
+/// here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnvOptions {
+    /// `AdditionalBrowserArguments`: exactly the proxy argument or empty (Task 8 pins it).
+    pub args: String,
+    /// Custom scheme registrations (`iterm2-about` for the browser stores).
+    pub custom_schemes: Vec<String>,
+}
+
+/// The user agent a web view gets (`WVW:127-150`): a set agent is used as written; an empty one
+/// keeps the engine's with the application name appended.
+pub fn user_agent(setting: &str, engine_default: &str) -> String {
+    if setting.is_empty() { format!("{engine_default} Tandem") } else { setting.to_string() }
+}
+
+/// What a view tells the app. Open for extension: every consumer's `match` ends in `_ =>`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    Created(ViewId),
+    Failed(ViewId, String),
+    /// A finished navigation: `url` is the URI of the matching NavigationStarting (iTerm2's
+    /// `lastRequestedURL`), `nav` its `NavigationId`.
+    Navigated { view: ViewId, ok: bool, status: i32, url: String, nav: u64 },
+    Source(ViewId, String),
+    Title(ViewId, String),
+    Favicon(ViewId, Vec<u8>),
+    /// A page's `postMessage`; `source` is the posting document's URL.
+    Message { view: ViewId, json: String, source: String },
+    ScriptDone { view: ViewId, token: u64, json: Result<String, String> },
+    NewWindow { view: ViewId, url: String },
+    Key { view: ViewId, vk: u32, mods: u8 },
+    Focus(ViewId, bool),
+    History { view: ViewId, back: bool, forward: bool },
+    Loading(ViewId, bool),
+    /// A request a registered filter matched; the app answers with `answer_request(token, ..)`.
+    Request { view: ViewId, token: u64, url: String, context: i32, top_url: String },
+    /// A page or redirect asked to open an external protocol; the view always cancels it (B4).
+    ExternalUri { view: ViewId, url: String, user: bool },
+}
+
+impl Event {
+    /// The view an event belongs to.
+    pub fn view(&self) -> ViewId {
+        match self {
+            Event::Created(v) | Event::Failed(v, _) | Event::Source(v, _) | Event::Title(v, _) | Event::Favicon(v, _) | Event::Focus(v, _) | Event::Loading(v, _) => *v,
+            Event::Navigated { view, .. }
+            | Event::Message { view, .. }
+            | Event::ScriptDone { view, .. }
+            | Event::NewWindow { view, .. }
+            | Event::Key { view, .. }
+            | Event::History { view, .. }
+            | Event::Request { view, .. }
+            | Event::ExternalUri { view, .. } => *view,
+        }
+    }
+
+    /// An event the queue may drop when a page floods it. Lifecycle, navigation results, focus,
+    /// script results and requests (each holds a COM deferral) are never dropped.
+    pub fn droppable(&self) -> bool {
+        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
+    }
+
+    /// The bytes an event holds that a page chose.
+    pub fn weight(&self) -> usize {
+        match self {
+            Event::Failed(_, s) | Event::Source(_, s) | Event::Title(_, s) => s.len(),
+            Event::Favicon(_, b) => b.len(),
+            Event::Message { json, source, .. } => json.len() + source.len(),
+            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } => url.len(),
+            Event::Request { url, top_url, .. } => url.len() + top_url.len(),
+            Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
+            _ => 0,
+        }
+    }
+}
+
+/// How the app answers a deferred request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    Continue,
+    Block,
+    Respond { status: u16, mime: String, body: Vec<u8>, headers: Vec<(String, String)> },
+}
+
+/// The header block `CreateWebResourceResponse` takes: `Content-Type: <mime>` then each
+/// `Name: value`, CRLF-separated. A header whose name or value holds CR or LF is dropped, so a
+/// value can never smuggle a second header; so is an empty or colon-holding name. The mime gets
+/// the same test (a mime with a line break falls back to octet-stream).
+pub fn response_headers(mime: &str, headers: &[(String, String)]) -> String {
+    let clean = |s: &str| !s.contains(['\r', '\n', '\0']);
+    let mime = if clean(mime) { mime } else { "application/octet-stream" };
+    let mut out = format!("Content-Type: {mime}");
+    for (name, value) in headers {
+        if clean(name) && clean(value) && !name.is_empty() && !name.contains(':') && !name.contains(' ') {
+            out.push_str("\r\n");
+            out.push_str(name);
+            out.push_str(": ");
+            out.push_str(value);
+        }
+    }
+    out
+}
+
+fn scheme_of(url: &str) -> String {
+    let end = url.find(':').unwrap_or(0);
+    let s = &url[..end];
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') { s.to_ascii_lowercase() } else { String::new() }
+}
+
+fn local_scheme(s: &str) -> bool {
+    matches!(s, "file" | "iterm2-file" | "iterm2-ssh")
+}
+
+/// The one rule every guarded view's NavigationStarting asks (R13x8ai item 3, B4): may this
+/// navigation go on?
+/// - a `file:` target that is not `file_ok` (a share, a mapped or remote drive, a link, a
+///   verbatim form: `file_url_local`) is refused for every source and initiator;
+/// - a redirect to `file:`, `iterm2-file:` or `iterm2-ssh:` is refused;
+/// - a navigation Tandem started (`navigate_tandem`) or the person started is allowed;
+/// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere;
+/// - a `file:`, `iterm2-file:` or `iterm2-ssh:` target is allowed only from an `iterm2-about:`
+///   source;
+/// - everything else is allowed. Schemes compare ignoring ASCII case.
+pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool) -> bool {
+    let t = scheme_of(target);
+    if t == "file" && !file_ok {
+        return false;
+    }
+    if redirect && local_scheme(&t) {
+        return false;
+    }
+    if by_tandem || user {
+        return true;
+    }
+    let s = source.map(scheme_of).unwrap_or_default();
+    if s == "iterm2-file" || s == "iterm2-ssh" {
+        return false;
+    }
+    if local_scheme(&t) {
+        return s == "iterm2-about";
+    }
+    true
+}
+
+/// Whether a `file:` URL names a local file the one path judge accepts (B4): no host other than
+/// empty or `localhost`, a drive-letter path with no stream, no verbatim or device form, no
+/// control character, and `judge` says yes (a remote or mapped drive, a link to a share: no). A
+/// URL that is not `file:` is not ok.
+pub fn file_url_local(url: &str, judge: &dyn Fn(&Path) -> bool) -> bool {
+    if scheme_of(url) != "file" {
+        return false;
+    }
+    let Some(path) = crate::semantic::file_url_path(url) else { return false };
+    let b = path.as_bytes();
+    if path.chars().any(|c| c.is_control()) || path.starts_with("\\\\") || !(b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\') {
+        return false;
+    }
+    if path[2..].contains(':') {
+        return false;
+    }
+    judge(Path::new(&path))
+}
+
+/// One posted item: an environment result, or a view event. The charge (when there is one) is
+/// released when the item is dropped, which is when the app has drained it.
+pub struct Posted {
+    pub env: Option<(Store, Result<(), String>)>,
+    pub event: Option<Event>,
+    pub charge: Option<Charge>,
+}
+
+impl Posted {
+    pub fn env(store: Store, result: Result<(), String>) -> Posted {
+        Posted { env: Some((store, result)), event: None, charge: None }
+    }
+    pub fn event(event: Event, charge: Option<Charge>) -> Posted {
+        Posted { env: None, event: Some(event), charge }
+    }
+}
+
+pub type Sink = std::sync::mpsc::Sender<Posted>;
+
+// --- Caps on everything a page can post (preflight B5) ---
+
+/// The largest `postMessage` body the host queues.
+pub const MAX_MESSAGE: usize = 64 * 1024;
+/// Messages of one view that may sit in the queue.
+pub const MAX_QUEUED_MESSAGES: usize = 50;
+/// A title, in characters.
+pub const MAX_TITLE: usize = 1024;
+/// A URL, in bytes.
+pub const MAX_URL: usize = 8192;
+/// A favicon's encoded size and side.
+pub const MAX_FAVICON: usize = 256 * 1024;
+pub const MAX_FAVICON_SIDE: u32 = 256;
+/// Events and bytes of one view that may sit in the queue.
+pub const MAX_QUEUED_EVENTS: usize = 256;
+pub const MAX_QUEUED_BYTES: usize = 1024 * 1024;
+/// New-window requests: per second and pending.
+pub const NEW_WINDOWS_PER_SECOND: usize = 4;
+pub const MAX_PENDING_NEW_WINDOWS: usize = 8;
+
+fn bidi_format(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A page's title made safe to show: control characters become a space, bidi format characters
+/// are removed, at most 1024 characters.
+pub fn clean_title(t: &str) -> String {
+    t.chars().filter(|c| !bidi_format(*c)).map(|c| if c.is_control() { ' ' } else { c }).take(MAX_TITLE).collect()
+}
+
+/// A URL a page gave, cut to 8192 bytes at a character boundary; the flag says it was cut (a cut
+/// URL is never stored whole and never navigated).
+pub fn cap_url(u: &str) -> (String, bool) {
+    if u.len() <= MAX_URL {
+        return (u.to_string(), false);
+    }
+    let mut end = MAX_URL;
+    while !u.is_char_boundary(end) {
+        end -= 1;
+    }
+    (u[..end].to_string(), true)
+}
+
+/// A favicon the host keeps: at most 256 KiB encoded and decoding (header only) to at most 256 by
+/// 256.
+pub fn favicon_ok(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > MAX_FAVICON {
+        return false;
+    }
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok())
+        .is_some_and(|(w, h)| w > 0 && h > 0 && w <= MAX_FAVICON_SIDE && h <= MAX_FAVICON_SIDE)
+}
+
+/// `NewWindowRequested` limiter (P20): only a user-initiated request, at most 4 a second, never
+/// more than 8 pending.
+#[derive(Debug, Default)]
+pub struct NewWindowLimiter {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl NewWindowLimiter {
+    pub fn allow(&mut self, now: Instant, user_initiated: bool, pending: usize) -> bool {
+        if !user_initiated || pending >= MAX_PENDING_NEW_WINDOWS {
+            return false;
+        }
+        match self.window_start {
+            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= NEW_WINDOWS_PER_SECOND {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
+/// What one view has queued: events, bytes and messages. Shared by the view's handlers and every
+/// `Charge` they make.
+#[derive(Debug, Default)]
+pub struct ViewGate {
+    events: AtomicUsize,
+    bytes: AtomicUsize,
+    messages: AtomicUsize,
+    new_windows: AtomicUsize,
+    dropped: AtomicUsize,
+}
+
+/// A queued item's claim on its view's gate; dropping it (the app drained the item, or the channel
+/// is gone) gives the room back.
+#[derive(Debug)]
+pub struct Charge {
+    gate: Arc<ViewGate>,
+    bytes: usize,
+    message: bool,
+    new_window: bool,
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        self.gate.events.fetch_sub(1, Ordering::AcqRel);
+        self.gate.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+        if self.message {
+            self.gate.messages.fetch_sub(1, Ordering::AcqRel);
+        }
+        if self.new_window {
+            self.gate.new_windows.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl ViewGate {
+    pub fn new() -> Arc<ViewGate> {
+        Arc::new(ViewGate::default())
+    }
+
+    /// Room for `event`? A droppable event over the caps is refused and counted (the newest is
+    /// dropped: a std channel cannot drop its oldest); an event that must not be dropped is always
+    /// admitted. The Charge returned is released on drop.
+    pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
+        let weight = event.weight();
+        let message = matches!(event, Event::Message { .. });
+        let new_window = matches!(event, Event::NewWindow { .. });
+        if event.droppable() {
+            let over = self.events.load(Ordering::Acquire) >= MAX_QUEUED_EVENTS
+                || self.bytes.load(Ordering::Acquire) + weight > MAX_QUEUED_BYTES
+                || (message && self.messages.load(Ordering::Acquire) >= MAX_QUEUED_MESSAGES)
+                || (message && weight > MAX_MESSAGE + MAX_URL)
+                || (new_window && self.new_windows.load(Ordering::Acquire) >= MAX_PENDING_NEW_WINDOWS);
+            if over {
+                self.dropped.fetch_add(1, Ordering::AcqRel);
+                return Err(());
+            }
+        }
+        self.events.fetch_add(1, Ordering::AcqRel);
+        self.bytes.fetch_add(weight, Ordering::AcqRel);
+        if message {
+            self.messages.fetch_add(1, Ordering::AcqRel);
+        }
+        if new_window {
+            self.new_windows.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(Charge { gate: self.clone(), bytes: weight, message, new_window })
+    }
+
+    /// New-window requests queued now.
+    pub fn new_windows_pending(&self) -> usize {
+        self.new_windows.load(Ordering::Acquire)
+    }
+
+    /// Events queued now.
+    pub fn queued(&self) -> usize {
+        self.events.load(Ordering::Acquire)
+    }
+
+    /// Events dropped since the last call.
+    pub fn take_dropped(&self) -> usize {
+        self.dropped.swap(0, Ordering::AcqRel)
+    }
+}
+
+/// Schemes a `window.open` may carry into a new tab (P20; 13x2's gate replaces the list).
+pub fn new_window_scheme_ok(url: &str) -> bool {
+    matches!(scheme_of(url).as_str(), "http" | "https" | "iterm2-about")
+}
+
+/// Whether `url`'s scheme is in `allowed` (ignoring ASCII case): a view that lists schemes loads only those.
+pub fn scheme_ok(url: &str, allowed: &[String]) -> bool {
+    let s = scheme_of(url);
+    !s.is_empty() && allowed.iter().any(|a| a.eq_ignore_ascii_case(&s))
+}
+
+/// Whether the URI WebView2 reports for a navigation is the one Tandem asked for: equal, or equal
+/// once WebView2's own added `/` after a bare host is ignored (P19).
+pub fn same_navigation_uri(requested: &str, started: &str) -> bool {
+    let norm = |u: &str| {
+        let u = u.trim();
+        let after = u.find("://").map(|i| i + 3);
+        match after {
+            Some(a) if !u[a..].contains(['/', '?', '#']) => format!("{u}/"),
+            _ => u.to_string(),
+        }
+    };
+    norm(requested) == norm(started)
+}
+
+/// SHA-256 of the pinned `WebView2Loader.dll` (webview2-com-sys 0.39.1, WebView2 SDK 1.0.3650.58):
+/// the file is refused when it is not this one (the build script and `fetch-webview2-loader.ps1`
+/// ship exactly these two).
+pub const LOADER_SHA256_X64: &str = "86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5";
+pub const LOADER_SHA256_ARM64: &str = "a0de1844933a10c898f833771a85f0ab9a0e3c745d4715f63d2d9730f9416025";
+
+/// The hash this build's loader must have.
+pub fn loader_sha256() -> &'static str {
+    if cfg!(target_arch = "aarch64") { LOADER_SHA256_ARM64 } else { LOADER_SHA256_X64 }
+}
+
+/// Whether `bytes` is the pinned loader.
+pub fn loader_ok(bytes: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+    let got = Sha256::digest(bytes);
+    let hex: String = got.iter().map(|b| format!("{b:02x}")).collect();
+    hex == loader_sha256()
+}
+
+// --- The bridge ---
+
+/// iTerm2's `iterm2Invoke.js` with `window.webkit.messageHandlers.iterm2Invoke.postMessage`
+/// replaced by `window.chrome.webview.postMessage` (the misspelled `messgeToPost` is iTerm2's), and
+/// `window.onerror` reporting by a `{"error": msg}` message where iTerm2 calls `alert` (WebView2
+/// has no alert delegate).
+pub const INVOKE_JS: &str = "function iterm2Invoke(invocation, callback) {\n    var messgeToPost = {'invocation': invocation,\n                        'callback': callback};\n    window.chrome.webview.postMessage(messgeToPost);\n}\nwindow.onerror = function(msg) {\n    window.chrome.webview.postMessage({'error': String(msg)});\n};\n";
+
+/// ToolWebView's logger script (`TWV:62-79`) with the same replacement: `console.log` posts its
+/// arguments as strings, `window.onerror` its message. The shapes are `{console: [string...]}` and
+/// `{error: string}` (`logger_message`).
+pub const LOGGER_JS: &str = "(function() {\n  const oldLog = console.log;\n  console.log = function(...args) {\n    window.chrome.webview.postMessage({'console': args.map(String)});\n    oldLog.apply(console, args);\n  };\n})();\nwindow.onerror = function(message, source, lineno, colno, error) {\n    window.chrome.webview.postMessage({'error': String(message) + ' ' + String(source) + ':' + lineno + ':' + colno});\n};\n";
+
+const MAX_INVOKE: usize = 16 * 1024;
+const MAX_INVOCATION: usize = 8 * 1024;
+const MAX_LOGGER_TEXT: usize = 2048;
+
+fn callback_name_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 128
+        && (b[0].is_ascii_alphabetic() || b[0] == b'_' || b[0] == b'$')
+        && b[1..].iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$' || *c == b'.')
+}
+
+/// The message `iterm2Invoke` posts: a closed set (B5). At most 16 KiB; an object whose only keys
+/// are `invocation` (a string of at most 8 KiB) and `callback` (a plain name or dotted path of at
+/// most 128 characters). Anything else is None.
+pub fn invoke_request(json: &str) -> Option<(Option<String>, Option<String>)> {
+    if json.len() > MAX_INVOKE {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let o = v.as_object()?;
+    let (mut invocation, mut callback) = (None, None);
+    for (k, val) in o {
+        let s = val.as_str()?;
+        match k.as_str() {
+            "invocation" if s.len() <= MAX_INVOCATION => invocation = Some(s.to_string()),
+            "callback" if callback_name_ok(s) => callback = Some(s.to_string()),
+            _ => return None,
+        }
+    }
+    Some((invocation, callback))
+}
+
+/// A tool view's logger message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoggerMessage {
+    /// `console.log` arguments.
+    Console(Vec<String>),
+    /// A script error.
+    Error(String),
+}
+
+/// The logger script's message, a closed set: `{console: [string...]}` or `{error: string}`, each
+/// text at most 2 KiB, the whole at most 16 KiB. The text is for its byte length only: it is
+/// never logged (B8).
+pub fn logger_message(json: &str) -> Option<LoggerMessage> {
+    if json.len() > MAX_INVOKE {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let o = v.as_object()?;
+    if o.len() != 1 {
+        return None;
+    }
+    if let Some(list) = o.get("console") {
+        let items = list.as_array()?;
+        let mut out = Vec::new();
+        for i in items {
+            let s = i.as_str()?;
+            if s.len() > MAX_LOGGER_TEXT {
+                return None;
+            }
+            out.push(s.to_string());
+        }
+        return Some(LoggerMessage::Console(out));
+    }
+    let e = o.get("error")?.as_str()?;
+    (e.len() <= MAX_LOGGER_TEXT).then(|| LoggerMessage::Error(e.to_string()))
+}
+
+/// The reply script for a successful call (`WVW:237-268`).
+pub fn return_script(callback: &str, value_json: &str) -> String {
+    format!("try {{ {callback}({value_json}); }} catch(err) {{ alert('Caught error while sending return value to javascript: ' + err.message + '\\n' + err.stack); }}")
+}
+
+/// The reply script for a failed call: throws the message in the page.
+pub fn throw_script(message: &str) -> String {
+    format!("throw {}", serde_json::to_string(message).unwrap_or_else(|_| "\"\"".into()))
+}
+
+/// A rectangle in physical pixels as (left, top, right, bottom): rounded, never negative in width
+/// or height, and an unusable number is zero.
+pub fn physical_bounds(r: Rect) -> (i32, i32, i32, i32) {
+    let n = |v: f32| if v.is_finite() { v.round().clamp(-1.0e6, 1.0e6) as i32 } else { 0 };
+    let (left, top) = (n(r.x), n(r.y));
+    (left, top, n(r.x + r.w).max(left), n(r.y + r.h).max(top))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn yes(_: &Path) -> bool {
+        true
+    }
+
+    #[test]
+    fn runtime_outcome_follows_iterm2() {
+        assert_eq!(runtime_outcome(Ok("128.0.2739.42".into())), Runtime::Found("128.0.2739.42".into()));
+        assert_eq!(runtime_outcome(Ok(String::new())), Runtime::Missing);
+        assert_eq!(runtime_outcome(Err(-2147024894)), Runtime::Missing);
+        assert_eq!(fixed_runtime_folder("  ", &yes), None);
+        assert_eq!(fixed_runtime_folder(r"C:\WV2\128", &yes), Some(PathBuf::from(r"C:\WV2\128")));
+        assert_eq!(fixed_runtime_folder(r"\\srv\wv2", &yes), None);
+    }
+
+    /// B2: the hint is judged before it can name a program's folder.
+    #[test]
+    fn fixed_runtime_hint_is_judged() {
+        let long = format!("C:\\{}", "a".repeat(300));
+        for (hint, why) in [
+            (r"WV2\128", "relative"),
+            (r"\\srv\wv2", "UNC"),
+            (r"C:\x\..\y", "a parent step"),
+            (r"C:\x\.\y", "a dot step"),
+            (long.as_str(), "300 characters"),
+            ("C:\\x\u{7}y", "a control character"),
+            (r"C:\x:stream", "a stream"),
+            (r"\\?\C:\x", "verbatim"),
+            (r"C:", "no folder"),
+        ] {
+            assert_eq!(fixed_runtime_folder(hint, &yes), None, "{why}");
+        }
+        // A junction or a mapped drive is the judge's: it says no.
+        assert_eq!(fixed_runtime_folder(r"C:\junction\wv2", &|_| false), None);
+        assert_eq!(refused_hint(r"C:\junction\wv2", &|_| false).unwrap_err(), "the folder is on a share, a mapped drive or behind a link");
+        // Trimmed.
+        assert_eq!(fixed_runtime_folder(r"  C:\WV2\128  ", &yes), Some(PathBuf::from(r"C:\WV2\128")));
+        assert_eq!(fixed_runtime_folder("C:/WV2/128", &yes), Some(PathBuf::from("C:/WV2/128")));
+    }
+
+    /// B2: the hint and the user agent are bounded where they are written.
+    #[test]
+    fn fixed_runtime_hint_is_bounded_at_the_write() {
+        let mut g = crate::globals::Globals::empty(Path::new("web-hint-bound-test.toml"));
+        g.set("BrowserPluginPathHint", toml::Value::String(format!("C:\\{}", "a".repeat(300))));
+        assert_eq!(g.string("BrowserPluginPathHint"), "");
+        g.set("BrowserPluginPathHint", toml::Value::String("C:\\x\u{7}y".into()));
+        assert_eq!(g.string("BrowserPluginPathHint"), "");
+        g.set("BrowserPluginPathHint", toml::Value::String(r"C:\WV2\128".into()));
+        assert_eq!(g.string("BrowserPluginPathHint"), r"C:\WV2\128");
+        g.set("WebUserAgent", toml::Value::String(format!("A\r\nX-Evil: 1{}", "b".repeat(600))));
+        let ua = g.string("WebUserAgent");
+        assert!(!ua.contains(['\r', '\n']) && ua.chars().count() == 512, "{}", ua.len());
+        // A file loaded with a bad value is bounded too.
+        let dir = std::env::temp_dir().join(format!("tandem-hint-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("g.toml");
+        std::fs::write(&file, format!("BrowserPluginPathHint = \"C:\\\\{}\"\n", "a".repeat(400))).unwrap();
+        let loaded = crate::globals::Globals::load(&file).unwrap();
+        assert_eq!(loaded.string("BrowserPluginPathHint"), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folders_and_options_follow_windows() {
+        let base = Path::new(r"C:\Users\u\AppData\Local");
+        assert_eq!(data_folder(base, Store::Default), PathBuf::from(r"C:\Users\u\AppData\Local\Tandem\WebView2\Default"));
+        assert!(data_folder(base, Store::Browser).ends_with("Browser"));
+        assert!(data_folder(base, Store::BrowserDevNull).ends_with("DevNull"));
+        assert_eq!(EnvOptions::default().args, "");
+        assert!(EnvOptions::default().custom_schemes.is_empty());
+        assert!(!ViewSetup_in_private_default());
+    }
+
+    // `ViewSetup` is Windows code (`webhost_win`); its InPrivate default is checked there too.
+    #[allow(non_snake_case)]
+    fn ViewSetup_in_private_default() -> bool {
+        #[cfg(windows)]
+        {
+            crate::webhost_win::ViewSetup::default().in_private
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
+    /// P4: Dev Null folders are per run and swept when their process is gone.
+    #[test]
+    fn dev_null_folders_are_per_run() {
+        let base = Path::new(r"C:\L");
+        let f = dev_null_folder(base, 4242, 0xdead_beef);
+        assert_eq!(f, PathBuf::from(r"C:\L\Tandem\WebView2\Tmp\DevNull-4242-deadbeef"));
+        assert_eq!(dev_null_pid("DevNull-4242-deadbeef"), Some(4242));
+        for bad in ["DevNull-x-deadbeef", "DevNull-1-dead", "DevNull--deadbeef", "Other-1-deadbeef", "DevNull-1-deadbeeg", "DevNull-1"] {
+            assert_eq!(dev_null_pid(bad), None, "{bad}");
+        }
+        let names: Vec<String> = ["DevNull-1-00000001", "DevNull-2-00000002", "DevNull-3-00000003", "keep"].map(String::from).to_vec();
+        // 1 is alive, 2 is dead, 3 is this process (always removed at exit).
+        let gone = stale_dev_null(&names, 3, &|p| p == 1);
+        assert_eq!(gone, vec!["DevNull-2-00000002".to_string(), "DevNull-3-00000003".to_string()]);
+    }
+
+    #[test]
+    fn user_agent_follows_iterm2() {
+        assert_eq!(user_agent("", "Mozilla/5.0 (Windows NT 10.0) Edg/128"), "Mozilla/5.0 (Windows NT 10.0) Edg/128 Tandem");
+        assert_eq!(user_agent("X/1", "ignored"), "X/1");
+        let s = crate::schema::find_global("WebUserAgent").expect("WebUserAgent");
+        assert_eq!(s.default, Some(toml::Value::String("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15".into())));
+    }
+
+    #[test]
+    fn bridge_texts_follow_iterm2() {
+        assert_eq!(invoke_request(r#"{"invocation":"f()","callback":"cb"}"#), Some((Some("f()".into()), Some("cb".into()))));
+        assert_eq!(invoke_request(r#"{"callback":"cb"}"#), Some((None, Some("cb".into()))));
+        assert_eq!(invoke_request("x"), None);
+        assert_eq!(return_script("cb", "1"), "try { cb(1); } catch(err) { alert('Caught error while sending return value to javascript: ' + err.message + '\\n' + err.stack); }");
+        assert_eq!(throw_script("E \"q\""), r#"throw "E \"q\"""#);
+        assert!(INVOKE_JS.contains("window.chrome.webview.postMessage(messgeToPost)"));
+        assert!(!INVOKE_JS.contains("webkit") && !LOGGER_JS.contains("webkit"));
+        assert!(LOGGER_JS.contains("window.chrome.webview.postMessage"));
+        assert_eq!(physical_bounds(Rect { x: 10.4, y: 0.6, w: 100.0, h: -3.0 }), (10, 1, 110, 1));
+        assert_eq!(physical_bounds(Rect { x: f32::NAN, y: 2.0, w: 5.0, h: 5.0 }), (0, 2, 0, 7));
+        assert_eq!(response_headers("text/html", &[("Content-Security-Policy".into(), "sandbox".into())]), "Content-Type: text/html\r\nContent-Security-Policy: sandbox");
+        assert_eq!(
+            response_headers("text/html", &[("X-A".into(), "v\r\nSet-Cookie: x=1".into()), ("X-B".into(), "ok".into()), ("Bad Name".into(), "v".into()), ("N\n".into(), "v".into())]),
+            "Content-Type: text/html\r\nX-B: ok"
+        );
+        assert_eq!(response_headers("text/html\r\nX: 1", &[]), "Content-Type: application/octet-stream");
+    }
+
+    /// B5: the invoke message is a closed set.
+    #[test]
+    fn invoke_request_is_a_closed_set() {
+        for bad in [
+            r#"{"invocation":"f()","callback":"cb","x":1}"#,
+            r#"{"invocation":5}"#,
+            r#"{"callback":"a b"}"#,
+            r#"{"callback":"1a"}"#,
+            r#"{"callback":"a();alert(1)"}"#,
+            r#"{"callback":""}"#,
+            r#"["invocation"]"#,
+            r#"{"invocation":null}"#,
+            r#"{"error":"x"}"#,
+        ] {
+            assert_eq!(invoke_request(bad), None, "{bad}");
+        }
+        let long_cb = format!(r#"{{"callback":"{}"}}"#, "a".repeat(129));
+        assert_eq!(invoke_request(&long_cb), None);
+        let ok_cb = format!(r#"{{"callback":"{}"}}"#, "a".repeat(128));
+        assert!(invoke_request(&ok_cb).is_some());
+        let big_inv = format!(r#"{{"invocation":"{}"}}"#, "a".repeat(8 * 1024 + 1));
+        assert_eq!(invoke_request(&big_inv), None);
+        let huge = format!(r#"{{"invocation":"{}"}}"#, "a".repeat(17 * 1024));
+        assert_eq!(invoke_request(&huge), None);
+        assert_eq!(invoke_request(r#"{"callback":"window.cb_1.$x"}"#), Some((None, Some("window.cb_1.$x".into()))));
+        // The logger accepts only its two shapes.
+        assert_eq!(logger_message(r#"{"console":["a","b"]}"#), Some(LoggerMessage::Console(vec!["a".into(), "b".into()])));
+        assert_eq!(logger_message(r#"{"error":"boom"}"#), Some(LoggerMessage::Error("boom".into())));
+        for bad in [r#"{"console":[1]}"#, r#"{"console":["a"],"error":"b"}"#, r#"{"other":"x"}"#, r#"{"error":5}"#, "[]", "nope"] {
+            assert_eq!(logger_message(bad), None, "{bad}");
+        }
+        assert_eq!(logger_message(&format!(r#"{{"error":"{}"}}"#, "e".repeat(2049))), None);
+    }
+
+    #[test]
+    fn navigation_guard_follows_the_rules() {
+        let n = |s: Option<&str>, t: &str, user, redirect, tandem| navigation_allowed(s, t, user, redirect, tandem, true);
+        assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", false, false, false));
+        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, false));
+        assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/dev/zero", false, false, false));
+        assert!(!n(Some("https://evil.test/"), "file:///C:/Windows/", false, false, false));
+        assert!(n(Some("iterm2-about:welcome"), "iterm2-file:///C:/", false, false, false));
+        assert!(!n(Some("iterm2-file:///C:/T/a.html"), "https://evil.test/?d=x", false, false, false));
+        assert!(!n(Some("iterm2-file:///C:/T/a.html"), "iterm2-file:///C:/T/b.txt", false, false, false));
+        assert!(n(Some("iterm2-file:///C:/T/"), "iterm2-file:///C:/T/b.txt", true, false, false));
+        assert!(!n(Some("iterm2-ssh://box/a.html"), "https://evil.test/", false, false, false));
+        assert!(!n(Some("https://a/"), "iterm2-file:///C:/x", true, true, false));
+        assert!(!n(Some("https://a/"), "file:///C:/x", false, true, true));
+        assert!(n(None, "iterm2-ssh://box/a.png", false, false, true));
+        assert!(n(Some("https://a/"), "https://b/", false, false, false));
+        assert!(!n(Some("https://evil.test/"), "FILE:///C:/x", false, false, false));
+        // B4: a file: target that is not file_ok is refused for every source and initiator.
+        for (user, redirect, tandem, source) in [(false, false, false, Some("iterm2-about:welcome")), (true, false, false, Some("https://a/")), (false, false, true, None), (true, false, true, Some("iterm2-about:history"))] {
+            assert!(!navigation_allowed(source, "file://srv/share/a", user, redirect, tandem, false), "{user} {tandem}");
+            assert!(!navigation_allowed(source, "FILE:///Z:/a", user, redirect, tandem, false));
+        }
+        assert!(navigation_allowed(Some("iterm2-about:welcome"), "FILE:///C:/ok", false, false, false, true));
+        assert!(navigation_allowed(None, "file:///C:/ok", true, false, false, true));
+        assert!(navigation_allowed(None, "file:///C:/ok", false, false, true, true));
+        // file_ok does not matter for another scheme.
+        assert!(navigation_allowed(Some("https://a/"), "https://b/", false, false, false, false));
+    }
+
+    #[test]
+    fn file_urls_are_judged() {
+        let local_c = |p: &Path| p.to_string_lossy().starts_with("C:");
+        assert!(!file_url_local("file://srv/share/a", &yes));
+        assert!(!file_url_local("file:////srv/s/a", &yes));
+        assert!(!file_url_local("file:///Z:/a", &local_c), "a remote drive: the judge says no");
+        assert!(file_url_local("FILE:///C:/ok", &local_c));
+        assert!(file_url_local("file://localhost/C:/ok", &local_c));
+        assert!(!file_url_local("file:///C:/ok:stream", &local_c));
+        assert!(!file_url_local("file:///C:/ok%00x", &local_c));
+        assert!(!file_url_local("file://./C:/x", &yes));
+        assert!(!file_url_local("https://a/", &yes));
+        assert!(!file_url_local("file:///C:/..%5C..%5C", &|_| false));
+    }
+
+    #[test]
+    fn message_caps_follow_the_rules() {
+        assert_eq!(clean_title("a\u{7}b\u{202E}c\nd"), "a bc d");
+        assert_eq!(clean_title(&"x".repeat(2000)).chars().count(), MAX_TITLE);
+        let (u, cut) = cap_url("https://a/");
+        assert_eq!((u.as_str(), cut), ("https://a/", false));
+        let long = format!("https://a/{}", "\u{e9}".repeat(9000));
+        let (u, cut) = cap_url(&long);
+        assert!(cut && u.len() <= MAX_URL && long.starts_with(&u));
+        assert!(!favicon_ok(&[]));
+        assert!(!favicon_ok(&vec![0u8; MAX_FAVICON + 1]));
+        assert!(!favicon_ok(b"not an image"));
+        // A 1 by 1 PNG.
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==").unwrap();
+        assert!(favicon_ok(&png));
+        // A header that no longer says 1 by 1 is refused (too large, or not decodable).
+        let mut big = png.clone();
+        big[16..20].copy_from_slice(&4000u32.to_be_bytes());
+        big[20..24].copy_from_slice(&4000u32.to_be_bytes());
+        assert!(!favicon_ok(&big));
+        let mut l = NewWindowLimiter::default();
+        let t = Instant::now();
+        assert!(!l.allow(t, false, 0), "a page's own window.open is not a person's click");
+        for _ in 0..NEW_WINDOWS_PER_SECOND {
+            assert!(l.allow(t, true, 0));
+        }
+        assert!(!l.allow(t, true, 0), "at most 4 a second");
+        assert!(l.allow(t + Duration::from_millis(1100), true, 0), "the next second");
+        assert!(!l.allow(t + Duration::from_secs(5), true, MAX_PENDING_NEW_WINDOWS), "never queued past 8");
+    }
+
+    /// B5: a view's queue is bounded; events that must not be lost are always admitted.
+    #[test]
+    fn event_queue_is_bounded() {
+        let gate = ViewGate::new();
+        let (tx, rx) = std::sync::mpsc::channel::<Posted>();
+        let post = |e: Event| {
+            if let Ok(c) = gate.admit(&e) {
+                let _ = tx.send(Posted::event(e, Some(c)));
+            }
+        };
+        for i in 0..10_000 {
+            post(Event::Message { view: 1, json: format!("{{\"n\":{i}}}"), source: "https://a/".into() });
+        }
+        assert!(gate.queued() <= MAX_QUEUED_EVENTS, "{}", gate.queued());
+        assert!(gate.queued() <= MAX_QUEUED_MESSAGES, "messages are capped at 50: {}", gate.queued());
+        assert!(gate.take_dropped() >= 9_950);
+        // A lifecycle event is admitted even when the queue is full.
+        post(Event::Created(1));
+        post(Event::Navigated { view: 1, ok: true, status: 200, url: "https://a/".into(), nav: 1 });
+        let mut kinds = 0;
+        while let Ok(p) = rx.try_recv() {
+            if matches!(p.event, Some(Event::Created(1)) | Some(Event::Navigated { .. })) {
+                kinds += 1;
+            }
+        }
+        assert_eq!(kinds, 2);
+        assert_eq!(gate.queued(), 0, "draining gives the room back");
+        // Bytes: 1 MiB of titles.
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..2000 {
+            if let Ok(c) = gate.admit(&Event::Title(1, "t".repeat(MAX_TITLE))) {
+                held.push(c);
+            }
+        }
+        assert!(held.len() <= MAX_QUEUED_EVENTS);
+        let bytes: usize = held.len() * MAX_TITLE;
+        assert!(bytes <= MAX_QUEUED_BYTES);
+        // A message over 64 KiB (plus its source) is never queued.
+        let gate = ViewGate::new();
+        assert!(gate.admit(&Event::Message { view: 1, json: "x".repeat(MAX_MESSAGE + MAX_URL + 1), source: String::new() }).is_err());
+    }
+
+    #[test]
+    fn small_rules_follow_the_ruling() {
+        assert!(same_navigation_uri("https://a", "https://a/"));
+        assert!(same_navigation_uri("https://a/x", "https://a/x"));
+        assert!(!same_navigation_uri("https://a/x", "https://a/y"));
+        assert!(!same_navigation_uri("https://a", "https://b/"));
+        assert!(new_window_scheme_ok("HTTPS://a/") && new_window_scheme_ok("iterm2-about:welcome") && new_window_scheme_ok("http://a"));
+        for bad in ["file:///C:/x", "javascript:alert(1)", "data:text/html,x", "ms-msdt:id", "about:blank", ""] {
+            assert!(!new_window_scheme_ok(bad), "{bad}");
+        }
+        let list = vec!["http".to_string(), "HTTPS".to_string()];
+        assert!(scheme_ok("https://a/", &list) && scheme_ok("HTTP://a/", &list));
+        assert!(!scheme_ok("file:///C:/", &list) && !scheme_ok("ms-msdt:id", &list) && !scheme_ok("noscheme", &list));
+        assert!(!loader_ok(b"not the loader"));
+        assert_eq!(LOADER_SHA256_X64.len(), 64);
+        assert_eq!(LOADER_SHA256_ARM64.len(), 64);
+    }
+
+    /// Every `Event` carries its view, and the droppable set matches the rule.
+    #[test]
+    fn events_know_their_view() {
+        assert_eq!(Event::Created(7).view(), 7);
+        assert_eq!(Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.view(), 9);
+        assert!(!Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.droppable());
+        assert!(!Event::ScriptDone { view: 1, token: 1, json: Ok("2".into()) }.droppable());
+        assert!(Event::Message { view: 1, json: String::new(), source: String::new() }.droppable());
+    }
+}

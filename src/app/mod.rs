@@ -171,6 +171,7 @@ mod tips_app;
 mod update_app;
 mod dynamic_profiles_app;
 mod access_app;
+mod webhost_app;
 mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
@@ -1600,6 +1601,10 @@ pub struct App {
     relaunch_due: bool,
     restored_scripts: Vec<PathBuf>,
     restored_dir: Option<PathBuf>,
+    /// The WebView2 host (13x Task 1): the environments and the runtime check, and what the views
+    /// post. App-wide, never per window.
+    web_envs: webhost_app::Envs,
+    web_events: std::sync::mpsc::Receiver<crate::webhost::Posted>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -1635,6 +1640,9 @@ pub(crate) fn teardown_process() {
     // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
     #[cfg(windows)]
     crate::uia_win::disconnect_all();
+    // This run's Dev Null browser folder goes with it (pure file removal, no COM).
+    #[cfg(windows)]
+    crate::webhost_win::cleanup_files();
 }
 
 pub fn run() {
@@ -1908,6 +1916,7 @@ pub fn run() {
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
+    let (web_envs, web_events) = webhost_app::Envs::new();
     let mut app = App {
         host,
         hotkey: None,
@@ -2516,6 +2525,8 @@ pub fn run() {
         relaunch_due: false,
         restored_scripts,
         restored_dir: None,
+        web_envs,
+        web_events,
     };
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
@@ -4277,6 +4288,8 @@ impl App {
         self.locale_update();
         self.register_hotkeys();
         self.scripts_folder_changed();
+        // WebUserAgent or BrowserPluginPathHint may have changed.
+        self.web_settings_changed();
         // The Theme may have changed: every window follows the forced mode (or Windows' again).
         self.apply_theme_everywhere();
         // The border settings, or the Theme, may have changed.
@@ -6798,6 +6811,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.tips_tick(event_loop);
         let dynamic_due = self.dynamic_profiles_tick();
         self.access_tick();
+        // What WebView2 views posted (before the wake times below are worked out).
+        self.web_tick(event_loop);
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);

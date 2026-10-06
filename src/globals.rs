@@ -103,6 +103,12 @@ impl Globals {
             Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
             None => self.custom_presets = Default::default(),
         }
+        // The WebView2 host's two text settings are bounded at the write too (13x B2).
+        for key in crate::webhost::BOUNDED_KEYS {
+            if let Some(v) = self.values.remove(key) {
+                self.set(key, v);
+            }
+        }
     }
 
     /// The custom color presets, sanitized and bounded at the write (`color_presets::custom`).
@@ -148,6 +154,8 @@ impl Globals {
         } else {
             value
         };
+        // The fixed-runtime hint and the user agent are bounded at the one write point (13x B2).
+        let value = crate::webhost::bound_global(key, value);
         // A changed cookie setting is no longer the one the Claude Code setup turned on, so its
         // marker goes; the setup writes the marker after the setting (Task 8 fix round 2).
         if key == crate::api_profile::SET_COOKIE && value.as_bool() != Some(self.bool(key)) {

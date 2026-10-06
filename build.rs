@@ -24,6 +24,18 @@ fn main() {
             println!("cargo:warning=vendor/conpty/{file} is missing. Run scripts/fetch-conpty.ps1.");
         }
     }
+    // The WebView2 loader (milestone 13x): copied beside the exe like ConPTY, never imported (the
+    // exe loads it by full path, so a missing file only makes the browser unavailable). The pinned
+    // file is checked by the exe at run time and by scripts/fetch-webview2-loader.ps1.
+    println!("cargo:rerun-if-changed=vendor/webview2");
+    {
+        let src = std::path::Path::new("vendor").join("webview2").join("WebView2Loader.dll");
+        if src.exists() {
+            std::fs::copy(&src, profile_dir.join("WebView2Loader.dll")).unwrap();
+        } else {
+            println!("cargo:warning=vendor/webview2/WebView2Loader.dll is missing. Run scripts/fetch-webview2-loader.ps1 (after cargo fetch).");
+        }
+    }
     write_licenses(&out);
 }
 

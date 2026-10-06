@@ -58,6 +58,9 @@ pub mod tab_position;
 pub mod status_tool;
 pub mod seltools;
 pub mod dll;
+pub mod webhost;
+#[cfg(windows)]
+pub mod webhost_win;
 pub mod seltext;
 pub mod wordsel;
 pub mod netpath;

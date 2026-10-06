@@ -898,7 +898,7 @@ pub(crate) fn runnable(path: &str) -> bool {
 }
 
 /// A local file: link as a Windows path. None for a link to another machine.
-fn file_url_path(url: &str) -> Option<String> {
+pub(crate) fn file_url_path(url: &str) -> Option<String> {
     let rest = &url[url.find(':')? + 1..];
     let rest = rest.strip_prefix("//").map_or(Some(rest), |r| {
         let (host, path) = r.split_at(r.find('/').unwrap_or(r.len()));

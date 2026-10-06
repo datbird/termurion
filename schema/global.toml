@@ -5342,3 +5342,21 @@ label = "Path to telnet for opening telnet: URLs."
 type = "string"
 default = "telnet"
 help = "Path to telnet for opening telnet: URLs.\nYou may want to set this to the full path of another telnet program."
+
+[[setting]]
+key = "WebUserAgent"
+tab = "Advanced"
+section = "General"
+label = "User agent for web views. Leave empty to use system default."
+type = "string"
+default = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+help = "User agent for web views. Leave empty to use system default."
+
+[[setting]]
+key = "BrowserPluginPathHint"
+tab = "Advanced"
+section = "Web Browser"
+label = "Location of the WebView2 Runtime folder if it cannot be auto-detected (a fixed-version runtime)."
+type = "string"
+default = ""
+help = "Location of the WebView2 Runtime folder if it cannot be auto-detected (a fixed-version runtime)."

@@ -67,9 +67,65 @@ pub fn load_bundled(path: &std::path::Path) -> Result<HMODULE, String> {
     Ok(module)
 }
 
+/// The two entry points of the shipped `WebView2Loader.dll` (milestone 13x, preflight B1). Tandem
+/// imports nothing from the loader: the exe never lists it, so a missing or planted file cannot
+/// stop the process or run before `harden_process`. The DLL is loaded once, by full path, with
+/// `load_bundled`, and these two addresses are resolved with `GetProcAddress`; webview2-com-sys's
+/// own wrappers (which reference the loader at link time) are never called.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+pub struct Loader {
+    /// `CreateCoreWebView2EnvironmentWithOptions`.
+    pub create_environment: usize,
+    /// `GetAvailableCoreWebView2BrowserVersionString`.
+    pub browser_version: usize,
+}
+
+/// Loads `<dir>\WebView2Loader.dll` and resolves its two entry points. Err (the load error) when
+/// the file is missing or does not load: the browser is then unavailable, nothing else changes.
+#[cfg(windows)]
+pub fn webview2_loader(path: &std::path::Path) -> Result<Loader, String> {
+    use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
+    let module = load_bundled(path)?;
+    let proc = |name: &std::ffi::CStr| {
+        // SAFETY: `module` is a loaded module and `name` is NUL-terminated.
+        unsafe { GetProcAddress(module, name.as_ptr() as *const u8) }.map(|p| p as usize).ok_or_else(|| format!("{} has no {}", path.display(), name.to_string_lossy()))
+    };
+    Ok(Loader { create_environment: proc(c"CreateCoreWebView2EnvironmentWithOptions")?, browser_version: proc(c"GetAvailableCoreWebView2BrowserVersionString")? })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    /// Preflight B1: webhost_win resolves the loader through `dll::webview2_loader` only: no call of
+    /// webview2-com-sys's loader wrappers, no `link!` import, no bare load.
+    #[test]
+    fn webhost_win_never_loads_the_loader_bare() {
+        let text = include_str!("webhost_win.rs");
+        let code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let code = code.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(code.contains("dll::webview2_loader"), "the loader is loaded through the one DLL module");
+        for banned in ["CreateCoreWebView2EnvironmentWithOptions", "GetAvailableCoreWebView2BrowserVersionString", "CompareBrowserVersions", "CreateCoreWebView2Environment(", "link!("] {
+            assert!(!code.contains(banned), "webhost_win references {banned} (a link-time import of the loader)");
+        }
+        // And the build copies the loader beside the exe, as it does ConPTY.
+        let build = include_str!("../build.rs");
+        assert!(build.contains("WebView2Loader.dll") && build.contains("rerun-if-changed=vendor/webview2"));
+    }
+
+    /// Preflight S4: winit owns COM on the UI thread; the host never initializes or uninitializes
+    /// it (a second model gives RPC_E_CHANGED_MODE, an unbalanced uninit breaks WebView2).
+    #[test]
+    fn webhost_win_never_initializes_com() {
+        for (name, text) in [("webhost_win.rs", include_str!("webhost_win.rs"))] {
+            let code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+            let code = code.split("#[cfg(test)]").next().unwrap_or("");
+            for banned in ["CoInitializeEx", "CoInitialize(", "CoUninitialize", "OleInitialize", "OleUninitialize"] {
+                assert!(!code.contains(banned), "{name} calls {banned}");
+            }
+        }
+    }
 
     fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap().flatten() {

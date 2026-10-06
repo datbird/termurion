@@ -2270,6 +2270,24 @@ mod tests {
         assert!(schema::find("Dynamic Profile Filename").is_none());
     }
 
+    /// m13x Task 1: the web host's two Advanced rows (`AS:496`, `:846`).
+    #[test]
+    fn web_host_rows_follow_iterm2() {
+        let ua = schema::find_global("WebUserAgent").expect("WebUserAgent");
+        assert_eq!((ua.tab.as_str(), ua.section.as_str(), ua.kind), ("Advanced", "General", Kind::String));
+        assert_eq!(ua.default, Some(Value::String("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15".into())));
+        assert_eq!(ua.label, "User agent for web views. Leave empty to use system default.");
+        assert_eq!(ua.help, "User agent for web views. Leave empty to use system default.");
+        let hint = schema::find_global("BrowserPluginPathHint").expect("BrowserPluginPathHint");
+        assert_eq!((hint.tab.as_str(), hint.section.as_str(), hint.kind), ("Advanced", "Web Browser", Kind::String));
+        assert_eq!(hint.default, Some(Value::String(String::new())));
+        let text = "Location of the WebView2 Runtime folder if it cannot be auto-detected (a fixed-version runtime).";
+        assert_eq!((hint.label.as_str(), hint.help.as_str()), (text, text));
+        for key in ["WebUserAgent", "BrowserPluginPathHint"] {
+            assert!(page_rows("Advanced").iter().any(|r| r.key == key), "{key} is shown");
+        }
+    }
+
     /// m13i Task 1: the pane navigation rows (`AS:311`, `:510`, `:667`, `:715`, `:716`, `:881`).
     #[test]
     fn navigation_rows_follow_iterm2() {
