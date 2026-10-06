@@ -59,11 +59,8 @@ impl Store {
         let mut profiles: Vec<Profile> = file
             .profile
             .into_iter()
-            // profiles.toml never holds a dynamic profile: the loader's marks are dropped.
-            .map(|mut values| {
-                values.retain(|k, _| !crate::dynamic_profiles::is_internal(k));
-                Profile::from_values(values)
-            })
+            // profiles.toml never holds a dynamic profile: `from_values` drops the loader's marks.
+            .map(Profile::from_values)
             .collect();
         ensure_unique_guids(&mut profiles);
         if profiles.is_empty() {

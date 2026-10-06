@@ -34,6 +34,14 @@ pub const INTERNAL_KEYS: [&str; 5] = [DYNAMIC_KEY, REWRITABLE_KEY, PARENT_NAME_K
 pub fn is_internal(key: &str) -> bool {
     INTERNAL_KEYS.contains(&key)
 }
+
+/// The one strip: removes the loader's keys from values that came from outside. `Profile::from_values`
+/// calls it, so the profiles file, imports, remote settings, Import All and duplicates all pass here
+/// (`every_profile_ingress_strips_the_marks`). The loader sets its marks afterwards with
+/// `Profile::set`; the API and OSC refuse the keys by name in `prompted::valid`.
+pub fn strip_internal(values: &mut BTreeMap<String, Value>) {
+    values.retain(|k, _| !is_internal(k));
+}
 const SEPARATE_COLORS_KEY: &str = "Use Separate Colors for Light and Dark Mode";
 const DEFAULT_BOOKMARK_KEY: &str = "Default Bookmark";
 
@@ -1442,5 +1450,42 @@ mod tests {
         assert!(bounded_read(&file, 1).unwrap_err().contains("too large"));
         assert!(bounded_read(&root, 1024).is_err(), "a folder is no file");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 5 fix r2 item 4 (class): the loader's marks are stripped by ONE function, called by the
+    /// one constructor every outside profile goes through (`Profile::from_values`: the profiles file,
+    /// imports, remote settings, Import All, duplicates), and nothing else builds a `Profile` value
+    /// by hand or names the internal keys outside the loader, the API's key refusal and that function.
+    #[test]
+    fn every_profile_ingress_strips_the_marks() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let profile = std::fs::read_to_string(src.join("profile.rs")).unwrap();
+        let from_values = profile.split("pub fn from_values(").nth(1).expect("from_values").split("\n    }\n").next().unwrap();
+        assert!(from_values.contains("strip_internal("), "Profile::from_values must strip the loader's marks");
+        let mut stack = vec![src.clone()];
+        let mut wrong = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.strip_prefix(&src).unwrap().display().to_string().replace('\\', "/");
+                if !name.ends_with(".rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                let body = text.split("#[cfg(test)]").next().unwrap();
+                if name != "profile.rs" && (body.contains("Profile { values") || body.contains("Profile{values")) {
+                    wrong.push(format!("{name} builds a Profile by hand: use Profile::from_values"));
+                }
+                let names_keys = body.contains("is_internal(") || body.contains("INTERNAL_KEYS");
+                if names_keys && !["dynamic_profiles.rs", "profile.rs", "prompted.rs"].contains(&name.as_str()) {
+                    wrong.push(format!("{name} strips the loader's keys itself: call dynamic_profiles::strip_internal (through Profile::from_values)"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 }

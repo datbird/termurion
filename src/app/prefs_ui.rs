@@ -777,6 +777,27 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Task 5 fix r2 item 4: remote settings at launch and Import All never bring the Dynamic
+    /// Profiles loader's marks in (they would keep a profile out of profiles.toml).
+    #[test]
+    fn a_loaded_snapshot_loses_the_dynamic_marks() {
+        let dir = std::env::temp_dir().join(format!("tandem-prefs-dyn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut g, mut store) = local(&dir, "x");
+        let mut values = vec![("Guid", Value::String("g1".into())), ("Name", Value::String("R".into()))];
+        for key in crate::dynamic_profiles::INTERNAL_KEYS {
+            values.push((key, if key == "Is Dynamic Profile" || key == "Rewritable" { Value::Boolean(true) } else { Value::String("x".into()) }));
+        }
+        let snap = Snapshot { settings: map(&[]), default: "g1".into(), profiles: vec![map(&values)] };
+        apply_snapshot(&snap, &mut g, &mut store);
+        for key in crate::dynamic_profiles::INTERNAL_KEYS {
+            assert!(store.profiles[0].get(key).is_none(), "{key} came in");
+        }
+        assert!(store.dynamic_guids().is_empty());
+        assert_eq!(store.file_profiles().len(), 1, "the profile is saved like any other");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A loaded snapshot's custom color presets are bounded and sanitized as Settings writes are.
     #[test]
     fn a_loaded_snapshot_bounds_custom_color_presets() {

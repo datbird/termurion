@@ -142,7 +142,7 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
 /// An imported profile: a start folder naming a network path is emptied (it did not come from
 /// the person typing it in Settings; `start_dir::scrub_value`).
 fn scrubbed(t: toml::Table) -> Profile {
-    let mut values: std::collections::BTreeMap<String, Value> = t.into_iter().filter(|(k, _)| !crate::dynamic_profiles::is_internal(k)).collect();
+    let mut values: std::collections::BTreeMap<String, Value> = t.into_iter().collect();
     crate::start_dir::scrub_map(&mut values);
     Profile::from_values(values)
 }
