@@ -298,6 +298,17 @@ mod tests {
     /// Every non-crash exit removes the notification area icon (task 9 review 2), and the
     /// icon window hears the taskbar's broadcast (review 1), and a second start is the reopen.
     #[test]
+    fn every_exit_path_unhooks_the_keyboard() {
+        let m = include_str!("mod.rs");
+        let after = m.split("event_loop.run_app(&mut app)").nth(1).expect("run_app");
+        assert!(after[..400].contains("winkeys::uninstall"), "unhooked after the event loop ends");
+        let erase = include_str!("settings_export_ui.rs");
+        let tail = erase.split("super::scripts_app::remove_path(path);").nth(1).expect("erase exit");
+        let before_exit = tail.split("std::process::exit(0)").next().unwrap();
+        assert!(before_exit.contains("winkeys::uninstall"), "unhooked before Erase All's exit");
+    }
+
+    #[test]
     fn the_icon_is_removed_on_exit_and_survives_explorer() {
         let m = include_str!("mod.rs");
         let after = m.split("event_loop.run_app(&mut app)").nth(1).expect("run_app");

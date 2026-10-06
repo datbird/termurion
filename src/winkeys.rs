@@ -417,7 +417,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
                     down,
-                    win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
+                    // Remapping off and a Win side remapped away: that key is read in the app as its
+                    // target, so it makes no Win chord here (`APP:252-285`).
+                    win_held: crate::remap::win_chord_held(&h.tags.read().map_or(Tags::identity(), |t| *t), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
                     focused: is_tandem(fg) || recording || pwm || chat || cockpit,
                     shift: held(0x10),
                     alt: held(0x12),
@@ -697,7 +699,8 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
         unsafe { UnregisterHotKey(std::ptr::null_mut(), rid) };
     }
     if paused {
-        if let Some(g) = GLOBAL.lock().unwrap().as_mut() {
+        // A poisoned lock (the app panicked holding it) must not stop the unhook's cleanup.
+        if let Some(g) = GLOBAL.lock().ok().as_mut().and_then(|guard| guard.as_mut()) {
             g.paused = true;
         }
         return Vec::new();
