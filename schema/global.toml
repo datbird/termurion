@@ -5456,3 +5456,50 @@ label = "Minimum time between beeping or flashing screen on bell, in seconds."
 type = "float"
 default = 0.1
 help = "Minimum time between beeping or flashing screen on bell, in seconds.\nIf the time interval between bells is less than this amount of time, it will be ignored."
+
+# Taskbar button and mark sounds (13w)
+
+[[setting]]
+key = "BounceOnInactiveBell"
+tab = "Advanced"
+section = "Terminal"
+label = "Flash the taskbar button when the bell rings while another app is active?"
+type = "bool"
+default = false
+help = "Flash the taskbar button when the bell rings while another app is active?"
+
+[[setting]]
+key = "IndicateBellsInDockBadgeLabel"
+tab = "Advanced"
+section = "General"
+label = "Indicate the number of bells rung while the app is inactive in the taskbar button\u2019s badge"
+type = "bool"
+default = true
+help = "Indicate the number of bells rung while the app is inactive in the taskbar button\u2019s badge"
+
+[[setting]]
+key = "SuccessSound"
+tab = "Advanced"
+section = "Session"
+label = "When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command."
+type = "string"
+default = ""
+help = "When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."
+
+[[setting]]
+key = "ErrorSound"
+tab = "Advanced"
+section = "Session"
+label = "When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command."
+type = "string"
+default = ""
+help = "When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."
+
+[[setting]]
+key = "ClearBellIconAggressively"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Clear bell icon when a session becomes active."
+type = "bool"
+default = true
+help = "Clear bell icon when a session becomes active.\nWhen off, you must type in the session to clear the bell icon."

@@ -69,6 +69,11 @@ impl App {
                 }
                 continue;
             }
+            // Typed input to a session clears its bell icon, whatever ClearBellIconAggressively
+            // says (`PTYSession.m:4180-4189`); a program's text does not.
+            if !program && self.bell_icons.remove(&t) {
+                self.redraw();
+            }
             if let Some(p) = self.panes.get_mut(&t) {
                 p.input(bytes);
             }

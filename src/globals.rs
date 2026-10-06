@@ -63,6 +63,9 @@ const BOUNDS: &[(&str, Bound)] = &[
     ("BellRateLimit", Bound::Number { min: 0.05, max: 60.0 }),
     ("IndicatorFlashInitialAlpha", Bound::Number { min: 0.0, max: 1.0 }),
     ("FakeFullyQualifiedDomainName", Bound::Text { max: 255, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') }),
+    // B2/B4: a sound name is short text with no control character (`bell_badge::resolve` judges it again).
+    ("SuccessSound", Bound::Text { max: 260, ok: |c| !c.is_control() }),
+    ("ErrorSound", Bound::Text { max: 260, ok: |c| !c.is_control() }),
     ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
 ];
 
@@ -326,6 +329,19 @@ mod tests {
                 g.set(key, bad.clone());
                 assert_eq!(g.number(key), if key == "BellRateLimit" { Some(0.1) } else { Some(0.5) }, "{key} refuses {bad:?}: back to the default");
             }
+        }
+    }
+
+    #[test]
+    fn sound_names_are_bounded_at_the_write_point() {
+        let mut g = Globals::empty(&scratch("bounds-sound"));
+        for key in ["SuccessSound", "ErrorSound"] {
+            g.set(key, Value::String("Windows Ding".into()));
+            assert_eq!(g.string(key), "Windows Ding");
+            g.set(key, Value::String("a\u{7}b".into()));
+            assert_eq!(g.string(key), "", "{key}: a control character is refused");
+            g.set(key, Value::String("x".repeat(261)));
+            assert_eq!(g.string(key), "", "{key}: over-long is refused");
         }
     }
 

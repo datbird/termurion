@@ -4500,4 +4500,25 @@ mod tests {
             assert!(!row.optional_bool(), "{key}");
         }
     }
+
+    /// 13w Task 6: the taskbar and mark-sound rows, iTerm2's text with Tandem's words.
+    #[test]
+    fn taskbar_rows_follow_iterm2() {
+        let rows = [
+            ("BounceOnInactiveBell", "Terminal", Kind::Bool, Value::Boolean(false), "Flash the taskbar button when the bell rings while another app is active?"),
+            ("IndicateBellsInDockBadgeLabel", "General", Kind::Bool, Value::Boolean(true), "Indicate the number of bells rung while the app is inactive in the taskbar button\u{2019}s badge"),
+            ("SuccessSound", "Session", Kind::String, Value::String(String::new()), "When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."),
+            ("ErrorSound", "Session", Kind::String, Value::String(String::new()), "When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."),
+            ("ClearBellIconAggressively", "Experimental Features", Kind::Bool, Value::Boolean(true), "Clear bell icon when a session becomes active.\nWhen off, you must type in the session to clear the bell icon."),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
 }

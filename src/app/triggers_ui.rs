@@ -149,7 +149,7 @@ impl App {
     }
 
     /// Bounce Dock Icon: the taskbar button flashes until Tandem is in front, or once.
-    fn flash_taskbar(&mut self, until_active: bool) {
+    pub(super) fn flash_taskbar(&mut self, until_active: bool) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY};
         if until_active { self.flash_taskbar_raw(FLASHW_TRAY | FLASHW_TIMERNOFG, 0) } else { self.flash_taskbar_raw(FLASHW_ALL, 1) }
     }

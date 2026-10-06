@@ -149,6 +149,7 @@ pub mod activity;
 pub mod alerts;
 pub mod badge;
 pub mod bell;
+pub mod bell_badge;
 pub mod trigger_eval;
 pub mod trigger_events;
 pub mod proctree;
@@ -344,6 +345,8 @@ pub mod launch;
 pub mod jumplist;
 #[cfg(windows)]
 pub mod jumplist_win;
+#[cfg(windows)]
+pub mod taskbar_win;
 pub mod open_file;
 pub mod reg;
 pub mod default_term;

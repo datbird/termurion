@@ -6,6 +6,10 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::bell::{Answer, BellPrefs};
 
+/// The most bells of one burst counted on the badge (the label caps at "99+" long before).
+const MAX_BURST: u32 = 100_000;
+/// The overlay is rebuilt at most this often.
+const BADGE_EVERY: Duration = Duration::from_millis(250);
 const OFFER_BAR: &str = "annoying-bell";
 const SUPPRESS_OFFER: &str = "NoSyncSuppressAnnyoingBellOffer";
 const SILENCE_AUTOMATICALLY: &str = "NoSyncSilenceAnnoyingBellAutomatically";
@@ -80,6 +84,20 @@ impl App {
             }
             self.redraw();
         }
+        // The taskbar: every bell of the burst that was not ignored counts while Tandem is in the
+        // background (quelled ones too, `PTYSession.m:19083-19116`), and a shown effect or a
+        // counted bell flashes the button when `BounceOnInactiveBell` is on.
+        let mut notified = ring.effects.is_some();
+        if ring.badge {
+            let enabled = self.globals.bool("IndicateBellsInDockBadgeLabel");
+            for _ in 0..count.clamp(1, MAX_BURST) {
+                notified |= self.bell_badge.bell(enabled, self.app_active);
+            }
+        }
+        if crate::bell_badge::bounce(notified, self.app_active, self.globals.bool("BounceOnInactiveBell")) {
+            // Until Tandem is in front (`NSCriticalRequest`); the one limiter holds the rate.
+            self.flash_taskbar(true);
+        }
         if ring.offer {
             let text = if prefs.silence { "The bell is ringing a lot. Want to suppress all output until things calm down?" } else { "The bell is ringing a lot. Silence it?" };
             if !self.ask(pane, OFFER_BAR, text, &["_Silence Bell Temporarily", "Suppress _All Output", "Don't Offer Again", "Silence Automatically"], false) {
@@ -120,12 +138,80 @@ impl App {
         true
     }
 
-    /// A pane the user looks at loses its bell icon.
+    /// A pane the user looks at loses its bell icon; with `ClearBellIconAggressively` off only a
+    /// key typed in it does (`PT:5052-5054`, `PTYSession.m:4180-4189`).
     pub(super) fn tick_bell(&mut self) {
+        if crate::bell_badge::clear_on(self.globals.bool("ClearBellIconAggressively")) != crate::bell_badge::ClearOn::Activation {
+            return;
+        }
         if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|_| self.focused) {
             if self.bell_icons.remove(&id) {
                 self.redraw();
             }
         }
+    }
+
+    /// The count goes onto every terminal window's taskbar button when it changed (one badge per
+    /// app in iTerm2; Windows has a button per window). Queued, never waited for.
+    pub(super) fn tick_badge(&mut self) {
+        let label = self.bell_badge.label();
+        let now = Instant::now();
+        if self.badge_pushed.as_ref().is_some_and(|(l, t)| *l == label || now.saturating_duration_since(*t) < BADGE_EVERY) {
+            return;
+        }
+        let hwnds: Vec<isize> = self.hwnd().into_iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().and_then(|g| super::menu::hwnd_of(&g.window)))).collect();
+        #[cfg(windows)]
+        for h in hwnds {
+            // A queue that cannot take the job leaves the button as it was; the next change retries.
+            let _ = crate::taskbar_win::set_badge(h, &label);
+        }
+        #[cfg(not(windows))]
+        let _ = hwnds;
+        self.badge_pushed = Some((label, now));
+    }
+
+    /// A window's taskbar button hears `TaskbarButtonCreated`, and the next pass sets its badge.
+    #[cfg(windows)]
+    pub(super) fn taskbar_watch(&mut self, hwnd: isize) {
+        crate::taskbar_win::watch(hwnd);
+        self.badge_pushed = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn body<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+        let at = src.find(from).unwrap_or_else(|| panic!("{from}"));
+        let rest = &src[at..];
+        &rest[..rest.find(to).unwrap_or(rest.len())]
+    }
+
+    /// The taskbar is wired where the brief says: the burst's count, the one flash limiter, the
+    /// three subclass sites, the activation edges, the tab selection and the teardown.
+    #[test]
+    fn taskbar_is_wired() {
+        let bell = include_str!("bell_ui.rs");
+        let ring = body(bell, "pub(super) fn ring_bell", "if ring.offer");
+        assert!(ring.contains("count.clamp(1, MAX_BURST)"), "the badge adds the burst's count");
+        assert!(ring.contains("self.flash_taskbar(true)"), "bounce goes through the shared flash path");
+        assert!(include_str!("triggers_ui.rs").matches("FlashWindowEx(").count() == 1, "one FlashWindowEx");
+        for f in ["windows_ui.rs", "transparency_ui.rs", "mod.rs"] {
+            assert!(include_str!("mod.rs").contains("taskbar_watch") && (f == "mod.rs" || std::fs::read_to_string(format!("{}/src/app/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap().contains("self.taskbar_watch(h)")), "{f}");
+        }
+        let m = include_str!("mod.rs");
+        assert!(body(m, "pub(crate) fn teardown_process()", "\n}\n").contains("taskbar_win::clear_all"));
+        assert!(body(m, "pub(super) fn select_tab", "\n    }\n").contains("tab_selected"));
+        assert!(body(m, "let active = hotkey_ui::tandem_in_front();", "self.hotkey_reactivated()").contains("became_active"));
+        assert!(include_str!("alerts_ui.rs").contains("bell_badge::is_waiting"));
+        assert!(include_str!("marks_ui.rs").contains("taskbar_win::play_named") && include_str!("marks_ui.rs").contains("sound_for"));
+    }
+
+    /// Typing clears a bell icon; with ClearBellIconAggressively off the tick leaves it.
+    #[test]
+    fn bell_icon_clearing_is_wired() {
+        let bell = include_str!("bell_ui.rs");
+        assert!(body(bell, "pub(super) fn tick_bell", "\n    }\n").contains("clear_on(self.globals.bool(\"ClearBellIconAggressively\"))"));
+        let w = body(include_str!("broadcast_ui.rs"), "fn write_to_domain(", "tmux_send_input");
+        assert!(w.contains("!program && self.bell_icons.remove(&t)"));
     }
 }

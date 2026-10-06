@@ -271,9 +271,20 @@ impl App {
         use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONHAND, MB_OK};
         match self.globals.string("Mark Alert Action").as_str() {
             "Modal Alert" => super::menu::info_box(&format!("Mark set in session \"{title}\".")),
-            "Ring Bell" => unsafe {
-                MessageBeep(if failed { MB_ICONHAND } else { MB_OK });
-            },
+            "Ring Bell" => {
+                // The named Windows sound through the one judge, else the system beeps (the
+                // stand-ins for iTerm2's bundled mp3s, `PTYSession.m:16657-16667`); never more
+                // often than the beep floor.
+                let named = crate::bell_badge::sound_for(failed, &self.globals.string("SuccessSound"), &self.globals.string("ErrorSound"));
+                if self.bell_limiter.beep(std::time::Instant::now()) {
+                    let played = named.is_some_and(|n| crate::taskbar_win::play_named(&n));
+                    if !played {
+                        unsafe {
+                            MessageBeep(if failed { MB_ICONHAND } else { MB_OK });
+                        }
+                    }
+                }
+            }
             _ => {
                 let result = self.hwnd().ok_or_else(|| "no window".to_string()).and_then(|h| crate::notify::show(h, "Mark Set", &format!("Session {title} had a mark set.")));
                 if let Err(e) = result {

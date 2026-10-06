@@ -777,6 +777,11 @@ pub struct App {
     /// The floors under every beep, flash and taskbar flash (B6). App-wide on purpose: three
     /// flashes a second is a limit of the person's eyes, not of one pane.
     bell_limiter: crate::bell::Limiter,
+    /// The taskbar button's count: bells rung and sessions waiting while no Tandem window is
+    /// active. App-wide (one count for every window's button).
+    bell_badge: crate::bell_badge::Badge,
+    /// The label last queued for the buttons and when; None makes the next pass queue it again.
+    badge_pushed: Option<(String, Instant)>,
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
@@ -1655,6 +1660,9 @@ pub(crate) fn teardown_process() {
     // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
     #[cfg(windows)]
     crate::uia_win::disconnect_all();
+    // The overlay icons come off the taskbar buttons (the badge is the app's, not the shell's).
+    #[cfg(windows)]
+    crate::taskbar_win::clear_all();
 }
 
 pub fn run() {
@@ -2237,6 +2245,8 @@ pub fn run() {
         flashes: HashMap::new(),
         bell_indicators: HashMap::new(),
         bell_limiter: crate::bell::Limiter::default(),
+        bell_badge: crate::bell_badge::Badge::default(),
+        badge_pushed: None,
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
         tmux_geometry: HashMap::new(),
@@ -2758,6 +2768,9 @@ impl App {
         }
         let changed = i != self.active;
         self.active = i;
+        // A selected tab's sessions are no longer waiting (`tabWasSelected`).
+        let sessions: Vec<String> = self.tabs[i].layout.panes().iter().map(|p| p.to_string()).collect();
+        self.bell_badge.tab_selected(&sessions);
         self.expand_selected_group();
         if changed {
             self.flash_tab_bar();
@@ -4771,6 +4784,7 @@ impl App {
         self.pending_background.remove(&id);
         self.flashes.remove(&id);
         self.bell_indicators.remove(&id);
+        self.bell_badge.forget(&id.to_string());
         self.fireworks.remove(&id);
         self.tab_colors.remove(&id);
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
@@ -6595,6 +6609,7 @@ impl ApplicationHandler<UserEvent> for App {
                     #[cfg(windows)]
                     {
                         crate::firstmouse_win::watch(h);
+                self.taskbar_watch(h);
                         logout_ui::watch(h);
                     }
                 }
@@ -6813,6 +6828,9 @@ impl ApplicationHandler<UserEvent> for App {
         let active = hotkey_ui::tandem_in_front();
         let edge = active != self.app_active;
         if active && !self.app_active {
+            // Tandem is in front: the waiting sessions clear and the bells reset (`PT:4999`).
+            self.bell_badge.became_active();
+            self.bell_badge.reset_bells();
             self.hotkey_reactivated();
             self.ffm_became_active();
             self.tips_became_active();
@@ -6842,6 +6860,7 @@ impl ApplicationHandler<UserEvent> for App {
         let paste_due = self.paste_tick().into_iter().chain(self.auto_command_tick()).min();
         let triggers = self.tick_triggers();
         self.tick_bell();
+        self.tick_badge();
         let activity = self.tick_activity();
         self.tick_status_change();
         let idle_codes = self.tick_idle_codes();
@@ -7237,6 +7256,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 crate::dlog!("window focus changed: {}", f);
+                // A window becoming key resets the bell count (`PT:4717`, `:4999`).
+                if f {
+                    self.bell_badge.reset_bells();
+                }
                 // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();

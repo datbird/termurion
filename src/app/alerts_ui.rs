@@ -105,6 +105,15 @@ impl App {
             }
         }
         self.last_status = now.into_iter().collect();
+        // Sessions whose status is the highest-priority pattern are waiting (`PTYTab.m:7729-7737`).
+        if !changes.is_empty() {
+            let patterns = self.status_patterns();
+            let priorities: Vec<&str> = patterns.iter().map(|p| p.pattern.as_str()).collect();
+            for (id, _, status) in &changes {
+                let waiting = crate::bell_badge::is_waiting(status.as_deref(), &priorities);
+                self.bell_badge.waiting(&id.to_string(), waiting, self.app_active);
+            }
+        }
         if !changes.is_empty() || !self.status_watches.is_empty() {
             self.status_changes(&changes);
         }
