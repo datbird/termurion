@@ -6611,6 +6611,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.session_hotkeys_flush();
         self.flush_dropped();
         self.ssh_suggest_purge();
+        // The queue is taken whole: a wake's index into it means nothing after this.
+        self.pending_wake = None;
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();

@@ -275,6 +275,7 @@ impl App {
     /// Restores a buried session where it was, opening the window it needs now.
     fn api_disinter(&mut self, pane: PaneId, event_loop: &ActiveEventLoop) {
         self.disinter(pane);
+        self.pending_wake = None;
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();

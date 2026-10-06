@@ -1267,18 +1267,23 @@ impl NewWindow {
 /// The resident wake's ONE window (final review item 3): the first profile tab asked for while
 /// resident queues a window (`wake` remembers where), and every later one before it opens joins it
 /// as a tab (`default` names the default profile for a tab of none). iTerm2 opens one window with
-/// N tabs, never N windows.
-pub(super) fn queue_wake_tab(pending: &mut Vec<NewWindow>, wake: &mut Option<usize>, guid: Option<String>, default: &str) {
+/// N tabs, never N windows. True when a window was queued (the loop must be woken for it).
+pub(super) fn queue_wake_tab(pending: &mut Vec<NewWindow>, wake: &mut Option<usize>, guid: Option<String>, default: &str) -> bool {
     let tab = |g: Option<String>| g.unwrap_or_else(|| default.to_string());
     match wake.and_then(|i| pending.get_mut(i)) {
-        Some(NewWindow::ProfilesIn(_, crate::settings_ui::Rest::Tabs(rest))) => rest.push(tab(guid)),
+        Some(NewWindow::ProfilesIn(_, crate::settings_ui::Rest::Tabs(rest))) => {
+            rest.push(tab(guid));
+            false
+        }
         Some(w @ NewWindow::Profile(_)) => {
             let NewWindow::Profile(first) = std::mem::replace(w, NewWindow::Orphans(Vec::new())) else { unreachable!() };
             *w = NewWindow::ProfilesIn(tab(first), crate::settings_ui::Rest::Tabs(vec![tab(guid)]));
+            false
         }
         _ => {
             pending.push(NewWindow::Profile(guid));
             *wake = Some(pending.len() - 1);
+            true
         }
     }
 }

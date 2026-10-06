@@ -150,9 +150,7 @@ impl App {
         match how {
             Wake::Window(guid) => {
                 // Every tab asked for before the window opens joins the one window (item 3).
-                let first = self.pending_wake.is_none();
-                windows_ui::queue_wake_tab(&mut self.pending_windows, &mut self.pending_wake, guid.map(str::to_string), &self.store.default_guid);
-                if first {
+                if windows_ui::queue_wake_tab(&mut self.pending_windows, &mut self.pending_wake, guid.map(str::to_string), &self.store.default_guid) {
                     let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
                 }
                 true
@@ -349,10 +347,10 @@ mod tests {
         use super::super::windows_ui::{queue_wake_tab, NewWindow};
         use crate::settings_ui::Rest;
         let (mut pending, mut wake) = (Vec::new(), None);
-        queue_wake_tab(&mut pending, &mut wake, Some("A".to_string()), "D");
+        assert!(queue_wake_tab(&mut pending, &mut wake, Some("A".to_string()), "D"), "a window queued: wake the loop");
         assert!(matches!(pending.as_slice(), [NewWindow::Profile(Some(g))] if g == "A"), "one tab alone is a plain profile window");
-        queue_wake_tab(&mut pending, &mut wake, None, "D");
-        queue_wake_tab(&mut pending, &mut wake, Some("C".to_string()), "D");
+        assert!(!queue_wake_tab(&mut pending, &mut wake, None, "D"), "joined: no second wake");
+        assert!(!queue_wake_tab(&mut pending, &mut wake, Some("C".to_string()), "D"));
         assert_eq!(pending.len(), 1, "one window");
         assert!(matches!(&pending[0], NewWindow::ProfilesIn(f, Rest::Tabs(r)) if f == "A" && r == &["D".to_string(), "C".to_string()]), "three tabs, in order");
         assert_eq!(pending[0].queued_tabs(), 3);
@@ -362,10 +360,14 @@ mod tests {
         queue_wake_tab(&mut pending, &mut wake, None, "D");
         assert_eq!(pending.len(), 2);
         assert!(matches!(&pending[1], NewWindow::ProfilesIn(f, Rest::Tabs(r)) if f == "D" && r.len() == 1));
+        // A queue taken whole leaves the index pointing nowhere: the next tab queues a window again.
+        pending.clear();
+        assert!(queue_wake_tab(&mut pending, &mut wake, None, "D"), "a stale index never swallows a tab");
         // The wiring: the one wake function merges, the merge ends when the window opens, and the
         // callers that compare before and after count tabs.
         let wake_fn = body(production(OWN), "wake_from_resident");
-        assert!(wake_fn.contains("queue_wake_tab(&mut self.pending_windows, &mut self.pending_wake,"), "the wake merges");
+        assert!(wake_fn.contains("if windows_ui::queue_wake_tab(&mut self.pending_windows, &mut self.pending_wake,"), "the wake merges, and wakes the loop for a new window");
+        assert_eq!(production(MOD).matches("self.pending_wake = None;\n        for w in std::mem::take(&mut self.pending_windows)").count(), 1, "the drain forgets the index");
         assert!(body(production(OWN), "leave_resident_for").contains("self.pending_wake = None;"));
         let ssh = production(include_str!("ssh_url_app.rs"));
         assert!(ssh.contains("self.pending_tabs()") && !ssh.contains("self.pending_windows.len()"), "a second link in the pass keeps its session copy");
