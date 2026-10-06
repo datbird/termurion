@@ -505,6 +505,15 @@ pub fn cmd_command_line(line: &str) -> String {
     format!("cmd.exe {}", cmd_args(line))
 }
 
+/// What a refused value in a Send Text says.
+pub const SEND_REFUSED: &str = "Tandem did not type this text: a value in it holds a control character (a line break would run a second command).";
+
+/// Whether any substituted value of a Send Text holds a control character; the template's own
+/// text (its `\n`) is not a value and stays.
+pub fn send_unsafe(values: &[&str]) -> bool {
+    values.iter().any(|v| v.chars().any(char::is_control))
+}
+
 pub const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds a character cmd.exe would read as more than text (& | < > ^ \" % ! ( ) `, a control character, a quote mark, or a trailing backslash).";
 
 /// Arguments a batch file (or cmd.exe) would re-read as syntax: refused for a `.cmd` or `.bat`
@@ -1048,6 +1057,7 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
                 "editor" => Run::Spawn { program: PathBuf::from(&prefs.editor), args: vec![p.clone()] },
                 "command" | "raw command" => cmd(Run::Command),
                 "coprocess" => cmd(Run::Coprocess),
+                "send text" if send_unsafe(&values) => Run::Blocked(SEND_REFUSED.into()),
                 "send text" => Run::Send(fill(&prefs.text, values, str::to_string)),
                 _ => file_open(&p, *line, *column, has_code),
             })
@@ -1867,6 +1877,19 @@ mod tests {
         }
         assert_eq!(resolve_program("p", r"C:\t", ".EXE", &|_| true), Some(PathBuf::from(r"C:\t\p.exe")), "a bare name still walks PATH");
         assert_eq!(resolve_program(r"C:\x\p.exe", "", ".EXE", &|_| true), Some(PathBuf::from(r"C:\x\p.exe")), "an absolute path still resolves");
+    }
+
+    /// Final wave minor 9: a Send Text never types a control character a value brought.
+    #[test]
+    fn send_text_refuses_control_characters_in_values_only() {
+        let send = Prefs { action: "send text".into(), text: "open \\1 \\3\\n".into(), editor: String::new() };
+        let file = Target::File { path: PathBuf::from(r"C:\a b\x.rs"), line: None, column: None };
+        let around = Around { prefix: "", suffix: "", cwd: "" };
+        assert_eq!(plan(&file, &send, &around, false), Some(Run::Send("open C:\\a b\\x.rs \\n".into())), "the control: the template's own text goes");
+        let tainted = Around { prefix: "a\nrm -rf x", suffix: "", cwd: "" };
+        assert_eq!(plan(&file, &send, &tainted, false), Some(Run::Blocked(SEND_REFUSED.into())));
+        let named = Target::File { path: PathBuf::from("C:\\a\r\nb.rs"), line: None, column: None };
+        assert_eq!(plan(&named, &send, &around, false), Some(Run::Blocked(SEND_REFUSED.into())));
     }
 
     #[test]

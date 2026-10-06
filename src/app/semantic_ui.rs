@@ -403,8 +403,13 @@ impl App {
             }
             Run::Send(text) => {
                 if let Some(p) = self.panes.get_mut(&id) {
-                    p.scroll(Scroll::Bottom);
-                    p.input(text.as_bytes());
+                    // A password read is never fed program text (B5).
+                    if p.at_password_prompt() {
+                        self.banners.set("action", super::cmdinfo_app::PASSWORD_PROMPT);
+                    } else {
+                        p.scroll(Scroll::Bottom);
+                        p.input(text.as_bytes());
+                    }
                 }
             }
             Run::Later(name, m) => self.banners.set("action", format!("{name} comes in milestone {m}.")),
@@ -975,6 +980,15 @@ mod title_menu_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Final wave minor 9: Send Text and Smart Selection sendText: do not type at a password prompt.
+    #[test]
+    fn send_text_refuses_a_password_prompt() {
+        let src = include_str!("semantic_ui.rs");
+        let arm = &src[src.find("Run::Send(text) => {").unwrap()..];
+        let arm = &arm[..arm.find("Run::Later").unwrap()];
+        assert!(arm.find("at_password_prompt()").unwrap() < arm.find("p.input(").unwrap(), "{arm}");
+    }
+
     /// The functions that turn text in a pane into a local open, run or coprocess, or a pane's
     /// reported folder into a local shell's folder or an Explorer target: each asks the one
     /// guard, `remote_text` (P10), or `pane_dir`, which asks it. Win-click and the Open Target

@@ -58,6 +58,9 @@ pub struct CmdInfoWindow {
     /// The time the running row counts to.
     now: SystemTime,
     focused: bool,
+    /// Where the window was opened for, so it is placed again when it grows.
+    at: (f64, f64),
+    work: Option<Rect>,
     share_open: bool,
     /// The share menu's open state the window was last sized for.
     sized_for: bool,
@@ -97,7 +100,7 @@ impl CmdInfoWindow {
         host.focus();
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(CmdInfoWindow { host, pane, info, started, now: SystemTime::now(), focused: false, share_open: false, sized_for: false, toast: None, next_frame: Instant::now() })
+        Ok(CmdInfoWindow { host, pane, info, started, now: SystemTime::now(), focused: false, at, work, share_open: false, sized_for: false, toast: None, next_frame: Instant::now() })
     }
 
     pub fn id(&self) -> WindowId {
@@ -173,7 +176,12 @@ impl CmdInfoWindow {
     fn redraw(&mut self) -> CmdInfoEvent {
         if self.sized_for != self.share_open {
             self.sized_for = self.share_open;
-            let _ = self.host.window.request_inner_size(winit::dpi::LogicalSize::new(cmdinfo::WIDTH, cmdinfo::height(self.started.is_some(), self.share_open)));
+            let h = cmdinfo::height(self.started.is_some(), self.share_open);
+            let _ = self.host.window.request_inner_size(winit::dpi::LogicalSize::new(cmdinfo::WIDTH, h));
+            // The taller window is placed again, so the share items stay inside the work area.
+            let scale = self.host.window.scale_factor();
+            let (x, y) = cmdinfo::place(self.at, cmdinfo::WIDTH * scale, h * scale, self.work, scale);
+            self.host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
         }
         let mut out = CmdInfoEvent::None;
         let (info, started, now, toast) = (&self.info, &self.started, self.now, self.toast);
@@ -317,4 +325,16 @@ fn draw_toast(ui: &egui::Ui, toast: Toast, age: f32) {
     let rect = egui::Align2::CENTER_BOTTOM.anchor_size(at, egui::vec2(width, 22.0));
     painter.rect_filled(rect, 4.0, egui::Color32::from_black_alpha((alpha * 255.0) as u8));
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), egui::Color32::WHITE.gamma_multiply(alpha / cmdinfo::TOAST_ALPHA));
+}
+
+#[cfg(test)]
+mod tests {
+    /// Final wave minor 13: opening Share grows the window, which is placed again.
+    #[test]
+    fn growing_the_window_places_it_again() {
+        let src = include_str!("cmdinfo_ui.rs");
+        let redraw = &src[src.find("fn redraw(").unwrap()..];
+        let redraw = &redraw[..redraw.find("self.host.paint").unwrap()];
+        assert!(redraw.find("request_inner_size").unwrap() < redraw.find("cmdinfo::place(").unwrap(), "{redraw}");
+    }
 }

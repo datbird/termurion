@@ -184,7 +184,18 @@ pub fn parameter(
         if cmd {
             return crate::semantic::build_cmd_line(&expand_pieces(&a.parameter, captures, cwd, host, user)).ok_or_else(|| crate::semantic::CMD_REFUSED.to_string());
         }
+        if a.action == "sendText:" {
+            let pieces = expand_pieces(&a.parameter, captures, cwd, host, user);
+            let values: Vec<&str> = pieces.iter().filter_map(|p| if let CmdPiece::Value(v) = p { Some(v.as_str()) } else { None }).collect();
+            if crate::semantic::send_unsafe(&values) {
+                return Err(crate::semantic::SEND_REFUSED.to_string());
+            }
+        }
         return Ok(expand(&a.parameter, captures, cwd, host, user));
+    }
+    // Interpolated: the captures are the values the template can bring in.
+    if a.action == "sendText:" && crate::semantic::send_unsafe(&captures.iter().map(String::as_str).collect::<Vec<_>>()) {
+        return Err(crate::semantic::SEND_REFUSED.to_string());
     }
     let encoded: Vec<String> = captures.iter().map(|c| encode_capture(&a.action, c)).collect();
     let matches: Vec<Option<&str>> = encoded.iter().map(|c| Some(c.as_str())).collect();
@@ -193,6 +204,18 @@ pub fn parameter(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_send_text_capture_with_a_line_break_is_refused() {
+        let act = |parameter: &str| RuleAction { title: "t".into(), action: "sendText:".into(), parameter: parameter.into() };
+        let eval = |t: &str, m: &[Option<&str>], _: bool| crate::interp::evaluate(t, &|_| None, m);
+        let clean = vec!["x".to_string(), "y".to_string()];
+        let tainted = vec!["x\ny".to_string(), "y".to_string()];
+        assert_eq!(parameter(&act("go \\1\\n"), &clean, false, &eval, "", "", ""), Ok("go y\n".into()), "the control: the template's own \\n stays");
+        assert_eq!(parameter(&act("go \\1"), &tainted, false, &eval, "", "", ""), Ok("go y".into()), "a capture that is not used is not a value");
+        assert_eq!(parameter(&act("go \\0"), &tainted, false, &eval, "", "", ""), Err(crate::semantic::SEND_REFUSED.into()));
+        assert_eq!(parameter(&act("go \\(matches[1])"), &tainted, true, &eval, "", "", ""), Err(crate::semantic::SEND_REFUSED.into()));
+    }
+
     #[test]
     fn an_open_url_capture_is_encoded_for_quotes_and_controls() {
         assert_eq!(encode_capture("openUrl:", "mailto:a@b?x=\" /a"), "mailto:a@b?x=%22%20/a");

@@ -120,6 +120,10 @@ impl App {
         while let Ok(reply) = self.pathnav.rx.try_recv() {
             match reply {
                 Reply::Marks(pane, found) => {
+                    // A sniff in flight across an end or a restart must not bring cleared marks back.
+                    if !self.navigator_pane_ok(pane) {
+                        continue;
+                    }
                     if let Some(p) = self.panes.get_mut(&pane) {
                         p.own_mut().add_path_marks(found);
                     }
@@ -309,6 +313,14 @@ mod tests {
     }
 
     const CODE: &str = include_str!("pathnav_ui.rs");
+
+    /// Final wave minor 8: a sniff in flight across an end or a restart never re-adds marks.
+    #[test]
+    fn a_late_sniff_reply_is_dropped_when_the_pane_no_longer_qualifies() {
+        let tick = &CODE[CODE.find("fn pathnav_tick").unwrap()..CODE.find("fn pathnav_sniff").unwrap()];
+        let marks = &tick[tick.find("Reply::Marks(pane, found)").unwrap()..tick.find("Reply::Listing").unwrap()];
+        assert!(marks.contains("navigator_pane_ok(pane)") && marks.find("navigator_pane_ok(pane)") < marks.find("add_path_marks"), "{marks}");
+    }
     const MOD: &str = include_str!("mod.rs");
 
     /// B4: the sniff is a worker started from the loop's drain; the parse path holds no disk call.
