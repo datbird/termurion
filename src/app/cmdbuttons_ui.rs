@@ -11,24 +11,13 @@ use crate::cmdbuttons::{self, Button};
 const MENU_ID: &str = "cmdbtn:";
 
 impl App {
-    /// The rows of the selected command in buffer rows (top of the history is row 0), for 13s's
-    /// restricted find and these buttons. None when nothing is selected or its mark is gone.
-    #[allow(dead_code)] // read by 13s's restricted Find, Filter and Select All
-    pub(super) fn command_region(&mut self, id: PaneId) -> Option<(usize, usize)> {
-        let p = self.panes.get(&id)?;
-        let mark = p.selected_command?;
-        let (first, last) = p.screen.command_region(mark)?;
-        let top = p.screen.term().grid().history_size() as i32;
-        Some(((first + top).max(0) as usize, (last + top).max(0) as usize))
-    }
-
     /// The fold in command `mark`'s region, if any: the Unfold button's target.
     fn command_fold(&self, pane: PaneId, mark: u32) -> Option<u32> {
         let p = self.panes.get(&pane)?;
         if p.screen.fold_count() == 0 {
             return None;
         }
-        let (first, last) = p.screen.command_region(mark)?;
+        let (first, last) = p.screen.command_grid_lines(mark)?;
         (first..=last).find_map(|l| p.screen.fold_at(l))
     }
 
@@ -43,7 +32,7 @@ impl App {
         if !cmdbuttons::shown(Some(mark), m.command.trim().is_empty(), m.line_style, self.globals.bool("ShowButtonsForSelectedCommand")) {
             return Vec::new();
         }
-        let Some((first, last)) = p.screen.command_region(mark) else { return Vec::new() };
+        let Some((first, last)) = p.screen.command_grid_lines(mark) else { return Vec::new() };
         let grid = p.screen.term().grid();
         let (off, rows, cols) = (grid.display_offset() as i64, grid.screen_lines() as i64, grid.columns());
         let Some(line) = cmdbuttons::row(i64::from(first), -off, rows - 1 - off, i64::from(last)) else { return Vec::new() };
@@ -183,6 +172,19 @@ fn save_name(command: &str) -> String {
 mod tests {
     use super::*;
     const SRC: &str = include_str!("cmdbuttons_ui.rs");
+
+    /// Fix round 2, item 3: 13s brings `Screen::command_region(&mut self, mark) -> Option<(usize,
+    /// usize)>` (buffer rows) and `App::command_region`; 13r's grid-line helper has another name and
+    /// no `App::command_region` is defined here, so the merge is a union.
+    #[test]
+    fn the_seam_names_stay_free_for_13s() {
+        let code = &SRC[..SRC.find("#[cfg(test)]").unwrap()];
+        assert!(!code.contains("fn command_region"), "13s defines App::command_region");
+        assert!(!code.contains(".command_region("), "13r reads grid lines through command_grid_lines");
+        assert!(code.contains("command_grid_lines("));
+        assert!(include_str!("../marks.rs").contains("pub fn command_grid_lines(&self"));
+        assert!(!include_str!("../marks.rs").contains("pub fn command_region"));
+    }
 
     #[test]
     fn the_save_name_is_the_program() {

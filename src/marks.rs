@@ -1008,7 +1008,7 @@ impl Screen {
     /// The grid lines of command `id`'s region: its prompt's line through the line before the next
     /// prompt mark, else the last screen line (`PTYSession.m` command region). None when the mark
     /// is gone or is not a prompt.
-    pub fn command_region(&self, id: u32) -> Option<(i32, i32)> {
+    pub fn command_grid_lines(&self, id: u32) -> Option<(i32, i32)> {
         let rows = self.row_marks();
         let first = rows.iter().find(|(_, m)| *m == id)?.0;
         self.marks.records.get(&id).filter(|m| m.kind == Kind::Prompt)?;
@@ -1875,15 +1875,15 @@ mod tests {
     }
 
     #[test]
-    fn command_region_runs_to_the_next_prompt() {
+    fn command_grid_lines_run_to_the_next_prompt() {
         let mut s = Screen::new(40, 12);
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07one\r\n\x1b]133;C\x07l1\r\nl2\r\n\x1b]133;D;0\x07");
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07two\r\n\x1b]133;C\x07x\r\n\x1b]133;D;0\x07");
         let ids: Vec<(i32, u32)> = s.marks_in_order().iter().map(|(l, m)| (*l, m.id)).collect();
         assert_eq!(ids.len(), 2);
-        assert_eq!(s.command_region(ids[0].1), Some((ids[0].0, ids[1].0 - 1)));
-        assert_eq!(s.command_region(ids[1].1), Some((ids[1].0, 11)));
-        assert_eq!(s.command_region(999), None);
+        assert_eq!(s.command_grid_lines(ids[0].1), Some((ids[0].0, ids[1].0 - 1)));
+        assert_eq!(s.command_grid_lines(ids[1].1), Some((ids[1].0, 11)));
+        assert_eq!(s.command_grid_lines(999), None);
     }
 
     #[test]
@@ -1894,11 +1894,11 @@ mod tests {
         let id = s.marks_in_order().iter().map(|(_, m)| m.id).next().unwrap();
         let (a, b) = s.output_range_of(id).unwrap();
         assert!(s.fold(a.line.0, b.line.0).is_some());
-        let (first, last) = s.command_region(id).unwrap();
+        let (first, last) = s.command_grid_lines(id).unwrap();
         let fold = (first..=last).find_map(|l| s.fold_at(l));
         assert!(fold.is_some(), "the Unfold button finds the fold in the region");
         assert!(s.unfold(fold.unwrap()));
-        assert!((first..=s.command_region(id).unwrap().1).all(|l| s.fold_at(l).is_none()));
+        assert!((first..=s.command_grid_lines(id).unwrap().1).all(|l| s.fold_at(l).is_none()));
     }
 
     #[test]
