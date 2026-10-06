@@ -337,6 +337,10 @@ impl<A: DnsSd> Requests<A> {
     /// Frees `id` once its last callback ran (it is about to: its message arrived), waiting a
     /// moment for the mark. Returns whether it was freed.
     pub fn finish(&mut self, id: u64) -> bool {
+        if !self.open.contains_key(&id) {
+            // Not ours (an older Browser's late callback) or already freed.
+            return true;
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
         self.ended.wait(&|ids| !ids.contains(&id), deadline);
         self.reap();
@@ -865,6 +869,10 @@ mod tests {
         assert!(r.finish(1));
         assert_eq!(lines(&log), vec!["free 2", "cancel 1", "free 1"]);
         assert_eq!(r.len(), 1);
+        // A message for a request it does not hold (an older Browser's) does not wait.
+        let start = std::time::Instant::now();
+        assert!(r.finish(99));
+        assert!(start.elapsed() < std::time::Duration::from_millis(50));
         // Drop cancels what is open and waits for its end before freeing.
         let t = end_after_cancel(&ENDED, log.clone(), 3);
         drop(r);
