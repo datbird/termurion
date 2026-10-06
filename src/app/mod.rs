@@ -5045,6 +5045,14 @@ impl App {
                 if count == 1 && plain && (self.click_unfold(id, point) || self.click_note(id, point, event_loop)) {
                     return;
                 }
+                // Win without Alt adds a selection (`MH:360-431`); the earlier ones are held while the new
+                // one is made and put back beside it. Win with Ctrl did not reach the open above.
+                let append = mods.cmd && !mods.alt;
+                #[cfg(windows)]
+                if mods.cmd && mods.ctrl {
+                    crate::winkeys::mask_start_menu();
+                }
+                let carried = self.commit_live_selection(id, append);
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
                 // A character drag on a bidi row is visual: remember where it began on screen.
@@ -5065,6 +5073,7 @@ impl App {
                 } else {
                     self.smart_window(id, point);
                 }
+                self.carry_subs(id, carried);
                 let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
                 let follow = mouse::press_follow_up(self.first_mouse_down, smart, count, alt_only);
                 if follow.copy_now {
@@ -5151,7 +5160,11 @@ impl App {
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
             Drag::Select { pane, .. } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
-                if empty {
+                // A Win-click with no drag (B11): the selection it held comes back as the live one.
+                let kept = self.panes.get(&pane).filter(|p| p.screen.live_is_empty()).map(|p| p.screen.extra_subs()).filter(|k| !k.is_empty());
+                if let Some(kept) = kept {
+                    self.set_subs(pane, kept);
+                } else if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
                         p.clear_selection();
                     }
@@ -5474,7 +5487,8 @@ impl App {
                     let bg_alpha = if see_through { alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a) } else { 1.0 };
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
                     let dim = self.pane_dim(tab, id, &bview);
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused };
+                    let selections = p.screen.extra_subs();
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused, selections: &selections };
                     // The margins, one layer per pixel and the only margin painter: the pane's
                     // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
                     {

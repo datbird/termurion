@@ -92,6 +92,30 @@ pub fn from_range(r: &alacritty_terminal::selection::SelectionRange, history: us
     Sub { start: pos(r.start), end: pos(r.end), mode: if r.is_block { Mode::Box } else { mode }, window, connected: false }
 }
 
+/// The most sub-selections Select Matches and SetSelection make; the rest are dropped (P4).
+pub const MAX_SUBS: usize = 10_000;
+
+/// The columns `sub` covers on `row` of a `width`-column buffer, `(first, last)` inclusive;
+/// None when it covers none there. A box is its columns on every row, a run is partial on its
+/// first and last row, and a window clips every row.
+pub fn row_span(sub: &Sub, row: usize, width: usize) -> Option<(usize, usize)> {
+    if width == 0 || row < sub.start.row || row > sub.end.row {
+        return None;
+    }
+    let last = width - 1;
+    let (mut from, mut to) = if sub.mode == Mode::Box {
+        (sub.start.col.min(sub.end.col), sub.start.col.max(sub.end.col))
+    } else {
+        (if row == sub.start.row { sub.start.col } else { 0 }, if row == sub.end.row { sub.end.col } else { last })
+    };
+    if let Some((lo, hi)) = sub.window {
+        from = from.max(lo);
+        to = to.min(hi);
+    }
+    let to = to.min(last);
+    (from <= to).then_some((from, to))
+}
+
 /// A visual (bidi) selection's runs, each `(first, last)` inclusive as (buffer row, column), as
 /// character subs: a run that starts at column 0 continues the previous one when that ended
 /// at the last column of the line above and merges into it; a run followed by another on its

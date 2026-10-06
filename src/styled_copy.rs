@@ -42,6 +42,20 @@ pub fn selection_spans(screen: &Screen) -> (Vec<(i32, usize, usize)>, bool) {
 /// goes through here, so the highlight, the plain copy and every other copy agree.
 fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
     let term = screen.term();
+    // Extra selections (Win-drag, Select Matches): every selection's runs in reading order, as
+    // the plain copy enumerates them (`seltext::ranges`: an overlap cancels).
+    if !screen.sel.extras.is_empty() {
+        let (width, history) = (term.columns(), term.grid().history_size() as i32);
+        let mut out = Vec::new();
+        for (a, b, _) in crate::seltext::ranges(&screen.subs(), width) {
+            for row in a.row..=b.row {
+                let from = if row == a.row { a.col } else { 0 };
+                let to = if row == b.row { b.col } else { width - 1 };
+                out.push((row as i32 - history, from, to));
+            }
+        }
+        return out;
+    }
     if let Some(sel) = term.selection.as_ref().filter(|s| !s.runs.is_empty()) {
         let top = term.topmost_line().0;
         return sel.runs.iter().filter(|(a, _)| a.line.0 >= top).map(|(a, b)| (a.line.0, a.column.0, b.column.0)).collect();

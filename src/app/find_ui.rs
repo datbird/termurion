@@ -243,6 +243,21 @@ pub(super) fn reveal_as(pane: &mut crate::pane::Pane, m: &Match, mode: crate::se
     show_line(pane, a.line.0);
 }
 
+/// Select Matches (`TVA:2801-2823`): the selection becomes one Character sub per match, the
+/// last the live one, with no copy. None with no matches, which changes nothing; else whether
+/// the matches passed `MAX_SUBS` and the rest were left out.
+pub(super) fn select_all_matches(screen: &mut crate::screen::Screen, matches: &[Match]) -> Option<bool> {
+    if matches.is_empty() {
+        return None;
+    }
+    let subs = matches
+        .iter()
+        .take(crate::seltext::MAX_SUBS + 1)
+        .map(|m| crate::seltext::Sub { start: m.start, end: m.end, mode: crate::seltext::Mode::Character, window: None, connected: false })
+        .collect();
+    Some(screen.set_subs(subs))
+}
+
 pub(super) fn show_line(pane: &mut crate::pane::Pane, line: i32) {
     let grid = pane.screen.term().grid();
     let (lines, offset, history) = (grid.screen_lines() as i32, grid.display_offset() as i32, grid.history_size() as i32);
@@ -798,22 +813,15 @@ impl App {
         true
     }
 
-    /// Select Matches: the selection runs from the first match to the last, and every
-    /// match is copied, one per line.
+    /// Select Matches (`TVA:2801-2823`): one selection per match, none copied (iTerm2 does not),
+    /// the first one scrolled into view.
     fn select_matches(&mut self, id: PaneId) {
         let (Some(f), Some(p)) = (self.finds.get(&id), self.panes.get_mut(&id)) else { return };
-        let (Some(first), Some(last)) = (f.results.matches.first().copied(), f.results.matches.last().copied()) else { return };
-        let texts: Vec<String> = f
-            .results
-            .matches
-            .iter()
-            .map(|m| p.screen.term().bounds_to_string(to_point(&p.screen, m.start), to_point(&p.screen, m.end)))
-            .collect();
-        reveal(p, &Match { start: first.start, end: last.end });
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(texts.join("\n")) {
-                self.banners.set("clipboard", format!("Copy failed: {e}"));
-            }
+        let Some(first) = f.results.matches.first().copied() else { return };
+        let Some(capped) = select_all_matches(&mut p.screen, &f.results.matches) else { return };
+        show_line(p, to_point(&p.screen, first.start).line.0);
+        if capped {
+            self.banners.set("select-matches", format!("Selected the first {} matches", crate::seltext::MAX_SUBS));
         }
     }
 }
@@ -821,6 +829,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Select Matches makes one selection per match and copies nothing (iTerm2 does not).
+    #[test]
+    fn select_matches_makes_selections() {
+        let mut s = crate::screen::Screen::new(10, 5);
+        s.feed(b"abcd\r\n\r\n\r\nxxcd");
+        let m = |r1, c1, r2, c2| Match { start: Pos { row: r1, col: c1 }, end: Pos { row: r2, col: c2 } };
+        // Nothing to select: the selection stays as it was.
+        s.set_selection(None, crate::seltext::Mode::Character);
+        assert_eq!(select_all_matches(&mut s, &[]), None);
+        assert!(s.subs().is_empty());
+        assert_eq!(select_all_matches(&mut s, &[m(0, 0, 0, 1), m(3, 2, 3, 3)]), Some(false));
+        let sub = |r, c1, c2| crate::seltext::Sub { start: Pos { row: r, col: c1 }, end: Pos { row: r, col: c2 }, mode: crate::seltext::Mode::Character, window: None, connected: false };
+        assert_eq!(s.subs(), vec![sub(0, 0, 1), sub(3, 2, 3)]);
+        assert_eq!(s.selection_text().as_deref(), Some("ab\ncd"));
+        // The command copies nothing: no clipboard in its body.
+        let body = include_str!("find_ui.rs").split("fn select_matches(&mut self").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(!body.contains("clipboard") && !body.contains("set_text") && body.contains("select_all_matches"));
+        // A match already on screen is not scrolled to (B5: select_matches reveals the first only).
+        assert!(body.contains("show_line"));
+        assert!(!body.contains("reveal("));
+    }
 
     fn typed(q: &str, now: Instant) -> FindState {
         let mut f = FindState::default();

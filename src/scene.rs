@@ -532,6 +532,14 @@ pub struct Highlights<'a> {
     /// The blink phase for text with the blink attribute: false hides it when the profile
     /// allows blinking. True in tests and screenshots.
     pub text_blink_on: bool,
+    /// The selections beside the live one (Win-drag, Select Matches), as buffer rows; the live
+    /// one is alacritty's and draws from `term.selection`.
+    pub selections: &'a [crate::seltext::Sub],
+}
+
+/// Whether `sub` covers the cell at buffer `row`, `col` on a `width`-column screen.
+pub fn sub_contains(sub: &crate::seltext::Sub, row: usize, col: usize, width: usize) -> bool {
+    crate::seltext::row_span(sub, row, width).is_some_and(|(a, b)| col >= a && col <= b)
 }
 
 /// What the find bar shows.
@@ -797,6 +805,17 @@ pub fn pane_with(
     let term = screen.term();
     let (cols, lines) = (term.columns(), term.screen_lines());
     let content = term.renderable_content();
+    // The extra selections' columns on each visible row, computed once per frame.
+    let first_row = (history - content.display_offset as i32).max(0) as usize;
+    let mut extra_runs: Vec<Vec<(usize, usize)>> = vec![Vec::new(); lines];
+    for sub in highlights.map_or(&[][..], |h| h.selections) {
+        let (from, to) = (sub.start.row.max(first_row), sub.end.row.min(first_row + lines.saturating_sub(1)));
+        for row in from..=to {
+            if let Some(span) = crate::seltext::row_span(sub, row, cols) {
+                extra_runs[row - first_row].push(span);
+            }
+        }
+    }
     // Cursor Hidden When Unfocused (`iTermTextDrawingHelper.m:4254-4256`).
     let key_cursor = highlights.is_some_and(|h| h.key_cursor);
     // A composition in progress replaces the terminal cursor (`iTermTextDrawingHelper.m:4267`),
@@ -902,7 +921,8 @@ pub fn pane_with(
         }
         let mut selected = false;
         // A visual selection (bidi rows) is its runs inside the hull.
-        if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().map_or(true, |s| s.covers(indexed.point)) {
+        let in_extra = || extra_runs[row].iter().any(|&(a, b)| col >= a && col <= b);
+        if (content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().map_or(true, |s| s.covers(indexed.point))) || in_extra() {
             // The text is adjusted against the selection color; `fg` is already muted otherwise.
             fg = match palette.selected_text {
                 Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
@@ -5679,7 +5699,7 @@ mod tests {
     }
 
     fn see_through(bg_alpha: f32, opaque_colors: bool) -> Highlights<'static> {
-        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors, text_blink_on: true }
+        Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha, opaque_colors, text_blink_on: true, selections: &[] }
     }
 
     /// "X" on red, then a selected "a", then a plain "b".
@@ -5701,7 +5721,7 @@ mod tests {
         let mut s = Screen::new(10, 3);
         s.feed(b"hello \xe4\xb8\xad world");
         let mut f = Frame::default();
-        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &[], color: rgb(255, 255, 0), hover: None, link: rgb(0, 0, 255), labels: &[(crate::find::Pos { row: 0, col: 1 }, "a".to_string())], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), 7);
         assert!(f.rows.len() >= 3, "{:?}", f.rows);
         assert!(f.rows.iter().all(|r| r.face == 7), "{:?}", f.rows.iter().map(|r| r.face).collect::<Vec<_>>());
@@ -6183,6 +6203,83 @@ mod tests {
         assert_eq!(ul(10.0), Some(rgba(rgb(0, 255, 0), 1.0)), "SGR 58 does not");
     }
 
+    fn sub_at(r1: usize, c1: usize, r2: usize, c2: usize) -> crate::seltext::Sub {
+        let at = |row, col| crate::find::Pos { row, col };
+        crate::seltext::Sub { start: at(r1, c1), end: at(r2, c2), mode: crate::seltext::Mode::Character, window: None, connected: false }
+    }
+
+    /// Review Focus 4: each selection draws, as the live one does.
+    #[test]
+    fn every_selection_is_drawn() {
+        let mut s = screen(b"aaaa\r\nbbbb\r\ncccc");
+        s.palette.selection = rgb(10, 20, 30);
+        let subs = [sub_at(0, 1, 0, 2), sub_at(2, 0, 2, 1)];
+        let hl = Highlights { selections: &subs, ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+        let mut drawn: Vec<(f32, f32, f32)> = f.quads.iter().filter(|q| q.color == rgba(rgb(10, 20, 30), 1.0)).map(|q| (q.rect.x, q.rect.y, q.rect.w)).collect();
+        drawn.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(drawn, vec![(0.0, 40.0, 20.0), (10.0, 0.0, 20.0)], "rows 0 and 2 only, row 1 untouched: {:?}", f.quads);
+    }
+
+    #[test]
+    fn sub_contains_follows_the_mode_and_window() {
+        let mut b = sub_at(0, 1, 2, 2);
+        b.mode = crate::seltext::Mode::Box;
+        assert!(sub_contains(&b, 1, 2, 10) && sub_contains(&b, 1, 1, 10));
+        assert!(!sub_contains(&b, 1, 0, 10) && !sub_contains(&b, 1, 3, 10) && !sub_contains(&b, 3, 1, 10));
+        let mut w = sub_at(0, 5, 1, 1);
+        w.window = Some((0, 6));
+        assert!(sub_contains(&w, 0, 6, 10) && sub_contains(&w, 0, 5, 10) && sub_contains(&w, 1, 0, 10));
+        assert!(!sub_contains(&w, 0, 7, 10) && !sub_contains(&w, 0, 4, 10) && !sub_contains(&w, 1, 2, 10));
+        // A plain run: partial first and last rows, whole rows between.
+        let r = sub_at(0, 8, 2, 1);
+        assert!(sub_contains(&r, 0, 9, 10) && sub_contains(&r, 1, 0, 10) && sub_contains(&r, 2, 1, 10));
+        assert!(!sub_contains(&r, 0, 7, 10) && !sub_contains(&r, 2, 2, 10));
+    }
+
+    /// 13m Task 1: an extra over text the color of the selection is adjusted like the live one.
+    #[test]
+    fn extra_selections_adjust_against_the_selection_color() {
+        let mut s = screen(b"\x1b[38;2;100;100;100mhello");
+        s.palette.selection = rgb(100, 100, 100);
+        s.palette.selected_text = None;
+        with_min_contrast(&mut s, 0.5);
+        let subs = [sub_at(0, 0, 0, 1)];
+        let hl = Highlights { selections: &subs, ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+        let sel_text = span_color(&f, "he").unwrap();
+        assert_eq!(sel_text, crate::contrast::apply(rgb(100, 100, 100), rgb(100, 100, 100), 0.5));
+    }
+
+    /// 13m Task 6: an extra over logical column 3 of a right-to-left row shades visual column 4.
+    #[test]
+    fn extra_selection_follows_the_display_order() {
+        let mut s = screen("ab \u{5d0}\u{5d1}".as_bytes());
+        s.palette.selection = rgb(10, 20, 30);
+        let subs = [sub_at(0, 3, 0, 3)];
+        let hl = Highlights { selections: &subs, ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+        let drawn: Vec<(f32, f32)> = f.quads.iter().filter(|q| q.color == rgba(rgb(10, 20, 30), 1.0)).map(|q| (q.rect.x, q.rect.w)).collect();
+        assert_eq!(drawn, vec![(40.0, 10.0)], "{:?}", f.quads);
+    }
+
+    #[test]
+    fn extra_selection_is_boosted_like_the_live_one() {
+        let mut s = screen(b"hello ab");
+        s.palette.bg = rgb(0, 0, 0);
+        s.palette.selection = rgb(200, 100, 0);
+        s.palette.selected_text = Some(rgb(100, 200, 100));
+        let subs = [sub_at(0, 0, 0, 1)];
+        let hl = Highlights { selections: &subs, ..see_through(1.0, false) };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
+        assert!(f.quads.iter().any(|q| q.color == rgba(rgb(100, 50, 0), 1.0) && q.rect.x == 0.0), "selection background halfway to black: {:?}", f.quads);
+        assert_eq!(span_color(&f, "he"), Some(rgb(50, 100, 50)), "selected text is muted");
+    }
+
     #[test]
     fn selected_cells_contrast_against_the_selection_color() {
         let mut s = screen(b"\x1b[38;2;100;100;100mhello");
@@ -6323,7 +6420,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(200, 200, 0);
-        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook { boost: 0.5, ..CursorLook::shown(false) }, &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let quad = |c: Rgb, x: f32| f.quads.iter().any(|q| q.color == rgba(c, 1.0) && q.rect.x == x);
         assert!(quad(rgb(100, 50, 0), 0.0), "selection background halfway to black: {:?}", f.quads);
@@ -7238,7 +7335,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }), crate::render::DEFAULT_FACE);
+        pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] }), crate::render::DEFAULT_FACE);
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -7490,7 +7587,7 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
@@ -7501,7 +7598,7 @@ mod tests {
     /// The row "ab " + aleph + bet draws the aleph (logical column 3) at visual column 4 and the
     /// bet (logical 4) at visual column 3. Everything placed by a logical column follows.
     fn hl_with<'a>(matches: &'a [crate::find::Match], labels: &'a [(crate::find::Pos, String)], notes: &'a [(crate::find::Match, Option<String>)]) -> Highlights<'a> {
-        Highlights { matches, color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels, notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true }
+        Highlights { matches, color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels, notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] }
     }
 
     fn at(col: usize) -> crate::find::Pos {
@@ -7566,7 +7663,7 @@ mod tests {
         let s = screen(b"see https://x.y now");
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
@@ -7598,7 +7695,7 @@ mod tests {
         let mut f = Frame::default();
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
@@ -7703,7 +7800,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 16 }, end: crate::find::Pos { row: 1_000_000, col: 19 } };
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, dim: crate::dim::Dim::LEGACY, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         pane_with(&mut f, &s, rect, CELL, true, &CursorLook::shown(false), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
@@ -7788,7 +7885,7 @@ mod tests {
     #[test]
     fn a_background_window_keeps_a_hollow_cursor() {
         let s = screen(b"ab");
-        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         let mut f = Frame::default();
         pane_with(&mut f, &s, RECT, CELL, false, &CursorLook::shown(true), &DrawPrefs::default(), Some(&hl), crate::render::DEFAULT_FACE);
         assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
@@ -7798,7 +7895,7 @@ mod tests {
     #[test]
     fn dim_quads_follow_the_dim() {
         let s = screen(b"ab");
-        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = |dim| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         let whole = |f: &Frame| f.overlay.iter().any(|q| q.rect == RECT);
         // The render loop lays the gray quad over the whole pane; pane_with draws none with highlights.
         let mut f = Frame::default();
@@ -7831,7 +7928,7 @@ mod tests {
     #[test]
     fn a_password_prompt_draws_the_key_for_the_cursor() {
         let key = crate::pwm_prompt::KEY_GLYPH.to_string();
-        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true };
+        let hl = |key_cursor| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::LEGACY, key_cursor, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[] };
         let key_row = |f: &Frame| f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == key)).cloned();
         let mut s = screen(b"ab");
         s.palette.bg = rgb(0, 0, 0);

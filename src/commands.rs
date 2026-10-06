@@ -75,7 +75,7 @@ pub const DONE: &[&str] = &[
     "previousPane:", "movePane:", "movePaneDividerUp:", "movePaneDividerDown:", "movePaneDividerLeft:",
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
     "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
-    "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:",
+    "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:", "performFindPanelAction:|Select Matches",
     "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openQuickly:", "openSelection:",
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
     "clearToStartOfSelection:", "toggleCopyMode:", "foldSelection:", "foldAll:", "addNoteAtCursor:", "annotateSelection:", "nextAnnotation:",
@@ -101,7 +101,6 @@ const PARTIAL: &[(&str, &str)] = &[
     ("filter:", "Shows the matching lines without their colors."),
     ("toggleSelectionRespectsSoftBoundaries:", "Double-click and Smart Selection stop at pane dividers; a drag still crosses them."),
     ("zoomOnSelection:", "Shows the selected lines without their colors."),
-    ("performFindPanelAction:|Select Matches", "Selects from the first match to the last and copies every match, one per line, since a selection is one range."),
 ];
 
 /// A "selector" or "selector|Label" entry names this item.
@@ -335,7 +334,7 @@ mod tests {
         assert_eq!(status(find("newWindow:", "New Window")), Status::Done, "7a opens real windows");
         assert_eq!(status(find("moveSessionToTab:", "Move Session to Tab")), Status::Done, "8h");
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
-        assert!(matches!(status(find("performFindPanelAction:", "Select Matches")), Status::Partial(_)));
+        assert_eq!(status(find("performFindPanelAction:", "Select Matches")), Status::Done, "13s: one selection per match");
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
         assert_eq!(status(find("openDashboard:", "Dashboard")), Status::Done, "8e");
         assert_eq!(status(find("setWindowStyle:", "Maximized")), Status::Done);

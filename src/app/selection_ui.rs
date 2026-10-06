@@ -124,6 +124,30 @@ impl App {
         self.copy_selection(id);
     }
 
+    /// The selections a press keeps (`iTermSelection.m:391-400`): with `append` (Win without Alt)
+    /// every selection now, to be put back beside the new one with `carry_subs`; a new
+    /// non-append selection starts over, which empties the extras. The selections join at the
+    /// press, never at the release (B11).
+    pub(super) fn commit_live_selection(&mut self, id: PaneId, append: bool) -> Vec<crate::seltext::Sub> {
+        self.panes.get(&id).map(|p| p.screen.carried_subs(append)).unwrap_or_default()
+    }
+
+    pub(super) fn carry_subs(&mut self, id: PaneId, subs: Vec<crate::seltext::Sub>) {
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.screen.carry_subs(subs);
+        }
+    }
+
+    /// Makes `subs` the selection of `id` (the last the live one, the rest extras); true when
+    /// the cap dropped some. Used by Select Matches and the API.
+    pub(super) fn set_subs(&mut self, id: PaneId, subs: Vec<crate::seltext::Sub>) -> bool {
+        let capped = self.panes.get_mut(&id).is_some_and(|p| p.screen.set_subs(subs));
+        if capped {
+            self.banners.set("select-matches", format!("Selected the first {} selections", crate::seltext::MAX_SUBS));
+        }
+        capped
+    }
+
     /// The share of a cell, from its right edge, in which the pointer picks the next cell
     /// (`FractionOfCharacterSelectingNextNeighbor`, iTerm2's 0.35).
     pub(super) fn neighbor_fraction(&self) -> f32 {
@@ -237,5 +261,115 @@ mod tests {
         assert_eq!(line_span(&s, 1, true, Some((4, 6))), (at(1, 4), at(1, 6)));
         // A row that does not wrap is itself.
         assert_eq!(line_span(&s, 2, true, None), (at(2, 0), at(2, 9)));
+    }
+
+    /// A press as `mouse_press` makes it: the carried selections first (B11), the new live one,
+    /// the carried ones back beside it.
+    fn press(s: &mut Screen, row: i32, col: usize, append: bool) {
+        let carried = s.carried_subs(append);
+        s.set_selection(Some(Selection::new(SelectionType::Simple, Point::new(Line(row), Column(col)), Side::Left)), Mode::Character);
+        s.carry_subs(carried);
+    }
+
+    fn drag_to(s: &mut Screen, row: i32, col: usize) {
+        s.term_mut().selection.as_mut().unwrap().update(Point::new(Line(row), Column(col)), Side::Right);
+    }
+
+    /// Review Focus 4: Win-drag adds a selection, Win+Alt does not, a plain press clears them.
+    #[test]
+    fn win_drag_appends() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abcx\r\ndefgh");
+        press(&mut s, 0, 0, false);
+        drag_to(&mut s, 0, 2);
+        assert_eq!(s.subs().len(), 1);
+        // Win (append): the first selection stays, the drag is the second.
+        press(&mut s, 1, 0, true);
+        drag_to(&mut s, 1, 3);
+        assert_eq!(s.subs().len(), 2);
+        assert_eq!(s.selection_text().as_deref(), Some("abc\ndefg"));
+        // Win+Alt is no append: a fresh selection.
+        press(&mut s, 1, 0, false);
+        drag_to(&mut s, 1, 3);
+        assert_eq!(s.subs().len(), 1);
+        assert_eq!(s.selection_text().as_deref(), Some("defg"));
+        // A plain press clears every selection at once.
+        press(&mut s, 0, 0, true);
+        drag_to(&mut s, 0, 1);
+        assert_eq!(s.subs().len(), 2);
+        press(&mut s, 3, 0, false);
+        assert!(s.subs().is_empty() && s.sel.extras.is_empty());
+        assert_eq!(s.selection_text(), None);
+    }
+
+    /// B11: the earlier selection joins at the press, so nothing counts twice at the release.
+    #[test]
+    fn append_commit_does_not_double() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abcx\r\ndefgh");
+        press(&mut s, 0, 0, false);
+        drag_to(&mut s, 0, 2);
+        press(&mut s, 1, 0, true);
+        assert_eq!((s.subs().len(), s.sel.extras.len()), (1, 1), "the empty live selection adds none");
+        drag_to(&mut s, 1, 3);
+        assert_eq!((s.subs().len(), s.sel.extras.len()), (2, 1));
+        assert_eq!(s.selection_text().as_deref(), Some("abc\ndefg"), "each text once");
+    }
+
+    /// B11: a Win-click with no drag gives the last selection back as the live one.
+    #[test]
+    fn empty_win_click_keeps_extras() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abcx\r\ndefgh");
+        press(&mut s, 0, 0, false);
+        drag_to(&mut s, 0, 2);
+        press(&mut s, 3, 0, true);
+        assert!(s.live_is_empty());
+        let kept = s.extra_subs();
+        assert_eq!(kept.len(), 1);
+        assert!(!s.set_subs(kept));
+        assert!(!s.live_is_empty() && s.sel.extras.is_empty());
+        assert_eq!(s.selection_text().as_deref(), Some("abc"));
+        // A plain click with no drag clears (it is no append).
+        press(&mut s, 3, 0, false);
+        assert!(s.live_is_empty() && s.extra_subs().is_empty());
+    }
+
+    /// Extras live and die with alacritty's selection: output that takes it takes them.
+    #[test]
+    fn extras_die_with_the_live_selection() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abcx\r\ndefgh");
+        press(&mut s, 0, 0, false);
+        drag_to(&mut s, 0, 2);
+        press(&mut s, 1, 0, true);
+        drag_to(&mut s, 1, 3);
+        assert_eq!(s.subs().len(), 2);
+        // A reset clears alacritty's selection; `feed` syncs, so the extras go with it.
+        s.feed(b"\x1bc");
+        assert!(s.subs().is_empty());
+        assert!(s.sel.extras.is_empty());
+        assert_eq!(s.selection_text(), None);
+    }
+
+    /// Select Matches and the API make several: the last is the live one.
+    #[test]
+    fn set_subs_makes_the_last_live() {
+        use crate::seltext::Sub;
+        let mut s = Screen::new(10, 4);
+        s.feed(b"abcx\r\ndefgh\r\nijk");
+        let sub = |r1, c1, r2, c2, mode| Sub { start: Pos { row: r1, col: c1 }, end: Pos { row: r2, col: c2 }, mode, window: None, connected: false };
+        let subs = vec![sub(0, 0, 0, 1, Mode::Character), sub(1, 2, 1, 3, Mode::Word), sub(2, 0, 2, 2, Mode::Character)];
+        assert!(!s.set_subs(subs.clone()));
+        assert_eq!(s.subs(), subs);
+        assert_eq!(s.sel.live_mode, Mode::Character);
+        assert_eq!(s.selection_text().as_deref(), Some("ab\nfg\nijk"));
+        // Past the cap the rest is dropped.
+        let many: Vec<Sub> = (0..crate::seltext::MAX_SUBS + 5).map(|_| sub(0, 0, 0, 0, Mode::Character)).collect();
+        assert!(s.set_subs(many));
+        assert_eq!(s.subs().len(), crate::seltext::MAX_SUBS);
+        // Nothing clears.
+        assert!(!s.set_subs(Vec::new()));
+        assert!(s.subs().is_empty());
     }
 }

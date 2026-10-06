@@ -979,16 +979,29 @@ impl Screen {
         self.sel.extras.push(sub);
     }
 
-    /// Every selection as buffer rows: the extras (read back against the lines dropped since
-    /// they were made; one that straddles the oldest kept line is clipped to it, one wholly
-    /// above is gone), then the live one. A visual (bidi) live selection is one sub per run
-    /// (`seltext::merge_runs`).
-    pub fn subs(&self) -> Vec<crate::seltext::Sub> {
+    /// The selections a Win-press keeps beside the one it starts (B11: they join at the press,
+    /// never at the release): every selection now, as buffer rows; none for a plain press.
+    pub fn carried_subs(&self, append: bool) -> Vec<crate::seltext::Sub> {
+        if append { self.subs() } else { Vec::new() }
+    }
+
+    /// Puts `subs` (buffer rows now) beside the live selection a press just made.
+    pub fn carry_subs(&mut self, subs: Vec<crate::seltext::Sub>) {
+        for s in subs {
+            self.push_extra(s);
+        }
+    }
+
+    /// Whether the live selection covers no cell (a press with no drag).
+    pub fn live_is_empty(&self) -> bool {
+        self.term.selection.as_ref().map_or(true, |s| s.runs.is_empty() && s.to_range(&self.term).is_none())
+    }
+
+    /// The extras alone, as buffer rows (the live selection is alacritty's).
+    pub fn extra_subs(&self) -> Vec<crate::seltext::Sub> {
         use crate::find::Pos;
-        let grid = self.term.grid();
-        let (dropped, history) = (grid.dropped() as usize, grid.history_size());
-        let mut out: Vec<crate::seltext::Sub> = self
-            .sel
+        let dropped = self.term.grid().dropped() as usize;
+        self.sel
             .extras
             .iter()
             .filter(|e| e.end.row >= dropped)
@@ -1002,7 +1015,39 @@ impl Screen {
                 e.end.row -= dropped;
                 e
             })
-            .collect();
+            .collect()
+    }
+
+    /// Makes `subs` the selection: the last is alacritty's live one, the rest extras. True when
+    /// more than `MAX_SUBS` were given and the rest dropped.
+    pub fn set_subs(&mut self, mut subs: Vec<crate::seltext::Sub>) -> bool {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let capped = subs.len() > crate::seltext::MAX_SUBS;
+        subs.truncate(crate::seltext::MAX_SUBS);
+        let Some(last) = subs.pop() else {
+            self.clear_selection();
+            return false;
+        };
+        let history = self.term.grid().history_size() as i32;
+        let point = |p: crate::find::Pos| Point::new(Line(p.row as i32 - history), Column(p.col));
+        let ty = if last.mode == crate::seltext::Mode::Box { SelectionType::Block } else { SelectionType::Simple };
+        let mut sel = Selection::new(ty, point(last.start), Side::Left);
+        sel.update(point(last.end), Side::Right);
+        self.set_selection(Some(sel), last.mode);
+        self.sel.window = last.window;
+        self.carry_subs(subs);
+        capped
+    }
+
+    /// Every selection as buffer rows: the extras (read back against the lines dropped since
+    /// they were made; one that straddles the oldest kept line is clipped to it, one wholly
+    /// above is gone), then the live one. A visual (bidi) live selection is one sub per run
+    /// (`seltext::merge_runs`).
+    pub fn subs(&self) -> Vec<crate::seltext::Sub> {
+        use crate::find::Pos;
+        let history = self.term.grid().history_size();
+        let mut out = self.extra_subs();
         let Some(sel) = self.term.selection.as_ref() else { return out };
         if !sel.runs.is_empty() {
             let top = self.term.topmost_line().0;
