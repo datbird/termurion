@@ -82,6 +82,8 @@ impl App {
             return;
         }
         self.save_window_frame();
+        // The window's hosted web views close with its state, not left in the slot that is dropped.
+        self.close_hosted_views();
         if self.win_style != crate::frames::NORMAL {
             self.apply_window_style(crate::frames::NORMAL, false);
         }

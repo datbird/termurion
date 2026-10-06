@@ -112,7 +112,25 @@ pub(super) struct Loaded {
     pub(super) parent: isize,
 }
 
+/// The tool views whose parent is not `new`, the handle of a window made again.
+pub(super) fn reparents(have: &HashMap<String, Loaded>, new: isize) -> Vec<String> {
+    have.iter().filter(|(_, l)| l.parent != new).map(|(n, _)| n.clone()).collect()
+}
+
 impl App {
+    /// This window was made again: its tool views move to the new handle before the old window
+    /// (their parent) is destroyed.
+    pub(super) fn tool_views_remade(&mut self, new_hwnd: isize) {
+        for name in reparents(&self.tool_loaded, new_hwnd) {
+            if let Some(v) = self.tool_views.get(&name) {
+                v.set_parent(new_hwnd);
+            }
+            if let Some(l) = self.tool_loaded.get_mut(&name) {
+                l.parent = new_hwnd;
+            }
+        }
+    }
+
     /// Brings this window's tool views to the belt's layout (`tools` are the split's tools, one per
     /// wrapper). Called from `draw_toolbelt`; a COM call happens only when something changed (the
     /// host caches bounds and visibility, P24).
@@ -341,6 +359,20 @@ mod tests {
         assert!(prod.contains("tool_setup()"));
         assert!(prod.contains("Store::Default"));
         assert!(!prod.contains("AddHostObject") && !prod.contains("navigate_to_string"));
+    }
+
+    /// Review fix 1: a remade window's new handle takes every view whose parent was the old one.
+    #[test]
+    fn tool_views_move_to_a_remade_window() {
+        let l = |p| Loaded { id: 1, url: "https://a".into(), parent: p };
+        let mut have: HashMap<String, Loaded> = HashMap::new();
+        have.insert("A".into(), l(10));
+        have.insert("B".into(), l(20));
+        have.insert("C".into(), l(20));
+        let mut moved = reparents(&have, 20);
+        moved.sort();
+        assert_eq!(moved, vec!["A".to_string()], "only a view not already on the new handle");
+        assert!(reparents(&HashMap::new(), 5).is_empty());
     }
 
     /// Per-window views live in the window's slot; the id map is app-wide.

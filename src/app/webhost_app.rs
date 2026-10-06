@@ -82,7 +82,39 @@ fn runtime_now(hint: &str) -> (Runtime, Option<PathBuf>, Option<String>) {
     }
 }
 
+/// One kind of hosted web view and what a window's remake or close does to it (review fix 1, a
+/// class fix). Every file that makes views with `WebView::create` is listed here (a source test
+/// pins it), so a later task's views are covered by the same two hooks: `remade` moves them to the
+/// new window handle (or closes them) before the old window is dropped; `closing` closes them
+/// while their parent still exists.
+pub(super) struct HostedView {
+    pub(super) file: &'static str,
+    pub(super) remade: fn(&mut App, isize),
+    pub(super) closing: fn(&mut App),
+}
+
+/// Every kind of hosted web view. Add a kind's entry with its first `WebView::create`.
+pub(super) const HOSTED_VIEWS: &[HostedView] = &[
+    HostedView { file: "tool_web_ui.rs", remade: App::tool_views_remade, closing: App::close_tool_views },
+    HostedView { file: "web_popover_app.rs", remade: App::popovers_remade, closing: App::popovers_window_closing },
+];
+
 impl App {
+    /// The current window was made again and `new_hwnd` is its handle: every hosted view follows,
+    /// before the old window (and with it a child's parent) is destroyed.
+    pub(super) fn window_remade(&mut self, new_hwnd: isize) {
+        for h in HOSTED_VIEWS {
+            (h.remade)(self, new_hwnd);
+        }
+    }
+
+    /// The current window is going: its hosted views close while their parent still exists.
+    pub(super) fn close_hosted_views(&mut self) {
+        for h in HOSTED_VIEWS {
+            (h.closing)(self);
+        }
+    }
+
     /// The WebView2 Runtime, cached for 30 seconds (iTerm2's gateway cache).
     pub(super) fn web_runtime(&self) -> Runtime {
         if let Some((at, r)) = self.web_envs.runtime.borrow().as_ref() {
@@ -312,5 +344,53 @@ mod tests {
         for name in ["web_envs", "web_events", "web_focus_held"] {
             assert!(!swap.contains(name), "{name} must not be per window");
         }
+    }
+
+    /// Review fix 1 (class): a window that is made again (transparency) or closed must not leave
+    /// a hosted web view behind a destroyed parent. Every kind of hosted view is in ONE list,
+    /// `HOSTED_VIEWS`, and the window code runs the list's hooks.
+    #[test]
+    fn every_web_view_kind_registers_with_the_remake_hook() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
+        let mut makers = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.extension().is_some_and(|x| x == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let prod = &text[..text.find("#[cfg(test)]").unwrap_or(text.len())];
+                if prod.contains("WebView::create(") {
+                    makers.push(path.file_name().unwrap().to_string_lossy().to_string());
+                }
+            }
+        }
+        makers.sort();
+        assert!(makers.len() >= 2, "tool views and popovers: {makers:?}");
+        for m in &makers {
+            assert!(HOSTED_VIEWS.iter().any(|h| h.file == m), "{m} makes web views but is not in HOSTED_VIEWS");
+        }
+        for h in HOSTED_VIEWS {
+            assert!(makers.iter().any(|m| m == h.file), "{} is listed but makes no view", h.file);
+        }
+    }
+
+    #[test]
+    fn a_remade_window_moves_its_views_before_the_old_one_drops() {
+        let t = include_str!("transparency_ui.rs");
+        let body = &t[t.find("fn recreate_window_for_alpha").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        let hook = body.find("self.window_remade(").expect("the remake hook is called");
+        assert!(hook < body.find("drop(old_gpu)").unwrap(), "before the old surface and window go");
+        assert!(hook > body.find("self.gpu.replace(").unwrap(), "after the new window is the current one");
+    }
+
+    #[test]
+    fn closing_a_window_closes_its_hosted_views() {
+        let w = include_str!("windows_ui.rs");
+        let body = &w[w.find("fn drop_current_window").unwrap()..];
+        assert!(body[..body.find("\n    }\n").unwrap()].contains("self.close_hosted_views("));
+        let r = include_str!("resident_ui.rs");
+        let body = &r[r.find("fn go_resident(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.find("self.close_hosted_views(").unwrap() < body.find("self.swap_live(").unwrap(), "before the slot is swapped out");
     }
 }

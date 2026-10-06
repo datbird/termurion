@@ -75,6 +75,26 @@ impl App {
         }
     }
 
+    /// The popover is anchored in the current window (its session is one of this window's panes).
+    fn popover_in_current_window(&self) -> bool {
+        self.web_popover.as_ref().and_then(|(p, _)| *p).is_some_and(|pane| self.tabs.iter().any(|t| t.layout.panes().contains(&pane)))
+    }
+
+    /// The window was made again: a popover anchored on it closes (its anchor is gone). A Quick
+    /// Look is the person's own pointer and stays; its parent is its own window, never this one.
+    pub(super) fn popovers_remade(&mut self, _new_hwnd: isize) {
+        if self.popover_in_current_window() {
+            self.web_popover = None;
+        }
+    }
+
+    /// The window is closing: a popover anchored on it closes with it.
+    pub(super) fn popovers_window_closing(&mut self) {
+        if self.popover_in_current_window() {
+            self.web_popover = None;
+        }
+    }
+
     /// Opens a popover (replacing any open one) of `kind` at `size` points with its bottom
     /// centered on `at` (screen pixels). `pane` is the session whose scope the bridge runs in.
     pub(super) fn open_web_popover(&mut self, pane: Option<PaneId>, kind: Kind, size: (f64, f64), at: (f64, f64), event_loop: &ActiveEventLoop) {

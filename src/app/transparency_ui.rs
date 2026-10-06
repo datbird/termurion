@@ -358,6 +358,10 @@ impl App {
         // The new handle's IME has been given no candidate area yet.
         self.ime.system_reset();
         self.rekey_window(old_id, new_id);
+        // Hosted web views (tool views, popovers) follow the new handle before the old window is destroyed.
+        if let Some(h) = menu::hwnd_of(&window) {
+            self.window_remade(h);
+        }
         if let Some(h) = old_hwnd {
             crate::winkeys::remove_window(h);
         }

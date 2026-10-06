@@ -838,8 +838,8 @@ impl App {
     pub(super) fn drop_current_window(&mut self) -> bool {
         let Some(k) = self.windows.current() else { return false };
         self.save_window_frame();
-        // Its tool views close while their parent window still exists.
-        self.close_tool_views();
+        // Its hosted web views close while their parent window still exists.
+        self.close_hosted_views();
         self.forget_window(k);
         if let Some(h) = self.hwnd() {
             crate::winkeys::remove_window(h);
