@@ -336,6 +336,9 @@ pub mod host_state;
 pub mod url_schemes;
 pub mod url_launch;
 pub mod update;
+#[cfg(windows)]
+pub mod update_fetch_win;
+pub mod update_ui;
 pub mod ssh_recovery;
 pub mod ssh_registry;
 pub mod ssh_procs;

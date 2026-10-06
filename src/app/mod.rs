@@ -162,6 +162,7 @@ mod script_ui;
 mod script_runtime_ui;
 mod claude_code_app;
 mod scripts_alerts;
+mod update_app;
 mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
@@ -1195,6 +1196,13 @@ pub struct App {
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// Checking for updates (M13v2): the worker, the window, the next scheduled check, whether the
+    /// check in flight is the person's, and the view waiting to show. App-wide, never per window.
+    update_checker: Option<crate::update_fetch_win::Checker>,
+    update_window: Option<crate::update_ui::UpdateWindow>,
+    update_due: Option<Instant>,
+    update_manual: bool,
+    update_show: Option<crate::update_ui::View>,
     /// Locale questions waiting for the picker: the start-time prompts, and Settings' Change
     /// Locale requests (`locale_ui`).
     locale_asks: VecDeque<locale_ui::Ask>,
@@ -1527,6 +1535,9 @@ pub(crate) fn teardown_process() {
     crate::winkeys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
+    // A running update check ends with Tandem (its curl.exe), not after it.
+    #[cfg(windows)]
+    crate::update_fetch_win::cancel_running();
 }
 
 pub fn run() {
@@ -2149,6 +2160,11 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        update_checker: None,
+        update_window: None,
+        update_due: None,
+        update_manual: false,
+        update_show: None,
         locale_asks: VecDeque::new(),
         locale_window: None,
         suppressed,
@@ -6364,6 +6380,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.alpha_recreate_tick(event_loop);
         // URLs that came with the start or before the window open now, after the first window.
         self.open_pending_urls();
+        // After the first window and the launch's own requests: the second launch's question.
+        self.update_start();
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -6475,6 +6493,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.script_export_tick();
         self.ssh_unzip_tick();
         self.scripts_scan_tick();
+        self.update_tick(event_loop);
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);
@@ -6548,7 +6567,7 @@ impl ApplicationHandler<UserEvent> for App {
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
         let command_due = self.command_click_tick();
-        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6651,7 +6670,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some();

@@ -71,6 +71,8 @@ pub(super) enum Answer {
 pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
     match then {
         Then::SlowScan => Answer::Button(1),
+        // Sparkle's question: a closed window answers neither (nothing is stored, it asks again).
+        Then::UpdatePermission => Answer::Closed,
         // Neither: a close never changes the person's locale.
         Then::LocaleMismatch { .. } => Answer::Closed,
         // A closed window never starts a log or makes a folder.
@@ -260,6 +262,9 @@ pub(super) enum Then {
     LogStyle { pane: crate::layout::PaneId, path: std::path::PathBuf, append: bool },
     /// "Session Logging Problem": OK only.
     LogProblem,
+    /// "Check for updates automatically?": Check Automatically (0) or Don't Check (1). Never
+    /// silenced; closed, nothing is stored.
+    UpdatePermission,
 }
 
 impl Then {
@@ -284,7 +289,7 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
     }
 }
 
@@ -448,6 +453,7 @@ impl App {
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
             Then::SessionHotkey { pane, shortcut } => self.session_hotkey_answered(pane, shortcut, index),
+            Then::UpdatePermission => self.update_permission_answered(index),
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem => {}
             Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),
             Then::LogExists { pane, path } => self.log_exists_answered(pane, path, index),

@@ -689,6 +689,7 @@ impl App {
         match item.selector.as_str() {
             "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", env!("CARGO_PKG_VERSION"))),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
+            "checkForUpdatesFromMenu:" => self.check_for_updates(true),
             "makeScreenshot:" => self.make_screenshot(event_loop),
             "renderSelection:" => self.render_selection(),
             "findGlobally:" => self.open_global_find(event_loop),
