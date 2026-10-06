@@ -271,16 +271,7 @@ impl App {
     /// The Profiles tool's rows: every saved profile, the command only when it is not the login
     /// shell (`ProfileModel.m:281-284`).
     fn profile_shown(&self, query: &str) -> Vec<tt::ProfileRow> {
-        let list: Vec<(String, String, Vec<String>, String)> = self
-            .store
-            .profiles
-            .iter()
-            .map(|p| {
-                let tags = p.get("Tags").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect::<Vec<_>>())).unwrap_or_default();
-                let command = if p.string("Custom Command") == "No" { String::new() } else { p.string("Command") };
-                (p.guid(), p.name(), tags, command)
-            })
-            .collect();
+        let list = crate::profile_list::rows(&self.store.profiles);
         tt::profile_rows(&list, &self.store.default_guid, query)
     }
 

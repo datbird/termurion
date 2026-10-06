@@ -1,0 +1,115 @@
+//! The profile list: a search field, a "Tags >" button, the tag sidebar and the rows, shared by
+//! the Settings window and the Profiles window (`ProfileListView.m`, `ProfileTagsView.m`).
+
+use crate::profile_list::{all_tags, click_selection, click_tags, display_text, filter, tag_query, tag_tree};
+
+/// The list's state; the window that owns the list keeps it.
+#[derive(Clone, Debug, Default)]
+pub struct ListState {
+    pub query: String,
+    pub tags_open: bool,
+    pub selected_tags: Vec<String>,
+    pub selection: Vec<String>,
+}
+
+/// What the person did in the list this frame.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ListEvent {
+    None,
+    /// A row was clicked (the clicked guid; `selection` holds the whole selection).
+    Picked(String),
+    /// A row was double-clicked.
+    Activated(String),
+    /// A row was right-clicked: the selection the menu acts on.
+    Context(Vec<String>),
+}
+
+/// The list's height.
+const LIST_HEIGHT: f32 = 300.0;
+/// The tag sidebar's width.
+const TAGS_WIDTH: f32 = 110.0;
+
+/// `rows` are (guid, name, tags, command). A star marks the default profile.
+pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, String, Vec<String>, String)], default_guid: &str, multi: bool) -> ListEvent {
+    let mut event = ListEvent::None;
+    let focus_id = ui.id().with("profile-list-search");
+    ui.horizontal(|ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut st.query).id(focus_id).hint_text("Search").desired_width((ui.available_width() - 70.0).max(40.0)));
+        // The search field has focus when the list opens (iTerm2's first responder).
+        let first = ui.data_mut(|d| d.get_temp::<bool>(focus_id).is_none());
+        if first {
+            ui.data_mut(|d| d.insert_temp(focus_id, true));
+            r.request_focus();
+        }
+        if r.changed() {
+            // Typing replaces the tag selection, as the search field and the sidebar share the text.
+            st.selected_tags.clear();
+        }
+        if ui.button(if st.tags_open { "< Tags" } else { "Tags >" }).clicked() {
+            st.tags_open = !st.tags_open;
+        }
+    });
+    let shown_idx = filter(rows, &st.query);
+    let shown: Vec<String> = shown_idx.iter().map(|&i| rows[i].0.clone()).collect();
+    let mods = ui.input(|i| i.modifiers);
+    ui.horizontal_top(|ui| {
+        if st.tags_open {
+            ui.allocate_ui(egui::vec2(TAGS_WIDTH, LIST_HEIGHT), |ui| {
+                ui.set_width(TAGS_WIDTH);
+                ui.label(egui::RichText::new("Tag Name").strong());
+                let tags = all_tags(&rows.iter().map(|r| (r.0.clone(), r.2.clone())).collect::<Vec<_>>());
+                egui::ScrollArea::vertical().id_salt("profile-tags").max_height(LIST_HEIGHT - 20.0).show(ui, |ui| {
+                    for (label, path) in tag_tree(&tags) {
+                        let on = st.selected_tags.contains(&path);
+                        if ui.selectable_label(on, label).clicked() {
+                            st.selected_tags = click_tags(&st.selected_tags, &path, mods.ctrl || mods.command);
+                            st.query = tag_query(&st.selected_tags);
+                        }
+                    }
+                });
+            });
+            ui.separator();
+        }
+        egui::ScrollArea::vertical().id_salt("profile-rows").max_height(LIST_HEIGHT).auto_shrink([false, false]).show(ui, |ui| {
+            let width = ui.available_width();
+            for &i in &shown_idx {
+                let (guid, name, tags, _) = &rows[i];
+                let star = if guid == default_guid { "\u{2605} " } else { "" };
+                let selected = st.selection.contains(guid);
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, ui.text_style_height(&egui::TextStyle::Body) + 4.0), egui::Sense::click());
+                if selected {
+                    ui.painter().rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                }
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let text = if selected { ui.visuals().selection.stroke.color } else { ui.visuals().text_color() };
+                let tag_x = rect.left() + width * 0.6;
+                ui.painter().with_clip_rect(egui::Rect::from_min_max(rect.min, egui::pos2(tag_x - 4.0, rect.max.y))).text(
+                    egui::pos2(rect.left() + 4.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{star}{}", display_text(name)),
+                    font.clone(),
+                    text,
+                );
+                let dim = if selected { text } else { ui.visuals().weak_text_color() };
+                let joined = tags.iter().map(|t| display_text(t)).collect::<Vec<_>>().join(", ");
+                ui.painter().with_clip_rect(rect).text(egui::pos2(tag_x, rect.center().y), egui::Align2::LEFT_CENTER, joined, font, dim);
+                if resp.clicked() {
+                    st.selection = click_selection(&st.selection, &shown, guid, mods.ctrl || mods.command, mods.shift, multi);
+                    event = ListEvent::Picked(guid.clone());
+                }
+                if resp.double_clicked() {
+                    event = ListEvent::Activated(guid.clone());
+                }
+                if resp.secondary_clicked() {
+                    if !selected {
+                        st.selection = vec![guid.clone()];
+                    }
+                    event = ListEvent::Context(st.selection.clone());
+                }
+            }
+        });
+    });
+    event
+}

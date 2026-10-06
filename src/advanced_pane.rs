@@ -347,6 +347,7 @@ mod tests {
             ("DisableTransparencyForKeyWindow", "Transparency", Kind::Bool, bool(false)),
             ("Size Changes Affect Profile", "Windows", Kind::Bool, bool(false)),
             ("Custom Color Presets", "Colors", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
+            ("NoSyncProfilesWindowTagsOpen", "Profiles", Kind::Bool, bool(false)),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

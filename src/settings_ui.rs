@@ -38,6 +38,9 @@ pub fn value_of_rgb(c: [u8; 3]) -> Value {
     profile::color_value(crate::palette::rgb(c[0], c[1], c[2]))
 }
 
+/// The Profiles window's remembered tag sidebar state (`iTermProfilesWindowController.m:42`).
+const PROFILES_TAGS_OPEN: &str = "NoSyncProfilesWindowTagsOpen";
+
 /// The side of the Colors tab's hue and chroma wheel.
 const HUE_WHEEL_SIZE: f32 = 180.0;
 
@@ -184,6 +187,10 @@ pub struct SettingsWindow {
     pub answered: Vec<settings_keys::SheetAnswer>,
     /// The Colors tab's presets: the Editing mode, a live hover preview, the questions and dialogs.
     presets: crate::settings_presets::State,
+    /// The profile list's search, tag sidebar and selection. The Profiles window's sidebar state is
+    /// saved in `NoSyncProfilesWindowTagsOpen`; Settings keeps its own per window.
+    list: crate::profile_list_ui::ListState,
+    list_init: bool,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -327,6 +334,8 @@ impl SettingsWindow {
             show_remembered: false,
             answered: Vec::new(),
             presets: crate::settings_presets::State::new(host_dark),
+            list: Default::default(),
+            list_init: false,
         })
     }
 
@@ -393,6 +402,14 @@ impl SettingsWindow {
         let dark = crate::tab_theme::forced_dark(style).unwrap_or_else(|| self.host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark));
         self.presets.editing.follow(dark);
         let presets = &mut self.presets;
+        if !self.list_init {
+            self.list_init = true;
+            if self.mode == Mode::Profiles {
+                self.list.tags_open = globals.bool(PROFILES_TAGS_OPEN);
+            }
+        }
+        let list = &mut self.list;
+        let list_rows = crate::profile_list::rows(&store.profiles);
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
@@ -553,17 +570,18 @@ impl SettingsWindow {
             if mode == Mode::Profiles {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.heading("Profiles");
-                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                        for p in &store.profiles {
-                            let r = ui.selectable_label(p.guid() == selected, p.name());
-                            if r.clicked() {
-                                pick = Some(p.guid());
-                            }
-                            if r.double_clicked() {
-                                edit = Edit::Open(p.guid(), How::Tab);
-                            }
+                    list.selection = vec![selected.clone()];
+                    match crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false) {
+                        crate::profile_list_ui::ListEvent::Picked(g) => pick = Some(g),
+                        crate::profile_list_ui::ListEvent::Activated(g) => edit = Edit::Open(g, How::Tab),
+                        _ => {}
+                    }
+                    if list.tags_open != globals.bool(PROFILES_TAGS_OPEN) {
+                        globals.set(PROFILES_TAGS_OPEN, Value::Boolean(list.tags_open));
+                        if matches!(edit, Edit::None) {
+                            edit = Edit::GlobalsChanged;
                         }
-                    });
+                    }
                     ui.separator();
                     ui.horizontal(|ui| {
                         for (label, how) in [("New Tab", How::Tab), ("New Window", How::Window), ("Split Right", How::SplitRight), ("Split Down", How::SplitDown)] {
@@ -577,11 +595,9 @@ impl SettingsWindow {
             }
             egui::Panel::left("profiles").default_size(220.0).show(ui, |ui| {
                 ui.heading("Profiles");
-                for p in &store.profiles {
-                    let star = if p.guid() == store.default_guid { " (default)" } else { "" };
-                    if ui.selectable_label(p.guid() == selected, format!("{}{star}", p.name())).clicked() {
-                        pick = Some(p.guid());
-                    }
+                list.selection = vec![selected.clone()];
+                if let crate::profile_list_ui::ListEvent::Picked(g) = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false) {
+                    pick = Some(g);
                 }
                 ui.separator();
                 ui.horizontal(|ui| {

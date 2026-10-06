@@ -4770,3 +4770,12 @@ label = "Custom color presets"
 type = "dict"
 default = {}
 help = "The color presets you imported or saved, by name. Each is a table of color keys (Ansi 0 Color, Foreground Color, and their Light and Dark variants), each color {r, g, b, a}. Managed from the Colors tab's Color Presets menu."
+
+[[setting]]
+key = "NoSyncProfilesWindowTagsOpen"
+tab = "Stored"
+section = "Profiles"
+label = "Profiles window: tags sidebar open"
+type = "bool"
+default = false
+help = "Remembered by the Profiles window."
