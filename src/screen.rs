@@ -951,7 +951,7 @@ impl Screen {
     /// What numbered extra selections depend on (B2).
     pub fn epoch(&self) -> crate::seltext::Epoch {
         use alacritty_terminal::grid::Dimensions;
-        crate::seltext::Epoch { columns: self.term.columns(), lines: self.term.screen_lines(), resets: self.term.resets, splices: self.splices_taken, alt: self.alt_screen() }
+        crate::seltext::Epoch { columns: self.term.columns(), lines: self.term.screen_lines(), resets: self.term.resets, history_clears: self.term.history_clears, splices: self.splices_taken, alt: self.alt_screen() }
     }
 
     /// Output may have taken the live selection away or moved the rows under the extras: with
@@ -2306,6 +2306,7 @@ impl Screen {
         self.term.clear_screen(ClearMode::Saved);
         self.prune_tags();
         self.prune_marks();
+        self.sync_selection();
     }
 
     /// iTerm2's Reset (a soft reset, DECSTR): modes, attributes, margins, and charset go back
@@ -5320,6 +5321,7 @@ mod tests {
         // Five more lines push l5 out of the buffer: that extra is gone, the live one too.
         s.feed(b"\r\na\r\nb\r\nc\r\nd\r\ne");
         assert!(!s.selection_text().unwrap_or_default().contains("l5"), "a line that left the buffer is not copied");
+        assert_ne!(s.selection_text().as_deref(), Some("l5\nl7"), "and nothing stands in for it");
     }
 
     #[test]
@@ -5338,6 +5340,32 @@ mod tests {
         hist_extra(&mut s, 1, 0, 1);
         s.feed(b"\x1bc");
         assert!(s.sel.extras.is_empty(), "and a reset");
+    }
+
+    /// Review I1 (B2): clearing the scrollback renumbers the rows without moving `dropped`, so
+    /// extras made before it must go (CSI 3 J with consent, Clear Scrollback Buffer).
+    #[test]
+    fn extras_die_on_history_clear() {
+        let fill = || {
+            let mut s = Screen::new(10, 3);
+            s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
+            s.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+            assert!(s.term().grid().history_size() >= 2);
+            // A live selection on the screen (it survives a history clear) and an extra in the history.
+            live_over(&mut s, 2, 0, 3);
+            hist_extra(&mut s, 0, 0, 2);
+            assert_eq!(s.selection_text().as_deref(), Some("one\nfive"));
+            s
+        };
+        let mut s = fill();
+        s.feed(b"\x1b[3J");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert!(s.sel.extras.is_empty(), "CSI 3 J drops the extras");
+        assert_ne!(s.selection_text().as_deref(), Some("two\nfive"), "no wrong rows copied");
+        let mut s = fill();
+        s.clear(true);
+        assert!(s.sel.extras.is_empty(), "Clear Scrollback Buffer drops the extras");
+        assert_eq!(s.selection_text().as_deref(), Some("five"), "only the live selection is left");
     }
 
     #[test]

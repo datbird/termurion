@@ -174,5 +174,7 @@ test data) is left out. Changes:
     stop after column 0 (`MS:2795-2818`), whether DECAWM is on or off (`wrapline_always`).
 29. `term/mod.rs`: `Term.resets` counts RIS (`reset_state`), so Tandem can stop an OSC 9;4 progress bar on
     a reset (iTerm2 `terminalDidReset`).
+30. `term/mod.rs`: `Term.history_clears` counts scrollback clears (`ClearMode::Saved` with history), so
+    Tandem's extra selections, numbered by buffer row, can drop when a clear renumbers the rows.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

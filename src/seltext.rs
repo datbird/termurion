@@ -42,6 +42,7 @@ pub struct Epoch {
     pub columns: usize,
     pub lines: usize,
     pub resets: u64,
+    pub history_clears: u64,
     pub splices: u64,
     pub alt: bool,
 }
