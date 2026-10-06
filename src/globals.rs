@@ -81,6 +81,13 @@ const BOUNDS: &[(&str, Bound)] = &[
     ("BadgeRightMargin", Bound::Int { min: 0, max: 1000 }),
     ("BadgeTopMargin", Bound::Int { min: 0, max: 1000 }),
     ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
+    // 13x B2 (the 13w merge): the browser's text keys are in the one table. The hint and the user
+    // agent are first cut by `webhost::bound_global`; a search template is a URL with no hidden
+    // character or white space, at most the browser's URL bound.
+    ("BrowserPluginPathHint", Bound::Text { max: crate::webhost::MAX_HINT, ok: |c| !c.is_control() }),
+    ("WebUserAgent", Bound::Text { max: 512, ok: |c| !c.is_control() }),
+    ("SearchCommand", Bound::Text { max: crate::browser::MAX_URL, ok: |c| !crate::inert_files::is_hidden(c) && !c.is_whitespace() }),
+    ("SearchSuggestURL", Bound::Text { max: crate::browser::MAX_URL, ok: |c| !crate::inert_files::is_hidden(c) && !c.is_whitespace() }),
 ];
 
 /// `value` as `key`'s bound allows; None when it is out of bounds (the default applies).
@@ -304,6 +311,33 @@ mod tests {
         for (key, _) in BOUNDS {
             assert!(!KEPT_WHEN_DEFAULT.contains(key), "{key}: a bounded key is never kept at its default");
         }
+    }
+
+    /// The 13w merge: every new browser key with a text value is in the one BOUNDS table, so
+    /// `set` and `load` bound it; a search template with a hidden character or white space, or
+    /// past the URL bound, is the default.
+    #[test]
+    fn browser_keys_are_bounded_at_the_one_write_point() {
+        for key in ["BrowserPluginPathHint", "WebUserAgent", "SearchCommand", "SearchSuggestURL"] {
+            assert!(BOUNDS.iter().any(|(k, _)| *k == key), "{key} is bounded");
+        }
+        let mut g = Globals::empty(&scratch("bounds-browser"));
+        let def = g.string("SearchCommand");
+        g.set("SearchCommand", Value::String("https://duck.test/?q=%@".into()));
+        assert_eq!(g.string("SearchCommand"), "https://duck.test/?q=%@");
+        for bad in ["https://a.test/?q=%@\u{202e}".to_string(), "https://a.test/?q= %@".to_string(), format!("https://a.test/?q=%@{}", "x".repeat(crate::browser::MAX_URL))] {
+            g.set("SearchCommand", Value::String(bad.clone()));
+            assert_eq!(g.string("SearchCommand"), def, "{bad:?}");
+            g.set("SearchSuggestURL", Value::String(bad.clone()));
+            assert_eq!(Some(g.string("SearchSuggestURL").as_str()), default_of("SearchSuggestURL").as_ref().and_then(Value::as_str), "{bad:?}");
+        }
+        // The cut keeps its 13x meaning: a long user agent is cut, not refused.
+        g.set("WebUserAgent", Value::String(format!("A\r\nB{}", "c".repeat(600))));
+        assert_eq!(g.string("WebUserAgent").chars().count(), 512);
+        // The file at load goes through the same table.
+        let path = scratch("bounds-browser-load");
+        std::fs::write(&path, "[settings]\nSearchCommand = \"https://a.test/?q=%@\\u202e\"\n").unwrap();
+        assert_eq!(Globals::load(&path).unwrap().string("SearchCommand"), def);
     }
 
     /// B4: the fake identity texts are bounded at the one write point (`set`) and at `load`.
