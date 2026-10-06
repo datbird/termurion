@@ -492,7 +492,19 @@ pub fn stop_at_exit() {
     };
     #[cfg(windows)]
     if let Some((h, b)) = taken {
-        let _ = save(&h, &b, EXIT_FOOTER, APPEND.load(Ordering::Relaxed));
+        // A save already running finishes first; give up after EXIT_WAIT (the process is ending).
+        let start = std::time::Instant::now();
+        let guard = loop {
+            match SAVE.try_lock() {
+                Ok(g) => break Some(g),
+                Err(std::sync::TryLockError::Poisoned(p)) => break Some(p.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) if start.elapsed() < EXIT_WAIT => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(std::sync::TryLockError::WouldBlock) => break None,
+            }
+        };
+        if guard.is_some() {
+            let _ = save_locked(&h, &b, EXIT_FOOTER, APPEND.load(Ordering::Relaxed));
+        }
     }
     #[cfg(not(windows))]
     drop(taken);
@@ -606,8 +618,19 @@ pub fn log_dirs() -> Vec<localfs::LocalPath> {
     log_dirs_with(&|k| std::env::var(k).ok())
 }
 
+/// One lock for every disk write of the log: a save, the private state files and the removal of
+/// the old file at start. Without it an off/on/off during a large save lets the UI thread delete the
+/// file a worker is writing, and a second save interleaves with the first.
+#[cfg(windows)]
+static SAVE: Mutex<()> = Mutex::new(());
+
+/// How long the exit save waits for a save already running (the process is ending).
+#[cfg(windows)]
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[cfg(windows)]
 fn remove_old_files() {
+    let _one = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     for dir in log_dirs() {
         if let Some(f) = dir.unfollowed(FILE_NAME) {
             let _ = localfs::remove_unfollowed(&f);
@@ -619,57 +642,75 @@ fn remove_old_files() {
 #[cfg(windows)]
 struct Disk {
     file: localfs::Unfollowed,
+    /// The one handle every chunk goes through: the file `prepare` judged, or the one `create`
+    /// made. The name is never opened again, so a swap after the judgment is not followed.
+    handle: Option<std::fs::File>,
 }
 
 #[cfg(windows)]
 impl Write3 for Disk {
     fn create(&mut self, _: &Path) -> std::io::Result<()> {
+        // An open handle on the old file would leave its delete pending and refuse CREATE_NEW.
+        self.handle = None;
         match localfs::remove_unfollowed(&self.file) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        localfs::create_owner_only(&self.file).map(drop)
+        self.handle = Some(localfs::create_owner_only(&self.file)?);
+        Ok(())
     }
 
     fn append(&mut self, _: &Path, chunk: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
-        let mut f = localfs::open_unfollowed(&self.file, |o| {
-            o.append(true);
-        })?;
-        if localfs::file_stat(&f)?.is_reparse {
-            return Err(std::io::Error::other("the log file is a link"));
+        match self.handle.as_mut() {
+            Some(f) => f.write_all(chunk),
+            None => Err(std::io::Error::other("no file is open for the log")),
         }
-        f.write_all(chunk)
     }
 }
 
-/// Whether an existing log file is this user's own plain single-link file.
+/// Whether an existing log file is this user's own plain single-link file with the owner-only
+/// DACL `create_owner_only` makes (protected, one allow entry, for the user): a file with a wider
+/// inherited DACL may be read by others, so it is not appended to.
 #[cfg(windows)]
 fn is_ours(f: &std::fs::File) -> bool {
     let Ok(st) = localfs::file_stat(f) else { return false };
-    st.is_file && !st.is_reparse && localfs::link_count(f).is_ok_and(|n| n == 1) && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b)
+    let owner_only = |sid: &str| localfs::dacl_sddl_of(f).is_ok_and(|s| s.starts_with("D:P") && s.matches('(').count() == 1 && s.contains(sid));
+    st.is_file
+        && !st.is_reparse
+        && localfs::link_count(f).is_ok_and(|n| n == 1)
+        && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
+}
+
+/// What `prepare` found at the log's name.
+#[cfg(windows)]
+enum Prepared {
+    /// No file (or one moved aside): a fresh one is made.
+    Fresh,
+    /// The user's own file, open for appending: the writes go through this handle.
+    Append(std::fs::File),
 }
 
 /// Looks at the file before the write: whether to append to it. A file that is not ours, or a
 /// link, is renamed away; one the new text would push past `cap` becomes the `.old` generation.
 #[cfg(windows)]
-fn prepare(dir: &localfs::LocalPath, file: &localfs::Unfollowed, append: bool, incoming: u64, cap: u64) -> Result<bool, String> {
+fn prepare(dir: &localfs::LocalPath, file: &localfs::Unfollowed, append: bool, incoming: u64, cap: u64) -> Result<Prepared, String> {
     let open = localfs::open_unfollowed(file, |o| {
-        o.read(true);
+        o.read(true).append(true);
     });
     let f = match open {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => return aside(dir, file).map(|_| false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Prepared::Fresh),
+        Err(_) => return aside(dir, file).map(|_| Prepared::Fresh),
     };
     if !is_ours(&f) {
         drop(f);
-        return aside(dir, file).map(|_| false);
+        return aside(dir, file).map(|_| Prepared::Fresh);
     }
     let len = localfs::file_stat(&f).map_or(0, |s| s.len);
-    drop(f);
     if append && len + incoming > cap {
+        drop(f);
         let old = dir.unfollowed(OLD_NAME).ok_or_else(|| could_not_open(dir.path()))?;
         match localfs::remove_unfollowed(&old) {
             Ok(()) => {}
@@ -677,9 +718,9 @@ fn prepare(dir: &localfs::LocalPath, file: &localfs::Unfollowed, append: bool, i
             Err(e) => return Err(e.to_string()),
         }
         localfs::rename_unfollowed(file, &old).map_err(|e| e.to_string())?;
-        return Ok(false);
+        return Ok(Prepared::Fresh);
     }
-    Ok(true)
+    Ok(Prepared::Append(f))
 }
 
 /// Moves an entry that is not ours to `debuglog.stale-<unix>.txt`.
@@ -699,8 +740,11 @@ pub fn save_in(dir: &localfs::LocalPath, header: &str, body: &str, footer: &str,
 #[cfg(windows)]
 pub fn save_in_capped(dir: &localfs::LocalPath, header: &str, body: &str, footer: &str, append: bool, cap: u64) -> Result<PathBuf, String> {
     let file = dir.unfollowed(FILE_NAME).ok_or_else(|| could_not_open(dir.path()))?;
-    let exists = prepare(dir, &file, append, (header.len() + body.len() + footer.len()) as u64, cap)?;
-    let mut disk = Disk { file: file.clone() };
+    let (exists, handle) = match prepare(dir, &file, append, (header.len() + body.len() + footer.len()) as u64, cap)? {
+        Prepared::Fresh => (false, None),
+        Prepared::Append(f) => (true, Some(f)),
+    };
+    let mut disk = Disk { file: file.clone(), handle };
     write(file.path(), header, body, footer, append, exists, &mut disk)?;
     Ok(file.path().to_path_buf())
 }
@@ -710,6 +754,7 @@ pub fn save_in_capped(dir: &localfs::LocalPath, header: &str, body: &str, footer
 #[cfg(windows)]
 pub fn save_private(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     use std::io::Write;
+    let _one = SAVE.lock().unwrap_or_else(|e| e.into_inner());
     let mut first_error = None;
     for dir in log_dirs() {
         let Some(file) = dir.unfollowed(name) else { continue };
@@ -733,6 +778,13 @@ pub fn save_private(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
 /// Saves into the first folder that takes it (iTerm2 reports the failure of its one folder).
 #[cfg(windows)]
 pub fn save(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
+    let _one = SAVE.lock().unwrap_or_else(|e| e.into_inner());
+    save_locked(header, body, footer, append)
+}
+
+/// `save` for a caller that holds `SAVE`.
+#[cfg(windows)]
+fn save_locked(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
     let mut first_error = None;
     for dir in log_dirs() {
         match save_in(&dir, header, body, footer, append) {
@@ -1276,6 +1328,61 @@ mod tests {
         assert_eq!(stale, 1, "the planted entry was renamed away");
         let _ = std::fs::remove_dir_all(dir.path());
         let _ = std::fs::remove_dir_all(target.path());
+    }
+
+    /// T1 m1: one lock serializes every disk write of the log: `remove_old_files` (on the UI thread, at
+    /// start) waits for a save that is running instead of deleting the file under it.
+    #[cfg(windows)]
+    #[test]
+    fn saves_are_serialized() {
+        let held = SAVE.lock().unwrap_or_else(|e| e.into_inner());
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        let t = std::thread::spawn(move || {
+            remove_old_files();
+            d.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!done.load(Ordering::SeqCst), "remove_old_files must wait for a save in progress");
+        drop(held);
+        t.join().unwrap();
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    /// T1 m3: an existing log whose DACL is wider than the one owner-only entry (inherited from the
+    /// folder) is not appended to: it is renamed away and a fresh owner-only file starts.
+    #[cfg(windows)]
+    #[test]
+    fn a_log_with_a_wider_dacl_is_not_appended_to() {
+        let dir = scratch("wide");
+        // Our own file (owner is the user, one ACE), then a second allow entry for Everyone.
+        let first = save_in(&dir, "OLD\n", "", "", false).unwrap();
+        let grant = std::process::Command::new("icacls").arg(&first).args(["/grant", "*S-1-1-0:R"]).output().unwrap();
+        assert!(grant.status.success(), "icacls: {}", String::from_utf8_lossy(&grant.stdout));
+        let wide = localfs::dacl_sddl(&dir.unfollowed(FILE_NAME).unwrap()).unwrap();
+        assert!(wide.matches("(A;").count() > 1, "the file now has a wider DACL: {wide}");
+        let saved = save_in(&dir, "H\n", "b\n", "F\n", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "H\nb\nF\n", "a fresh file, not appended");
+        let sddl = localfs::dacl_sddl(&dir.unfollowed(FILE_NAME).unwrap()).unwrap();
+        assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+        let _ = std::fs::remove_dir_all(dir.path());
+    }
+
+    /// T1 m2: the file `prepare` judged is the handle the chunks go through (the name is not opened again).
+    #[cfg(windows)]
+    #[test]
+    fn prepare_hands_back_the_judged_handle() {
+        use std::io::Write;
+        let dir = scratch("handle");
+        let file = dir.unfollowed(FILE_NAME).unwrap();
+        assert!(matches!(prepare(&dir, &file, true, 1, 1 << 20), Ok(Prepared::Fresh)), "no file yet");
+        save_in(&dir, "one\n", "", "", false).unwrap();
+        match prepare(&dir, &file, true, 1, 1 << 20) {
+            Ok(Prepared::Append(mut f)) => f.write_all(b"two\n").unwrap(),
+            _ => panic!("our own file is appended to through its handle"),
+        }
+        assert_eq!(std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_dir_all(dir.path());
     }
 
     /// B3: appending never grows the file past the cap; the old one is kept as `.old` once.

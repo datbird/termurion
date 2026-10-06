@@ -193,13 +193,19 @@ pub fn remove_unfollowed(p: &Unfollowed) -> io::Result<()> {
 /// The entry's DACL as SDDL text (a test reads back what `create_owner_only` set).
 #[cfg(windows)]
 pub fn dacl_sddl(p: &Unfollowed) -> io::Result<String> {
+    let f = open_unfollowed(p, |o| {
+        o.read(true);
+    })?;
+    dacl_sddl_of(&f)
+}
+
+/// An open file's DACL as SDDL text (the handle was opened with read access).
+#[cfg(windows)]
+pub fn dacl_sddl_of(f: &File) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
     use windows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
-    let f = open_unfollowed(p, |o| {
-        o.read(true);
-    })?;
     // SAFETY: the handle is open; the descriptor and the text are freed once.
     unsafe {
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
