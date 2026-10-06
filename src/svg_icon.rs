@@ -3,7 +3,7 @@
 //! rasterizes them in order until one renders (`CIG:160-316`). The reply is untrusted text, so
 //! this file also holds what iTerm2 gets from its sandboxed decoder (`CIG:340-362`): a strict
 //! pre-check of each candidate (`check`) before anything is handed to a web view, the page the
-//! view loads (`wrapper_html`) and the judgement of what that page posts back.
+//! view is served (`wrapper_doc`) and the judgement of what that page posts back.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -478,18 +478,18 @@ fn start_tag(svg: &str, at: usize, stack: &mut Vec<String>, elements: &mut usize
 
 // --- The page the view loads ---
 
-/// The page the rasterizer's view loads: a 128 by 128 transparent page with the SVG as a
-/// base64 `data:` image (`object-fit: cover` is the aspect fill of `CIG:365-388`), under a policy
-/// that allows nothing but data images and the page's own nonce'd script, which posts "ok" once the
-/// image decoded and painted with a size, else "fail". The SVG is only ever inside the `<img>`:
-/// no script in it runs, and its text is never part of the page.
-pub fn wrapper_html(svg: &str) -> String {
+/// The page the rasterizer's view is served (`webhost::LocalDoc`, never NavigateToString): a 128 by
+/// 128 transparent page with the SVG as a base64 `data:` image (`object-fit: cover` is the aspect
+/// fill of `CIG:365-388`). The policy is a response header: nothing but data images and the page's
+/// own nonce'd script, which posts "ok" once the image decoded and painted with a size, else
+/// "fail". The SVG is only ever inside the `<img>`: no script in it runs, and its text is never part
+/// of the page.
+pub fn wrapper_doc(svg: &str) -> crate::webhost::LocalDoc {
     use base64::Engine as _;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let b64 = base64::engine::general_purpose::STANDARD.encode(svg.as_bytes());
-    format!(
+    let html = format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
-<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-{nonce}'\">\
 <style>html,body{{margin:0;padding:0;width:{SIDE}px;height:{SIDE}px;overflow:hidden;background:transparent}}\
 img{{display:block;width:{SIDE}px;height:{SIDE}px;object-fit: cover}}</style></head>\
 <body><img id=\"i\" alt=\"\" src=\"data:image/svg+xml;base64,{b64}\">\
@@ -499,45 +499,18 @@ function go(){{var raf=window.requestAnimationFrame||function(f){{setTimeout(f,1
 i.onerror=function(){{done(false)}};\
 if(i.decode){{i.decode().then(go,function(){{done(false)}})}}else if(i.complete){{go()}}else{{i.onload=go}}\
 }})();</script></body></html>"
-    )
+    );
+    let csp = format!("default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'");
+    crate::webhost::LocalDoc::new(html, &csp)
 }
 
-/// Whether a request the rasterizer's view makes may go on (preflight P23): the document and its
-/// data images only. Anything with a scheme that reaches a network or a disk, and anything
-/// without a scheme, is blocked.
-pub fn request_allowed(url: &str) -> bool {
-    matches!(crate::webhost::scheme_of(url).as_str(), "data" | "about" | "blob")
-}
-
-/// Judges what the wrapper page posts (preflight P17): only the exact JSON strings `"ok"` and
-/// `"fail"`, and only from the document Tandem loaded (the first `data:` source the view reports),
-/// until the view reports any other source.
-#[derive(Debug, Default)]
-pub struct Judge {
-    initial: Option<String>,
-    navigated: bool,
-}
-
-impl Judge {
-    pub fn on_source(&mut self, url: &str) {
-        match &self.initial {
-            None if crate::webhost::scheme_of(url) == "data" => self.initial = Some(url.to_string()),
-            None => self.navigated = true,
-            Some(i) if i != url => self.navigated = true,
-            _ => {}
-        }
-    }
-
-    /// Some(true) for "ok", Some(false) for "fail", None for anything else.
-    pub fn on_message(&self, json: &str, source: &str) -> Option<bool> {
-        if self.navigated || self.initial.as_deref() != Some(source) {
-            return None;
-        }
-        match json {
-            "\"ok\"" => Some(true),
-            "\"fail\"" => Some(false),
-            _ => None,
-        }
+/// What the wrapper page posted (preflight P17): only the exact JSON strings `"ok"` and `"fail"`
+/// count, and only when `LocalDoc::trusts` the message's source (the page's exact URL).
+pub fn verdict(json: &str) -> Option<bool> {
+    match json {
+        "\"ok\"" => Some(true),
+        "\"fail\"" => Some(false),
+        _ => None,
     }
 }
 
@@ -635,22 +608,28 @@ mod tests {
     }
 
     #[test]
-    fn wrapper_html_holds_the_svg_only_as_data() {
+    fn wrapper_doc_holds_the_svg_only_as_data() {
+        use crate::webhost::Answer;
         let svg = "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>";
-        let html = wrapper_html(svg);
+        let doc = wrapper_doc(svg);
+        let Answer::Respond { body, headers, .. } = doc.answer(doc.url()) else { panic!("served") };
+        let html = String::from_utf8(body).unwrap();
+        let csp = headers.iter().find(|(k, _)| k == "Content-Security-Policy").map(|(_, v)| v.clone()).expect("the policy is a header");
         assert!(html.contains("data:image/svg+xml;base64,"));
         assert!(html.contains("object-fit: cover"));
-        // The SVG's own text is nowhere in the page, only its base64.
+        // The SVG's own text is nowhere in the page, only its base64; no policy meta in the page.
         assert!(!html.contains("alert(1)") && !html.contains("<script>alert"));
+        assert!(!html.contains("Content-Security-Policy"), "the policy is a header, not markup");
         // One script, the wrapper's own, under a nonce; no external reference, default-src none.
         assert_eq!(html.matches("<script").count(), 1);
-        assert!(html.contains("default-src 'none'") && html.contains("img-src data:"));
-        assert!(!html.contains("script-src 'unsafe-inline'"), "scripts run only under the nonce");
-        let nonce = html.split("script-src 'nonce-").nth(1).and_then(|s| s.split('\'').next()).expect("a nonce in the policy");
+        assert!(csp.contains("default-src 'none'") && csp.contains("img-src data:") && csp.contains("frame-src 'none'"));
+        assert!(!csp.contains("script-src 'unsafe-inline'"), "scripts run only under the nonce");
+        let nonce = csp.split("script-src 'nonce-").nth(1).and_then(|s| s.split('\'').next()).expect("a nonce in the policy");
         assert!(nonce.len() >= 16);
         assert!(html.contains(&format!("<script nonce=\"{nonce}\">")));
         assert!(!html.contains("http://") && !html.contains("https://"));
-        assert_ne!(wrapper_html(svg), wrapper_html(svg), "a fresh nonce per page");
+        let other = wrapper_doc(svg);
+        assert_ne!(other.url(), doc.url(), "a fresh URL per page");
         use base64::Engine as _;
         let b64 = html.split("base64,").nth(1).unwrap().split('"').next().unwrap();
         assert_eq!(base64::engine::general_purpose::STANDARD.decode(b64).unwrap(), svg.as_bytes());
@@ -757,35 +736,38 @@ mod tests {
     }
 
     #[test]
-    fn only_data_and_inert_requests_go_on() {
-        assert!(request_allowed("data:text/html;charset=utf-8;base64,AAAA"));
-        assert!(request_allowed("data:image/svg+xml;base64,AAAA"));
-        assert!(request_allowed("about:blank"));
-        for u in ["http://evil.test/a.png", "https://evil.test/a", "HTTPS://evil.test", "ftp://x/a", "ws://x", "wss://x", "file:///C:/x", "//evil.test/a", "\\\\host\\share\\a", ""] {
-            assert!(!request_allowed(u), "{u}");
+    fn only_the_page_and_data_images_are_served() {
+        use crate::webhost::Answer;
+        let doc = wrapper_doc("<svg/>");
+        assert!(matches!(doc.answer(doc.url()), Answer::Respond { status: 200, .. }));
+        assert_eq!(doc.answer("data:image/svg+xml;base64,AAAA"), Answer::Continue);
+        for u in ["http://evil.test/a.png", "https://evil.test/a", "HTTPS://evil.test", "ftp://x/a", "ws://x", "wss://x", "file:///C:/x", "//evil.test/a", "\\\\host\\share\\a", "", "about:blank"] {
+            assert_eq!(doc.answer(u), Answer::Block, "{u}");
         }
     }
 
     #[test]
     fn the_wrapper_is_judged_by_its_own_source() {
-        let mut j = Judge::default();
+        let mut d = wrapper_doc("<svg/>");
+        let url = d.url().to_string();
         // Nothing is trusted before the view reported its document.
-        assert_eq!(j.on_message("\"ok\"", "data:text/html,a"), None);
-        j.on_source("data:text/html,a");
-        assert_eq!(j.on_message("\"ok\"", "data:text/html,a"), Some(true));
-        assert_eq!(j.on_message("\"fail\"", "data:text/html,a"), Some(false));
-        // Another source, or text outside the closed set, answers nothing.
-        assert_eq!(j.on_message("\"ok\"", "https://evil.test/"), None);
+        assert!(!d.trusts(&url));
+        d.saw_source(&url);
+        assert!(d.trusts(&url));
+        assert_eq!(verdict("\"ok\""), Some(true));
+        assert_eq!(verdict("\"fail\""), Some(false));
+        // Another source answers nothing; text outside the closed set answers nothing.
+        assert!(!d.trusts("https://evil.test/") && !d.trusts("data:text/html,a"));
         for m in ["ok", "\"OK\"", "\"ok \"", "{\"ok\":1}", "true", "\"fail\" ", "", "\"o\\u006b\""] {
-            assert_eq!(j.on_message(m, "data:text/html,a"), None, "{m}");
+            assert_eq!(verdict(m), None, "{m}");
         }
         // Once the view navigated anywhere else, nothing counts any more.
-        j.on_source("https://evil.test/");
-        assert_eq!(j.on_message("\"ok\"", "data:text/html,a"), None);
-        // A first source that is not a data document is never trusted.
-        let mut k = Judge::default();
-        k.on_source("https://evil.test/");
-        assert_eq!(k.on_message("\"ok\"", "https://evil.test/"), None);
+        d.saw_source("https://evil.test/");
+        assert!(!d.trusts(&url));
+        // A first source that is not the document is never trusted.
+        let mut k = wrapper_doc("<svg/>");
+        k.saw_source("https://evil.test/");
+        assert!(!k.trusts("https://evil.test/") && !k.trusts(k.url()));
     }
 
     fn png(w: u32, h: u32, px: [u8; 4]) -> Vec<u8> {

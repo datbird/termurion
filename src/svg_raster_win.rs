@@ -17,8 +17,8 @@ use std::time::Instant;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetLayeredWindowAttributes, ShowWindow, LWA_ALPHA, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP};
 
-use crate::svg_icon::{self, Judge};
-use crate::webhost::{Answer, Event, Sink, ViewId};
+use crate::svg_icon;
+use crate::webhost::{Event, LocalDoc, Sink, ViewId};
 use crate::webhost_win::{Env, ViewSetup, WebView};
 
 /// The script token of the one capture.
@@ -33,7 +33,7 @@ enum Stage {
 
 /// The view's setup: InPrivate (preflight P7), the page message bridge on (the wrapper posts "ok"
 /// or "fail"), no navigation after the first load, no new windows, no devtools, every request
-/// offered to `svg_icon::request_allowed`, transparent at scale 1.0.
+/// answered by the page's `LocalDoc` (the page, data images, else 403), transparent at scale 1.0.
 pub fn setup() -> ViewSetup {
     ViewSetup {
         transparent: true,
@@ -71,7 +71,7 @@ pub struct Rasterizer {
     view: Option<WebView>,
     id: ViewId,
     started: Instant,
-    judge: Judge,
+    doc: LocalDoc,
     stage: Stage,
 }
 
@@ -86,8 +86,10 @@ impl Rasterizer {
         let view = WebView::create(env, hwnd as isize, id, (0, 0, side, side), setup(), sink);
         // Visible before the capture, so the renderer does not treat the page as occluded.
         view.set_visible(true);
-        view.navigate_to_string(&svg_icon::wrapper_html(svg));
-        Ok(Rasterizer { hwnd: hwnd as isize, view: Some(view), id, started: Instant::now(), judge: Judge::default(), stage: Stage::Loading })
+        // Served by the host's one function on Tandem's own origin (never NavigateToString).
+        let doc = svg_icon::wrapper_doc(svg);
+        view.navigate_tandem(doc.url());
+        Ok(Rasterizer { hwnd: hwnd as isize, view: Some(view), id, started: Instant::now(), doc, stage: Stage::Loading })
     }
 
     pub fn id(&self) -> ViewId {
@@ -109,14 +111,13 @@ impl Rasterizer {
             return self.limit();
         }
         match e {
-            Event::Source(_, url) => self.judge.on_source(url),
+            Event::Source(_, url) => self.doc.saw_source(url),
             Event::Request { token, url, .. } => {
-                let answer = if svg_icon::request_allowed(url) { Answer::Continue } else { Answer::Block };
                 if let Some(v) = &self.view {
-                    v.answer_request(*token, answer);
+                    v.answer_request(*token, self.doc.answer(url));
                 }
             }
-            Event::Message { json, source, .. } if self.stage == Stage::Loading => match self.judge.on_message(json, source) {
+            Event::Message { json, source, .. } if self.stage == Stage::Loading => match svg_icon::verdict(json).filter(|_| self.doc.trusts(source)) {
                 Some(true) => {
                     self.stage = Stage::Capturing;
                     if let Some(v) = &self.view {
@@ -185,14 +186,14 @@ mod tests {
         assert_eq!(s.scale, Some(1.0));
     }
 
-    /// P18 and the class rules: one `navigate_to_string` caller (the wrapper), no COM handler of
+    /// P18 and the class rules: no `navigate_to_string` caller (the wrapper is served), no COM handler of
     /// its own, no winit window (so never a terminal window), checked before any window or view.
     #[test]
     fn the_rasterizer_has_one_page_and_no_handlers() {
         let me = include_str!("svg_raster_win.rs");
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
-        assert_eq!(prod.matches(".navigate_to_string(").count(), 1);
-        assert!(prod.contains("svg_icon::wrapper_html("));
+        assert_eq!(prod.matches(".navigate_to_string(").count(), 0);
+        assert!(prod.contains("svg_icon::wrapper_doc(") && prod.contains("navigate_tandem(doc.url())"));
         assert!(!prod.contains("Handler::create") && !prod.contains("winit"));
         let check = prod.find("svg_icon::check(").expect("the candidate is judged");
         assert!(check < prod.find("make_window()?").unwrap() && check < prod.find("WebView::create(").unwrap());

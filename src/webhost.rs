@@ -700,12 +700,137 @@ pub fn pane_focus_reports(prev: Option<(crate::layout::PaneId, bool)>, next: Opt
     }
 }
 
+/// The fixed Tandem-only host that program and model content is served under (never resolvable).
+pub const LOCAL_HOST: &str = "tandem-local.invalid";
+
+/// One document Tandem serves to a view itself: a script's popover HTML or the icon wrapper page.
+/// The class rule (Task 4 fix 1) replaces `NavigateToString` for program and model content: the view
+/// navigates to this document's URL on `LOCAL_HOST`, the host's request filter hands every request
+/// of the view to `answer`, and the content policy travels as a response header, so no markup is
+/// parsed, scanned or changed on the way (a meta tag inserted after a doctype or a comment is
+/// exactly the differential this removes). The URL has a random path, known before the load, so
+/// the bridge's source check is an exact comparison and does not depend on what the runtime
+/// reports for `NavigateToString` content.
+#[derive(Debug)]
+pub struct LocalDoc {
+    url: String,
+    html: String,
+    csp: String,
+    seen: bool,
+    navigated: bool,
+}
+
+fn without_fragment(url: &str) -> &str {
+    url.split('#').next().unwrap_or(url)
+}
+
+impl LocalDoc {
+    /// A document of `html` served under the policy `csp`.
+    pub fn new(html: String, csp: &str) -> LocalDoc {
+        let url = format!("https://{LOCAL_HOST}/{}/doc", uuid::Uuid::new_v4().simple());
+        LocalDoc { url, html, csp: csp.to_string(), seen: false, navigated: false }
+    }
+
+    /// The URL to navigate to (`WebView::navigate_tandem`).
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The answer to one request of the view: the document at its exact URL with the policy as a
+    /// header; `data:` and `blob:` requests go on (they cannot reach a network or a disk, and the
+    /// policy governs which may load); everything else is refused (403).
+    pub fn answer(&self, request_url: &str) -> Answer {
+        if request_url == self.url {
+            return Answer::Respond {
+                status: 200,
+                mime: "text/html; charset=utf-8".to_string(),
+                body: self.html.clone().into_bytes(),
+                headers: vec![
+                    ("Content-Security-Policy".to_string(), self.csp.clone()),
+                    ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
+                    ("Cache-Control".to_string(), "no-store".to_string()),
+                    ("Referrer-Policy".to_string(), "no-referrer".to_string()),
+                    ("X-DNS-Prefetch-Control".to_string(), "off".to_string()),
+                ],
+            };
+        }
+        match scheme_of(request_url).as_str() {
+            "data" | "blob" => Answer::Continue,
+            _ => Answer::Block,
+        }
+    }
+
+    /// A source the view reported. The document's own URL is the document; the blank page a new
+    /// view starts on is nobody's and is ignored until the document is seen; any other source ends
+    /// the trust for good.
+    pub fn saw_source(&mut self, url: &str) {
+        if self.navigated {
+            return;
+        }
+        let base = without_fragment(url);
+        if base == self.url {
+            self.seen = true;
+        } else if !(base == "about:blank" && !self.seen) {
+            self.navigated = true;
+        }
+    }
+
+    /// Whether a message's source is this document: its exact URL (a fragment link inside the page is
+    /// not a navigation), reported by the view, and the view has not navigated since.
+    pub fn trusts(&self, source: &str) -> bool {
+        self.seen && !self.navigated && without_fragment(source) == self.url
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn yes(_: &Path) -> bool {
         true
+    }
+
+    /// Class ruling (Task 4 fix 1): program and model content is served by one function on a fixed
+    /// Tandem-only origin, the policy is a response header, the markup is never parsed or changed.
+    #[test]
+    fn local_documents_get_their_policy_as_a_header() {
+        let hostile = "<!-- --!><img src=\"https://x.test/p\"><!DOCTYPE html><script>fetch('https://x.test')</script><!--";
+        let d = LocalDoc::new(hostile.to_string(), "default-src 'none'");
+        assert!(d.url().starts_with("https://tandem-local.invalid/") && d.url().ends_with("/doc"), "{}", d.url());
+        assert_ne!(d.url(), LocalDoc::new(String::new(), "").url(), "a random path per document");
+        let Answer::Respond { status, mime, body, headers } = d.answer(d.url()) else { panic!("the document is served") };
+        assert_eq!((status, mime.as_str()), (200, "text/html; charset=utf-8"));
+        assert_eq!(body, hostile.as_bytes(), "the markup is served byte for byte, no meta inserted");
+        let h = |n: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| v.as_str());
+        assert_eq!(h("Content-Security-Policy"), Some("default-src 'none'"));
+        assert_eq!(h("X-Content-Type-Options"), Some("nosniff"));
+        assert_eq!(h("Cache-Control"), Some("no-store"));
+        // Every other request of the view is refused (403); data and blob images cannot reach anything.
+        for other in ["https://tandem-local.invalid/other/doc", "https://x.test/p", "http://127.0.0.1/", "file:///C:/x", "https://tandem-local.invalid/", &format!("{}x", d.url())] {
+            assert_eq!(d.answer(other), Answer::Block, "{other}");
+        }
+        assert_eq!(d.answer("data:image/png;base64,AAAA"), Answer::Continue);
+    }
+
+    #[test]
+    fn local_document_source_is_the_exact_url() {
+        let mut d = LocalDoc::new("x".into(), "");
+        let url = d.url().to_string();
+        assert!(!d.trusts(&url), "not seen yet");
+        d.saw_source("about:blank");
+        assert!(!d.trusts("about:blank") && !d.trusts(&url), "the initial blank page is nobody's");
+        d.saw_source(&url);
+        assert!(d.trusts(&url));
+        assert!(d.trusts(&format!("{url}#top")), "a fragment link inside the page is not a navigation");
+        for other in ["about:blank", "data:text/html,x", "https://evil.example/", "", &format!("{url}/x"), &url.replace("/doc", "/dox")] {
+            assert!(!d.trusts(other), "{other}");
+        }
+        d.saw_source("https://evil.example/");
+        assert!(!d.trusts(&url), "it navigated away");
+        let mut e = LocalDoc::new("x".into(), "");
+        e.saw_source("https://evil.example/");
+        e.saw_source(e.url().to_string().as_str());
+        assert!(!e.trusts(e.url()), "a first source that is not the document ends the trust for good");
     }
 
     #[test]

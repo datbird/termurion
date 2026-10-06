@@ -165,9 +165,15 @@ impl App {
         };
         let Some(env) = self.web_env(Store::Default) else { return };
         let view = WebView::create(env, hwnd, id, bounds, setup, sink);
+        // A script's HTML is served by the host's one function on Tandem's own origin, never loaded
+        // with NavigateToString; Quick Look is the page the person pointed at.
+        let mut served = None;
         match &kind {
             Kind::Html { html } => match web_popover::popover_document(html) {
-                Ok(doc) => view.navigate_to_string(&doc),
+                Ok(doc) => {
+                    view.navigate_tandem(doc.url());
+                    served = Some(doc);
+                }
                 Err(_) => {
                     self.web_popover = None;
                     return;
@@ -177,6 +183,9 @@ impl App {
         }
         if let Some((_, p)) = self.web_popover.as_mut() {
             p.attach(view, id);
+            if let Some(doc) = served {
+                p.set_doc(doc);
+            }
         }
         self.redraw();
     }
@@ -212,8 +221,10 @@ impl App {
         let Some((_, p)) = self.web_popover.as_mut().filter(|(_, p)| p.view_id() == view && view != 0) else { return false };
         match event {
             Event::Source(_, url) => p.set_current(url),
+            // Every request of the view goes to the one serving function: the document, or 403.
+            Event::Request { token, url, .. } => p.answer(*token, url),
             Event::Message { json, source, .. } => {
-                if p.trust.trusts(source) && p.limiter.allow(Instant::now()) {
+                if p.trusts(source) && p.limiter.allow(Instant::now()) {
                     let json = json.clone();
                     self.web_invoke(view, &json);
                 }
@@ -361,16 +372,32 @@ mod tests {
         assert!(pg[..pg.find("\n    }\n").unwrap()].contains("web_popover"));
     }
 
-    /// P18: no text from a program reaches NavigateToString except a status bar component's HTML.
+    /// P18 and the class ruling: no text from a program, a page or a model is ever loaded with
+    /// NavigateToString; a status bar component's HTML is served by `LocalDoc` and nothing else.
     #[test]
-    fn navigate_to_string_has_one_popover_caller() {
+    fn program_content_is_served_never_navigated_to_string() {
         let me = include_str!("web_popover_app.rs");
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
-        assert_eq!(prod.matches(".navigate_to_string(").count(), 1);
-        assert!(prod.contains("popover_document("), "the policy wraps the HTML");
+        assert_eq!(prod.matches(".navigate_to_string(").count(), 0);
+        assert!(prod.contains("navigate_tandem(doc.url())") && prod.contains("popover_document("));
         assert_eq!(prod.matches("WebView::create(").count(), 1);
         assert!(prod.contains("quick_look_setup(") && prod.contains("html_setup()"));
         assert!(prod.contains("quick_look_scheme_ok(") , "what 'Open in' reads back is judged again");
+        // Nowhere in the application's own code.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let path = e.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|x| x == "rs") && !path.ends_with("webhost_win.rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let prod = &text[..text.find("#[cfg(test)]").unwrap_or(text.len())];
+                    assert!(!prod.contains(".navigate_to_string("), "{}", path.display());
+                }
+            }
+        }
     }
 
     /// Every popover COM-facing step runs behind the host's unwind guard: this module makes no

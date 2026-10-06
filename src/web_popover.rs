@@ -3,7 +3,7 @@
 //! window holding a WebView2 child. The HTML a script supplies and the URL a person points at are
 //! untrusted: the HTML loads under a Content-Security-Policy that allows no network, nothing
 //! navigates after the first load (P6), the bridge is a closed set from the popover's own
-//! document, and Quick Look is an InPrivate view that may reach http and https only, through the
+//! document (an exact URL on Tandem's own origin, `webhost::LocalDoc`), and Quick Look is an InPrivate view that may reach http and https only, through the
 //! one navigation verdict (B4, P7).
 
 use std::time::{Duration, Instant};
@@ -27,9 +27,10 @@ pub const BUTTON_HEIGHT: f64 = 22.0;
 pub const MAX_HTML: usize = 1024 * 1024;
 /// Bridge calls a popover may make in one second (P6).
 pub const BRIDGE_PER_SECOND: usize = 20;
-/// The policy every popover document is loaded under: no network, no frames, no forms, no base,
-/// images only as data. The bridge needs the page's own inline script, which the policy allows.
-pub const POPOVER_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'";
+/// The policy every popover document is served under, as a response header: no network, no frames,
+/// no forms, no base, images only as data. The bridge needs the page's own inline script, which the
+/// policy allows.
+pub const POPOVER_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
 /// Removes WebRTC before any page script runs, in every frame: a content policy does not govern
 /// it, and a STUN request is network traffic (review fix, Minor 1).
@@ -111,53 +112,26 @@ pub fn layout(kind: &Kind, size: (f64, f64)) -> Layout {
     }
 }
 
-/// The document a status bar popover loads: the policy first (nothing the script wrote can
-/// precede it), then the script's HTML. Refused over `MAX_HTML` (the caller falls back to the
-/// text popover with a log line).
-pub fn popover_document(html: &str) -> Result<String, &'static str> {
+/// The document a status bar popover is served: the script's HTML, byte for byte, under the policy
+/// as a response header (nothing is parsed or inserted). Refused over `MAX_HTML` (the caller falls
+/// back to the text popover with a log line).
+pub fn popover_document(html: &str) -> Result<webhost::LocalDoc, &'static str> {
     if html.len() > MAX_HTML {
         return Err("the popover's HTML is too large");
     }
-    // A leading doctype stays first (the page is not in quirks mode); the policy follows it at once.
-    let at = doctype_end(html);
-    let (head, rest) = html.split_at(at);
-    Ok(format!("{head}<meta http-equiv=\"Content-Security-Policy\" content=\"{POPOVER_CSP}\"><meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">{rest}"))
-}
-
-/// Where a leading `<!doctype ...>` ends, after only white space, a BOM and comments; 0 when the
-/// HTML starts with anything else, or the doctype holds a quote or a `<` (it could hide its own end).
-fn doctype_end(html: &str) -> usize {
-    let mut i = 0;
-    loop {
-        let t = html[i..].trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
-        i = html.len() - t.len();
-        if t.starts_with("<!--") {
-            match t.find("-->") {
-                Some(n) => i += n + 3,
-                None => return 0,
-            }
-        } else {
-            break;
-        }
-    }
-    let t = &html[i..];
-    if !t.get(..9).is_some_and(|s| s.eq_ignore_ascii_case("<!doctype")) {
-        return 0;
-    }
-    match t.find('>') {
-        Some(n) if !t[1..n].contains(['"', '\'', '<']) => i + n + 1,
-        _ => 0,
-    }
+    Ok(webhost::LocalDoc::new(html.to_string(), POPOVER_CSP))
 }
 
 /// The HTML popover's view: the bridge script, a message channel for it, no automatic windows, no
-/// developer tools, and nothing may load after Tandem's own NavigateToString (P6, B4).
+/// developer tools, every request answered by the popover's `LocalDoc` (the document, or 403), and
+/// nothing may load after Tandem's own navigation to it (P6, B4).
 pub fn html_setup() -> ViewSetup {
     ViewSetup {
         scripts: vec![WEBRTC_OFF_JS.to_string(), webhost::INVOKE_JS.to_string()],
         guard_local_schemes: true,
         allowed_schemes: Some(Vec::new()),
         web_message: true,
+        resource_filters: vec!["*".to_string()],
         ..Default::default()
     }
 }
@@ -192,49 +166,6 @@ pub fn bridge_call(is_html: bool, json: &str) -> BridgeCall {
         None => BridgeCall::Ignore,
         Some((None, callback)) => BridgeCall::Missing { reply: callback.map(|cb| webhost::return_script(&cb, "null")), log: "missing invocation" },
         Some((Some(invocation), callback)) => BridgeCall::Invoke { invocation, callback },
-    }
-}
-
-/// Which document may call the bridge (P6): the one Tandem loaded itself (the first `data:`
-/// source the view reports), until the view reports any other source.
-#[derive(Debug, Default)]
-pub struct BridgeTrust {
-    /// The document, without its fragment (a `#top` link inside it is not a navigation away).
-    initial: Option<String>,
-    /// The runtime reported `about:blank` for the document: one `data:` source may still replace it.
-    blank: bool,
-    navigated: bool,
-}
-
-fn without_fragment(url: &str) -> &str {
-    url.split('#').next().unwrap_or(url)
-}
-
-impl BridgeTrust {
-    /// The first source is the document Tandem loaded: WebView2 reports `data:` or `about:blank` for
-    /// NavigateToString content (the ignored `popover_source_is_recorded` test prints which). A web
-    /// page as the first source, or any later different document, ends the trust.
-    pub fn saw_source(&mut self, url: &str) {
-        let base = without_fragment(url);
-        match &self.initial {
-            None => match webhost::scheme_of(url).as_str() {
-                scheme @ ("data" | "about") => {
-                    self.initial = Some(base.to_string());
-                    self.blank = scheme == "about";
-                }
-                _ => self.navigated = true,
-            },
-            Some(i) if i == base => {}
-            Some(_) if self.blank && webhost::scheme_of(url) == "data" => {
-                self.initial = Some(base.to_string());
-                self.blank = false;
-            }
-            Some(_) => self.navigated = true,
-        }
-    }
-
-    pub fn trusts(&self, source: &str) -> bool {
-        !self.navigated && self.initial.as_deref().is_some_and(|i| i == without_fragment(source))
     }
 }
 
@@ -310,7 +241,8 @@ pub struct WebPopover {
     view: Option<WebView>,
     view_id: ViewId,
     focused: bool,
-    pub trust: BridgeTrust,
+    /// The document served to the view (HTML popovers); its URL is the only source the bridge trusts (P6).
+    doc: Option<webhost::LocalDoc>,
     pub limiter: BridgeLimiter,
     /// The page's URL now (from the view's source events).
     current: Option<String>,
@@ -330,7 +262,7 @@ impl WebPopover {
         host.window.set_visible(true);
         host.focus();
         let layout = layout(&kind, size);
-        Ok(WebPopover { host, kind, layout, view: None, view_id: 0, focused: false, trust: BridgeTrust::default(), limiter: BridgeLimiter::default(), current: None, opened: Instant::now() })
+        Ok(WebPopover { host, kind, layout, view: None, view_id: 0, focused: false, doc: None, limiter: BridgeLimiter::default(), current: None, opened: Instant::now() })
     }
 
     pub fn id(&self) -> WindowId {
@@ -378,8 +310,28 @@ impl WebPopover {
 
     /// The page's URL now, as the view reports it.
     pub fn set_current(&mut self, url: &str) {
-        self.trust.saw_source(url);
+        if let Some(d) = self.doc.as_mut() {
+            d.saw_source(url);
+        }
         self.current = Some(url.to_string());
+    }
+
+    /// The document the view was told to load (an HTML popover).
+    pub fn set_doc(&mut self, doc: webhost::LocalDoc) {
+        self.doc = Some(doc);
+    }
+
+    /// Whether a message from `source` is the popover's own document's (P6).
+    pub fn trusts(&self, source: &str) -> bool {
+        self.doc.as_ref().is_some_and(|d| d.trusts(source))
+    }
+
+    /// Answers one request of the view: the document, or a refusal (the one serving function).
+    pub fn answer(&self, token: u64, url: &str) {
+        let answer = self.doc.as_ref().map_or(webhost::Answer::Block, |d| d.answer(url));
+        if let Some(v) = &self.view {
+            v.answer_request(token, answer);
+        }
     }
 
     /// What "Open in ..." opens now (Quick Look only).
@@ -548,54 +500,23 @@ mod tests {
         }
     }
 
-    /// P6: only the popover's own initial document may call the bridge, and only until it navigates.
+    /// P6 and the class ruling: the popover's HTML is served as it is, under its policy as a header,
+    /// and only its own document's exact URL may call the bridge (no markup parsing anywhere).
     #[test]
-    fn bridge_needs_the_popovers_own_document() {
-        let mut t = BridgeTrust::default();
-        assert!(!t.trusts("data:text/html;charset=utf-8,x"), "no document yet");
-        t.saw_source("https://evil.example/");
-        assert!(!t.trusts("https://evil.example/"), "a web page is never the popover's document");
-        let mut t = BridgeTrust::default();
-        t.saw_source("data:text/html;charset=utf-8,x");
-        assert!(t.trusts("data:text/html;charset=utf-8,x"));
-        assert!(!t.trusts("https://evil.example/"), "another document");
-        assert!(!t.trusts(""), "an unknown source");
-        t.saw_source("https://evil.example/");
-        assert!(!t.trusts("data:text/html;charset=utf-8,x"), "it has navigated since");
+    fn popover_documents_are_served_not_rewritten() {
+        let hostile = "<!-- --!><img src=\"https://x.test/p\"><script>fetch('https://x.test')</script><!-- --><!doctype html>";
+        let mut d = popover_document(hostile).unwrap();
+        let webhost::Answer::Respond { body, headers, .. } = d.answer(d.url()) else { panic!("served") };
+        assert_eq!(body, hostile.as_bytes(), "byte for byte: no meta tag, no doctype scan");
+        assert!(headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v == POPOVER_CSP));
+        assert_eq!(d.answer("https://x.test/p"), webhost::Answer::Block);
+        assert_eq!(d.answer("https://x.test/"), webhost::Answer::Block);
+        let url = d.url().to_string();
+        d.saw_source(&url);
+        assert!(d.trusts(&url) && !d.trusts("data:text/html;charset=utf-8,x") && !d.trusts("about:blank"));
     }
 
-    /// Review fix (Task 3, Important 1 and Minor 2): the document's source is whatever the runtime
-    /// reports for NavigateToString content, `data:` or `about:blank`; a fragment link inside the
-    /// page does not kill the bridge; any other navigation does.
-    #[test]
-    fn bridge_trust_follows_what_the_runtime_reports() {
-        // about:blank for the page, then a data: source that replaces it once.
-        let mut t = BridgeTrust::default();
-        t.saw_source("about:blank");
-        assert!(t.trusts("about:blank"), "the runtime reports about:blank for NavigateToString content");
-        t.saw_source("data:text/html;charset=utf-8,x");
-        assert!(t.trusts("data:text/html;charset=utf-8,x"));
-        assert!(!t.trusts("about:blank"));
-        t.saw_source("https://evil.example/");
-        assert!(!t.trusts("data:text/html;charset=utf-8,x"));
-        // A fragment navigation inside the document keeps the bridge.
-        let mut f = BridgeTrust::default();
-        f.saw_source("data:text/html;charset=utf-8,x");
-        f.saw_source("data:text/html;charset=utf-8,x#top");
-        assert!(f.trusts("data:text/html;charset=utf-8,x"));
-        assert!(f.trusts("data:text/html;charset=utf-8,x#top"));
-        assert!(!f.trusts("data:text/html;charset=utf-8,y#top"), "another document");
-        f.saw_source("data:text/html;charset=utf-8,y");
-        assert!(!f.trusts("data:text/html;charset=utf-8,x"), "a different document ends it");
-        // The about:blank exception is used once: a second change ends it.
-        let mut b = BridgeTrust::default();
-        b.saw_source("about:blank");
-        b.saw_source("data:text/html,a");
-        b.saw_source("data:text/html,b");
-        assert!(!b.trusts("data:text/html,b") && !b.trusts("data:text/html,a"));
-    }
-
-    /// Minor 1, 4: no WebRTC, no DNS prefetch, and the policy after a doctype (standards mode).
+    /// No WebRTC in any frame, no frames at all, no network, no connections, as a header.
     #[test]
     fn popovers_have_no_webrtc_prefetch_or_quirks() {
         let h = html_setup();
@@ -605,23 +526,13 @@ mod tests {
         for name in ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCRtpSender"] {
             assert!(WEBRTC_OFF_JS.contains(name), "{name}");
         }
-        let doc = popover_document("<p>x</p>").unwrap();
-        assert!(doc.contains("<meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">"));
-        assert!(doc.find("Content-Security-Policy").unwrap() < doc.find("x-dns-prefetch-control").unwrap());
-        // A doctype stays first, so the page is not in quirks mode; the policy follows it at once.
-        let d = popover_document("  <!DOCTYPE html>\n<script>1</script>").unwrap();
-        assert!(d.trim_start().to_ascii_lowercase().starts_with("<!doctype html>"));
-        let doctype_end = d.find('>').unwrap();
-        assert!(d.find("Content-Security-Policy").unwrap() > doctype_end);
-        assert!(d.find("Content-Security-Policy").unwrap() < d.find("<script>1").unwrap(), "nothing the script wrote precedes the policy");
-        let c = popover_document("<!-- hi --><!doctype html><p>").unwrap();
-        assert!(c.find("Content-Security-Policy").unwrap() < c.find("<p>").unwrap());
-        // A doctype that holds a quote could hide the end of itself: the policy goes first.
-        let q = popover_document("<!doctype html SYSTEM \"a>b\"><script>1</script>").unwrap();
-        assert!(q.starts_with("<meta http-equiv=\"Content-Security-Policy\""));
-        // Anything else before the doctype is the script's own text: the policy goes first.
-        let s = popover_document("<script>1</script><!doctype html>").unwrap();
-        assert!(s.starts_with("<meta http-equiv=\"Content-Security-Policy\""));
+        for must in ["frame-src 'none'", "connect-src 'none'", "default-src 'none'"] {
+            assert!(POPOVER_CSP.contains(must), "{must}");
+        }
+        let d = popover_document("<p>x</p>").unwrap();
+        let webhost::Answer::Respond { headers, .. } = d.answer(d.url()) else { panic!("served") };
+        assert!(headers.iter().any(|(k, v)| k == "X-DNS-Prefetch-Control" && v == "off"));
+        assert!(headers.iter().any(|(k, v)| k == "Referrer-Policy" && v == "no-referrer"));
     }
 
     /// Review fix (Task 3, Important 1): records what a real WebView2 reports as the `Source` of a
@@ -631,7 +542,7 @@ mod tests {
     /// (skips with a note otherwise). The value is in docs/superpowers/rulings/m13x-rulings.txt.
     #[test]
     #[ignore]
-    fn popover_source_is_recorded() {
+    fn popover_source_is_the_served_url() {
         use crate::webhost::{EnvOptions, Event, Posted, Store};
         use crate::webhost_win::Env;
         use std::cell::RefCell;
@@ -692,15 +603,16 @@ mod tests {
         let env = cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
         let view = WebView::create(&env, hwnd as isize, 1, (0, 0, 200, 200), html_setup(), tx);
         assert!(pump(20, &mut |e| matches!(e, Event::Created(1))), "Created");
-        view.navigate_to_string(&popover_document("<script>iterm2Invoke('f()','cb')</script>").unwrap());
-        let mut trust = BridgeTrust::default();
+        let mut doc = popover_document("<script>iterm2Invoke('f()','cb')</script>").unwrap();
+        view.navigate_tandem(doc.url());
         let mut sources: Vec<String> = Vec::new();
         let mut message_source = None;
         pump(10, &mut |e| {
             match e {
+                Event::Request { token, url, .. } => view.answer_request(*token, doc.answer(url)),
                 Event::Source(1, u) => {
                     sources.push(webhost::scheme_of(u));
-                    trust.saw_source(u);
+                    doc.saw_source(u);
                 }
                 Event::Message { source, .. } => {
                     message_source = Some(source.clone());
@@ -712,8 +624,8 @@ mod tests {
         });
         println!("RECORDED sources (schemes, in order): {sources:?}; message source scheme: {:?}", message_source.as_deref().map(webhost::scheme_of));
         let src = message_source.expect("the document's message arrives");
-        assert!(trust.trusts(&src), "the bridge trusts the source the runtime reports for the document's own message");
-        assert!(matches!(webhost::scheme_of(&src).as_str(), "data" | "about"));
+        assert!(doc.trusts(&src), "the bridge trusts the source the runtime reports for the document's own message: {src}");
+        assert_eq!(src, doc.url(), "the exact URL the view was told to load");
         drop(view);
         drop(env);
         // SAFETY: the handle this test made.
@@ -739,18 +651,16 @@ mod tests {
     #[test]
     fn popover_html_is_sandboxed() {
         let doc = popover_document("<p>hello</p>").unwrap();
-        assert!(doc.starts_with("<meta http-equiv=\"Content-Security-Policy\""), "the policy comes before anything the script wrote");
-        assert!(doc.contains("x-dns-prefetch-control"));
-        assert!(doc.ends_with("<p>hello</p>"));
-        for must in ["default-src 'none'", "img-src data:", "style-src 'unsafe-inline'", "form-action 'none'", "base-uri 'none'"] {
+        let webhost::Answer::Respond { body, .. } = doc.answer(doc.url()) else { panic!("served") };
+        assert_eq!(body, b"<p>hello</p>");
+        for must in ["default-src 'none'", "img-src data:", "style-src 'unsafe-inline'", "form-action 'none'", "base-uri 'none'", "frame-src 'none'", "connect-src 'none'"] {
             assert!(POPOVER_CSP.contains(must), "{must}");
         }
-        for never in ["http:", "https:", "connect-src", "frame-src", "'unsafe-eval'", "*"] {
+        for never in ["http:", "https:", "'unsafe-eval'", "*"] {
             assert!(!POPOVER_CSP.contains(never), "{never}");
         }
         assert!(popover_document(&"x".repeat(MAX_HTML + 1)).is_err(), "over the bound");
         assert!(popover_document(&"x".repeat(MAX_HTML - 1000)).is_ok());
-        assert!(MAX_HTML < 2 * 1024 * 1024, "NavigateToString's own limit is 2 MB");
     }
 
     #[test]
@@ -758,10 +668,10 @@ mod tests {
         let h = html_setup();
         assert!(h.web_message, "the bridge");
         assert!(h.guard_local_schemes);
-        assert_eq!(h.allowed_schemes, Some(Vec::new()), "nothing loads but Tandem's own NavigateToString");
+        assert_eq!(h.allowed_schemes, Some(Vec::new()), "nothing loads but Tandem's own navigation to the served document");
         assert!(!h.new_windows && !h.devtools);
         assert_eq!(h.scripts, vec![WEBRTC_OFF_JS.to_string(), crate::webhost::INVOKE_JS.to_string()]);
-        assert!(h.resource_filters.is_empty());
+        assert_eq!(h.resource_filters, vec!["*".to_string()], "every request goes to the one serving function");
         let q = quick_look_setup("");
         assert!(!q.web_message, "no bridge for a page the person pointed at");
         assert!(q.scripts.is_empty());
@@ -806,6 +716,6 @@ mod tests {
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
         assert!(prod.contains("popover_attributes("));
         assert!(!prod.contains("AddHostObject"));
-        assert!(!prod.contains("navigate_to_string") || prod.matches("navigate_to_string(").count() == 1);
+        assert!(!prod.contains("navigate_to_string"), "program content is served, never NavigateToString");
     }
 }
