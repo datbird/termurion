@@ -2660,7 +2660,7 @@ macos_only = false
 key = "Treat Option as Alt"
 tab = "Keys"
 section = ""
-label = "Treat Option as Alt"
+label = "Treat Alt as Alt for special keys like arrows"
 type = "bool"
 default = true
 help = "Chooses whether Esc+ mode reports the key as Alt versus older Meta-style behavior."
@@ -2879,7 +2879,7 @@ section = "Hotkey Window"
 label = "Hotkey modifier-alone activation key"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "Control" }, { value = 1, label = "Shift" }, { value = 2, label = "Alt (Option)" }, { value = 3, label = "Win (Command)" } ]
+choices = [ { value = 0, label = "Control" }, { value = 1, label = "Shift" }, { value = 2, label = "Alt" }, { value = 3, label = "Win" } ]
 help = "Which single modifier key, tapped twice alone, toggles the hotkey window when double-tap activation is on."
 light_dark = false
 macos_only = false

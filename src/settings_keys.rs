@@ -806,7 +806,8 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
                     let mut text = g.string(&s.key);
-                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0).char_limit(KEYBOARD_LOCALE_LIMIT));
+                    let text = limit_locale(&text);
                     if r.changed() && text != g.string(&s.key) {
                         g.set(&s.key, Value::String(text));
                         changed = true;
@@ -1170,6 +1171,14 @@ pub fn sheet_warning(ctx: &egui::Context, g: &mut Globals, w: &mut SheetWarning,
 /// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
 /// (`GP:2152-2154`), the settings folder only while "Load settings from a custom folder or URL"
 /// is on (`GP:2210-2212`); every other row always.
+/// The longest keyboard locale id the field keeps (an HKL id is 8 hex digits).
+pub const KEYBOARD_LOCALE_LIMIT: usize = 64;
+
+/// The locale text as stored, cut to the limit.
+pub fn limit_locale(s: &str) -> String {
+    s.chars().take(KEYBOARD_LOCALE_LIMIT).collect()
+}
+
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
     row_enabled_with(g, key, crate::power::both_gpu_kinds_known())
 }
@@ -1733,6 +1742,17 @@ mod tests {
             let row = crate::advanced_pane::rows().into_iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} has no pane row"));
             assert_eq!(row.kind, want, "{key} row kind");
         }
+    }
+
+    /// 13u Task 1 fix 2: the locale field is bounded; "Treat Option as Alt" reads Alt.
+    #[test]
+    fn keyboard_locale_is_limited_and_alt_labels_agree() {
+        assert_eq!(limit_locale("00000409"), "00000409");
+        assert_eq!(limit_locale(&"a".repeat(200)).chars().count(), KEYBOARD_LOCALE_LIMIT);
+        let s = schema::find("Treat Option as Alt").unwrap();
+        assert_eq!(s.label, "Treat Alt as Alt for special keys like arrows");
+        let labels: Vec<String> = schema::find("HotKey Modifier Activation").unwrap().choices.iter().map(|c| c.label.clone()).collect();
+        assert_eq!(labels, ["Control", "Shift", "Alt", "Win"]);
     }
 
     /// 13u Task 1 (Review Focus 1): the Advanced rows with iTerm2's sections and help, the Keys

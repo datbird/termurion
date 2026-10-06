@@ -1842,6 +1842,15 @@ pub fn contrasting(c: Rgb) -> Rgb {
 /// A pinned tab's mark (Segoe Fluent Icons "Pin"; iTerm2's SF Symbol "pin.fill").
 pub const PIN_GLYPH: char = '\u{E718}';
 /// The pinned hotkey window indicator's hover text (`IH:392`).
+/// The hover text of the indicator under (`x`, `y`) among a frame's indicator rectangles
+/// (`IH:392`); None off every indicator and on those with no text.
+pub fn indicator_tip<T>(hits: &[(T, Rect, IndicatorKind)], x: f32, y: f32) -> Option<&'static str> {
+    match hits.iter().find(|(_, r, _)| r.contains(x, y))?.2 {
+        IndicatorKind::Pin => Some(PIN_HOVER),
+        _ => None,
+    }
+}
+
 pub const PIN_HOVER: &str = "This Hotkey Window is pinned.";
 /// `PinnedTabWidth`'s default in points (`AS:321`); the drawn width comes from the key.
 pub const PINNED_TAB_WIDTH: f32 = 64.0;
@@ -4383,7 +4392,18 @@ mod broadcast_tests {
         assert_eq!(indicator_glyphs(false, false, false, true, true, true), vec![PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
         let kinds: Vec<IndicatorKind> = indicators(false, false, false, false, false, true).into_iter().map(|(_, k)| k).collect();
         assert_eq!(kinds, vec![IndicatorKind::Pin]);
-        assert_eq!(PIN_HOVER, "This Hotkey Window is pinned.");
+    }
+
+    /// 13u Task 1 fix 1: hovering the pin shows its text; elsewhere nothing.
+    #[test]
+    fn pin_hover_follows_the_pointer() {
+        let pin = Rect { x: 100.0, y: 10.0, w: 12.0, h: 16.0 };
+        let hits = [(7u64, Rect { x: 80.0, y: 10.0, w: 12.0, h: 16.0 }, IndicatorKind::AiLinked), (7, pin, IndicatorKind::Pin)];
+        assert_eq!(indicator_tip(&hits, 105.0, 15.0), Some("This Hotkey Window is pinned."));
+        assert_eq!(indicator_tip(&hits, 99.0, 15.0), None, "left of the pin");
+        assert_eq!(indicator_tip(&hits, 105.0, 40.0), None, "below the pin");
+        assert_eq!(indicator_tip(&hits, 85.0, 15.0), None, "another glyph has no text");
+        assert_eq!(indicator_tip::<u64>(&[], 105.0, 15.0), None);
     }
 
     #[test]

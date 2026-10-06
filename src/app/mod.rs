@@ -5820,6 +5820,13 @@ impl App {
             let (x, y) = self.cursor;
             tip_rect = Some(scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
         }
+        // A pinned hotkey window's pin shows its hover text (the tab tip wins while it shows).
+        if tip_rect.is_none() {
+            let (x, y) = self.cursor;
+            if let Some(text) = scene::indicator_tip(&indicator_hits, x, y) {
+                tip_rect = Some(scene::tab_tooltip(&mut frame, text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
+            }
+        }
         if see_through {
             let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             let chrome = rgba(palette_bg, 1.0);
