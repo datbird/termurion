@@ -103,16 +103,46 @@ pub fn local_appdata() -> Option<PathBuf> {
 }
 
 /// Makes `folder` (judged local, links never followed) with a protected owner-only access list: the
-/// user's profile is not readable by any other account (preflight P3).
+/// user's profile is not readable by any other account (preflight P3). The list is set when the
+/// folder is new, and again (off this thread) only when a check finds it widened.
 pub fn prepare_folder(folder: &Path) -> Result<(), String> {
     let judged = crate::localfs::LocalPath::judge(folder).ok_or_else(|| format!("{} is on a share or behind a link", folder.display()))?;
+    let existed = crate::localfs::local_exists(judged.path());
     crate::localfs::create_dir_all(&judged).map_err(|e| format!("{}: {e}", folder.display()))?;
-    protect_dir_owner_only(judged.path())
+    if !existed {
+        // New: the list is set once, before anything is in it (the cheap case).
+        return protect_dir_owner_only(judged.path());
+    }
+    if crate::dynamic_profiles_trust::open(&judged, 0).is_ok_and(|o| o.dir && o.trust.is_ok()) {
+        return Ok(());
+    }
+    // Setting a protected list walks the whole profile: a repair never runs on the UI thread. This
+    // call fails (the caller retries on the next request) and a worker does it, one at a time.
+    static REPAIRING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let dir = judged.path().to_path_buf();
+    {
+        let mut busy = REPAIRING.lock().unwrap_or_else(|e| e.into_inner());
+        if !busy.contains(&dir) {
+            busy.push(dir.clone());
+            let worker = dir.clone();
+            std::thread::spawn(move || {
+                let _ = protect_dir_owner_only(&worker);
+                REPAIRING.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| *p != worker);
+            });
+        }
+    }
+    Err(format!("{}: its access list is being repaired; try again in a moment", folder.display()))
 }
+
+/// Every folder `protect_dir_owner_only` was asked to protect (tests count the calls).
+#[cfg(test)]
+static PROTECTED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
 /// A protected DACL on a folder: full control for the current user only, inherited by what is made
 /// inside it.
 pub fn protect_dir_owner_only(dir: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    PROTECTED.lock().unwrap().push(dir.to_path_buf());
     use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
     use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW};
     use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
@@ -1098,7 +1128,7 @@ mod tests {
     fn no_host_objects_for_pages() {
         let this = include_str!("webhost_win.rs");
         let code: String = this.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        let code = code.split("#[cfg(test)]").next().unwrap_or("");
+        let code = code.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert!(!code.contains("AddHostObjectToScript"), "a host object");
         assert!(code.contains("SetAreHostObjectsAllowed(false)"));
         // Downloads stay WebView2's: no handler and no setting that changes the Mark of the Web.
@@ -1115,7 +1145,7 @@ mod tests {
     #[test]
     fn every_com_callback_goes_through_the_unwind_guard() {
         let this = include_str!("webhost_win.rs");
-        let code = this.split("#[cfg(test)]").next().unwrap_or("");
+        let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         let mut seen = 0;
         let mut rest = code;
         while let Some(i) = rest.find("Handler::create(Box::new(") {
@@ -1140,9 +1170,42 @@ mod tests {
     #[test]
     fn the_navigation_handler_asks_the_one_verdict() {
         let this = include_str!("webhost_win.rs");
-        let code = this.split("#[cfg(test)]").next().unwrap_or("");
+        let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert_eq!(code.matches("webhost::nav_verdict(").count(), 1);
         assert!(!code.contains("navigation_allowed("), "the handler judges through nav_verdict only");
+    }
+
+    /// Final review round 1, item 2: the protected DACL is set when the folder is made, not on every
+    /// environment (setting it walks the whole profile). An existing folder that fails the check is
+    /// repaired on a worker thread, and this call fails so the UI thread never waits for it.
+    #[test]
+    fn the_owner_only_acl_is_set_once() {
+        let base = std::env::temp_dir().join(format!("tandem-wv2-acl-{}", std::process::id()));
+        let folder = base.join("a").join("Default");
+        let calls = || PROTECTED.lock().unwrap().iter().filter(|p| p.starts_with(&base)).count();
+        prepare_folder(&folder).unwrap();
+        assert_eq!(calls(), 1, "a new folder is protected once");
+        prepare_folder(&folder).unwrap();
+        prepare_folder(&folder).unwrap();
+        assert_eq!(calls(), 1, "a folder that passes the check is never protected again");
+        // Someone widens the access list: the next call fails and a worker repairs it.
+        let out = std::process::Command::new("icacls").arg(&folder).args(["/grant", "*S-1-5-32-545:(OI)(CI)(M)"]).output().unwrap();
+        assert!(out.status.success(), "icacls: {}", String::from_utf8_lossy(&out.stdout));
+        let first = prepare_folder(&folder);
+        assert!(first.is_err(), "a widened folder is not used until repaired");
+        let end = Instant::now() + Duration::from_secs(20);
+        while calls() < 2 && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(calls(), 2, "the repair ran once, on a worker");
+        let mut ok = false;
+        while !ok && Instant::now() < end {
+            ok = prepare_folder(&folder).is_ok();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(ok, "the repaired folder is accepted");
+        assert_eq!(calls(), 2);
+        let _ = crate::localfs::remove_dir_all(&crate::localfs::LocalPath::judge(&base).unwrap());
     }
 
     /// Later plans add fields to `ViewSetup`: it is only ever built with `..Default::default()`.

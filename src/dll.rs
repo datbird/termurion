@@ -77,7 +77,7 @@ mod tests {
     fn the_webview2_loader_is_static() {
         let code = |text: &str| -> String { text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n") };
         let host = code(include_str!("webhost_win.rs"));
-        let host = host.split("#[cfg(test)]").next().unwrap_or("");
+        let host = host.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert!(host.contains("CreateCoreWebView2EnvironmentWithOptions") && host.contains("GetAvailableCoreWebView2BrowserVersionString"));
         for (name, text) in [("webhost_win.rs", host.to_string()), ("build.rs", code(include_str!("../build.rs"))), ("install-extreme.ps1", code(include_str!("../scripts/install-extreme.ps1")))] {
             assert!(!text.contains("WebView2Loader.dll"), "{name} names the loader DLL");
@@ -91,7 +91,7 @@ mod tests {
     fn webhost_win_never_initializes_com() {
         for (name, text) in [("webhost_win.rs", include_str!("webhost_win.rs"))] {
             let code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-            let code = code.split("#[cfg(test)]").next().unwrap_or("");
+            let code = code.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
             for banned in ["CoInitializeEx", "CoInitialize(", "CoUninitialize", "OleInitialize", "OleUninitialize"] {
                 assert!(!code.contains(banned), "{name} calls {banned}");
             }
