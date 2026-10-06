@@ -62,6 +62,26 @@ pub struct Chunked {
     cols: usize,
     out: Vec<Styled>,
     progress: f32,
+    /// Logical lines read so far (the work counter the tests watch).
+    read: usize,
+    /// Lines of the view that come before this run's first output line (a resumed run extends them).
+    base: usize,
+    /// Where the whole filter began (a resize reads from here again).
+    origin: i64,
+    /// The last logical line read (numbered like `next`) and how many output lines come before it:
+    /// the place a later run resumes, since that line may still be growing.
+    last_start: i64,
+    keep: usize,
+}
+
+/// Where a finished run stopped, for the next run to resume (final review fix 3).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tail {
+    pattern: String,
+    origin: i64,
+    start: i64,
+    keep: usize,
+    cols: usize,
 }
 
 impl Chunked {
@@ -79,7 +99,36 @@ impl Chunked {
             Some((first, last)) => (dropped + first as i64, Some(dropped + last as i64)),
             None => (dropped, None),
         };
-        Ok(Chunked { pattern: pattern.to_string(), re: (!pattern.is_empty()).then_some(re), start, next: start, last, cols: screen.term().columns(), out: Vec::new(), progress: 0.0 })
+        Ok(Chunked { pattern: pattern.to_string(), re: (!pattern.is_empty()).then_some(re), start, next: start, last, cols: screen.term().columns(), out: Vec::new(), progress: 0.0, read: 0, base: 0, origin: start, last_start: start, keep: 0 })
+    }
+
+    /// A run over the buffer's new end only: it starts at the line the last run stopped in and
+    /// reads to the buffer's end. None when that no longer fits (the width changed, the line left
+    /// the scrollback, another pattern): the caller starts a whole run then.
+    pub fn resume(screen: &Screen, pattern: &str, tail: &Tail) -> Option<Chunked> {
+        use alacritty_terminal::grid::Dimensions;
+        if tail.pattern != pattern || tail.cols != screen.term().columns() || tail.start < screen.term().grid().dropped() as i64 {
+            return None;
+        }
+        let mut c = Chunked::start_in(screen, pattern, None).ok()?;
+        c.origin = tail.origin;
+        c.start = tail.start;
+        c.next = tail.start;
+        c.last_start = tail.start;
+        c.base = tail.keep;
+        c.keep = tail.keep;
+        Some(c)
+    }
+
+    /// Where this run stopped; None for a run over a command's rows only.
+    pub fn tail(&self) -> Option<Tail> {
+        self.last.is_none().then(|| Tail { pattern: self.pattern.clone(), origin: self.origin, start: self.last_start, keep: self.keep, cols: self.cols })
+    }
+
+    /// The view lines before this run's output: the finished lines are `shown[..base]` plus the
+    /// result of the last `step`.
+    pub fn base(&self) -> usize {
+        self.base
     }
 
     /// Reads one chunk. None until the run is done, then every matching line.
@@ -93,7 +142,9 @@ impl Chunked {
         // A resize rewraps everything: read it again from the start.
         if grid.columns() != self.cols {
             self.cols = grid.columns();
-            self.next = self.start;
+            self.start = self.origin;
+            self.next = self.origin;
+            self.base = 0;
             self.out.clear();
         }
         let (dropped, history) = (grid.dropped() as i64, grid.history_size() as i64);
@@ -111,6 +162,8 @@ impl Chunked {
         if from <= end {
             let stop = find::chunk_end(screen, from, end, max_lines, max_cells);
             for (text, a, b) in find::lines_between(screen, from, stop) {
+                self.read += 1;
+                (self.last_start, self.keep) = (a as i64 + dropped + history, self.base + self.out.len());
                 if self.re.as_ref().is_none_or(|re| re.is_match(&text)) {
                     self.out.push(styled_line(screen, text, a, b));
                 }
@@ -129,6 +182,11 @@ impl Chunked {
     /// The pattern the run filters with.
     pub fn pattern(&self) -> &str {
         &self.pattern
+    }
+
+    /// Logical lines this run has read.
+    pub fn lines_read(&self) -> usize {
+        self.read
     }
 
     /// How much of the buffer has been read, 0 to 1.

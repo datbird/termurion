@@ -149,8 +149,10 @@ pub(super) struct FindState {
     pub next_chunk: Option<Instant>,
     /// The run started for a new query, so its result replaces the view instead of extending it.
     pub run_fresh: bool,
-    /// Output arrived during the run: it ends with one more pass (new output does not restart it).
-    pub catch_up: bool,
+    /// Where the last finished run stopped: output resumes there instead of rereading the buffer.
+    pub tail: Option<crate::synthetic::Tail>,
+    /// Lines the last finished run read (a work counter for tests).
+    pub work: usize,
 }
 
 impl FindState {
@@ -247,7 +249,7 @@ impl FindState {
         self.run = None;
         self.progress = None;
         self.next_chunk = None;
-        self.catch_up = false;
+        self.tail = None;
         self.pending = false;
         self.error = None;
         self.results = Results::default();
@@ -356,8 +358,9 @@ fn fresh_results(pane: &mut crate::pane::Pane, results: &mut Results, matches: V
 }
 
 /// Filter's start (`refilter`'s body): an empty query shows the pane's own screen; a new query
-/// starts a run; new output during a run only asks it for a last pass (P7). The first chunk is
-/// read at once, so a small buffer is done before this returns.
+/// starts a run; new output during a run starts nothing, since the run reads to the buffer's end at
+/// each step, and output after a run resumes where it stopped (P7). The first chunk is read at
+/// once, so a small buffer is done before this returns.
 fn filter_start(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, fresh: bool, now: Instant) {
     // Make Screenshot's frozen copy is not filtered, nor a replay's frame.
     if p.frozen || p.replay.is_some() {
@@ -367,16 +370,25 @@ fn filter_start(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, 
         f.error = None;
         f.run = None;
         f.progress = None;
+        f.tail = None;
         f.shown.clear();
         p.end_view();
         return;
     }
+    // The run under way reads the new output itself (it reads to the buffer's end at each step).
     if f.run.is_some() && !fresh {
-        f.catch_up = true;
         return;
     }
     let region = p.search_region();
-    match crate::synthetic::Chunked::start_in(p.own(), &find::pattern(&f.query, mode), region) {
+    let pattern = find::pattern(&f.query, mode);
+    // Output after a finished run: read only the new end, and extend the view (a whole run only
+    // for a new query, a command's rows, or a changed width).
+    let resumed = (!fresh && region.is_none() && p.live.is_some()).then(|| f.tail.as_ref().and_then(|t| crate::synthetic::Chunked::resume(p.own(), &pattern, t))).flatten();
+    let started = match resumed {
+        Some(run) => Ok(run),
+        None => crate::synthetic::Chunked::start_in(p.own(), &pattern, region),
+    };
+    match started {
         Err(e) => {
             f.error = Some(e);
             f.run = None;
@@ -386,7 +398,7 @@ fn filter_start(p: &mut crate::pane::Pane, f: &mut FindState, mode: find::Mode, 
             f.error = None;
             f.run = Some(run);
             f.run_fresh = fresh;
-            f.catch_up = false;
+            f.tail = None;
             filter_step(p, f, now);
         }
     }
@@ -401,36 +413,33 @@ pub(super) fn filter_step(p: &mut crate::pane::Pane, f: &mut FindState, now: Ins
         f.next_chunk = Some(now + crate::cadence::FAST_GAP);
         return;
     };
-    let pattern = run.pattern().to_string();
+    let (base, tail, read) = (run.base(), run.tail(), run.lines_read());
     f.run = None;
     f.progress = None;
     f.next_chunk = None;
-    let tail = (!f.run_fresh && p.live.is_some()).then(|| crate::synthetic::appended(&f.shown, &lines)).flatten();
-    match tail {
+    f.work = read;
+    f.tail = tail;
+    // The view's lines from `base` on are this run's to replace: a repeat that only grew adds its
+    // new lines (which keeps the scroll position and selection), anything else replaces the view.
+    let base = base.min(f.shown.len());
+    let old = f.shown.split_off(base);
+    let grown = (!f.run_fresh && p.live.is_some()).then(|| crate::synthetic::appended(&old, &lines)).flatten();
+    match grown {
         Some(tail) => {
             let mut bytes = String::new();
             for (i, l) in tail.iter().enumerate() {
-                if i > 0 || !f.shown.is_empty() {
+                if i > 0 || base + old.len() > 0 {
                     bytes.push_str("\r\n");
                 }
                 bytes.push_str(&l.sgr);
             }
             p.screen.feed(bytes.as_bytes());
+            f.shown.extend(lines);
         }
         None => {
-            let view = crate::synthetic::view(&lines, p.own());
+            f.shown.extend(lines);
+            let view = crate::synthetic::view(&f.shown, p.own());
             p.show_view(view);
-        }
-    }
-    f.shown = lines;
-    if std::mem::take(&mut f.catch_up) {
-        // Output came while it ran: one more pass, a chunk later.
-        f.run_fresh = false;
-        let region = p.search_region();
-        if let Ok(run) = crate::synthetic::Chunked::start_in(p.own(), &pattern, region) {
-            f.run = Some(run);
-            f.next_chunk = Some(now + crate::cadence::FAST_GAP);
-            f.progress = Some(0.0);
         }
     }
 }
@@ -1364,25 +1373,70 @@ mod tests {
         assert!(p.live.is_none(), "nothing replaces the view before the run ends");
         // The wake is a chunk away; with no run there is none.
         assert_eq!(f.run.as_ref().and(f.next_chunk), Some(t + crate::cadence::FAST_GAP));
-        // Output during the run asks for one more pass and does not restart it.
+        // Output during the run does not restart it.
         filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
-        assert!(f.catch_up);
         assert_eq!(f.progress, Some(first));
         filter_step(&mut p, &mut f, t);
         assert!((f.progress.unwrap() - 0.8).abs() < 0.02);
         filter_step(&mut p, &mut f, t);
-        // Done: the lines show, with their colors' codes fed; the catch-up pass has begun.
+        // Done: the lines show, with their colors' codes fed; no second pass starts.
         assert!(p.live.is_some());
         assert_eq!(f.shown.len(), 5);
-        assert_eq!(f.progress, Some(0.0));
-        for _ in 0..5 {
-            filter_step(&mut p, &mut f, t);
-        }
         assert_eq!((f.run.is_none(), f.progress, f.next_chunk), (true, None, None));
         // A closed bar holds no run.
         filter_start(&mut p, &mut f, find::Mode::SmartCase, true, t);
         f.close();
         assert_eq!((f.run.is_none(), f.progress), (true, None));
+    }
+
+    /// Final review fix 3: Filter never rereads the buffer from the start for output. During a run
+    /// the run itself reads to the buffer's end at each step, so output ticks start no second
+    /// pass and the run still ends; after it, output starts a run that resumes where the last one
+    /// stopped and reads only the new tail, and idle output leaves no run.
+    #[test]
+    fn filter_output_reads_only_the_tail() {
+        let mut p = crate::pane::Pane::recording(1, 40, 24);
+        p.screen = crate::screen::Screen::with_scrollback(40, 24, 50_100);
+        let mut text = String::new();
+        for i in 0..50_000 {
+            text.push_str(&format!("line {i}{}\r\n", if i % 10_000 == 5 { " needle" } else { "" }));
+        }
+        p.screen.feed(text.as_bytes());
+        let t = Instant::now();
+        let mut f = typed("needle", t);
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, true, t);
+        // Steady output during the run: every tick asks again, none starts a second pass.
+        for n in 0..20 {
+            p.screen.feed(format!("tick {n} needle\r\n").as_bytes());
+            filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        }
+        let mut steps = 0;
+        while f.run.is_some() {
+            filter_step(&mut p, &mut f, t);
+            steps += 1;
+            assert!(steps <= 4, "the run ends after its own chunks, output does not re-arm it");
+        }
+        assert_eq!(f.shown.len(), 25, "the 5 old needles and the 20 that arrived during the run");
+        // Output after the run: a run over the tail only, not the 50 000 lines again.
+        p.own_mut().feed(b"after one needle\r\nafter two\r\nafter three needle\r\n");
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        let work = f.run.as_ref().map_or(0, |r| r.lines_read()) + f.work;
+        assert!(work < 100, "{work} lines read for 3 new lines");
+        while f.run.is_some() {
+            filter_step(&mut p, &mut f, t);
+        }
+        assert_eq!(f.shown.len(), 27);
+        assert_eq!(f.shown.last().map(|l| l.text.as_str()), Some("after three needle"));
+        // Idle: nothing re-arms.
+        assert_eq!((f.run.is_none(), f.progress, f.next_chunk), (true, None, None));
+        // A line that is still being typed is read again whole once it ends.
+        p.own_mut().feed(b"partial nee");
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        assert_eq!(f.shown.len(), 27);
+        p.own_mut().feed(b"dle done\r\n");
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        assert_eq!(f.shown.len(), 28);
+        assert_eq!(f.shown.last().map(|l| l.text.as_str()), Some("partial needle done"));
     }
 
     /// The bar draws the run's fraction as a line in the selection color, and none when done.
