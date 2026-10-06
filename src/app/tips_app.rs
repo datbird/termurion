@@ -27,6 +27,13 @@ pub(super) enum Step {
     Start,
 }
 
+/// "Tandem is active" for the tip rules (P18, the 13v1 merge): a Tandem window is in front and
+/// Tandem is not resident. A resident Tandem shows only its notification area icon (its tray menu
+/// can bring the hidden window to the foreground), so no tip ever opens then.
+pub(super) fn tip_active(app_active: bool, resident: bool) -> bool {
+    app_active && !resident
+}
+
 fn quell(g: &mut Globals, now: f64, days: f64) {
     g.set(tips::NEXT_ANNOYANCE_KEY, toml::Value::Float(now + days * tips::DAY));
 }
@@ -132,13 +139,14 @@ impl App {
 
     /// Tandem came to the front: try again soon (`applicationDidBecomeActive:`).
     pub(super) fn tips_became_active(&mut self) {
-        if self.tips_started {
+        if self.tips_started && tip_active(true, self.resident) {
             self.arm_tip(0.0);
         }
     }
 
     pub(super) fn tips_tick(&mut self, event_loop: &ActiveEventLoop) {
-        if self.tip_due.is_some_and(|t| Instant::now() >= t) {
+        // While resident the deadline stays armed: it is tried when a window wakes.
+        if !self.resident && self.tip_due.is_some_and(|t| Instant::now() >= t) {
             self.tip_due = None;
             self.try_tip(event_loop);
         }
@@ -149,7 +157,7 @@ impl App {
         let now = now_secs();
         let (last, between) = (tips::last_tip_time_of(&self.globals), tips::between_of(&self.globals));
         let showing = self.tip_window.is_some();
-        let verdict = tips::try_show(tips::permission_of(&self.globals), self.globals.bool(tips::DISABLED_KEY), self.app_active, showing, tips::shown_recently(now, last, between));
+        let verdict = tips::try_show(tips::permission_of(&self.globals), self.globals.bool(tips::DISABLED_KEY), tip_active(self.app_active, self.resident), showing, tips::shown_recently(now, last, between));
         match verdict {
             // Not due to anyone now: the next activation tries again, so an idle Tandem is not woken.
             Try::Never => {}
@@ -372,4 +380,24 @@ mod tests {
         let src = include_str!("tips_app.rs");
         assert!(src.contains("crate::semantic::guard_open(url, false)"));
     }
+
+    /// The 13v1 merge (P18, S8 c): "active" for the tip rules is a Tandem window in front while
+    /// Tandem is not resident (the tray menu can put the hidden resident window in front); a
+    /// resident Tandem keeps the deadline armed and never wakes for it.
+    #[test]
+    fn no_tip_opens_while_resident() {
+        assert!(tip_active(true, false));
+        assert!(!tip_active(true, true), "resident: never active, even with the hidden window in front");
+        assert!(!tip_active(false, false));
+        assert_eq!(tips::try_show(Some(true), false, tip_active(true, true), false, false), Try::Never, "the rules never show a tip to a resident Tandem");
+        let src = include_str!("tips_app.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        let try_tip = src.split("fn try_tip(").nth(1).and_then(|r| r.split("\n    }\n").next()).unwrap();
+        assert!(try_tip.contains("tip_active(self.app_active, self.resident)"), "try_tip asks the resident-aware rule");
+        assert!(!try_tip.contains(", self.app_active,"), "never the bare foreground flag");
+        let tick = src.split("pub(super) fn tips_tick(").nth(1).and_then(|r| r.split("\n    }\n").next()).unwrap();
+        assert!(tick.contains("!self.resident &&"), "the deadline is not taken while resident");
+        let became = src.split("pub(super) fn tips_became_active(").nth(1).and_then(|r| r.split("\n    }\n").next()).unwrap();
+        assert!(became.contains("self.resident"), "becoming active while resident arms nothing");
+    }
+
 }

@@ -68,6 +68,19 @@ pub(super) fn permission_ask() -> Ask {
     ask(update::PERMISSION_TITLE, &update::permission_text(), &[update::CHECK_AUTOMATICALLY, update::DONT_CHECK], None, Kind::Persistent, Then::UpdatePermission)
 }
 
+/// Whether a view waits instead of opening (the 13v1 merge): an automatic check's notice never
+/// opens while Tandem is resident (only the notification area icon shows); it opens when a window
+/// wakes. A manual check (the menu or the tray's Check For Updates) shows at once.
+pub(super) fn notice_waits(resident: bool, manual: bool) -> bool {
+    resident && !manual
+}
+
+/// A deadline as the idle loop sees it (the 13v1 merge, P12 of 13v1): a resident Tandem wakes for
+/// no update or tip timer; the overdue one runs at the first pass after a window wakes.
+pub(super) fn idle_due(due: Option<Instant>, resident: bool) -> Option<Instant> {
+    due.filter(|_| !resident)
+}
+
 fn now_secs() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
@@ -114,6 +127,7 @@ impl App {
             }
             self.update_manual = true;
             self.update_show = Some(View::Checking);
+            self.update_show_manual = true;
         }
         self.update_due = None;
         if !self.update_checker_ready().busy() {
@@ -138,7 +152,10 @@ impl App {
             let test = self.globals.bool("CheckTestRelease");
             let closes = closes_checking(&result, manual);
             match decide(result, manual, update::current_version(), skipped.as_deref(), test) {
-                Some(view) => self.update_show = Some(view),
+                Some(view) => {
+                    self.update_show = Some(view);
+                    self.update_show_manual = manual;
+                }
                 None if closes || manual => self.update_window = None,
                 None => {}
             }
@@ -147,13 +164,17 @@ impl App {
         if self.update_due.is_none() && self.update_checker.as_ref().is_none_or(|c| !c.busy()) {
             self.update_schedule();
         }
-        if self.update_due.is_some_and(|t| Instant::now() >= t) {
+        // Never while resident: the overdue check runs when a window wakes.
+        if !self.resident && self.update_due.is_some_and(|t| Instant::now() >= t) {
             self.update_due = None;
             if update::automatic_checks_on(&self.globals) {
                 self.check_for_updates(false);
             }
         }
-        // A view waiting to show.
+        // A view waiting to show (an automatic notice waits while resident).
+        if self.update_window.is_none() && notice_waits(self.resident, self.update_show_manual) {
+            return;
+        }
         if let Some(view) = self.update_show.take() {
             if let Some(w) = self.update_window.as_mut() {
                 w.set_view(view);
@@ -343,4 +364,27 @@ mod tests {
         let stored = start.find("store_check_time(").expect("the time is stored at the start");
         assert!(stored < start.find(".check()").unwrap(), "stored before the request is sent");
     }
+
+    /// The 13v1 merge (S8 d, 13v1 P12): an automatic check's notice waits while resident (a manual
+    /// check from the tray shows at once), and a resident Tandem wakes for no update or tip timer.
+    #[test]
+    fn no_update_notice_or_timer_wake_while_resident() {
+        assert!(notice_waits(true, false), "an automatic notice waits while resident");
+        assert!(!notice_waits(true, true), "the tray's Check For Updates shows");
+        assert!(!notice_waits(false, false));
+        let soon = Some(Instant::now() + Duration::from_secs(5));
+        assert_eq!(idle_due(soon, true), None, "no wake while resident");
+        assert_eq!(idle_due(soon, false), soon);
+        let src = include_str!("update_app.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        let tick = src.split("pub(super) fn update_tick(").nth(1).and_then(|r| r.split("\n    }\n").next()).unwrap();
+        assert!(tick.contains("if !self.resident && self.update_due.is_some_and("), "no scheduled check while resident");
+        let gate = tick.find("notice_waits(self.resident, self.update_show_manual)").expect("the notice gate");
+        assert!(gate < tick.find("UpdateWindow::open(").unwrap(), "the gate comes before any window opens");
+        let m = std::fs::read_to_string(format!("{}/src/app/mod.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(m.contains("let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));"));
+        let wake = m.split("let wake = [").nth(1).and_then(|r| r.split("].into_iter()").next()).unwrap();
+        assert!(wake.contains("update_wake, tip_of_day_wake"), "the wake array takes the resident-aware deadlines");
+        assert!(!wake.contains(" self.update_due,") && !wake.contains(" self.tip_due,"), "no bare update or tip deadline in the wake array");
+    }
+
 }

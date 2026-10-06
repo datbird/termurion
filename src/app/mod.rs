@@ -1274,6 +1274,8 @@ pub struct App {
     update_due: Option<Instant>,
     update_manual: bool,
     update_show: Option<crate::update_ui::View>,
+    /// The waiting view comes from a manual check (it opens while resident too).
+    update_show_manual: bool,
     /// The Tip of the Day (M13v2): the card, the one deadline for the next try, and whether the
     /// launch started the schedule. App-wide, never per window.
     tip_window: Option<crate::tip_ui::TipWindow>,
@@ -2353,6 +2355,7 @@ pub fn run() {
         update_due: None,
         update_manual: false,
         update_show: None,
+        update_show_manual: false,
         tip_window: None,
         tip_due: None,
         tips_started: false,
@@ -6870,7 +6873,9 @@ impl ApplicationHandler<UserEvent> for App {
         let open_due = self.open_tick(event_loop);
         let jump_due = self.jump_list_tick();
         let command_due = self.command_click_tick();
-        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, self.access_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
+        let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
+        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
