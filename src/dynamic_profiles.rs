@@ -35,6 +35,12 @@ pub fn is_internal(key: &str) -> bool {
     INTERNAL_KEYS.contains(&key)
 }
 
+/// The loader's marks of `from`, as (key, value) pairs: what a replace of a dynamic profile puts
+/// back on its replacement (Copy to Profile), since `Profile::from_values` strips them.
+pub fn internal_of(from: &BTreeMap<String, Value>) -> Vec<(String, Value)> {
+    INTERNAL_KEYS.iter().filter_map(|k| from.get(*k).map(|v| (k.to_string(), v.clone()))).collect()
+}
+
 /// The one strip: removes the loader's keys from values that came from outside. `Profile::from_values`
 /// calls it, so the profiles file, imports, remote settings, Import All and duplicates all pass here
 /// (`every_profile_ingress_strips_the_marks`). The loader sets its marks afterwards with

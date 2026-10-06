@@ -281,10 +281,8 @@ pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
     let mut copy = Profile::from_values(values);
     // The destination keeps its own loader marks: a dynamic profile stays dynamic (and out of
     // profiles.toml). `from_values` strips them from outside values, so they go back by `set`.
-    for key in crate::dynamic_profiles::INTERNAL_KEYS {
-        if let Some(v) = destination.values.get(key) {
-            copy.set(key, v.clone());
-        }
+    for (key, v) in crate::dynamic_profiles::internal_of(&destination.values) {
+        copy.set(&key, v);
     }
     copy
 }
