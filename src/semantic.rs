@@ -994,6 +994,12 @@ pub fn encode_url_chars(s: &str) -> String {
     out
 }
 
+/// What `shell_open` hands ShellExecute: a web or mail URL is percent-encoded (`encode_url_chars`),
+/// anything else (a path, a folder) is passed as written.
+pub fn shell_target(target: &str) -> String {
+    if web_link(target) { encode_url_chars(target) } else { target.to_string() }
+}
+
 /// Percent-encodes everything but letters, digits, and "-._~".
 pub fn percent_encode(s: &str) -> String {
     s.bytes()
@@ -1086,6 +1092,22 @@ mod tests {
         assert_eq!(open("https://a.b/p%20q?x=1&y=2#f"), "https://a.b/p%20q?x=1&y=2#f", "a valid URL is unchanged");
         let encoded = open("mailto:a@b?x=\" /a C:\\secret.txt");
         assert!(!encoded.contains(['"', ' ', '\\']));
+    }
+
+    /// Residual fix (Porthole document links, and every other `shell_open` caller): a link holding a
+    /// quote, a space and a control character is encoded at the sink; a path is not touched.
+    #[test]
+    fn shell_open_encodes_every_web_target() {
+        let link = "mailto:a@b?x=\" /a C:\\secret.txt\u{7}";
+        assert_eq!(shell_target(link), "mailto:a@b?x=%22%20/a%20C:%5Csecret.txt%07");
+        assert_eq!(shell_target("https://a.b/p%20q"), "https://a.b/p%20q");
+        assert_eq!(shell_target("C:\\My Docs\\a b.txt"), "C:\\My Docs\\a b.txt", "a path is not a URL");
+        let sink = include_str!("app/semantic_ui.rs");
+        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, cwd").unwrap()..];
+        assert!(body[..body.find("ShellExecuteW(std").unwrap()].contains("crate::semantic::shell_target(target)"), "shell_open encodes through shell_target");
+        let porthole = include_str!("app/porthole_ui.rs");
+        let f = &porthole[porthole.find("fn open_link_target").unwrap()..];
+        assert!(f[..f.find("pub(super) fn porthole_link_bar").unwrap()].contains("shell_open("), "Porthole links open through shell_open");
     }
 
     #[test]

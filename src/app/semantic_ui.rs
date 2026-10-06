@@ -896,7 +896,7 @@ pub(super) fn shell_open(target: &str, cwd: Option<&std::path::Path>, background
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let (verb, file) = (wide("open"), wide(target));
+    let (verb, file) = (wide("open"), wide(&crate::semantic::shell_target(target)));
     let dir = cwd.map(|d| wide(&d.to_string_lossy()));
     let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
     let r = unsafe {
