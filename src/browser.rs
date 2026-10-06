@@ -666,7 +666,7 @@ pub fn fit_address(shown: &str, cells: usize) -> String {
 /// What the lock mark beside the address shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Security {
-    /// Tandem's own page or a blank one.
+    /// Tandem's own `iterm2-about:` page or a blank one; nothing else is Tandem's.
     Local,
     Secure,
     NotSecure,
@@ -685,7 +685,17 @@ pub fn security(url: &str, failed: bool) -> Security {
         "https" => Security::Secure,
         "http" => Security::NotSecure,
         "file" => Security::File,
-        _ => Security::Local,
+        // The creator's origin decides: only a blob made by an https page is secure.
+        "blob" | "filesystem" => {
+            let inner = url.split_once(':').map_or("", |(_, r)| r);
+            if crate::webhost::scheme_of(inner) == "https" { Security::Secure } else { Security::NotSecure }
+        }
+        // Tandem's own pages (and the blank one, and an empty address before any load).
+        "iterm2-about" => Security::Local,
+        "about" if url.trim().eq_ignore_ascii_case("about:blank") => Security::Local,
+        "" if url.trim().is_empty() => Security::Local,
+        // data:, javascript:, other about: pages and every other scheme: not Tandem's, not secure.
+        _ => Security::NotSecure,
     }
 }
 
@@ -1299,6 +1309,17 @@ mod tests {
         assert_eq!(security("file:///C:/x.html", false), Security::File);
         assert_eq!(security("", false), Security::Local);
         assert_eq!(security("HTTPS://A.TEST/", false), Security::Secure);
+        // Only Tandem's own page is Tandem's own; every other scheme shows its creator's state.
+        assert_eq!(security("blob:https://evil.test/1234", false), Security::Secure, "a blob has its creator's origin");
+        assert_eq!(security("blob:http://evil.test/1234", false), Security::NotSecure);
+        assert_eq!(security("blob:null/1234", false), Security::NotSecure);
+        assert_eq!(security("filesystem:https://a.test/temporary/x", false), Security::Secure);
+        assert_eq!(security("data:text/html,<b>x</b>", false), Security::NotSecure);
+        assert_eq!(security("about:srcdoc", false), Security::NotSecure);
+        assert_eq!(security("javascript:alert(1)", false), Security::NotSecure);
+        assert_eq!(security("ms-msdt:id", false), Security::NotSecure);
+        assert_eq!(security("ITERM2-ABOUT:history", false), Security::Local);
+        assert_eq!(security("blob:iterm2-about:history/1", false), Security::NotSecure, "a blob never claims Tandem's page");
     }
 
     #[test]
