@@ -516,7 +516,7 @@ impl App {
         let pad = 2.0 * scale;
         let text_y = g.text.y + (g.text.h - ch) / 2.0;
         let keys = bv.bar.keys;
-        let shown = if keys { bv.bar.edit.text.clone() } else { browser::display_url(&io.url) };
+        let shown = if keys { bv.bar.edit.text.clone() } else { browser::fit_address(&browser::display_url(&io.url), ((g.text.w - 2.0 * pad) / cw).floor().max(1.0) as usize) };
         let caret_x = if keys { text_w(&shown[..bv.bar.edit.caret.min(shown.len())], cw) } else { 0.0 };
         let scroll = (caret_x + cw - (g.text.w - 2.0 * pad)).max(0.0);
         let x0 = g.text.x + pad - scroll;
@@ -1202,7 +1202,7 @@ mod tests {
         assert!(suggest.contains("browser::suggest_allowed(&query)"), "a URL may hold a password: never sent to the service");
         assert!(suggest.contains("Proxy::System") && suggest.contains("from_secs(5)"));
         let draw = &prod[prod.find("pub(super) fn draw_browser_bar").unwrap()..prod.find("pub(super) fn browser_toolbar_press").unwrap()];
-        assert!(draw.contains("browser::display_url(&io.url)") && draw.contains("browser::security(&io.url, io.failed)"), "the field shows the sanitized page URL and the mark follows the page's state");
+        assert!(draw.contains("browser::display_url(&io.url)") && draw.contains("browser::fit_address(") && draw.contains("browser::security(&io.url, io.failed)"), "the field shows the sanitized page URL and the mark follows the page's state");
         assert!(!draw.contains("frame.overlay"), "never text in the overlay");
     }
 }

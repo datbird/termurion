@@ -626,6 +626,43 @@ pub fn display_url(url: &str) -> String {
     if chars.len() <= MAX_URL { shown } else { chars[..MAX_URL].iter().chain(['\u{2026}'].iter()).collect() }
 }
 
+/// The address as it fits `cells` characters of the idle field. The end of the host always stays
+/// visible (a long user name cannot push it out, `https://accounts.google.com...@evil.test/` must
+/// show `evil.test`): the path is cut first, then the user information is shortened to a marked
+/// prefix, and last the host is cut from its left.
+pub fn fit_address(shown: &str, cells: usize) -> String {
+    let chars: Vec<char> = shown.chars().collect();
+    if chars.len() <= cells {
+        return shown.to_string();
+    }
+    let cut = |text: &str, room: usize| -> String {
+        let c: Vec<char> = text.chars().collect();
+        if c.len() <= room { text.to_string() } else if room == 0 { String::new() } else { c[..room - 1].iter().chain(['\u{2026}'].iter()).collect() }
+    };
+    let Some((scheme, rest)) = shown.split_once("://").filter(|(s, _)| !s.is_empty() && !s.contains('/')) else {
+        return cut(shown, cells);
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (userinfo, hostport) = authority.rsplit_once('@').map_or((None, authority), |(u, h)| (Some(u), h));
+    let prefix = format!("{scheme}://");
+    let short = userinfo.map(|u| if u.chars().count() > 4 { format!("{}\u{2026}", u.chars().take(4).collect::<String>()) } else { u.to_string() });
+    let marks = ["\u{2026}".to_string()];
+    let users: Vec<&str> = userinfo.into_iter().chain(short.as_deref()).chain(userinfo.map(|_| marks[0].as_str())).collect();
+    for u in users.iter().map(|u| Some(*u)).chain(userinfo.is_none().then_some(None)) {
+        let head = format!("{prefix}{}{hostport}", u.map_or(String::new(), |u| format!("{u}@")));
+        let n = head.chars().count();
+        if n <= cells {
+            return format!("{head}{}", cut(tail, cells - n));
+        }
+    }
+    // The host itself does not fit: keep its end.
+    let at = if userinfo.is_some() { "@" } else { "" };
+    let host: Vec<char> = format!("{at}{hostport}").chars().collect();
+    let room = cells.saturating_sub(1);
+    ['\u{2026}'].iter().chain(host[host.len().saturating_sub(room)..].iter()).take(cells).collect()
+}
+
 /// What the lock mark beside the address shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Security {
@@ -1231,6 +1268,25 @@ mod tests {
             assert!(suggest_allowed(q), "{q} is a search");
         }
         assert!(!suggest_allowed(&"x".repeat(201)) && !suggest_allowed("  "));
+    }
+
+    #[test]
+    fn a_long_userinfo_cannot_hide_the_host() {
+        let url = "https://accounts.google.com.signin.verify.session-7781@evil.test/path/that/goes/on";
+        for cells in [10usize, 11, 14, 20, 24, 30, 40, 60] {
+            let fit = fit_address(url, cells);
+            assert!(fit.chars().count() <= cells, "{cells}: {fit}");
+            assert!(fit.contains("evil.test"), "{cells}: the host must stay visible: {fit}");
+            assert!(!fit.contains("accounts.google.com"), "{cells}: userinfo is shortened: {fit}");
+        }
+        assert_eq!(fit_address(url, 30), "https://acco\u{2026}@evil.test/path/\u{2026}", "path first, then userinfo");
+        assert_eq!(fit_address("https://a.test/x", 40), "https://a.test/x", "what fits is untouched");
+        // A long host is cut from the left: the registrable end stays.
+        let long = "https://very.long.subdomain.chain.example-bank.test:8443/x";
+        let fit = fit_address(long, 24);
+        assert!(fit.starts_with('\u{2026}') && fit.contains("bank.test") && fit.chars().count() <= 24, "{fit}");
+        // Something that is not an authority URL is cut from the right.
+        assert_eq!(fit_address("about:blank", 6), "about\u{2026}");
     }
 
     #[test]
