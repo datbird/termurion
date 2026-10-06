@@ -473,6 +473,11 @@ impl Tracker {
         out
     }
 
+    /// When the pending burst settles (None with nothing pending): the next time `settle` has work.
+    pub fn due(&self) -> Option<Instant> {
+        self.deadline.filter(|_| self.pending.is_some())
+    }
+
     /// The pane is at a password prompt: forget everything (no deletion is read from the
     /// prompt, no burst is pending) and raise nothing until the state clears.
     pub fn refresh_secure(&mut self) -> Vec<Event> {
@@ -752,6 +757,18 @@ mod tests {
         assert_eq!(c.rows.len(), 2, "older rows go first, 7 units each");
         assert_eq!((c.cursor.0, c.first_line), (1, 103));
         assert_eq!(Rows { rows: vec![], ..Default::default() }.capped(0), Rows::default());
+    }
+
+    #[test]
+    fn the_tracker_reports_its_deadline() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        assert_eq!(t.due(), None);
+        t.refresh(t0, 10, 1, &[]);
+        t.refresh(t0, 11, 1, &[]);
+        assert_eq!(t.due(), Some(t0 + SETTLE));
+        t.settle(t0 + SETTLE, &|_| None, 11);
+        assert_eq!(t.due(), None);
     }
 
     #[test]

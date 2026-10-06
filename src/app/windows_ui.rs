@@ -637,6 +637,7 @@ impl App {
         self.install_sizing();
         // A forced Theme's title bar survives system setting changes.
         self.guard_theme();
+        // The screen reader's host (the key is the window's: the slot is current already).
         if let Some(h) = self.hwnd() {
             crate::display_watch::watch(h);
             #[cfg(windows)]
@@ -650,6 +651,7 @@ impl App {
             self.windows.park(old, slot);
         }
         self.windows.start(key(id));
+        self.access_install_host();
         self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
@@ -954,6 +956,7 @@ impl App {
             self.perf_frames.remove(&(n + 1));
             self.perf.forget_window(n + 1);
         }
+        self.access_forget_window(k);
         self.registry.close(k);
         self.refresh_window_list();
     }

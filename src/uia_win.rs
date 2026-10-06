@@ -78,6 +78,9 @@ pub struct WindowSnapshot {
 pub enum Request {
     Select { pane: u64, start: usize, end: usize },
     ScrollIntoView { pane: u64, offset: usize },
+    /// A client asked the window for its root provider: the window thread publishes a snapshot
+    /// now (nothing else would wake it, and nothing is built until a client is there).
+    Attach,
 }
 
 /// Every COM method body runs in this: a panic becomes `E_FAIL`.
@@ -824,6 +827,12 @@ impl ITextRangeProvider_Impl for RangeProvider_Impl {
 // ---------------------------------------------------------------------------------------------
 // The host: the window subclass and the events
 
+/// Every provider of this process is disconnected (process teardown, P14).
+pub fn disconnect_all() {
+    // SAFETY: a plain call; clients drop what they hold.
+    let _ = unsafe { UiaDisconnectAllProviders() };
+}
+
 /// The provider tree of one window. Create and drop it on the window's thread.
 pub struct Host {
     shared: Arc<Shared>,
@@ -835,6 +844,7 @@ unsafe extern "system" fn proc(hwnd: windows_sys::Win32::Foundation::HWND, msg: 
             // SAFETY: data is the Arc<Shared> the Host keeps alive for as long as this subclass is installed.
             let shared = unsafe { &*(data as *const Shared) };
             let root = lock(&shared.root).clone()?;
+            shared.send(Request::Attach);
             // SAFETY: handing the root provider to UI Automation for this window.
             Some(unsafe { UiaReturnRawElementProvider(HWND(hwnd), WPARAM(wparam), LPARAM(lparam), &root) }.0)
         }));

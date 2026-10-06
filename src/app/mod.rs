@@ -165,6 +165,7 @@ mod scripts_alerts;
 mod tips_app;
 mod update_app;
 mod dynamic_profiles_app;
+mod access_app;
 mod locale_ui;
 mod warnings_app;
 mod special_exceptions_app;
@@ -231,6 +232,8 @@ pub enum UserEvent {
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
+    /// A screen reader asked to select text or scroll, or attached (`uia_win::Request`).
+    Uia(crate::uia_win::Request),
 }
 
 #[derive(Clone)]
@@ -1219,6 +1222,15 @@ pub struct App {
     tip_window: Option<crate::tip_ui::TipWindow>,
     tip_due: Option<Instant>,
     tips_started: bool,
+    /// Screen readers (M13v2 Task 10): the UI Automation host of each window (by registry key),
+    /// what is kept of each pane while a client listens, the one settle deadline, the window
+    /// and focus last published, and whether an Attach is already posted. App-wide.
+    uia_hosts: HashMap<u64, crate::uia_win::Host>,
+    access_trackers: HashMap<PaneId, access_app::AccessPane>,
+    access_due: Option<Instant>,
+    access_window: Option<access_app::AccessWindow>,
+    access_focus_sent: Option<(u64, PaneId)>,
+    access_attach: Arc<std::sync::atomic::AtomicBool>,
     /// Locale questions waiting for the picker: the start-time prompts, and Settings' Change
     /// Locale requests (`locale_ui`).
     locale_asks: VecDeque<locale_ui::Ask>,
@@ -1557,6 +1569,9 @@ pub(crate) fn teardown_process() {
     // The Dynamic Profiles folder's watch stops with Tandem.
     #[cfg(windows)]
     crate::dynamic_profiles_scan::stop_all();
+    // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
+    #[cfg(windows)]
+    crate::uia_win::disconnect_all();
 }
 
 pub fn run() {
@@ -2192,6 +2207,12 @@ pub fn run() {
         tip_window: None,
         tip_due: None,
         tips_started: false,
+        uia_hosts: HashMap::new(),
+        access_trackers: HashMap::new(),
+        access_due: None,
+        access_window: None,
+        access_focus_sent: None,
+        access_attach: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         locale_asks: VecDeque::new(),
         locale_window: None,
         suppressed,
@@ -6532,6 +6553,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.update_tick(event_loop);
         self.tips_tick(event_loop);
         let dynamic_due = self.dynamic_profiles_tick();
+        self.access_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);
@@ -6605,7 +6627,7 @@ impl ApplicationHandler<UserEvent> for App {
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
         let command_due = self.command_click_tick();
-        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, self.access_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6615,6 +6637,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
+            UserEvent::Uia(r) => self.uia_request(r),
             UserEvent::Chord(c) => {
                 // Win+B, Win+U and Win+C in a password manager window are its own keys.
                 if self.pwm_take_chord(&c) {
@@ -6896,6 +6919,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.ime_cancel();
                 }
                 self.focused = f;
+                self.access_focus();
                 // The border takes the focused or unfocused color.
                 self.apply_border();
                 // Tandem going to the background saves the windows (iTerm2 saves on resign
