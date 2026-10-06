@@ -325,6 +325,31 @@ mod tests {
         assert!(movement < bytes && bytes < clear && clear < write);
     }
 
+    /// Task 5 fix r1 items 1 and 2 (`PTYTextView.m:4189-4193`, `:4210`): Copy with Styles refuses an
+    /// empty copy with DisallowCopyEmptyString and saves the text to Paste History, before it writes
+    /// the clipboard, like the plain copy.
+    #[test]
+    fn copy_with_styles_follows_the_plain_copy() {
+        let body = include_str!("seltools_ui.rs").split("fn copy_with_styles(").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        let (text, refuse, remember, write) = (body.find("selection_text()").unwrap(), body.find("copy_decision(").unwrap_or(usize::MAX), body.find("remember_paste(").unwrap_or(usize::MAX), body.find("winclip::set(").unwrap());
+        assert!(text < refuse && refuse < write, "an empty styled copy is refused before the write");
+        assert!(body.contains("DisallowCopyEmptyString"));
+        assert!(remember < write, "the styled copy reaches Paste History");
+    }
+
+    /// Task 4 re-review item 3: a Win-press masks the Start menu for a left press on a pane even
+    /// with CommandSelection off (the Win-drag append still ends with a Win release).
+    #[test]
+    fn win_press_masks_the_start_menu_without_command_selection() {
+        let body = include_str!("mod.rs").split("fn mouse_press(").nth(1).unwrap().split("fn mouse_release(").next().unwrap();
+        let at = body.find("The Win release must not open the Start menu").unwrap();
+        let guard = &body[at..];
+        let mask = guard.find("mask_start_menu()").unwrap();
+        let cond = guard[..mask].rfind("if mods.cmd").unwrap();
+        assert!(!guard[cond..mask].contains("CommandSelection"));
+        assert!(guard[..mask].contains("#[cfg(windows)]"));
+    }
+
     #[test]
     fn copy_on_selection_uses_styles() {
         assert_eq!(copy_kind(false, false), None);

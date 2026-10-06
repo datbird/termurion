@@ -20,10 +20,16 @@ impl App {
         if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::Styles) {
             return;
         }
-        let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
+        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return };
+        // An empty copy never clears the clipboard with DisallowCopyEmptyString (`PTYTextView.m:4189-4193`).
+        if !crate::seltext::copy_decision(&text, self.globals.bool("DisallowCopyEmptyString")) {
+            return;
+        }
+        // The styled copy reaches Paste History as the plain one does (`PTYTextView.m:4210`).
+        self.remember_paste(&text);
+        let Some(p) = self.panes.get(&id) else { return };
         let screen = &p.screen;
-        let Some(text) = screen.selection_text() else { return };
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
         let rows = p.styled_rows();
         let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
