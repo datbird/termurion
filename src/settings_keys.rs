@@ -2605,6 +2605,42 @@ mod tests {
         }
     }
 
+    /// `AS:853-885`: the five open-file rows (Task 2): tab, section, kind, default, label and help.
+    #[test]
+    fn open_file_rows_follow_iterm2() {
+        let dep = "DEPRECATED: Use \u{201c}How should new instances be opened\u{201d} instead.";
+        let rows: [(&str, &str, Kind, Value, String, String); 5] = [
+            (
+                "OpenFileOverridesSendText",
+                "General",
+                Kind::Bool,
+                Value::Boolean(true),
+                "Should opening a script with Tandem disable the default profile\u{2019}s \u{201c}Send Text at Start\u{201d} setting?".into(),
+                "\nIf you use \u{201c}tandem.exe file.ps1\u{201d} or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's \u{201c}Send Text at Start\u{201d} setting. If this setting is off then both will be executed.".into(),
+            ),
+            ("OpenFileInNewWindows", "Windows", Kind::Bool, Value::Boolean(false), dep.into(), "\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also \u{201c}Open files in split panes\u{201d}.".into()),
+            ("OpenFileInSplitPanes", "Windows", Kind::Bool, Value::Boolean(false), dep.into(), "\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set \u{201c}Open files in new windows, not new tabs\u{201d} to \u{201c}No\u{201d} for this to take effect. See also \u{201c}When opening a file in a split pane, should it be a vertical split?\u{201d}".into()),
+            ("OpenFileInVerticalSplitPane", "Windows", Kind::Bool, Value::Boolean(true), dep.into(), "\nWhen opening a file in a split pane, should it be a vertical split?".into()),
+            (
+                "NewInstanceOpenStyle",
+                "Windows",
+                Kind::Int,
+                Value::Integer(-1),
+                "How should new instances be opened when triggered by scripts or external applications?".into(),
+                "\n-1: Use legacy settings (default)\n0: New Window\n1: New Tab\n2: Vertical Split Pane\n3: Horizontal Split Pane\nThis provides a unified setting for controlling external instance creation.".into(),
+            ),
+        ];
+        for (key, section, kind, default, label, rest) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}{rest}"), "{key}");
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+    }
+
     #[test]
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";

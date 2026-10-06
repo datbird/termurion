@@ -224,7 +224,7 @@ impl SchemeRegistry for NoRegistry {
 pub struct WinRegistry;
 
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW};
     use windows_sys::Win32::System::Registry::RegDeleteTreeW;

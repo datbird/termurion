@@ -5053,3 +5053,48 @@ label = "Auto-lock session name after editing it."
 type = "bool"
 default = true
 help = "Auto-lock session name after editing it."
+
+[[setting]]
+key = "OpenFileOverridesSendText"
+tab = "Advanced"
+section = "General"
+label = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?"
+type = "bool"
+default = true
+help = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?\nIf you use “tandem.exe file.ps1” or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's “Send Text at Start” setting. If this setting is off then both will be executed."
+
+[[setting]]
+key = "OpenFileInNewWindows"
+tab = "Advanced"
+section = "Windows"
+label = "DEPRECATED: Use “How should new instances be opened” instead."
+type = "bool"
+default = false
+help = "DEPRECATED: Use “How should new instances be opened” instead.\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also “Open files in split panes”."
+
+[[setting]]
+key = "OpenFileInSplitPanes"
+tab = "Advanced"
+section = "Windows"
+label = "DEPRECATED: Use “How should new instances be opened” instead."
+type = "bool"
+default = false
+help = "DEPRECATED: Use “How should new instances be opened” instead.\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set “Open files in new windows, not new tabs” to “No” for this to take effect. See also “When opening a file in a split pane, should it be a vertical split?”"
+
+[[setting]]
+key = "OpenFileInVerticalSplitPane"
+tab = "Advanced"
+section = "Windows"
+label = "DEPRECATED: Use “How should new instances be opened” instead."
+type = "bool"
+default = true
+help = "DEPRECATED: Use “How should new instances be opened” instead.\nWhen opening a file in a split pane, should it be a vertical split?"
+
+[[setting]]
+key = "NewInstanceOpenStyle"
+tab = "Advanced"
+section = "Windows"
+label = "How should new instances be opened when triggered by scripts or external applications?"
+type = "int"
+default = -1
+help = "How should new instances be opened when triggered by scripts or external applications?\n-1: Use legacy settings (default)\n0: New Window\n1: New Tab\n2: Vertical Split Pane\n3: Horizontal Split Pane\nThis provides a unified setting for controlling external instance creation."

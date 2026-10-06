@@ -960,10 +960,17 @@ impl App {
     /// downloaded file asks first.
     pub(super) fn load_arrangement_file(&mut self) {
         let Some(path) = rfd::FileDialog::new().set_title("Load Arrangement").add_filter("Arrangement", &["itermarrangement", "iterm2arrangement", "plist"]).pick_file() else { return };
+        self.load_arrangement_path(&path);
+    }
+
+    /// The windows of the arrangement file at `path` open (`AD:815-819`); a downloaded file asks
+    /// first (`open_arrangement_windows`). The caller has checked the path is local.
+    pub(super) fn load_arrangement_path(&mut self, path: &std::path::Path) {
+        let path = path.to_path_buf();
         let windows = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| arrangement::from_plist(&b)) {
             Ok(w) => w,
             Err(e) => {
-                self.banners.set("arrangement", format!("Could not load {}: {e}", path.display()));
+                self.banners.set("arrangement", format!("Could not load {}: {e}", super::files_ui::shown_name(&path.display().to_string())));
                 return self.redraw();
             }
         };

@@ -373,7 +373,7 @@ mod tests {
         let arrange = include_str!("arrange_ui.rs");
         let shared = body(arrange, "    pub(super) fn open_arrangement_windows(");
         assert!(shared.contains("has_mark_of_the_web") && shared.contains("trust_text"));
-        let load = body(arrange, "    pub(super) fn load_arrangement_file(");
+        let load = body(arrange, "    pub(super) fn load_arrangement_path(");
         assert!(load.contains("open_arrangement_windows("), "Load Arrangement uses the same gate");
         let read = restore.find("read_bounded(").unwrap();
         let pick = restore.find("pick_file").unwrap();

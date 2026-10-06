@@ -13,6 +13,13 @@ use crate::launch::Request;
 impl App {
     /// A request from the pipe: capped like URLs are, queued until the first window exists.
     pub(super) fn receive_launch(&mut self, r: Request, event_loop: &ActiveEventLoop) {
+        // Explorer opens many files as many processes: they gather in a short window and open
+        // together (`open_file::Batch`, with its own bound and one "N files ignored" banner), so
+        // the launch flood cap never drops them silently.
+        if let Request::Open { paths } = r {
+            self.open_batch.push(paths, Instant::now());
+            return;
+        }
         if !self.launch_flood.admit(Instant::now()) {
             return self.ignored_launch_banner();
         }
@@ -44,7 +51,7 @@ impl App {
         }
     }
 
-    /// One request, now. `Open` is Task 2, `Url` (which arrives as `UserEvent::OpenUrl`) is
+    /// One request, now. `Open` gathers into `open_batch` (Task 2), `Url` (which arrives as `UserEvent::OpenUrl`) is
     /// `receive_url`, `Embedding` is Task 5: each does nothing here until it lands.
     pub(super) fn launch_request(&mut self, r: Request, event_loop: &ActiveEventLoop) {
         match r {
@@ -80,7 +87,8 @@ impl App {
                 self.bring_forward();
                 self.redraw();
             }
-            Request::Open { .. } | Request::Url { .. } | Request::Embedding => {}
+            Request::Open { paths } => self.open_batch.push(paths, Instant::now()),
+            Request::Url { .. } | Request::Embedding => {}
         }
     }
 

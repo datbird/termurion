@@ -80,6 +80,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
         Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
+        // Cancel: a closed window never runs an opened script or adds a preset (B6).
+        Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) => Answer::Button(1),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
         Then::ClaudeUninstall | Then::ClaudeHooksFailed => Answer::Button(1),
         // Leave Enabled: a closed window never turns the person's API off (P10).
@@ -257,6 +259,12 @@ pub(super) enum Then {
     LogStyle { pane: crate::layout::PaneId, path: std::path::PathBuf, append: bool },
     /// "Session Logging Problem": OK only.
     LogProblem,
+    /// "OK to run ...?" for a script opened with Tandem (Task 2): OK (0) opens the session that
+    /// runs it; Cancel (1) does nothing. A closed window cancels; another process raises it, so
+    /// it is capped (B6).
+    RunOpenedFile(crate::open_file::Launch),
+    /// "Add duplicate color preset?" for an opened `.itermcolors`: Cancel (0) or Add it anyway (1).
+    AddDuplicateColorPreset(std::path::PathBuf),
 }
 
 impl Then {
@@ -279,7 +287,7 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_))
     }
 }
 
@@ -582,6 +590,16 @@ impl App {
                 }
             }
             Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie => self.claude_answered(&then, index),
+            Then::RunOpenedFile(launch) => {
+                if index == 0 {
+                    self.open_runs.push(launch);
+                }
+            }
+            Then::AddDuplicateColorPreset(path) => {
+                if index == 1 {
+                    self.open_recheck(path);
+                }
+            }
         }
     }
 }
@@ -776,5 +794,29 @@ mod tests {
         assert_eq!(a.spec.cancel, None);
         assert!(a.spec.never_remember.is_empty());
         assert!(!a.then.capped());
+    }
+
+    /// B6: the questions another process can raise close as Cancel and count against the cap.
+    #[test]
+    fn closing_the_run_question_cancels() {
+        let launch = crate::open_file::Launch { guid: "G".into(), dir: None, text: Some("x".into()), style: crate::open_file::Style::Tab, new_window: false };
+        for then in [Then::RunOpenedFile(launch.clone()), Then::AddDuplicateColorPreset(std::path::PathBuf::from(r"C:.itermcolors"))] {
+            assert_eq!(on_close(&then, 0), Answer::Button(1), "{then:?}");
+            assert!(then.capped(), "{then:?}");
+        }
+    }
+
+    #[test]
+    fn a_flood_of_open_requests_is_capped() {
+        let launch = crate::open_file::Launch { guid: "G".into(), dir: None, text: Some("x".into()), style: crate::open_file::Style::Tab, new_window: false };
+        let mut queue = VecDeque::new();
+        let mut dropped = 0;
+        for _ in 0..40 {
+            let a = ask("", "OK to run?", &["OK", "Cancel"], None, Kind::Persistent, Then::RunOpenedFile(launch.clone()));
+            if push_capped(&mut queue, a).is_some() {
+                dropped += 1;
+            }
+        }
+        assert_eq!((queue.len(), dropped), (LIMIT, 40 - LIMIT));
     }
 }
