@@ -4339,8 +4339,9 @@ pub const BELL_GLYPH: char = '\u{EA8F}';
 /// The centered bell indicator (`iTermIndicatorsHelper.m:141-203`, `:414-429`): a 26 point
 /// rounded square (corner radius a sixth of its side) at the pane's center, black with a light
 /// gray edge on a dark background and white with a dark gray one on a light background, the bell
-/// glyph on it, all at `alpha`. A popup box (it holds text): the text under it is cut out.
-pub fn bell_indicator(frame: &mut Frame, pane: Rect, dark_background: bool, alpha: f32, scale: f32) {
+/// glyph on it (22 points tall, centered: `cell` is the pane's cell in pixels, so the glyph's
+/// size and advance are known), all at `alpha`. A popup box (it holds text): the text under it is cut out.
+pub fn bell_indicator(frame: &mut Frame, pane: Rect, dark_background: bool, alpha: f32, scale: f32, cell: (f32, f32)) {
     let alpha = alpha.clamp(0.0, 1.0);
     if alpha <= 0.0 {
         return;
@@ -4356,7 +4357,10 @@ pub fn bell_indicator(frame: &mut Frame, pane: Rect, dark_background: bool, alph
     // The glyph fades by moving toward the fill (text has no alpha).
     let color = blend(fill, glyph, alpha);
     let span = Span { text: BELL_GLYPH.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-    frame.rows.push(TextRow { x: r.x + 2.0 * scale, y: r.y + 2.0 * scale, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    // The icon is one cell wide; scaled so its cell is 22 points tall, then centered in the box.
+    let glyph_scale = if cell.1 > 0.0 { 22.0 * scale / cell.1 } else { 1.0 };
+    let (gw, gh) = (cell.0 * glyph_scale, cell.1 * glyph_scale);
+    frame.rows.push(TextRow { x: r.x + (side - gw) / 2.0, y: r.y + (side - gh) / 2.0, spans: vec![span], clip: r, scale: glyph_scale, face: crate::render::DEFAULT_FACE });
 }
 
 /// RequestAttention=fireworks: bursts of colored sparks around `center`, `t` from 0 to 1.
@@ -8887,7 +8891,7 @@ mod drawn_overlay_tests {
             (x0, y0, x1 - x0, y1 - y0)
         };
         let mut f = Frame::default();
-        bell_indicator(&mut f, pane, true, 1.0, 1.0);
+        bell_indicator(&mut f, pane, true, 1.0, 1.0, (9.0, 18.0));
         assert_eq!(bounds(&f), (87.0, 37.0, 26.0, 26.0));
         assert!(f.popups.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0)), "black fill");
         assert!(f.popups.iter().any(|q| q.color == rgba(BELL_EDGE_ON_DARK, 1.0)), "light gray edge");
@@ -8895,12 +8899,20 @@ mod drawn_overlay_tests {
         let row = &f.rows[0];
         assert!(row.spans[0].icon && row.spans[0].text == "\u{EA8F}");
         assert!(row.x >= 87.0 && row.x < 113.0 && row.y >= 37.0 && row.y < 63.0, "the glyph sits on the box");
+        // Centered, about 22 points tall (`iTermIndicatorsHelper.m:211`): the glyph cell's center is the box's center.
+        let center = |row: &TextRow, cell: (f32, f32), at: (f32, f32)| ((row.x + cell.0 * row.scale / 2.0 - at.0).abs(), (row.y + cell.1 * row.scale / 2.0 - at.1).abs());
+        let (dx, dy) = center(row, (9.0, 18.0), (100.0, 50.0));
+        assert!(dx <= 1.0 && dy <= 1.0, "glyph centered in the box at 1x: off by ({dx}, {dy})");
+        assert!((18.0 * row.scale - 22.0).abs() < 0.5, "the glyph is 22 points tall, not the terminal font's size");
         let mut f = Frame::default();
-        bell_indicator(&mut f, pane, false, 0.5, 1.0);
+        bell_indicator(&mut f, pane, false, 0.5, 1.0, (9.0, 18.0));
         assert!(f.popups.iter().any(|q| q.color == rgba(rgb(0xff, 0xff, 0xff), 0.5)), "white fill at the fade's alpha");
         let mut f = Frame::default();
-        bell_indicator(&mut f, pane, true, 1.0, 2.0);
+        bell_indicator(&mut f, pane, true, 1.0, 2.0, (18.0, 36.0));
         assert_eq!(bounds(&f), (74.0, 24.0, 52.0, 52.0), "26 points scale with the display");
+        let (dx, dy) = center(&f.rows[0], (18.0, 36.0), (100.0, 50.0));
+        assert!(dx <= 1.0 && dy <= 1.0, "glyph centered at 2x: off by ({dx}, {dy})");
+        assert!((36.0 * f.rows[0].scale - 44.0).abs() < 0.5, "22 points at 2x");
         let mut f = Frame::default();
         pane_flash(&mut f, pane, rgb(10, 20, 30), 0.25);
         assert_eq!(f.overlay.len(), 1);

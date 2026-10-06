@@ -360,7 +360,7 @@ impl App {
             let age = now - t;
             if age < FLASH_DURATION {
                 let alpha = if fades { crate::bell::indicator_alpha(age.as_secs_f32()) } else { 1.0 };
-                scene::bell_indicator(frame, inner, scene::filler_dark(s.palette.bg), alpha, self.scale());
+                scene::bell_indicator(frame, inner, scene::filler_dark(s.palette.bg), alpha, self.scale(), cell);
                 // A fixed-alpha frame needs one more wake, at its end.
                 next = Some(now + if fades { Duration::from_millis(16) } else { FLASH_DURATION - age });
             }
