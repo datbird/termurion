@@ -136,22 +136,45 @@ pub struct Snapshot {
     /// A composer has the keyboard: its own Win chords (`composer::chord`) are Tandem's even
     /// when nothing else binds them (Win+Y).
     pub composer: bool,
+    /// The forms of mappings the person wrote or edited. A hit that is in `keys` but not here
+    /// is one of Tandem's stock global mappings (Win+Arrows, Win+Home): Tandem's own, never
+    /// yielded to Windows.
+    user: HashSet<String>,
+    /// Respect shortcuts from Windows keyboard shortcuts (AllowSymbolicHotKeys): Win chords the
+    /// shell keeps for itself go to Windows over the person's own key mappings.
+    pub respect_system: bool,
 }
 
 impl Snapshot {
     pub fn new(ctx: &Context) -> Snapshot {
         let mut keys = HashSet::new();
-        for map in [ctx.profile_map, ctx.global_map] {
+        let mut user = HashSet::new();
+        let stock = crate::globals::keymaps::factory_global();
+        for (is_global, map) in [(false, ctx.profile_map), (true, ctx.global_map)] {
             for (k, v) in map {
                 let (Some(stroke), Some(b)) = (keystroke::parse(k), Binding::from_value(v)) else { continue };
                 if stroke.flags & COMMAND != 0 && !matches!(b.action, 22 | 24) {
-                    keys.insert(stroke.legacy());
-                    keys.insert(stroke.modified_key());
+                    // Byte for byte Tandem's shipped global entry: not the person's mapping.
+                    let is_stock = is_global && stock.get(k) == Some(v);
+                    for form in [stroke.legacy(), stroke.modified_key()] {
+                        if !is_stock {
+                            user.insert(form.clone());
+                        }
+                        keys.insert(form);
+                    }
                 }
             }
         }
-        Snapshot { keys, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false }
+        Snapshot { keys, user, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, respect_system: false }
     }
+}
+
+/// Whether a Win chord goes to Windows instead of a key mapping (R3 under ruling R7: iTerm2's
+/// default "Respect shortcuts from System Settings" lets the system's shortcuts win). Only
+/// with the option on, only for a chord the shell keeps, and never when a Tandem menu command
+/// (or one of Tandem's own stock mappings) owns it.
+pub fn yields_to_system(respect: bool, shell_owned: bool, menu_command: bool) -> bool {
+    respect && shell_owned && !menu_command
 }
 
 /// True when Tandem has something for this Win chord: the Leader, a number shortcut,
@@ -166,7 +189,14 @@ pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     }
     let mut typed = p.stroke.clone();
     typed.char_is_modified = true;
-    s.keys.contains(&p.stroke.legacy()) || s.keys.contains(&typed.modified_key()) || crate::commands::command_for_chord(chord).is_some()
+    let (a, b) = (p.stroke.legacy(), typed.modified_key());
+    let menu = crate::commands::command_for_chord(chord).is_some();
+    if s.keys.contains(&a) || s.keys.contains(&b) {
+        // A stock mapping is Tandem's own, like a menu command.
+        let stock_only = !s.user.contains(&a) && !s.user.contains(&b);
+        return !yields_to_system(s.respect_system, crate::winkeys::shell_owned_chord(chord), menu || stock_only);
+    }
+    menu
 }
 
 #[cfg(test)]
@@ -275,6 +305,83 @@ mod tests {
         assert!(win_chord_bound(&Snapshot::new(&ctx(&a, &e)), &Chord { shift: true, ..win(ChordKey::Char('a')) }));
         assert!(win_chord_bound(&Snapshot::new(&ctx(&bang, &e)), &Chord { shift: true, ..win(ChordKey::Char('1')) }));
         assert!(matches!(route(&ctx(&bang, &e), &press_from_chord(&Chord { shift: true, ..win(ChordKey::Char('1')) })), Route::Binding(_)));
+    }
+
+    fn respecting(c: &Context) -> Snapshot {
+        Snapshot { respect_system: true, ..Snapshot::new(c) }
+    }
+
+    #[test]
+    fn symbolic_shortcuts_follow_the_option() {
+        assert!(yields_to_system(true, true, false));
+        assert!(!yields_to_system(true, true, true), "a Tandem menu command still wins");
+        assert!(!yields_to_system(false, true, false));
+        assert!(!yields_to_system(true, false, false));
+        let e = toml::Table::new();
+        // A key mapping on Win+B (the shell's; Win+E is also Tandem's Use Selection for Find, a
+        // menu command) yields to Windows only with the option on.
+        let g = map("0x62-0x100000", 13);
+        let win_e = win(ChordKey::Char('b'));
+        assert!(!win_chord_bound(&respecting(&ctx(&e, &g)), &win_e));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &g)), &win_e));
+        // A profile mapping yields the same way.
+        assert!(!win_chord_bound(&respecting(&ctx(&g, &e)), &win_e));
+        // A mapping on a chord Windows does not keep stays Tandem's (Win+Y).
+        let j = map("0x6e-0x100000", 13); // Win+N has a menu command in Tandem
+        assert_eq!(win_chord_bound(&respecting(&ctx(&j, &e)), &win(ChordKey::Char('n'))), crate::commands::command_for_chord(&win(ChordKey::Char('n'))).is_some());
+        let free = map("0x79-0x100000", 13); // Win+Y is nobody's
+        assert!(win_chord_bound(&respecting(&ctx(&free, &e)), &win(ChordKey::Char('y'))));
+        // Win+T is New Tab: a menu command wins even with a mapping on it, option on or off.
+        let t = map("0x74-0x100000", 13);
+        assert!(win_chord_bound(&respecting(&ctx(&t, &e)), &win(ChordKey::Char('t'))));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&t, &e)), &win(ChordKey::Char('t'))));
+        // Ctrl+Win+B is Windows' (wake the display): a mapping on it yields. Ctrl+Win+Left is
+        // Move Divider Left in Tandem, a menu command, so it stays Tandem's.
+        let desk = map("0x62-0x140000", 13);
+        let ctrl_left = Chord { ctrl: true, ..win(ChordKey::Char('b')) };
+        let kept = map("0xf702-0x340000", 13);
+        assert!(win_chord_bound(&respecting(&ctx(&e, &kept)), &Chord { ctrl: true, ..win(ChordKey::Left) }));
+        assert!(!win_chord_bound(&respecting(&ctx(&e, &desk)), &ctrl_left));
+        assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &desk)), &ctrl_left));
+        // The Leader and number shortcuts are Tandem's own, not key mappings.
+        let mut c = ctx(&e, &e);
+        c.leader_on = true;
+        assert!(win_chord_bound(&respecting(&c), &win_e));
+        assert!(win_chord_bound(&respecting(&ctx(&e, &e)), &win(ChordKey::Char('3'))));
+    }
+
+    #[test]
+    fn stock_global_win_arrows_stay_tandems() {
+        let e = toml::Table::new();
+        let stock = crate::globals::keymaps::factory_global().clone();
+        let s = respecting(&ctx(&e, &stock));
+        for c in [win(ChordKey::Left), win(ChordKey::Right), win(ChordKey::Up), win(ChordKey::Down), win(ChordKey::Home), Chord { shift: true, ..win(ChordKey::Left) }, Chord { shift: true, ..win(ChordKey::Right) }] {
+            assert!(win_chord_bound(&s, &c), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn edited_stock_mapping_yields() {
+        let e = toml::Table::new();
+        // The person rebinds Win+Left (stock: action 7) to another action.
+        let mut g = crate::globals::keymaps::factory_global().clone();
+        g.insert("0xf702-0x300000".into(), map("0xf702-0x300000", 13)["0xf702-0x300000"].clone());
+        let s = respecting(&ctx(&e, &g));
+        assert!(!win_chord_bound(&s, &win(ChordKey::Left)));
+        assert!(win_chord_bound(&s, &win(ChordKey::Right)), "the others stay stock");
+        // A profile mapping on a stock chord is the person's too.
+        let p = map("0xf703-0x300000", 13);
+        assert!(!win_chord_bound(&respecting(&ctx(&p, crate::globals::keymaps::factory_global())), &win(ChordKey::Right)));
+    }
+
+    #[test]
+    fn user_mapping_on_win_e_yields() {
+        let e = toml::Table::new();
+        let mut g = crate::globals::keymaps::factory_global().clone();
+        g.extend(map("0x62-0x100000", 13));
+        let s = respecting(&ctx(&e, &g));
+        assert!(!win_chord_bound(&s, &win(ChordKey::Char('b'))));
+        assert!(win_chord_bound(&s, &win(ChordKey::Left)));
     }
 
     #[test]

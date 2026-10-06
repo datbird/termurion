@@ -637,6 +637,47 @@ pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
     }
 }
 
+/// `shell_owned` for a Win chord as the hook reports it, with no Win32 call: the hook thread
+/// asks this for every Win chord, so the key goes to its (U.S. layout independent) scan code
+/// through a table. A key with no entry is not the shell's.
+pub fn shell_owned_chord(c: &crate::menus::Chord) -> bool {
+    use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+    use crate::menus::ChordKey as K;
+    if !c.cmd {
+        return false;
+    }
+    let scan: u32 = match c.key {
+        K::Char(ch) => {
+            // U.S. scan codes (set 1): the top row, then the three letter rows.
+            const ROWS: [(&str, u32); 5] = [("1234567890-=", 0x02), ("qwertyuiop", 0x10), ("asdfghjkl;", 0x1E), ("zxcvbnm,.", 0x2C), ("/", 0x35)];
+            match ROWS.iter().find_map(|(row, base)| row.find(ch.to_ascii_lowercase()).map(|i| base + i as u32)) {
+                Some(n) => n,
+                None => return false,
+            }
+        }
+        K::Space => 0x39,
+        K::Tab => 0x0F,
+        K::Enter => 0x1C,
+        K::Escape => 0x01,
+        K::Backspace => 0x0E,
+        K::Left => 0xE04B,
+        K::Right => 0xE04D,
+        K::Up => 0xE048,
+        K::Down => 0xE050,
+        K::Home => 0xE047,
+        K::End => 0xE04F,
+        K::PageUp => 0xE049,
+        K::PageDown => 0xE051,
+        K::Delete => 0xE053,
+        K::F(n @ 1..=10) => 0x3A + n as u32,
+        K::F(11) => 0x57,
+        K::F(12) => 0x58,
+        K::F(_) => return false,
+    };
+    let mods = MOD_WIN | if c.shift { MOD_SHIFT } else { 0 } | if c.ctrl { MOD_CONTROL } else { 0 } | if c.alt { MOD_ALT } else { 0 };
+    shell_owned(HChord { key: HKey::Scan(scan), mods })
+}
+
 type Global = HookHotkeys;
 
 static GLOBAL: Mutex<Option<Global>> = Mutex::new(None);
@@ -840,6 +881,47 @@ mod tests {
         assert!(!shell_owned(HChord { key: HKey::Scan(0x15), mods: MOD_WIN }), "Win+Y is free");
         assert!(!shell_owned(HChord { key: HKey::Scan(0x24), mods: MOD_WIN | crate::hotkey::MOD_ALT | MOD_CONTROL }), "Win+Ctrl+Alt+J");
         assert_eq!(fallback(HChord { key: HKey::Scan(0x15), mods: MOD_WIN }, 1409), Err("Another app uses this shortcut".to_string()));
+    }
+
+    #[test]
+    fn shell_owned_chord_matches_shell_owned() {
+        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_WIN};
+        use crate::menus::{Chord, ChordKey as MKey};
+        let chord = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
+        let chars = |s: &str| s.chars().map(MKey::Char).collect::<Vec<_>>();
+        // Win+letter: the shell keeps every letter but Y.
+        for k in chars("abcdefghijklmnopqrstuvwxz") {
+            assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
+            assert!(shell_owned_chord(&chord(k, false, false, true)));
+        }
+        assert!(!shell_owned_chord(&chord(MKey::Char('y'), false, false, false)), "Win+Y is free");
+        for k in chars("1234567890") {
+            assert!(shell_owned_chord(&chord(k, false, false, false)));
+        }
+        for k in [MKey::Space, MKey::Tab, MKey::Enter, MKey::Escape, MKey::Up, MKey::Down, MKey::Left, MKey::Right, MKey::Home, MKey::Char(','), MKey::Char('.'), MKey::Char(';'), MKey::Char('-'), MKey::Char('=')] {
+            assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
+        }
+        assert!(!shell_owned_chord(&chord(MKey::End, false, false, false)));
+        assert!(!shell_owned_chord(&chord(MKey::PageUp, false, false, false)));
+        assert!(!shell_owned_chord(&chord(MKey::Backspace, false, false, false)));
+        // Win+Ctrl: virtual desktops and the like.
+        for k in [MKey::Char('d'), MKey::F(4), MKey::Left, MKey::Right, MKey::Enter, MKey::Char('f'), MKey::Char('b'), MKey::Char('c')] {
+            assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
+        }
+        assert!(!shell_owned_chord(&chord(MKey::Char('e'), true, false, false)));
+        // Win+Alt: Game Bar and pen.
+        for k in "grtmbdkh".chars() {
+            assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k}");
+        }
+        assert!(!shell_owned_chord(&chord(MKey::Char('e'), false, true, false)));
+        assert!(!shell_owned_chord(&chord(MKey::Char('d'), true, true, false)), "Win+Ctrl+Alt+D");
+        // Not a Win chord at all.
+        assert!(!shell_owned_chord(&Chord { cmd: false, ..chord(MKey::Char('d'), false, false, false) }));
+        // The two agree on every scan code both can name.
+        for (key, scan) in [(MKey::Char('a'), 0x1E_u32), (MKey::Char('t'), 0x14), (MKey::Char('y'), 0x15), (MKey::Left, 0xE04B), (MKey::Space, 0x39)] {
+            let h = HChord { key: HKey::Scan(scan), mods: MOD_WIN };
+            assert_eq!(shell_owned_chord(&chord(key, false, false, false)), shell_owned(h));
+        }
     }
 
     #[test]

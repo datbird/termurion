@@ -1,0 +1,8 @@
+m13u rulings (keys and hotkeys)
+
+Task 6: Respect shortcuts from Windows keyboard shortcuts (02:340, R3, R7)
+- Tandem's hook took shell chords for key mappings; iTerm2's default (Respect shortcuts from System Settings) lets the system's shortcuts win. Fixed (R3) under ruling R7: with AllowSymbolicHotKeys on (default), a key mapping on a Win chord the shell keeps (winkeys::shell_owned_chord) no longer takes it from Windows.
+- Stock global shortcuts are Tandem's own; R7 yields only the person's own mappings (a global entry byte-for-byte equal to schema/keymaps.toml [global] is stock; an edited or profile mapping is the person's). Cost if wrong: Win+Left would snap the window instead of changing tab, from the keyboard and from bumbles.
+- A Tandem menu command (commands::command_for_chord) never yields. The Leader, Win+number and composer chords are not key mappings and never yield.
+- shell_owned_chord is pure (a scan table over menus::Chord, U.S. layout independent), so the hook thread makes no Win32 call per keystroke.
+- Cost if wrong (R7): a user mapping on a shell chord with no Tandem command (Win+B, Ctrl+Win+B) needs the option off. Note Win+E and Ctrl+Win+Left are Tandem menu commands, so they stay Tandem's.

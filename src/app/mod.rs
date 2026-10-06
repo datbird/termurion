@@ -4714,6 +4714,7 @@ impl App {
     fn refresh_route(&self) {
         let mut snapshot = self.with_route(keyroute::Snapshot::new);
         snapshot.composer = self.composer_has_keys();
+        snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
