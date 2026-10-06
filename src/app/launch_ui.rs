@@ -107,15 +107,71 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// The 13u startup a second Tandem must never reach: the keyboard hook, the global remap,
+    /// the hotkeys (app, profile and session), the forced layout and the notification icon.
+    const KEYS_STARTUP: &[&str] = &["winkeys::install", "set_remap_global", "set_hotkey_sink", "register_hotkeys", "input_locale::", "locale_focus", "notify::add", "notify::show"];
+
+    /// `run()` up to the event loop: every way a forwarding or losing process ends lies in it.
+    fn run_before_loop() -> &'static str {
+        let m = include_str!("mod.rs");
+        let run = m.split("pub fn run()").nth(1).expect("run");
+        run.split("event_loop.run_app").next().expect("run_app")
+    }
+
     /// 13u S4: a process that cannot bind the launch pipe hands its request over and ends before
     /// the event loop runs, so it never installs a second keyboard hook, hotkeys or tray icon.
     #[test]
     fn a_second_process_installs_no_hook() {
-        let m = include_str!("mod.rs");
-        let run = m.split("pub fn run()").nth(1).expect("run");
+        let run = run_before_loop();
         let failed = run.split("launch: not listening").nth(1).and_then(|r| r.split("let wake = proxy.clone();").next()).expect("the bind failure branch");
         assert!(failed.contains("return;"), "the loser of the pipe ends");
-        assert!(!failed.contains("run_app"));
+        // Nothing of 13u's startup runs before the event loop, so every early return (a
+        // forwarded launch, a lost pipe, a refused command line) leaves no hook, hotkey, forced
+        // layout or icon behind.
+        for call in KEYS_STARTUP {
+            assert!(!run.contains(call), "{call} runs before the launch pipe decided this process may stay");
+        }
+        // The hook and the hotkeys come only from install_menus, which runs on the first window.
+        let menu = include_str!("menu.rs");
+        let live = menu.split("\n#[cfg(test)]").next().unwrap();
+        let install = live.split("fn install_menus").nth(1).expect("install_menus");
+        let body = install.split("\n    pub(super) fn ").next().unwrap();
+        assert!(body.contains("winkeys::install") && body.contains("register_hotkeys"), "the hook and hotkeys are installed with the first window's menus");
+        assert_eq!(live.matches("winkeys::install(").count(), 1, "one hook install site");
+        let m = include_str!("mod.rs");
+        let live_mod = m.split("\n#[cfg(test)]").next().unwrap();
+        assert!(!live_mod.contains("winkeys::install("), "no hook install in mod.rs");
+        // The listener is bound before the event loop runs, so the loser never reaches a window.
+        assert!(run.contains("url_launch::listen("), "the pipe is bound before the first window");
+    }
+
+    /// 13u S6: a process that forwards its request and ends has nothing for the one process
+    /// teardown to undo (13u's startup comes later, above), and the teardown runs after the
+    /// event loop on every way it ends, so every 13v1 exit is covered by `teardown_process`.
+    #[test]
+    fn every_launch_exit_is_covered_by_the_one_teardown() {
+        let run = run_before_loop();
+        assert!(run.matches("AfterHand::Exit => return").count() >= 2, "the URL and the command-line forwards both end here");
+        let m = include_str!("mod.rs");
+        let after = m.split("event_loop.run_app").nth(1).expect("run_app");
+        let tail = after.split("\nimpl App").next().unwrap();
+        assert!(tail.contains("teardown_process();"), "the end of the event loop runs the one teardown");
+        let teardown = m.split("pub(crate) fn teardown_process()").nth(1).and_then(|r| r.split("\n}").next()).expect("teardown_process");
+        for part in ["winkeys::uninstall", "input_locale::", "notify::remove"] {
+            assert!(teardown.contains(part), "the teardown undoes {part}");
+        }
+        // WM_ENDSESSION (13q's logout_ui, the one end-of-session path) runs it too.
+        assert!(include_str!("logout_ui.rs").contains("teardown_process()"));
+    }
+
+    /// 13u S5: a session hotkey with no session (Tandem without a window, or every session gone)
+    /// picks nothing, so it neither reveals a pane nor wakes a window.
+    #[test]
+    fn a_session_hotkey_with_no_session_does_nothing() {
+        let none: &[crate::layout::PaneId] = &[];
+        assert_eq!(crate::session_hotkeys::pick(none, None, none), None);
+        let (first, background) = crate::session_hotkeys::focus_state(&[(false, None)]);
+        assert_eq!(crate::session_hotkeys::pick(none, first, &background), None);
     }
 
     /// B1: the launch channel is the one URL pipe: no second pipe module, no second name.
