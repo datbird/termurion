@@ -375,6 +375,8 @@ pub struct App {
     /// The modifiers of a Cycle Tabs chord; letting go of them ends the cycle.
     mru_mods: Option<Mods>,
     alt_side: AltSide,
+    /// Which Control and Win keys are down, left and right apart (kitty's Hyper, Meta and Super mapping).
+    sides: crate::keyproto::Sides,
     pointer_clicks: pointer::Clicks,
     /// The last press for the pointer multi-click count: when, button, where, count.
     pointer_last: Option<(Instant, u8, (f32, f32), u8)>,
@@ -1701,6 +1703,7 @@ pub fn run() {
         next_tab_id: 1,
         mru_mods: None,
         alt_side: AltSide::Left,
+        sides: crate::keyproto::Sides::default(),
         pointer_clicks: pointer::Clicks::default(),
         pointer_last: None,
         pointer_down: None,
@@ -6650,6 +6653,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if was != self.tab_flash.state() {
                     self.redraw();
                 }
+                self.sides = crate::keyproto::Sides { lctrl: m.lcontrol_state() == ModifiersKeyState::Pressed, rctrl: m.rcontrol_state() == ModifiersKeyState::Pressed, lwin: m.lsuper_state() == ModifiersKeyState::Pressed, rwin: m.rsuper_state() == ModifiersKeyState::Pressed };
                 self.update_hover();
                 if s.alt_key() {
                     self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };

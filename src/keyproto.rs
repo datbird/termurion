@@ -23,6 +23,67 @@ pub struct KeyEvent<'a> {
     pub kind: Kind,
     pub altgr: bool,
     pub vk: u16,
+    /// Which Control and Win keys are down (the modifier bits cannot say left from right).
+    pub sides: Sides,
+    /// The pane's Control and Win key mappings.
+    pub bucky: Bucky,
+}
+
+/// Which Control and Win keys are down, left and right apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sides {
+    pub lctrl: bool,
+    pub rctrl: bool,
+    pub lwin: bool,
+    pub rwin: bool,
+}
+
+/// The profile's Left/Right Control and Win (Command) key mappings: 0 Normal, 1 Hyper, 2 Meta, 3 Super.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Bucky {
+    pub left_ctrl: u8,
+    pub right_ctrl: u8,
+    pub left_win: u8,
+    pub right_win: u8,
+}
+
+impl Bucky {
+    pub fn from_profile(p: &crate::profile::Profile) -> Bucky {
+        let v = |k: &str| p.int(k).clamp(0, 3) as u8;
+        Bucky { left_ctrl: v("Left Control Key"), right_ctrl: v("Right Control Key"), left_win: v("Left Command Key"), right_win: v("Right Command Key") }
+    }
+}
+
+/// kitty's modifier bits (shift 1, alt 2, ctrl 4, super 8, hyper 16, meta 32) for a key event
+/// (`iTermModernKeyMapper.swift:1717-1860`). A down Control or Win key adds its own bit, or the
+/// bit of the bucky it is mapped to; Win alone adds nothing. With no side known (a synthetic
+/// event) a held Control counts as plain Control.
+pub fn cook(mods: Mods, sides: Sides, b: Bucky) -> u32 {
+    fn side(map: u8, plain: u32) -> u32 {
+        match map {
+            1 => 16,
+            2 => 32,
+            3 => 8,
+            _ => plain,
+        }
+    }
+    let mut bits = mods.shift as u32 + 2 * mods.alt as u32;
+    if sides.lctrl {
+        bits |= side(b.left_ctrl, 4);
+    }
+    if sides.rctrl {
+        bits |= side(b.right_ctrl, 4);
+    }
+    if mods.ctrl && !sides.lctrl && !sides.rctrl {
+        bits |= 4;
+    }
+    if sides.lwin {
+        bits |= side(b.left_win, 0);
+    }
+    if sides.rwin {
+        bits |= side(b.right_win, 0);
+    }
+    bits
 }
 
 /// Which protocol reports keys, besides kitty's flags.
@@ -242,14 +303,15 @@ pub fn kitty(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
             return altgr_text(ev);
         }
         let c = text_char(ev)?;
-        (Form::U(c as u32), Mods { shift: false, alt: false, ctrl: false, cmd: false })
+        (Form::U(c as u32), 0)
     } else {
-        (kitty_form(ev)?, ev.mods)
+        (kitty_form(ev)?, cook(ev.mods, ev.sides, ev.bucky))
     };
+    let (shift, others) = (m & 1 != 0, m & !1 != 0);
     let text_key = matches!(ev.key, Key::Text(_));
     let legacy_key = text_key || matches!(ev.key, Key::Enter | Key::Tab | Key::Backspace);
     // Keys that go out as plain text (or legacy Enter, Tab, Backspace) report no release.
-    let as_text = !all && legacy_key && !m.alt && !m.ctrl && (!m.shift || text_key);
+    let as_text = !all && legacy_key && !others && (!shift || text_key);
     if ev.kind == Kind::Release && (!events || as_text) {
         return Some(Vec::new());
     }
@@ -263,8 +325,8 @@ pub fn kitty(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
         Kind::Release => 3,
     };
     let mut mods = String::new();
-    if param(m) != 1 || event != 1 {
-        mods = param(m).to_string();
+    if m != 0 || event != 1 {
+        mods = (m + 1).to_string();
         if event != 1 {
             mods += &format!(":{event}");
         }
@@ -273,7 +335,7 @@ pub fn kitty(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
     match form {
         Form::U(code) => {
             out += &code.to_string();
-            if flags & ALTERNATE_KEYS != 0 && m.shift && !ev.altgr {
+            if flags & ALTERNATE_KEYS != 0 && shift && !ev.altgr {
                 if let (Some(t), Some(b)) = (text_char(ev), base_char(ev)) {
                     if t != b {
                         out += &format!(":{}", t as u32);
@@ -281,7 +343,7 @@ pub fn kitty(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
                 }
             }
             let text: Vec<String> = match ev.text {
-                Some(t) if flags & ASSOCIATED_TEXT != 0 && all && ev.kind != Kind::Release && !m.alt && !m.ctrl => {
+                Some(t) if flags & ASSOCIATED_TEXT != 0 && all && ev.kind != Kind::Release && !others => {
                     t.chars().filter(|c| !c.is_control()).map(|c| (c as u32).to_string()).collect()
                 }
                 _ => Vec::new(),
@@ -334,24 +396,39 @@ pub enum Modifier {
 
 /// A modifier key's own press or release under kitty flag 8. `mods` is the state before
 /// the event; the report carries the state after it. None: nothing to send.
-pub fn kitty_modifier(key: Modifier, mods: Mods, kind: Kind, flags: u8) -> Option<Vec<u8>> {
+pub fn kitty_modifier(key: Modifier, mods: Mods, sides: Sides, bucky: Bucky, kind: Kind, flags: u8) -> Option<Vec<u8>> {
     use Modifier::*;
     if flags & ALL_AS_ESCAPES == 0 || (kind == Kind::Release && flags & EVENT_TYPES == 0) {
         return None;
     }
-    let (code, bit) = match key {
-        LeftShift => (57441, 1),
-        LeftCtrl => (57442, 4),
-        LeftAlt => (57443, 2),
-        LeftSuper => (57444, 8),
-        RightShift => (57447, 1),
-        RightCtrl => (57448, 4),
-        RightAlt => (57449, 2),
-        RightSuper => (57450, 8),
+    let code = match key {
+        LeftShift => 57441,
+        LeftCtrl => 57442,
+        LeftAlt => 57443,
+        LeftSuper => 57444,
+        RightShift => 57447,
+        RightCtrl => 57448,
+        RightAlt => 57449,
+        RightSuper => 57450,
     };
-    // Win (Super) is never reported as a modifier, but its key is.
-    let before = param(mods) - 1;
-    let after = if kind == Kind::Release { before & !bit } else { before | bit } & 7;
+    // The state after the event: the key's own side, then the modifier it stands for.
+    let down = kind != Kind::Release;
+    let (mut m, mut sd) = (mods, sides);
+    match key {
+        LeftShift | RightShift => m.shift = down,
+        LeftAlt | RightAlt => m.alt = down,
+        LeftCtrl => sd.lctrl = down,
+        RightCtrl => sd.rctrl = down,
+        LeftSuper => sd.lwin = down,
+        RightSuper => sd.rwin = down,
+    }
+    if matches!(key, LeftCtrl | RightCtrl) {
+        m.ctrl = sd.lctrl || sd.rctrl;
+    }
+    if matches!(key, LeftSuper | RightSuper) {
+        m.cmd = sd.lwin || sd.rwin;
+    }
+    let after = cook(m, sd, bucky);
     let event = match kind {
         Kind::Press => 1,
         Kind::Repeat if flags & EVENT_TYPES != 0 => 2,
@@ -398,7 +475,7 @@ mod tests {
     }
 
     fn ev<'a>(key: &'a Key, base: Option<char>, text: Option<&'a str>, mods: Mods) -> KeyEvent<'a> {
-        KeyEvent { key, base, text, mods, kind: Kind::Press, altgr: false, vk: 0 }
+        KeyEvent { key, base, text, mods, kind: Kind::Press, altgr: false, vk: 0, sides: Sides::default(), bucky: Bucky::default() }
     }
 
     fn s(v: Option<Vec<u8>>) -> Option<String> {
@@ -448,7 +525,7 @@ mod tests {
     }
 
     fn k(key: &Key, base: Option<char>, text: Option<&str>, mods: Mods, kind: Kind, flags: u8) -> Option<String> {
-        s(kitty(&KeyEvent { key, base, text, mods, kind, altgr: false, vk: 0 }, flags))
+        s(kitty(&KeyEvent { key, base, text, mods, kind, altgr: false, vk: 0, sides: Sides::default(), bucky: Bucky::default() }, flags))
     }
 
     #[test]
@@ -499,7 +576,7 @@ mod tests {
     #[test]
     fn altgr_types_its_character() {
         let at = Key::Text("@".into());
-        let e = KeyEvent { key: &at, base: Some('q'), text: Some("@"), mods: m(false, true, true), kind: Kind::Press, altgr: true, vk: 0x51 };
+        let e = KeyEvent { key: &at, base: Some('q'), text: Some("@"), mods: m(false, true, true), kind: Kind::Press, altgr: true, vk: 0x51, sides: Sides::default(), bucky: Bucky::default() };
         assert_eq!(s(modify_other_keys(&e, 2)).as_deref(), Some("@"));
         assert_eq!(s(csi_u(&e)).as_deref(), Some("@"));
         assert_eq!(s(kitty(&e, DISAMBIGUATE)).as_deref(), Some("@"));
@@ -509,7 +586,7 @@ mod tests {
     #[test]
     fn raw_reports_key_down_and_up() {
         let a = Key::Text("a".into());
-        let mut e = KeyEvent { key: &a, base: Some('a'), text: Some("a"), mods: m(true, false, false), kind: Kind::Press, altgr: false, vk: 0x41 };
+        let mut e = KeyEvent { key: &a, base: Some('a'), text: Some("a"), mods: m(true, false, false), kind: Kind::Press, altgr: false, vk: 0x41, sides: Sides::default(), bucky: Bucky::default() };
         assert_eq!(String::from_utf8(raw(&e)).unwrap(), "\x1b]1337;d;2;61;65;61\x07");
         e.kind = Kind::Release;
         assert!(String::from_utf8(raw(&e)).unwrap().starts_with("\x1b]1337;u;2;"));
@@ -537,10 +614,54 @@ mod tests {
 
     #[test]
     fn kitty_reports_modifier_keys() {
-        assert_eq!(s(kitty_modifier(Modifier::LeftShift, NONE, Kind::Press, ALL_AS_ESCAPES)).as_deref(), Some("\x1b[57441;2u"));
-        assert_eq!(s(kitty_modifier(Modifier::RightCtrl, m(false, false, true), Kind::Release, ALL_AS_ESCAPES | EVENT_TYPES)).as_deref(), Some("\x1b[57448;1:3u"));
-        assert_eq!(kitty_modifier(Modifier::LeftAlt, NONE, Kind::Press, DISAMBIGUATE), None, "only with flag 8");
+        assert_eq!(s(kitty_modifier(Modifier::LeftShift, NONE, Sides::default(), Bucky::default(), Kind::Press, ALL_AS_ESCAPES)).as_deref(), Some("\x1b[57441;2u"));
+        assert_eq!(s(kitty_modifier(Modifier::RightCtrl, m(false, false, true), Sides { rctrl: true, ..Sides::default() }, Bucky::default(), Kind::Release, ALL_AS_ESCAPES | EVENT_TYPES)).as_deref(), Some("\x1b[57448;1:3u"));
+        assert_eq!(kitty_modifier(Modifier::LeftAlt, NONE, Sides::default(), Bucky::default(), Kind::Press, DISAMBIGUATE), None, "only with flag 8");
     }
+    /// 13u Task 3 (Review Focus 3): `iTermModernKeyMapper.swift:1717-1860`.
+    #[test]
+    fn bucky_bits_follow_iterm2() {
+        let a = Key::Text("a".into());
+        let ctrl = m(false, false, true);
+        let win = Mods { cmd: true, ..NONE };
+        let left = Sides { lctrl: true, ..Sides::default() };
+        let right = Sides { rctrl: true, ..Sides::default() };
+        let lwin = Sides { lwin: true, ..Sides::default() };
+        let run = |mods: Mods, sides: Sides, b: Bucky, flags: u8| {
+            let mut e = ev(&a, Some('a'), Some("a"), mods);
+            e.sides = sides;
+            e.bucky = b;
+            s(kitty(&e, flags))
+        };
+        let plain = Bucky::default();
+        let hyper = Bucky { left_ctrl: 1, ..plain };
+        assert_eq!(run(ctrl, left, plain, DISAMBIGUATE).as_deref(), Some("\x1b[97;5u"));
+        assert_eq!(run(ctrl, left, hyper, DISAMBIGUATE).as_deref(), Some("\x1b[97;17u"), "left Control as Hyper");
+        assert_eq!(run(ctrl, right, hyper, DISAMBIGUATE).as_deref(), Some("\x1b[97;5u"), "per side: right stays Control");
+        let both = Sides { lctrl: true, rctrl: true, ..Sides::default() };
+        assert_eq!(run(ctrl, both, hyper, DISAMBIGUATE).as_deref(), Some("\x1b[97;21u"), "both down: Hyper and Control");
+        let sup = Bucky { left_win: 3, ..plain };
+        assert_eq!(run(win, lwin, sup, DISAMBIGUATE).as_deref(), Some("\x1b[97;9u"), "Win as Super");
+        assert_eq!(run(win, lwin, plain, DISAMBIGUATE), None, "Win alone is never reported");
+        let meta = Bucky { left_win: 2, ..plain };
+        assert_eq!(run(Mods { shift: true, ..win }, lwin, meta, DISAMBIGUATE).as_deref(), Some("\x1b[97;34u"), "Meta 32 + Shift 1, plus one");
+        assert_eq!(run(win, lwin, Bucky { left_win: 2, ..plain }, DISAMBIGUATE).as_deref(), Some("\x1b[97;33u"), "Meta");
+        // The modifier key itself reports its own bucky bit.
+        let report = kitty_modifier(Modifier::LeftCtrl, NONE, Sides::default(), hyper, Kind::Press, ALL_AS_ESCAPES);
+        assert_eq!(s(report).as_deref(), Some("\x1b[57442;17u"));
+        let win_key = kitty_modifier(Modifier::LeftSuper, NONE, Sides::default(), sup, Kind::Press, ALL_AS_ESCAPES);
+        assert_eq!(s(win_key).as_deref(), Some("\x1b[57444;9u"));
+        let release = kitty_modifier(Modifier::LeftCtrl, ctrl, left, hyper, Kind::Release, ALL_AS_ESCAPES | EVENT_TYPES);
+        assert_eq!(s(release).as_deref(), Some("\x1b[57442;1:3u"));
+        // Legacy modes never see the mapping.
+        let mut e = ev(&a, Some('a'), Some("a"), ctrl);
+        e.sides = left;
+        e.bucky = hyper;
+        assert_eq!(encode(Keyboard { mode: KeyMode::Standard, kitty: 0 }, &e), None, "standard bytes stay \x01");
+        assert_eq!(s(encode(Keyboard { mode: KeyMode::CsiU, kitty: 0 }, &e)).as_deref(), Some("\x01"));
+        assert_eq!(s(encode(Keyboard { mode: KeyMode::Mok2, kitty: 0 }, &e)).as_deref(), Some("\x1b[27;5;97~"));
+    }
+
     #[test]
     fn ctrl_alt_letter_is_not_altgr() {
         let both = m(false, true, true);

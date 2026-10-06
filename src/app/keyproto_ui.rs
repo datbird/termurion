@@ -7,12 +7,21 @@ use super::*;
 use crate::keyproto::{self, KeyMode, Kind, Modifier};
 
 impl App {
+    /// The Control and Win key mappings of `pane`'s profile (they only reach kitty's modern mapper).
+    pub(super) fn bucky_of(&self, pane: PaneId) -> keyproto::Bucky {
+        self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).map(keyproto::Bucky::from_profile).unwrap_or_default()
+    }
+
+    fn focused_bucky(&self) -> keyproto::Bucky {
+        self.tabs.get(self.active).map(|t| self.bucky_of(t.focused)).unwrap_or_default()
+    }
+
     /// The focused pane's key reporting.
     pub(super) fn keyboard(&self) -> keyproto::Keyboard {
         self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| p.own().keyboard()).unwrap_or_default()
     }
 
-    fn proto_event<'a>(&self, ev: &'a KeyEvent, key: &'a Key, base: Option<&'a Key>, kind: Kind) -> keyproto::KeyEvent<'a> {
+    fn proto_event<'a>(&self, ev: &'a KeyEvent, key: &'a Key, base: Option<&'a Key>, kind: Kind, bucky: keyproto::Bucky) -> keyproto::KeyEvent<'a> {
         let text = ev.text.as_deref().filter(|t| !t.chars().any(char::is_control));
         let mods = Mods { cmd: false, ..self.mods };
         let base = match base {
@@ -21,7 +30,7 @@ impl App {
         };
         // Windows reports AltGr as Ctrl+Alt.
         let altgr = keyproto::is_altgr(mods, text, base);
-        keyproto::KeyEvent { key, base, text, mods, kind, altgr, vk: crate::winkeys::vk_of(ev.physical_key) }
+        keyproto::KeyEvent { key, base, text, mods, kind, altgr, vk: crate::winkeys::vk_of(ev.physical_key), sides: self.sides, bucky }
     }
 
     /// A press's bytes under the pane's protocol. None: the standard bytes.
@@ -31,7 +40,7 @@ impl App {
             return None;
         }
         let kind = if ev.repeat { Kind::Repeat } else { Kind::Press };
-        keyproto::encode(kb, &self.proto_event(ev, key, base, kind))
+        keyproto::encode(kb, &self.proto_event(ev, key, base, kind, self.focused_bucky()))
     }
 
     /// Key releases and modifier keys, when the protocol reports them. True when handled.
@@ -41,7 +50,7 @@ impl App {
             let kb = self.keyboard();
             let kind = if !pressed { Kind::Release } else if ev.repeat { Kind::Repeat } else { Kind::Press };
             let bytes = if kb.kitty != 0 {
-                keyproto::kitty_modifier(which, Mods { cmd: false, ..self.mods }, kind, kb.kitty)
+                keyproto::kitty_modifier(which, self.mods, self.sides, self.focused_bucky(), kind, kb.kitty)
             } else if kb.mode == KeyMode::Raw && kind != Kind::Repeat {
                 Some(keyproto::raw_modifiers(after(self.mods, which, pressed)))
             } else {
@@ -64,7 +73,7 @@ impl App {
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
         let Some(key) = keystroke::key_of(&ev.logical_key, ev.text.as_deref()).or_else(|| base.clone()) else { return true };
-        let bytes = keyproto::encode(kb, &self.proto_event(ev, &key, base.as_ref(), Kind::Release));
+        let bytes = keyproto::encode(kb, &self.proto_event(ev, &key, base.as_ref(), Kind::Release, self.bucky_of(pane)));
         if let Some(b) = bytes.filter(|b| !b.is_empty() && self.panes.contains_key(&pane)) {
             self.user_write(pane, &b, crate::broadcast::Write::KeyRelease);
         }
