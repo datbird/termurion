@@ -64,6 +64,9 @@ pub struct PaneSnapshot {
     /// The pane is at a password prompt (13v2 B5/P12): the text is only the prompt, nothing is
     /// announced, and `Select` and `ScrollIntoView` are refused.
     pub secure: bool,
+    /// A browser pane (13x B7): its name ("Browser: <title>"), a Group with no text range and no
+    /// caret; WebView2 raises its own UI Automation tree from its child window.
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -484,8 +487,8 @@ impl IRawElementProviderSimple_Impl for PaneProvider_Impl {
 
     fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> {
         guard(|| {
-            self.shared.pane(self.id)?;
-            if id == UIA_TextPatternId {
+            let (snap, i) = self.shared.pane(self.id)?;
+            if id == UIA_TextPatternId && snap.panes[i].label.is_none() {
                 let p: ITextProvider = self.shared.pane_provider(self.id).cast()?;
                 p.cast()
             } else {
@@ -499,6 +502,8 @@ impl IRawElementProviderSimple_Impl for PaneProvider_Impl {
             let (snap, i) = self.shared.pane(self.id)?;
             let p = &snap.panes[i];
             Ok(match id {
+                UIA_ControlTypePropertyId if p.label.is_some() => VARIANT::from(UIA_GroupControlTypeId.0),
+                UIA_NamePropertyId if p.label.is_some() => VARIANT::from(p.label.as_deref().unwrap_or_default()),
                 UIA_ControlTypePropertyId => VARIANT::from(UIA_TextControlTypeId.0),
                 UIA_NamePropertyId => VARIANT::from("shell"),
                 UIA_AutomationIdPropertyId => VARIANT::from(format!("TandemPane{}", p.id).as_str()),

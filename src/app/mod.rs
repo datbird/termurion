@@ -152,6 +152,7 @@ mod metrics_ui;
 mod git_ui;
 mod toolbelt_ui;
 mod tool_web_ui;
+mod browser_app;
 mod web_popover_app;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
@@ -1622,6 +1623,13 @@ pub struct App {
     /// The tool views of every window, by view id, with whether the view failed (13x Task 2).
     /// App-wide: an event names a view, not a window.
     tool_view_ids: HashMap<crate::webhost::ViewId, bool>,
+    /// The web view of every browser pane (13x Task 5). App-wide: keyed by pane, and a view is
+    /// re-parented when its pane changes windows.
+    browser_views: HashMap<PaneId, browser_app::BrowserView>,
+    /// The pane that was focused at the last placement, to tell a pane change from none.
+    focus_seen: Option<PaneId>,
+    /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
+    browser_url_override: Option<String>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -2551,6 +2559,9 @@ pub fn run() {
         web_events,
         web_focus_held: None,
         tool_view_ids: HashMap::new(),
+        browser_views: HashMap::new(),
+        focus_seen: None,
+        browser_url_override: None,
     };
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
@@ -3901,6 +3912,7 @@ impl App {
         if self.web_popover.as_ref().is_some_and(|(p, _)| *p == Some(id)) {
             self.web_popover = None;
         }
+        self.close_browser_view(id);
     }
 
     /// A cookie that will never be used takes itself out of the jar.
@@ -3911,6 +3923,13 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
+        // A Browser profile starts a web page, not a shell (`GW:98-111`); with BrowserProfiles off
+        // it is a terminal. No handed-over console, no command override is ever a browser.
+        let p = self.profile(guid);
+        if self.start_handoff.is_none() && self.start_command_override.is_none() && self.is_browser_profile(&p) {
+            return self.start_browser_pane(id, rect, &p);
+        }
+        self.browser_url_override = None;
         let handed = self.start_handoff.is_some();
         match self.spawn_pane(id, rect, guid, None) {
             Ok((pane, p)) => {
@@ -4540,7 +4559,10 @@ impl App {
     /// Sizes the window to the profile's Columns and Rows, or to its percentages of the work area.
     fn size_window(&mut self, guid: Option<&str>) {
         let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
-        let (cw, ch) = self.cell();
+        // A browser profile's window is its Width and Height in points, one point to the cell
+        // (`TWSH:170-176`).
+        let browser = self.is_browser_profile(&p);
+        let (cw, ch) = if browser { (self.scale(), self.scale()) } else { self.cell() };
         let (side, vert) = self.margins();
         // A legacy scrollbar's strip is part of the window's room around the grid, so a new
         // window opens with its columns.
@@ -4562,6 +4584,12 @@ impl App {
         let rows = match (ph, work) {
             (Some(pct), Some(work)) => i64::from(crate::frames::percent_cells(pct, ch, work.h)),
             _ => p.int("Rows").max(4),
+        };
+        let (columns, rows) = if browser {
+            let (c, r) = crate::browser::window_cells(p.int("Width in Points"), p.int("Height in Points"));
+            (i64::from(c), i64::from(r))
+        } else {
+            (columns, rows)
         };
         let (mut w, mut h) = (columns as f32 * cw + padx, rows as f32 * ch + pady + line);
         if let Some(work) = work.filter(|_| pw.is_some() || ph.is_some()) {
@@ -5963,6 +5991,8 @@ impl App {
     }
 
     fn build_frame(&mut self) -> Frame {
+        // Before the timed phases (13w S12): each browser view is placed for this frame.
+        self.place_browser_views();
         let mut attention: Option<Instant> = None;
         // Every pane's face is measured before the frame (`pane_cell` only reads).
         self.ensure_faces();
@@ -6077,6 +6107,13 @@ impl App {
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
+                // A browser pane's view covers its rectangle: only its background is Tandem's.
+                if self.is_browser_pane(id) {
+                    if let Some(p) = self.panes.get(&id) {
+                        frame.quads.push(scene::Quad { rect, color: scene::rgba(p.screen.palette.bg, 1.0) });
+                    }
+                    continue;
+                }
                 // Everything a pane's iteration draws lays out in its own cell and shapes in its own
                 // face; the window's chrome (after the loop) keeps the default cell and face.
                 let cell = self.pane_cell(id);

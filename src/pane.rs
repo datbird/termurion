@@ -70,6 +70,8 @@ pub enum Io {
     Local(Pty),
     Hosted(crate::host_client::HostedPty),
     Tmux(TmuxIo),
+    /// A browser pane (13x Task 5): no pty and no output; the web view is the app's.
+    Browser(crate::browser::BrowserIo),
 }
 
 /// A tmux pane's pty stand-in: `%output` waits in `inbox`, typing waits in `outbox` for the
@@ -148,6 +150,7 @@ impl Io {
                 let data = std::mem::take(&mut *t.inbox.borrow_mut());
                 if data.is_empty() { Read::Empty } else { Read::Data(data) }
             }
+            Io::Browser(_) => Read::Empty,
         }
     }
 
@@ -161,6 +164,8 @@ impl Io {
                 t.outbox.borrow_mut().extend_from_slice(bytes);
                 Ok(())
             }
+            // Typing has nowhere to go: the page has its own keyboard.
+            Io::Browser(_) => Ok(()),
         }
     }
 
@@ -172,6 +177,7 @@ impl Io {
             Io::Hosted(p) => p.resize(cols, rows),
             // tmux sets its panes' sizes (milestone 8c sends Tandem's).
             Io::Tmux(_) => Ok(()),
+            Io::Browser(_) => Ok(()),
         }
     }
 
@@ -181,7 +187,7 @@ impl Io {
         match self {
             Io::Local(p) => p.clear(),
             Io::Hosted(p) => p.clear(),
-            Io::Tmux(_) => Ok(()),
+            Io::Tmux(_) | Io::Browser(_) => Ok(()),
         }
     }
 
@@ -192,7 +198,7 @@ impl Io {
             Io::Local(p) if paused => p.pause_after_reads(),
             Io::Local(p) => p.set_paused(false),
             Io::Hosted(p) => p.set_paused(paused),
-            Io::Tmux(_) => {}
+            Io::Tmux(_) | Io::Browser(_) => {}
         }
     }
 
@@ -201,6 +207,7 @@ impl Io {
             Io::Local(p) => p.pending(),
             Io::Hosted(p) => p.pending(),
             Io::Tmux(t) => t.outbox.borrow().len(),
+            Io::Browser(_) => 0,
         }
     }
 
@@ -209,6 +216,7 @@ impl Io {
             Io::Local(p) => p.exit_code(),
             Io::Hosted(p) => p.exit_code(),
             Io::Tmux(t) => t.ended.get(),
+            Io::Browser(_) => None,
         }
     }
 
@@ -217,7 +225,7 @@ impl Io {
         match self {
             Io::Local(p) => Some(p.pid()),
             Io::Hosted(p) => Some(p.pid()),
-            Io::Tmux(_) => None,
+            Io::Tmux(_) | Io::Browser(_) => None,
         }
     }
 }
@@ -566,6 +574,27 @@ impl Pane {
         p.screen.pty_backed = false;
         p.tmux_size = Some((cols, rows));
         p
+    }
+
+    /// A browser pane (13x Task 5): no ConPTY and no output, its screen is never drawn.
+    pub fn browser(id: PaneId, cols: u16, rows: u16, io: crate::browser::BrowserIo) -> Pane {
+        let mut p = Pane::with_io(id, Io::Browser(io), cols.max(1), rows.max(1));
+        p.screen.pty_backed = false;
+        p
+    }
+
+    pub fn browser_io(&self) -> Option<&crate::browser::BrowserIo> {
+        match &self.pty {
+            Some(Io::Browser(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub fn browser_io_mut(&mut self) -> Option<&mut crate::browser::BrowserIo> {
+        match &mut self.pty {
+            Some(Io::Browser(b)) => Some(b),
+            _ => None,
+        }
     }
 
     /// tmux gave this pane a new size.

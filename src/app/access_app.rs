@@ -210,7 +210,7 @@ impl App {
         let Some(key) = self.windows.current() else { return };
         // The keyboard may be in a web view: WebView2 raises its own UI Automation focus then (B7).
         let web_held = self.web_focus_held.is_some() && self.web_focus_held == self.current_window();
-        let target = access_target(self.focused, web_held, false, ()).and_then(|()| self.tabs.get(self.active).map(|t| (key, t.focused)));
+        let target = access_target(self.focused, web_held, self.tabs.get(self.active).is_some_and(|t| self.is_browser_pane(t.focused)), ()).and_then(|()| self.tabs.get(self.active).map(|t| (key, t.focused)));
         if target == self.access_focus_sent {
             return;
         }
@@ -254,6 +254,15 @@ impl App {
                 changed.push(*id);
             }
         }
+        // A browser pane's name follows its page title (B7).
+        for (id, _) in &signals {
+            if let Some(label) = self.browser_access_label(*id) {
+                let held = self.access_trackers.get(id).and_then(|s| s.snap.as_ref()).and_then(|p| p.label.as_deref());
+                if held != Some(label.as_str()) && !changed.contains(id) {
+                    changed.push(*id);
+                }
+            }
+        }
         let ids: Vec<PaneId> = shown.iter().map(|(id, _)| *id).collect();
         let window = (title, (wx, wy, wx + size.width as i32, wy + size.height as i32), ids.clone());
         if changed.is_empty() && self.access_window.as_ref() == Some(&window) {
@@ -293,6 +302,13 @@ impl App {
     /// One pane's snapshot, stored in `st`, and the events its change calls for.
     #[allow(clippy::too_many_arguments)]
     fn access_build(&self, id: PaneId, rect: crate::layout::Rect, sig: &Signal, lines: i64, win: (i32, i32), now: Instant, st: &mut AccessPane) -> Vec<Event> {
+        // A browser pane has no text: a named Group, no range, no events (B7).
+        if let Some(label) = self.browser_access_label(id) {
+            let win_rect = sig.rect;
+            st.snap = Some(PaneSnapshot { id, rect: win_rect, cell: (1.0, 1.0), origin: (win.0 + rect.x as i32, win.1 + rect.y as i32), focused: sig.focused, label: Some(label), ..Default::default() });
+            st.signal = Some(sig.clone());
+            return Vec::new();
+        }
         let p = &self.panes[&id];
         let screen = access_screen(p);
         let grid = screen.term().grid();
@@ -344,6 +360,7 @@ impl App {
             visible_rows: count,
             focused: sig.focused,
             secure,
+            label: None,
         });
         st.signal = Some(sig.clone());
         events
@@ -419,6 +436,15 @@ mod tests {
 
     /// Preflight B7: UI Automation is told the terminal pane has focus only when the window is
     /// focused, no web view holds the keyboard and the pane is not a browser pane.
+    #[test]
+    fn browser_pane_snapshot_has_no_text() {
+        assert_eq!(crate::browser::access_label("A\u{202e}B"), "Browser: AB");
+        let p = PaneSnapshot { label: Some(crate::browser::access_label("T")), ..Default::default() };
+        assert!(p.text.text.is_empty() && p.label.as_deref() == Some("Browser: T"), "a Group named by the title, no text range");
+        let m = include_str!("access_app.rs");
+        assert!(m.contains("browser_access_label(id)"), "the build asks for a browser pane's label");
+    }
+
     #[test]
     fn access_skips_focus_for_a_browser_pane() {
         assert_eq!(access_target(true, false, false, 7), Some(7));

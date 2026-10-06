@@ -58,6 +58,14 @@ pub struct Setting {
     /// `kPreferenceInfoTypeInvertedCheckbox`, e.g. `HideTab` as "Show tab bar...").
     #[serde(default)]
     pub inverted: bool,
+    /// "terminal" or "browser": the row is on the profile page only for a profile of that type
+    /// (iTerm2's `iTermTerminalModeEnclosure` and `iTermBrowserModeEnclosure`). None: both.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// The row is on the page only while `BrowserProfiles` is on (iTerm2's
+    /// `iTermHiddenModeEnclosure`, which holds the Profile type control).
+    #[serde(default)]
+    pub hidden_mode: bool,
 }
 
 fn number(v: &toml::Value) -> Option<f64> {

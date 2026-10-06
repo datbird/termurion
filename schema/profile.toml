@@ -90,6 +90,7 @@ macos_only = false
 [[setting]]
 key = "Profile Type (Phony)"
 tab = "General"
+hidden_mode = true
 section = ""
 label = "Profile type"
 type = "enum"
@@ -103,6 +104,7 @@ macos_only = false
 [[setting]]
 key = "Custom Command"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Command type"
 type = "enum"
@@ -115,6 +117,7 @@ macos_only = false
 [[setting]]
 key = "Command"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Command / command line"
 type = "string"
@@ -126,6 +129,7 @@ macos_only = false
 [[setting]]
 key = "Initial URL"
 tab = "General"
+mode = "browser"
 section = ""
 label = "Initial URL"
 type = "string"
@@ -137,6 +141,7 @@ macos_only = false
 [[setting]]
 key = "Initial Text"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Send text at start"
 type = "string"
@@ -148,6 +153,7 @@ macos_only = false
 [[setting]]
 key = "Custom Directory"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Initial working directory"
 type = "enum"
@@ -160,6 +166,7 @@ macos_only = false
 [[setting]]
 key = "Working Directory"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Custom directory path"
 type = "string"
@@ -241,6 +248,7 @@ macos_only = false
 [[setting]]
 key = "Badge Text"
 tab = "General"
+mode = "terminal"
 section = "Badge"
 label = "Badge text"
 type = "string"
@@ -252,6 +260,7 @@ macos_only = false
 [[setting]]
 key = "Badge Font"
 tab = "General"
+mode = "terminal"
 section = "Badge"
 label = "Badge font"
 type = "font"
@@ -361,6 +370,7 @@ macos_only = false
 [[setting]]
 key = "Load Shell Integration Automatically"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Load shell integration automatically"
 type = "bool"
@@ -372,6 +382,7 @@ macos_only = false
 [[setting]]
 key = "Run Command In Login Shell"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Run command in login shell"
 type = "bool"
@@ -383,6 +394,7 @@ macos_only = false
 [[setting]]
 key = "Allow Title Setting"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Allow title setting"
 type = "bool"
@@ -394,6 +406,7 @@ macos_only = false
 [[setting]]
 key = "Prevent Automatic Profile Switching"
 tab = "General"
+mode = "terminal"
 section = ""
 label = "Prevent Automatic Profile Switching"
 type = "bool"
@@ -416,6 +429,7 @@ macos_only = false
 [[setting]]
 key = "Use Separate Colors for Light and Dark Mode"
 tab = "Colors"
+mode = "terminal"
 section = ""
 label = "Use Separate Colors for Light and Dark Mode"
 type = "bool"
@@ -429,6 +443,7 @@ seed = true
 [[setting]]
 key = "Foreground Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Foreground Color"
 type = "color"
@@ -446,6 +461,7 @@ seed_dark = { r = 0.861979, g = 0.862, b = 0.861989, a = 1.0 }
 [[setting]]
 key = "Background Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Background Color"
 type = "color"
@@ -463,6 +479,7 @@ seed_dark = { r = 0.080688, g = 0.099111, b = 0.121033, a = 1.0 }
 [[setting]]
 key = "Use Bright Bold"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Use custom color for bold text"
 type = "bool"
@@ -476,6 +493,7 @@ default_dark = true
 [[setting]]
 key = "Bold Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Bold Color"
 type = "color"
@@ -493,6 +511,7 @@ seed_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 [[setting]]
 key = "Brighten Bold Text"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Use bright version of ANSI colors for bold text"
 type = "bool"
@@ -506,6 +525,7 @@ default_dark = true
 [[setting]]
 key = "Link Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Link Color"
 type = "color"
@@ -523,6 +543,7 @@ seed_dark = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
 [[setting]]
 key = "Match Background Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Match Color"
 type = "color"
@@ -537,6 +558,7 @@ default_dark = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Selection Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Selection Color"
 type = "color"
@@ -554,6 +576,7 @@ seed_dark = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
 [[setting]]
 key = "Use Selected Text Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Use custom color for selected text"
 type = "bool"
@@ -567,6 +590,7 @@ default_dark = true
 [[setting]]
 key = "Selected Text Color"
 tab = "Colors"
+mode = "terminal"
 section = "Basic Colors"
 label = "Selected Text Color"
 type = "color"
@@ -583,6 +607,7 @@ seed_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Cursor Color"
 tab = "Colors"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor Color"
 type = "color"
@@ -600,6 +625,7 @@ seed_dark = { r = 0.999976, g = 1.0, b = 0.999987, a = 1.0 }
 [[setting]]
 key = "Cursor Text Color"
 tab = "Colors"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor Text Color"
 type = "color"
@@ -616,6 +642,7 @@ seed_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Smart Cursor Color"
 tab = "Colors"
+mode = "terminal"
 section = "Cursor"
 label = "Smart Cursor Color"
 type = "bool"
@@ -629,6 +656,7 @@ default_dark = false
 [[setting]]
 key = "IME Cursor Color"
 tab = "Colors"
+mode = "terminal"
 section = "Cursor"
 label = "IME Cursor Color"
 type = "color"
@@ -641,6 +669,7 @@ macos_only = false
 [[setting]]
 key = "Badge Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Badge Color"
 type = "color"
@@ -658,6 +687,7 @@ seed_dark = { r = 0.978744, g = 0.652186, b = 0.652186, a = 0.5 }
 [[setting]]
 key = "Use Tab Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Use custom tab color"
 type = "bool"
@@ -671,6 +701,7 @@ default_dark = false
 [[setting]]
 key = "Tab Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Tab Color"
 type = "color"
@@ -682,6 +713,7 @@ macos_only = false
 [[setting]]
 key = "Use Underline Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Use custom underline color"
 type = "bool"
@@ -695,6 +727,7 @@ default_dark = false
 [[setting]]
 key = "Underline Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Underline Color"
 type = "color"
@@ -706,6 +739,7 @@ macos_only = false
 [[setting]]
 key = "Use Active Pane Border"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Border around active pane"
 type = "bool"
@@ -719,6 +753,7 @@ default_dark = false
 [[setting]]
 key = "Active Pane Border Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Active Pane Border Color"
 type = "color"
@@ -733,6 +768,7 @@ default_dark = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
 [[setting]]
 key = "Use Cursor Guide"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Use cursor guide"
 type = "bool"
@@ -746,6 +782,7 @@ default_dark = false
 [[setting]]
 key = "Cursor Guide Color"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Cursor Guide Color"
 type = "color"
@@ -763,6 +800,7 @@ seed_dark = { r = 0.376496, g = 0.802326, b = 0.94099, a = 0.25 }
 [[setting]]
 key = "Use Theme Mark Colors"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Use ANSI colors for mark indicators"
 type = "bool"
@@ -774,6 +812,7 @@ macos_only = false
 [[setting]]
 key = "Harmonize 256 Colors"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Harmonize 256 Colors"
 type = "bool"
@@ -787,6 +826,7 @@ default_dark = false
 [[setting]]
 key = "HDR Cursor"
 tab = "Colors"
+mode = "terminal"
 section = "Cursor"
 label = "Use HDR cursor when available"
 type = "bool"
@@ -800,6 +840,7 @@ default_dark = false
 [[setting]]
 key = "Minimum Contrast"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Minimum Contrast"
 type = "float"
@@ -815,6 +856,7 @@ default_dark = 0.0
 [[setting]]
 key = "Faint Text Alpha"
 tab = "Colors"
+mode = "terminal"
 section = "Other Colors"
 label = "Faint Text Alpha"
 type = "float"
@@ -830,6 +872,7 @@ default_dark = 0.5
 [[setting]]
 key = "Cursor Boost"
 tab = "Colors"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor Boost"
 type = "float"
@@ -845,6 +888,7 @@ default_dark = 0.0
 [[setting]]
 key = "Ansi 0 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 0 Color (Black)"
 type = "color"
@@ -862,6 +906,7 @@ seed_dark = { r = 0.078431, g = 0.098039, b = 0.117647, a = 1.0 }
 [[setting]]
 key = "Ansi 1 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 1 Color (Red)"
 type = "color"
@@ -879,6 +924,7 @@ seed_dark = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
 [[setting]]
 key = "Ansi 2 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 2 Color (Green)"
 type = "color"
@@ -896,6 +942,7 @@ seed_dark = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Ansi 3 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 3 Color (Yellow)"
 type = "color"
@@ -913,6 +960,7 @@ seed_dark = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Ansi 4 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 4 Color (Blue)"
 type = "color"
@@ -930,6 +978,7 @@ seed_dark = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
 [[setting]]
 key = "Ansi 5 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 5 Color (Magenta)"
 type = "color"
@@ -947,6 +996,7 @@ seed_dark = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
 [[setting]]
 key = "Ansi 6 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 6 Color (Cyan)"
 type = "color"
@@ -964,6 +1014,7 @@ seed_dark = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
 [[setting]]
 key = "Ansi 7 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 7 Color (White)"
 type = "color"
@@ -981,6 +1032,7 @@ seed_dark = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
 [[setting]]
 key = "Ansi 8 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 8 Color (Bright Black)"
 type = "color"
@@ -998,6 +1050,7 @@ seed_dark = { r = 0.407818, g = 0.407828, b = 0.407822, a = 1.0 }
 [[setting]]
 key = "Ansi 9 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 9 Color (Bright Red)"
 type = "color"
@@ -1015,6 +1068,7 @@ seed_dark = { r = 0.865952, g = 0.475241, b = 0.458332, a = 1.0 }
 [[setting]]
 key = "Ansi 10 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 10 Color (Bright Green)"
 type = "color"
@@ -1032,6 +1086,7 @@ seed_dark = { r = 0.345007, g = 0.904282, b = 0.565419, a = 1.0 }
 [[setting]]
 key = "Ansi 11 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 11 Color (Bright Yellow)"
 type = "color"
@@ -1049,6 +1104,7 @@ seed_dark = { r = 0.925903, g = 0.883378, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Ansi 12 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 12 Color (Bright Blue)"
 type = "color"
@@ -1066,6 +1122,7 @@ seed_dark = { r = 0.653491, g = 0.670447, b = 0.948532, a = 1.0 }
 [[setting]]
 key = "Ansi 13 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 13 Color (Bright Magenta)"
 type = "color"
@@ -1083,6 +1140,7 @@ seed_dark = { r = 0.882156, g = 0.492727, b = 0.882156, a = 1.0 }
 [[setting]]
 key = "Ansi 14 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 14 Color (Bright Cyan)"
 type = "color"
@@ -1100,6 +1158,7 @@ seed_dark = { r = 0.375975, g = 0.992633, b = 1.0, a = 1.0 }
 [[setting]]
 key = "Ansi 15 Color"
 tab = "Colors"
+mode = "terminal"
 section = "ANSI Colors"
 label = "Ansi 15 Color (Bright White)"
 type = "color"
@@ -1117,6 +1176,7 @@ seed_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 [[setting]]
 key = "Normal Font"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Normal (ASCII) font"
 type = "font"
@@ -1129,6 +1189,7 @@ macos_only = false
 [[setting]]
 key = "Non Ascii Font"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Non-ASCII font"
 type = "font"
@@ -1141,6 +1202,7 @@ macos_only = false
 [[setting]]
 key = "Use Non-ASCII Font"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Use a different font for non-ASCII text"
 type = "bool"
@@ -1154,6 +1216,7 @@ seed = false
 [[setting]]
 key = "Special Font Config"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Manage Special Exceptions"
 type = "dict"
@@ -1165,6 +1228,7 @@ macos_only = false
 [[setting]]
 key = "Horizontal Spacing"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Horizontal Spacing"
 type = "float"
@@ -1179,6 +1243,7 @@ macos_only = false
 [[setting]]
 key = "Vertical Spacing"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Vertical Spacing"
 type = "float"
@@ -1193,6 +1258,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Type"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor style"
 type = "enum"
@@ -1205,6 +1271,7 @@ macos_only = false
 [[setting]]
 key = "Blinking Cursor"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Blinking cursor"
 type = "bool"
@@ -1216,6 +1283,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Shadow"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor shadow"
 type = "bool"
@@ -1227,6 +1295,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Hidden When Unfocused"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Hide cursor when unfocused"
 type = "bool"
@@ -1238,6 +1307,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Smooth Slide"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor smooth slide"
 type = "bool"
@@ -1249,6 +1319,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Smooth Blink"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Cursor smooth blink"
 type = "bool"
@@ -1260,6 +1331,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Blink Fade In Duration"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Smooth blink fade in duration"
 type = "float"
@@ -1271,6 +1343,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Blink Fade Out Duration"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Smooth blink fade out duration"
 type = "float"
@@ -1282,6 +1355,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Blink Fade In Curve"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Smooth blink fade in curve"
 type = "enum"
@@ -1294,6 +1368,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Blink Fade Out Curve"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Smooth blink fade out curve"
 type = "enum"
@@ -1306,6 +1381,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Blink Visible Dwell"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Smooth blink visible dwell"
 type = "float"
@@ -1317,6 +1393,7 @@ macos_only = false
 [[setting]]
 key = "Cursor Blink Hidden Dwell"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Smooth blink hidden dwell"
 type = "float"
@@ -1328,6 +1405,7 @@ macos_only = false
 [[setting]]
 key = "Blink Allowed"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Allow blinking text"
 type = "bool"
@@ -1339,6 +1417,7 @@ macos_only = false
 [[setting]]
 key = "Animate Movement"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Animate large cursor movements"
 type = "bool"
@@ -1350,6 +1429,7 @@ macos_only = false
 [[setting]]
 key = "Animate Movement Only in Interactive Apps"
 tab = "Text"
+mode = "terminal"
 section = "Cursor"
 label = "Animate movement only in interactive apps"
 type = "bool"
@@ -1361,6 +1441,7 @@ macos_only = false
 [[setting]]
 key = "Use Bold Font"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Draw bold text in bold font"
 type = "bool"
@@ -1372,6 +1453,7 @@ macos_only = false
 [[setting]]
 key = "Use Italic Font"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Allow italic text"
 type = "bool"
@@ -1383,6 +1465,7 @@ macos_only = false
 [[setting]]
 key = "Thin Strokes"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Thin Strokes"
 type = "enum"
@@ -1395,6 +1478,7 @@ macos_only = false
 [[setting]]
 key = "ASCII Anti Aliased"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Anti-aliased (ASCII)"
 type = "bool"
@@ -1408,6 +1492,7 @@ seed = true
 [[setting]]
 key = "Non-ASCII Anti Aliased"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Anti-aliased (non-ASCII)"
 type = "bool"
@@ -1421,6 +1506,7 @@ seed = true
 [[setting]]
 key = "ASCII Ligatures"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Use ligatures (ASCII)"
 type = "bool"
@@ -1432,6 +1518,7 @@ macos_only = false
 [[setting]]
 key = "Non-ASCII Ligatures"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Use ligatures (non-ASCII)"
 type = "bool"
@@ -1443,6 +1530,7 @@ macos_only = false
 [[setting]]
 key = "Draw Powerline Glyphs"
 tab = "Text"
+mode = "terminal"
 section = "Font"
 label = "Use built-in Powerline glyphs"
 type = "bool"
@@ -1454,6 +1542,7 @@ macos_only = false
 [[setting]]
 key = "Ambiguous Double Width"
 tab = "Text"
+mode = "terminal"
 section = "Text"
 label = "Ambiguous characters are double-width"
 type = "bool"
@@ -1465,6 +1554,7 @@ macos_only = false
 [[setting]]
 key = "Unicode Normalization"
 tab = "Text"
+mode = "terminal"
 section = "Text"
 label = "Unicode Normalization Form"
 type = "enum"
@@ -1477,6 +1567,7 @@ macos_only = false
 [[setting]]
 key = "Unicode Version"
 tab = "Text"
+mode = "terminal"
 section = "Text"
 label = "Use Unicode version 9+ widths"
 type = "enum"
@@ -1489,6 +1580,7 @@ macos_only = false
 [[setting]]
 key = "Columns"
 tab = "Window"
+mode = "terminal"
 section = "Window Size"
 label = "Columns (initial width)"
 type = "int"
@@ -1502,6 +1594,7 @@ macos_only = false
 [[setting]]
 key = "Rows"
 tab = "Window"
+mode = "terminal"
 section = "Window Size"
 label = "Rows (initial height)"
 type = "int"
@@ -1515,6 +1608,7 @@ macos_only = false
 [[setting]]
 key = "Width Percentage"
 tab = "Window"
+mode = "terminal"
 section = "Window Size"
 label = "Width, % of screen"
 type = "float"
@@ -1528,6 +1622,7 @@ macos_only = false
 [[setting]]
 key = "Height Percentage"
 tab = "Window"
+mode = "terminal"
 section = "Window Size"
 label = "Height, % of screen"
 type = "float"
@@ -1541,6 +1636,7 @@ macos_only = false
 [[setting]]
 key = "Width in Points"
 tab = "Window"
+mode = "browser"
 section = "Window Size"
 label = "Width, points (Browser profile)"
 type = "int"
@@ -1554,6 +1650,7 @@ macos_only = false
 [[setting]]
 key = "Height in Points"
 tab = "Window"
+mode = "browser"
 section = "Window Size"
 label = "Height, points (Browser profile)"
 type = "int"
@@ -1702,6 +1799,7 @@ macos_only = false
 [[setting]]
 key = "Transparency"
 tab = "Window"
+mode = "terminal"
 section = "Transparency"
 label = "Transparency"
 type = "float"
@@ -1715,6 +1813,7 @@ macos_only = false
 [[setting]]
 key = "Only The Default BG Color Uses Transparency"
 tab = "Window"
+mode = "terminal"
 section = "Transparency"
 label = "Keep background colors opaque"
 type = "bool"
@@ -1726,6 +1825,7 @@ macos_only = false
 [[setting]]
 key = "Blur"
 tab = "Window"
+mode = "terminal"
 section = "Transparency"
 label = "Blur"
 type = "bool"
@@ -1737,6 +1837,7 @@ macos_only = false
 [[setting]]
 key = "Blur Radius"
 tab = "Window"
+mode = "terminal"
 section = "Transparency"
 label = "Blur Radius"
 type = "float"
@@ -1751,6 +1852,7 @@ macos_only = false
 [[setting]]
 key = "Background Image Source Mode"
 tab = "Window"
+mode = "terminal"
 section = "Background Image"
 label = "Background image source mode"
 type = "enum"
@@ -1763,6 +1865,7 @@ macos_only = false
 [[setting]]
 key = "Background Image Location"
 tab = "Window"
+mode = "terminal"
 section = "Background Image"
 label = "Background image (path)"
 type = "string"
@@ -1775,6 +1878,7 @@ seed = ""
 [[setting]]
 key = "Background Image Folder Location"
 tab = "Window"
+mode = "terminal"
 section = "Background Image"
 label = "Background image folder (path)"
 type = "string"
@@ -1786,6 +1890,7 @@ macos_only = false
 [[setting]]
 key = "Background Image Folder Interval"
 tab = "Window"
+mode = "terminal"
 section = "Background Image"
 label = "Background image rotation interval"
 type = "int"
@@ -1798,6 +1903,7 @@ macos_only = false
 [[setting]]
 key = "Background Image Mode"
 tab = "Window"
+mode = "terminal"
 section = "Background Image"
 label = "Background image scaling mode"
 type = "enum"
@@ -1810,6 +1916,7 @@ macos_only = false
 [[setting]]
 key = "Blend"
 tab = "Window"
+mode = "terminal"
 section = "Background Image"
 label = "Blending"
 type = "float"
@@ -1823,6 +1930,7 @@ macos_only = false
 [[setting]]
 key = "Scrollback Lines"
 tab = "Terminal"
+mode = "terminal"
 section = "Scrollback"
 label = "Scrollback Lines"
 type = "int"
@@ -1836,6 +1944,7 @@ macos_only = false
 [[setting]]
 key = "Unlimited Scrollback"
 tab = "Terminal"
+mode = "terminal"
 section = "Scrollback"
 label = "Unlimited Scrollback"
 type = "bool"
@@ -1847,6 +1956,7 @@ macos_only = false
 [[setting]]
 key = "Scrollback With Status Bar"
 tab = "Terminal"
+mode = "terminal"
 section = "Scrollback"
 label = "Save lines to scrollback with status bar present"
 type = "bool"
@@ -1858,6 +1968,7 @@ macos_only = false
 [[setting]]
 key = "Scrollback in Alternate Screen"
 tab = "Terminal"
+mode = "terminal"
 section = "Scrollback"
 label = "Save lines to scrollback in alternate screen"
 type = "bool"
@@ -1869,6 +1980,7 @@ macos_only = false
 [[setting]]
 key = "Drag to Scroll in Alternate Screen Mode Disabled"
 tab = "Terminal"
+mode = "terminal"
 section = "Scrollback"
 label = "Drag to scroll disabled in alternate screen"
 type = "bool"
@@ -1880,6 +1992,7 @@ macos_only = false
 [[setting]]
 key = "Automatically Enable Alternate Mouse Scroll"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Automatically enable alternate mouse scroll"
 type = "bool"
@@ -1891,6 +2004,7 @@ macos_only = false
 [[setting]]
 key = "Restrict Alternate Mouse Scroll to Vertical"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Restrict alternate mouse scroll to vertical"
 type = "bool"
@@ -1902,6 +2016,7 @@ macos_only = false
 [[setting]]
 key = "Allow Alternate Mouse Scroll"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Applications may use alternate mouse scroll"
 type = "bool"
@@ -1913,6 +2028,7 @@ macos_only = false
 [[setting]]
 key = "Character Encoding"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Character Encoding"
 type = "enum"
@@ -1926,6 +2042,7 @@ macos_only = false
 [[setting]]
 key = "Terminal Type"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Terminal Type (report as)"
 type = "string"
@@ -1939,6 +2056,7 @@ seed = "xterm-256color"
 [[setting]]
 key = "Answerback String"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Answerback String"
 type = "string"
@@ -1950,6 +2068,7 @@ macos_only = false
 [[setting]]
 key = "Mouse Reporting"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Report Mouse Clicks and Drags (Mouse Reporting)"
 type = "bool"
@@ -1961,6 +2080,7 @@ macos_only = false
 [[setting]]
 key = "Mouse Reporting allow mouse wheel"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Report Mouse Wheel Events"
 type = "bool"
@@ -1972,6 +2092,7 @@ macos_only = false
 [[setting]]
 key = "Mouse Reporting allow clicks and drags"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Report Mouse Clicks and Drags"
 type = "bool"
@@ -1983,6 +2104,7 @@ macos_only = false
 [[setting]]
 key = "Restrict Mouse Reporting to Alternate Screen Mode"
 tab = "Terminal"
+mode = "terminal"
 section = "Mouse"
 label = "Restrict mouse reporting to alternate screen"
 type = "bool"
@@ -1994,6 +2116,7 @@ macos_only = false
 [[setting]]
 key = "Allow Title Reporting"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Terminal may report its title"
 type = "bool"
@@ -2005,6 +2128,7 @@ macos_only = false
 [[setting]]
 key = "Allow Paste Bracketing"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Applications may use paste bracketing"
 type = "bool"
@@ -2016,6 +2140,7 @@ macos_only = false
 [[setting]]
 key = "Disable Printing"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Disable Printing"
 type = "bool"
@@ -2027,6 +2152,7 @@ macos_only = false
 [[setting]]
 key = "Disable Smcup Rmcup"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Disable Alternate Screen (smcup/rmcup)"
 type = "bool"
@@ -2038,6 +2164,7 @@ macos_only = false
 [[setting]]
 key = "Disable Window Resizing"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Terminal may resize window"
 type = "bool"
@@ -2051,6 +2178,7 @@ seed = true
 [[setting]]
 key = "Disable Window Resizing by Unfocused Sessions"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Terminal may resize window when not focused"
 type = "bool"
@@ -2062,6 +2190,7 @@ macos_only = false
 [[setting]]
 key = "Allow Change Cursor Blink"
 tab = "Terminal"
+mode = "terminal"
 section = "Terminal Emulation"
 label = "Programs can change cursor blink"
 type = "bool"
@@ -2073,6 +2202,7 @@ macos_only = false
 [[setting]]
 key = "Silence Bell"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Silence Bell"
 type = "bool"
@@ -2084,6 +2214,7 @@ macos_only = false
 [[setting]]
 key = "BM Growl"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Send Notification (master toggle)"
 type = "bool"
@@ -2097,6 +2228,7 @@ seed = true
 [[setting]]
 key = "Send Bell Alert"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Bell (alert filter)"
 type = "bool"
@@ -2108,6 +2240,7 @@ macos_only = false
 [[setting]]
 key = "Send Idle Alert"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Idle (alert filter)"
 type = "bool"
@@ -2119,6 +2252,7 @@ macos_only = false
 [[setting]]
 key = "Send New Output Alert"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "New Output (alert filter)"
 type = "bool"
@@ -2130,6 +2264,7 @@ macos_only = false
 [[setting]]
 key = "Send Session Ended Alert"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Session Ended (alert filter)"
 type = "bool"
@@ -2141,6 +2276,7 @@ macos_only = false
 [[setting]]
 key = "Send Terminal Generated Alerts"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Terminal-Generated Alerts (alert filter)"
 type = "bool"
@@ -2152,6 +2288,7 @@ macos_only = false
 [[setting]]
 key = "Suppress Alerts in Active Session"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Suppress Alerts in Active Session"
 type = "bool"
@@ -2163,6 +2300,7 @@ macos_only = false
 [[setting]]
 key = "Send Alerts To Companion"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Also Send to Companion"
 type = "bool"
@@ -2174,6 +2312,7 @@ macos_only = true
 [[setting]]
 key = "Flashing Bell"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Flashing Bell"
 type = "bool"
@@ -2185,6 +2324,7 @@ macos_only = false
 [[setting]]
 key = "Visual Bell"
 tab = "Terminal"
+mode = "terminal"
 section = "Notifications"
 label = "Visual Bell"
 type = "bool"
@@ -2198,6 +2338,7 @@ seed = true
 [[setting]]
 key = "Set Local Environment Vars"
 tab = "Terminal"
+mode = "terminal"
 section = "Locale"
 label = "Set Locale Variables"
 type = "enum"
@@ -2210,6 +2351,7 @@ macos_only = false
 [[setting]]
 key = "Custom Locale"
 tab = "Terminal"
+mode = "terminal"
 section = "Locale"
 label = "Change Locale"
 type = "string"
@@ -2221,6 +2363,7 @@ macos_only = false
 [[setting]]
 key = "Place Prompt at First Column"
 tab = "Terminal"
+mode = "terminal"
 section = "Shell Integration"
 label = "Place prompt at first column"
 type = "bool"
@@ -2232,6 +2375,7 @@ macos_only = false
 [[setting]]
 key = "Show Mark Indicators"
 tab = "Terminal"
+mode = "terminal"
 section = "Shell Integration"
 label = "Show Mark Indicators"
 type = "bool"
@@ -2243,6 +2387,7 @@ macos_only = false
 [[setting]]
 key = "Prompt Path Click Opens Navigator"
 tab = "Terminal"
+mode = "terminal"
 section = "Shell Integration"
 label = "Click on a path in a shell prompt to open Navigator"
 type = "bool"
@@ -2254,6 +2399,7 @@ macos_only = false
 [[setting]]
 key = "Show Offscreen Command line"
 tab = "Terminal"
+mode = "terminal"
 section = "Shell Integration"
 label = "Show Offscreen Command Line"
 type = "bool"
@@ -2265,6 +2411,7 @@ macos_only = false
 [[setting]]
 key = "Show Offscreen Command line for Current Command"
 tab = "Terminal"
+mode = "terminal"
 section = "Shell Integration"
 label = "Show offscreen command line for current command"
 type = "bool"
@@ -2276,6 +2423,7 @@ macos_only = false
 [[setting]]
 key = "Tmux Newline"
 tab = "Terminal"
+mode = "terminal"
 section = "tmux"
 label = "tmux uses newline (vs CRLF)"
 type = "bool"
@@ -2287,6 +2435,7 @@ macos_only = false
 [[setting]]
 key = "Close Sessions On End"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Close or restart session on end"
 type = "enum"
@@ -2325,6 +2474,7 @@ macos_only = false
 [[setting]]
 key = "Session Close Undo Timeout"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Session Close Undo Timeout"
 type = "float"
@@ -2336,6 +2486,7 @@ macos_only = false
 [[setting]]
 key = "Automatically Log"
 tab = "Session"
+mode = "terminal"
 section = "Logging"
 label = "Automatically Log"
 type = "bool"
@@ -2347,6 +2498,7 @@ macos_only = false
 [[setting]]
 key = "Log Directory"
 tab = "Session"
+mode = "terminal"
 section = "Logging"
 label = "Log Directory"
 type = "string"
@@ -2358,6 +2510,7 @@ macos_only = false
 [[setting]]
 key = "Log Filename Format"
 tab = "Session"
+mode = "terminal"
 section = "Logging"
 label = "Log Filename Format"
 type = "string"
@@ -2370,6 +2523,7 @@ macos_only = false
 [[setting]]
 key = "Plain Text Logging"
 tab = "Session"
+mode = "terminal"
 section = "Logging"
 label = "Logging style"
 type = "enum"
@@ -2382,6 +2536,7 @@ macos_only = false
 [[setting]]
 key = "Archive On Closure"
 tab = "Session"
+mode = "terminal"
 section = "Logging"
 label = "Archive On Closure"
 type = "bool"
@@ -2393,6 +2548,7 @@ macos_only = false
 [[setting]]
 key = "Archive Directory"
 tab = "Session"
+mode = "terminal"
 section = "Logging"
 label = "Archive Directory"
 type = "string"
@@ -2404,6 +2560,7 @@ macos_only = false
 [[setting]]
 key = "Send Code When Idle"
 tab = "Session"
+mode = "terminal"
 section = "Idle"
 label = "Send code when idle"
 type = "bool"
@@ -2415,6 +2572,7 @@ macos_only = false
 [[setting]]
 key = "Idle Code"
 tab = "Session"
+mode = "terminal"
 section = "Idle"
 label = "Idle code"
 type = "int"
@@ -2428,6 +2586,7 @@ macos_only = false
 [[setting]]
 key = "Idle Period"
 tab = "Session"
+mode = "terminal"
 section = "Idle"
 label = "Idle period"
 type = "float"
@@ -2440,6 +2599,7 @@ macos_only = false
 [[setting]]
 key = "Reduce Flicker"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Reduce Flicker"
 type = "bool"
@@ -2462,6 +2622,7 @@ macos_only = false
 [[setting]]
 key = "Default Pane Locked"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Default Pane Locked"
 type = "bool"
@@ -2473,6 +2634,7 @@ macos_only = false
 [[setting]]
 key = "Buffer Input by Default"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Buffer Input by Default"
 type = "bool"
@@ -2507,6 +2669,7 @@ macos_only = false
 [[setting]]
 key = "Open Password Manager Automatically"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Open Password Manager Automatically"
 type = "bool"
@@ -2518,6 +2681,7 @@ macos_only = false
 [[setting]]
 key = "Timestamps Style"
 tab = "Session"
+mode = "terminal"
 section = "Timestamps"
 label = "Timestamps Style"
 type = "enum"
@@ -2531,6 +2695,7 @@ macos_only = false
 [[setting]]
 key = "Timestamps Visible"
 tab = "Session"
+mode = "terminal"
 section = "Timestamps"
 label = "Timestamps Visible"
 type = "bool"
@@ -2543,6 +2708,7 @@ macos_only = false
 [[setting]]
 key = "Enable Progress Bars"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Enable Progress Bars"
 type = "bool"
@@ -2554,6 +2720,7 @@ macos_only = false
 [[setting]]
 key = "Progress Bar Height"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Progress Bar Height"
 type = "float"
@@ -2568,6 +2735,7 @@ macos_only = false
 [[setting]]
 key = "Progress Bar Color Scheme"
 tab = "Session"
+mode = "terminal"
 section = ""
 label = "Progress Bar Color Scheme"
 type = "enum"
@@ -2580,6 +2748,7 @@ macos_only = false
 [[setting]]
 key = "Option Key Sends"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Alt Key Sends (Left)"
 type = "enum"
@@ -2592,6 +2761,7 @@ macos_only = false
 [[setting]]
 key = "Right Option Key Sends"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Alt Key Sends (Right)"
 type = "enum"
@@ -2604,6 +2774,7 @@ macos_only = false
 [[setting]]
 key = "Left Option Key Changeable"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Left Alt key changeable"
 type = "bool"
@@ -2615,6 +2786,7 @@ macos_only = false
 [[setting]]
 key = "Right Option Key Changeable"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Right Alt key changeable"
 type = "bool"
@@ -2626,6 +2798,7 @@ macos_only = false
 [[setting]]
 key = "Application Keypad Allowed"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Application Keypad Allowed"
 type = "bool"
@@ -2637,6 +2810,7 @@ macos_only = false
 [[setting]]
 key = "Allow modifyOtherKeys"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Apps can change how keys are reported"
 type = "bool"
@@ -2648,6 +2822,7 @@ macos_only = false
 [[setting]]
 key = "Movement Keys Scroll Outside Interactive Apps"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Movement keys scroll outside interactive apps"
 type = "bool"
@@ -2659,6 +2834,7 @@ macos_only = false
 [[setting]]
 key = "Treat Option as Alt"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Treat Alt as Alt for special keys like arrows"
 type = "bool"
@@ -2670,6 +2846,7 @@ macos_only = false
 [[setting]]
 key = "Use libtickit protocol"
 tab = "Keys"
+mode = "terminal"
 section = ""
 label = "Report keys using CSI u"
 type = "bool"
@@ -2681,6 +2858,7 @@ macos_only = false
 [[setting]]
 key = "Left Control Key"
 tab = "Keys"
+mode = "terminal"
 section = "Extended Modifiers"
 label = "Left Control Key"
 type = "enum"
@@ -2693,6 +2871,7 @@ macos_only = false
 [[setting]]
 key = "Right Control Key"
 tab = "Keys"
+mode = "terminal"
 section = "Extended Modifiers"
 label = "Right Control Key"
 type = "enum"
@@ -2705,6 +2884,7 @@ macos_only = false
 [[setting]]
 key = "Left Command Key"
 tab = "Keys"
+mode = "terminal"
 section = "Extended Modifiers"
 label = "Left Win Key"
 type = "enum"
@@ -2717,6 +2897,7 @@ macos_only = false
 [[setting]]
 key = "Right Command Key"
 tab = "Keys"
+mode = "terminal"
 section = "Extended Modifiers"
 label = "Right Win Key"
 type = "enum"
@@ -2729,6 +2910,7 @@ macos_only = false
 [[setting]]
 key = "Function Key"
 tab = "Keys"
+mode = "terminal"
 section = "Extended Modifiers"
 label = "Function Key"
 type = "enum"
@@ -2933,6 +3115,7 @@ macos_only = false
 [[setting]]
 key = "Enable Triggers in Interactive Apps"
 tab = "Advanced"
+mode = "terminal"
 section = "Triggers"
 label = "Enable triggers in interactive apps"
 type = "bool"
@@ -3062,5 +3245,43 @@ section = ""
 label = "Is a dynamic profile"
 type = "bool"
 help = "Set on a profile that came from a Dynamic Profiles file; such a profile is never saved to the profile file; never drawn."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Dev Null Mode"
+tab = "General"
+mode = "browser"
+section = ""
+label = "Dev Null Mode"
+type = "bool"
+default = false
+help = "Keep no history or website data for this browser profile."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Browser Zoom"
+tab = "General"
+mode = "browser"
+section = ""
+label = "Page zoom"
+type = "int"
+default = 100
+min = 25
+max = 500
+help = "The browser page zoom in percent (100 is normal). Set by the zoom commands; not shown on the page."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Instant Replay"
+tab = "General"
+mode = "browser"
+section = ""
+label = "Enable Instant Replay (costs memory and CPU)"
+type = "bool"
+default = false
+help = "Whether instant replay is enabled for Browser profile"
 light_dark = false
 macos_only = false

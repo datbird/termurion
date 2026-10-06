@@ -96,6 +96,7 @@ pub(super) struct HostedView {
 /// Every kind of hosted web view. Add a kind's entry with its first `WebView::create`.
 pub(super) const HOSTED_VIEWS: &[HostedView] = &[
     HostedView { file: "tool_web_ui.rs", remade: App::tool_views_remade, closing: App::close_tool_views },
+    HostedView { file: "browser_app.rs", remade: App::browser_views_remade, closing: App::close_browser_views },
     HostedView { file: "web_popover_app.rs", remade: App::popovers_remade, closing: App::popovers_window_closing },
 ];
 
@@ -265,16 +266,9 @@ impl App {
         crate::winkeys::set_web_focus(self.web_focus_held.and_then(|w| self.window_hwnd(w)).unwrap_or(0));
     }
 
-    /// Whether `pane` is a browser pane. No pane is one until 13x Task 5 adds `Io::Browser`.
-    #[allow(dead_code)]
-    pub(super) fn is_browser_pane(&self, _pane: crate::layout::PaneId) -> bool {
-        false
-    }
-
     /// The active session of the key window changed from `prev` to `next` (`PTYTab.m:955-960`): a
     /// terminal pane that hands focus to a browser pane is told it lost focus and one that takes it
     /// back is told it gained it, when its program asked for DECSET 1004. Task 5 calls this.
-    #[allow(dead_code)]
     pub(super) fn browser_focus_moved(&mut self, prev: Option<crate::layout::PaneId>, next: Option<crate::layout::PaneId>) {
         let tag = |p: Option<crate::layout::PaneId>| p.map(|p| (p, self.is_browser_pane(p)));
         for (pane, gained) in crate::webhost::pane_focus_reports(tag(prev), tag(next)) {
@@ -287,7 +281,7 @@ impl App {
     }
 
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.
-    fn web_route(&mut self, event: &Event, _event_loop: &ActiveEventLoop) {
+    fn web_route(&mut self, event: &Event, event_loop: &ActiveEventLoop) {
         if self.tool_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
             return;
         }
@@ -295,6 +289,9 @@ impl App {
             return;
         }
         if self.web_popover_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+            return;
+        }
+        if self.browser_view_event(event, event_loop) {
             return;
         }
         match event {

@@ -66,6 +66,13 @@ pub fn foreground_root() -> Option<isize> {
     (!root.is_null()).then_some(root as isize)
 }
 
+/// Gives the keyboard back to a Tandem window from a web view (a pane change by keyboard).
+pub fn focus_window(hwnd: isize) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    // SAFETY: a plain handle; a handle that is gone makes the call fail harmlessly.
+    unsafe { SetFocus(hwnd as *mut std::ffi::c_void) };
+}
+
 /// The WebView2 Runtime's version: the fixed-version folder's when one is given, else the
 /// Evergreen runtime the system has. Err is an HRESULT: `Runtime::Missing`.
 pub fn runtime_version(fixed: Option<&Path>) -> Result<String, i32> {

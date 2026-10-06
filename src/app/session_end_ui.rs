@@ -65,7 +65,7 @@ impl App {
 
     /// Whether the pane can start its program again.
     pub(super) fn restartable(&self, id: PaneId) -> bool {
-        self.panes.get(&id).is_some_and(|p| restartable_for(p.tmux_io().is_some(), p.dvr.read_only, self.single_use.contains_key(&id), p.hold_open))
+        self.panes.get(&id).is_some_and(|p| restartable_for(p.tmux_io().is_some(), p.dvr.read_only, self.single_use.contains_key(&id), p.hold_open) && p.browser_io().is_none())
     }
 
     /// Handles the end of every pane whose shell exited and whose output has drained. Returns the

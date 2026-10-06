@@ -1025,8 +1025,18 @@ impl SettingsWindow {
                 }
             });
             egui::CentralPanel::default().show(ui, |ui| {
+                // A browser profile hides the terminal rows, and the tabs left with none
+                // (`ProfilePreferencesViewController.m:575-600`).
+                let browser_profiles = globals.bool("BrowserProfiles");
+                let browser = browser_profiles && store.get(&selected).is_some_and(|p| crate::browser::is_browser(&p.string("Custom Command")));
+                if !crate::browser::tab_visible(schema::TABS[tab], browser, browser_profiles) {
+                    tab = 0;
+                }
                 ui.horizontal(|ui| {
                     for (i, name) in schema::TABS.iter().enumerate() {
+                        if !crate::browser::tab_visible(name, browser, browser_profiles) {
+                            continue;
+                        }
                         if ui.selectable_label(tab == i, *name).clicked() {
                             tab = i;
                         }
@@ -1126,6 +1136,36 @@ impl SettingsWindow {
                             ui.strong(&section);
                         }
                         for s in list {
+                            if !crate::browser::settings_visible(s.mode.as_deref(), s.hidden_mode, browser, browser_profiles) {
+                                continue;
+                            }
+                            // The zoom commands set the page zoom; it has no row.
+                            if s.key == "Browser Zoom" {
+                                continue;
+                            }
+                            // Profile type: a two-segment control over Custom Command (`PGP:268-290`).
+                            if s.key == "Profile Type (Phony)" {
+                                let now = crate::browser::profile_type(&profile.string("Custom Command"));
+                                let mut picked = None;
+                                ui.horizontal(|ui| {
+                                    ui.label(&s.label);
+                                    for (i, name) in ["Terminal", "Browser"].iter().enumerate() {
+                                        if ui.selectable_label(now == i as i64, *name).on_hover_text(&s.help).clicked() && now != i as i64 {
+                                            picked = Some(i as i64);
+                                        }
+                                    }
+                                });
+                                if let Some(i) = picked {
+                                    let (value, automatic_icon) = crate::browser::set_profile_type(i);
+                                    profile.set("Custom Command", Value::String(value.to_string()));
+                                    if automatic_icon {
+                                        // "Built-in Icon for Current App" (iTerm2's Automatic).
+                                        profile.set("Icon", Value::Integer(1));
+                                    }
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             // The hotkey keys are one row and the Configure Hotkey Window sheet.
                             if s.key == "Has Hotkey" {
                                 if crate::settings_hotkey::profile_row(ui, &selected, profile, hk, keys, &hotkey_prefs) {

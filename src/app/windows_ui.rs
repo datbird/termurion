@@ -1652,7 +1652,8 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let pos = g.window.outer_position().unwrap_or_default();
-        let (cw, ch) = self.cell();
+        let browser = self.is_browser_profile(&profile);
+        let (cw, ch) = if browser { (self.scale(), self.scale()) } else { self.cell() };
         let area = self.content_area();
         let (side, vert) = self.margins();
         let chrome = (2.0 * side + self.scroll_room(), inner.height as f32 - area.h + 2.0 * vert);
@@ -1660,10 +1661,14 @@ impl App {
             style: s,
             percent,
             // A percentage is whole cells of that share of the work area (`WSH:223-233`).
-            cells: (
-                percents.0.map_or(profile.int("Columns").clamp(1, 1000) as u16, |p| frames::percent_cells(p, cw, work.w)),
-                percents.1.map_or(profile.int("Rows").clamp(1, 1000) as u16, |p| frames::percent_cells(p, ch, work.h)),
-            ),
+            cells: if browser {
+                crate::browser::window_cells(profile.int("Width in Points"), profile.int("Height in Points"))
+            } else {
+                (
+                    percents.0.map_or(profile.int("Columns").clamp(1, 1000) as u16, |p| frames::percent_cells(p, cw, work.w)),
+                    percents.1.map_or(profile.int("Rows").clamp(1, 1000) as u16, |p| frames::percent_cells(p, ch, work.h)),
+                )
+            },
             cell: (cw, ch),
             chrome,
             initial: Rect { x: pos.x as f32, y: pos.y as f32, w: outer.width as f32, h: outer.height as f32 },

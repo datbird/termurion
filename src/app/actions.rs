@@ -91,7 +91,7 @@ impl App {
         }
     }
 
-    fn focused_pane_id(&self) -> Option<PaneId> {
+    pub(super) fn focused_pane_id(&self) -> Option<PaneId> {
         self.tabs.get(self.active).map(|t| t.focused)
     }
 

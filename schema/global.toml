@@ -5360,3 +5360,12 @@ label = "Location of the WebView2 Runtime folder if it cannot be auto-detected (
 type = "string"
 default = ""
 help = "Location of the WebView2 Runtime folder if it cannot be auto-detected (a fixed-version runtime)."
+
+[[setting]]
+key = "BrowserProfiles"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Enable browser-style profiles?"
+type = "bool"
+default = true
+help = "Enable browser-style profiles?\nYou must restart Tandem for this to take effect."

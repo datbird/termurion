@@ -366,6 +366,10 @@ pub struct Sources {
     /// (iTerm2 filters candidates by matching `profileType`; Tandem's profiles carry no type
     /// yet, so the app collapses that filter to this one gate).
     pub current_profile_type_ok: bool,
+    /// The current session's profile type (`browser::profile_type`) and each profile's, by guid:
+    /// Change Profile lists only profiles of the same type (`OQM:653`).
+    pub current_profile_type: i64,
+    pub profile_types: Vec<(String, i64)>,
     pub has_window: bool,
     pub arrangements: Vec<String>,
     pub default_arrangement: Option<String>,
@@ -742,6 +746,11 @@ fn add_new_tabs(items: &mut Vec<Item>, query: &str, s: &Sources) {
 fn add_change_profile(items: &mut Vec<Item>, query: &str, s: &Sources) {
     let cap = 2.0 * PROFILE_ITEM_MULT;
     for (name, guid, _prevents_tab) in &s.profiles {
+        // A browser profile cannot become a terminal one, nor the reverse (`OQM:653`).
+        let kind = s.profile_types.iter().find(|(g, _)| g == guid).map_or(0, |(_, t)| *t);
+        if kind != s.current_profile_type {
+            continue;
+        }
         let docs = vec![name.clone()];
         let (mut score, result) = score_feature(query, &docs, PROFILE_ITEM_MULT, cap);
         if score <= 0.0 {
@@ -1224,6 +1233,19 @@ mod tests {
         let sources = Sources { profiles: vec![("bash".to_string(), "g1".to_string(), true)], has_window: true, ..Default::default() };
         let item = items("bash", &sources).into_iter().find(|it| it.kind == ItemKind::NewTab("g1".to_string())).unwrap();
         assert_eq!(item.detail, NEW_WINDOW_DETAIL);
+
+        // Change profile lists only profiles of the current session's type (`OQM:653`).
+        let mixed = Sources {
+            profiles: vec![("web".to_string(), "b1".to_string(), false), ("bash".to_string(), "g1".to_string(), false)],
+            profile_types: vec![("b1".to_string(), 1), ("g1".to_string(), 0)],
+            has_window: true,
+            current_profile_type_ok: true,
+            ..Default::default()
+        };
+        assert!(items("web", &mixed).iter().all(|it| it.kind != ItemKind::ChangeProfile("b1".to_string())), "a terminal session cannot change into a browser profile");
+        let browser_now = Sources { current_profile_type: 1, ..mixed.clone() };
+        assert!(items("web", &browser_now).iter().any(|it| it.kind == ItemKind::ChangeProfile("b1".to_string())));
+        assert!(items("bash", &browser_now).iter().all(|it| it.kind != ItemKind::ChangeProfile("g1".to_string())));
 
         // Change profile.
         let sources = Sources {

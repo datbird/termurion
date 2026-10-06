@@ -238,6 +238,10 @@ impl App {
         }
 
         s.profiles = self.store.profiles.iter().map(|p| (p.name(), p.guid(), p.bool("Prevent Opening in a Tab"))).collect();
+        // The type a profile runs as: Browser only while BrowserProfiles is on.
+        let kind = |p: &Profile| i64::from(self.is_browser_profile(p));
+        s.profile_types = self.store.profiles.iter().map(|p| (p.guid(), kind(p))).collect();
+        s.current_profile_type = current.and_then(|c| self.panes.get(&c)).and_then(|p| self.store.get(&p.profile)).map_or(0, kind);
         let arrangements = self.arrangements();
         s.arrangements = arrangements.names().into_iter().map(str::to_string).collect();
         s.default_arrangement = arrangements.default_name().map(str::to_string);

@@ -24,7 +24,8 @@ impl App {
     pub(super) fn broadcast_view(&self) -> View {
         let tabs = self.tabs.iter().map(|t| TabView { broadcasting: self.broadcast_tabs.contains(&t.id), panes: t.layout.panes() }).collect();
         let current = self.tabs.get(self.active).map_or(0, |t| t.focused);
-        let exited = self.panes.iter().filter(|(_, p)| p.exited.is_some()).map(|(id, _)| *id).collect();
+        // A browser pane takes no typing: it is never a broadcast target.
+        let exited = self.panes.iter().filter(|(_, p)| p.exited.is_some() || p.browser_io().is_some()).map(|(id, _)| *id).collect();
         View { tabs, current_tab: self.active, current, exited }
     }
 

@@ -366,6 +366,9 @@ impl App {
         if let Some(u) = &s.shell.user {
             v.session.insert("username", u.clone());
         }
+        if p.browser_io().is_some() {
+            v.session.insert("jobName", crate::browser::BROWSER_VALUE.to_string());
+        }
         if let Some(j) = &s.shell.job {
             v.session.insert("jobName", j.name.clone());
             v.session.insert("deepestJob", j.name.clone());

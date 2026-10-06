@@ -18,6 +18,10 @@ pub const TEMPORARY_NAME: u32 = 1 << 11;
 /// AI-generated name: accepted so imported profiles keep working, never drawn (not available on Windows).
 pub const AI: u32 = 1 << 12;
 
+/// The components that mean nothing to a browser session (`BST:44-66`): it has no job, tty, host,
+/// user, working directory, command line or terminal size.
+pub const BROWSER_HIDDEN: u32 = JOB | PWD | TTY | USER | HOST | COMMAND_LINE | SIZE;
+
 /// Separates the title's parts (iTerm2 uses an em dash; Tandem's text uses none).
 const SEP: &str = " - ";
 
