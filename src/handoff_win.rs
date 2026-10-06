@@ -160,6 +160,40 @@ struct Shared {
     live: Arc<AtomicUsize>,
     /// This process's token and session: the caller must match them (`api_peer::judge_peer`).
     mine: crate::api_peer::Peer,
+    /// Calls inside `EstablishPtyHandoff` right now: the server's shutdown waits for them (round 5
+    /// race A; `CoRevokeClassObject` does not wait for calls in flight).
+    inflight: Arc<AtomicUsize>,
+}
+
+/// The longest a server shutdown waits for calls in flight.
+const INFLIGHT_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// One call in flight, counted from its first step until it returns (any way).
+struct InFlight(Arc<AtomicUsize>);
+
+impl InFlight {
+    fn enter(calls: &Arc<AtomicUsize>) -> InFlight {
+        calls.fetch_add(1, Ordering::SeqCst);
+        InFlight(calls.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Waits until no call is in flight, at most `limit`; false when one still is.
+fn wait_idle(calls: &AtomicUsize, limit: std::time::Duration) -> bool {
+    let end = Instant::now() + limit;
+    while calls.load(Ordering::SeqCst) != 0 {
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
 }
 
 /// Set once Tandem is ending: a handoff after that is refused with `E_ABORT`.
@@ -249,6 +283,7 @@ struct Handler {
 
 impl ITerminalHandoff3_Impl for Handler_Impl {
     unsafe fn EstablishPtyHandoff(&self, input: *mut HANDLE, output: *mut HANDLE, signal: HANDLE, reference: HANDLE, server: HANDLE, client: HANDLE, startup: *const TerminalStartupInfo) -> HRESULT {
+        let _call = InFlight::enter(&self.shared.inflight);
         match unsafe { establish(&self.shared, input, output, signal, reference, server, client, startup) } {
             Ok(()) => HRESULT(0),
             Err(hr) => HRESULT(hr),
@@ -288,7 +323,7 @@ impl Server {
     /// every good handoff; `close` is the api's `ConptyClosePseudoConsole`.
     pub fn register(send: Box<dyn Fn(Handoff) + Send + Sync>, pack: PackFn, close: CloseFn) -> Result<Server, String> {
         let mine = crate::winpipe::own_peer()?;
-        let shared = Arc::new(Shared { send, pack, close, gate: Mutex::new(Gate::default()), live: Arc::new(AtomicUsize::new(0)), mine });
+        let shared = Arc::new(Shared { send, pack, close, gate: Mutex::new(Gate::default()), live: Arc::new(AtomicUsize::new(0)), mine, inflight: Arc::new(AtomicUsize::new(0)) });
         let (stop, wait) = mpsc::channel::<()>();
         let (done, result) = mpsc::channel::<Result<(), String>>();
         let for_thread = shared.clone();
@@ -335,6 +370,10 @@ impl Drop for Server {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // The class is revoked; a call already inside has sent its handoff when this returns.
+        if !wait_idle(&self.shared.inflight, INFLIGHT_LIMIT) {
+            crate::host::log("handoff: a call was still in flight when the class closed");
+        }
     }
 }
 
@@ -342,6 +381,45 @@ impl Drop for Server {
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    /// The production text of this file.
+    fn production() -> &'static str {
+        include_str!("handoff_win.rs").split("\n#[cfg(test)]").next().unwrap()
+    }
+
+    /// Round 5 race A: a call already inside EstablishPtyHandoff when the class is revoked is waited
+    /// for (bounded), so a stopping `-Embedding` process has queued the handoff before it ends.
+    #[test]
+    fn a_call_in_flight_holds_the_server_shutdown() {
+        let src = production();
+        let est = &src[src.find("unsafe fn EstablishPtyHandoff(").unwrap()..];
+        let est = &est[..est.find("\n    }\n").unwrap()];
+        let enter = est.find("InFlight::enter(&self.shared.inflight)").expect("the call counts itself first");
+        assert!(enter < est.find("establish(").unwrap());
+        let drop = &src[src.find("impl Drop for Server").unwrap()..];
+        let drop = &drop[..drop.find("\n}\n").unwrap()];
+        assert!(drop.find("t.join()").unwrap() < drop.find("wait_idle(&self.shared.inflight, INFLIGHT_LIMIT)").expect("waits for the calls in flight"), "after the revoke");
+    }
+
+    /// The wait itself: it ends when the last call in flight leaves, and is bounded.
+    #[test]
+    fn the_shutdown_waits_for_calls_in_flight_bounded() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let held = InFlight::enter(&calls);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let t = Instant::now();
+        assert!(!wait_idle(&calls, std::time::Duration::from_millis(100)), "a call that never leaves is reported");
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "and the wait is bounded");
+        let leaving = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(held);
+        });
+        let t = Instant::now();
+        assert!(wait_idle(&calls, std::time::Duration::from_secs(2)));
+        assert!(t.elapsed() >= std::time::Duration::from_millis(100), "it waited for the call");
+        leaving.join().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn startup_info_matches_the_idl() {

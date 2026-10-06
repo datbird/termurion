@@ -1101,10 +1101,10 @@ impl App {
         let text = if selection_only { p.screen.selection_text() } else { Some(p.screen.all_text()) };
         let Some(text) = text.filter(|t| !t.is_empty()) else { return };
         let name = if selection_only { "selection.txt" } else { "session.txt" };
-        if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-            match crate::localfs::picked(&path).and_then(|p| crate::localfs::write(&p, text)) {
+        if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().set_file_name(name)) {
+            match crate::localfs::write(&path, text) {
                 Ok(()) => self.banners.clear("save-text"),
-                Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", path.display())),
+                Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", path.path().display())),
             }
         }
     }

@@ -200,6 +200,38 @@ pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn 
     AfterHand::Refuse(format!("a running Tandem did not take the link ({why}); nothing opened"))
 }
 
+/// What a Tandem that cannot take its launch pipe does (13u S4): one rule for `run()` and for an
+/// idle `-Embedding` process (round 5 race B).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LostPipe {
+    /// Every request went to the running Tandem: this process ends.
+    Handed,
+    /// A hand-over was refused (a holder that may be Tandem did not answer), or nothing was a
+    /// Start: this process ends, so two Tandems never run.
+    Refused,
+    /// The holder is not Tandem (every kept request was a Start), or a handed-off console waits to be
+    /// shown: this one runs, without the pipe.
+    RunWithout,
+}
+
+/// The rule over each request's `hand_over` result; `console_waiting` is a handoff that would be lost.
+pub fn lost_pipe(after: &[AfterHand], console_waiting: bool) -> LostPipe {
+    if console_waiting {
+        return LostPipe::RunWithout;
+    }
+    if after.iter().all(|a| *a == AfterHand::Exit) {
+        return LostPipe::Handed;
+    }
+    if after.iter().any(|a| matches!(a, AfterHand::Refuse(_))) || !after.contains(&AfterHand::Start) {
+        return LostPipe::Refused;
+    }
+    LostPipe::RunWithout
+}
+
+/// The byte a listener answers with once it has a request (round 5 item 6): a sender counts its
+/// request as taken only when it reads this.
+pub const ACK: u8 = 0x06;
+
 #[cfg(windows)]
 pub use pipe::{Serving, hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running, serve_on};
 
@@ -298,11 +330,14 @@ mod pipe {
         if let Err(e) = pipe.write_all(&message) {
             return Handed::Failed(e);
         }
-        // The listener closes the pipe when it has read (before it acts on the request), so a
-        // close is the answer; a Tandem that does not close within 2 s is hung, not a taker.
-        match pipe.read_timeout(&mut [0u8; 1], Duration::from_secs(2)) {
+        // The listener answers `ACK` when it has the request, then closes; a Tandem that does not
+        // answer within 2 s is hung, not a taker. A close or a broken pipe without the ack is no
+        // taker either (a listener closing in that instant, round 5 item 6): this Tandem starts.
+        let mut answer = [0u8; 1];
+        match pipe.read_timeout(&mut answer, Duration::from_secs(2)) {
+            Ok(Some(1)) if answer[0] == ACK => Handed::Taken,
             Ok(None) => Handed::Failed("the running Tandem did not answer".into()),
-            _ => Handed::Taken,
+            _ => Handed::NoServer,
         }
     }
 
@@ -357,24 +392,29 @@ mod pipe {
                     }
                 };
                 // The DACL admits this user at this elevation only; nothing more is checked of the client.
-                let request = read_message(&pipe, wait);
-                // A silent or finished client is closed either way, so it never blocks the next one,
-                // and before the request runs, so the sender's answer never waits for the callback.
-                pipe.shutdown();
-                if let Some(request) = request {
-                    notify(request);
-                }
+                take_one(&pipe, wait, &notify);
             }
             // A client that connected as the last wait ended is served too, before the name goes.
             if let Ok(Some(pipe)) = listener.accept(Duration::ZERO) {
-                let request = read_message(&pipe, wait);
-                pipe.shutdown();
-                if let Some(request) = request {
-                    notify(request);
-                }
+                take_one(&pipe, wait, &notify);
             }
         });
         Ok(Serving { stop, thread: Some(thread) })
+    }
+
+    /// One client: its message is read, acknowledged with `ACK` once it is held here (the sender
+    /// counts it taken only then), the pipe is closed, and the request handed on. A silent or finished
+    /// client is closed either way, so it never blocks the next one, and the ack never waits for the
+    /// callback.
+    fn take_one(pipe: &winpipe::Pipe, wait: Duration, notify: &dyn Fn(crate::launch::Request)) {
+        let request = read_message(pipe, wait);
+        if request.is_some() {
+            let _ = pipe.write_all(&[ACK]);
+        }
+        pipe.shutdown();
+        if let Some(request) = request {
+            notify(request);
+        }
     }
 
     /// One message, read within `wait` of the accept and at most `launch::MAX_MESSAGE` in all:
@@ -437,6 +477,22 @@ mod tests {
         assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start);
         let (mut f, _) = sequence(vec![Handed::Taken]);
         assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Exit);
+    }
+
+    /// 13u S4, the one rule for a launch pipe another holder took (run() and an idle `-Embedding`
+    /// process, round 5 race B): everything handed over ends this process; a refused hand-over, or
+    /// no Start at all, ends it too unless a handed-off console waits; otherwise it runs without.
+    #[test]
+    fn a_lost_pipe_has_one_rule() {
+        use AfterHand::*;
+        let refuse = || Refuse("busy".into());
+        assert_eq!(lost_pipe(&[Exit, Exit], false), LostPipe::Handed);
+        assert_eq!(lost_pipe(&[], false), LostPipe::Handed);
+        assert_eq!(lost_pipe(&[Exit, refuse()], false), LostPipe::Refused);
+        assert_eq!(lost_pipe(&[Start, refuse()], false), LostPipe::Refused, "one refused is enough");
+        assert_eq!(lost_pipe(&[Start, Exit], false), LostPipe::RunWithout, "a holder that is not Tandem");
+        assert_eq!(lost_pipe(&[refuse()], true), LostPipe::RunWithout, "a console waits: it is shown");
+        assert_eq!(lost_pipe(&[Exit], true), LostPipe::RunWithout);
     }
 
     #[test]
@@ -709,6 +765,28 @@ mod tests {
             let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("url_launch.rs")).unwrap();
             let code = &src[..src.find("#[cfg(test)]").unwrap()];
             assert!(!code.contains(concat!("ASFW", "_ANY")), "AllowSetForegroundWindow takes a pid");
+        }
+
+        /// Round 5 item 6 (Task 1 minor 7): a request counts as taken only when the server says so with
+        /// its ack byte. A server that reads it and closes without the ack (the microsecond window
+        /// before a listener's close, or one that drops the request) is no taker: NoServer, so the
+        /// request is retried or this Tandem starts.
+        #[test]
+        fn a_close_without_the_ack_is_not_taken() {
+            let name = test_name("launch-noack");
+            let mut listener = crate::winpipe::Listener::bind(&name).unwrap();
+            let server = std::thread::spawn(move || {
+                let pipe = listener.accept(Duration::from_secs(5)).unwrap().unwrap();
+                let _ = pipe.read_timeout(&mut [0u8; 64], Duration::from_secs(2));
+                pipe.shutdown();
+            });
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::NoServer);
+            server.join().unwrap();
+            // The real listener acks after it has queued the request.
+            let name = test_name("launch-ack");
+            let rx = listening_all(&name, Duration::from_secs(2));
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Taken);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
         }
 
         /// R14de-10: a client that connects and sends nothing is dropped and never blocks the next.

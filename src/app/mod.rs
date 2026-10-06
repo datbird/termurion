@@ -1701,16 +1701,17 @@ pub fn run() {
                 again.push(crate::launch::Request::Reopen);
             }
             let after: Vec<_> = again.iter().map(crate::url_launch::hand_to_running).collect();
-            if after.iter().all(|a| matches!(a, crate::url_launch::AfterHand::Exit)) {
-                return;
-            }
             // A holder that is not this Tandem (another user, a lower integrity level, another
             // program) is sent nothing and does not stop Tandem from starting: this one runs
             // without a listener and says so (review r1, Important 1). Only a holder that may
             // be Tandem but did not answer ends the launch.
-            if after.iter().any(|a| matches!(a, crate::url_launch::AfterHand::Refuse(_))) || !after.iter().any(|a| matches!(a, crate::url_launch::AfterHand::Start)) {
-                message_box(&format!("Tandem could not take its launch pipe: {e}"));
-                return;
+            match crate::url_launch::lost_pipe(&after, false) {
+                crate::url_launch::LostPipe::Handed => return,
+                crate::url_launch::LostPipe::Refused => {
+                    message_box(&format!("Tandem could not take its launch pipe: {e}"));
+                    return;
+                }
+                crate::url_launch::LostPipe::RunWithout => {}
             }
             pipe_problem = Some("Another program holds Tandem's launch pipe, so files and links opened with Tandem cannot reach this window.".to_string());
             None

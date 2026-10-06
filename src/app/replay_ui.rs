@@ -422,8 +422,8 @@ impl App {
         if let Some(home) = home_folder() {
             d = d.set_directory(home);
         }
-        let Some(path) = d.pick_file() else { return };
-        self.import_recording(crate::localfs::picked(&path));
+        let Some(path) = crate::localfs::pick_file(d) else { return };
+        self.import_recording(Ok(path));
     }
 
     /// A recording from outside (Explorer, the launch pipe, the command line): judged again here,

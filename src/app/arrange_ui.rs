@@ -426,10 +426,10 @@ impl App {
             self.enter(w);
         }
         let windows = self.snapshots(what, Contents::Plain);
-        let Some(path) = rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"]).save_file() else { return };
-        match arrangement::to_plist(&windows).and_then(|b| crate::localfs::picked(&path).and_then(|p| crate::localfs::write(&p, b)).map_err(|e| e.to_string())) {
+        let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"])) else { return };
+        match arrangement::to_plist(&windows).and_then(|b| crate::localfs::write(&path, b).map_err(|e| e.to_string())) {
             Ok(()) => self.banners.clear("arrangement"),
-            Err(e) => self.banners.set("arrangement", format!("Could not save {}: {e}", path.display())),
+            Err(e) => self.banners.set("arrangement", format!("Could not save {}: {e}", path.path().display())),
         }
         self.redraw();
     }
@@ -971,9 +971,10 @@ impl App {
     /// Window > Arrangements > Load Arrangement from File...: each window in it opens; a
     /// downloaded file asks first.
     pub(super) fn load_arrangement_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new().set_title("Load Arrangement").add_filter("Arrangement", &["itermarrangement", "iterm2arrangement", "plist"]).pick_file() else { return };
+        let Some(path) = crate::localfs::pick_file(rfd::FileDialog::new().set_title("Load Arrangement").add_filter("Arrangement", &["itermarrangement", "iterm2arrangement", "plist"])) else { return };
         // The person's own pick at this moment (judge rulings r3, item 1).
-        self.load_arrangement_from(crate::localfs::picked(&path), &path);
+        let shown = path.path().to_path_buf();
+        self.load_arrangement_from(Ok(path), &shown);
     }
 
     /// An arrangement file from outside (Explorer, the launch pipe, the command line): judged

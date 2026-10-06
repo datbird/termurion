@@ -160,19 +160,27 @@ impl App {
                 Ok(s) => self.url_listener = Some(s),
                 Err(e) => {
                     crate::host::log(&format!("embedding: the launch pipe is taken: {e}"));
-                    let mut left = Vec::new();
                     let paths = self.open_batch.take_all();
                     let urls = std::mem::take(&mut self.pending_urls_at_start).into_iter().map(|url| crate::launch::Request::Url { url });
                     let opens = (!paths.is_empty()).then_some(crate::launch::Request::Open { paths });
-                    for r in urls.chain(std::mem::take(&mut self.launch_queue)).chain(opens) {
-                        if crate::url_launch::hand_to_running(&r) != crate::url_launch::AfterHand::Exit {
-                            left.push(r);
+                    let handed: Vec<(crate::launch::Request, crate::url_launch::AfterHand)> = urls.chain(std::mem::take(&mut self.launch_queue)).chain(opens).map(|r| {
+                        let a = crate::url_launch::hand_to_running(&r);
+                        (r, a)
+                    }).collect();
+                    let after: Vec<crate::url_launch::AfterHand> = handed.iter().map(|(_, a)| a.clone()).collect();
+                    let waiting = self.start_handoff.is_some() || !self.handoff_queue.is_empty();
+                    // run()'s rule (13u S4, round 5 race B): this process runs beside another holder
+                    // only when that holder is not Tandem, or a handed-off console would be lost.
+                    match crate::url_launch::lost_pipe(&after, waiting) {
+                        crate::url_launch::LostPipe::RunWithout => {}
+                        ended => {
+                            crate::host::log(&format!("embedding: ends, the launch pipe's holder took or refused the requests ({ended:?})"));
+                            event_loop.exit();
+                            return false;
                         }
                     }
-                    if left.is_empty() && self.start_handoff.is_none() && self.handoff_queue.is_empty() {
-                        event_loop.exit();
-                        return false;
-                    }
+                    // Only a Start stays to open here; a refused one goes, as run() drops it.
+                    let left = handed.into_iter().filter(|(_, a)| *a == crate::url_launch::AfterHand::Start).map(|(r, _)| r);
                     for r in left {
                         match r {
                             crate::launch::Request::Url { url } => self.pending_urls_at_start.push(url),
@@ -251,6 +259,20 @@ mod tests {
         let me = include_str!("default_term_ui.rs");
         let live = me.split("\n#[cfg(test)]").next().unwrap();
         assert!(!live.contains("RegSetValue") && !live.contains("HKEY_"), "only reg::HkcuRegistry writes");
+    }
+
+    /// Round 5 race B: an idle `-Embedding` process that finds the pipe taken applies `run()`'s rule
+    /// (13u S4): a refused hand-over with no console waiting ends it; it runs without the pipe only
+    /// when every request it kept was a Start (a holder that is not Tandem), or a console waits.
+    #[test]
+    fn a_lost_pipe_follows_runs_rule() {
+        let me = include_str!("default_term_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        let main = me.split("pub(super) fn embedding_becomes_main(").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(main.contains("crate::url_launch::lost_pipe(&after, waiting)"), "the one rule");
+        assert!(main.contains("LostPipe::RunWithout =>") && main.contains("event_loop.exit()"));
+        assert!(main.contains("*a == crate::url_launch::AfterHand::Start"), "a refused request is not kept");
+        let run = include_str!("mod.rs").split("pub fn run()").nth(1).unwrap().split("event_loop.run_app").next().unwrap();
+        assert!(run.contains("crate::url_launch::lost_pipe(&after, false)"), "run() uses the same rule");
     }
 
     /// B9: the class is registered only while Tandem is the default and the pack exists, and the

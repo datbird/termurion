@@ -696,13 +696,9 @@ impl App {
     /// Opens a new script in its editor with the "edit" verb, never "open" (which runs a
     /// `.py`); when that fails the script is revealed.
     pub(super) fn edit_new_script(&self, path: &Path) {
-        use windows_sys::Win32::UI::Shell::ShellExecuteW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let (verb, file) = (wide("edit"), wide(&path.to_string_lossy()));
-        let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
-        // Values above 32 mean success.
-        if (r as isize) <= 32 {
+        // ShellExecute takes a file only as a LocalPath (round 5 item 4).
+        let edited = crate::localfs::LocalPath::judge(path).is_some_and(|p| crate::localfs::shell_verb("edit", &p, None, false).is_ok());
+        if !edited {
             self.reveal_path(path);
         }
     }

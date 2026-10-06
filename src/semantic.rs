@@ -1004,11 +1004,17 @@ pub fn shell_target(target: &str) -> String {
     if web_link(target) { encode_url_chars(target) } else { target.to_string() }
 }
 
+/// The schemes the URL sink hands the shell besides Tandem's registered ones (`url_schemes::SCHEMES`):
+/// web and mail links, and the Settings app's pages (Default apps).
+const SHELL_SCHEMES: &[&str] = &["http", "https", "mailto", "ms-settings"];
+
 /// The URL sink's input (judge round 5): `target` as `shell_target` gives it, only when it is a
-/// URL: a scheme of two or more letters that is not `file:`, and no network path. A path, a drive
-/// path or a file link is None (a file opens only as a judged `LocalPath`, `localfs::open_with_shell`).
+/// URL of a scheme Tandem means to open (`SHELL_SCHEMES` and Tandem's own ftp, ssh and telnet) and no
+/// network path. A path, a drive path, a file link, a shell namespace (`search-ms:`, `shell:`) or any
+/// other protocol handler is None (round 5 item 3; a file opens only as a judged `LocalPath`,
+/// `localfs::open_with_shell`).
 pub fn shell_url(target: &str) -> Option<String> {
-    let url = scheme(target).is_some_and(|s| s != "file") && !crate::scripts::is_network_path(target);
+    let url = scheme(target).is_some_and(|s| SHELL_SCHEMES.contains(&s.as_str()) || crate::url_schemes::SCHEMES.contains(&s.as_str())) && !crate::scripts::is_network_path(target);
     url.then(|| shell_target(target))
 }
 
@@ -1131,6 +1137,14 @@ mod tests {
         assert_eq!(shell_url("mailto:a@b.c").as_deref(), Some("mailto:a@b.c"));
         assert_eq!(shell_url("ms-settings:defaultapps").as_deref(), Some("ms-settings:defaultapps"));
         for bad in [r"C:\x.txt", "c:/x.txt", r"Z:\share\x.pdf", r"\\host\s\x", "//host/s/x", r"\\?\C:\x", "file:///C:/x.txt", "FILE://host/s/x", "x.txt", r"..\x", ""] {
+            assert_eq!(shell_url(bad), None, "{bad}");
+        }
+        // Round 5 item 3: only the schemes Tandem means to hand the shell. A shell namespace or any
+        // other protocol handler (search-ms: makes Explorer connect to a share) is refused.
+        for good in ["http://h/x", "HTTPS://h", "mailto:a@b.c", "ftp://h/f", "ssh://u@h", "telnet://h", crate::url_schemes::DEFAULT_APPS_URI] {
+            assert!(shell_url(good).is_some(), "{good}");
+        }
+        for bad in ["search-ms:query=x&crumb=location:\\\\evil\\s", "shell:startup", "ms-msdt:/id x", "javascript:alert(1)", "vscode://file/c:/x", "ms-word:ofe|u|https://h/x", "itms://x", "res://x.dll/1", "mk:@MSITStore:x"] {
             assert_eq!(shell_url(bad), None, "{bad}");
         }
         let sink = include_str!("app/semantic_ui.rs");
