@@ -95,6 +95,7 @@ impl App {
             }
             restore_state::write_atomic(&path, &bytes)
         });
+        crate::rlog!("saving the windows for the next launch: {}", if result.is_ok() { "saved" } else { "failed" });
         match result {
             Ok(()) => self.banners.clear("state"),
             Err(e) => self.banners.set("state", format!("Could not save the windows for the next launch: {e}")),
@@ -127,6 +128,10 @@ impl App {
         if state.windows.is_empty() {
             return None;
         }
+        crate::rlog!("restoring saved windows: {}", state.windows.len());
+        if self.globals.bool("LogRestorableStateSize") {
+            self.write_state_sizes(&state);
+        }
         // Only this launch-time read makes a saved chat reference adoptable.
         mark_adoptable(&mut state.windows);
         if self.globals.bool("showSessionRestoredBanner") {
@@ -136,6 +141,28 @@ impl App {
             }
         }
         Some((state.windows, state.host))
+    }
+
+    /// LogRestorableStateSize (`AD:1271-1279`, `PT:15147-15150`): the sizes of the saved state as
+    /// iTerm2's `sizeInfo` lists them, whole and per window, in owner-only files (sizes, never content).
+    fn write_state_sizes(&mut self, state: &State) {
+        let pid = std::process::id();
+        let mut root = toml::Table::new();
+        if let Some(h) = &state.host {
+            root.insert("Host Instance".into(), Value::String(h.clone()));
+        }
+        root.insert("Windows".into(), Value::Array(state.windows.clone()));
+        let mut files = vec![(format!("statesize.app-{pid}.txt"), crate::state_size::size_info(&Value::Table(root)))];
+        for (i, w) in state.windows.iter().enumerate() {
+            files.push((format!("statesize.window-{pid}-{}.txt", i + 1), crate::state_size::size_info(w)));
+        }
+        for (name, text) in files {
+            if let Err(e) = crate::dlog::save_private(&name, text.as_bytes()) {
+                self.banners.set("state-size", format!("Could not write {name}: {e}"));
+                return;
+            }
+        }
+        self.banners.clear("state-size");
     }
 
     /// Matches the saved sessions against the host's running ones: a match is marked to take

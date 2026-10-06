@@ -59,6 +59,7 @@ const WHEEL_LINES: f32 = 3.0;
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod gpu_capture;
 mod paste_ui;
 mod edit_session_ui;
 mod history_ui;
@@ -111,11 +112,13 @@ mod menu;
 mod porthole_ui;
 mod prompted_ui;
 mod triggers_ui;
+mod trigger_file_ui;
 mod requests_ui;
 mod emu_ui;
 mod jobs_ui;
 mod close_ui;
 mod coprocess_ui;
+mod dlog_ui;
 mod aps_ui;
 mod windows_ui;
 #[cfg(windows)]
@@ -218,6 +221,9 @@ pub enum UserEvent {
     Wake,
     /// A Win chord from the keyboard hook.
     Chord(crate::menus::Chord),
+    /// The debug log was written on its worker thread: the file's path or the reason it failed,
+    /// and whether to say it stopped (`dlog_ui`).
+    DebugLogSaved(Result<PathBuf, String>, bool),
     /// A menu item was clicked (its id).
     Menu(String),
     /// A notification was clicked.
@@ -709,6 +715,9 @@ pub struct App {
     open_ignored: crate::open_file::IgnoredCount,
     open_work: open_file_ui::OpenWork,
     open_runs: Vec<crate::open_file::Launch>,
+    /// The profile chooser for an opened `.it2triggers` file, and the files waiting for it.
+    trigger_import: Option<trigger_file_ui::ImportWindow>,
+    trigger_imports: std::collections::VecDeque<Vec<toml::Table>>,
     open_with_done: bool,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
@@ -770,6 +779,17 @@ pub struct App {
     pending_title_restores: HashMap<PaneId, Option<String>>,
     /// RequestAttention: pane flashes and fireworks (start time, and the cursor cell).
     flashes: HashMap<PaneId, Instant>,
+    /// The centered bell indicator's start per pane, and whether it fades (it does not when
+    /// Windows animations are off, P13).
+    bell_indicators: HashMap<PaneId, (Instant, bool)>,
+    /// The floors under every beep, flash and taskbar flash (B6). App-wide on purpose: three
+    /// flashes a second is a limit of the person's eyes, not of one pane.
+    bell_limiter: crate::bell::Limiter,
+    /// The taskbar button's count: bells rung and sessions waiting while no Tandem window is
+    /// active. App-wide (one count for every window's button).
+    bell_badge: crate::bell_badge::Badge,
+    /// The label last queued for the buttons and when; None makes the next pass queue it again.
+    badge_pushed: Option<(String, Instant)>,
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
@@ -876,6 +896,8 @@ pub struct App {
     perf: crate::perf_stats::Logs,
     /// Each window's frame counters, by window number (app-wide).
     perf_frames: std::collections::BTreeMap<usize, crate::perf_stats::FrameStats>,
+    /// The drawing statistics `LogDrawingPerformance` logs (app-wide, every window).
+    draw_timers: crate::perf::Timers,
     /// The last key press in any window (iTerm2's `_lastKeystrokeTime`, `UC:90-94`).
     last_keystroke: Option<Instant>,
     /// The power line (13l Task 3): app-wide, sampled when the output path asks, at most once a second.
@@ -1540,6 +1562,12 @@ pub struct App {
     /// was at hand).
     script_console_reveal: Option<String>,
     last_notified_script: Option<String>,
+    /// The last notification was "Debug logging turned on": a click on it turns logging off.
+    last_notified_debug: Option<u64>,
+    /// The pane the debug log last named as focused (app-wide: a window switch changes it too).
+    focus_logged: Option<PaneId>,
+    /// The automatic-start notification shows once per launch (`AD:1309-1324`).
+    debug_notice_shown: bool,
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
@@ -1652,6 +1680,7 @@ fn message_box(text: &str) {
 /// needs nothing of it that Windows does not do (the hook, hotkeys and the per-thread layout end
 /// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
 pub(crate) fn teardown_process() {
+    crate::dlog::stop_at_exit();
     crate::winkeys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
@@ -1665,12 +1694,16 @@ pub(crate) fn teardown_process() {
     // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
     #[cfg(windows)]
     crate::uia_win::disconnect_all();
+    // The overlay icons come off the taskbar buttons (the badge is the app's, not the shell's).
+    #[cfg(windows)]
+    crate::taskbar_win::clear_all();
     // This run's Dev Null browser folder goes with it (pure file removal, no COM).
     #[cfg(windows)]
     crate::webhost_win::cleanup_files();
 }
 
 pub fn run() {
+    crate::dlog::mark_main_thread();
     // A cookie in Tandem's own environment (Tandem started from a Tandem shell) must reach no
     // session and no child: only a cookie Tandem mints for a session is ever set.
     for name in crate::session_env::NEVER_INHERITED {
@@ -1867,7 +1900,9 @@ pub fn run() {
     };
     // "Load settings from a custom folder or URL": the location's settings replace the local
     // ones before anything reads them; its questions and failures show with the first window.
+    // Read once at launch (its help says a restart is needed).
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
+    let trigger_pool_width = globals.int("MaximumNumberOfTriggerCommands");
     // iTerm2 drops bindings whose profile is gone when it loads them (P11).
     if crate::url_schemes::prune_globals(&mut globals, &store) {
         if let Err(e) = globals.save() {
@@ -1912,6 +1947,7 @@ pub fn run() {
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
     jobs.set_fast_updates(globals.bool("FastForegroundJobUpdates"));
+    jobs.set_ancestry_diagnostics(globals.bool("LogForegroundJobAncestryDiagnostics"));
     let side_bar_preferred = side_bar_default(&globals);
     let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
@@ -2118,6 +2154,8 @@ pub fn run() {
         open_ignored: Default::default(),
         open_work,
         open_runs: Vec::new(),
+        trigger_import: None,
+        trigger_imports: std::collections::VecDeque::new(),
         open_with_done: false,
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
@@ -2176,7 +2214,7 @@ pub fn run() {
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
-        trigger_pool: crate::triggers::CommandPool::new(16),
+        trigger_pool: crate::triggers::CommandPool::new(trigger_pool_width),
         trigger_children: Vec::new(),
         handler_inbox: Default::default(),
         bells: HashMap::new(),
@@ -2192,6 +2230,7 @@ pub fn run() {
         frame_number: 0,
         perf: Default::default(),
         perf_frames: Default::default(),
+        draw_timers: crate::perf::Timers::new(&["frame", "scene", "draw", "present"]),
         last_keystroke: None,
         power: crate::power::Poll::default(),
         last_status: HashMap::new(),
@@ -2248,6 +2287,10 @@ pub fn run() {
         scroll_series: Default::default(),
         text_blinking: false,
         flashes: HashMap::new(),
+        bell_indicators: HashMap::new(),
+        bell_limiter: crate::bell::Limiter::default(),
+        bell_badge: crate::bell_badge::Badge::default(),
+        badge_pushed: None,
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
         tmux_geometry: HashMap::new(),
@@ -2523,6 +2566,9 @@ pub fn run() {
         script_inspector: None,
         script_console_reveal: None,
         last_notified_script: None,
+        last_notified_debug: None,
+        focus_logged: None,
+        debug_notice_shown: false,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
         script_components: HashMap::new(),
@@ -2563,6 +2609,8 @@ pub fn run() {
         focus_seen: Default::default(),
         browser_url_override: None,
     };
+    // Debug logging at launch starts before the first window (`AD:1356-1358`).
+    app.start_debug_logging_automatically();
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
     if let Err(e) = event_loop.run_app(&mut app) {
@@ -2774,6 +2822,9 @@ impl App {
         }
         let changed = i != self.active;
         self.active = i;
+        // A selected tab's sessions are no longer waiting (`tabWasSelected`).
+        let sessions: Vec<String> = self.tabs[i].layout.panes().iter().map(|p| p.to_string()).collect();
+        self.bell_badge.tab_selected(&sessions);
         self.expand_selected_group();
         if changed {
             self.flash_tab_bar();
@@ -4014,6 +4065,7 @@ impl App {
         };
         match started {
             Ok(mut pane) => {
+                crate::rlog!("session started: profile {} program {}", crate::dlog::name(&p.name()), crate::dlog::program(&cmd));
                 pane.cookie = cookie;
                 pane.command = cmd;
                 pane.start_dir = Some(cwd);
@@ -4279,6 +4331,10 @@ impl App {
             // Taken by the window's redraw handler, which has the event loop.
             Edit::EditProfiles(_) => return,
             Edit::Error(e) => self.banners.set("import", e),
+            Edit::Alert { heading, text } => {
+                let id = crate::trigger_file::identifier_for(&heading, &text);
+                self.ask_scripts(scripts_alerts::ask(&heading, &text, &[crate::api_auth::OK], Some(id), crate::warnings::Kind::Persistent, scripts_alerts::Then::Acknowledged));
+            }
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => self.globals_changed(true),
             Edit::PrefsCopyNow => {
@@ -4322,6 +4378,7 @@ impl App {
         self.save_globals();
         // Job updates wait on a job's exit, or only poll (Advanced > Experimental Features).
         self.jobs.set_fast_updates(self.globals.bool("FastForegroundJobUpdates"));
+        self.jobs.set_ancestry_diagnostics(self.globals.bool("LogForegroundJobAncestryDiagnostics"));
         if api_now {
             self.api_settings_changed();
         }
@@ -4518,8 +4575,8 @@ impl App {
         g.renderer.set_bold_difference(bold_difference);
         g.renderer.set_contextual_alternates(calt);
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
-        let badge = p.font("Badge Font").family;
-        g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
+        g.renderer.set_badge_family(&badge_ui::badge_family(badge_ui::profile_font(&p), &self.globals.string("BadgeFont")));
+        g.renderer.set_badge_bold(self.globals.bool("BadgeFontIsBold"));
         // Read with the window's other fonts, not on every change (iTerm2: "Changing this
         // setting does not affect existing windows").
         g.renderer.set_toolbelt_family(&self.globals.string("toolbeltFont"));
@@ -4806,6 +4863,8 @@ impl App {
         self.uploads.remove(&id);
         self.pending_background.remove(&id);
         self.flashes.remove(&id);
+        self.bell_indicators.remove(&id);
+        self.bell_badge.forget(&id.to_string());
         self.fireworks.remove(&id);
         self.tab_colors.remove(&id);
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
@@ -4931,6 +4990,7 @@ impl App {
         for (id, (cols, rows), (cw, ch)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
+                    crate::dlog!("pane {} resized to {} columns {} rows", id, cols, rows);
                     self.activity.entry(id).or_default().resized(Instant::now());
                     if p.replay.is_some() {
                         reframe.push(id);
@@ -6281,6 +6341,10 @@ impl App {
                         bars.push((row, color));
                     }
                     scene::mark_bars(&mut frame, &bars, inner, cell.1, pad, &p.screen.palette, theme);
+                    if self.globals.bool("DebugShowPromptMarkRangesInLegacyRenderer") {
+                        let spans = p.screen.prompt_range_spans();
+                        scene::prompt_range_outlines(&mut frame, &scene::prompt_span_rects(&spans, inner, cell, cols, g.screen_lines()));
+                    }
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
@@ -6404,6 +6468,32 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Nothing is measured while LogDrawingPerformance is off.
+        let timing = self.globals.bool("LogDrawingPerformance");
+        let started = timing.then(Instant::now);
+        self.render_frame(timing);
+        if let Some(started) = started {
+            self.draw_timers.stats[0].add(started.elapsed().as_secs_f64(), 1);
+            if self.draw_timers.due(Instant::now(), crate::perf::DRAW_EVERY) {
+                // iTerm2's console (`PTM:176-192`) and the debug log: the numeric table only.
+                let table = crate::perf::log_table("render", &mut self.draw_timers.stats);
+                crate::dlog::debug_output(table.as_str());
+                crate::dlog!("{}", table);
+            }
+        }
+    }
+
+    fn render_frame(&mut self, timing: bool) {
+        // Focus moves between windows and panes, as the debug log reports them.
+        if crate::dlog::is_on() {
+            let focus = self.focused_id();
+            if focus != self.focus_logged {
+                self.focus_logged = focus;
+                if let Some(pane) = focus {
+                    crate::dlog!("pane focus changed to {}", pane);
+                }
+            }
+        }
         // Recorded first: a frame that finds no surface still ends the wait for one.
         let now = Instant::now();
         let before = self.pacer.last();
@@ -6414,7 +6504,11 @@ impl App {
         self.sync_menu_hidden();
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
+        let scene_start = timing.then(Instant::now);
         let frame = self.build_frame();
+        if let Some(t) = scene_start {
+            self.draw_timers.stats[1].add(t.elapsed().as_secs_f64(), 1);
+        }
         // The caption's hit tests answer from what this frame drew.
         self.publish_caption();
         let (title, menu_text) = self.caption_text();
@@ -6475,14 +6569,29 @@ impl App {
         let (w, h) = (gpu.config.width, gpu.config.height);
         // The non-sRGB view a fade needs on an sRGB target; no fade, no view.
         let raw = gpu.config.view_formats.first().filter(|_| frame.fade < 1.0).map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
-        if let Err(e) = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h) {
+        #[cfg(debug_assertions)]
+        let capturing = gpu_capture::begin(gpu.render_device());
+        let draw_start = timing.then(Instant::now);
+        let drawn = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h);
+        if let Some(t) = draw_start {
+            self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
+        }
+        if let Err(e) = drawn {
             if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                 self.fade_failed = true;
             }
             self.banners.set("gpu", e);
         }
+        let present_start = timing.then(Instant::now);
         if let Some(gpu) = self.gpu.as_ref() {
             gpu.render_queue().present(texture);
+            #[cfg(debug_assertions)]
+            if capturing {
+                gpu_capture::end(gpu.render_device());
+            }
+        }
+        if let Some(t) = present_start {
+            self.draw_timers.stats[3].add(t.elapsed().as_secs_f64(), 1);
         }
     }
 }
@@ -6608,6 +6717,7 @@ impl ApplicationHandler<UserEvent> for App {
                     #[cfg(windows)]
                     {
                         crate::firstmouse_win::watch(h);
+                        self.taskbar_watch(h);
                         logout_ui::watch(h);
                     }
                 }
@@ -6826,6 +6936,9 @@ impl ApplicationHandler<UserEvent> for App {
         let active = hotkey_ui::tandem_in_front();
         let edge = active != self.app_active;
         if active && !self.app_active {
+            // Tandem is in front: the waiting sessions clear and the bells reset (`PT:4999`).
+            self.bell_badge.became_active();
+            self.bell_badge.reset_bells();
             self.hotkey_reactivated();
             self.ffm_became_active();
             self.tips_became_active();
@@ -6855,6 +6968,7 @@ impl ApplicationHandler<UserEvent> for App {
         let paste_due = self.paste_tick().into_iter().chain(self.auto_command_tick()).min();
         let triggers = self.tick_triggers();
         self.tick_bell();
+        let badge_due = self.tick_badge();
         let activity = self.tick_activity();
         self.tick_status_change();
         let idle_codes = self.tick_idle_codes();
@@ -6976,7 +7090,7 @@ impl ApplicationHandler<UserEvent> for App {
         let command_due = self.command_click_tick();
         // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
-        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -7013,6 +7127,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::JobsChanged => return self.jobs_changed(),
+            UserEvent::DebugLogSaved(result, announce) => return self.debug_log_saved(result, announce),
             UserEvent::DisplayChanged => {
                 let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));
                 self.display_due = Some(Instant::now() + delay);
@@ -7092,7 +7207,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.web_popover_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.web_popover_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;
@@ -7580,6 +7695,9 @@ pub(super) struct FocusActions {
     pub access: bool,
     /// A gain that was reported: last window, the stamp, the Window menu, a closed password manager's hold.
     pub gain_stamps: bool,
+    /// The bell count resets: a window became key (13w, `PT:4717`, `:4999`). Never on the return
+    /// from the window's own web view, whose loss was never reported (13w seam S2).
+    pub bell_reset: bool,
 }
 
 pub(super) fn focus_actions(step: crate::webhost::FocusStep, gained: bool) -> FocusActions {
@@ -7603,8 +7721,9 @@ pub(super) fn focus_actions(step: crate::webhost::FocusStep, gained: bool) -> Fo
             flash_stop: true,
             access: true,
             gain_stamps: false,
+            bell_reset: false,
         },
-        (Normal, true) => FocusActions { flag: Some(true), report: Some(true), access: true, gain_stamps: true, ..FocusActions::default() },
+        (Normal, true) => FocusActions { flag: Some(true), report: Some(true), access: true, gain_stamps: true, bell_reset: true, ..FocusActions::default() },
     }
 }
 
@@ -7635,6 +7754,17 @@ impl App {
     /// Runs one focus step in the current window: only what the table names (preflight B6).
     fn apply_focus(&mut self, step: crate::webhost::FocusStep, f: bool, id: WindowId) {
         let a = focus_actions(step, f);
+        // 13w seam S2: a real focus change is logged as 13w logs it; a move into or out of the
+        // window's own web view is one fixed line (no window lost or gained focus).
+        if step == crate::webhost::FocusStep::Normal {
+            crate::dlog!("window focus changed: {}", f);
+        } else {
+            crate::dlog!("focus moved between a window and its web view");
+        }
+        // A window becoming key resets the bell count (`PT:4717`, `:4999`).
+        if a.bell_reset {
+            self.bell_badge.reset_bells();
+        }
         // A divider drag loses its release when focus goes, and so do keys.
         if a.mouse_cancel {
             self.tmux_drag_cancel();
@@ -7729,6 +7859,16 @@ mod tests {
         rest.split(&format!("\n{indent}}}\n")).next().unwrap()
     }
 
+    /// Review 3: the trigger pool's width is read after "Load settings from a custom folder or
+    /// URL" replaced the globals, so that location's MaximumNumberOfTriggerCommands counts.
+    #[test]
+    fn the_pool_width_is_read_after_the_custom_settings_load() {
+        let src = include_str!("mod.rs");
+        let load = src.find("prefs_ui::load_at_start(&mut globals").expect("the load");
+        let read = src.find("let trigger_pool_width = globals.int(").expect("the read");
+        assert!(read > load, "the pool width is read after load_at_start");
+    }
+
     #[test]
     fn focus_into_web_view_keeps_the_window() {
         use crate::webhost::FocusStep::*;
@@ -7746,10 +7886,11 @@ mod tests {
         assert_eq!(r.flag, None);
         assert_eq!(r.report, None, "the loss was never reported, so no focus-in either");
         assert!(!r.gain_stamps, "the gain stamps belong to a reported gain");
+        assert!(!r.bell_reset, "13w S2: the bell count resets only on a reported gain");
         let g = focus_actions(Normal, true);
         assert_eq!(g.flag, Some(true));
         assert_eq!(g.report, Some(true));
-        assert!(g.gain_stamps && g.access);
+        assert!(g.gain_stamps && g.access && g.bell_reset);
         assert!(!g.save && !g.hotkey_hide && !g.api_lost && !g.clear_keys && !g.drop_leader && !g.mouse_cancel && !g.flash_stop);
     }
 
@@ -7796,6 +7937,7 @@ mod tests {
         ("self.leader_on", "drop_leader"),
         ("self.refresh_route", "drop_leader"),
         ("self.focused_pane", "report"),
+        ("self.bell_badge.reset_bells", "bell_reset"),
         ("self.redraw", "always"),
     ];
 

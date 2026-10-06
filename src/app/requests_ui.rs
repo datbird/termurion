@@ -74,14 +74,14 @@ pub(super) fn share_targets(panes_in_window: &[PaneId], from: PaneId, separate: 
 }
 
 /// How long RequestAttention's pane flash and fireworks last.
-pub(super) const FLASH: Duration = Duration::from_millis(300);
+pub(super) const FLASH_DURATION: Duration = Duration::from_millis(300);
 pub(super) const FIREWORKS: Duration = Duration::from_millis(1200);
 
 impl App {
     pub(super) fn window_request(&mut self, pane: PaneId, r: Request) {
         match r {
             Request::Trigger(t) => self.trigger_request(pane, t),
-            Request::Bell => self.ring_bell(pane),
+            Request::Bell { count } => self.ring_bell(pane, count),
             Request::Osc7Disabled => self.osc7_disabled(),
             Request::Notify { title, message } => self.terminal_alert(pane, title, message),
             Request::WindowTitle(title) => self.share_window_title(pane, title),
@@ -188,24 +188,15 @@ impl App {
     }
 
     fn attention(&mut self, pane: PaneId, a: Attention) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_STOP, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
-        let flash = |flags: u32, count: u32, hwnd: isize| {
-            let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: flags, uCount: count, dwTimeout: 0 };
-            unsafe { FlashWindowEx(&info) };
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_STOP, FLASHW_TIMERNOFG, FLASHW_TRAY};
         match a {
-            Attention::Once | Attention::Start | Attention::Stop => {
-                let Some(hwnd) = self.hwnd() else { return };
-                match a {
-                    Attention::Once => flash(FLASHW_TRAY, 1, hwnd),
-                    Attention::Start => flash(FLASHW_TRAY | FLASHW_TIMERNOFG, 0, hwnd),
-                    _ => flash(FLASHW_STOP, 0, hwnd),
-                }
-            }
-            Attention::Flash => {
-                self.flashes.insert(pane, Instant::now());
-                self.redraw();
-            }
+            // The taskbar flashes share the per-window floor with the Bounce trigger (B6).
+            Attention::Once => self.flash_taskbar_raw(FLASHW_TRAY, 1),
+            Attention::Start => self.flash_taskbar_raw(FLASHW_TRAY | FLASHW_TIMERNOFG, 0),
+            Attention::Stop => self.flash_taskbar_raw(FLASHW_STOP, 0),
+            // Always the whole pane, whatever TraditionalVisualBell says (`PS:17176-17178`),
+            // through the one visual floor.
+            Attention::Flash => self.start_flash(pane, crate::bell::Visual::FullFlash, Instant::now()),
             Attention::Fireworks => {
                 let at = self.panes.get(&pane).map(|p| {
                     let g = p.own().term().grid();
@@ -347,7 +338,8 @@ impl App {
     /// Forgets pane flashes and fireworks that are over.
     pub(super) fn prune_attention(&mut self) {
         let now = Instant::now();
-        self.flashes.retain(|_, t| now - *t < FLASH);
+        self.flashes.retain(|_, t| now - *t < FLASH_DURATION);
+        self.bell_indicators.retain(|_, (t, _)| now - *t < FLASH_DURATION);
         self.fireworks.retain(|_, (t, _)| now - *t < FIREWORKS);
     }
 
@@ -355,11 +347,22 @@ impl App {
     pub(super) fn draw_attention(&self, frame: &mut Frame, pane: PaneId, inner: Rect, cell: (f32, f32)) -> Option<Instant> {
         let now = Instant::now();
         let mut next = None;
-        if let Some(t) = self.flashes.get(&pane).copied() {
+        let screen = self.panes.get(&pane).map(|p| &p.screen);
+        if let (Some(t), Some(s)) = (self.flashes.get(&pane).copied(), screen) {
             let age = now - t;
-            if age < FLASH {
-                scene::pane_flash(frame, inner, 1.0 - age.as_secs_f32() / FLASH.as_secs_f32());
+            if age < FLASH_DURATION {
+                let initial = self.globals.number("IndicatorFlashInitialAlpha").unwrap_or(0.5) as f32;
+                scene::pane_flash(frame, inner, s.palette.fg, crate::bell::flash_alpha(age.as_secs_f32(), initial));
                 next = Some(now + Duration::from_millis(16));
+            }
+        }
+        if let (Some((t, fades)), Some(s)) = (self.bell_indicators.get(&pane).copied(), screen) {
+            let age = now - t;
+            if age < FLASH_DURATION {
+                let alpha = if fades { crate::bell::indicator_alpha(age.as_secs_f32()) } else { 1.0 };
+                scene::bell_indicator(frame, inner, scene::filler_dark(s.palette.bg), alpha, self.scale(), cell);
+                // A fixed-alpha frame needs one more wake, at its end.
+                next = Some(now + if fades { Duration::from_millis(16) } else { FLASH_DURATION - age });
             }
         }
         if let Some((t, (col, row))) = self.fireworks.get(&pane).copied() {

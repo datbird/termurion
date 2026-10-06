@@ -320,7 +320,7 @@ impl App {
     /// reports no host, user or directory, or its host is this machine.
     pub(super) fn scp_path_for(&self, pane: PaneId, file: &str) -> Option<ScpPath> {
         let shell = &self.panes.get(&pane)?.own().shell;
-        let local = shell.host.as_deref().is_some_and(|h| self.host_is_this_machine(h));
+        let local = shell.host.is_some() && super::statusbar_content::is_this_machine(shell.host.as_deref(), shell.machine_id.as_deref());
         let cwd = shell.cwd.as_deref().and_then(crate::ssh_jumps::clean_directory);
         ssh_files::scp_path(file, cwd.as_deref(), shell.host.as_deref(), shell.user.as_deref(), local)
     }

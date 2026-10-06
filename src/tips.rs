@@ -473,7 +473,7 @@ mod tests {
     fn tip_paths_are_real_menus_and_settings() {
         use crate::schema;
         let strip = |s: &str| s.trim_end_matches("...").trim_end_matches('\u{2026}').to_string();
-        let menu_paths: Vec<Vec<String>> = crate::menus::items().iter().filter(|i| !i.separator).map(|i| i.path.iter().map(|p| strip(&crate::menus::shown_label(p))).collect()).collect();
+        let menu_paths: Vec<Vec<String>> = crate::menus::shown_items().filter(|i| !i.separator).map(|i| i.path.iter().map(|p| strip(&crate::menus::shown_label(p))).collect()).collect();
         let roots: std::collections::HashSet<&str> = menu_paths.iter().map(|p| p[0].as_str()).collect();
         // "Your session" stands for whatever session the person buried.
         const PLACEHOLDERS: [&str; 1] = ["Your session"];

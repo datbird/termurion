@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn empty_event_captures_follow_iterm2() {
         let mut s = Screen::new(40, 4);
-        s.set_triggers(vec![event(EventKind::BellReceived, "[\\(matches[0] == \"\")]", &[])], TriggerPrefs { interactive: false, interpolated: true });
+        s.set_triggers(vec![event(EventKind::BellReceived, "[\\(matches[0] == \"\")]", &[])], TriggerPrefs { interpolated: true, ..Default::default() });
         s.feed(b"\x07");
         assert_eq!(alerts(&mut s), vec!["[1]"], "matches is [\"\"], not undefined");
         s.set_triggers(vec![event(EventKind::BellReceived, "[\\0]", &[])], TriggerPrefs::default());
@@ -517,7 +517,7 @@ mod tests {
             let mut s = Screen::new(40, 6);
             let mut t = event(EventKind::DirectoryChanged, param, &[]);
             t.action = "CaptureTrigger".into();
-            s.set_triggers(vec![t], TriggerPrefs { interactive: false, interpolated });
+            s.set_triggers(vec![t], TriggerPrefs { interpolated, ..Default::default() });
             s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
             s.feed(b"\x1b]1337;CurrentDir=/a&calc\x07");
             let commands: Vec<Option<String>> = s.last_command_mark().map(|m| m.captured.iter().map(|c| c.command.clone()).collect()).unwrap_or_default();

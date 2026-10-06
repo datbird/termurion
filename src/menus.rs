@@ -72,6 +72,23 @@ const SHIFTED: [(char, char); 21] = [
     ('}', ']'), ('|', '\\'), (':', ';'), ('"', '\''), ('<', ','), ('>', '.'), ('?', '/'),
 ];
 
+/// Items iTerm2 removes from the menu (`AD:402-419`): Capture GPU Frame in release builds, and
+/// Check Settings Control Truncation unless built for development (Tandem's Settings wrap text,
+/// so it is never built, R5). The one rule every menu copy and list of menu actions applies.
+pub fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
+    match selector {
+        "captureNextMetalFrame:" => !debug_build,
+        "debugCheckSettingsControlTruncation:" => true,
+        _ => false,
+    }
+}
+
+/// The items of this build's menus: `items()` without what `hidden_in_menu` removes. Every menu
+/// builder and list of menu actions reads this, never `items()`.
+pub fn shown_items() -> impl Iterator<Item = &'static Item> {
+    items().iter().filter(|i| !hidden_in_menu(&i.selector, cfg!(debug_assertions)))
+}
+
 pub fn items() -> &'static [Item] {
     static ITEMS: OnceLock<Vec<Item>> = OnceLock::new();
     ITEMS.get_or_init(|| {
@@ -128,13 +145,13 @@ pub fn shown_label(label: &str) -> String {
 }
 
 pub fn by_id(id: &str) -> Option<&'static Item> {
-    items().iter().find(|i| !i.separator && i.id() == id)
+    shown_items().find(|i| !i.separator && i.id() == id)
 }
 
 /// The leaf item (not a separator, not a submenu) with this XIB identifier, first in
 /// menu order, as iTerm2 searches its main menu (`H:1526-1539`).
 pub fn by_identifier(id: &str) -> Option<&'static Item> {
-    items().iter().find(|i| !i.separator && !i.submenu && !i.identifier.is_empty() && i.identifier == id)
+    shown_items().find(|i| !i.separator && !i.submenu && !i.identifier.is_empty() && i.identifier == id)
 }
 
 /// iTerm2's MenuItem answer (`H:3524-3547`) for the item found (None when no leaf has the
@@ -164,7 +181,7 @@ pub fn command_for(chord: &Chord) -> Option<&'static Item> {
     TABLE
         .get_or_init(|| {
             let mut t = HashMap::new();
-            let commands = items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty());
+            let commands = shown_items().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty());
             let (normal, alternates): (Vec<_>, Vec<_>) = commands.partition(|i| !i.alternate);
             for i in normal.into_iter().chain(alternates) {
                 if let Some(c) = i.chord() {
@@ -179,7 +196,7 @@ pub fn command_for(chord: &Chord) -> Option<&'static Item> {
 
 /// Every command with this chord, in menu order, alternates last.
 pub fn items_for(chord: &Chord) -> Vec<&'static Item> {
-    let commands = items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty());
+    let commands = shown_items().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty());
     let (normal, alternates): (Vec<_>, Vec<_>) = commands.partition(|i| !i.alternate);
     normal.into_iter().chain(alternates).filter(|i| i.chord().as_ref() == Some(chord)).collect()
 }
@@ -220,6 +237,46 @@ pub fn chord_label(c: &Chord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The class (Task 3 round 1): ONE filter hides Capture GPU Frame (release) and Check Settings
+    /// Control Truncation (always) from every menu copy and every list of menu actions: the window
+    /// menu, the tray's Main Menu, the key-binding targets, Open Quickly and the API's lookups.
+    /// A list is built from `shown_items()`; `items()` is only searched by selector.
+    #[test]
+    fn every_menu_list_goes_through_the_one_filter() {
+        assert!(hidden_in_menu("captureNextMetalFrame:", false));
+        assert!(!hidden_in_menu("captureNextMetalFrame:", true));
+        assert!(hidden_in_menu("debugCheckSettingsControlTruncation:", true));
+        assert!(shown_items().all(|i| i.selector != "debugCheckSettingsControlTruncation:"));
+        assert_eq!(shown_items().any(|i| i.selector == "captureNextMetalFrame:"), cfg!(debug_assertions));
+        assert!(by_id(&item("debugCheckSettingsControlTruncation:").id()).is_none(), "the API cannot reach a hidden item by id");
+        assert!(by_identifier("Check Settings Control Truncation").is_none());
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let raw = regex::Regex::new(r"menus::items\(\)").unwrap();
+        let lookup = regex::Regex::new(r"menus::items\(\)\s*\.iter\(\)\s*\.find\(\|i\| i\.selector").unwrap();
+        let (mut dirs, mut builders) = (vec![src], 0);
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("menus.rs") {
+                    let t = std::fs::read_to_string(&p).unwrap();
+                    let live = t.split("#[cfg(test)]").next().unwrap_or("");
+                    let (all, finds) = (raw.find_iter(live).count(), lookup.find_iter(live).count());
+                    assert_eq!(all, finds, "{p:?}: a list of menu items must come from menus::shown_items(), not menus::items()");
+                    builders += live.matches("shown_items()").count();
+                }
+            }
+        }
+        assert!(builders >= 5, "the window menu, the tray menu, the binding targets and Open Quickly: {builders}");
+        let own = include_str!("menus.rs");
+        let own = own.split("#[cfg(test)]").next().unwrap();
+        for f in ["pub fn by_id", "pub fn by_identifier", "pub fn items_for"] {
+            let body = &own[own.find(f).unwrap()..];
+            assert!(body[..body.find("\n}\n").unwrap()].contains("shown_items()"), "{f}");
+        }
+    }
 
     fn item(selector: &str) -> &'static Item {
         items().iter().find(|i| i.selector == selector).unwrap_or_else(|| panic!("{selector}"))

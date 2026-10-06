@@ -111,6 +111,7 @@ impl App {
     pub(super) fn session_exited(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let tmux = p.tmux_io().is_some();
+        crate::rlog!("session ended: pane {} exit code {}", id, p.exited.map_or(-1i64, i64::from));
         // The pid is reusable from now on: the watcher forgets it (B7; the survivors were
         // surveyed when the exit was seen).
         if let Some(pid) = p.exit_pid() {

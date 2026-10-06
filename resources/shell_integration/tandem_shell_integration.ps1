@@ -18,6 +18,35 @@ function global:__TandemOsc([string]$body) {
     return "$([char]27)]$body$([char]7)"
 }
 
+# The machine identity OSC 7 carries (iTerm2's machineID, version 1): HMAC-SHA256 of this
+# boot's identity, "MachineGuid:BootId", keyed with iTerm2's key, as lowercase hex. Tandem
+# computes the same value, so a path reported by this shell is known to be on this machine.
+function global:Get-TandemMachineIdHash([string]$identity) {
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    try {
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes('iterm2-osc7-machine-id')
+        $bytes = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($identity))
+    } finally {
+        $hmac.Dispose()
+    }
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# "1:<hex>", or "0:" (identity unavailable, as iTerm2's bash script sends) when either value
+# cannot be read. Two registry reads, once, when this file loads.
+function global:__TandemMachineId {
+    try {
+        $guid = Get-ItemPropertyValue -Path 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop
+        $boot = Get-ItemPropertyValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' -Name BootId -ErrorAction Stop
+        if (-not $guid -or $null -eq $boot) { return '0:' }
+        $id = '{0}:{1}' -f $guid, ([uint32]([int64]$boot -band 0xFFFFFFFF))
+        return '1:' + (Get-TandemMachineIdHash $id)
+    } catch {
+        return '0:'
+    }
+}
+$global:__TandemMachineId = __TandemMachineId
+
 # OSC 7: file://user@host/C:/path, percent-encoded as UTF-8 except [A-Za-z0-9/._~-].
 function global:__TandemLocation {
     $loc = Get-Location
@@ -31,7 +60,7 @@ function global:__TandemLocation {
     }
     $user = $env:USERNAME -replace '[^A-Za-z0-9._@-]', ''
     $machine = $env:COMPUTERNAME -replace '[^A-Za-z0-9._-]', ''
-    return (__TandemOsc "7;file://$user@$machine$($sb.ToString())?machineID=1:")
+    return (__TandemOsc "7;file://$user@$machine$($sb.ToString())?machineID=$global:__TandemMachineId")
 }
 
 function global:prompt {

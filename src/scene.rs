@@ -1888,6 +1888,7 @@ pub const PIN_GLYPH: char = '\u{E718}';
 pub fn indicator_tip<T>(hits: &[(T, Rect, IndicatorKind)], x: f32, y: f32) -> Option<&'static str> {
     match hits.iter().find(|(_, r, _)| r.contains(x, y))?.2 {
         IndicatorKind::Pin => Some(PIN_HOVER),
+        IndicatorKind::DebugLogging => Some(crate::dlog::INDICATOR_HOVER),
         _ => None,
     }
 }
@@ -1921,12 +1922,14 @@ pub fn tab_icon(dot: bool, dead: bool, bell: bool, new_output: bool, idle: bool)
 pub const COPROCESS_GLYPH: char = '\u{E8AB}';
 /// Broadcast input: this session sends (and receives), or only receives.
 pub const BROADCAST_GLYPH: char = '\u{EC05}';
+/// Debug logging is on (`IH:389`; Segoe Fluent Icons "Bug").
+pub const DEBUG_LOGGING_GLYPH: char = '\u{EBE8}';
 pub const RECEIVE_ONLY_GLYPH: char = '\u{E701}';
 
 /// The top-right glyphs in iTerm2's order (right to left): broadcast or receive-only,
 /// then the coprocess, then the pin of a pinned hotkey window.
-pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool) -> Vec<char> {
-    indicators(sends, receives, coprocess, linked, streaming, pinned).into_iter().map(|(g, _)| g).collect()
+pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool, debug_logging: bool) -> Vec<char> {
+    indicators(sends, receives, coprocess, linked, streaming, pinned, debug_logging).into_iter().map(|(g, _)| g).collect()
 }
 
 /// What a press on an indicator glyph does.
@@ -1936,10 +1939,11 @@ pub enum IndicatorKind {
     AiLinked,
     AiStreaming,
     Pin,
+    DebugLogging,
 }
 
 /// The glyphs with their kinds, in the same order.
-pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool) -> Vec<(char, IndicatorKind)> {
+pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool, debug_logging: bool) -> Vec<(char, IndicatorKind)> {
     let mut out = Vec::new();
     if sends {
         out.push((BROADCAST_GLYPH, IndicatorKind::Other));
@@ -1948,6 +1952,9 @@ pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, st
     }
     if coprocess {
         out.push((COPROCESS_GLYPH, IndicatorKind::Other));
+    }
+    if debug_logging {
+        out.push((DEBUG_LOGGING_GLYPH, IndicatorKind::DebugLogging));
     }
     if pinned {
         out.push((PIN_GLYPH, IndicatorKind::Pin));
@@ -4277,9 +4284,84 @@ pub fn buffering_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
     }
 }
 
-/// RequestAttention=flash: the pane goes white and fades back (`strength` 1 to 0).
-pub fn pane_flash(frame: &mut Frame, pane: Rect, strength: f32) {
-    frame.overlay.push(Quad { rect: pane, color: rgba(rgb(0xff, 0xff, 0xff), 0.6 * strength.clamp(0.0, 1.0)) });
+/// `TV:1743`: the prompt range (OSC 133 A to B) in blue, the command range (B to C) in green and
+/// excluded subranges in red.
+pub const PROMPT_RANGE_BLUE: Rgb = rgb(0x40, 0x80, 0xff);
+pub const PROMPT_RANGE_GREEN: Rgb = rgb(0x40, 0xd0, 0x40);
+pub const PROMPT_RANGE_RED: Rgb = rgb(0xff, 0x40, 0x40);
+
+/// DebugShowPromptMarkRangesInLegacyRenderer: a 1-pixel outline per rect (kind 0 prompt, 1 command,
+/// 2 excluded), in `frame.overlay`. No text, so it may sit in the overlay.
+pub fn prompt_range_outlines(frame: &mut Frame, rects: &[(Rect, u8)]) {
+    for (r, kind) in rects {
+        let color = rgba([PROMPT_RANGE_BLUE, PROMPT_RANGE_GREEN, PROMPT_RANGE_RED][(*kind).min(2) as usize], 1.0);
+        let (w, h) = (r.w.max(1.0), r.h.max(1.0));
+        for rect in [
+            Rect { x: r.x, y: r.y, w, h: 1.0 },
+            Rect { x: r.x, y: r.y + h - 1.0, w, h: 1.0 },
+            Rect { x: r.x, y: r.y, w: 1.0, h },
+            Rect { x: r.x + w - 1.0, y: r.y, w: 1.0, h },
+        ] {
+            frame.overlay.push(Quad { rect, color });
+        }
+    }
+}
+
+/// Cell ranges `(kind, (row, col) start, (row, col) end exclusive)`, rows counted from the top of
+/// the view (negative or past `rows`: out of view), as one rect per row in view.
+pub fn prompt_span_rects(spans: &[(u8, (i32, usize), (i32, usize))], inner: Rect, cell: (f32, f32), cols: usize, rows: usize) -> Vec<(Rect, u8)> {
+    let mut out = Vec::new();
+    for &(kind, (r0, c0), (r1, c1)) in spans {
+        for row in r0.max(0)..=r1.min(rows as i32 - 1) {
+            let from = if row == r0 { c0 } else { 0 };
+            let to = if row == r1 { c1 } else { cols };
+            if to > from {
+                out.push((Rect { x: inner.x + from as f32 * cell.0, y: inner.y + row as f32 * cell.1, w: (to - from) as f32 * cell.0, h: cell.1 }, kind));
+            }
+        }
+    }
+    out
+}
+
+/// The whole-pane flash (a traditional visual bell, RequestAttention=flash): the pane in the
+/// default text color at `alpha` (`bell::flash_alpha`; `PTYTextView.m:6505-6507`).
+pub fn pane_flash(frame: &mut Frame, pane: Rect, color: Rgb, alpha: f32) {
+    frame.overlay.push(Quad { rect: pane, color: rgba(color, alpha.clamp(0.0, 1.0)) });
+}
+
+/// The bell indicator's edge on a dark background (`NSColor lightGrayColor`) and on a light one
+/// (`darkGrayColor`), `iTermIndicatorsHelper.m:202-203`.
+pub const BELL_EDGE_ON_DARK: Rgb = rgb(170, 170, 170);
+pub const BELL_EDGE_ON_LIGHT: Rgb = rgb(85, 85, 85);
+/// Segoe Fluent Icons "Ringer".
+pub const BELL_GLYPH: char = '\u{EA8F}';
+
+/// The centered bell indicator (`iTermIndicatorsHelper.m:141-203`, `:414-429`): a 26 point
+/// rounded square (corner radius a sixth of its side) at the pane's center, black with a light
+/// gray edge on a dark background and white with a dark gray one on a light background, the bell
+/// glyph on it (22 points tall, centered: `cell` is the pane's cell in pixels, so the glyph's
+/// size and advance are known), all at `alpha`. A popup box (it holds text): the text under it is cut out.
+pub fn bell_indicator(frame: &mut Frame, pane: Rect, dark_background: bool, alpha: f32, scale: f32, cell: (f32, f32)) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let side = 26.0 * scale;
+    let r = Rect { x: pane.x + (pane.w - side) / 2.0, y: pane.y + (pane.h - side) / 2.0, w: side, h: side };
+    let (fill, edge, glyph) = if dark_background { (rgb(0, 0, 0), BELL_EDGE_ON_DARK, rgb(0xff, 0xff, 0xff)) } else { (rgb(0xff, 0xff, 0xff), BELL_EDGE_ON_LIGHT, rgb(0, 0, 0)) };
+    // The pane rows are measured by the default line height; a tall line only widens the cut.
+    cut_out(frame, r, 20.0 * scale);
+    rounded_box(&mut frame.popups, r, side / 6.0, rgba(edge, alpha));
+    let inner = Rect { x: r.x + 1.0, y: r.y + 1.0, w: r.w - 2.0, h: r.h - 2.0 };
+    rounded_box(&mut frame.popups, inner, (side / 6.0 - 1.0).max(0.0), rgba(fill, alpha));
+    // The glyph fades by moving toward the fill (text has no alpha).
+    let color = blend(fill, glyph, alpha);
+    let span = Span { text: BELL_GLYPH.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    // Scaled so its line is 22 points tall; the icon font's glyph is its em wide (the line over
+    // 1.2, as the key glyph is sized), not one cell, and it is centered by that width.
+    let glyph_scale = if cell.1 > 0.0 { 22.0 * scale / cell.1 } else { 1.0 };
+    let (gw, gh) = (cell.1 * glyph_scale / 1.2, cell.1 * glyph_scale);
+    frame.rows.push(TextRow { x: r.x + (side - gw) / 2.0, y: r.y + (side - gh) / 2.0, spans: vec![span], clip: r, scale: glyph_scale, face: crate::render::DEFAULT_FACE });
 }
 
 /// RequestAttention=fireworks: bursts of colored sparks around `center`, `t` from 0 to 1.
@@ -4425,14 +4507,14 @@ mod broadcast_tests {
 
     #[test]
     fn indicators_keep_iterm2_order() {
-        assert_eq!(indicator_glyphs(true, true, true, false, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
-        assert_eq!(indicator_glyphs(false, true, false, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, true, false, false, false), vec![COPROCESS_GLYPH]);
-        assert!(indicator_glyphs(false, false, false, false, false, false).is_empty());
+        assert_eq!(indicator_glyphs(true, true, true, false, false, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
+        assert_eq!(indicator_glyphs(false, true, false, false, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, true, false, false, false, false), vec![COPROCESS_GLYPH]);
+        assert!(indicator_glyphs(false, false, false, false, false, false, false).is_empty());
         // The pin follows the coprocess and comes before the AI glyphs (P2).
-        assert_eq!(indicator_glyphs(true, false, true, false, false, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, PIN_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, false, true, true, true), vec![PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
-        let kinds: Vec<IndicatorKind> = indicators(false, false, false, false, false, true).into_iter().map(|(_, k)| k).collect();
+        assert_eq!(indicator_glyphs(true, false, true, false, false, true, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, PIN_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, true, true, false), vec![PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        let kinds: Vec<IndicatorKind> = indicators(false, false, false, false, false, true, false).into_iter().map(|(_, k)| k).collect();
         assert_eq!(kinds, vec![IndicatorKind::Pin]);
     }
 
@@ -4450,13 +4532,19 @@ mod broadcast_tests {
 
     #[test]
     fn indicator_glyphs_follow_iterm2() {
-        assert_eq!(indicator_glyphs(true, true, true, true, true, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
-        assert_eq!(indicator_glyphs(false, false, false, true, false, false), vec![AI_LINKED_GLYPH]);
+        assert_eq!(indicator_glyphs(true, true, true, true, true, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, true, false, false, false), vec![AI_LINKED_GLYPH]);
+        // Debug logging (`IH:389`): the Bug glyph, right after the coprocess one.
+        assert_eq!(DEBUG_LOGGING_GLYPH, '\u{EBE8}');
+        assert_eq!(indicator_glyphs(true, false, true, false, false, false, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH, DEBUG_LOGGING_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, false, false, false, true, true), vec![DEBUG_LOGGING_GLYPH, PIN_GLYPH]);
+        let bug = [(1u64, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, IndicatorKind::DebugLogging)];
+        assert_eq!(indicator_tip(&bug, 5.0, 5.0), Some("Debug logging is enabled."));
         assert_eq!(AI_STREAMING_GLYPH, RECEIVE_ONLY_GLYPH, "iTerm2 uses one symbol for both");
         assert_eq!(AI_LINKED_GLYPH, '\u{E8BD}');
         // Each glyph knows what a press on it means; the streaming glyph is told apart from
         // receive-only by its kind, not its character.
-        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true, false).into_iter().map(|(_, k)| k).collect();
+        let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true, false, false).into_iter().map(|(_, k)| k).collect();
         assert_eq!(kinds, vec![IndicatorKind::Other, IndicatorKind::Other, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
         let hits = top_right_indicators(&mut Frame::default(), Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, &[BROADCAST_GLYPH, AI_LINKED_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
         assert_eq!(hits.len(), 2);
@@ -5444,6 +5532,38 @@ mod tests {
         assert_eq!(b.h, a.h + 20.0, "one line taller");
         assert!(noted.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
         assert!(!plain.rows.iter().any(|r| r.spans.iter().any(|s| s.text == crate::cmdsel::NOTICE)));
+    }
+
+    /// `TV:1743`: blue prompt, green command, red excluded ranges, each a 1-pixel outline of four
+    /// overlay quads (Tandem records no excluded range, so the red kind is only drawn when given).
+    #[test]
+    fn prompt_outlines_follow_iterm2() {
+        let mut f = Frame::default();
+        let r = |x| Rect { x, y: 10.0, w: 40.0, h: 16.0 };
+        prompt_range_outlines(&mut f, &[(r(0.0), 0), (r(50.0), 1), (r(100.0), 2)]);
+        assert_eq!(f.overlay.len(), 12);
+        assert!(f.quads.is_empty() && f.rows.is_empty(), "outlines only, no text");
+        let colors: Vec<[f32; 4]> = f.overlay.chunks(4).map(|c| c[0].color).collect();
+        assert_eq!(colors, [rgba(PROMPT_RANGE_BLUE, 1.0), rgba(PROMPT_RANGE_GREEN, 1.0), rgba(PROMPT_RANGE_RED, 1.0)]);
+        assert!(PROMPT_RANGE_BLUE.b > PROMPT_RANGE_BLUE.r && PROMPT_RANGE_GREEN.g > PROMPT_RANGE_GREEN.r && PROMPT_RANGE_RED.r > PROMPT_RANGE_RED.g);
+        let first = &f.overlay[..4];
+        assert!(first.iter().all(|q| q.rect.w == 1.0 || q.rect.h == 1.0), "1 pixel lines");
+        let (x0, x1) = (first.iter().map(|q| q.rect.x).fold(f32::MAX, f32::min), first.iter().map(|q| q.rect.x + q.rect.w).fold(0.0, f32::max));
+        assert_eq!((x0, x1), (0.0, 40.0), "inside the rect");
+    }
+
+    /// A range of cells over several rows is one rect per row, clipped to the rows in view.
+    #[test]
+    fn prompt_spans_become_row_rects() {
+        let inner = Rect { x: 10.0, y: 20.0, w: 100.0, h: 80.0 };
+        let cell = (10.0, 16.0);
+        let one = prompt_span_rects(&[(0, (1, 2), (1, 7))], inner, cell, 10, 5);
+        assert_eq!(one, vec![(Rect { x: 30.0, y: 36.0, w: 50.0, h: 16.0 }, 0)]);
+        let many = prompt_span_rects(&[(1, (-3, 8), (1, 3))], inner, cell, 10, 5);
+        assert_eq!(many.len(), 2, "only rows 0 and 1 are in view: {many:?}");
+        assert_eq!(many[0].0, Rect { x: 10.0, y: 20.0, w: 100.0, h: 16.0 });
+        assert_eq!(many[1].0, Rect { x: 10.0, y: 36.0, w: 30.0, h: 16.0 });
+        assert!(prompt_span_rects(&[(0, (9, 0), (9, 4))], inner, cell, 10, 5).is_empty(), "below the view");
     }
 
     #[test]
@@ -8758,5 +8878,47 @@ mod drawn_overlay_tests {
         assert_eq!(filler_color(rgb(100, 100, 100), true, false), rgb(116, 116, 116));
         // Dark is brightness (the largest component) under one half.
         assert!(filler_dark(rgb(127, 0, 0)) && !filler_dark(rgb(128, 0, 0)) && filler_dark(rgb(0, 0, 0)));
+    }
+
+    /// `iTermIndicatorsHelper.m:141-203`, `:414-429`: a 26 point rounded square at the pane's
+    /// center, black with a light edge on a dark background, white on a light one, the bell
+    /// glyph on it; a flash is one quad of the given color at the given alpha.
+    #[test]
+    fn bell_indicator_follows_iterm2() {
+        let pane = Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
+        let bounds = |f: &Frame| {
+            let (x0, y0) = f.popups.iter().fold((f32::MAX, f32::MAX), |a, q| (a.0.min(q.rect.x), a.1.min(q.rect.y)));
+            let (x1, y1) = f.popups.iter().fold((f32::MIN, f32::MIN), |a, q| (a.0.max(q.rect.x + q.rect.w), a.1.max(q.rect.y + q.rect.h)));
+            (x0, y0, x1 - x0, y1 - y0)
+        };
+        let mut f = Frame::default();
+        bell_indicator(&mut f, pane, true, 1.0, 1.0, (9.0, 18.0));
+        assert_eq!(bounds(&f), (87.0, 37.0, 26.0, 26.0));
+        assert!(f.popups.iter().any(|q| q.color == rgba(rgb(0, 0, 0), 1.0)), "black fill");
+        assert!(f.popups.iter().any(|q| q.color == rgba(BELL_EDGE_ON_DARK, 1.0)), "light gray edge");
+        assert_eq!(f.rows.len(), 1);
+        let row = &f.rows[0];
+        assert!(row.spans[0].icon && row.spans[0].text == "\u{EA8F}");
+        assert!(row.x >= 87.0 && row.x < 113.0 && row.y >= 37.0 && row.y < 63.0, "the glyph sits on the box");
+        // Centered, about 22 points tall (`iTermIndicatorsHelper.m:211`): the glyph cell's center is the box's center.
+        // The icon font's glyph is its em wide, the line height over 1.2 (see the key glyph), not one cell.
+        let center = |row: &TextRow, cell: (f32, f32), at: (f32, f32)| ((row.x + cell.1 * row.scale / 1.2 / 2.0 - at.0).abs(), (row.y + cell.1 * row.scale / 2.0 - at.1).abs());
+        let (dx, dy) = center(row, (9.0, 18.0), (100.0, 50.0));
+        assert!(dx <= 1.0 && dy <= 1.0, "glyph centered in the box at 1x: off by ({dx}, {dy})");
+        assert!((18.0 * row.scale - 22.0).abs() < 0.5, "the glyph is 22 points tall, not the terminal font's size");
+        let mut f = Frame::default();
+        bell_indicator(&mut f, pane, false, 0.5, 1.0, (9.0, 18.0));
+        assert!(f.popups.iter().any(|q| q.color == rgba(rgb(0xff, 0xff, 0xff), 0.5)), "white fill at the fade's alpha");
+        let mut f = Frame::default();
+        bell_indicator(&mut f, pane, true, 1.0, 2.0, (18.0, 36.0));
+        assert_eq!(bounds(&f), (74.0, 24.0, 52.0, 52.0), "26 points scale with the display");
+        let (dx, dy) = center(&f.rows[0], (18.0, 36.0), (100.0, 50.0));
+        assert!(dx <= 1.0 && dy <= 1.0, "glyph centered at 2x: off by ({dx}, {dy})");
+        assert!((36.0 * f.rows[0].scale - 44.0).abs() < 0.5, "22 points at 2x");
+        let mut f = Frame::default();
+        pane_flash(&mut f, pane, rgb(10, 20, 30), 0.25);
+        assert_eq!(f.overlay.len(), 1);
+        assert_eq!(f.overlay[0].color, rgba(rgb(10, 20, 30), 0.25));
+        assert_eq!(f.overlay[0].rect, pane);
     }
 }

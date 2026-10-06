@@ -48,6 +48,60 @@ pub struct Globals {
     custom_presets: std::sync::Arc<Vec<(String, crate::color_presets::Preset)>>,
 }
 
+/// How a value is bounded at the one write point (B4): what a key may hold whatever wrote it
+/// (the window, a script, remote settings, the file at load).
+enum Bound {
+    /// Text of at most `max` characters, each accepted by `ok`; anything else is the default.
+    Text { max: usize, ok: fn(char) -> bool },
+    /// A finite number clamped into `min..=max`; anything else is the default.
+    Number { min: f64, max: f64 },
+    /// A whole number clamped into `min..=max` and stored as an integer; anything else is the default.
+    Int { min: i64, max: i64 },
+}
+
+/// The bounded keys. Later 13w tasks add their numbers here.
+const BOUNDS: &[(&str, Bound)] = &[
+    // B6: never below the beep floor (`bell::BELL_FLOOR`), and a flash alpha is an alpha.
+    ("BellRateLimit", Bound::Number { min: 0.05, max: 60.0 }),
+    ("IndicatorFlashInitialAlpha", Bound::Number { min: 0.0, max: 1.0 }),
+    ("FakeFullyQualifiedDomainName", Bound::Text { max: 255, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') }),
+    // B2/B4: a sound name is short text with no control character (`bell_badge::resolve` judges it again).
+    ("SuccessSound", Bound::Text { max: 260, ok: |c| !c.is_control() }),
+    ("ErrorSound", Bound::Text { max: 260, ok: |c| !c.is_control() }),
+    // B4/B5: the trigger numbers (a radius is rows scanned per line, a pool is processes, a limit is a Duration).
+    ("TriggerRadius", Bound::Int { min: 1, max: 64 }),
+    ("MaximumNumberOfTriggerCommands", Bound::Int { min: 1, max: 64 }),
+    ("IdempotentTriggerModeRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
+    ("AlertTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
+    ("UserNotificationTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
+    // B4: the badge keys. A font is a family name: never a path, so a setting cannot make the renderer read a file.
+    ("BadgeFont", Bound::Text { max: 128, ok: |c| !crate::inert_files::is_hidden(c) && !matches!(c, '\\' | '/' | ':') }),
+    ("BadgeMaxWidthFraction", Bound::Number { min: 0.0, max: 1.0 }),
+    ("BadgeMaxHeightFraction", Bound::Number { min: 0.0, max: 1.0 }),
+    ("BadgeRightMargin", Bound::Int { min: 0, max: 1000 }),
+    ("BadgeTopMargin", Bound::Int { min: 0, max: 1000 }),
+    ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
+];
+
+/// `value` as `key`'s bound allows; None when it is out of bounds (the default applies).
+fn bounded(key: &str, value: &Value) -> Option<Value> {
+    let Some((_, bound)) = BOUNDS.iter().find(|(k, _)| *k == key) else { return Some(value.clone()) };
+    match bound {
+        Bound::Text { max, ok } => {
+            let text = value.as_str()?;
+            (text.chars().count() <= *max && text.chars().all(ok)).then(|| value.clone())
+        }
+        Bound::Number { min, max } => {
+            let n = value.as_float().or_else(|| value.as_integer().map(|i| i as f64)).filter(|n| n.is_finite())?;
+            Some(if (*min..=*max).contains(&n) { value.clone() } else { Value::Float(n.clamp(*min, *max)) })
+        }
+        Bound::Int { min, max } => {
+            let n = value.as_integer().or_else(|| value.as_float().filter(|f| f.is_finite()).map(|f| f.round() as i64))?;
+            Some(Value::Integer(n.clamp(*min, *max)))
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct FileFormat {
     #[serde(default)]
@@ -103,9 +157,9 @@ impl Globals {
             Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
             None => self.custom_presets = Default::default(),
         }
-        // The WebView2 host's two text settings are bounded at the write too (13x B2).
-        for key in crate::webhost::BOUNDED_KEYS {
-            if let Some(v) = self.values.remove(key) {
+        // One table bounds every key, the WebView2 host's included (13w B4, 13x B2).
+        for (key, _) in BOUNDS {
+            if let Some(v) = self.values.remove(*key) {
                 self.set(key, v);
             }
         }
@@ -154,12 +208,27 @@ impl Globals {
         } else {
             value
         };
-        // The fixed-runtime hint and the user agent are bounded at the one write point (13x B2).
+        // The user agent is cut and the fixed-runtime hint emptied first (13x B2); then a value
+        // out of its bound is the default (13w B4).
         let value = crate::webhost::bound_global(key, value);
+        let Some(value) = bounded(key, &value).or_else(|| default_of(key)) else { return };
         // A changed cookie setting is no longer the one the Claude Code setup turned on, so its
         // marker goes; the setup writes the marker after the setting (Task 8 fix round 2).
         if key == crate::api_profile::SET_COOKIE && value.as_bool() != Some(self.bool(key)) {
             self.values.remove(crate::claude_code::COOKIE_BY_KEY);
+        }
+        // The one write point for every writer (window, script, remote settings): the setting's
+        // name and the kind of its value, never the value.
+        if crate::dlog::is_on() {
+            let setting = crate::dlog::name(key);
+            let kind = match &value {
+                Value::Boolean(_) => "bool",
+                Value::Integer(_) => "int",
+                Value::Float(_) => "float",
+                Value::String(_) => "text",
+                _ => "other",
+            };
+            crate::dlog!("setting changed: {} ({})", setting, kind);
         }
         if default_of(key).as_ref() == Some(&value) && !KEPT_WHEN_DEFAULT.contains(&key) {
             self.values.remove(key);
@@ -216,6 +285,149 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("settings.toml")
+    }
+
+    /// The 13v2 x 13w seam in `Globals::set`: 13w's bounds apply before 13v2's `KEPT_WHEN_DEFAULT`
+    /// check. A bounded key's refused value becomes the default and is removed (not stored), while
+    /// a kept key at its default stays present (`raw` sees it); neither table changes the other.
+    #[test]
+    fn bounds_and_kept_when_default_compose() {
+        let mut g = Globals::empty(&scratch("bounds-kept"));
+        g.set("FakeFullyQualifiedDomainName", Value::String("a b".to_string()));
+        assert!(g.raw("FakeFullyQualifiedDomainName").is_none(), "a refused bounded value is the default, removed");
+        g.set("FakeFullyQualifiedDomainName", Value::String("ok.host".to_string()));
+        assert_eq!(g.raw("FakeFullyQualifiedDomainName").and_then(|v| v.as_str()), Some("ok.host"));
+        let auto = crate::update::AUTOMATIC_KEY;
+        let def = default_of(auto).expect("SUEnableAutomaticChecks has a default");
+        g.set(auto, def.clone());
+        assert_eq!(g.raw(auto), Some(&def), "a kept key at its default stays present");
+        for (key, _) in BOUNDS {
+            assert!(!KEPT_WHEN_DEFAULT.contains(key), "{key}: a bounded key is never kept at its default");
+        }
+    }
+
+    /// B4: the fake identity texts are bounded at the one write point (`set`) and at `load`.
+    #[test]
+    fn globals_bounds_clamp_every_13w_key() {
+        let mut g = Globals::empty(&scratch("bounds-fake"));
+        for (key, ok, max) in [("FakeFullyQualifiedDomainName", "fake.host-1", 255), ("FakeBootSessionUUID", "{AB12-cd:34}", 128)] {
+            g.set(key, Value::String(ok.to_string()));
+            assert_eq!(g.string(key), ok, "{key}");
+            g.set(key, Value::String("x".repeat(max)));
+            assert_eq!(g.string(key).len(), max, "{key} at the limit");
+            for bad in ["x".repeat(max + 1), "a b".to_string(), "a\u{202e}b".to_string(), "a\nb".to_string(), "caf\u{e9}".to_string()] {
+                g.set(key, Value::String("keep".to_string()));
+                g.set(key, Value::String(bad.clone()));
+                assert_eq!(g.string(key), "", "{key} refuses {bad:?}: back to the default");
+            }
+            g.set(key, Value::Integer(5));
+            assert_eq!(g.string(key), "", "{key} refuses a non-text value");
+        }
+        // The file at load goes through the same table.
+        let path = scratch("bounds-fake-load");
+        std::fs::write(&path, "[settings]\nFakeFullyQualifiedDomainName = \"bad name\"\nFakeBootSessionUUID = \"ok-1\"\n").unwrap();
+        let g = Globals::load(&path).unwrap();
+        assert_eq!(g.string("FakeFullyQualifiedDomainName"), "");
+        assert_eq!(g.string("FakeBootSessionUUID"), "ok-1");
+    }
+
+    /// B4/B6: the bell numbers are clamped at the one write point: the rate limit never below
+    /// 0.05 s, the flash alpha within 0..=1, anything that is not a finite number is the default.
+    #[test]
+    fn globals_bounds_clamp_the_bell_numbers() {
+        let mut g = Globals::empty(&scratch("bounds-bell"));
+        for (key, low, high) in [("BellRateLimit", 0.05, 60.0), ("IndicatorFlashInitialAlpha", 0.0, 1.0)] {
+            g.set(key, Value::Float(-3.0));
+            assert_eq!(g.number(key), Some(low), "{key} below");
+            g.set(key, Value::Float(1.0e9));
+            assert_eq!(g.number(key), Some(high), "{key} above");
+            g.set(key, Value::Float(0.5));
+            assert_eq!(g.number(key), Some(0.5), "{key} inside");
+            g.set(key, Value::Integer(1));
+            assert_eq!(g.number(key), Some(1.0), "{key} integer");
+            for bad in [Value::Float(f64::NAN), Value::Float(f64::INFINITY), Value::String("x".into()), Value::Boolean(true)] {
+                g.set(key, Value::Float(0.5));
+                g.set(key, bad.clone());
+                assert_eq!(g.number(key), if key == "BellRateLimit" { Some(0.1) } else { Some(0.5) }, "{key} refuses {bad:?}: back to the default");
+            }
+        }
+    }
+
+    /// B4/B5: the trigger numbers are clamped at the one write point.
+    #[test]
+    fn globals_bounds_clamp_the_trigger_numbers() {
+        let mut g = Globals::empty(&scratch("bounds-trigger"));
+        for key in ["TriggerRadius", "MaximumNumberOfTriggerCommands"] {
+            g.set(key, Value::Integer(1_000_000_000));
+            assert_eq!(g.int(key), 64, "{key} above");
+            g.set(key, Value::Integer(-5));
+            assert_eq!(g.int(key), 1, "{key} below");
+            g.set(key, Value::Integer(7));
+            assert_eq!(g.int(key), 7, "{key} inside");
+            g.set(key, Value::String("x".into()));
+            assert_eq!(g.int(key), if key == "TriggerRadius" { 3 } else { 16 }, "{key} refuses text");
+        }
+        for key in ["IdempotentTriggerModeRateLimit", "AlertTriggerRateLimit", "UserNotificationTriggerRateLimit"] {
+            g.set(key, Value::Float(-1.0));
+            assert_eq!(g.number(key), Some(0.0), "{key} below");
+            g.set(key, Value::Float(1e12));
+            assert_eq!(g.number(key), Some(3600.0), "{key} above");
+            g.set(key, Value::Float(f64::NAN));
+            assert!(g.number(key).is_some_and(|n| n.is_finite() && (0.0..=3600.0).contains(&n)), "{key} NaN");
+        }
+    }
+
+    /// B4: the badge keys are bounded at the one write point: fractions 0..=1, margins 0..=1000,
+    /// the font a plain family name (never a path, no control character, at most 128).
+    #[test]
+    fn badge_keys_are_bounded_at_the_write_point() {
+        let mut g = Globals::empty(&scratch("bounds-badge"));
+        for key in ["BadgeMaxWidthFraction", "BadgeMaxHeightFraction"] {
+            g.set(key, Value::Float(7.0));
+            assert_eq!(g.number(key), Some(1.0), "{key} above");
+            g.set(key, Value::Float(-3.0));
+            assert_eq!(g.number(key), Some(0.0), "{key} below");
+            g.set(key, Value::Float(f64::NAN));
+            assert!(g.number(key).is_some_and(|n| n.is_finite() && (0.0..=1.0).contains(&n)), "{key} NaN");
+            g.set(key, Value::Float(0.3));
+            assert_eq!(g.number(key), Some(0.3), "{key} inside");
+        }
+        for key in ["BadgeRightMargin", "BadgeTopMargin"] {
+            g.set(key, Value::Integer(1_000_000_000));
+            assert_eq!(g.int(key), 1000, "{key} above");
+            g.set(key, Value::Integer(-5));
+            assert_eq!(g.int(key), 0, "{key} below");
+            g.set(key, Value::Integer(20));
+            assert_eq!(g.int(key), 20, "{key} inside");
+            g.set(key, Value::String("x".into()));
+            assert_eq!(g.int(key), 10, "{key} refuses text");
+        }
+        g.set("BadgeFont", Value::String("Segoe UI".into()));
+        assert_eq!(g.string("BadgeFont"), "Segoe UI");
+        for bad in ["x".repeat(129), "a\u{7}b".to_string(), "C:\\Windows\\Fonts\\evil.ttf".to_string(), "..\\evil.ttf".to_string(), "//server/share/f.ttf".to_string(), "a\u{202e}b".to_string()] {
+            g.set("BadgeFont", Value::String("keep".into()));
+            g.set("BadgeFont", Value::String(bad.clone()));
+            assert_eq!(g.string("BadgeFont"), "Helvetica", "BadgeFont refuses {bad:?}");
+        }
+        let path = scratch("bounds-badge-load");
+        std::fs::write(&path, "[settings]\nBadgeMaxWidthFraction = 9.0\nBadgeRightMargin = 99999\nBadgeFont = \"C:\\\\x.ttf\"\n").unwrap();
+        let g = Globals::load(&path).unwrap();
+        assert_eq!(g.number("BadgeMaxWidthFraction"), Some(1.0));
+        assert_eq!(g.int("BadgeRightMargin"), 1000);
+        assert_eq!(g.string("BadgeFont"), "Helvetica");
+    }
+
+    #[test]
+    fn sound_names_are_bounded_at_the_write_point() {
+        let mut g = Globals::empty(&scratch("bounds-sound"));
+        for key in ["SuccessSound", "ErrorSound"] {
+            g.set(key, Value::String("Windows Ding".into()));
+            assert_eq!(g.string(key), "Windows Ding");
+            g.set(key, Value::String("a\u{7}b".into()));
+            assert_eq!(g.string(key), "", "{key}: a control character is refused");
+            g.set(key, Value::String("x".repeat(261)));
+            assert_eq!(g.string(key), "", "{key}: over-long is refused");
+        }
     }
 
     #[test]

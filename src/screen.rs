@@ -489,8 +489,8 @@ pub enum Request {
     NamedColor(String, crate::osc1337::Color),
     /// A trigger's action the window runs.
     Trigger(crate::trigger_eval::TriggerRequest),
-    /// BEL.
-    Bell,
+    /// BEL: the bells of one feed, as one request (B6, P14).
+    Bell { count: u32 },
     /// OSC 9 or OSC 1337 Notification: an escape-sequence alert.
     Notify { title: Option<String>, message: String },
     /// OSC 9;4: a progress bar appeared (true) or went away.
@@ -1247,6 +1247,11 @@ impl Screen {
         self.bump_ticks();
         if !bytes.is_empty() && !self.triggers.list.is_empty() {
             self.events_on_output();
+            // One time and request budget for the whole read, whatever pieces it goes in (B5); a
+            // nested feed (Inject Data) is part of the read that fired it and never restarts it.
+            if !self.triggers.busy {
+                self.begin_budget();
+            }
         }
         // With triggers, a read holding more lines than the buffer keeps goes in pieces, so
         // every line is checked before it scrolls away.
@@ -2294,6 +2299,7 @@ impl Screen {
     /// The replies the terminal's events ask for, and the title changes they carry.
     fn drain_events(&mut self) -> Vec<u8> {
         let mut reply = Vec::new();
+        let mut bells = 0u32;
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::PtyWrite(text) => reply.extend_from_slice(text.as_bytes()),
@@ -2325,13 +2331,18 @@ impl Screen {
                     self.title = None;
                     self.requests.push(Request::WindowTitle(None));
                 }
+                // Counted per BEL (iTerm2's bellCount); one request and one event per burst, so
+                // 64 KB of BEL is not 65 000 redraws and 65 000 trigger events (B6, P14).
                 Event::Bell => {
                     self.bell_count += 1;
-                    self.requests.push(Request::Bell);
-                    self.fire_event(crate::trigger_events::EventKind::BellReceived, &Default::default(), &[]);
+                    bells = bells.saturating_add(1);
                 }
                 _ => {}
             }
+        }
+        if bells > 0 {
+            self.requests.push(Request::Bell { count: bells });
+            self.fire_event(crate::trigger_events::EventKind::BellReceived, &Default::default(), &[]);
         }
         reply
     }
@@ -2609,6 +2620,7 @@ impl Screen {
         self.shell.host = None;
         self.shell.user = None;
         self.shell.host_local = None;
+        self.shell.machine_id = None;
         self.marks.program_ended();
         self.restart_scanner();
         // The reset reaches the parser itself (the answers to it are not wanted).

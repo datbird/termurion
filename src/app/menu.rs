@@ -153,7 +153,7 @@ impl App {
         let mut ssh_download_files = None;
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
         let mut suppressed = None;
-        for item in menus::items() {
+        for item in menus::shown_items() {
             // With the recents off at launch the item is removed (`AD:1340-1342`).
             if item.selector == "removeRecentProfilesFromDockMenu:" && !self.globals.bool(super::jumplist_ui::KEY) {
                 continue;
@@ -286,12 +286,12 @@ impl App {
         self.apply_theme();
     }
 
-    /// A copy of the main menu built from `menus::items()` by the rule `install_menus` uses
+    /// A copy of the main menu built from `menus::shown_items()` by the rule `install_menus` uses
     /// (check marks are not copied): the notification area icon's Main Menu submenu.
     pub(super) fn main_menu_tree(&self) -> Submenu {
         let root = Submenu::new("Main Menu", true);
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
-        for item in menus::items() {
+        for item in menus::shown_items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
             } else if item.submenu {
@@ -612,7 +612,7 @@ impl App {
                 c.set_checked(self.is_checked(selector));
             }
         }
-        for item in menus::items().iter().filter(|i| matches!(i.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:")) {
+        for item in menus::shown_items().filter(|i| matches!(i.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:")) {
             if let (Some(c), Some(on)) = (bar.checks.get(item.label()), self.paste_checked(item.label())) {
                 c.set_checked(on);
             }
@@ -689,6 +689,7 @@ impl App {
         if commands::status(item).unavailable() {
             return;
         }
+        crate::dlog!("menu command {}", crate::dlog::name(&item.selector));
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         if self.paste_command(&item.selector, label) {
@@ -969,6 +970,10 @@ impl App {
             }
             "toggleAutoComposer:" => self.toggle_auto_composer(),
             "startStopLogging:" => self.start_stop_logging(),
+            "debugLogging:" => self.toggle_debug_logging(),
+            "saveRetrospectiveDebugLogs:" => self.save_retrospective_logs(),
+            #[cfg(debug_assertions)]
+            "captureNextMetalFrame:" => super::gpu_capture::arm(),
             "saveArchive:" => self.save_archive_menu(),
             "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),
@@ -1167,6 +1172,7 @@ impl App {
         if self.prefs_exit_pending {
             return;
         }
+        crate::rlog!("quit confirmed with {} windows", self.registry.order().len());
         self.save_pending_settings();
         // Before any window closes, so the saved state holds every window.
         self.save_state_for_quit();
@@ -1658,6 +1664,18 @@ mod tests {
         }
         assert!(super::tray_window_items(&[], None, false, 0).is_empty());
     }
+    /// `AD:402-419`: release builds remove Capture GPU Frame; builds without `ITERM_DEBUG` (every
+    /// Tandem build) remove Check Settings Control Truncation.
+    #[test]
+    fn debug_items_follow_iterm2() {
+        assert!(crate::menus::hidden_in_menu("captureNextMetalFrame:", false));
+        assert!(!crate::menus::hidden_in_menu("captureNextMetalFrame:", true));
+        assert!(crate::menus::hidden_in_menu("debugCheckSettingsControlTruncation:", false));
+        assert!(crate::menus::hidden_in_menu("debugCheckSettingsControlTruncation:", true));
+        assert!(!crate::menus::hidden_in_menu("debugLogging:", false));
+        assert!(!crate::menus::hidden_in_menu("copyPerformanceStats:", true));
+    }
+
     use crate::warnings::{Kind, checkbox_label};
 
     /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which

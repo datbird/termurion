@@ -319,6 +319,7 @@ impl App {
         let output_changed = st.signal.as_ref().is_none_or(|g| g.tick != sig.tick);
         let sel_changed = st.signal.as_ref().is_none_or(|g| g.sel != sig.sel);
         let secured;
+        let plain = access::build(&rows);
         let (used, events) = if secure {
             // Recorded only on seeing the pane reach the prompt: a pane first seen at one exposes nothing.
             if !st.secure && st.signal.is_some() {
@@ -331,7 +332,9 @@ impl App {
         } else {
             st.input_start = None;
             let mut ev = Vec::new();
-            if output_changed {
+            // A tick that moved for nothing a client reads (a bell flood, a title) raises nothing.
+            let quiet = !st.secure && access::output_unchanged(st.snap.as_ref().map(|s| (&s.text, s.cursor, st.first_abs)), &rows, &plain);
+            if output_changed && !quiet {
                 ev = st.tracker.refresh(now, cursor_abs, rows.cursor.1 + 1, &cursor_line(&rows));
             }
             if sel_changed && !ev.contains(&Event::SelectionChanged) {
@@ -340,7 +343,7 @@ impl App {
             (&rows, ev)
         };
         st.secure = secure;
-        let text = access::build(used);
+        let text = if secure { access::build(used) } else { plain };
         let top = used.first_line - base;
         let cursor = access::offset_of(&text, used.cursor.0, used.cursor.1);
         let selection = if secure { None } else { sig.sel.and_then(|s| selection_offsets(&text, top, s)) }.unwrap_or((cursor, cursor));
@@ -508,6 +511,33 @@ mod tests {
         assert_eq!(due, t0 + BUILD_GAP);
         assert_eq!(build_wait(last, due, BUILD_GAP), None);
         assert_eq!(build_wait(None, t0, BUILD_GAP), None);
+    }
+
+    /// The 13v2 x 13w seam: a flood of bells moves the screen's tick (the trigger and idempotent
+    /// checks see it) but changes no text, cursor or first line, so the screen reader raises no
+    /// TextChanged for it; text after the bells still does. `access_build` asks before refreshing.
+    #[test]
+    fn a_bell_flood_raises_no_screen_reader_event() {
+        let mut p = Pane::recording(1, 20, 4);
+        p.screen.feed(b"prompt> ");
+        let rows = p.screen.access_rows(100);
+        let text = access::build(&rows);
+        let snap = (text.clone(), access::offset_of(&text, rows.cursor.0, rows.cursor.1), rows.first_line);
+        let tick = p.screen.tick_digest();
+        p.screen.feed(&[0x07; 5000]);
+        assert_eq!(p.screen.bell_count, 5000);
+        assert_ne!(p.screen.tick_digest(), tick, "the bells move the tick");
+        let after = p.screen.access_rows(100);
+        assert!(access::output_unchanged(Some((&snap.0, snap.1, snap.2)), &after, &access::build(&after)), "bells change nothing the reader reads");
+        p.screen.feed(b"x");
+        let typed = p.screen.access_rows(100);
+        assert!(!access::output_unchanged(Some((&snap.0, snap.1, snap.2)), &typed, &access::build(&typed)), "text still raises");
+        assert!(!access::output_unchanged(None, &typed, &access::build(&typed)), "a first build always raises");
+        let src = std::fs::read_to_string(format!("{}/src/app/access_app.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let body = &code[code.find("fn access_build").unwrap()..];
+        let (ask, refresh) = (body.find("access::output_unchanged").unwrap(), body.find("st.tracker.refresh(").unwrap());
+        assert!(ask < refresh, "access_build asks output_unchanged before refreshing the tracker");
     }
 
     /// P12: with a view shown (Filter and Zoom show their view this way, Instant Replay and a frozen

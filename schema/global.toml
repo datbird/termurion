@@ -5387,3 +5387,276 @@ label = "Template of URL for typeahead search suggestions."
 type = "string"
 default = "https://suggestqueries.google.com/complete/search?client=firefox&q=%@"
 help = "Template of URL for typeahead search suggestions.\nTandem replaces the string “%@” with the text to search for. Query parameter percent escaping is used."
+
+# Debug log (13w)
+
+[[setting]]
+key = "StartDebugLoggingAutomatically"
+tab = "Advanced"
+section = "Debugging"
+label = "Start debug logging automatically when Tandem is launched."
+type = "bool"
+default = false
+help = "Start debug logging automatically when Tandem is launched."
+
+[[setting]]
+key = "AppendToExistingDebugLog"
+tab = "Advanced"
+section = "Debugging"
+label = "Append to existing debug log rather than replacing it."
+type = "bool"
+default = false
+help = "Append to existing debug log rather than replacing it."
+
+[[setting]]
+key = "LogToSyslog"
+tab = "Advanced"
+section = "Debugging"
+label = "Debug logs also write to the debug output."
+type = "bool"
+default = false
+help = "Debug logs also write to the debug output."
+
+[[setting]]
+key = "FakeFullyQualifiedDomainName"
+tab = "Advanced"
+section = "Debugging"
+label = "Override the local hostname used for localhost detection."
+type = "string"
+default = ""
+help = "Override the local hostname used for localhost detection.\nWhen non-empty, the app behaves as though this computer\u2019s full DNS name were this value. Lets you test how localhost detection reacts to a hostname change without actually renaming your computer. Takes effect at once for opening paths; a host that was already reported keeps the answer it was given. Leave empty to use the real hostname."
+
+[[setting]]
+key = "FakeBootSessionUUID"
+tab = "Advanced"
+section = "Debugging"
+label = "Override this machine\u2019s identity used for OSC 7 machineID localhost detection."
+type = "string"
+default = ""
+help = "Override this machine\u2019s identity used for OSC 7 machineID localhost detection.\nWhen non-empty, the app behaves as though this machine\u2019s boot identity were this value. Lets you test how machine-identity localhost detection reacts without rebooting. Takes effect at once for opening paths; a host that was already reported keeps the answer it was given. Leave empty to use the real value."
+
+[[setting]]
+key = "LogForegroundJobAncestryDiagnostics"
+tab = "Advanced"
+section = "Debugging"
+label = "Log a detailed trace when a session\u2019s foreground-job ancestor list unexpectedly shrinks."
+type = "bool"
+default = false
+help = "Log a detailed trace when a session\u2019s foreground-job ancestor list unexpectedly shrinks.\nWhen an intermediate ancestor (such as the claude CLI) drops out of a tracked session\u2019s foreground-job ancestry for a single process-cache update, log via RLog the names that dropped out, whether a process of that name is still in the process list, and the pid of the deepest foreground job. Used to diagnose spurious job-ended events that can tear down a Claude Code workgroup. Off by default; turn on only while reproducing an issue."
+
+# Debug tools (13w)
+
+[[setting]]
+key = "LogDrawingPerformance"
+tab = "Advanced"
+section = "Debugging"
+label = "Log stats about text drawing performance to the debug output."
+type = "bool"
+default = false
+help = "Log stats about text drawing performance to the debug output.\nUsed for performance testing."
+
+[[setting]]
+key = "LogRestorableStateSize"
+tab = "Advanced"
+section = "Debugging"
+label = "Log restorable state size info to %TEMP%\\statesize.*.txt."
+type = "bool"
+default = false
+help = "Log restorable state size info to %TEMP%\\statesize.*.txt."
+
+[[setting]]
+key = "DebugShowPromptMarkRangesInLegacyRenderer"
+tab = "Advanced"
+section = "Terminal"
+label = "Debug: highlight prompt mark prompt/command/excluded ranges."
+type = "bool"
+default = false
+help = "Debug: highlight prompt mark prompt/command/excluded ranges.\nWhen enabled, the renderer overlays a blue outline around each visible prompt mark\u2019s prompt range (OSC 133 A to B), a green outline around its command range (B to C), and a red outline around each excluded subrange (PS2 prefixes and right-prompt regions recorded via OSC 133 k=). Intended for development and bug reports; leave off in normal use."
+
+# Bell and flash (13w)
+
+[[setting]]
+key = "TraditionalVisualBell"
+tab = "Advanced"
+section = "Terminal"
+label = "Visual bell flashes the whole screen, not just a bell icon."
+type = "bool"
+default = false
+help = "Visual bell flashes the whole screen, not just a bell icon."
+
+[[setting]]
+key = "IndicatorFlashInitialAlpha"
+tab = "Advanced"
+section = "Terminal"
+label = "Initial alpha value when flashing the visual bell or search wraparound indicator"
+type = "float"
+default = 0.5
+help = "Initial alpha value when flashing the visual bell or search wraparound indicator"
+
+[[setting]]
+key = "BellRateLimit"
+tab = "Advanced"
+section = "Terminal"
+label = "Minimum time between beeping or flashing screen on bell, in seconds."
+type = "float"
+default = 0.1
+help = "Minimum time between beeping or flashing screen on bell, in seconds.\nIf the time interval between bells is less than this amount of time, it will be ignored."
+
+# Taskbar button and mark sounds (13w)
+
+[[setting]]
+key = "BounceOnInactiveBell"
+tab = "Advanced"
+section = "Terminal"
+label = "Flash the taskbar button when the bell rings while another app is active?"
+type = "bool"
+default = false
+help = "Flash the taskbar button when the bell rings while another app is active?"
+
+[[setting]]
+key = "IndicateBellsInDockBadgeLabel"
+tab = "Advanced"
+section = "General"
+label = "Indicate the number of bells rung while the app is inactive in the taskbar button\u2019s badge"
+type = "bool"
+default = true
+help = "Indicate the number of bells rung while the app is inactive in the taskbar button\u2019s badge"
+
+[[setting]]
+key = "SuccessSound"
+tab = "Advanced"
+section = "Session"
+label = "When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command."
+type = "string"
+default = ""
+help = "When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."
+
+[[setting]]
+key = "ErrorSound"
+tab = "Advanced"
+section = "Session"
+label = "When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command."
+type = "string"
+default = ""
+help = "When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."
+
+[[setting]]
+key = "ClearBellIconAggressively"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Clear bell icon when a session becomes active."
+type = "bool"
+default = true
+help = "Clear bell icon when a session becomes active.\nWhen off, you must type in the session to clear the bell icon."
+
+# Trigger limits (13w)
+
+[[setting]]
+key = "TriggerRadius"
+tab = "Advanced"
+section = "Terminal"
+label = "Number of screen lines to match against trigger regular expressions."
+type = "int"
+default = 3
+help = "Number of screen lines to match against trigger regular expressions.\nTrigger regular expressions are matched against the last logical line of text when a newline is received. A search is performed to find the start of the line. Since very long lines would cause performance problems, the search (and consequently the regular expression match, highlighting, and so on) is limited to this many screen lines."
+
+[[setting]]
+key = "AllowIdempotentTriggers"
+tab = "Advanced"
+section = "Terminal"
+label = "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled."
+type = "bool"
+default = false
+help = "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled."
+
+[[setting]]
+key = "IdempotentTriggerModeRateLimit"
+tab = "Advanced"
+section = "Terminal"
+label = "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates."
+type = "float"
+default = 0.25
+help = "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates.\nThis limits the performance impact of trigger evaluation."
+
+[[setting]]
+key = "MaximumNumberOfTriggerCommands"
+tab = "Advanced"
+section = "General"
+label = "Maximum number of trigger-launched commands that can run at once."
+type = "int"
+default = 16
+help = "Maximum number of trigger-launched commands that can run at once.\nIf too many \u201cRun Command\u2026\u201d triggers fire their commands will be queued. You must restart Tandem for changes to this setting to take effect."
+
+[[setting]]
+key = "AlertTriggerRateLimit"
+tab = "Advanced"
+section = "General"
+label = "Rate limit for Alert triggers."
+type = "float"
+default = 1.0
+help = "Rate limit for Alert triggers.\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed."
+
+[[setting]]
+key = "UserNotificationTriggerRateLimit"
+tab = "Advanced"
+section = "General"
+label = "Rate limit for Notification triggers."
+type = "float"
+default = 0.0
+help = "Rate limit for Notification triggers.\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed."
+
+# Badge (13w)
+
+[[setting]]
+key = "BadgeFont"
+tab = "Advanced"
+section = "Badge"
+label = "Font to use for the badge."
+type = "string"
+default = "Helvetica"
+help = "Font to use for the badge."
+
+[[setting]]
+key = "BadgeFontIsBold"
+tab = "Advanced"
+section = "Badge"
+label = "Should the badge render in bold type?"
+type = "bool"
+default = true
+help = "Should the badge render in bold type?"
+
+[[setting]]
+key = "BadgeMaxWidthFraction"
+tab = "Advanced"
+section = "Badge"
+label = "Maximum width of the badge"
+type = "float"
+default = 0.5
+help = "Maximum width of the badge\nAs a fraction of the width of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "BadgeMaxHeightFraction"
+tab = "Advanced"
+section = "Badge"
+label = "Maximum height of the badge"
+type = "float"
+default = 0.2
+help = "Maximum height of the badge\nAs a fraction of the height of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "BadgeRightMargin"
+tab = "Advanced"
+section = "Badge"
+label = "Default value for right margin for the badge"
+type = "int"
+default = 10
+help = "Default value for right margin for the badge\nHow much space to leave between the right edge of the badge and the right edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "BadgeTopMargin"
+tab = "Advanced"
+section = "Badge"
+label = "Default value for the top margin for the badge"
+type = "int"
+default = 10
+help = "Default value for the top margin for the badge\nHow much space to leave between the top edge of the badge and the top edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting."

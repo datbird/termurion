@@ -89,6 +89,7 @@ fn to_rgb(v: &Value) -> Option<Rgb> {
 
 /// The profile's tag list.
 const TAGS_KEY: &str = "Tags";
+const TRIGGERS_KEY: &str = "Triggers";
 
 impl Profile {
     /// The values iTerm2 gives a new profile (its DefaultBookmark), with no Guid or name.
@@ -146,6 +147,9 @@ impl Profile {
                 values.insert(TAGS_KEY.to_string(), t);
             }
         }
+        if let Some(t) = values.remove(TRIGGERS_KEY) {
+            values.insert(TRIGGERS_KEY.to_string(), crate::triggers::clean(&t));
+        }
         Profile { values, menu_stamp: next_menu_stamp() }
     }
 
@@ -161,6 +165,10 @@ impl Profile {
                 Some(b) => self.values.insert(key.to_string(), b),
                 None => self.values.remove(key),
             };
+            return;
+        }
+        if key == TRIGGERS_KEY {
+            self.values.insert(key.to_string(), crate::triggers::clean(&value));
             return;
         }
         if key == TAGS_KEY {

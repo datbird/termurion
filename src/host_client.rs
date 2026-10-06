@@ -148,6 +148,7 @@ fn read_loop(inner: Arc<Inner>, welcome: mpsc::Sender<Result<Welcome, HostError>
         }
     }
     inner.lost.store(true, Ordering::Release);
+    crate::rlog!("session host connection lost");
     inner.launches.lock().unwrap().clear();
     inner.attaches.lock().unwrap().clear();
     for slot in inner.sessions.lock().unwrap().values() {
@@ -293,7 +294,10 @@ impl Client {
         let client = Client { inner };
         client.inner.send(&Msg::Hello { version })?;
         match rx.recv_timeout(wait.max(REPLY_WAIT)) {
-            Ok(Ok(w)) => Ok(Some((client, w))),
+            Ok(Ok(w)) => {
+                crate::rlog!("session host connected, protocol {}", version);
+                Ok(Some((client, w)))
+            }
             Ok(Err(e)) => {
                 client.close();
                 Err(e)

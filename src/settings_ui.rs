@@ -55,6 +55,9 @@ pub enum Edit {
     SessionHotkey(crate::layout::PaneId, Option<crate::hotkey::Shortcut>),
     Imported(usize),
     Error(String),
+    /// An OK-only alert the person's own action raised (a trigger file that did not import or
+    /// export, `TriggerController.m:1155-1163`); the App shows it through `ask_scripts`.
+    Alert { heading: String, text: String },
     /// Open these profiles (the Profiles window's selection, in list order) as `How`.
     OpenMany(Vec<String>, How),
     /// "Edit Profiles\u{2026}": Settings on this profile's General tab, or on the Profiles page.
@@ -492,7 +495,7 @@ impl SettingsWindow {
 
     /// A file to show in Explorer (an exported color preset), taken after each frame.
     pub fn take_reveal(&mut self) -> Option<String> {
-        self.presets.reveal.take()
+        self.presets.reveal.take().or_else(crate::settings_triggers::take_reveal)
     }
 
     /// Puts a live color preview's colors back before anything is saved or the window goes (B2).
@@ -1384,6 +1387,15 @@ impl SettingsWindow {
         }
         if let Some(e) = self.ai.take_error() {
             edit = Edit::Error(e);
+        }
+        // The Triggers editor's Import and Export alerts, one a frame.
+        if matches!(edit, Edit::None) {
+            if let Some((heading, text)) = crate::settings_triggers::take_alert() {
+                edit = Edit::Alert { heading, text };
+            }
+        }
+        if crate::settings_triggers::alerts_pending() {
+            self.host.request_redraw();
         }
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's

@@ -378,6 +378,7 @@ impl App {
             #[cfg(windows)]
             {
                 crate::firstmouse_win::watch(h);
+                self.taskbar_watch(h);
                 super::logout_ui::watch(h);
             }
         }

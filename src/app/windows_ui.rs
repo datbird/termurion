@@ -665,6 +665,7 @@ impl App {
             #[cfg(windows)]
             {
                 crate::firstmouse_win::watch(h);
+                self.taskbar_watch(h);
                 super::logout_ui::watch(h);
             }
         }
@@ -681,6 +682,8 @@ impl App {
             // resident window gets its host back in `leave_resident_for`.
             self.access_install_host();
             self.registry.open(key(id));
+            let number = self.registry.number(key(id)).unwrap_or(0);
+            crate::rlog!("window opened: number {}", number);
         }
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
@@ -999,8 +1002,12 @@ impl App {
             self.perf_frames.remove(&(n + 1));
             self.perf.forget_window(n + 1);
         }
+        crate::rlog!("window closed: number {}", self.registry.number(k).unwrap_or(0));
         self.access_forget_window(k);
         self.registry.close(k);
+        if self.registry.order().is_empty() {
+            crate::rlog!("the last window closed");
+        }
         self.refresh_window_list();
     }
 

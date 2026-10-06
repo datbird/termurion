@@ -263,8 +263,7 @@ impl App {
         }
 
         // Every menu command Tandem runs, then the Scripts menu's script items.
-        s.menu_items = crate::menus::items()
-            .iter()
+        s.menu_items = crate::menus::shown_items()
             .filter(|i| !i.separator && !i.submenu && !i.selector.is_empty() && crate::commands::status(i) == crate::commands::Status::Done)
             .map(|i| (i.id(), crate::menus::shown_label(i.label()), i.path[..i.path.len().saturating_sub(1)].to_vec(), i.alternate))
             .collect();

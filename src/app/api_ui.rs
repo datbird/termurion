@@ -614,6 +614,7 @@ impl App {
                 Event::Message { conn, bytes } => self.api_message(conn, bytes, event_loop),
                 Event::Closed { conn } => self.api_closed(conn, event_loop),
                 Event::Rejected { key, reason } => {
+                    crate::rlog!("Python API connection rejected before authorization");
                     let (stamp, now) = (self.history_stamp(), unix_secs());
                     self.script_history.rejected(key.as_deref(), "", &reason, &stamp, &api_auth::fresh_key(), now);
                     // A refused script's entry stops: its menu item loses its check mark.
@@ -651,6 +652,7 @@ impl App {
         let name = api_auth::display_name(p.upgrade.advisory_name.as_deref());
         let (stamp, now) = (self.history_stamp(), unix_secs());
         let key = &p.upgrade.key;
+        crate::rlog!("Python API connection {} for script {}", if allow { "accepted" } else { "rejected" }, crate::dlog::name(&name));
         if allow {
             self.api_keys.insert(p.conn, (key.clone(), name.clone()));
             if p.upgrade.library_version == crate::api_client::LIBRARY_VERSION {

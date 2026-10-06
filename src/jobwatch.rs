@@ -238,6 +238,33 @@ pub fn wait_any(pids: &[u32], gap: Duration) {
     }
 }
 
+/// The names an ancestry lost, in the old order (`PC:479-500`); growth or no change is empty.
+pub fn ancestry_shrank(old: &[String], new: &[String]) -> Vec<String> {
+    old.iter().filter(|n| !new.contains(n)).cloned().collect()
+}
+
+/// Logs a shrunken ancestry through `rlog!`: the line, then per vanished name whether a process
+/// of that name is still in the process list. Names are program names, never command lines.
+fn log_ancestry_shrink(procs: &[Proc], root: u32, old: &[String], now: &ShellJob) {
+    let removed = ancestry_shrank(old, &now.ancestors);
+    if removed.is_empty() {
+        return;
+    }
+    let deepest = now.job.as_ref().map_or("nil".to_string(), |j| j.pid.to_string());
+    crate::rlog!(
+        "[ANCESTRYDIAG] tracked pid {}: ancestry shrank {} -> {} (removed {}); deepest fg job pid={}",
+        root,
+        crate::dlog::names(old),
+        crate::dlog::names(&now.ancestors),
+        crate::dlog::names(&removed),
+        crate::dlog::name(&deepest)
+    );
+    for gone in &removed {
+        let alive = procs.iter().any(|p| proctree::strip_exe(&p.name).eq_ignore_ascii_case(gone));
+        crate::rlog!("[ANCESTRYDIAG] vanished {}: still in the process list: {}", crate::dlog::name(gone), alive);
+    }
+}
+
 /// What the window knows about one shell's job.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShellJob {
@@ -255,6 +282,8 @@ struct Shared {
     /// `FastForegroundJobUpdates`: the wait between looks ends when a watched foreground job
     /// exits. Off, the watcher only polls.
     fast_updates: bool,
+    /// `LogForegroundJobAncestryDiagnostics`: a shrinking ancestry is logged (`PC:470-500`).
+    ancestry_diagnostics: bool,
     error: Option<String>,
     /// Shells whose whole tree the Jobs tool shows, and each one's last tree.
     trees_wanted: HashSet<u32>,
@@ -345,6 +374,11 @@ impl JobWatch {
                             for r in roots {
                                 let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r), root: proctree::root_name(&procs, r) };
                                 if s.roots.contains(&r) && s.jobs.get(&r) != Some(&now) {
+                                    if s.ancestry_diagnostics {
+                                        if let Some(old) = s.jobs.get(&r) {
+                                            log_ancestry_shrink(&procs, r, &old.ancestors, &now);
+                                        }
+                                    }
                                     s.jobs.insert(r, now);
                                     changed = true;
                                 }
@@ -438,6 +472,11 @@ impl JobWatch {
     /// line input on); false when unknown.
     pub fn password_input(&self, shell: u32) -> bool {
         self.lock().prompts.get(&shell).is_some_and(|d| d.on)
+    }
+
+    /// `LogForegroundJobAncestryDiagnostics`, read by the watcher at each look.
+    pub fn set_ancestry_diagnostics(&self, on: bool) {
+        self.lock().ancestry_diagnostics = on;
     }
 
     /// `FastForegroundJobUpdates`: on, a watched foreground job's exit ends the wait at once;
@@ -584,6 +623,19 @@ pub fn still_running(set: &[(u32, u64)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PC:479-500`: the names that vanished from a shrinking ancestry, and the one log line.
+    #[test]
+    fn ancestry_diagnostics_follow_iterm2() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(ancestry_shrank(&names(&["claude", "node", "pwsh"]), &names(&["node", "pwsh"])), names(&["claude"]));
+        assert!(ancestry_shrank(&names(&["node"]), &names(&["claude", "node"])).is_empty(), "growth is not a shrink");
+        assert!(ancestry_shrank(&names(&["node"]), &names(&["node"])).is_empty());
+        assert_eq!(ancestry_shrank(&names(&["claude", "pwsh"]), &names(&["node", "pwsh"])), names(&["claude"]), "a swap of equal length loses a name too: iTerm2 has no length guard");
+        // The line itself is made by `rlog!` from log-safe parts (`dlog::names`).
+        assert_eq!(crate::dlog::names(&names(&["claude", "node"])).to_string(), "[\"claude\", \"node\"]");
+        assert_eq!(crate::dlog::names(&[]).to_string(), "[]");
+    }
 
     #[test]
     fn pe_subsystem_reads_the_header() {

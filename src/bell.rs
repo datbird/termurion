@@ -1,5 +1,6 @@
-//! iTerm2's bell: what a bell does under the profile's switches, the 0.1 s limit, and the
-//! offer to silence a bell that rings too often.
+//! iTerm2's bell: what a bell does under the profile's switches, the rate limit, the visual
+//! (centered icon or whole-pane flash), and the offer to silence a bell that rings too often.
+//! `Limiter` holds the floors under every flash and beep (B6).
 
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,8 @@ pub struct BellPrefs {
     pub offer: bool,
     /// "Silence Automatically" was chosen once.
     pub auto_silence: bool,
+    /// `BellRateLimit`: a bell this soon after the last shown one is quelled.
+    pub limit: Duration,
 }
 
 /// What a bell does.
@@ -31,6 +34,9 @@ pub struct Effects {
 pub struct Ring {
     pub effects: Option<Effects>,
     pub offer: bool,
+    /// Counts on the taskbar badge: every bell that was not ignored, rate-limited ones too
+    /// (`PTYSession.m:19083-19116`).
+    pub badge: bool,
 }
 
 /// The answers to "The bell is ringing a lot. Silence it?".
@@ -43,8 +49,87 @@ pub enum Answer {
     Dismissed,
 }
 
-/// iTerm2's bellRateLimit.
-const LIMIT: Duration = Duration::from_millis(100);
+/// iTerm2's bellRateLimit default.
+pub const DEFAULT_LIMIT: Duration = Duration::from_millis(100);
+/// How long a flash or the centered indicator fades (`iTermIndicatorsHelper.m:61-65`).
+pub const FLASH_SECS: f32 = 0.3;
+/// B6: the least gap between two beeps or icons, whatever `BellRateLimit` says.
+pub const BELL_FLOOR: Duration = Duration::from_millis(50);
+/// B6 and WCAG 2.3.1: any flash (the pane, the centered indicator) at most 3 a second.
+pub const VISUAL_FLOOR: Duration = Duration::from_millis(334);
+/// B6: the least gap between two taskbar flashes of one window.
+pub const TASKBAR_FLASH_FLOOR: Duration = Duration::from_secs(1);
+
+/// How a bell's flash looks (`PTYTextView.m:4500-4509`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visual {
+    /// The centered bell icon.
+    Indicator,
+    /// The whole pane in the text color.
+    FullFlash,
+}
+
+/// `traditionalVisualBell` picks the whole pane, else the centered icon.
+pub fn visual(traditional: bool) -> Visual {
+    if traditional { Visual::FullFlash } else { Visual::Indicator }
+}
+
+/// The whole-pane flash's alpha `elapsed` seconds in (`iTermIndicatorsHelper.m:477-480`).
+pub fn flash_alpha(elapsed: f32, initial: f32) -> f32 {
+    (1.0 - elapsed / FLASH_SECS).max(0.0) * initial
+}
+
+/// The centered indicator's alpha (`iTermIndicatorsHelper.m:61-65`): it starts at 1.
+pub fn indicator_alpha(elapsed: f32) -> f32 {
+    (1.0 - elapsed / FLASH_SECS).max(0.0)
+}
+
+/// P13: with Windows animations off a whole-pane flash is the centered icon at a fixed alpha.
+/// Returns what to draw and whether it fades.
+pub fn shown_visual(v: Visual, animations: bool) -> (Visual, bool) {
+    if animations { (v, true) } else { (Visual::Indicator, false) }
+}
+
+/// B6: the one place the floors live, shared by every source (bells, RequestAttention, the
+/// Bounce trigger). Pure: the caller gives the clock.
+#[derive(Debug, Default)]
+pub struct Limiter {
+    beep: Option<Instant>,
+    visual: Option<Instant>,
+    taskbar: std::collections::HashMap<isize, Instant>,
+}
+
+impl Limiter {
+    fn pass(last: &mut Option<Instant>, now: Instant, floor: Duration) -> bool {
+        if last.is_some_and(|t| now.saturating_duration_since(t) < floor && now >= t) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+
+    /// A beep may go now (the bell icon is not floored here).
+    pub fn beep(&mut self, now: Instant) -> bool {
+        Self::pass(&mut self.beep, now, BELL_FLOOR)
+    }
+
+    /// A pane flash or a centered indicator may show now (3 a second at most).
+    pub fn visual(&mut self, now: Instant) -> bool {
+        Self::pass(&mut self.visual, now, VISUAL_FLOOR)
+    }
+
+    /// A taskbar flash of `window` may go now.
+    pub fn taskbar(&mut self, window: isize, now: Instant) -> bool {
+        if self.taskbar.len() > 64 {
+            self.taskbar.retain(|_, t| now.saturating_duration_since(*t) < TASKBAR_FLASH_FLOOR);
+        }
+        if self.taskbar.get(&window).is_some_and(|t| now >= *t && now.saturating_duration_since(*t) < TASKBAR_FLASH_FLOOR) {
+            return false;
+        }
+        self.taskbar.insert(window, now);
+        true
+    }
+}
 /// Gaps shorter than this are not sampled.
 const SAMPLE: Duration = Duration::from_millis(10);
 /// The average gap below which the bell is annoying.
@@ -97,11 +182,14 @@ impl Bell {
                 }
             }
         };
-        if ignored || self.last_shown.is_some_and(|t| now < t + LIMIT) {
-            return Ring { effects: None, offer };
+        if ignored {
+            return Ring { effects: None, offer, badge: false };
+        }
+        if self.last_shown.is_some_and(|t| now < t + prefs.limit) {
+            return Ring { effects: None, offer, badge: true };
         }
         self.last_shown = Some(now);
-        Ring { effects: Some(Effects { beep: !prefs.silence, icon: prefs.icon, flash: prefs.flash }), offer }
+        Ring { effects: Some(Effects { beep: !prefs.silence, icon: prefs.icon, flash: prefs.flash }), offer, badge: true }
     }
 
     /// The window could not show the offer (its bar row was full): it may come again.
@@ -133,7 +221,116 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    const ON: BellPrefs = BellPrefs { silence: false, icon: true, flash: false, offer: true, auto_silence: false };
+    const ON: BellPrefs = BellPrefs { silence: false, icon: true, flash: false, offer: true, auto_silence: false, limit: DEFAULT_LIMIT };
+
+    /// `PTYTextView.m:4500-4509`: the centered indicator by default, the whole pane by choice;
+    /// `iTermIndicatorsHelper.m:61-65`: the indicator fades linearly over 0.3 s.
+    #[test]
+    fn visual_bell_follows_iterm2() {
+        assert_eq!(visual(false), Visual::Indicator);
+        assert_eq!(visual(true), Visual::FullFlash);
+        assert_eq!(indicator_alpha(0.0), 1.0);
+        assert!((indicator_alpha(0.15) - 0.5).abs() < 1e-6);
+        assert_eq!(indicator_alpha(0.4), 0.0);
+        assert_eq!(FLASH_SECS, 0.3);
+    }
+
+    /// `iTermIndicatorsHelper.m:477-480`: `max(0, 1 - t/0.3) * initial`.
+    #[test]
+    fn flash_alpha_follows_iterm2() {
+        assert_eq!(flash_alpha(0.0, 0.5), 0.5);
+        assert!((flash_alpha(0.15, 0.5) - 0.25).abs() < 1e-6);
+        assert_eq!(flash_alpha(0.3, 0.5), 0.0);
+        assert_eq!(flash_alpha(0.0, 0.8), 0.8);
+    }
+
+    /// `PTYSession.m:19083-19116`: a bell inside the limit has no effects but still counts; an
+    /// ignored bell (silenced temporarily) counts nothing.
+    #[test]
+    fn quelled_bells_still_count() {
+        let t = Instant::now();
+        let mut b = Bell::default();
+        let first = b.ring(t, ON);
+        assert!(first.effects.is_some() && first.badge);
+        let second = b.ring(t + Duration::from_millis(50), ON);
+        assert!(second.effects.is_none() && second.badge, "limited, still counted");
+        let mut fast = Bell::default();
+        fast.ring(t, BellPrefs { limit: Duration::from_millis(10), ..ON });
+        assert!(fast.ring(t + Duration::from_millis(50), BellPrefs { limit: Duration::from_millis(10), ..ON }).effects.is_some());
+        let mut silenced = Bell::default();
+        silenced.answer(t, Answer::SilenceTemporarily);
+        let r = silenced.ring(t + Duration::from_secs(1), ON);
+        assert!(r.effects.is_none() && !r.badge, "an ignored bell counts nothing");
+    }
+
+    /// B6: whatever `BellRateLimit` says, 1 000 bells in one second give at most 3 visuals and
+    /// 20 beeps, and every one still counts on the badge. A fake clock; nothing sleeps.
+    #[test]
+    fn bell_floors_hold() {
+        let t0 = Instant::now();
+        let (mut b, mut limiter) = (Bell::default(), Limiter::default());
+        let prefs = BellPrefs { flash: true, limit: Duration::ZERO, ..ON };
+        let (mut beeps, mut visuals, mut counted) = (0, 0, 0);
+        for ms in 0..1000u64 {
+            let now = t0 + Duration::from_millis(ms);
+            let r = b.ring(now, prefs);
+            counted += r.badge as u32;
+            if let Some(e) = r.effects {
+                beeps += (e.beep && limiter.beep(now)) as u32;
+                visuals += (e.flash && limiter.visual(now)) as u32;
+            }
+        }
+        assert!(visuals <= 3, "visuals {visuals}");
+        assert!(beeps <= 20, "beeps {beeps}");
+        assert!(visuals >= 1 && beeps >= 1);
+        assert_eq!(counted, 1000, "every bell counts");
+        // A flash right after the limiter's last one is refused; after the floor it shows again.
+        let now = t0 + Duration::from_secs(1);
+        assert!(limiter.visual(now + VISUAL_FLOOR));
+        assert!(!limiter.visual(now + VISUAL_FLOOR + Duration::from_millis(1)));
+    }
+
+    /// B6: RequestAttention=flash goes through the same visual floor as a bell's flash, so a
+    /// bell flash and an attention flash together are still 3 per second; the app's one flash
+    /// entry is used by both.
+    #[test]
+    fn request_attention_flash_is_limited() {
+        let t = Instant::now();
+        let mut l = Limiter::default();
+        assert!(l.visual(t));
+        assert!(!l.visual(t + Duration::from_millis(100)), "an attention flash right after a bell flash");
+        let ui = include_str!("app/bell_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        let rq = include_str!("app/requests_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        assert!(ui.contains("fn start_flash(") && ui.contains("bell_limiter.visual("));
+        assert!(rq.contains("start_flash(") && !rq.contains("flashes.insert"), "attention flashes only through start_flash");
+        assert!(!ui.contains("flashes.insert") || ui.matches("flashes.insert").count() == 1);
+    }
+
+    /// B6: every `FlashWindowEx` goes through the per-window floor.
+    #[test]
+    fn taskbar_flash_is_limited() {
+        let t = Instant::now();
+        let mut l = Limiter::default();
+        assert!(l.taskbar(1, t));
+        assert!(!l.taskbar(1, t + Duration::from_millis(900)));
+        assert!(l.taskbar(2, t + Duration::from_millis(900)), "another window has its own floor");
+        assert!(l.taskbar(1, t + TASKBAR_FLASH_FLOOR));
+        let rq = include_str!("app/requests_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        let tr = include_str!("app/triggers_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        assert_eq!((tr.matches("FlashWindowEx(").count(), rq.matches("FlashWindowEx(").count()), (1, 0), "one call site");
+        assert!(tr.contains("bell_limiter.taskbar(") && rq.contains("flash_taskbar_raw("), "RequestAttention shares the limiter");
+        assert!(tr.contains("fn flash_taskbar(&mut self") && tr.matches("flash_taskbar_raw(").count() >= 3);
+    }
+
+    /// P13: with Windows animations off, a whole-pane flash becomes the centered indicator at
+    /// a fixed alpha; with them on nothing changes.
+    #[test]
+    fn reduced_motion_swaps_the_flash() {
+        assert_eq!(shown_visual(Visual::FullFlash, true), (Visual::FullFlash, true));
+        assert_eq!(shown_visual(Visual::FullFlash, false), (Visual::Indicator, false));
+        assert_eq!(shown_visual(Visual::Indicator, true), (Visual::Indicator, true));
+        assert_eq!(shown_visual(Visual::Indicator, false), (Visual::Indicator, false));
+    }
 
     #[test]
     fn bell_follows_the_profile() {
@@ -179,9 +376,24 @@ mod tests {
     fn bel_becomes_a_request() {
         let mut s = crate::screen::Screen::new(20, 4);
         s.feed(b"a\x07b\x07");
-        let bells = s.take_requests().into_iter().filter(|r| matches!(r, crate::screen::Request::Bell)).count();
+        let bells: u32 = s.take_requests().into_iter().map(|r| if let crate::screen::Request::Bell { count } = r { count } else { 0 }).sum();
         assert_eq!(bells, 2);
         assert_eq!(s.bell_count, 2);
+    }
+
+    /// B6/P14: the BELs of one feed are one request carrying the count, and fire one event;
+    /// `bell_count` still counts each. A flood leaves nothing to wake for afterwards.
+    #[test]
+    fn bells_in_one_feed_coalesce() {
+        let mut s = crate::screen::Screen::new(20, 4);
+        s.feed(&[0x07; 65_000]);
+        let reqs: Vec<_> = s.take_requests().into_iter().filter(|r| matches!(r, crate::screen::Request::Bell { .. })).collect();
+        assert_eq!(reqs.len(), 1, "one request per burst");
+        assert!(matches!(reqs[0], crate::screen::Request::Bell { count: 65_000 }));
+        assert_eq!(s.bell_count, 65_000);
+        assert!(s.take_requests().is_empty(), "nothing is left pending after the flood");
+        s.feed(b"a");
+        assert!(s.take_requests().iter().all(|r| !matches!(r, crate::screen::Request::Bell { .. })), "no bell without a BEL");
     }
 
     #[test]

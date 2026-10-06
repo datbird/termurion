@@ -407,7 +407,7 @@ fn preset_combo(ui: &mut egui::Ui, salt: &str, name: &mut String) -> bool {
 
 /// Menu items a binding can select, with their title and id.
 fn menu_items() -> Vec<(&'static str, String)> {
-    crate::menus::items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()).map(|i| (i.label(), i.id())).collect()
+    crate::menus::shown_items().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()).map(|i| (i.label(), i.id())).collect()
 }
 
 /// `pointer`: pointer bindings store "identifier\ntitle"; key bindings "title\nidentifier".
@@ -4418,5 +4418,175 @@ mod tests {
         assert_ne!(schema::find_global("sessionEndMessageText").unwrap().section, "Notifications");
         let smart = schema::find_global("smartLoggingWithAutoComposer").unwrap();
         assert_eq!((smart.tab.as_str(), smart.kind, smart.default.clone()), ("Advanced", Kind::Bool, b(false)));
+    }
+
+    /// 13w Task 1 (`AS` Debugging rows, `02:631`, `02:633`, `02:858`): the three debug-log rows with
+    /// iTerm2's section, kind, default and text (Tandem's names for its own folders).
+    #[test]
+    fn debug_log_rows_follow_iterm2() {
+        let rows: Vec<(&str, &str)> = vec![
+            ("StartDebugLoggingAutomatically", "Start debug logging automatically when Tandem is launched."),
+            ("AppendToExistingDebugLog", "Append to existing debug log rather than replacing it."),
+            ("LogToSyslog", "Debug logs also write to the debug output."),
+        ];
+        for (key, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!(row.label, help, "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
+
+    /// 13w Task 4 (`AS` `fakeFullyQualifiedDomainName`, `fakeBootSessionUUID`): Advanced > Debugging,
+    /// text, empty, iTerm2's description (the first line is the label, the whole text the help).
+    #[test]
+    fn fake_identity_rows_follow_iterm2() {
+        let rows = [
+            (
+                "FakeFullyQualifiedDomainName",
+                "Override the local hostname used for localhost detection.",
+                "\nWhen non-empty, the app behaves as though this computer\u{2019}s full DNS name were this value. Lets you test how localhost detection reacts to a hostname change without actually renaming your computer. Takes effect at once for opening paths; a host that was already reported keeps the answer it was given. Leave empty to use the real hostname.",
+            ),
+            (
+                "FakeBootSessionUUID",
+                "Override this machine\u{2019}s identity used for OSC 7 machineID localhost detection.",
+                "\nWhen non-empty, the app behaves as though this machine\u{2019}s boot identity were this value. Lets you test how machine-identity localhost detection reacts without rebooting. Takes effect at once for opening paths; a host that was already reported keeps the answer it was given. Leave empty to use the real value.",
+            ),
+        ];
+        for (key, label, rest) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"), "{key}");
+            assert_eq!(row.kind, Kind::String, "{key}");
+            assert_eq!(row.default, Some(Value::String(String::new())), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}{rest}"), "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
+
+    /// `AS` `logForegroundJobAncestryDiagnostics`: Advanced > Debugging, off, iTerm2's text.
+    #[test]
+    fn ancestry_row_follows_iterm2() {
+        let row = schema::find_global("LogForegroundJobAncestryDiagnostics").expect("row");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Log a detailed trace when a session\u{2019}s foreground-job ancestor list unexpectedly shrinks.");
+        assert!(row.help.starts_with(&row.label) && row.help.contains("\nWhen an intermediate ancestor (such as the claude CLI) drops out"));
+        assert!(row.help.ends_with("Off by default; turn on only while reproducing an issue."));
+        assert!(!row.optional_bool());
+    }
+
+    /// 13w Task 3 (`AS` rows, `02:632`, `02:636`, `02:857`): the three debug tool rows.
+    #[test]
+    fn debug_tool_rows_follow_iterm2() {
+        let rows: Vec<(&str, &str, &str)> = vec![
+            ("LogDrawingPerformance", "Debugging", "Log stats about text drawing performance to the debug output.\nUsed for performance testing."),
+            ("LogRestorableStateSize", "Debugging", "Log restorable state size info to %TEMP%\\statesize.*.txt."),
+            ("DebugShowPromptMarkRangesInLegacyRenderer", "Terminal", "Debug: highlight prompt mark prompt/command/excluded ranges.\nWhen enabled, the renderer overlays a blue outline around each visible prompt mark\u{2019}s prompt range (OSC 133 A to B), a green outline around its command range (B to C), and a red outline around each excluded subrange (PS2 prefixes and right-prompt regions recorded via OSC 133 k=). Intended for development and bug reports; leave off in normal use."),
+        ];
+        for (key, section, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
+
+    /// 13w Task 5 (`AS` `traditionalVisualBell`, `indicatorFlashInitialAlpha`, `bellRateLimit`):
+    /// Advanced > Terminal, iTerm2's defaults and text.
+    #[test]
+    fn bell_rows_follow_iterm2() {
+        let rows = [
+            ("TraditionalVisualBell", Kind::Bool, Value::Boolean(false), "Visual bell flashes the whole screen, not just a bell icon."),
+            ("IndicatorFlashInitialAlpha", Kind::Float, Value::Float(0.5), "Initial alpha value when flashing the visual bell or search wraparound indicator"),
+            ("BellRateLimit", Kind::Float, Value::Float(0.1), "Minimum time between beeping or flashing screen on bell, in seconds.\nIf the time interval between bells is less than this amount of time, it will be ignored."),
+        ];
+        for (key, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Terminal"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
+
+    /// 13w Task 6: the taskbar and mark-sound rows, iTerm2's text with Tandem's words.
+    #[test]
+    fn taskbar_rows_follow_iterm2() {
+        let rows = [
+            ("BounceOnInactiveBell", "Terminal", Kind::Bool, Value::Boolean(false), "Flash the taskbar button when the bell rings while another app is active?"),
+            ("IndicateBellsInDockBadgeLabel", "General", Kind::Bool, Value::Boolean(true), "Indicate the number of bells rung while the app is inactive in the taskbar button\u{2019}s badge"),
+            ("SuccessSound", "Session", Kind::String, Value::String(String::new()), "When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."),
+            ("ErrorSound", "Session", Kind::String, Value::String(String::new()), "When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command.\nYou can name a Windows sound (such as Windows Ding) or a .wav file in %WINDIR%\\Media."),
+            ("ClearBellIconAggressively", "Experimental Features", Kind::Bool, Value::Boolean(true), "Clear bell icon when a session becomes active.\nWhen off, you must type in the session to clear the bell icon."),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
+
+    /// 13w Task 8: the six badge rows, Advanced > Badge, iTerm2's text.
+    #[test]
+    fn badge_rows_follow_iterm2() {
+        let rows = [
+            ("BadgeFont", Kind::String, Value::String("Helvetica".into()), "Font to use for the badge.".to_string()),
+            ("BadgeFontIsBold", Kind::Bool, Value::Boolean(true), "Should the badge render in bold type?".to_string()),
+            ("BadgeMaxWidthFraction", Kind::Float, Value::Float(0.5), "Maximum width of the badge\nAs a fraction of the width of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting.".to_string()),
+            ("BadgeMaxHeightFraction", Kind::Float, Value::Float(0.2), "Maximum height of the badge\nAs a fraction of the height of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting.".to_string()),
+            ("BadgeRightMargin", Kind::Int, Value::Integer(10), "Default value for right margin for the badge\nHow much space to leave between the right edge of the badge and the right edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting.".to_string()),
+            ("BadgeTopMargin", Kind::Int, Value::Integer(10), "Default value for the top margin for the badge\nHow much space to leave between the top edge of the badge and the top edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting.".to_string()),
+        ];
+        for (key, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Badge"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+        // The profile rows' default notes name the Advanced keys as the computed default.
+        let toml = include_str!("../schema/profile.toml");
+        for adv in ["BadgeFont", "BadgeFontIsBold", "BadgeTopMargin", "BadgeRightMargin", "BadgeMaxWidthFraction", "BadgeMaxHeightFraction"] {
+            assert!(toml.contains(&format!("the {adv} Advanced setting")), "{adv} named in a default_note");
+        }
+    }
+
+    /// 13w Task 7: the trigger limit rows, iTerm2's text.
+    #[test]
+    fn trigger_rows_follow_iterm2() {
+        let again = "\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed.";
+        let rows = [
+            ("TriggerRadius", "Terminal", Kind::Int, Value::Integer(3), "Number of screen lines to match against trigger regular expressions.\nTrigger regular expressions are matched against the last logical line of text when a newline is received. A search is performed to find the start of the line. Since very long lines would cause performance problems, the search (and consequently the regular expression match, highlighting, and so on) is limited to this many screen lines.".to_string()),
+            ("AllowIdempotentTriggers", "Terminal", Kind::Bool, Value::Boolean(false), "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled.".to_string()),
+            ("IdempotentTriggerModeRateLimit", "Terminal", Kind::Float, Value::Float(0.25), "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates.\nThis limits the performance impact of trigger evaluation.".to_string()),
+            ("MaximumNumberOfTriggerCommands", "General", Kind::Int, Value::Integer(16), "Maximum number of trigger-launched commands that can run at once.\nIf too many \u{201c}Run Command\u{2026}\u{201d} triggers fire their commands will be queued. You must restart Tandem for changes to this setting to take effect.".to_string()),
+            ("AlertTriggerRateLimit", "General", Kind::Float, Value::Float(1.0), format!("Rate limit for Alert triggers.{again}")),
+            ("UserNotificationTriggerRateLimit", "General", Kind::Float, Value::Float(0.0), format!("Rate limit for Notification triggers.{again}")),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
     }
 }

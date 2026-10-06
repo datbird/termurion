@@ -110,6 +110,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
+        crate::rlog!("tmux gateway started: pane {}", pane);
         self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
@@ -247,6 +248,7 @@ impl App {
         if self.buried.contains(pane) {
             self.disinter(pane);
         }
+        crate::rlog!("tmux gateway ended: pane {}", pane);
         self.tmux.remove(&pane);
         self.tmux_status.retain(|(g, _), _| *g != pane);
         self.tmux_end_panes(pane);

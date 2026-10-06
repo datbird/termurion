@@ -3,7 +3,7 @@
 //! `TaskbarCreated` broadcast), so a click on the notification can reveal the session it came
 //! from.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -16,6 +16,8 @@ const ICON_ID: u32 = 0x7A4D;
 const CALLBACK: u32 = WM_APP + 0x4D;
 /// Shell_NotifyIcon's balloon click (NIN_BALLOONUSERCLICK).
 const BALLOON_CLICK: u32 = 0x0405;
+/// Every notification shown, so a click can tell whether the one it means is still the last.
+static SHOWN: AtomicU64 = AtomicU64::new(0);
 static ADDED: AtomicBool = AtomicBool::new(false);
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static ON_CLICK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -140,6 +142,11 @@ pub fn set_resident(on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// How many notifications were shown (every `show_with` that Windows accepted, whoever called it).
+pub fn shown_count() -> u64 {
+    SHOWN.load(Ordering::SeqCst)
+}
+
 /// Shows a notification with `title` and `body`; `silent` plays no sound.
 pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     let hwnd = window()?;
@@ -159,6 +166,7 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
         ADDED.store(false, Ordering::SeqCst);
         return Err("Windows did not show the notification".into());
     }
+    SHOWN.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 

@@ -45,6 +45,7 @@ impl App {
             Ok(()) => {
                 self.last_notified = Some(pane);
                 self.last_notified_script = None;
+                self.last_notified_debug = None;
             }
             Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
         }
@@ -60,6 +61,9 @@ impl App {
     /// A click on a notification: Tandem comes forward on the session it named, or on the
     /// Script Console entry of the script that failed.
     pub(super) fn reveal_notified(&mut self) {
+        if crate::dlog::same_notice(self.last_notified_debug, crate::notify::shown_count()) {
+            return self.disable_debug_logging_from_notice();
+        }
         if let Some(id) = self.last_notified_script.clone() {
             return self.reveal_script_entry(&id);
         }
@@ -101,6 +105,15 @@ impl App {
             }
         }
         self.last_status = now.into_iter().collect();
+        // Sessions whose status is the highest-priority pattern are waiting (`PTYTab.m:7729-7737`).
+        if !changes.is_empty() {
+            let patterns = self.status_patterns();
+            let priorities: Vec<&str> = patterns.iter().map(|p| p.pattern.as_str()).collect();
+            for (id, _, status) in &changes {
+                let waiting = crate::bell_badge::is_waiting(status.as_deref(), &priorities);
+                self.bell_badge.waiting(&id.to_string(), waiting, self.app_active);
+            }
+        }
         if !changes.is_empty() || !self.status_watches.is_empty() {
             self.status_changes(&changes);
         }

@@ -69,7 +69,7 @@ impl App {
         }
         f.shell = var("shell").unwrap_or_default();
         f.host = var("hostname");
-        f.local = super::statusbar_content::is_localhost(f.host.as_deref());
+        f.local = super::statusbar_content::is_this_machine(s.shell.host.as_deref(), s.shell.machine_id.as_deref());
         f.user = var("username");
         f.path = var("path").unwrap_or_default();
         match call {
@@ -111,7 +111,8 @@ impl App {
     /// answer (the `shell` variable, `ai_terminal::detected_shell`), classified.
     pub(super) fn ai_shell_of(&self, pane: PaneId) -> (ShellKind, bool, Option<String>) {
         let vars = self.variables_with(pane, false);
-        let local = super::statusbar_content::is_localhost(vars.session.get("hostname").map(String::as_str));
+        let shell = self.panes.get(&pane).map(|p| &p.own().shell);
+        let local = super::statusbar_content::is_this_machine(shell.and_then(|s| s.host.as_deref()), shell.and_then(|s| s.machine_id.as_deref()));
         (ai_shell::shell_kind(vars.session.get("shell").map(String::as_str), local), local, vars.session.get("path").cloned())
     }
 

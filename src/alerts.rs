@@ -78,6 +78,12 @@ pub fn looked_at(front: bool, tab_shown: bool) -> bool {
     front && tab_shown
 }
 
+/// Text from a program made safe to show: control, bidi and zero-width characters removed,
+/// at most 200 characters (B5). Through the one sanitizer, `inert_files::display_text`.
+pub fn safe_text(s: &str) -> String {
+    crate::inert_files::display_text(s, 200, false)
+}
+
 /// A time from the settings, in `lo..=hi` seconds (a negative, huge, or NaN value would
 /// panic in Duration).
 pub fn safe_secs(v: f64, lo: f64, hi: f64) -> Duration {
@@ -89,6 +95,13 @@ mod tests {
     use super::*;
 
     const ALL: AlertPrefs = AlertPrefs { enabled: true, bell: true, idle: true, new_output: true, session_ended: true, terminal: true, suppress_active: false };
+
+    #[test]
+    fn safe_text_removes_what_misleads() {
+        assert_eq!(safe_text("a\u{202e}b\u{200b}c\nd\u{7}e"), "abcde");
+        assert_eq!(safe_text("a\u{61c}b\u{180e}c\u{2028}d"), "abcd", "Arabic letter mark, Mongolian vowel separator, line separator");
+        assert_eq!(safe_text(&"x".repeat(500)).len(), 200);
+    }
 
     #[test]
     fn alert_texts_follow_iterm2() {

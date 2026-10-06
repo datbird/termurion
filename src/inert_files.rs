@@ -50,8 +50,15 @@ pub const ZONE_MARK: &str = "[ZoneTransfer]\r\nZoneId=3\r\n";
 /// separator and zero-width characters (one place, so every label drops the same set).
 pub fn is_hidden(c: char) -> bool {
     let bidi = matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    let unseen = matches!(c, '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}');
+    let unseen = matches!(c, '\u{2028}' | '\u{2029}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{2064}' | '\u{feff}');
     c.is_control() || bidi || unseen
+}
+
+/// THE sanitizer for text a program supplied and Tandem shows (badge text, alert text, host
+/// names, and any later display of program text): `is_hidden` characters removed (a newline kept
+/// when `keep_newline`), then at most `max` characters. Do not write another removal set.
+pub fn display_text(s: &str, max: usize, keep_newline: bool) -> String {
+    s.chars().filter(|&c| (keep_newline && c == '\n') || !is_hidden(c)).take(max).collect()
 }
 
 /// `name` without the characters no shown name keeps, and with no length cut (a command line
