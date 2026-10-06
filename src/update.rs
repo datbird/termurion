@@ -478,6 +478,20 @@ mod tests {
             ("1.0_1", "1.0 1", Equal),
             ("1.0~1", "1.0", Less),
             ("1.0.1", "1.0-1", Equal),
+            // Sparkle's own table (Tests/SUVersionComparisonTest.m): build numbers in brackets,
+            // pre-release words, a prerelease of the next point release.
+            ("1.0b1 (1234)", "1.0 (1234)", Less),
+            ("3.3 (5847)", "3.3.1b1 (5902)", Less),
+            ("1.0pre1", "1.0", Less),
+            ("1.0b1", "1.0b2", Less),
+            ("1.0b2", "1.0", Less),
+            ("1.0 (1234)", "1.0 (1235)", Less),
+            ("1.0 (1234)", "1.0 (1234)", Equal),
+            ("1.5", "1.10", Less),
+            ("1.0.0", "1.0", Greater),
+            ("2.0a1", "1.9", Greater),
+            ("1.0rc1", "1.0", Less),
+            ("1.0rc1", "1.0b9", Greater),
         ] {
             assert_eq!(compare(a, b), want, "{a} vs {b}");
             assert_eq!(compare(b, a), want.reverse(), "{b} vs {a}");

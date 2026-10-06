@@ -68,9 +68,9 @@ fn outcome(code: Option<i32>, stdout: &[u8], stderr: &[u8], too_big: bool) -> Fe
 }
 
 /// Tandem's environment for curl: the variables that choose its trust store or its config are
-/// dropped (P2); proxies stay curl's own.
+/// dropped (P2), and SSLKEYLOGFILE (it would write the session keys to a file); proxies stay curl's own.
 fn curl_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
-    const DROPPED: [&str; 5] = ["CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_HOME", "CURL_SSL_BACKEND"];
+    const DROPPED: [&str; 6] = ["CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_HOME", "CURL_SSL_BACKEND", "SSLKEYLOGFILE"];
     vars.into_iter().filter(|(k, _)| !DROPPED.iter().any(|d| k.eq_ignore_ascii_case(d))).collect()
 }
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn curl_never_reads_its_trust_from_the_environment() {
-        let vars = ["PATH", "SystemRoot", "curl_ca_bundle", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_HOME", "Curl_Ssl_Backend", "HTTPS_PROXY"];
+        let vars = ["PATH", "SystemRoot", "curl_ca_bundle", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_HOME", "Curl_Ssl_Backend", "sslkeylogfile", "HTTPS_PROXY"];
         let kept: Vec<String> = curl_env(vars.iter().map(|k| (k.to_string(), "x".to_string()))).into_iter().map(|(k, _)| k).collect();
         assert_eq!(kept, ["PATH", "SystemRoot", "HTTPS_PROXY"], "the proxy is curl's own; the trust variables go");
     }

@@ -116,9 +116,13 @@ impl App {
             self.update_show = Some(View::Checking);
         }
         self.update_due = None;
-        let checker = self.update_checker_ready();
-        if !checker.busy() {
-            checker.check();
+        if !self.update_checker_ready().busy() {
+            // Sparkle stores the time when the check starts (`SUUpdater.m:382`) and again when it
+            // ends: a Cancel (or a quit) mid-check leaves the schedule pushed, not overdue.
+            store_check_time(&mut self.globals, now_secs());
+            self.save_globals();
+            self.update_schedule();
+            self.update_checker_ready().check();
         }
     }
 
@@ -327,6 +331,16 @@ mod tests {
         let stored = tick.find("store_check_time(").expect("the time is stored");
         assert!(stored < tick.find("decide(").unwrap(), "a failed or empty check is stored too");
         let choice = src.split("fn update_choice").nth(1).and_then(|r| r.split("fn learn_more").next()).unwrap();
-        assert!(!choice.contains("store_check_time"), "a cancelled check does not push the schedule");
+        assert!(!choice.contains("store_check_time"), "Cancel itself stores nothing");
+    }
+
+    /// Sparkle stores the time when a check starts (`SUUpdater.m:382`) as well as when it ends, so
+    /// a Cancel on an overdue check is not followed at once by the same request.
+    #[test]
+    fn a_check_stores_its_time_when_it_starts() {
+        let src = include_str!("update_app.rs");
+        let start = src.split("fn check_for_updates").nth(1).and_then(|r| r.split("fn update_tick").next()).unwrap();
+        let stored = start.find("store_check_time(").expect("the time is stored at the start");
+        assert!(stored < start.find(".check()").unwrap(), "stored before the request is sent");
     }
 }
