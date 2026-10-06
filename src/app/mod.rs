@@ -1496,7 +1496,7 @@ pub struct App {
     script_console_reveal: Option<String>,
     last_notified_script: Option<String>,
     /// The last notification was "Debug logging turned on": a click on it turns logging off.
-    last_notified_debug: bool,
+    last_notified_debug: Option<u64>,
     /// The automatic-start notification shows once per launch (`AD:1309-1324`).
     debug_notice_shown: bool,
     /// Status bar strings with function calls, by session and string: their shown values
@@ -2425,7 +2425,7 @@ pub fn run() {
         script_inspector: None,
         script_console_reveal: None,
         last_notified_script: None,
-        last_notified_debug: false,
+        last_notified_debug: None,
         debug_notice_shown: false,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),

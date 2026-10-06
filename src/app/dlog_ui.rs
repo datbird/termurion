@@ -93,7 +93,7 @@ impl App {
         self.debug_notice_shown = true;
         match crate::notify::show_with(dlog::AUTO_TITLE, dlog::AUTO_DETAIL, self.globals.bool("silentUserNotifications")) {
             Ok(()) => {
-                self.last_notified_debug = true;
+                self.last_notified_debug = Some(crate::notify::shown_count());
                 self.last_notified = None;
                 self.last_notified_script = None;
             }
@@ -105,7 +105,7 @@ impl App {
     /// A click on that notification is iTerm2's "Disable" action: the key goes off and logging
     /// stops, saving silently.
     pub(super) fn disable_debug_logging_from_notice(&mut self) {
-        self.last_notified_debug = false;
+        self.last_notified_debug = None;
         self.globals.set("StartDebugLoggingAutomatically", toml::Value::Boolean(false));
         self.save_globals();
         self.stop_debug_logging(false);

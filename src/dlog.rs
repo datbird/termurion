@@ -98,6 +98,40 @@ impl fmt::Display for Name {
     }
 }
 
+/// Whether a format string captures a variable inline (`{secret}`), which skips the `LogSafe`
+/// check on that value. Only `{}`, `{:..}` and the escapes `{{` and `}}` are allowed.
+pub const fn has_capture(fmt: &str) -> bool {
+    let b = fmt.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'{' {
+            if i + 1 >= b.len() {
+                return true;
+            }
+            match b[i + 1] {
+                b'{' => i += 1,
+                b'}' | b':' => {}
+                _ => return true,
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether the notification the person clicked is still the automatic-start notice: it was the
+/// last one shown (`recorded` is `notify::shown_count()` right after it).
+pub fn same_notice(recorded: Option<u64>, shown_now: u64) -> bool {
+    recorded == Some(shown_now)
+}
+
+/// Fails the build when a log format captures a variable inline: the guarantee that every
+/// logged value passed `LogSafe` is the type system's, for every spelling of the macro.
+#[doc(hidden)]
+pub const fn no_capture(fmt: &str) {
+    assert!(!has_capture(fmt), "a log format may not capture a variable inline; pass it as an argument");
+}
+
 /// Words a log format must never name (the call-site test reads every `dlog!` format).
 pub const FORBIDDEN_WORDS: &[&str] = &["text", "input", "key", "cookie", "token", "password", "secret", "env", "clip", "title", "url", "argv", "typed", "chars"];
 
@@ -386,6 +420,7 @@ pub fn debug_output(text: &str) {
 macro_rules! dlog {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {
         if $crate::dlog::is_on() {
+            const _: () = $crate::dlog::no_capture($fmt);
             $crate::dlog::emit(file!(), line!(), module_path!(), format_args!($fmt $(, $crate::dlog::safe(&$arg))*));
         }
     };
@@ -706,10 +741,25 @@ mod tests {
         assert!(!is_on());
     }
 
-    /// Every `dlog!` call site is listed; a format string never names a secret-shaped word and
-    /// never captures a variable inline (an inline capture skips the `LogSafe` check).
+    /// `{}` and `{:..}` are plain; `{secret}` and `{0}` capture or index a named value.
+    #[test]
+    fn inline_captures_are_found() {
+        assert!(!has_capture("a {} b {:?} c {:x} {{literal}}"));
+        assert!(has_capture("typed {secret}"));
+        assert!(has_capture("{0} twice"));
+        assert!(has_capture("{secret:?}"));
+        assert!(has_capture("open {"));
+        // The macro itself runs the check in a `const`, so every spelling gets it.
+        let src = include_str!("dlog.rs").split("#[cfg(test)]").next().unwrap();
+        assert_eq!(src.matches("const _: () = $crate::dlog::no_capture($fmt);").count(), 1, "dlog! checks its format at compile time");
+    }
+
+    /// Every `dlog!` call site is listed, whatever its spelling (`dlog!(`, `crate::dlog!(`,
+    /// `dlog! (`, `dlog!{`); a format string never names a secret-shaped word and never captures
+    /// a variable inline.
     #[test]
     fn log_call_sites_are_listed_and_safe() {
+        let call = regex::Regex::new(r"\bdlog!\s*[(\[{]").unwrap();
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found: Vec<(String, usize)> = Vec::new();
         let mut dirs = vec![src.clone()];
@@ -726,15 +776,15 @@ mod tests {
                 let rel = p.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
                 let text = std::fs::read_to_string(&p).unwrap();
                 // This file's own tests and docs mention the macro.
-                let live = if rel == "dlog.rs" { text.split("#[cfg(test)]").next().unwrap_or("").to_string() } else { text.split("#[cfg(test)]").next().unwrap_or("").to_string() };
+                let live = text.split("#[cfg(test)]").next().unwrap_or("");
                 let mut n = 0;
-                for call in live.split("crate::dlog!(").skip(1) {
+                for m in call.find_iter(live) {
                     n += 1;
-                    let fmt = call.split('"').nth(1).unwrap_or("");
+                    let fmt = live[m.end()..].split('"').nth(1).unwrap_or("");
                     for bad in FORBIDDEN_WORDS {
                         assert!(!fmt.to_ascii_lowercase().contains(bad), "{rel}: a log format names `{bad}`: {fmt}");
                     }
-                    assert!(!fmt.contains("{") || fmt.replace("{}", "").replace("{:?}", "").replace("{:x}", "").replace("{{", "").find(|c| c == '{').is_none(), "{rel}: an inline capture in a log format: {fmt}");
+                    assert!(!has_capture(fmt), "{rel}: an inline capture in a log format: {fmt}");
                 }
                 if n > 0 {
                     found.push((rel, n));
@@ -744,6 +794,19 @@ mod tests {
         found.sort();
         let want: Vec<(String, usize)> = CALL_SITES.iter().map(|(f, n)| (f.to_string(), *n)).collect();
         assert_eq!(found, want, "a new dlog! call site needs a line in CALL_SITES after a secrets review");
+    }
+
+    /// A click on a notification stops the log only when the automatic-start notice is still the
+    /// last notification shown; every notification goes through `notify::show_with`, which counts.
+    #[test]
+    fn only_the_debug_notice_click_stops_logging() {
+        assert!(same_notice(Some(4), 4));
+        assert!(!same_notice(Some(4), 5), "another notification was shown since");
+        assert!(!same_notice(None, 4));
+        let n = include_str!("notify.rs");
+        assert!(n.split("pub fn show_with(").nth(1).unwrap().split("\n}").next().unwrap().contains("SHOWN.fetch_add"), "show_with counts every notification");
+        let a = include_str!("app/alerts_ui.rs");
+        assert!(a.split("fn reveal_notified(").nth(1).unwrap().split("\n    }").next().unwrap().contains("same_notice("), "the click compares");
     }
 
     /// `AD:1130`, P21: the one teardown stops the log and writes the file, and a panic reaches

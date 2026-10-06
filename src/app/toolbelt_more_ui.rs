@@ -1060,7 +1060,7 @@ impl App {
                     Ok(()) => {
                         self.last_notified = Some(*pane);
                         self.last_notified_script = None;
-                        self.last_notified_debug = false;
+                        self.last_notified_debug = None;
                     }
                     Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
                 }
