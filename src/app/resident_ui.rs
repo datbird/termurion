@@ -47,11 +47,7 @@ impl App {
         self.write_empty_state();
         self.flush_notes();
         self.clear_undo();
-        if let Some(c) = self.undo_capture.as_mut() {
-            for p in &mut c.panes {
-                p.stop_log();
-            }
-        }
+        self.end_capture();
         self.finish_archives(false, std::time::Duration::from_secs(5));
         self.close_all_logs();
         self.end_sessions_keep_host();
@@ -431,6 +427,19 @@ mod tests {
         assert!(notify.contains("RegisterWindowMessageW") && notify.contains("if RESIDENT.load(Ordering::SeqCst)") && notify.contains("add_resident(hwnd)"));
         assert!(production(PRESENCE).contains("crate::resident::icon_wanted(presence::tray_wanted("));
         assert!(production(PRESENCE).contains("crate::notify::set_resident(want)"));
+    }
+
+    /// Closing the last window by its close button, Close Tab or Close ends the undo capture with the
+    /// sessions it holds (they end with the window, before the shells are killed): nothing dead or
+    /// orphaned reaches the Undo Close stack, so the tray's Undo Close never restores them.
+    #[test]
+    fn closing_the_last_window_ends_the_undo_capture() {
+        let go = body(production(OWN), "go_resident_after_last");
+        assert!(go.contains("self.end_capture()") && !go.contains("stop_log"), "the capture ends through undo_ui");
+        assert!(go.contains("self.clear_undo()"), "the stack is empty while resident");
+        assert!(go.find("self.end_capture()").unwrap() < go.find("self.end_sessions_keep_host()").unwrap(), "before the shells are killed");
+        let undo = body(production(include_str!("undo_ui.rs")), "end_capture");
+        assert!(undo.contains("undo_capture.take()") && undo.contains("end_undone("), "the captured panes end for good");
     }
 
     /// A shutdown asks as a quit does, through the one subclass; the block reason stands only
