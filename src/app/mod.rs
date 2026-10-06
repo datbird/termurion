@@ -3918,7 +3918,7 @@ impl App {
         }
         match edit {
             Edit::None | Edit::Preview => return,
-            Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how),
+            Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how, crate::settings_ui::Opener::ProfilesWindow),
             // Taken by the window's redraw handler, which has the event loop.
             Edit::EditProfiles(_) => return,
             Edit::Error(e) => self.banners.set("import", e),

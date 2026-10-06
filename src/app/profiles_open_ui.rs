@@ -3,7 +3,7 @@
 //! (`iTermProfilesWindowController.m:213-440`).
 
 use super::*;
-use crate::settings_ui::{asks_before_opening, CLOSE_AFTER_OPENING, closes_after, open_plan, How, Step};
+use crate::settings_ui::{asks_before_opening, CLOSE_AFTER_OPENING, closes_after, open_plan, How, Opener, Step};
 
 
 /// The question that asks before many sessions start (P6): its heading and text.
@@ -13,7 +13,7 @@ pub(super) fn open_many_text(count: usize) -> (String, &'static str) {
 
 impl App {
     /// Opens `guids` as `how`, asking first when there are more than `OPEN_ASK_ABOVE` (P6).
-    pub(super) fn open_selected_profiles(&mut self, guids: Vec<String>, how: How) {
+    pub(super) fn open_selected_profiles(&mut self, guids: Vec<String>, how: How, from: Opener) {
         // Bonjour hosts never open in a crowd (P5).
         let guids = super::bonjour_ui::without_bonjour(&self.store, guids);
         if guids.is_empty() {
@@ -21,16 +21,16 @@ impl App {
         }
         if asks_before_opening(guids.len()) {
             let (heading, text) = open_many_text(guids.len());
-            let ask = scripts_alerts::ask(&heading, text, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, how));
+            let ask = scripts_alerts::ask(&heading, text, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, how, from));
             return self.ask_scripts(ask);
         }
-        self.open_selected_now(guids, how);
+        self.open_selected_now(guids, how, from);
     }
 
     /// The answered question's OK, or a small selection: each step goes through the usual
     /// spawn path (`new_tab`, `split`, `pending_windows`), then the Profiles window closes when
-    /// its checkbox says so.
-    pub(super) fn open_selected_now(&mut self, guids: Vec<String>, how: How) {
+    /// its checkbox says so and the opening was its own.
+    pub(super) fn open_selected_now(&mut self, guids: Vec<String>, how: How, from: Opener) {
         let window_exists = self.current_window().is_some();
         for step in open_plan(&guids, how, window_exists) {
             match step {
@@ -41,7 +41,7 @@ impl App {
                 Step::NewWindow(first, rest) => self.pending_windows.push(windows_ui::NewWindow::ProfilesIn(first, rest)),
             }
         }
-        if closes_after(self.globals.bool(CLOSE_AFTER_OPENING), how) {
+        if closes_after(self.globals.bool(CLOSE_AFTER_OPENING), how, from) {
             self.profiles_win = None;
         }
     }
@@ -66,7 +66,7 @@ mod tests {
         let (heading, _) = open_many_text(9);
         assert_eq!(heading, "Open 9 sessions?");
         let guids: Vec<String> = (0..9).map(|i| i.to_string()).collect();
-        let ask = scripts_alerts::ask(&heading, "t", &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, How::Tab));
+        let ask = scripts_alerts::ask(&heading, "t", &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, How::Tab, Opener::ProfilesWindow));
         assert_eq!(scripts_alerts::on_close(&ask.then, 1), scripts_alerts::Answer::Button(1));
         assert_eq!(ask.spec.cancel, Some(1));
     }

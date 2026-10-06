@@ -1150,7 +1150,7 @@ impl App {
         if guids.is_empty() {
             return;
         }
-        self.open_selected_profiles(guids, if window { crate::settings_ui::How::TabsInNewWindow } else { crate::settings_ui::How::Tab });
+        self.open_selected_profiles(guids, if window { crate::settings_ui::How::TabsInNewWindow } else { crate::settings_ui::How::Tab }, crate::settings_ui::Opener::Menu);
     }
 
     /// The saved profile a Ctrl+Win shortcut key opens: the first one holding it (P8).

@@ -242,7 +242,7 @@ pub(super) enum Then {
     BindScheme { guid: String, scheme: String },
     /// "Open N sessions?" (P6): OK (0) opens the Profiles window's profiles as the way chosen;
     /// Cancel (1) does nothing. A closed window cancels.
-    OpenProfiles(Vec<String>, crate::settings_ui::How),
+    OpenProfiles(Vec<String>, crate::settings_ui::How, crate::settings_ui::Opener),
     /// "Wrong Encoding Detected" for the custom `locale` of profile `guid` under a UTF-8 profile:
     /// Change Locale (0) asks for another, Keep This Locale (1) keeps it, storing it when
     /// `from_settings` (a pick made in Settings). A closed window does neither.
@@ -566,9 +566,9 @@ impl App {
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
             Then::LocaleMismatch { guid, locale, from_settings } => self.locale_mismatch_answered(guid, locale, from_settings, index),
-            Then::OpenProfiles(guids, how) => {
+            Then::OpenProfiles(guids, how, from) => {
                 if index == 0 {
-                    self.open_selected_now(guids, how);
+                    self.open_selected_now(guids, how, from);
                 }
             }
             Then::BindScheme { guid, scheme } => {

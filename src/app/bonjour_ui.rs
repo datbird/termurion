@@ -36,6 +36,23 @@ pub(super) fn apply_event(store: &mut Store, live: &mut Vec<Live>, event: Event,
     }
 }
 
+/// Drops the live entries whose profile is gone (deleted in Settings or by the API:
+/// `Store::delete` takes the guid out of `transient`), so the slot frees and the host can be
+/// added again. Costs nothing unless a delete happened.
+pub(super) fn prune(store: &Store, live: &mut Vec<Live>) {
+    if live.len() != store.transient.len() {
+        live.retain(|l| store.transient.contains(&l.guid));
+    }
+}
+
+/// The profiles were replaced wholesale (a remote-prefs load): transient guids that name no
+/// profile go, and the live list follows.
+pub(super) fn after_profiles_replaced(store: &mut Store, live: &mut Vec<Live>) {
+    let present: std::collections::HashSet<String> = store.profiles.iter().map(|p| p.guid()).collect();
+    store.transient.retain(|g| present.contains(g));
+    live.retain(|l| store.transient.contains(&l.guid));
+}
+
 /// Removes every Bonjour profile (`removeBonjourProfiles`): the key went off.
 pub(super) fn remove_all(store: &mut Store, live: &mut Vec<Live>) -> bool {
     let before = store.profiles.len();
@@ -91,6 +108,7 @@ impl App {
     /// this costs nothing while nothing is found.
     pub(super) fn bonjour_tick(&mut self) {
         self.bonjour_sync();
+        prune(&self.store, &mut self.bonjour_live);
         let mut changed = false;
         while let Some(event) = self.bonjour.as_ref().and_then(|b| b.try_event()) {
             let ssh = self.globals.string("sshSchemePath");
@@ -101,6 +119,14 @@ impl App {
             self.menus_dirty = true;
             self.redraw();
         }
+    }
+
+    /// A remote-prefs load replaced every profile: the stale transient and live entries go and
+    /// the browser starts again (if still on), so the hosts are found again.
+    pub(super) fn bonjour_profiles_replaced(&mut self) {
+        after_profiles_replaced(&mut self.store, &mut self.bonjour_live);
+        self.bonjour = None;
+        self.bonjour_wanted = None;
     }
 
     /// Removes every Bonjour profile (the key turned off, or the browser stopped).
@@ -185,6 +211,24 @@ mod tests {
         // A lost host frees a slot.
         assert!(apply_event(&mut s, &mut live, lost("h0", "ssh", "10.1.0.1"), "ssh"));
         assert!(apply_event(&mut s, &mut live, found("late", "10.9.9.9"), "ssh"));
+    }
+
+    #[test]
+    fn a_deleted_or_replaced_bonjour_profile_frees_its_slot() {
+        let mut s = store();
+        let mut live = Vec::new();
+        apply_event(&mut s, &mut live, found("Mac", "10.0.0.5"), "ssh");
+        // Deleted in Settings or by the API: the live entry goes, and the host can come back.
+        let guid = live[0].guid.clone();
+        assert!(s.delete(&guid));
+        prune(&s, &mut live);
+        assert!(live.is_empty());
+        assert!(apply_event(&mut s, &mut live, found("Mac", "10.0.0.5"), "ssh"));
+        // A remote-prefs load replaces every profile: nothing transient or live is left.
+        s.profiles = vec![crate::profile::Profile::new("Remote")];
+        after_profiles_replaced(&mut s, &mut live);
+        assert!(s.transient.is_empty() && live.is_empty());
+        assert!(apply_event(&mut s, &mut live, found("Mac", "10.0.0.5"), "ssh"));
     }
 
     #[test]

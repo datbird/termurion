@@ -35,6 +35,49 @@ pub struct Lost {
     pub address: String,
 }
 
+/// Goodbyes waiting for room in the UI queue, at most.
+pub const MAX_WAITING_LOST: usize = MAX_HOSTS;
+
+/// Events on their way to the UI thread's bounded queue. A host that does not fit is reported
+/// back, so the worker forgets the instance and its next announcement resolves it again; a
+/// goodbye that does not fit waits (at most `MAX_WAITING_LOST`) and is sent before anything
+/// else, so a later host never overtakes the goodbye before it.
+#[derive(Default)]
+pub struct Outbox {
+    lost: std::collections::VecDeque<Event>,
+}
+
+impl Outbox {
+    /// Sends `e` through `send` (false: no room). False only for a host that was not sent.
+    pub fn emit(&mut self, e: Event, send: &mut dyn FnMut(Event) -> bool) -> bool {
+        self.flush(send);
+        match e {
+            Event::Found(_) => self.lost.is_empty() && send(e),
+            Event::Lost(_) => {
+                if !(self.lost.is_empty() && send(e.clone())) && self.lost.len() < MAX_WAITING_LOST {
+                    self.lost.push_back(e);
+                }
+                true
+            }
+        }
+    }
+
+    /// Sends the waiting goodbyes, in order, while there is room.
+    pub fn flush(&mut self, send: &mut dyn FnMut(Event) -> bool) {
+        while let Some(e) = self.lost.front() {
+            if !send(e.clone()) {
+                return;
+            }
+            self.lost.pop_front();
+        }
+    }
+
+    /// Whether a goodbye waits (the worker then wakes to retry).
+    pub fn waiting(&self) -> bool {
+        !self.lost.is_empty()
+    }
+}
+
 /// The services iTerm2 browses (`:416-428`); only ssh, scp and sftp make profiles.
 pub const SERVICES: [&str; 3] = ["_ssh._tcp.local", "_ftp._tcp.local", "_telnet._tcp.local"];
 
@@ -336,7 +379,7 @@ pub use browser::Browser;
 /// request's last callback; no early return, failed spawn or panic can free one sooner.
 #[cfg(windows)]
 mod browser {
-    use super::{instance_label, DnsSd, Ended, Event, Found, Lost, Requests, MAX_HOSTS, SERVICES};
+    use super::{instance_label, DnsSd, Ended, Event, Found, Lost, Outbox, Requests, MAX_HOSTS, SERVICES};
     use crate::pty::Notify;
     use std::collections::HashMap;
     use std::ffi::c_void;
@@ -358,9 +401,10 @@ mod browser {
     /// Longest wide string, and most TXT pairs, read from a system structure.
     const MAX_WIDE: usize = 256;
     const MAX_TXT: usize = 32;
-    /// Events waiting for the UI thread; a full queue drops the newest (the next announcement
-    /// repeats it).
+    /// Events waiting for the UI thread (`Outbox`: a host that does not fit is resolved again
+    /// at its next announcement, a goodbye waits and is retried every `RETRY`).
     const UI_QUEUE: usize = 256;
+    const RETRY: Duration = Duration::from_millis(250);
     /// DnsServiceBrowse and DnsServiceResolve answer this when the request is running.
     const DNS_REQUEST_PENDING: i32 = 9506;
     const STATUS_OK: u32 = 0;
@@ -607,14 +651,19 @@ mod browser {
         // Instance names seen and not gone, by lowercase full name: None while resolving, then
         // what a goodbye reports.
         let mut known: HashMap<String, Option<Lost>> = HashMap::new();
-        let emit = |e: Event| {
-            if ui.try_send(e).is_ok() {
+        let mut outbox = Outbox::default();
+        let mut send = |e: Event| {
+            let sent = ui.try_send(e).is_ok();
+            if sent {
                 notify();
             }
+            sent
         };
         loop {
             requests.reap();
-            let next = resolving.values().map(|r| r.deadline).min();
+            outbox.flush(&mut send);
+            let retry = outbox.waiting().then(|| Instant::now() + RETRY);
+            let next = resolving.values().map(|r| r.deadline).chain(retry).min();
             let msg = match next {
                 Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
                     Ok(m) => Some(m),
@@ -646,7 +695,7 @@ mod browser {
                     }
                     if gone {
                         if let Some(Some(lost)) = known.remove(&key) {
-                            emit(Event::Lost(lost));
+                            outbox.emit(Event::Lost(lost), &mut send);
                         } else if let Some(id) = resolving.iter().find(|(_, r)| r.full.eq_ignore_ascii_case(&full)).map(|(id, _)| *id) {
                             resolving.remove(&id);
                             requests.cancel(id);
@@ -673,8 +722,12 @@ mod browser {
                     };
                     let Some(name) = instance_label(&r.full, SERVICES[r.service]) else { continue };
                     let Some(service) = super::service_type(SERVICES[r.service]) else { continue };
-                    known.insert(r.full.to_ascii_lowercase(), Some(Lost { name: name.clone(), service: service.clone(), address: address.clone() }));
-                    emit(Event::Found(Found { name, service, address, port, user: super::user_from_txt(&txt) }));
+                    let key = r.full.to_ascii_lowercase();
+                    known.insert(key.clone(), Some(Lost { name: name.clone(), service: service.clone(), address: address.clone() }));
+                    if !outbox.emit(Event::Found(Found { name, service, address, port, user: super::user_from_txt(&txt) }), &mut send) {
+                        // No room: forgotten, so the next announcement resolves it again.
+                        known.remove(&key);
+                    }
                 }
             }
         }
@@ -915,6 +968,47 @@ mod tests {
         let p = profile_for(&found("ssh", None, 22), &proto, "ssh").unwrap();
         assert_eq!(p.string("Initial Text"), "");
         assert!(p.get("Shortcut").is_none());
+    }
+
+    #[test]
+    fn a_full_ui_queue_loses_no_goodbye_and_no_host_for_good() {
+        struct Queue {
+            room: usize,
+            sent: Vec<Event>,
+        }
+        impl Queue {
+            fn push(&mut self, e: Event) -> bool {
+                if self.room == 0 {
+                    return false;
+                }
+                self.room -= 1;
+                self.sent.push(e);
+                true
+            }
+        }
+        let host = |n: &str| Event::Found(Found { name: n.into(), service: "ssh".into(), address: "10.0.0.5".into(), port: 22, user: None });
+        let gone = |n: &str| Event::Lost(Lost { name: n.into(), service: "ssh".into(), address: "10.0.0.5".into() });
+        let mut q = Queue { room: 1, sent: Vec::new() };
+        let mut out = Outbox::default();
+        assert!(out.emit(host("a"), &mut |e| q.push(e)));
+        // A host that does not fit is reported, so the worker forgets it and resolves it again.
+        assert!(!out.emit(host("b"), &mut |e| q.push(e)));
+        // A goodbye that does not fit waits, and holds back later hosts so the order stays.
+        assert!(out.emit(gone("a"), &mut |e| q.push(e)));
+        assert!(out.waiting());
+        // With room for one, the waiting goodbye goes first and the host behind it is refused.
+        q.room = 1;
+        assert!(!out.emit(host("c"), &mut |e| q.push(e)), "behind a waiting goodbye");
+        assert!(!out.waiting());
+        q.room = 5;
+        assert!(out.emit(host("c"), &mut |e| q.push(e)));
+        assert_eq!(q.sent, vec![host("a"), gone("a"), host("c")]);
+        // Waiting goodbyes are bounded.
+        let mut full = Queue { room: 0, sent: Vec::new() };
+        for i in 0..2 * MAX_WAITING_LOST {
+            out.emit(gone(&i.to_string()), &mut |e| full.push(e));
+        }
+        assert_eq!(out.lost.len(), MAX_WAITING_LOST);
     }
 
     #[test]

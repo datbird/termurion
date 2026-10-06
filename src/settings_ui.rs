@@ -173,8 +173,18 @@ pub fn profiles_context_menu(selected: usize) -> Vec<&'static str> {
 /// Whether "Close this window after opening a profile." closes the window after `how`
 /// (`PWC:285-340`): after every kind of opening, splits into the current window included
 /// (`openBookmarkInVerticalPane:` and `openBookmarkInHorizontalPane:` close it too, `PWC:298-301`, `:311-314`).
-pub fn closes_after(key: bool, _how: How) -> bool {
-    key
+/// Only the Profiles window reads its box (`PWC` is the only reader of
+/// CloseBookmarksWindowAfterOpening); an Open All from the Profiles menu never closes it.
+pub fn closes_after(key: bool, _how: How, from: Opener) -> bool {
+    key && from == Opener::ProfilesWindow
+}
+
+/// Where several profiles were opened from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opener {
+    ProfilesWindow,
+    /// The Profiles menu's Open All.
+    Menu,
 }
 
 /// The General tab's Shortcut popup (`PGP:1329-1418`): "none", A-Z and 0-9, each titled
@@ -2097,14 +2107,18 @@ mod tests {
 
     #[test]
     fn close_after_opening_follows_iterm2() {
+        let pw = Opener::ProfilesWindow;
         for how in [How::Tab, How::Window, How::TabsInNewWindow, How::SplitsInNewWindow(true), How::SplitsInNewWindow(false)] {
-            assert!(closes_after(true, how), "{how:?}");
-            assert!(!closes_after(false, how), "{how:?} with the key off");
+            assert!(closes_after(true, how, pw), "{how:?}");
+            assert!(!closes_after(false, how, pw), "{how:?} with the key off");
         }
         // iTerm2 closes after a split into the current window too (`PWC:298-301`, `:311-314`).
-        assert!(closes_after(true, How::SplitRight));
-        assert!(closes_after(true, How::SplitDown));
-        assert!(!closes_after(false, How::SplitDown));
+        assert!(closes_after(true, How::SplitRight, pw));
+        assert!(closes_after(true, How::SplitDown, pw));
+        assert!(!closes_after(false, How::SplitDown, pw));
+        // Only the Profiles window reads its box: the Profiles menu's Open All leaves it open.
+        assert!(!closes_after(true, How::Tab, Opener::Menu));
+        assert!(!closes_after(true, How::TabsInNewWindow, Opener::Menu));
     }
 
     #[test]

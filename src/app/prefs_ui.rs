@@ -337,6 +337,7 @@ impl App {
     /// The location's settings replace the running ones, as an import does.
     pub(super) fn prefs_apply(&mut self, snap: Snapshot) {
         apply_snapshot(&snap, &mut self.globals, &mut self.store);
+        self.bonjour_profiles_replaced();
         let n = snap.profiles.len();
         self.prefs_saved = Some(snap);
         self.apply_edit(Edit::Imported(n));

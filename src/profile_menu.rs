@@ -67,6 +67,8 @@ struct Menu {
     index: std::collections::HashMap<String, usize>,
     leaves: Vec<Node>,
     guids: std::collections::HashSet<String>,
+    /// Whether it holds a profile Open All would open (Bonjour hosts are skipped, P5).
+    openable: bool,
 }
 
 /// What the build has spent against `MAX_ITEMS` and `MAX_WORK`.
@@ -110,28 +112,35 @@ impl Menu {
         Some(&mut self.folders[at].1)
     }
 
-    fn add(&mut self, node: &Node, budget: &mut Budget) {
+    /// Adds a profile; `crowd` is false for a Bonjour host, which Open All skips.
+    fn add(&mut self, node: &Node, budget: &mut Budget, crowd: bool) {
         let Node::Profile { guid, .. } = node else { return };
         if !self.guids.contains(guid) && budget.spend(1) {
             self.guids.insert(guid.clone());
             self.leaves.push(node.clone());
+            self.openable |= crowd;
         }
     }
 
     /// Folders sorted without regard to case, then the profiles in model order, then Open All
-    /// when the menu holds two or more entries (`menuHasMultipleItemsExcludingAlternates`).
-    fn nodes(mut self, path: &str) -> Vec<Node> {
+    /// when the menu holds two or more entries (`menuHasMultipleItemsExcludingAlternates`) and
+    /// it or a submenu holds a profile Open All opens (a menu of Bonjour hosts only has none,
+    /// since Open All skips them, P5). Returns the nodes and whether Open All would open any.
+    fn nodes(mut self, path: &str) -> (Vec<Node>, bool) {
         self.folders.sort_by_key(|(n, _)| n.to_lowercase());
         let mut out: Vec<Node> = Vec::new();
+        let mut openable = self.openable;
         for (name, menu) in self.folders {
             let below = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
-            out.push(Node::Folder { name, children: menu.nodes(&below) });
+            let (children, below_openable) = menu.nodes(&below);
+            openable |= below_openable;
+            out.push(Node::Folder { name, children });
         }
         out.extend(self.leaves);
-        if out.len() >= 2 {
+        if out.len() >= 2 && openable {
             out.push(Node::OpenAll { path: path.to_string() });
         }
-        out
+        (out, openable)
     }
 }
 
@@ -152,13 +161,14 @@ pub fn tree_counted(profiles: &[(String, String, Vec<String>, Option<char>)], wo
             break;
         }
         let node = Node::Profile { guid: guid.clone(), name: crate::profile_list::display_text(name), shortcut: *shortcut };
+        let crowd = !tags.iter().any(|t| t == crate::bonjour::TAG);
         let chains: Vec<Vec<String>> = tags
             .iter()
             .map(|t| t.split('/').map(crate::profile_list::display_text).filter(|p| !p.is_empty()).collect::<Vec<_>>())
             .filter(|c| !c.is_empty())
             .collect();
         if chains.is_empty() {
-            top.add(&node, &mut budget);
+            top.add(&node, &mut budget, crowd);
             continue;
         }
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -178,10 +188,10 @@ pub fn tree_counted(profiles: &[(String, String, Vec<String>, Option<char>)], wo
                     None => continue 'profiles,
                 }
             }
-            menu.add(&node, &mut budget);
+            menu.add(&node, &mut budget, crowd);
         }
     }
-    let mut out = top.nodes("");
+    let (mut out, _) = top.nodes("");
     if budget.over {
         out.push(Node::More);
     }
@@ -387,7 +397,19 @@ mod tests {
         let only_bonjour: Vec<_> = (0..128).map(|i| (format!("b{i}"), format!("h{i}"), vec!["bonjour".to_string()], None)).collect();
         let t = tree(&only_bonjour);
         assert!(!matches!(t.last(), Some(Node::More)), "128 hosts fit");
-        assert_eq!(count(&t), 1 + 128 + 1, "one folder, the hosts, its Open All");
+        assert_eq!(count(&t), 1 + 128, "one folder and the hosts: no Open All that would open nothing");
+    }
+
+    #[test]
+    fn open_all_is_left_out_where_it_would_open_nothing() {
+        // Open All skips Bonjour hosts (P5), so the bonjour folder has none.
+        let t = tree(&[p("h1", &["bonjour"]), p("h2", &["bonjour"]), p("A", &[]), p("B", &[])]);
+        assert_eq!(t[0], folder("bonjour", vec![leaf("h1"), leaf("h2")]));
+        assert_eq!(t.last(), Some(&all("")), "the top menu opens A and B");
+        // A folder holding a host and a saved profile keeps its Open All.
+        let t = tree(&[p("h", &["bonjour", "lan"]), p("A", &["lan"])]);
+        assert_eq!(t[1], folder("lan", vec![leaf("h"), leaf("A"), all("lan")]));
+        assert_eq!(t[0], folder("bonjour", vec![leaf("h")]));
     }
 
     #[test]
