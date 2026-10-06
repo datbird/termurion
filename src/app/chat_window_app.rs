@@ -38,6 +38,15 @@ pub(super) struct IconJob {
     waiting: Option<Instant>,
 }
 
+/// When the loop must wake for the icon renderers: the earliest render deadline (a view started at
+/// each `rendering` instant has `svg_icon::RENDER_TIMEOUT`) and environment-wait deadline (a
+/// candidate that waited since each `waiting` instant has `ICON_ENV_WAIT`).
+pub(super) fn icon_wake(rendering: &[Instant], waiting: &[Instant]) -> Option<Instant> {
+    let render = rendering.iter().map(|t| *t + crate::svg_icon::RENDER_TIMEOUT);
+    let env = waiting.iter().map(|t| *t + ICON_ENV_WAIT);
+    render.chain(env).min()
+}
+
 /// How a generation ends.
 enum IconEnd {
     Png(Vec<u8>),
@@ -1705,6 +1714,14 @@ impl App {
         }
     }
 
+    /// When the loop must wake for a stalled renderer or a candidate that waits for the environment
+    /// (P23: an idle app still tears the view down on time).
+    pub(super) fn icon_due(&self) -> Option<Instant> {
+        let rendering: Vec<Instant> = self.icon_jobs.values().filter_map(|j| j.rast.as_ref().map(|r| r.started())).collect();
+        let waiting: Vec<Instant> = self.icon_jobs.values().filter(|j| j.rast.is_none()).filter_map(|j| j.waiting).collect();
+        icon_wake(&rendering, &waiting)
+    }
+
     /// Time limits and candidates waiting for the environment (`about_to_wait`).
     pub(super) fn icon_tick(&mut self) {
         let chats: Vec<String> = self.icon_jobs.keys().cloned().collect();
@@ -1805,6 +1822,24 @@ mod tests {
         // The icon renderers' state is app-wide, never swapped per window.
         let swap = include_str!("windows_ui.rs");
         assert!(!swap.contains("icon_requests") && !swap.contains("icon_jobs"));
+    }
+
+    /// Review fix (Task 4, Important 2, P23): the 5 s render limit and the 15 s environment wait are
+    /// deadlines in the wake array, so an idle app still tears down a renderer that posts nothing.
+    #[test]
+    fn icon_deadlines_are_in_the_wake_array() {
+        let t0 = Instant::now();
+        assert_eq!(icon_wake(&[], &[]), None);
+        assert_eq!(icon_wake(&[t0], &[]), Some(t0 + crate::svg_icon::RENDER_TIMEOUT));
+        assert_eq!(icon_wake(&[], &[t0]), Some(t0 + ICON_ENV_WAIT));
+        let later = t0 + Duration::from_secs(1);
+        assert_eq!(icon_wake(&[later, t0], &[t0]), Some(t0 + crate::svg_icon::RENDER_TIMEOUT), "the earliest of all");
+        let m = include_str!("mod.rs");
+        let wake = &m[m.find("let wake = [jump_due").unwrap()..];
+        let wake = &wake[..wake.find("].into_iter()").unwrap()];
+        assert!(wake.contains("icon_due"), "the wake array names the icon deadline");
+        assert!(m.contains("let icon_due = self.icon_due();"), "computed after icon_tick, before the array");
+        assert!(m.find("self.icon_tick();").unwrap() < m.find("let icon_due = self.icon_due();").unwrap());
     }
 
     #[test]

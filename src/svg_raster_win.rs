@@ -96,6 +96,11 @@ impl Rasterizer {
         self.id
     }
 
+    /// When this render started (its deadline is `svg_icon::RENDER_TIMEOUT` later).
+    pub fn started(&self) -> Instant {
+        self.started
+    }
+
     /// The 5 second limit passed.
     pub fn expired(&self) -> bool {
         self.started.elapsed() >= svg_icon::RENDER_TIMEOUT
