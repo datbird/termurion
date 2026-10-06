@@ -161,13 +161,25 @@ fn toolinfo(owner: isize, text: *mut u16) -> TTTOOLINFOW {
     info
 }
 
+/// The window `GetMenuItemRect` takes for `menu`: the window for its menu bar, null for a popup
+/// (a submenu), which the system finds itself; with the owner window the popup's item rect is
+/// taken from the wrong window.
+fn rect_owner(hwnd: isize, menu: isize) -> HWND {
+    // SAFETY: a plain query on this thread's window.
+    if unsafe { GetMenu(hwnd as HWND) } as isize == menu {
+        hwnd as HWND
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
 /// Shows the tip for `hit` beside its item.
 fn show(hwnd: isize, hit: &Hit) {
     let Ok(mut state) = STATE.lock() else { return };
     let Some(tip) = tooltip(&mut state, hwnd) else { return };
     let mut item = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     // SAFETY: a plain query with a valid rect.
-    if unsafe { GetMenuItemRect(hwnd as HWND, hit.menu as _, hit.pos, &mut item) } == 0 || item.right <= item.left {
+    if unsafe { GetMenuItemRect(rect_owner(hwnd, hit.menu), hit.menu as _, hit.pos, &mut item) } == 0 || item.right <= item.left {
         return;
     }
     let mut text = wide(hit.text);
@@ -282,6 +294,18 @@ mod tests {
             SetMenu(w, bar);
             (w, shell as isize, other as isize)
         }
+    }
+
+    /// m13v2 Task 7 fix: a popup submenu's item rect is asked with a null owner, the bar's with the window.
+    #[test]
+    fn item_rects_name_the_owner_the_docs_say() {
+        let (w, shell, _) = window_with_menu();
+        // SAFETY: the window is this thread's.
+        let bar = unsafe { GetMenu(w) } as isize;
+        assert_eq!(rect_owner(w as isize, bar), w, "the menu bar belongs to the window");
+        assert!(rect_owner(w as isize, shell).is_null(), "a popup submenu has no owner window");
+        // SAFETY: the window is this thread's.
+        unsafe { DestroyWindow(w) };
     }
 
     #[test]
