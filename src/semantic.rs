@@ -430,6 +430,13 @@ pub enum Run {
     Blocked(String),
 }
 
+/// A bare drive root (`C:\`, `c:/`) as `C:\.`: the same folder, with no trailing separator, so it is
+/// safe in cmd.exe, PowerShell and POSIX quoting alike (final wave ruling). None for anything else.
+pub fn drive_root_form(v: &str) -> Option<String> {
+    let b = v.as_bytes();
+    (b.len() == 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/')).then(|| format!("{}:\\.", b[0] as char))
+}
+
 /// Whether a substituted value is refused on a cmd.exe command line. The rule holds whether
 /// or not the template quotes the placeholder, so it never depends on quote state: cmd.exe
 /// metacharacters (`& | < > ^ " % ! ( ) ` + "`" + `), every control character (CR, LF, NUL included),
@@ -464,6 +471,9 @@ pub fn build_cmd_line(pieces: &[CmdPiece]) -> Option<String> {
     let mut out = String::new();
     let mut quoted = false;
     for p in pieces {
+        // A drive root is safe only in its `X:\.` form (no trailing backslash).
+        let root = if let CmdPiece::Value(v) = p { drive_root_form(v) } else { None };
+        let p = &root.map_or_else(|| p.clone(), CmdPiece::Value);
         match p {
             CmdPiece::Text(t) => {
                 quoted ^= t.chars().filter(|&c| c == '"').count() % 2 == 1;
@@ -1163,6 +1173,14 @@ mod tests {
     /// A placeholder the template already quotes gets the value bare (no second pair of quotes),
     /// so a value with spaces stays one argument for the program cmd.exe starts; an unquoted
     /// placeholder gets its own quotes. The exact CreateProcess line and its argv.
+    /// Final wave ruling: a working folder at a drive root (`\5`) reaches the builder as `X:\.`.
+    #[test]
+    fn a_drive_root_reaches_the_cmd_builder_in_its_safe_form() {
+        assert_eq!(fill_cmd("dir \\5", ["", "", "", "", "C:\\"]).as_deref(), Some("dir \"C:\\.\""));
+        assert_eq!(fill_cmd("dir \"\\5\"", ["", "", "", "", "d:/"]).as_deref(), Some("dir \"d:\\.\""));
+        assert_eq!(fill_cmd("dir \\5", ["", "", "", "", "C:\\a\\"]), None, "a folder with a trailing backslash stays refused");
+    }
+
     #[test]
     fn a_pre_quoted_placeholder_stays_one_argument() {
         let v = "a --output=C:\\p";

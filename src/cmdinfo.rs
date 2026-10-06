@@ -291,6 +291,12 @@ mod tests {
     }
 
     #[test]
+    fn composer_at_a_drive_root_writes_the_root() {
+        assert_eq!(composer_text("dir", Some("C:\\"), Some("cmd")).unwrap(), "cd /d \"C:\\.\"\ndir");
+        assert_eq!(composer_text("dir", Some("C:\\"), Some("pwsh")).unwrap(), "cd 'C:\\.'\ndir");
+    }
+
+    #[test]
     fn hms_follows_iterm2() {
         assert_eq!(hms(0.0), "0:00.000");
         assert_eq!(hms(61.25), "1:01.250");
@@ -427,7 +433,7 @@ mod tests {
         // Fix round 2, item 1: whatever shell a program reports (OSC 1337 shell=, RemoteHost), the
         // directory is written only when no supported shell reads anything special in it.
         for shell in [None, Some("cmd"), Some("bash"), Some("sh"), Some("pwsh"), Some("/bin/zsh")] {
-            for dir in ["C:\\x$(calc)", "C:\\x\\;calc", "C:\\x&calc", "C:\\x`calc`", "C:\\a\u{201e} x \u{201e}", "C:\\a\u{ff02}b", "C:\\a\u{2032}b", "C:\\"] {
+            for dir in ["C:\\x$(calc)", "C:\\x\\;calc", "C:\\x&calc", "C:\\x`calc`", "C:\\a\u{201e} x \u{201e}", "C:\\a\u{ff02}b", "C:\\a\u{2032}b", "C:\\x\\"] {
                 assert!(composer_text("make", Some(dir), shell).is_err(), "{shell:?} {dir}");
             }
         }

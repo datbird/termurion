@@ -79,6 +79,9 @@ fn special_in_some_shell(c: char) -> bool {
 pub fn quote_for(path: &str, shell: Shell) -> Result<String, String> {
     let path = safe_text(path).ok_or_else(|| REFUSED.to_string())?;
     checked_directory(path)?;
+    // A drive root is written as `X:\.`: the same folder, safe in every wrapper.
+    let root = crate::semantic::drive_root_form(path);
+    let path = root.as_deref().unwrap_or(path);
     if path.chars().any(special_in_some_shell) || path.ends_with('\\') {
         return Err(UNION_REFUSED.to_string());
     }
@@ -281,6 +284,19 @@ mod tests {
         assert_eq!(quote_for(r"C:\a b", Shell::Cmd).unwrap(), "\"C:\\a b\"");
     }
 
+    /// Final wave ruling: a drive root is written as `X:\.` for every shell.
+    #[test]
+    fn a_drive_root_is_written_in_a_form_every_shell_reads_as_the_root() {
+        assert_eq!(quote_for(r"C:\", Shell::Cmd).unwrap(), "\"C:\\.\"");
+        assert_eq!(quote_for(r"c:/", Shell::Unknown).unwrap(), "\"c:\\.\"");
+        assert_eq!(quote_for(r"C:\", Shell::PowerShell).unwrap(), "'C:\\.'");
+        assert_eq!(quote_for(r"C:\", Shell::Posix).unwrap(), "C\\:\\\\.");
+        // Only an exact drive root: a trailing backslash on a folder stays refused.
+        assert!(quote_for(r"C:\a\", Shell::Cmd).is_err());
+        assert!(quote_for(r"C:\\", Shell::Cmd).is_err());
+        assert!(quote_for(r"\\", Shell::Cmd).is_err());
+    }
+
     #[test]
     fn quote_for_follows_the_shell() {
         assert_eq!(quote_for(r"C:\a b", Shell::PowerShell).unwrap(), "'C:\\a b'");
@@ -293,7 +309,7 @@ mod tests {
     /// is program text (OSC 1337 shell=, RemoteHost, the launch program in a spoofed pane).
     #[test]
     fn the_union_refusal_applies_to_every_shell() {
-        let bad = ["C:\\x$(calc)", "C:\\x`calc`", "C:\\x\\;calc", "C:\\x&calc", "C:\\a'b\u{2019}; calc", "C:\\a\u{201a}b", "C:\\a\u{201b}b", "C:\\a\u{201e} x \u{201e}", "C:\\a\u{201f}b", "C:\\a\u{2032}b", "C:\\a\u{2033}b", "C:\\a\u{ff02}b", "C:\\a\u{ff07}b", "C:\\100%", "C:\\", "/tmp/dir\\", "x\"y"];
+        let bad = ["C:\\x$(calc)", "C:\\x`calc`", "C:\\x\\;calc", "C:\\x&calc", "C:\\a'b\u{2019}; calc", "C:\\a\u{201a}b", "C:\\a\u{201b}b", "C:\\a\u{201e} x \u{201e}", "C:\\a\u{201f}b", "C:\\a\u{2032}b", "C:\\a\u{2033}b", "C:\\a\u{ff02}b", "C:\\a\u{ff07}b", "C:\\100%", "C:\\x\\", "/tmp/dir\\", "x\"y"];
         for shell in [Shell::PowerShell, Shell::Cmd, Shell::Posix, Shell::Unknown] {
             for b in bad {
                 assert!(quote_for(b, shell).is_err(), "{shell:?} {b}");
