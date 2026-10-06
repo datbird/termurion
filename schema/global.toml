@@ -5559,3 +5559,59 @@ label = "Rate limit for Notification triggers."
 type = "float"
 default = 0.0
 help = "Rate limit for Notification triggers.\nIf the same trigger fires with less than this time interval (in seconds) between firings, it will be suppressed."
+
+# Badge (13w)
+
+[[setting]]
+key = "BadgeFont"
+tab = "Advanced"
+section = "Badge"
+label = "Font to use for the badge."
+type = "string"
+default = "Helvetica"
+help = "Font to use for the badge."
+
+[[setting]]
+key = "BadgeFontIsBold"
+tab = "Advanced"
+section = "Badge"
+label = "Should the badge render in bold type?"
+type = "bool"
+default = true
+help = "Should the badge render in bold type?"
+
+[[setting]]
+key = "BadgeMaxWidthFraction"
+tab = "Advanced"
+section = "Badge"
+label = "Maximum width of the badge"
+type = "float"
+default = 0.5
+help = "Maximum width of the badge\nAs a fraction of the width of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "BadgeMaxHeightFraction"
+tab = "Advanced"
+section = "Badge"
+label = "Maximum height of the badge"
+type = "float"
+default = 0.2
+help = "Maximum height of the badge\nAs a fraction of the height of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "BadgeRightMargin"
+tab = "Advanced"
+section = "Badge"
+label = "Default value for right margin for the badge"
+type = "int"
+default = 10
+help = "Default value for right margin for the badge\nHow much space to leave between the right edge of the badge and the right edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "BadgeTopMargin"
+tab = "Advanced"
+section = "Badge"
+label = "Default value for the top margin for the badge"
+type = "int"
+default = 10
+help = "Default value for the top margin for the badge\nHow much space to leave between the top edge of the badge and the top edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting."

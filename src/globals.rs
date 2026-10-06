@@ -74,6 +74,12 @@ const BOUNDS: &[(&str, Bound)] = &[
     ("IdempotentTriggerModeRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
     ("AlertTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
     ("UserNotificationTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
+    // B4: the badge keys. A font is a family name: never a path, so a setting cannot make the renderer read a file.
+    ("BadgeFont", Bound::Text { max: 128, ok: |c| !c.is_control() && !matches!(c, '\\' | '/' | ':') && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}') }),
+    ("BadgeMaxWidthFraction", Bound::Number { min: 0.0, max: 1.0 }),
+    ("BadgeMaxHeightFraction", Bound::Number { min: 0.0, max: 1.0 }),
+    ("BadgeRightMargin", Bound::Int { min: 0, max: 1000 }),
+    ("BadgeTopMargin", Bound::Int { min: 0, max: 1000 }),
     ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
 ];
 
@@ -366,6 +372,46 @@ mod tests {
             g.set(key, Value::Float(f64::NAN));
             assert!(g.number(key).is_some_and(|n| n.is_finite() && (0.0..=3600.0).contains(&n)), "{key} NaN");
         }
+    }
+
+    /// B4: the badge keys are bounded at the one write point: fractions 0..=1, margins 0..=1000,
+    /// the font a plain family name (never a path, no control character, at most 128).
+    #[test]
+    fn badge_keys_are_bounded_at_the_write_point() {
+        let mut g = Globals::empty(&scratch("bounds-badge"));
+        for key in ["BadgeMaxWidthFraction", "BadgeMaxHeightFraction"] {
+            g.set(key, Value::Float(7.0));
+            assert_eq!(g.number(key), Some(1.0), "{key} above");
+            g.set(key, Value::Float(-3.0));
+            assert_eq!(g.number(key), Some(0.0), "{key} below");
+            g.set(key, Value::Float(f64::NAN));
+            assert!(g.number(key).is_some_and(|n| n.is_finite() && (0.0..=1.0).contains(&n)), "{key} NaN");
+            g.set(key, Value::Float(0.3));
+            assert_eq!(g.number(key), Some(0.3), "{key} inside");
+        }
+        for key in ["BadgeRightMargin", "BadgeTopMargin"] {
+            g.set(key, Value::Integer(1_000_000_000));
+            assert_eq!(g.int(key), 1000, "{key} above");
+            g.set(key, Value::Integer(-5));
+            assert_eq!(g.int(key), 0, "{key} below");
+            g.set(key, Value::Integer(20));
+            assert_eq!(g.int(key), 20, "{key} inside");
+            g.set(key, Value::String("x".into()));
+            assert_eq!(g.int(key), 10, "{key} refuses text");
+        }
+        g.set("BadgeFont", Value::String("Segoe UI".into()));
+        assert_eq!(g.string("BadgeFont"), "Segoe UI");
+        for bad in ["x".repeat(129), "a\u{7}b".to_string(), "C:\\Windows\\Fonts\\evil.ttf".to_string(), "..\\evil.ttf".to_string(), "//server/share/f.ttf".to_string(), "a\u{202e}b".to_string()] {
+            g.set("BadgeFont", Value::String("keep".into()));
+            g.set("BadgeFont", Value::String(bad.clone()));
+            assert_eq!(g.string("BadgeFont"), "Helvetica", "BadgeFont refuses {bad:?}");
+        }
+        let path = scratch("bounds-badge-load");
+        std::fs::write(&path, "[settings]\nBadgeMaxWidthFraction = 9.0\nBadgeRightMargin = 99999\nBadgeFont = \"C:\\\\x.ttf\"\n").unwrap();
+        let g = Globals::load(&path).unwrap();
+        assert_eq!(g.number("BadgeMaxWidthFraction"), Some(1.0));
+        assert_eq!(g.int("BadgeRightMargin"), 1000);
+        assert_eq!(g.string("BadgeFont"), "Helvetica");
     }
 
     #[test]

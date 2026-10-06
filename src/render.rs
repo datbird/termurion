@@ -418,6 +418,8 @@ pub struct Renderer {
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
     badge_family: String,
+    /// Whether the badge draws bold (`BadgeFontIsBold`).
+    badge_bold: bool,
     /// The toolbelt's list font: `toolbeltFont` when installed, else Consolas.
     toolbelt_family: String,
     /// The toolbelt font's size in points (`toolbeltFontSize`, 0 meaning 11).
@@ -503,6 +505,7 @@ impl Renderer {
             icon_family: String::new(),
             prose_family: String::new(),
             badge_family: "Arial".into(),
+            badge_bold: true,
             toolbelt_family: "Consolas".into(),
             toolbelt_pt: 11.0,
             widths: std::collections::HashMap::new(),
@@ -866,6 +869,11 @@ impl Renderer {
         self.badge_family = if self.has_family(&resolved) { resolved } else { "Arial".into() };
     }
 
+    /// `BadgeFontIsBold`: the badge draws and measures in the bold face, or the regular one.
+    pub fn set_badge_bold(&mut self, bold: bool) {
+        self.badge_bold = bold;
+    }
+
     /// The toolbelt font: `name` when installed (Menlo, iTerm2's default, is not on Windows),
     /// else Consolas, Windows' monospaced system font.
     pub fn set_toolbelt_family(&mut self, name: &str) {
@@ -912,12 +920,16 @@ impl Renderer {
         h.finish()
     }
 
-    /// A badge line's width at `px` pixels, in the bold badge font.
+    fn badge_weight(&self) -> Weight {
+        if self.badge_bold { Weight::BOLD } else { Weight::NORMAL }
+    }
+
+    /// A badge line's width at `px` pixels, in the badge font (bold while `BadgeFontIsBold`).
     pub fn badge_width(&mut self, text: &str, px: f32) -> f32 {
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px.max(1.0), px.max(1.0) * 1.2));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
-        b.set_text(text, &Attrs::new().family(Family::Name(&self.badge_family)).weight(Weight::BOLD), Shaping::Advanced, None);
+        b.set_text(text, &Attrs::new().family(Family::Name(&self.badge_family)).weight(self.badge_weight()), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
     }
@@ -1248,6 +1260,7 @@ impl Renderer {
         } else {
             &frame.rows
         };
+        let badge_weight = self.badge_weight();
         let doubles = self.double_strikes(rows);
         let all_rows: Vec<&TextRow> = rows.iter().chain(&doubles).collect();
         while self.buffers.len() < all_rows.len() {
@@ -1303,7 +1316,9 @@ impl Renderer {
                 // chrome and prose never do. A terminal bold span draws in the face's bold weight,
                 // or in the regular one when none is heavy enough (the double strike is a second row).
                 let terminal = !(s.icon || s.badge || s.toolbelt || s.prose);
-                let weight = if !s.bold {
+                let weight = if s.badge {
+                    badge_weight
+                } else if !s.bold {
                     Weight::NORMAL
                 } else if s.fake_bold && terminal {
                     match (use_bold, bold_weight) {
@@ -1875,6 +1890,19 @@ mod tests {
             let w: Vec<u16> = db.faces().filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(m, _)| m == n)).map(|f| f.weight.0).collect();
             !w.is_empty() && w.iter().all(|w| *w < 600) && w.contains(&400) && db.faces().filter(|f| f.families.iter().any(|(m, _)| m == n)).all(|f| f.weight.0 < 600)
         })
+    }
+
+    /// 13w Task 8: the badge is bold only while `BadgeFontIsBold` says so.
+    #[test]
+    fn badge_weight_follows_the_key() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        r.set_badge_family("Arial");
+        r.set_badge_bold(false);
+        let regular = r.badge_width("bbb ddd", 40.0);
+        r.set_badge_bold(true);
+        let bold = r.badge_width("bbb ddd", 40.0);
+        assert!(regular < bold, "regular {regular} is narrower than bold {bold}");
     }
 
     #[test]

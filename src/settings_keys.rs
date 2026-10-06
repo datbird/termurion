@@ -4522,6 +4522,33 @@ mod tests {
         }
     }
 
+    /// 13w Task 8: the six badge rows, Advanced > Badge, iTerm2's text.
+    #[test]
+    fn badge_rows_follow_iterm2() {
+        let rows = [
+            ("BadgeFont", Kind::String, Value::String("Helvetica".into()), "Font to use for the badge.".to_string()),
+            ("BadgeFontIsBold", Kind::Bool, Value::Boolean(true), "Should the badge render in bold type?".to_string()),
+            ("BadgeMaxWidthFraction", Kind::Float, Value::Float(0.5), "Maximum width of the badge\nAs a fraction of the width of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting.".to_string()),
+            ("BadgeMaxHeightFraction", Kind::Float, Value::Float(0.2), "Maximum height of the badge\nAs a fraction of the height of the terminal, between 0 and 1.0. This is the default value if a profile does not have a setting.".to_string()),
+            ("BadgeRightMargin", Kind::Int, Value::Integer(10), "Default value for right margin for the badge\nHow much space to leave between the right edge of the badge and the right edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting.".to_string()),
+            ("BadgeTopMargin", Kind::Int, Value::Integer(10), "Default value for the top margin for the badge\nHow much space to leave between the top edge of the badge and the top edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting.".to_string()),
+        ];
+        for (key, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Badge"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+        // The profile rows' default notes name the Advanced keys as the computed default.
+        let toml = include_str!("../schema/profile.toml");
+        for adv in ["BadgeFont", "BadgeFontIsBold", "BadgeTopMargin", "BadgeRightMargin", "BadgeMaxWidthFraction", "BadgeMaxHeightFraction"] {
+            assert!(toml.contains(&format!("the {adv} Advanced setting")), "{adv} named in a default_note");
+        }
+    }
+
     /// 13w Task 7: the trigger limit rows, iTerm2's text.
     #[test]
     fn trigger_rows_follow_iterm2() {

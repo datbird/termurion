@@ -4506,8 +4506,8 @@ impl App {
         g.renderer.set_bold_difference(bold_difference);
         g.renderer.set_contextual_alternates(calt);
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
-        let badge = p.font("Badge Font").family;
-        g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
+        g.renderer.set_badge_family(&badge_ui::badge_family(badge_ui::profile_font(&p), &self.globals.string("BadgeFont")));
+        g.renderer.set_badge_bold(self.globals.bool("BadgeFontIsBold"));
         // Read with the window's other fonts, not on every change (iTerm2: "Changing this
         // setting does not affect existing windows").
         g.renderer.set_toolbelt_family(&self.globals.string("toolbeltFont"));
