@@ -47,10 +47,17 @@ enum Kind {
     Text,
 }
 
+/// Unicode category P (`punctuationCharacterSet`): the ASCII ones are `!"#%&'()*,-./:;?@[\\]_{}`;
+/// `+ $ < = > ^ ` | ~` are symbols, so they are text parts, as in Sparkle. (Non-ASCII punctuation is
+/// text here: no tag the filter admits holds any.)
+fn is_punctuation(c: char) -> bool {
+    matches!(c, '!' | '"' | '#' | '%' | '&' | '\'' | '(' | ')' | '*' | ',' | '-' | '.' | '/' | ':' | ';' | '?' | '@' | '[' | '\\' | ']' | '_' | '{' | '}')
+}
+
 fn kind_of(c: char) -> Kind {
     if c.is_ascii_digit() {
         Kind::Number
-    } else if c.is_whitespace() || c.is_ascii_punctuation() {
+    } else if c.is_whitespace() || is_punctuation(c) {
         Kind::Separator
     } else {
         Kind::Text
@@ -97,7 +104,9 @@ pub fn compare(a: &str, b: &str) -> Ordering {
     for (x, y) in pa.iter().zip(pb.iter()) {
         let ord = match (x.0, y.0) {
             (Kind::Number, Kind::Number) => compare_numbers(x.1, y.1),
-            (Kind::Text, Kind::Text) | (Kind::Separator, Kind::Separator) => x.1.cmp(y.1),
+            (Kind::Text, Kind::Text) => x.1.cmp(y.1),
+            // Sparkle compares only numbers and strings: two separators are equal.
+            (Kind::Separator, Kind::Separator) => Ordering::Equal,
             (Kind::Text, _) => Ordering::Less,
             (_, Kind::Text) => Ordering::Greater,
             (Kind::Number, Kind::Separator) => Ordering::Greater,
@@ -462,6 +471,13 @@ mod tests {
             ("1.0a", "1.0b", Less),
             ("2", "1.9.9", Greater),
             ("1.0.1", "1.0a", Greater),
+            // '+' is Unicode symbol (Sm), not punctuation: a string part, so it makes the
+            // shorter version newer; '-' and '.' are both separators and compare equal.
+            ("1.0+1", "1.0", Less),
+            ("1.0-1", "1.0.1", Equal),
+            ("1.0_1", "1.0 1", Equal),
+            ("1.0~1", "1.0", Less),
+            ("1.0.1", "1.0-1", Equal),
         ] {
             assert_eq!(compare(a, b), want, "{a} vs {b}");
             assert_eq!(compare(b, a), want.reverse(), "{b} vs {a}");
