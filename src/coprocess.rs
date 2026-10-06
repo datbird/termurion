@@ -205,7 +205,8 @@ pub fn drop_text(files: &[String], always_quote: bool, shell: Option<&str>) -> R
     for f in files {
         let quoted = crate::pathnav::quote_for(f, kind)?;
         let bare = !always_quote && kind != crate::pathnav::Shell::Posix && !f.is_empty() && !f.contains(|c: char| c.is_whitespace() || ",=+".contains(c));
-        out.push(if bare { f.clone() } else { quoted });
+        // A bare drive root takes the same `X:\.` form as a quoted one.
+        out.push(if bare { crate::semantic::drive_root_form(f).unwrap_or_else(|| f.clone()) } else { quoted });
     }
     Ok(out.join(" "))
 }
@@ -250,6 +251,27 @@ mod tests {
         // The reported shell picks the quoting of what passes.
         assert_eq!(drop_text(&["C:\\a b".into()], false, Some("pwsh")).as_deref(), Ok("'C:\\a b'"));
         assert_eq!(drop_text(&["C:\\x".into()], false, Some("bash")).as_deref(), Ok("C\\:\\\\x"));
+    }
+
+    /// Task 8 fix round 1, item 1: the named attacks, each through every shell (the merge routed
+    /// the drop through 13r's union rule; these pin the cases the review listed).
+    #[test]
+    fn dropped_names_refuse_the_reviewed_attacks() {
+        use crate::pathnav::{REFUSED, UNION_REFUSED};
+        for name in ["D:\\$(calc).txt", "D:\\a&calc&.txt", "D:\\%PATH%.txt", "D:\\a`b", "D:\\a\u{201c}b", "D:\\a\u{201d} & calc & \u{201c}b.txt", "D:\\a\u{201e}b", "D:\\x\\"] {
+            for shell in [None, Some("cmd"), Some("pwsh"), Some("bash")] {
+                for key in [false, true] {
+                    assert_eq!(drop_text(&[name.to_string()], key, shell), Err(UNION_REFUSED.to_string()), "{name:?} {shell:?} {key}");
+                }
+            }
+        }
+        for name in ["D:\\a\nb", "D:\\a\rb", "D:\\a\u{7}b", "D:\\a\u{202e}b"] {
+            assert_eq!(drop_text(&[name.to_string()], true, Some("pwsh")), Err(REFUSED.to_string()), "{name:?}");
+        }
+        // A drive root takes 13r's X:\. form, never `C:\` (a trailing backslash swallows the quote).
+        assert_eq!(drop_text(&["C:\\".into()], true, None).as_deref(), Ok("\"C:\\.\""));
+        assert_eq!(drop_text(&["C:\\".into()], true, Some("pwsh")).as_deref(), Ok("'C:\\.'"));
+        assert_eq!(drop_text(&["C:\\".into()], false, None).as_deref(), Ok("C:\\."));
     }
 
     #[test]
