@@ -14,13 +14,15 @@ fn stored(profile: &Profile, key: &str) -> Option<f64> {
 /// The badge's sizes: each from the profile only when the profile stores it, else from its
 /// Advanced key (`PP:1594-1624`; iTerm2's 0.5, 0.2, 10, 10 when those are unset).
 pub(super) fn badge_prefs_for(profile: &Profile, g: &Globals) -> BadgePrefs {
-    let pick = |own: &str, advanced: &str, fallback: f64| stored(profile, own).or_else(|| g.number(advanced)).unwrap_or(fallback) as f32;
+    // A stored value that is not finite (a hand-edited profile, a Dynamic Profile or an API write) is not the profile's own.
+    let pick = |own: &str, advanced: &str, fallback: f64| stored(profile, own).filter(|v| v.is_finite()).or_else(|| g.number(advanced)).unwrap_or(fallback) as f32;
     BadgePrefs {
         max_w: pick("Badge Max Width", "BadgeMaxWidthFraction", 0.5),
         max_h: pick("Badge Max Height", "BadgeMaxHeightFraction", 0.2),
         right: pick("Badge Right Margin", "BadgeRightMargin", 10.0),
         top: pick("Badge Top Margin", "BadgeTopMargin", 10.0),
     }
+    .bounded()
 }
 
 /// The profile's stored "Badge Font", if any.
@@ -111,6 +113,28 @@ mod tests {
 
     /// 13w Task 8 (`PP:1594-1624`): a profile's own badge size wins, key by key; every other
     /// size is the Advanced key (iTerm2's 0.5, 0.2, 10, 10 when unset).
+    #[test]
+    fn profile_badge_values_are_bounded() {
+        let g = globals("bounded");
+        for (key, lo, hi) in [("Badge Max Width", 0.0, 1.0), ("Badge Max Height", 0.0, 1.0), ("Badge Right Margin", 0.0, 1000.0), ("Badge Top Margin", 0.0, 1000.0)] {
+            for (bad, want) in [(f64::NAN, None), (f64::INFINITY, None), (-1.0, Some(lo)), (1e30, Some(hi))] {
+                let mut p = Profile::default();
+                p.set(key, Value::Float(bad));
+                let b = badge_prefs_for(&p, &g);
+                let got = match key {
+                    "Badge Max Width" => b.max_w,
+                    "Badge Max Height" => b.max_h,
+                    "Badge Right Margin" => b.right,
+                    _ => b.top,
+                } as f64;
+                match want {
+                    Some(w) => assert_eq!(got, w, "{key} {bad}"),
+                    None => assert!(got.is_finite() && got >= lo && got <= hi, "{key} {bad} gives {got}"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn badge_defaults_follow_the_advanced_keys() {
         let mut g = globals("prefs");

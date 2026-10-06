@@ -20,6 +20,18 @@ pub struct BadgePrefs {
     pub right: f32,
 }
 
+impl BadgePrefs {
+    /// iTerm2's 0.5, 0.2, 10, 10.
+    pub const DEFAULT: BadgePrefs = BadgePrefs { max_w: 0.5, max_h: 0.2, top: 10.0, right: 10.0 };
+    /// Shares in 0 to 1 and margins in 0 to 1000 pixels (the Advanced keys' bounds); a value that is
+    /// not finite becomes the default. No reader depends on its caller to have bounded them.
+    pub fn bounded(self) -> BadgePrefs {
+        let d = BadgePrefs::DEFAULT;
+        let fix = |v: f32, hi: f32, default: f32| if v.is_finite() { v.clamp(0.0, hi) } else { default };
+        BadgePrefs { max_w: fix(self.max_w, 1.0, d.max_w), max_h: fix(self.max_h, 1.0, d.max_h), top: fix(self.top, 1000.0, d.top), right: fix(self.right, 1000.0, d.right) }
+    }
+}
+
 /// A badge laid out: its font size, lines and their widths, and its box in the pane.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BadgeLayout {
@@ -59,6 +71,7 @@ fn wrap(text: &str, width: f32, size: f32, max_lines: usize, measure: &dyn Fn(&s
 /// The badge for `text` in a pane of `pane` pixels: the largest whole size from 4 to 100 at
 /// which the wrapped text fits the box (4 when none does). None for empty text.
 pub fn layout(text: &str, pane: (f32, f32), prefs: BadgePrefs, measure: &dyn Fn(&str, f32) -> f32) -> Option<BadgeLayout> {
+    let prefs = prefs.bounded();
     let text = shown_text(text);
     let text = text.trim();
     if text.is_empty() {
@@ -133,6 +146,17 @@ mod tests {
         let tiny = layout("W", (20.0, 20.0), PREFS, &measure).unwrap();
         assert_eq!(tiny.size, 4.0, "never below 4");
         assert!(tiny.rect.x >= 0.0 && tiny.rect.y >= 0.0 && tiny.rect.x + tiny.rect.w <= 20.0 + 0.01);
+    }
+
+    #[test]
+    fn layout_bounds_its_own_prefs() {
+        for bad in [f32::NAN, f32::INFINITY, -5.0, 1e30] {
+            let prefs = BadgePrefs { max_w: bad, max_h: bad, top: bad, right: bad };
+            let l = layout("hello", (800.0, 600.0), prefs, &measure).unwrap();
+            let r = l.rect;
+            assert!([r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()), "{bad}: {r:?}");
+            assert!(r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= 800.0 + 0.01 && r.y <= 1000.0, "{bad}: {r:?}");
+        }
     }
 
     #[test]

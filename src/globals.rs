@@ -75,7 +75,7 @@ const BOUNDS: &[(&str, Bound)] = &[
     ("AlertTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
     ("UserNotificationTriggerRateLimit", Bound::Number { min: 0.0, max: 3600.0 }),
     // B4: the badge keys. A font is a family name: never a path, so a setting cannot make the renderer read a file.
-    ("BadgeFont", Bound::Text { max: 128, ok: |c| !c.is_control() && !matches!(c, '\\' | '/' | ':') && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}') }),
+    ("BadgeFont", Bound::Text { max: 128, ok: |c| !crate::inert_files::is_hidden(c) && !matches!(c, '\\' | '/' | ':') }),
     ("BadgeMaxWidthFraction", Bound::Number { min: 0.0, max: 1.0 }),
     ("BadgeMaxHeightFraction", Bound::Number { min: 0.0, max: 1.0 }),
     ("BadgeRightMargin", Bound::Int { min: 0, max: 1000 }),
