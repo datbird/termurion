@@ -142,6 +142,8 @@ pub struct Shell {
     /// (iTerm2's frozen locality, `VT100ScreenMutableState.m:4083-4103`). Only the host stack
     /// reads it; it never feeds an open or run decision (14d-G1).
     pub host_local: Option<bool>,
+    /// The OSC 7 `machineID` token of the report that named `host` (bounded, untrusted).
+    pub machine_id: Option<String>,
     pub shell: Option<String>,
     pub version: Option<u32>,
     /// SetUserVar values, by name (iTerm2's `user.<name>` variables).
@@ -215,8 +217,18 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(out.clone()).unwrap_or_else(|_| out.iter().map(|&c| c as char).collect())
 }
 
-/// A file:// URL: (user, host, path, has a machine id).
-fn parse_location(url: &str) -> Option<(Option<String>, Option<String>, String, bool)> {
+/// A file:// URL as an OSC 7 report.
+struct Location {
+    user: Option<String>,
+    host: Option<String>,
+    path: String,
+    /// The `machineID` token, kept only when short and plain (B9: else treated as no token).
+    machine: Option<String>,
+    /// Whether the report carried a `machineID` at all (it is then an iTerm2 script's report).
+    has_machine_id: bool,
+}
+
+fn parse_location(url: &str) -> Option<Location> {
     let rest = url.strip_prefix("file://")?;
     let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
     let slash = rest.find('/')?;
@@ -225,9 +237,11 @@ fn parse_location(url: &str) -> Option<(Option<String>, Option<String>, String, 
         Some((u, h)) => (Some(percent_decode(u)), h),
         None => (None, authority),
     };
-    let host = (!host.is_empty()).then(|| host.to_string());
-    let machine = query.split('&').any(|q| q.starts_with("machineID="));
-    Some((user, host, percent_decode(path), machine))
+    // A host from a program: controls, bidi marks and length are cut (it is shown in the bar).
+    let host = crate::host_identity::clean_host(host);
+    let token = query.split('&').find_map(|q| q.strip_prefix("machineID="));
+    let machine = token.and_then(crate::host_identity::clean_token);
+    Some(Location { user, host, path: percent_decode(path), machine, has_machine_id: token.is_some() })
 }
 
 /// The next mark line after `from` (or before it, going back), wrapping around.
@@ -261,10 +275,7 @@ pub fn host_changed(previous: Option<&str>, new: &str, local: &[String]) -> bool
     previous.is_some_and(|p| p != new && !(is_local_name(p, local) && is_local_name(new, local)))
 }
 
-/// Whether `host` is one of this computer's `names` (ignoring case).
-fn is_local_name(host: &str, names: &[String]) -> bool {
-    names.iter().any(|n| !n.is_empty() && n.eq_ignore_ascii_case(host))
-}
+use crate::host_identity::is_local_name;
 
 /// What a host change does with a mode left on, from its saved answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,14 +297,17 @@ pub fn host_step(saved: Option<bool>) -> HostStep {
 /// A host change's settings, pushed to each screen before its output is read: the saved
 /// answers (`NoSyncTurnOff...OnHostChange`) and whether the pane may report the mouse
 /// (iTerm2's "ever allowed").
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostPolicy {
     pub focus: Option<bool>,
     pub mouse: Option<bool>,
     pub paste: Option<bool>,
     pub mouse_allowed: bool,
     /// The names this computer answers to (P1: the one answer for the offers and the host stack).
-    pub local_names: &'static [String],
+    pub local_names: std::sync::Arc<[String]>,
+    /// What an OSC 7 machine token from this machine holds (`host_identity::our_value`); None
+    /// when the identity cannot be read (R3: the token is then Unknown, the names decide).
+    pub ours: Option<std::sync::Arc<str>>,
 }
 
 /// The modes a host change offers to turn off.
@@ -1208,9 +1222,13 @@ impl Screen {
             let new = after.1.as_deref().unwrap_or_default();
             // Locality is decided when a host is reported and kept: a report of the same host
             // (a user-only change) copies the previous answer (`VT100ScreenMutableState.m:4083-4103`).
-            let local = if before.1 == after.1 { was_local.unwrap_or(false) } else { is_local_name(new, self.host_policy.local_names) };
+            let local = if before.1 == after.1 {
+                was_local.unwrap_or(false)
+            } else {
+                crate::host_identity::is_local_session(Some(new), self.shell.machine_id.as_deref(), &self.host_policy.local_names, self.host_policy.ours.as_deref())
+            };
             self.shell.host_local = Some(local);
-            let moved = before.1 != after.1 && host_changed(before.1.as_deref(), new, self.host_policy.local_names);
+            let moved = before.1 != after.1 && host_changed(before.1.as_deref(), new, &self.host_policy.local_names);
             let left_on = if moved { self.reset_modes_on_host_change() } else { LeftOn::default() };
             self.requests.push(Request::HostChanged(left_on));
             if let (true, Some(prev)) = (before.1 != after.1, before.1.clone()) {
@@ -1234,7 +1252,7 @@ impl Screen {
     /// host left them are turned off, offered, or left alone, so the new host's own modes
     /// that follow in the same read are never touched. Gives the offers, for the app.
     fn reset_modes_on_host_change(&mut self) -> LeftOn {
-        let policy = self.host_policy;
+        let policy = self.host_policy.clone();
         let mode = *self.term().mode();
         let fish = self.shell.shell.as_deref() == Some("fish");
         // Mouse reporting counts only where the pane may report the mouse; fish handles
@@ -1456,7 +1474,7 @@ impl Screen {
                 }
             }
             Osc::Location(url) => {
-                let Some((user, host, path, machine)) = parse_location(&url) else { return };
+                let Some(Location { user, host, path, machine: token, has_machine_id: machine }) = parse_location(&url) else { return };
                 // Accept OSC 7 off: the sequence is ignored, after a warning when it carries a
                 // machine id and no proprietary location code was seen (`MS:4555-4565`,
                 // `MS:4636-4655`). One pending request at most, so a flood queues nothing more.
@@ -1469,6 +1487,10 @@ impl Screen {
                 }
                 if host.is_some() && (user.is_some() || host != self.shell.host) {
                     self.shell.user = user;
+                }
+                // The token belongs to the report that carried it: a report with a host replaces it.
+                if host.is_some() {
+                    self.shell.machine_id = token;
                 }
                 self.shell.host = host.or(self.shell.host.take());
                 if !path.is_empty() {
@@ -1487,12 +1509,14 @@ impl Screen {
                 "RemoteHost" => {
                     self.saw_location_code = true;
                     let clean: String = value.chars().filter(|c| !c.is_control()).collect();
+                    // No token comes with this report: an earlier host's must not decide for it.
+                    self.shell.machine_id = None;
                     match clean.rsplit_once('@') {
                         Some((u, h)) => {
                             self.shell.user = Some(u.to_string());
-                            self.shell.host = Some(h.to_string());
+                            self.shell.host = crate::host_identity::clean_host(h);
                         }
-                        None => self.shell.host = Some(clean),
+                        None => self.shell.host = crate::host_identity::clean_host(&clean),
                     }
                 }
                 "SetUserVar" => {
@@ -2201,6 +2225,66 @@ mod tests {
         assert_eq!((m.user, m.host), (None, None));
     }
 
+    /// 13w Task 4 (R3): the machine id token is kept (bounded), not only noticed.
+    #[test]
+    fn location_keeps_the_machine_token() {
+        let loc = parse_location("file://u@h/C:/x?machineID=1:ab").unwrap();
+        assert_eq!(loc.machine.as_deref(), Some("1:ab"));
+        assert!(loc.has_machine_id);
+        assert_eq!((loc.user.as_deref(), loc.host.as_deref(), loc.path.as_str()), (Some("u"), Some("h"), "/C:/x"));
+        let none = parse_location("file://u@h/C:/x").unwrap();
+        assert_eq!(none.machine, None);
+        assert!(!none.has_machine_id);
+        assert_eq!(parse_location("file://h/x?a=1&machineID=0:").unwrap().machine.as_deref(), Some("0:"));
+    }
+
+    #[test]
+    fn location_refuses_an_overlong_or_odd_token() {
+        let long = format!("file://h/x?machineID=1:{}", "a".repeat(200));
+        let loc = parse_location(&long).unwrap();
+        assert_eq!(loc.machine, None, "over 130 characters is no token");
+        assert!(loc.has_machine_id, "but the sequence still carries a machine id");
+        for odd in ["1:a b", "1:a\u{202e}b", "1:%41", "1:a;b"] {
+            let loc = parse_location(&format!("file://h/x?machineID={odd}")).unwrap();
+            assert_eq!(loc.machine, None, "{odd}");
+        }
+        assert_eq!(parse_location(&format!("file://h/x?machineID=1:{}", "a".repeat(128))).unwrap().machine.map(|m| m.len()), Some(130));
+        assert_eq!(parse_location("file://bo\u{202e}x/x").unwrap().host.as_deref(), Some("box"), "bidi marks are cut from a host");
+    }
+
+    /// The token decides locality when it is known, the host name when it is not; the locality
+    /// is decided at the report and kept; a later report replaces the token.
+    #[test]
+    fn the_machine_token_decides_locality() {
+        use crate::host_identity::hmac_sha256_hex;
+        let mut s = Screen::new(40, 10);
+        s.host_policy.local_names = vec!["pc".to_string()].into();
+        s.host_policy.ours = Some("ab".into());
+        s.feed(b"\x1b]7;file://elsewhere/tmp?machineID=1:AB\x07");
+        assert_eq!(s.shell.host_local, Some(true), "our token wins over a foreign name");
+        assert_eq!(s.shell.machine_id.as_deref(), Some("1:AB"));
+        s.feed(b"\x1b]7;file://pc/tmp?machineID=1:\x07");
+        assert_eq!(s.shell.host_local, Some(false), "1: alone is remote even under a local name");
+        s.feed(b"\x1b]7;file://pc2/tmp?machineID=0:\x07\x1b]7;file://pc/tmp?machineID=0:\x07");
+        assert_eq!(s.shell.host_local, Some(true), "0: falls back to the name");
+        // RemoteHost carries no token: the old one must not decide for the new host.
+        s.feed(b"\x1b]7;file://far/tmp?machineID=1:ab\x07\x1b]1337;RemoteHost=u@pc\x07");
+        assert_eq!(s.shell.machine_id, None);
+        assert_eq!(s.shell.host_local, Some(true));
+        s.host_policy.ours = None;
+        s.feed(b"\x1b]7;file://far2/tmp?machineID=1:ab\x07");
+        assert_eq!(s.shell.host_local, Some(false), "no identity of ours: names only");
+        let _ = hmac_sha256_hex(b"k", b"m");
+    }
+
+    /// B9: the offers use the same names as the host stack, and a fake replaces them.
+    #[test]
+    fn host_changed_uses_the_same_names() {
+        let fake = crate::host_identity::local_names("fake.host", "PC", "pc.corp");
+        assert!(host_changed(Some("PC"), "fake.host", &fake), "PC is no longer this machine");
+        assert!(!host_changed(Some("fake.host"), "FAKE.HOST", &fake));
+    }
+
     #[test]
     fn location_reports_set_the_directory_host_and_user() {
         let mut s = Screen::new(40, 10);
@@ -2887,7 +2971,7 @@ mod tests {
             })
         };
         let mut s = Screen::new(40, 10);
-        s.host_policy.local_names = names;
+        s.host_policy.local_names = names.into();
         s.feed(b"\x1b]2;local\x07\x1b]1337;RemoteHost=me@pc\x07");
         s.take_requests();
         s.feed(b"\x1b]1337;RemoteHost=u@box\x07\x1b[>4;2m\x1b]2;evil\x07");
@@ -2908,14 +2992,14 @@ mod tests {
         let moved = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostMoved { .. })).collect::<Vec<_>>();
         let rem = |u: &str, h: &str, local| Remote { user: Some(u.into()), host: h.into(), local };
         let mut s = Screen::new(40, 10);
-        s.host_policy.local_names = names;
+        s.host_policy.local_names = names.into();
         s.feed(b"\x1b]1337;RemoteHost=me@pc\x07");
         assert!(moved(&mut s).is_empty(), "the first report");
         s.feed(b"\x1b]1337;RemoteHost=u@box\x07");
         assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("me", "pc", true), current: rem("u", "box", false), mode: crate::keyproto::KeyMode::Standard, title: None }]);
         // A user-only change queues none and copies the locality, even if the answer changed.
         static BOTH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-        s.host_policy.local_names = BOTH.get_or_init(|| vec!["pc".to_string(), "box".to_string()]);
+        s.host_policy.local_names = BOTH.get_or_init(|| vec!["pc".to_string(), "box".to_string()]).as_slice().into();
         s.feed(b"\x1b]1337;RemoteHost=root@box\x07");
         assert!(moved(&mut s).is_empty(), "user-only");
         assert_eq!(s.shell.host_local, Some(false), "copied, not recomputed");
@@ -2923,7 +3007,7 @@ mod tests {
         s.feed(b"\x1b]7;file://pc/tmp\x07");
         assert_eq!(moved(&mut s), vec![Request::HostMoved { previous: rem("root", "box", false), current: Remote { user: None, host: "pc".into(), local: true }, mode: crate::keyproto::KeyMode::Standard, title: None }]);
         // Once reported, a later change of the answer changes nothing.
-        s.host_policy.local_names = &[];
+        s.host_policy.local_names = Default::default();
         s.feed(b"\x1b]1337;CurrentDir=/x\x07");
         assert_eq!(s.shell.host_local, Some(true));
         s.feed(b"\x1b]1337;RemoteHost=root@pc\x07");

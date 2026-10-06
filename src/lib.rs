@@ -8,6 +8,7 @@ pub mod ime;
 pub mod pane_order;
 pub mod mouse_frustration;
 pub mod globals;
+pub mod host_identity;
 pub mod keystroke;
 pub mod keyaction;
 pub mod pointer;

@@ -48,6 +48,30 @@ pub struct Globals {
     custom_presets: std::sync::Arc<Vec<(String, crate::color_presets::Preset)>>,
 }
 
+/// How a value is bounded at the one write point (B4): what a key may hold whatever wrote it
+/// (the window, a script, remote settings, the file at load).
+enum Bound {
+    /// Text of at most `max` characters, each accepted by `ok`; anything else is the default.
+    Text { max: usize, ok: fn(char) -> bool },
+}
+
+/// The bounded keys. Later 13w tasks add their numbers here.
+const BOUNDS: &[(&str, Bound)] = &[
+    ("FakeFullyQualifiedDomainName", Bound::Text { max: 255, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') }),
+    ("FakeBootSessionUUID", Bound::Text { max: 128, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '{' | '}' | '-') }),
+];
+
+/// `value` as `key`'s bound allows; None when it is out of bounds (the default applies).
+fn bounded(key: &str, value: &Value) -> Option<Value> {
+    let Some((_, bound)) = BOUNDS.iter().find(|(k, _)| *k == key) else { return Some(value.clone()) };
+    match bound {
+        Bound::Text { max, ok } => {
+            let text = value.as_str()?;
+            (text.chars().count() <= *max && text.chars().all(ok)).then(|| value.clone())
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct FileFormat {
     #[serde(default)]
@@ -102,6 +126,11 @@ impl Globals {
             Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
             None => self.custom_presets = Default::default(),
         }
+        for (key, _) in BOUNDS {
+            if let Some(v) = self.values.remove(*key) {
+                self.set(key, v);
+            }
+        }
     }
 
     /// The custom color presets, sanitized and bounded at the write (`color_presets::custom`).
@@ -141,6 +170,8 @@ impl Globals {
         } else {
             value
         };
+        // A value out of its bound is the default (B4).
+        let Some(value) = bounded(key, &value).or_else(|| default_of(key)) else { return };
         // A changed cookie setting is no longer the one the Claude Code setup turned on, so its
         // marker goes; the setup writes the marker after the setting (Task 8 fix round 2).
         if key == crate::api_profile::SET_COOKIE && value.as_bool() != Some(self.bool(key)) {
@@ -214,6 +245,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("settings.toml")
+    }
+
+    /// B4: the fake identity texts are bounded at the one write point (`set`) and at `load`.
+    #[test]
+    fn globals_bounds_clamp_every_13w_key() {
+        let mut g = Globals::empty(&scratch("bounds-fake"));
+        for (key, ok, max) in [("FakeFullyQualifiedDomainName", "fake.host-1", 255), ("FakeBootSessionUUID", "{AB12-cd:34}", 128)] {
+            g.set(key, Value::String(ok.to_string()));
+            assert_eq!(g.string(key), ok, "{key}");
+            g.set(key, Value::String("x".repeat(max)));
+            assert_eq!(g.string(key).len(), max, "{key} at the limit");
+            for bad in ["x".repeat(max + 1), "a b".to_string(), "a\u{202e}b".to_string(), "a\nb".to_string(), "caf\u{e9}".to_string()] {
+                g.set(key, Value::String("keep".to_string()));
+                g.set(key, Value::String(bad.clone()));
+                assert_eq!(g.string(key), "", "{key} refuses {bad:?}: back to the default");
+            }
+            g.set(key, Value::Integer(5));
+            assert_eq!(g.string(key), "", "{key} refuses a non-text value");
+        }
+        // The file at load goes through the same table.
+        let path = scratch("bounds-fake-load");
+        std::fs::write(&path, "[settings]\nFakeFullyQualifiedDomainName = \"bad name\"\nFakeBootSessionUUID = \"ok-1\"\n").unwrap();
+        let g = Globals::load(&path).unwrap();
+        assert_eq!(g.string("FakeFullyQualifiedDomainName"), "");
+        assert_eq!(g.string("FakeBootSessionUUID"), "ok-1");
     }
 
     #[test]

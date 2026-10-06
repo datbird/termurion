@@ -330,24 +330,19 @@ pub(super) fn shown_path(raw: &str) -> String {
 }
 
 /// The names this computer answers to, for `is_local_host`: localhost, the computer name
-/// and its full DNS name.
-pub(super) fn local_names() -> &'static [String] {
-    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(|| {
-        let mut names = vec!["localhost".to_string()];
-        names.extend(std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty()));
-        let full = super::aps_ui::local_host();
-        if !full.is_empty() {
-            names.push(full);
-        }
-        names
-    })
+/// and its full DNS name, or only the fake name while one is set (`host_identity::local_names`).
+/// The real names are read once; the fake is read each call, so a change applies to hosts
+/// reported afterward.
+pub(super) fn local_names() -> Vec<String> {
+    static REAL: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    let (computer, dns) = REAL.get_or_init(|| (std::env::var("COMPUTERNAME").unwrap_or_default(), super::aps_ui::local_host()));
+    crate::host_identity::local_names(&crate::host_identity::fakes().0, computer, dns)
 }
 
 /// `session.isLocalhost`: a session with no reported host is on this computer (iTerm2
 /// starts every session with the local host).
 pub(super) fn is_localhost(host: Option<&str>) -> bool {
-    host.is_none_or(|h| sbt::is_local_host(h, local_names()))
+    host.is_none_or(|h| sbt::is_local_host(h, &local_names()))
 }
 
 /// The local time, broken down.

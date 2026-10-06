@@ -220,7 +220,14 @@ impl App {
 
     /// Whether a reported host name is this computer (`localhost`, its name or its DNS name; P17).
     pub(super) fn host_is_this_machine(&self, host: &str) -> bool {
-        crate::statusbar_text::is_local_host(host, super::statusbar_content::local_names())
+        crate::statusbar_text::is_local_host(host, &super::statusbar_content::local_names())
+    }
+
+    /// Whether a pane's reported session is on this computer: the machine token decides when it
+    /// is known, else the host name (R3). Callers that gate an open or a run still ask
+    /// `remote_text` first; a conductor-framed pane is remote whatever it reports (P7).
+    pub(super) fn shell_is_local(&self, shell: &crate::marks::Shell) -> bool {
+        crate::host_identity::is_local_session(shell.host.as_deref(), shell.machine_id.as_deref(), &super::statusbar_content::local_names(), crate::host_identity::current_ours().as_deref())
     }
 
     /// P10's one guard: text in this pane may have been written by a remote host, so it never
@@ -236,7 +243,7 @@ impl App {
             return None;
         }
         let shell = &self.panes.get(&id)?.own().shell;
-        if shell.host.as_ref().is_some_and(|h| !self.host_is_this_machine(h)) {
+        if !self.shell_is_local(shell) {
             return None;
         }
         crate::profile::local_path(shell.cwd.as_deref()?)

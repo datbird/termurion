@@ -104,10 +104,14 @@ impl App {
     pub(super) fn sync_host_policy(&mut self) {
         let saved = |o| self.globals.optional_bool(offer_key(o));
         let (focus, mouse, paste) = (saved(Offer::Focus), saved(Offer::Mouse), saved(Offer::Paste));
+        // The fake name and fake boot identity are read from the settings each pass.
+        crate::host_identity::set_fakes(&self.globals.string("FakeFullyQualifiedDomainName"), &self.globals.string("FakeBootSessionUUID"));
+        let local_names: std::sync::Arc<[String]> = super::statusbar_content::local_names().into();
+        let ours: Option<std::sync::Arc<str>> = crate::host_identity::current_ours().map(Into::into);
         let allowed: Vec<(PaneId, bool)> = self.panes.keys().map(|id| (*id, self.mouse_allowed(*id))).collect();
         for (id, mouse_allowed) in allowed {
             if let Some(p) = self.panes.get_mut(&id) {
-                p.own_mut().host_policy = HostPolicy { focus, mouse, paste, mouse_allowed, local_names: super::statusbar_content::local_names() };
+                p.own_mut().host_policy = HostPolicy { focus, mouse, paste, mouse_allowed, local_names: local_names.clone(), ours: ours.clone() };
             }
         }
     }

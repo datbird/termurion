@@ -4251,6 +4251,33 @@ mod tests {
         }
     }
 
+    /// 13w Task 4 (`AS` `fakeFullyQualifiedDomainName`, `fakeBootSessionUUID`): Advanced > Debugging,
+    /// text, empty, iTerm2's description (the first line is the label, the whole text the help).
+    #[test]
+    fn fake_identity_rows_follow_iterm2() {
+        let rows = [
+            (
+                "FakeFullyQualifiedDomainName",
+                "Override the local hostname used for localhost detection.",
+                "\nWhen non-empty, the app behaves as though this computer\u{2019}s full DNS name were this value. Lets you test how localhost detection reacts to a hostname change without actually renaming your computer. Affects hosts reported after you change it; leave empty to use the real hostname.",
+            ),
+            (
+                "FakeBootSessionUUID",
+                "Override this machine\u{2019}s identity used for OSC 7 machineID localhost detection.",
+                "\nWhen non-empty, the app behaves as though this machine\u{2019}s boot identity were this value. Lets you test how machine-identity localhost detection reacts without rebooting. Affects hosts reported after you change it; leave empty to use the real value.",
+            ),
+        ];
+        for (key, label, rest) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"), "{key}");
+            assert_eq!(row.kind, Kind::String, "{key}");
+            assert_eq!(row.default, Some(Value::String(String::new())), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}{rest}"), "{key}");
+            assert!(!row.optional_bool(), "{key}");
+        }
+    }
+
     /// `AS` `logForegroundJobAncestryDiagnostics`: Advanced > Debugging, off, iTerm2's text.
     #[test]
     fn ancestry_row_follows_iterm2() {

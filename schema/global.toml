@@ -5264,6 +5264,24 @@ default = false
 help = "Debug logs also write to the debug output."
 
 [[setting]]
+key = "FakeFullyQualifiedDomainName"
+tab = "Advanced"
+section = "Debugging"
+label = "Override the local hostname used for localhost detection."
+type = "string"
+default = ""
+help = "Override the local hostname used for localhost detection.\nWhen non-empty, the app behaves as though this computer\u2019s full DNS name were this value. Lets you test how localhost detection reacts to a hostname change without actually renaming your computer. Affects hosts reported after you change it; leave empty to use the real hostname."
+
+[[setting]]
+key = "FakeBootSessionUUID"
+tab = "Advanced"
+section = "Debugging"
+label = "Override this machine\u2019s identity used for OSC 7 machineID localhost detection."
+type = "string"
+default = ""
+help = "Override this machine\u2019s identity used for OSC 7 machineID localhost detection.\nWhen non-empty, the app behaves as though this machine\u2019s boot identity were this value. Lets you test how machine-identity localhost detection reacts without rebooting. Affects hosts reported after you change it; leave empty to use the real value."
+
+[[setting]]
 key = "LogForegroundJobAncestryDiagnostics"
 tab = "Advanced"
 section = "Debugging"

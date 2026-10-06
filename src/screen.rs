@@ -2527,6 +2527,7 @@ impl Screen {
         self.shell.host = None;
         self.shell.user = None;
         self.shell.host_local = None;
+        self.shell.machine_id = None;
         self.marks.program_ended();
         self.restart_scanner();
         // The reset reaches the parser itself (the answers to it are not wanted).
