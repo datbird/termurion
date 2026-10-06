@@ -950,8 +950,7 @@ impl App {
                 Some(Q::SetDefaultProfileRequest(d)) => {
                     use res::set_default_profile_result::Status;
                     let guid = d.guid.clone().unwrap_or_default();
-                    let status = if self.store.get_mut(&guid).is_some() {
-                        self.store.default_guid = guid.clone();
+                    let status = if self.store.set_default(&guid) {
                         self.apply_edit(Edit::Changed(guid));
                         Status::Ok
                     } else {

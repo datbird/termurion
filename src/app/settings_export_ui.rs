@@ -448,7 +448,7 @@ impl App {
         let app_support = settings.parent().unwrap_or(&settings).to_path_buf();
         let scripts = self.scripts_folder();
         let local = crate::scripts::ancestors_stay_local(&scripts, &crate::scripts::read_link) && !crate::remote_prefs::is_unc(&scripts.to_string_lossy());
-        let user_defaults = Snapshot::from_local(&self.globals.values, &self.store.default_guid, &self.store.file_profiles());
+        let user_defaults = Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles());
         let entry_local = |p: &Path| crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link);
         export_into(out, &Sources { app_support: &app_support, scripts: local.then_some(scripts.as_path()), user_defaults: &user_defaults, local: &entry_local })
     }

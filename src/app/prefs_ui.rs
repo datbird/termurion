@@ -245,7 +245,7 @@ impl App {
 
     /// The local settings as the folder would hold them.
     fn prefs_local(&self) -> Snapshot {
-        Snapshot::from_local(&self.globals.values, &self.store.default_guid, &self.store.file_profiles())
+        Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles())
     }
 
     /// A setting or profile was saved (`RP:1460-1478`): with "Automatically", a folder, and a

@@ -151,6 +151,7 @@ mod open_quickly_app;
 mod presets_ui;
 mod profiles_open_ui;
 mod bindings_ui;
+mod bonjour_ui;
 mod replay_ui;
 mod pwm_app;
 mod api_ui;
@@ -1142,6 +1143,11 @@ pub struct App {
     script_next: u64,
     /// Expression bindings per pane and bound key (`bindings_ui`); app-wide, so no `swap_live`.
     bindings: HashMap<(PaneId, String), bindings_ui::Bound>,
+    /// Bonjour hosts as profiles (`bonjour_ui`): the browser while `EnableRendezvous` is on, the
+    /// hosts live now, and the state last synced; app-wide, so no `swap_live`.
+    bonjour: Option<crate::bonjour::Browser>,
+    bonjour_live: Vec<crate::bonjour::Live>,
+    bonjour_wanted: Option<bool>,
     /// The active pane `follow_edit_session` last saw; app-wide, so no `swap_live`.
     edit_follow_seen: Option<PaneId>,
     script_tokens: HashMap<u64, u64>,
@@ -2067,6 +2073,9 @@ pub fn run() {
         script_runs: BTreeMap::new(),
         script_next: 1,
         bindings: HashMap::new(),
+        bonjour: None,
+        bonjour_live: Vec::new(),
+        bonjour_wanted: None,
         edit_follow_seen: None,
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
@@ -2235,6 +2244,8 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
+    // Stop browsing: the callbacks end before the process does.
+    app.bonjour = None;
     // Every exit that is not a crash takes the notification area icon with it.
     crate::notify::remove(0);
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
@@ -3989,6 +4000,7 @@ impl App {
         self.sync_blur();
         self.refresh_scroll_style();
         self.presence_globals_changed();
+        self.bonjour_sync();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -6398,6 +6410,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.archive_tick();
         let sleep_due = self.recompute_sleep(Instant::now());
         let bindings_due = self.tick_bindings();
+        self.bonjour_tick();
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
         let command_due = self.command_click_tick();

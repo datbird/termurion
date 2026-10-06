@@ -14,6 +14,11 @@ pub(super) fn open_many_text(count: usize) -> (String, &'static str) {
 impl App {
     /// Opens `guids` as `how`, asking first when there are more than `OPEN_ASK_ABOVE` (P6).
     pub(super) fn open_selected_profiles(&mut self, guids: Vec<String>, how: How) {
+        // Bonjour hosts never open in a crowd (P5).
+        let guids = super::bonjour_ui::without_bonjour(&self.store, guids);
+        if guids.is_empty() {
+            return;
+        }
         if asks_before_opening(guids.len()) {
             let (heading, text) = open_many_text(guids.len());
             let ask = scripts_alerts::ask(&heading, text, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, how));

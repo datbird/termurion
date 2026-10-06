@@ -172,6 +172,7 @@ pub mod color_presets;
 pub mod oklab;
 pub mod hue_wheel_ui;
 pub mod bindings;
+pub mod bonjour;
 pub mod prompted;
 pub mod schema;
 pub mod scene;

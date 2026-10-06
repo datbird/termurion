@@ -915,9 +915,12 @@ impl SettingsWindow {
                         edit = Edit::Changed(String::new());
                     }
                 });
-                if ui.button("Set as Default").clicked() {
-                    store.default_guid = selected.clone();
-                    edit = Edit::Changed(selected.clone());
+                // A Bonjour host lives in memory only (13t B1): it cannot be the default.
+                let transient = store.transient.contains(&selected);
+                if ui.add_enabled(!transient, egui::Button::new("Set as Default")).clicked() {
+                    if store.set_default(&selected) {
+                        edit = Edit::Changed(selected.clone());
+                    }
                 }
                 if ui.button("Import from iTerm2...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {

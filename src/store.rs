@@ -16,6 +16,9 @@ pub struct Store {
     path: PathBuf,
     /// Session-local profile copies (never saved).
     pub sessions: Vec<crate::session_profile::SessionProfile>,
+    /// Guids of profiles that live in memory only (Bonjour hosts, 13t B1): never written to the
+    /// file, the remote-prefs snapshot or Export All. Filled and emptied by `bonjour_ui` only.
+    pub transient: std::collections::HashSet<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,13 +62,13 @@ impl Store {
             return Err(format!("{}: no profiles", path.display()));
         }
         let default_guid = if profiles.iter().any(|p| p.guid() == file.default) { file.default } else { profiles[0].guid() };
-        Ok(Store { profiles, default_guid, path: path.to_path_buf(), sessions: Vec::new() })
+        Ok(Store { profiles, default_guid, path: path.to_path_buf(), sessions: Vec::new(), transient: Default::default() })
     }
 
     /// One "Default" profile, saved at `path`.
     pub fn fresh(path: &Path) -> Store {
         let p = Profile::new("Default");
-        Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf(), sessions: Vec::new() }
+        Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf(), sessions: Vec::new(), transient: Default::default() }
     }
 
     /// The profiles as the file holds them: values that differ from the defaults, plus Guid and
@@ -73,6 +76,7 @@ impl Store {
     pub fn file_profiles(&self) -> Vec<BTreeMap<String, Value>> {
         self.profiles
             .iter()
+            .filter(|p| !self.transient.contains(&p.guid()))
             .map(|p| {
                 p.values
                     .iter()
@@ -85,9 +89,28 @@ impl Store {
             .collect()
     }
 
+    /// The default Guid as the file holds it: a transient default is written as the first saved
+    /// profile's Guid.
+    pub fn saved_default_guid(&self) -> String {
+        if !self.transient.contains(&self.default_guid) {
+            return self.default_guid.clone();
+        }
+        self.profiles.iter().find(|p| !self.transient.contains(&p.guid())).map_or_else(|| self.default_guid.clone(), |p| p.guid())
+    }
+
+    /// Makes `guid` the default profile. A transient profile (a Bonjour host) cannot be it, and
+    /// neither can an unknown Guid (13t B1).
+    pub fn set_default(&mut self, guid: &str) -> bool {
+        if self.transient.contains(guid) || !self.profiles.iter().any(|p| p.guid() == guid) {
+            return false;
+        }
+        self.default_guid = guid.to_string();
+        true
+    }
+
     pub fn save(&self) -> Result<(), String> {
         let profile = self.file_profiles();
-        let text = toml::to_string(&FileFormat { default: self.default_guid.clone(), profile })
+        let text = toml::to_string(&FileFormat { default: self.saved_default_guid(), profile })
             .map_err(|e| format!("saving profiles: {e}"))?;
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -176,6 +199,12 @@ impl Store {
     /// Copies a profile under a new Guid and "<name> copy". Returns the new Guid.
     pub fn duplicate(&mut self, guid: &str) -> Option<String> {
         let mut copy = self.get(guid)?.clone();
+        // A copy of a transient profile is an ordinary saved profile (13t B1).
+        copy.values.remove("Bonjour Service Address");
+        if self.transient.contains(guid) {
+            let tags: Vec<Value> = copy.get("Tags").and_then(|t| t.as_array().cloned()).map(|a| a.into_iter().filter(|t| t.as_str() != Some("bonjour")).collect()).unwrap_or_default();
+            copy.set("Tags", Value::Array(tags));
+        }
         let new_guid = uuid::Uuid::new_v4().to_string().to_uppercase();
         copy.set(GUID, Value::String(new_guid.clone()));
         copy.set(NAME, Value::String(format!("{} copy", copy.name())));
@@ -186,14 +215,17 @@ impl Store {
     /// Deletes a profile. The last profile cannot be deleted. Deleting the default
     /// makes the first remaining profile the default.
     pub fn delete(&mut self, guid: &str) -> bool {
-        if self.profiles.len() < 2 {
+        // The file needs one saved profile at least, so transient ones do not count.
+        let saved = self.profiles.iter().filter(|p| !self.transient.contains(&p.guid())).count();
+        if saved < 2 && !self.transient.contains(guid) {
             return false;
         }
         // Remove exactly one profile. Guids are unique after load, but never delete more than one.
         let Some(i) = self.profiles.iter().position(|p| p.guid() == guid) else { return false };
         self.profiles.remove(i);
+        self.transient.remove(guid);
         if self.default_guid == guid {
-            self.default_guid = self.profiles[0].guid();
+            self.default_guid = self.profiles.iter().find(|p| !self.transient.contains(&p.guid())).unwrap_or(&self.profiles[0]).guid();
         }
         true
     }
@@ -320,5 +352,75 @@ mod tests {
         assert!(s.delete(&first));
         assert_eq!(s.default_guid, second);
         assert_eq!(s.profiles.len(), 1);
+    }
+    fn with_bonjour(name: &str) -> (Store, String) {
+        let mut s = Store::fresh(&scratch(name));
+        let mut p = Profile::new("host");
+        p.set("Bonjour Service Address", Value::String("10.0.0.5".into()));
+        p.set("Tags", Value::Array(vec![Value::String("bonjour".into())]));
+        let guid = p.guid();
+        s.add(p);
+        s.transient.insert(guid.clone());
+        (s, guid)
+    }
+
+    #[test]
+    fn transient_profiles_never_reach_file_profiles() {
+        let (mut s, guid) = with_bonjour("transient");
+        assert_eq!(s.file_profiles().len(), 1, "only the saved profile");
+        s.default_guid = guid.clone();
+        s.save().unwrap();
+        let back = Store::load(&s.path).unwrap();
+        assert_eq!(back.profiles.len(), 1);
+        assert_eq!(back.default_guid, back.profiles[0].guid(), "a transient default is written as a saved guid");
+        assert_ne!(s.saved_default_guid(), guid);
+    }
+
+    #[test]
+    fn imported_bonjour_tagged_profile_is_saved() {
+        let mut s = Store::fresh(&scratch("imported"));
+        let mut p = Profile::new("imported");
+        p.set("Bonjour Service Address", Value::String("10.0.0.5".into()));
+        p.set("Tags", Value::Array(vec![Value::String("bonjour".into())]));
+        s.add(p);
+        assert_eq!(s.file_profiles().len(), 2, "tag and key alone do not make a profile transient");
+    }
+
+    #[test]
+    fn export_all_omits_transient_profiles() {
+        let (s, _) = with_bonjour("export");
+        let snap = crate::remote_prefs::Snapshot::from_local(&Default::default(), &s.saved_default_guid(), &s.file_profiles());
+        assert_eq!(snap.profiles.len(), 1);
+        assert!(snap.profiles.iter().all(|p| !p.contains_key("Bonjour Service Address")));
+    }
+
+    #[test]
+    fn set_as_default_refuses_a_transient_profile() {
+        let (mut s, guid) = with_bonjour("default");
+        let before = s.default_guid.clone();
+        assert!(!s.set_default(&guid));
+        assert_eq!(s.default_guid, before);
+        let saved = s.profiles[0].guid();
+        assert!(s.set_default(&saved));
+    }
+
+    #[test]
+    fn duplicate_of_a_transient_profile_is_saved_without_the_key() {
+        let (mut s, guid) = with_bonjour("dup");
+        let copy = s.duplicate(&guid).unwrap();
+        assert!(!s.transient.contains(&copy));
+        let p = s.get(&copy).unwrap();
+        assert!(p.get("Bonjour Service Address").is_none());
+        assert!(p.get("Tags").is_none_or(|t| t.as_array().is_some_and(|a| a.is_empty())));
+        assert_eq!(s.file_profiles().len(), 2);
+    }
+
+    #[test]
+    fn deleting_counts_only_saved_profiles() {
+        let (mut s, guid) = with_bonjour("delete");
+        let only = s.profiles[0].guid();
+        assert!(!s.delete(&only), "the last saved profile stays although a transient one exists");
+        assert!(s.delete(&guid));
+        assert!(s.transient.is_empty());
     }
 }

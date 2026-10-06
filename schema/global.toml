@@ -3147,6 +3147,16 @@ type = "bool"
 default = true
 help = "Prefer integrated to discrete GPU"
 
+# 13t Task 9: Bonjour hosts as profiles.
+[[setting]]
+key = "EnableRendezvous"
+tab = "General"
+section = "Bonjour"
+label = "Add Bonjour hosts to Profiles"
+type = "bool"
+default = false
+help = "Add Bonjour hosts to Profiles"
+
 [[setting]]
 key = "Bidi"
 tab = "General"
