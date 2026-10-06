@@ -60,7 +60,7 @@ fn guid_ok(g: &str) -> bool {
         && g.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '{' | '}'))
 }
 
-fn name_ok(n: &str) -> bool {
+pub(crate) fn name_ok(n: &str) -> bool {
     n.chars().count() <= MAX_NAME && crate::pathnav::safe_text(n).is_some()
 }
 

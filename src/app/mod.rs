@@ -122,6 +122,7 @@ mod windows_ui;
 mod chrome_ui;
 mod desktops_ui;
 mod launch_ui;
+mod jumplist_ui;
 mod default_term_ui;
 mod open_file_ui;
 mod presence_ui;
@@ -649,6 +650,11 @@ pub struct App {
     /// them (app-wide, not in `swap_live`; m13v1).
     launch_queue: Vec<crate::launch::Request>,
     launch_flood: crate::url_launch::Flood,
+    /// The recent profiles behind the Jump List's Recents (Task 6); app-wide.
+    recents: crate::jumplist::Recents,
+    /// The Jump List needs a rebuild (the profiles, the arrangements or the recents changed).
+    jump_list_due: bool,
+    jump_sync: crate::jumplist::Sync,
     /// The default-terminal handoff class, registered while Tandem is the default (m13v1 Task 5).
     handoff: Option<crate::handoff_win::Server>,
     /// The handed-off console the next started pane takes (`spawn_pane`), and the ones that
@@ -1986,6 +1992,9 @@ pub fn run() {
         url_flood: Default::default(),
         launch_queue,
         launch_flood: Default::default(),
+        recents: Default::default(),
+        jump_list_due: false,
+        jump_sync: Default::default(),
         handoff: None,
         start_handoff: None,
         handoff_queue: Vec::new(),
@@ -3938,6 +3947,13 @@ impl App {
         self.apply_session_start(id);
         // Automatic logging at the start, the restart and a restore (`PS:3549-3560`).
         self.start_auto_log(id);
+        // A session of a saved profile is a recent (`SF:393-397`).
+        if !relaunch {
+            let saved = self.store.shared_guid(&p.guid());
+            if let Some((guid, name)) = self.store.profiles.iter().find(|q| q.guid() == saved).map(|q| (q.guid(), q.name())) {
+                self.note_recent(&guid, &name);
+            }
+        }
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
@@ -6684,8 +6700,9 @@ impl ApplicationHandler<UserEvent> for App {
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
         let open_due = self.open_tick(event_loop);
+        let jump_due = self.jump_list_tick();
         let command_due = self.command_click_tick();
-        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

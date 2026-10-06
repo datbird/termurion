@@ -2859,6 +2859,19 @@ mod tests {
         }
     }
 
+    /// `AS:` saveProfilesToRecentDocuments (Task 6): the Jump List's Recents switch.
+    #[test]
+    fn recents_row_follows_iterm2() {
+        let key = "SaveProfilesToRecentDocuments";
+        let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Tabs", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Add items to Recents (in the taskbar button\u{2019}s Jump List) to reopen recently used profiles as tabs?");
+        assert_eq!(row.help, row.label);
+        assert!(page_rows("Advanced").iter().any(|s| s.key == key));
+        assert_eq!(schema::global().iter().filter(|s| s.key.eq_ignore_ascii_case(key)).count(), 1, "one row, whatever the case");
+    }
+
     #[test]
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";

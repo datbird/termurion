@@ -121,6 +121,7 @@ impl App {
         self.globals.set(arrangements::DEFAULT_KEY, default.unwrap_or_else(|| Value::String(String::new())));
         self.save_globals();
         self.menus_dirty = true;
+        self.jump_list_due = true;
         self.sync_checks();
     }
 

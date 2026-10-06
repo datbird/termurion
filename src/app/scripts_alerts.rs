@@ -82,6 +82,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
         // Cancel: a closed window never runs an opened script or adds a preset (B6).
         Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) => Answer::Button(1),
+        // Cancel is the third button: a closed window never opens a profile either way (B6).
+        Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
         Then::ClaudeUninstall | Then::ClaudeHooksFailed => Answer::Button(1),
         // Leave Enabled: a closed window never turns the person's API off (P10).
@@ -268,6 +270,11 @@ pub(super) enum Then {
     RunOpenedFile(crate::open_file::Launch),
     /// "Add duplicate color preset?" for an opened `.itermcolors`: Cancel (0) or Add it anyway (1).
     AddDuplicateColorPreset(std::path::PathBuf),
+    /// "Profile Renamed" for an opened `.itermtab` (Task 6): the first button opens the profile by
+    /// its guid (the one now named {new}), the second the profile that has the old name, Cancel
+    /// nothing (`PD:44-61`, a faithful quirk). A closed window cancels; another process can raise it,
+    /// so it is capped (B6).
+    OpenRenamedProfile { by_guid: String, by_name: String },
 }
 
 impl Then {
@@ -292,13 +299,13 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. })
     }
 }
 
 /// How many ignored files a question that never shows stands for (the opened-file questions).
 pub(super) fn dropped_open_files(then: &Then) -> usize {
-    matches!(then, Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_)) as usize
+    matches!(then, Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. }) as usize
 }
 
 /// The queue holds at most this many capped asks (`Then::capped`); later ones are dropped (a
@@ -625,6 +632,7 @@ impl App {
                     self.open_recheck(path);
                 }
             }
+            Then::OpenRenamedProfile { by_guid, by_name } => self.renamed_profile_answered(&by_guid, &by_name, index),
         }
     }
 }

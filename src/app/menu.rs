@@ -146,6 +146,10 @@ impl App {
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
         let mut suppressed = None;
         for item in menus::items() {
+            // With the recents off at launch the item is removed (`AD:1340-1342`).
+            if item.selector == "removeRecentProfilesFromDockMenu:" && !self.globals.bool(super::jumplist_ui::KEY) {
+                continue;
+            }
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
             } else if item.submenu {
@@ -812,6 +816,7 @@ impl App {
             "performNaturalLanguageQuery:" => self.engage_ai(event_loop),
             "makeDefaultTerminal:" => self.make_default_terminal(),
             "unmakeDefaultTerminal:" => self.unmake_default_terminal(),
+            "removeRecentProfilesFromDockMenu:" => self.remove_recent_profiles(),
             "explainOutputWithAI:" => self.explain_output(event_loop),
             "revealCockpit:" => self.reveal_cockpit(event_loop),
             "openAIChats:" => self.open_ai_chats(event_loop),

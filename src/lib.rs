@@ -336,6 +336,9 @@ pub mod ssh_url;
 pub mod host_state;
 pub mod url_schemes;
 pub mod launch;
+pub mod jumplist;
+#[cfg(windows)]
+pub mod jumplist_win;
 pub mod open_file;
 pub mod reg;
 pub mod default_term;

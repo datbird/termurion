@@ -1125,6 +1125,7 @@ impl App {
             self.banners.set("menu", format!("Profiles menu: {e}"));
         }
         bar.profile_items = tree;
+        self.jump_list_due = true;
     }
 
     /// A profile picked in the Profiles menu: a tab, or a window with Alt held.

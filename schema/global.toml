@@ -5136,6 +5136,15 @@ default = true
 help = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?\nIf you use “tandem.exe file.ps1” or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's “Send Text at Start” setting. If this setting is off then both will be executed."
 
 [[setting]]
+key = "SaveProfilesToRecentDocuments"
+tab = "Advanced"
+section = "Tabs"
+label = "Add items to Recents (in the taskbar button’s Jump List) to reopen recently used profiles as tabs?"
+type = "bool"
+default = false
+help = "Add items to Recents (in the taskbar button’s Jump List) to reopen recently used profiles as tabs?"
+
+[[setting]]
 key = "OpenFileInNewWindows"
 tab = "Advanced"
 section = "Windows"

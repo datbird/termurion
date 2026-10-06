@@ -192,7 +192,8 @@ impl App {
                 self.bring_forward();
             }
             Kind::ColorPresets => self.open_color_file(&f.path),
-            Kind::ProfileTab | Kind::Triggers => self.open_file_banner(format!("Tandem cannot open \u{201c}{shown}\u{201d} yet.")),
+            Kind::ProfileTab => self.open_profile_tab(&f.path),
+            Kind::Triggers => self.open_file_banner(format!("Tandem cannot open \u{201c}{shown}\u{201d} yet.")),
             Kind::Folder => self.open_folder_or_script(&f, event_loop),
             Kind::Script => self.open_folder_or_script(&f, event_loop),
         }
