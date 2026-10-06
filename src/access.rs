@@ -68,13 +68,18 @@ impl Rows {
     }
 }
 
-/// A pane at a password prompt: only the cursor's own row, up to the cursor column or the
-/// column where the prompt ended (`input_start`) when the caller recorded it, so a program
-/// that echoes what is typed never exposes it. The cursor stays where it was in that row.
-pub fn secure_rows(rows: &Rows, input_start: Option<usize>) -> Rows {
-    let Some((cells, _)) = rows.rows.get(rows.cursor.0) else { return Rows::default() };
-    let cut = rows.cursor.1.min(input_start.unwrap_or(usize::MAX)).min(cells.len());
-    Rows { rows: vec![(cells[..cut].to_vec(), false)], cursor: (0, cut), first_line: rows.first_line + rows.cursor.0 as i64 }
+/// A pane at a password prompt: only the prompt. `input_start` is where the prompt ended, as
+/// (absolute line, column), recorded when the pane reached the prompt; the model exposes that
+/// row up to that column and nothing else, so a program that echoes what is typed never exposes
+/// it, even when the echo wraps onto later rows (the cursor is then on a later row). Without a
+/// recorded start, or when its row is no longer in `rows`, nothing is exposed: unknown means
+/// hidden. The cursor shows at the end of the prompt.
+pub fn secure_rows(rows: &Rows, input_start: Option<(i64, usize)>) -> Rows {
+    let Some((line, col)) = input_start else { return Rows::default() };
+    let Ok(idx) = usize::try_from(line - rows.first_line) else { return Rows::default() };
+    let Some((cells, _)) = rows.rows.get(idx) else { return Rows::default() };
+    let cut = col.min(cells.len());
+    Rows { rows: vec![(cells[..cut].to_vec(), false)], cursor: (0, cut), first_line: line }
 }
 
 /// The text a client reads: UTF-16 units, the offset after each row, and the (row, column)
@@ -695,15 +700,28 @@ mod tests {
     #[test]
     fn secure_pane_exposes_only_the_prompt() {
         let r = rows(&[("old output", false), ("Password: hunter2", false)], (1, 17));
-        let s = secure_rows(&r, Some(10));
+        let s = secure_rows(&r, Some((1, 10)));
         let t = build(&s);
         assert_eq!(string(&t), "Password:\n");
         assert!(!string(&t).contains("hunter2") && !string(&t).contains("old"));
-        // Without a recorded start the cursor column is the cut.
-        assert_eq!(string(&build(&secure_rows(&rows(&[("Password: ", false)], (0, 10)), None))), "Password:\n");
-        // A cursor that is somewhere else exposes no more than it reaches.
-        assert_eq!(s.cursor.0, 0);
+        // Without a recorded start (or one that scrolled out) nothing is exposed.
+        assert_eq!(secure_rows(&rows(&[("Password: ", false)], (0, 10)), None), Rows::default());
+        assert_eq!(secure_rows(&rows(&[("Password: ", false)], (0, 10)), Some((9, 10))), Rows::default());
+        assert_eq!(s.cursor, (0, 10));
         assert_eq!(secure_rows(&Rows::default(), None), Rows::default());
+    }
+
+    /// A password echoed (or typed before the state was seen) that wraps onto the next row: the
+    /// cursor is on the later row, so a cut at the cursor's row would expose the echo.
+    #[test]
+    fn secure_hides_a_wrapped_echo() {
+        let mut r = rows(&[("old", false), ("Password: ", true), ("hunter2", false)], (2, 7));
+        r.first_line = 50;
+        // The prompt began on absolute line 51 and ended at column 10.
+        let s = secure_rows(&r, Some((51, 10)));
+        let shown = string(&build(&s));
+        assert!(!shown.contains("hunter") && !shown.contains("old"), "got {shown:?}");
+        assert_eq!(shown, "Password:\n");
     }
 
     #[test]

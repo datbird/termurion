@@ -963,7 +963,11 @@ impl App {
     /// state changed goes to `password_input_changed`. A new sample wakes the window, so
     /// nothing waits here.
     fn tick_password_input(&mut self) {
-        let debounce = self.globals.bool(pwm_prompt::DETECT_KEY).then(|| self.globals.number(pwm_prompt::DEBOUNCE_KEY).unwrap_or(pwm_prompt::DEFAULT_DEBOUNCE));
+        // The samplers run whatever the "Show key at cursor" setting says: the screen reader's
+        // privacy gate (`Pane::secure_input`) needs the state, the setting only gates what the
+        // key cursor and the manager do with it (`pwm_prompt::states`).
+        let detect_on = self.globals.bool(pwm_prompt::DETECT_KEY);
+        let debounce = pwm_prompt::sampling_debounce(detect_on, self.globals.number(pwm_prompt::DEBOUNCE_KEY));
         self.jobs.set_read_modes(debounce);
         if let Some(h) = &self.host {
             h.watch_prompts(debounce);
@@ -971,7 +975,9 @@ impl App {
         let mut changes = Vec::new();
         for (id, p) in self.panes.iter_mut() {
             let local = || p.owns_console() && p.shell_pid().is_some_and(|pid| self.jobs.password_input(pid));
-            let now = debounce.is_some() && p.exited.is_none() && pwm_prompt::with_conductor(p.hosted_password_input().unwrap_or_else(local), p.ssh_password_prompt());
+            let raw = p.exited.is_none() && pwm_prompt::with_conductor(p.hosted_password_input().unwrap_or_else(local), p.ssh_password_prompt());
+            let (now, secure) = pwm_prompt::states(raw, detect_on);
+            p.secure_input = secure;
             if now != p.password_input {
                 changes.push((*id, p.password_input, now));
                 p.password_input = now;
