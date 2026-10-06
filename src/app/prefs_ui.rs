@@ -175,8 +175,13 @@ pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store
     if profiles.is_empty() {
         profiles.push(Profile::new("Default"));
     }
+    // The snapshot never holds Dynamic Profiles (`file_profiles` leaves them out), so the ones
+    // running stay, unless the snapshot holds the same Guid (then the file's entry is refused as a
+    // clash by the reload that follows).
+    let running: Vec<Profile> = store.profiles.iter().filter(|p| p.bool(crate::dynamic_profiles::DYNAMIC_KEY)).filter(|p| !profiles.iter().any(|q| q.guid() == p.guid())).cloned().collect();
     crate::store::ensure_unique_guids(&mut profiles);
     store.default_guid = if profiles.iter().any(|p| p.guid() == snap.default) { snap.default.clone() } else { profiles[0].guid() };
+    profiles.extend(running);
     store.profiles = profiles;
 }
 
@@ -337,7 +342,10 @@ impl App {
 
     /// The location's settings replace the running ones, as an import does.
     pub(super) fn prefs_apply(&mut self, snap: Snapshot) {
+        // Edits still waiting for their file go first: the snapshot replaces the list under them.
+        self.flush_dynamic_writes();
         apply_snapshot(&snap, &mut self.globals, &mut self.store);
+        self.reload_dynamic_profiles();
         self.bonjour_profiles_replaced();
         let n = snap.profiles.len();
         self.prefs_saved = Some(snap);
@@ -775,6 +783,39 @@ mod tests {
         apply_snapshot(&snap, &mut g, &mut store);
         assert_eq!(store.profiles[0].string("Working Directory"), "");
         assert_eq!(store.profiles[0].string("AWDS Tab Directory"), "D:\\ok");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Final review 2: a run-time load writes pending dynamic edits first, applies the snapshot,
+    /// then reloads the Dynamic Profiles folder once.
+    #[test]
+    fn prefs_apply_flushes_then_applies_then_reloads_the_folder() {
+        let src = include_str!("prefs_ui.rs");
+        let from = src.find("pub(super) fn prefs_apply(").expect("prefs_apply");
+        let body = &src[from..from + src[from..].find("\n    }\n").expect("end")];
+        let at = |n: &str| body.find(n).unwrap_or_else(|| panic!("prefs_apply calls {n}"));
+        assert!(at("self.flush_dynamic_writes();") < at("apply_snapshot(&snap"));
+        assert!(at("apply_snapshot(&snap") < at("self.reload_dynamic_profiles();"));
+    }
+
+    /// Final review 2: loading remote settings while running keeps the Dynamic Profiles in the
+    /// list (the snapshot never holds them); a Guid the snapshot also holds goes to the snapshot.
+    #[test]
+    fn a_loaded_snapshot_keeps_the_running_dynamic_profiles() {
+        let dir = std::env::temp_dir().join(format!("tandem-prefs-keepdyn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut g, mut store) = local(&dir, "x");
+        for guid in ["dyn1", "clash"] {
+            let mut p = Profile::new("D");
+            p.set("Guid", Value::String(guid.into()));
+            p.set("Is Dynamic Profile", Value::Boolean(true));
+            store.profiles.push(p);
+        }
+        let snap = Snapshot { settings: map(&[]), default: "s1".into(), profiles: vec![map(&[("Guid", Value::String("s1".into())), ("Name", Value::String("S".into()))]), map(&[("Guid", Value::String("clash".into())), ("Name", Value::String("C".into()))])] };
+        apply_snapshot(&snap, &mut g, &mut store);
+        assert_eq!(store.dynamic_guids(), ["dyn1"], "the running dynamic profile survives; a clash goes to the snapshot");
+        assert!(store.unsaved("dyn1"));
+        assert_eq!(store.file_profiles().len(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -512,12 +512,18 @@ impl App {
     }
 
     /// Writes every pending edit back (no reload) and logs what was not written.
-    fn flush_dynamic_writes(&mut self) {
+    pub(super) fn flush_dynamic_writes(&mut self) {
         self.dynamic_write_due = None;
         let pending = std::mem::take(&mut self.dynamic_write);
         let Some(folder) = self.dynamic_scan.as_ref().map(|s| s.folder().to_path_buf()).filter(|_| !pending.is_empty()) else { return };
         let add_tag = self.globals.bool("AddDynamicTagToDynamicProfiles");
+        let asked = pending.clone();
         let results = flush_writes(&Fs::real(), &folder, &mut self.dynamic_files, &self.store, add_tag, pending);
+        // An edit for a profile that is no longer in the list or has no file is never silent.
+        let lost: Vec<String> = asked.into_iter().filter(|g| !results.iter().any(|(r, _)| r == g)).collect();
+        for guid in lost {
+            self.dynamic_log(&format!("An edit to the dynamic profile {guid} could not be written back: its profile or file is gone."));
+        }
         for (guid, out) in results {
             self.dynamic_outcome(&guid, out);
         }
