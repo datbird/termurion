@@ -251,22 +251,29 @@ mod tests {
         assert!(find_urls_regex(&g).is_none());
     }
 
+    /// The inputs sit between the configured limits and the libraries' defaults (measured on
+    /// EXTREME: 16 'a's is above 20 000 backtracking steps and below the default 1 000 000;
+    /// 50 000 repeats compile under the default 10 MiB size limit and over 1 MiB), so removing
+    /// either bound from `find_urls_regex` fails this test.
     #[test]
     fn find_urls_pattern_is_bounded() {
-        // A lookahead needs fancy_regex's backtracking VM: over a long line it gives up at the
-        // backtrack limit with an error, which ends the scan with no hits (and no hang).
         let mut g = Globals::empty(std::path::Path::new("unused.toml"));
+        // Backtracking: the lookahead needs the backtracking VM; the limit is an error, which ends
+        // the scan with no hits, where the default limit would finish with no match.
         g.set("FindUrlsRegex", toml::Value::String("(a+)+(?=c)".into()));
-        let text = "a".repeat(100_000);
+        let text = "a".repeat(16);
         let re = find_urls_regex(&g).expect("pattern");
-        let start = std::time::Instant::now();
-        let hits = url_hits(&re, &text, 0..text.len());
-        assert!(hits.is_empty(), "the scan ended at the first error");
-        assert!(re.find(&text).is_err(), "the limit is hit, not skipped");
-        assert!(start.elapsed().as_secs() < 5);
-        // An over-large pattern is refused at compile time (the size limits).
-        g.set("FindUrlsRegex", toml::Value::String("(?:(?:a{500}){500}){10}".into()));
+        assert!(re.find(&text).is_err(), "the 20 000 step limit is hit");
+        assert!(url_hits(&re, &text, 0..text.len()).is_empty());
+        let default = fancy_regex::Regex::new("(a+)+(?=c)").unwrap();
+        assert!(matches!(default.find(&text), Ok(None)), "the same input is fine under the default");
+        // Size: a pattern over the 1 MiB compile limit is refused, one the default would accept.
+        g.set("FindUrlsRegex", toml::Value::String("(?:ab){50000}".into()));
         assert!(find_urls_regex(&g).is_none());
+        assert!(fancy_regex::Regex::new("(?:ab){50000}").is_ok(), "the default limit accepts it");
+        // A small pattern still compiles.
+        g.set("FindUrlsRegex", toml::Value::String("https?://\\S+".into()));
+        assert!(find_urls_regex(&g).is_some());
     }
 
     #[test]
