@@ -74,7 +74,7 @@ pub trait LogSafe {}
 macro_rules! log_safe {
     ($($t:ty),* $(,)?) => { $(impl LogSafe for $t {})* };
 }
-log_safe!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, bool, char, std::time::Duration, Name, Built);
+log_safe!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, bool, char, std::time::Duration, Name);
 impl LogSafe for &'static str {}
 
 /// Identity, so the macro can demand `LogSafe` of each argument.
@@ -92,18 +92,27 @@ pub fn name(s: &str) -> Name {
     Name(s.chars().take(64).map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' ') { c } else { '?' }).collect())
 }
 
-/// A line assembled by the caller from `LogSafe` parts only (names made by `name(..)`, numbers):
-/// kept as it is. Never wrap a value that came from a terminal or a user.
+/// A list of short words (program names in a job ancestry): each one passed through `name`, shown
+/// as `["a", "b"]`. The only way to make one is `names`, so it holds nothing unsanitized.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Built(String);
+pub struct Names(Vec<Name>);
 
-pub fn built(s: String) -> Built {
-    Built(s)
+pub fn names(items: &[String]) -> Names {
+    Names(items.iter().map(|s| name(s)).collect())
 }
 
-impl fmt::Display for Built {
+impl LogSafe for Names {}
+
+impl fmt::Display for Names {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str("[")?;
+        for (i, n) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "\"{n}\"")?;
+        }
+        f.write_str("]")
     }
 }
 
@@ -931,6 +940,39 @@ mod tests {
         // The macro itself runs the check in a `const`, so every spelling gets it.
         let src = include_str!("dlog.rs").split("#[cfg(test)]").next().unwrap();
         assert_eq!(src.matches("const _: () = $crate::dlog::no_capture($fmt);").count(), 2, "dlog! and rlog! check their format at compile time");
+    }
+
+    /// P2, review of Task 2: no public function turns an arbitrary `String` into a log-safe value.
+    /// The `LogSafe` implementors are the numbers, `&'static str` and three types whose only
+    /// constructors sanitize or build from numbers: `Name`/`Names` (`name`, `names`) and the
+    /// timer `Table` (`perf::log_table`); none has a public `fn (String) -> Self`.
+    #[test]
+    fn no_string_becomes_log_safe_by_a_constructor() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut implementors = Vec::new();
+        let mut dirs = vec![src];
+        let impl_for = regex::Regex::new(r"LogSafe for ([A-Za-z_&' ]+?)\s*\{").unwrap();
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let t = std::fs::read_to_string(&p).unwrap();
+                    let live = t.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+                    for c in impl_for.captures_iter(live) {
+                        implementors.push(c[1].to_string());
+                    }
+                    assert!(!live.contains("pub fn built("), "{p:?}: a public String-to-LogSafe constructor");
+                }
+            }
+        }
+        implementors.sort();
+        assert_eq!(implementors, ["&'static str", "Names", "Table"], "the LogSafe implementors");
+        let own = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/dlog.rs")).unwrap();
+        let macro_list = own.lines().find(|l| l.starts_with("log_safe!(")).unwrap();
+        assert!(!macro_list.contains("Built"), "{macro_list}");
+        assert_eq!(names(&["claude".to_string(), "a b\"c".to_string()]).to_string(), "[\"claude\", \"a b?c\"]", "sanitized, in iTerm2's list spelling");
     }
 
     /// Every live `dlog!` and `rlog!` call: (file, macro, format string, argument text).
