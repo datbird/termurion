@@ -306,6 +306,7 @@ pub mod settings_shortcuts;
 pub mod settings_hotkey;
 pub mod settings_ssh;
 pub mod restore_state;
+pub mod resident;
 pub mod host_proto;
 pub mod host;
 pub mod host_client;

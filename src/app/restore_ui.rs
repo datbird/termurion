@@ -36,8 +36,16 @@ impl App {
     /// with no windows). Later saves are off.
     pub(super) fn save_empty_state(&mut self) {
         if !self.state_frozen {
-            self.write_state(&State { host: None, windows: Vec::new() });
+            self.write_empty_state();
             self.state_frozen = true;
+        }
+    }
+
+    /// The same empty state without freezing later saves: Tandem stays resident and the next
+    /// window saves as usual (m13v1 Task 7, B7).
+    pub(super) fn write_empty_state(&mut self) {
+        if !self.state_frozen {
+            self.write_state(&State { host: None, windows: Vec::new() });
         }
     }
 

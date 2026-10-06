@@ -74,7 +74,8 @@ impl App {
         let excluded = self.globals.bool(presence::EXCLUDED_FROM_CYCLING_KEY);
         let look_of = |hotkey: Option<bool>, style: i64| presence::with_accessory(presence::window_look(now, hotkey, excluded), style == crate::frames::ACCESSORY);
         let mut flipped = false;
-        if let Some(g) = &self.gpu {
+        // A resident window stays hidden and off the taskbar: no look is applied to it.
+        if let (Some(g), false) = (&self.gpu, self.resident) {
             let hotkey = self.hotkey.as_ref().map(|h| h.shown);
             flipped = apply_look(&g.window, look_of(hotkey, self.win_style), &mut self.look_seen, hotkey.is_some());
         }
@@ -130,7 +131,7 @@ const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
 impl App {
     /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) {
-        let want = presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY));
+        let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
         if !presence::tray_changes(want, self.tray_on) {
             return;
         }
@@ -143,7 +144,7 @@ impl App {
     }
 
     /// Terminal windows: (id, Some(shown) for a hotkey window, on screen), current first.
-    fn terminal_window_states(&self) -> Vec<(WindowId, Option<bool>, bool)> {
+    pub(super) fn terminal_window_states(&self) -> Vec<(WindowId, Option<bool>, bool)> {
         let on_screen = |w: &winit::window::Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
         let mut out = Vec::new();
         if let Some(g) = &self.gpu {
@@ -190,11 +191,7 @@ impl App {
                 }
             }
             // The reopen macOS runs: the last window comes forward, or a new one opens.
-            presence::DockClick::Unhandled => match presence::reopen_target(self.last_window, &states) {
-                presence::Reopen::Focus(w) => self.focus_terminal_window(w),
-                presence::Reopen::NewWindow => self.new_window(event_loop, None),
-                presence::Reopen::Nothing => {}
-            },
+            presence::DockClick::Unhandled => self.reopen(event_loop),
         }
     }
 

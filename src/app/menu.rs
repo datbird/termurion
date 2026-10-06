@@ -857,6 +857,8 @@ impl App {
                 }
             }
             "closeCurrentSession:" => {
+                // Close counts as using Tandem (`AD:2728`): no grace period after it.
+                self.note_interaction();
                 if let Some(id) = self.focused_id().filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_session_undoable(id, event_loop);
                 }

@@ -64,3 +64,15 @@ Same setup and capture as rows 1-5.
 | # | Check | Result |
 |---|---|---|
 | 22 | Right-click Tandem's taskbar button, Remove from this list on a profile item. Open two new tabs (two rebuilds) and edit a profile name: the item stays gone. Quit and start Tandem: still gone. `%APPDATA%\Tandem\Recents\removed.json` lists its arguments. | |
+
+## Staying resident (task 7)
+
+| # | Check | Result |
+|---|---|---|
+| 23 | With "Quit when all windows are closed" off, close the last window (Ctrl+D in its only shell, then the close button). Tandem stays: no taskbar button, no Alt+Tab entry, the notification area icon is there, and `tasklist` still shows tandem.exe. | |
+| 24 | Left-click the icon: a window opens with one tab, on the screen it opened on before, with a working shell. Close it again: the icon stays. Quit from the icon's right-click menu: Tandem ends and the icon goes. | |
+| 25 | Resident for an hour: no CPU use in Task Manager (0%), no wake-ups beyond Windows' own; the hidden window uses about its old memory. Restart Explorer (`taskkill /f /im explorer.exe`, then `explorer`): the icon comes back by itself. | |
+| 26 | "Quit when all windows are closed" on, start Tandem and close its window within 10 seconds without typing or using Close: Tandem stays (log line "Not quitting Tandem because it ran very briefly"). Type a key, then close: Tandem ends. With MinRunningTime 0 it ends at once. | |
+| 27 | OpenUntitledFile off, resident: a left click on the icon opens nothing (right-click > Main Menu > Shell > New Window still does). Start Tandem with the key off and "Open a new window at startup" on: it starts resident, no window. | |
+| 28 | Resident, a Jump List item, `tandem.exe` again, or an ssh link: one window shows, with only the requested tab (a bare second start follows OpenUntitledFile). A global hotkey of a profile's hotkey window brings that window while resident. | |
+| 29 | Resident, a Windows sign out or shutdown with Tandem running: it ends with the logoff, nothing hangs, the keyboard layout is not left forced after it. | |

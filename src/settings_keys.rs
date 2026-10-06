@@ -2823,6 +2823,28 @@ mod tests {
         }
     }
 
+    /// 13v1 Task 7 (`AS` MinRunningTime, OpenUntitledFile): the grace period and the icon click rows; the quit
+    /// row keeps its label and no longer says Tandem cannot stay without a window (R3).
+    #[test]
+    fn resident_rows_follow_iterm2() {
+        let min = schema::find_global("MinRunningTime").expect("MinRunningTime");
+        assert_eq!((min.tab.as_str(), min.section.as_str(), min.kind, min.default.clone()), ("Advanced", "General", Kind::Float, Some(Value::Float(10.0))));
+        assert_eq!(min.label, "Grace period for automatic quitting after the last window is closed.");
+        assert_eq!(min.help, "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period.");
+        let open = schema::find_global("OpenUntitledFile").expect("OpenUntitledFile");
+        assert_eq!((open.tab.as_str(), open.section.as_str(), open.kind, open.default.clone()), ("Advanced", "General", Kind::Bool, Some(Value::Boolean(true))));
+        let text = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?";
+        assert_eq!((open.label.as_str(), open.help.as_str()), (text, text));
+        for key in ["MinRunningTime", "OpenUntitledFile"] {
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+        let quit = schema::find_global("QuitWhenAllWindowsClosed").unwrap();
+        assert_eq!((quit.tab.as_str(), quit.label.as_str()), ("General", "Quit when all windows are closed"));
+        assert!(!quit.help.contains("7e") && !quit.help.contains("milestone"), "{}", quit.help);
+        assert!(quit.help.contains("notification area icon"), "{}", quit.help);
+    }
+
     /// `AS:853-885`: the five open-file rows (Task 2): tab, section, kind, default, label and help.
     #[test]
     fn open_file_rows_follow_iterm2() {

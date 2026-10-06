@@ -126,6 +126,7 @@ mod jumplist_ui;
 mod default_term_ui;
 mod open_file_ui;
 mod presence_ui;
+mod resident_ui;
 #[cfg(windows)]
 mod sizing_ui;
 #[cfg(windows)]
@@ -650,6 +651,13 @@ pub struct App {
     /// them (app-wide, not in `swap_live`; m13v1).
     launch_queue: Vec<crate::launch::Request>,
     launch_flood: crate::url_launch::Flood,
+    /// Tandem runs with no window (m13v1 Task 7, R3): the last window is hidden, empty and off the
+    /// taskbar, the notification area icon is its way back. App-wide, not in `swap_live`.
+    resident: bool,
+    /// When this Tandem started, and whether the person has done anything yet (a key in a
+    /// session, Close, a window they closed): iTerm2's grace period for quitting (`AD:915-942`).
+    launched_at: Instant,
+    user_interacted: bool,
     /// The recent profiles behind the Jump List's Recents (Task 6); app-wide.
     recents: crate::jumplist::Recents,
     /// The Jump List needs a rebuild (the profiles, the arrangements or the recents changed).
@@ -1986,6 +1994,9 @@ pub fn run() {
         url_flood: Default::default(),
         launch_queue,
         launch_flood: Default::default(),
+        resident: false,
+        launched_at: Instant::now(),
+        user_interacted: false,
         recents: Default::default(),
         jump_list_due: false,
         jump_sync: Default::default(),
@@ -4662,6 +4673,12 @@ impl App {
             // The window's last tab closed: the window goes; the last window ends Tandem. The
             // settings folder's quit question may open after it has gone, with its GPU.
             self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
+            // iTerm2's rule for the last window (`AD:915-942`, R3): Tandem stays resident unless
+            // "Quit when all windows are closed" says otherwise (and the grace period has passed).
+            if self.windows.parked().next().is_none() && self.hotkey.is_none() && self.after_last_window_now() == crate::resident::AfterLast::StayResident {
+                self.prefs_gpu = None;
+                return self.go_resident_after_last();
+            }
             if !self.drop_current_window() {
                 self.save_pending_settings();
                 self.save_empty_state();
@@ -5032,6 +5049,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // A key in a session ends the quit grace period (`PTYTextView.m:7505-7509`).
+        if ev.state == ElementState::Pressed {
+            self.note_interaction();
+        }
         // Remap modifiers globally off: this key is read with the remapped modifiers.
         let remapped = self.remapped_key(ev);
         let ev = remapped.as_ref().unwrap_or(ev);
@@ -5702,7 +5723,9 @@ impl App {
                     Axis::Column => (y - parent.y) / parent.h,
                 };
                 let path = path.clone();
-                self.tabs[self.active].layout.set_ratio(&path, ratio);
+                // A hidden resident window has no tabs and no drag (Task 7).
+                let Some(tab) = self.tabs.get_mut(self.active) else { return };
+                tab.layout.set_ratio(&path, ratio);
                 self.relayout();
             }
             Drag::App { pane, button, .. } => {
@@ -6344,8 +6367,12 @@ impl ApplicationHandler<UserEvent> for App {
         // window and nothing restored): the first window is a hotkey window, made hidden.
         let quiet = hotkey_only || (system_policy && !early.window && !early.restore);
         let startup_hotkey = if quiet && !self.state_frozen && self.start_handoff.is_none() { hotkey_profiles.first().cloned() } else { None };
+        // R3: when the plan opens no window (and no hotkey window comes up), Tandem starts resident, as
+        // iTerm2 runs with no window: the first window is made hidden and empty, the icon is the way in.
+        let untitled = self.globals.bool("OpenUntitledFile");
+        let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && (!early.window || !untitled);
         let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
-        if startup_hotkey.is_some() {
+        if startup_hotkey.is_some() || resident_start {
             use winit::platform::windows::WindowAttributesExtWindows;
             attrs = attrs.with_visible(false).with_skip_taskbar(true);
         }
@@ -6366,7 +6393,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gpu = Some(gpu);
                 self.load_cursors(event_loop);
                 self.windows.start(k);
-                self.registry.open(k);
+                // A resident start has no window in the list until a tab makes it one.
+                if resident_start {
+                    self.resident = true;
+                } else {
+                    self.registry.open(k);
+                }
                 // Edge drags snap to the cell grid, and follow AllowLiveResize.
                 self.install_sizing();
                 // A forced Theme's title bar survives system setting changes.
@@ -6464,6 +6496,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     self.hotkey = Some(hotkey_ui::HotkeyWin::new(guid.clone()));
                 }
+                None if resident_start => {}
                 None => self.new_tab(None),
             },
         }
@@ -6484,13 +6517,15 @@ impl ApplicationHandler<UserEvent> for App {
         self.install_menus();
         // A window the default arrangement filled keeps its frame, style, and locks.
         let steps = crate::winmodel::open_steps(arranged);
-        if steps.place && startup_hotkey.is_none() {
+        if resident_start {
+            // Hidden and empty: nothing to place or style until a window opens.
+        } else if steps.place && startup_hotkey.is_none() {
             self.place_window();
         } else {
             self.claim_slot();
             self.anchor_from_profile(startup_hotkey.as_deref());
         }
-        if steps.profile_window && startup_hotkey.is_none() {
+        if steps.profile_window && startup_hotkey.is_none() && !resident_start {
             self.apply_window_profile(None);
         }
         // The Profiles window follows Open profiles window.
@@ -6501,7 +6536,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.open_settings(event_loop, Mode::Profiles);
         }
         let style = startup_hotkey.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
-        if steps.profile_style && style != crate::frames::NORMAL {
+        if steps.profile_style && style != crate::frames::NORMAL && !resident_start {
             self.apply_window_style(style, false);
         }
         // The first window is made on the primary instance; one whose profiles want alpha is recreated now.
@@ -6539,6 +6574,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.handoff_banner_tick();
+        // A hidden resident window that got a tab by any route is a window again (B11).
+        self.wake_from_resident();
         // Timers (blink, bells, activity, marks, animations) act for the window the person
         // uses; the window that drew last may be another one.
         if let Some(w) = self.last_window {
@@ -6829,7 +6866,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
-        let window_exists = self.current_window().is_some();
+        let window_exists = self.current_window().is_some() && !self.resident;
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
             if !slot.as_ref().is_some_and(|s| s.id() == id) {

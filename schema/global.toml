@@ -858,7 +858,7 @@ section = "Closing"
 label = "Quit when all windows are closed"
 type = "bool"
 default = false
-help = "Tandem ends when its last window closes. On Windows a Tandem with no window cannot be reached, so Tandem also ends when this is off, until hotkey windows (milestone 7e) can bring one back."
+help = "Tandem ends when its last window closes. When this is off, Tandem keeps running with its notification area icon and a click on the icon opens a window."
 
 [[setting]]
 key = "NeverBlockSystemShutdown"
@@ -5134,6 +5134,24 @@ label = "Should opening a script with Tandem disable the default profile’s “
 type = "bool"
 default = true
 help = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?\nIf you use “tandem.exe file.ps1” or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's “Send Text at Start” setting. If this setting is off then both will be executed."
+
+[[setting]]
+key = "MinRunningTime"
+tab = "Advanced"
+section = "General"
+label = "Grace period for automatic quitting after the last window is closed."
+type = "float"
+default = 10.0
+help = "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period."
+
+[[setting]]
+key = "OpenUntitledFile"
+tab = "Advanced"
+section = "General"
+label = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?"
+type = "bool"
+default = true
+help = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?"
 
 [[setting]]
 key = "SaveProfilesToRecentDocuments"
