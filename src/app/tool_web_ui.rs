@@ -112,6 +112,21 @@ pub(super) struct Loaded {
     pub(super) parent: isize,
 }
 
+/// What a repeat registration does to a tool's view.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ReOp {
+    /// Load the stored URL again (`TWV:140-146`).
+    Navigate(String),
+    /// Close the view; the next layout makes it anew.
+    Close,
+}
+
+/// A failed view, or a stored URL a tool view may not load, is closed; a good view navigates to
+/// the registered URL (not `reload`, which would reload the page it wandered to).
+pub(super) fn reregister_op(failed: bool, stored_url: &str) -> ReOp {
+    if failed || !tool_url_ok(stored_url) { ReOp::Close } else { ReOp::Navigate(stored_url.to_string()) }
+}
+
 /// The tool views whose parent is not `new`, the handle of a window made again.
 pub(super) fn reparents(have: &HashMap<String, Loaded>, new: isize) -> Vec<String> {
     have.iter().filter(|(_, l)| l.parent != new).map(|(n, _)| n.clone()).collect()
@@ -224,12 +239,18 @@ impl App {
             if !self.enter(id) {
                 continue;
             }
-            let failed = self.tool_loaded.get(&name).is_some_and(|l| self.tool_view_ids.get(&l.id).copied().unwrap_or(false));
-            if failed {
-                self.close_tool_view(&name);
-                self.redraw();
-            } else if let Some(v) = self.tool_views.get(&name) {
-                v.reload();
+            let Some(l) = self.tool_loaded.get(&name) else { continue };
+            let failed = self.tool_view_ids.get(&l.id).copied().unwrap_or(false);
+            match reregister_op(failed, &l.url.clone()) {
+                ReOp::Close => {
+                    self.close_tool_view(&name);
+                    self.redraw();
+                }
+                ReOp::Navigate(url) => {
+                    if let Some(v) = self.tool_views.get(&name) {
+                        v.navigate(&url);
+                    }
+                }
             }
         }
         if let Some(b) = back {
@@ -373,6 +394,21 @@ mod tests {
         moved.sort();
         assert_eq!(moved, vec!["A".to_string()], "only a view not already on the new handle");
         assert!(reparents(&HashMap::new(), 5).is_empty());
+    }
+
+    /// Review fix 2 (`TWV:140-146`, didRegister): a repeat registration loads the tool's stored URL
+    /// again, not whatever page the view navigated to since.
+    #[test]
+    fn a_repeat_registration_loads_the_stored_url() {
+        assert_eq!(reregister_op(false, "https://a.example/tool"), ReOp::Navigate("https://a.example/tool".to_string()));
+        assert_eq!(reregister_op(true, "https://a.example/tool"), ReOp::Close, "a failed view is made anew");
+        // A stored URL the tool view may not load is never navigated to.
+        assert_eq!(reregister_op(false, "file:///C:/x"), ReOp::Close);
+        let src = include_str!("tool_web_ui.rs");
+        let body = &src[src.find("fn reload_tool_view").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(!body.contains(".reload()"), "reload() would reload the page the view wandered to");
+        assert!(body.contains("reregister_op("));
     }
 
     /// Per-window views live in the window's slot; the id map is app-wide.
