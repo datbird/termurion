@@ -76,8 +76,7 @@ pub fn is_local_session(host: Option<&str>, token: Option<&str>, names: &[String
 /// A host name from a program, as it may be kept and shown: controls and bidirectional
 /// formatting characters are cut, the length is bounded, an empty result is no host.
 pub fn clean_host(raw: &str) -> Option<String> {
-    let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    let clean: String = raw.chars().filter(|c| !c.is_control() && !bidi(*c)).take(MAX_HOST).collect();
+    let clean = crate::inert_files::display_text(raw, MAX_HOST, false);
     (!clean.is_empty()).then_some(clean)
 }
 
@@ -287,6 +286,7 @@ mod tests {
         assert_eq!(clean_host("box.example"), Some("box.example".to_string()));
         assert_eq!(clean_host("bo\u{1b}[31mx\u{7}"), Some("bo[31mx".to_string()));
         assert_eq!(clean_host("a\u{202e}b\u{2066}c\u{200f}d"), Some("abcd".to_string()));
+        assert_eq!(clean_host("a\u{200b}b\u{feff}c\u{180e}d"), Some("abcd".to_string()), "zero-width characters are cut like the other shown text");
         assert_eq!(clean_host("\u{202e}"), None);
         assert_eq!(clean_host(""), None);
         assert_eq!(clean_host(&"h".repeat(1000)).unwrap().len(), MAX_HOST);

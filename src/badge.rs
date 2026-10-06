@@ -59,7 +59,8 @@ fn wrap(text: &str, width: f32, size: f32, max_lines: usize, measure: &dyn Fn(&s
 /// The badge for `text` in a pane of `pane` pixels: the largest whole size from 4 to 100 at
 /// which the wrapped text fits the box (4 when none does). None for empty text.
 pub fn layout(text: &str, pane: (f32, f32), prefs: BadgePrefs, measure: &dyn Fn(&str, f32) -> f32) -> Option<BadgeLayout> {
-    let text = cut(text.trim());
+    let text = shown_text(text);
+    let text = text.trim();
     if text.is_empty() {
         return None;
     }
@@ -94,16 +95,18 @@ pub fn layout(text: &str, pane: (f32, f32), prefs: BadgePrefs, measure: &dyn Fn(
 /// the badge.
 pub fn text(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     if !template.contains("\\(") {
-        return cut(template).to_string();
+        return shown_text(template);
     }
     match crate::interp::evaluate(template, lookup, &[]) {
-        Ok(v) => cut(&v).to_string(),
-        Err(e) => cut(&format!("Error: {e}")).to_string(),
+        Ok(v) => shown_text(&v),
+        Err(e) => shown_text(&format!("Error: {e}")),
     }
 }
 
-fn cut(s: &str) -> &str {
-    s.char_indices().nth(MAX_TEXT).map_or(s, |(i, _)| &s[..i])
+/// Badge text as it may be drawn: through the one sanitizer (`inert_files::display_text`), the
+/// newline kept (a badge wraps lines), at most `MAX_TEXT` characters.
+pub fn shown_text(s: &str) -> String {
+    crate::inert_files::display_text(s, MAX_TEXT, true)
 }
 
 #[cfg(test)]
@@ -130,6 +133,17 @@ mod tests {
         let tiny = layout("W", (20.0, 20.0), PREFS, &measure).unwrap();
         assert_eq!(tiny.size, 4.0, "never below 4");
         assert!(tiny.rect.x >= 0.0 && tiny.rect.y >= 0.0 && tiny.rect.x + tiny.rect.w <= 20.0 + 0.01);
+    }
+
+    #[test]
+    fn badge_text_is_sanitized() {
+        let planted = "a\u{202e}b\u{200b}c\u{1b}d\u{7}e\u{61c}f\u{180e}g\nh";
+        let l = layout(planted, (800.0, 600.0), PREFS, &measure).unwrap();
+        assert_eq!(l.lines, vec!["abcdefg", "h"], "controls, bidi and zero-width characters go; the newline stays");
+        let vars = |_: &str| Some(planted.to_string());
+        assert_eq!(text("\\(x)", &vars), "abcdefg\nh");
+        assert_eq!(text(planted, &vars), "abcdefg\nh");
+        assert_eq!(shown_text(&"y".repeat(MAX_TEXT + 50)).chars().count(), MAX_TEXT);
     }
 
     #[test]

@@ -234,7 +234,7 @@ fn parse_location(url: &str) -> Option<Location> {
     let slash = rest.find('/')?;
     let (authority, path) = rest.split_at(slash);
     let (user, host) = match authority.rsplit_once('@') {
-        Some((u, h)) => (Some(percent_decode(u)), h),
+        Some((u, h)) => (Some(crate::inert_files::display_text(&percent_decode(u), crate::host_identity::MAX_HOST, false)), h),
         None => (None, authority),
     };
     // A host from a program: controls, bidi marks and length are cut (it is shown in the bar).
@@ -1513,7 +1513,7 @@ impl Screen {
                     self.shell.machine_id = None;
                     match clean.rsplit_once('@') {
                         Some((u, h)) => {
-                            self.shell.user = Some(u.to_string());
+                            self.shell.user = Some(crate::inert_files::display_text(u, crate::host_identity::MAX_HOST, false));
                             self.shell.host = crate::host_identity::clean_host(h);
                         }
                         None => self.shell.host = crate::host_identity::clean_host(&clean),
@@ -2236,6 +2236,7 @@ mod tests {
         assert_eq!(none.machine, None);
         assert!(!none.has_machine_id);
         assert_eq!(parse_location("file://h/x?a=1&machineID=0:").unwrap().machine.as_deref(), Some("0:"));
+        assert_eq!(parse_location("file://al%E2%80%AEice%00@h/x").unwrap().user.as_deref(), Some("alice"), "the user is cleaned like the host");
     }
 
     #[test]

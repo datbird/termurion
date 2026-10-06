@@ -79,9 +79,9 @@ pub fn looked_at(front: bool, tab_shown: bool) -> bool {
 }
 
 /// Text from a program made safe to show: control, bidi and zero-width characters removed,
-/// at most 200 characters (B5).
+/// at most 200 characters (B5). Through the one sanitizer, `inert_files::display_text`.
 pub fn safe_text(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control() && !matches!(*c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')).take(200).collect()
+    crate::inert_files::display_text(s, 200, false)
 }
 
 /// A time from the settings, in `lo..=hi` seconds (a negative, huge, or NaN value would
@@ -99,6 +99,7 @@ mod tests {
     #[test]
     fn safe_text_removes_what_misleads() {
         assert_eq!(safe_text("a\u{202e}b\u{200b}c\nd\u{7}e"), "abcde");
+        assert_eq!(safe_text("a\u{61c}b\u{180e}c\u{2028}d"), "abcd", "Arabic letter mark, Mongolian vowel separator, line separator");
         assert_eq!(safe_text(&"x".repeat(500)).len(), 200);
     }
 
