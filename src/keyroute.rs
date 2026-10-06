@@ -154,8 +154,9 @@ impl Snapshot {
             for (k, v) in map {
                 let (Some(stroke), Some(b)) = (keystroke::parse(k), Binding::from_value(v)) else { continue };
                 if stroke.flags & COMMAND != 0 && !matches!(b.action, 22 | 24) {
-                    // Byte for byte Tandem's shipped global entry: not the person's mapping.
-                    let is_stock = is_global && stock.get(k) == Some(v);
+                    // Byte for byte Tandem's shipped global entry, or (in a profile) one of its key
+                    // mapping presets' entries: not the person's mapping.
+                    let is_stock = if is_global { stock.get(k) == Some(v) } else { crate::globals::keymaps::presets().iter().any(|(_, t)| t.get(k) == Some(v)) };
                     for form in [stroke.legacy(), stroke.modified_key()] {
                         if !is_stock {
                             user.insert(form.clone());
@@ -358,6 +359,22 @@ mod tests {
         for c in [win(ChordKey::Left), win(ChordKey::Right), win(ChordKey::Up), win(ChordKey::Down), win(ChordKey::Home), Chord { shift: true, ..win(ChordKey::Left) }, Chord { shift: true, ..win(ChordKey::Right) }] {
             assert!(win_chord_bound(&s, &c), "{c:?}");
         }
+    }
+
+    #[test]
+    fn natural_text_editing_win_arrows_stay_tandems() {
+        let e = toml::Table::new();
+        // The shipped preset, picked in a profile's Keys, is entries verbatim: Tandem's own.
+        let natural = &crate::globals::keymaps::presets().iter().find(|(n, _)| n == "Natural Text Editing").expect("the preset").1;
+        let s = respecting(&ctx(natural, &e));
+        assert!(win_chord_bound(&s, &win(ChordKey::Left)));
+        assert!(win_chord_bound(&s, &win(ChordKey::Right)));
+        // Edited, the entry is the person's and yields.
+        let mut edited = natural.clone();
+        edited.extend(map("0xf702-0x300000", 13));
+        let s = respecting(&ctx(&edited, &e));
+        assert!(!win_chord_bound(&s, &win(ChordKey::Left)));
+        assert!(win_chord_bound(&s, &win(ChordKey::Right)), "the others stay the preset's");
     }
 
     #[test]
