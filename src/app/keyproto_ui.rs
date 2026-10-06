@@ -7,6 +7,55 @@ use super::*;
 use crate::keyproto::{self, KeyMode, Kind, Modifier};
 
 impl App {
+    /// Remap modifiers globally is off: Tandem remaps only the keys it receives
+    /// (`iTermApplication.m:252-285`), and Windows' own chords see the physical keys.
+    pub(super) fn remap_in_app_on(&self) -> bool {
+        !self.globals.bool("RemapModifiersGlobally")
+    }
+
+    /// Sets the modifiers every key reader sees (`mods`, `sides`, the Alt side) from the physical
+    /// ones: remapped through the tags when remapping is off globally, as they are otherwise
+    /// (with the remap global, Windows already delivers remapped keys).
+    pub(super) fn apply_remapped_mods(&mut self) {
+        let (mods, sides) = if self.remap_in_app_on() {
+            crate::remap::remap_in_app(&crate::remap::Tags::from_globals(&self.globals), self.phys_mods, self.phys_sides)
+        } else {
+            (self.phys_mods, self.phys_sides)
+        };
+        self.mods = mods;
+        self.sides = sides;
+        if mods.alt {
+            self.alt_side = if sides.ralt { AltSide::Right } else { AltSide::Left };
+        }
+    }
+
+    /// The Remap modifiers setting changed: the hook follows it, and the modifiers are read again.
+    pub(super) fn remap_setting_changed(&mut self) {
+        crate::winkeys::set_remap_global(!self.remap_in_app_on());
+        self.apply_remapped_mods();
+    }
+
+    /// `ev` with the text and character a remapped modifier calls for, when remapping is off and
+    /// the remap changed what is held: Alt remapped as Control types Ctrl+C's byte, Control remapped
+    /// as Alt types the plain letter. None when nothing differs.
+    pub(super) fn remapped_key(&self, ev: &KeyEvent) -> Option<KeyEvent> {
+        use winit::platform::scancode::PhysicalKeyExtScancode;
+        let changed = self.mods.ctrl != self.phys_mods.ctrl || self.mods.alt != self.phys_mods.alt;
+        if !self.remap_in_app_on() || !changed || ev.state != ElementState::Pressed {
+            return None;
+        }
+        let vk = crate::winkeys::vk_of(ev.physical_key);
+        let scan = ev.physical_key.to_scancode()?;
+        let mut out = ev.clone();
+        out.text = crate::winkeys::text_for(vk, scan, self.mods).map(Into::into);
+        if matches!(out.logical_key, WKey::Character(_)) {
+            if let Some(t) = crate::winkeys::text_for(vk, scan, Mods { ctrl: false, ..self.mods }) {
+                out.logical_key = WKey::Character(t.into());
+            }
+        }
+        Some(out)
+    }
+
     /// The Control and Win key mappings of `pane`'s profile (they only reach kitty's modern mapper).
     pub(super) fn bucky_of(&self, pane: PaneId) -> keyproto::Bucky {
         self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).map(keyproto::Bucky::from_profile).unwrap_or_default()

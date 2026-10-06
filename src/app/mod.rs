@@ -375,8 +375,12 @@ pub struct App {
     /// The modifiers of a Cycle Tabs chord; letting go of them ends the cycle.
     mru_mods: Option<Mods>,
     alt_side: AltSide,
-    /// Which Control and Win keys are down, left and right apart (kitty's Hyper, Meta and Super mapping).
+    /// Which Alt, Control and Win keys are down, left and right apart (kitty's Hyper, Meta and Super
+    /// mapping), as the key readers see them: remapped in the app when Remap modifiers globally is off.
     sides: crate::keyproto::Sides,
+    /// The modifiers as the keys are physically held, before an in-app remap.
+    phys_mods: Mods,
+    phys_sides: crate::keyproto::Sides,
     pointer_clicks: pointer::Clicks,
     /// The last press for the pointer multi-click count: when, button, where, count.
     pointer_last: Option<(Instant, u8, (f32, f32), u8)>,
@@ -1513,6 +1517,15 @@ pub fn run() {
     if crate::presence::forwards_reopen(std::env::args_os().count(), wait_pid.is_some()) && crate::notify::forward_reopen() {
         return;
     }
+    // A panic on the main thread (it ends Tandem) takes the keyboard hook down first, so no remap
+    // outlives it; a worker thread's panic leaves the hook alone.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some("main") {
+            crate::winkeys::uninstall();
+        }
+        previous_hook(info);
+    }));
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
@@ -1704,6 +1717,8 @@ pub fn run() {
         mru_mods: None,
         alt_side: AltSide::Left,
         sides: crate::keyproto::Sides::default(),
+        phys_mods: Mods::default(),
+        phys_sides: crate::keyproto::Sides::default(),
         pointer_clicks: pointer::Clicks::default(),
         pointer_last: None,
         pointer_down: None,
@@ -2228,6 +2243,8 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
+    // The keyboard hook and its hotkeys end with Tandem (a crash needs nothing: Windows removes them).
+    crate::winkeys::uninstall();
     // Every exit that is not a crash takes the notification area icon with it.
     crate::notify::remove(0);
     // The restart after Import All Settings and Data: the new Tandem finishes the import.
@@ -3935,6 +3952,7 @@ impl App {
         self.settle_action_undo();
         self.menus_dirty = true;
         self.sync_checks();
+        self.remap_setting_changed();
         self.register_hotkeys();
         self.scripts_folder_changed();
         // The Theme may have changed: every window follows the forced mode (or Windows' again).
@@ -4770,6 +4788,9 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // Remap modifiers globally off: this key is read with the remapped modifiers.
+        let remapped = self.remapped_key(ev);
+        let ev = remapped.as_ref().unwrap_or(ev);
         // iTerm2's `didHandleKeystroke`: an echo within 0.1 s of it draws at once.
         if ev.state == ElementState::Pressed {
             self.last_keystroke = Some(Instant::now());
@@ -4804,6 +4825,13 @@ impl App {
         self.api_key_early(ev);
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
+        }
+        // A Win chord made by an in-app remap never passed the hook, which takes real Win chords
+        // for the menu commands: it takes the same road.
+        if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd {
+            if let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
+                return self.run_chord(&chord, event_loop);
+            }
         }
         if self.bar_key(ev, event_loop) || self.upload_key(ev) {
             return;
@@ -6646,21 +6674,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
-                self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                self.phys_mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                self.phys_sides = crate::keyproto::Sides { lalt: m.lalt_state() == ModifiersKeyState::Pressed, ralt: m.ralt_state() == ModifiersKeyState::Pressed, lctrl: m.lcontrol_state() == ModifiersKeyState::Pressed, rctrl: m.rcontrol_state() == ModifiersKeyState::Pressed, lwin: m.lsuper_state() == ModifiersKeyState::Pressed, rwin: m.rsuper_state() == ModifiersKeyState::Pressed };
+                // What every key reader sees: remapped here when Remap modifiers globally is off.
+                self.apply_remapped_mods();
                 // A held Win key keeps a flashing tab bar up (`PT flagsChanged:`, `PT:13278`).
                 let was = self.tab_flash.state();
-                self.tab_flash.set_win_held(s.super_key(), Instant::now());
+                self.tab_flash.set_win_held(self.mods.cmd, Instant::now());
                 if was != self.tab_flash.state() {
                     self.redraw();
                 }
-                self.sides = crate::keyproto::Sides { lctrl: m.lcontrol_state() == ModifiersKeyState::Pressed, rctrl: m.rcontrol_state() == ModifiersKeyState::Pressed, lwin: m.lsuper_state() == ModifiersKeyState::Pressed, rwin: m.rsuper_state() == ModifiersKeyState::Pressed };
                 self.update_hover();
-                if s.alt_key() {
-                    self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };
-                }
                 // Cycle Tabs ends when the chord's modifiers come up.
                 if let Some(c) = self.mru_mods {
-                    if !((c.ctrl && s.control_key()) || (c.alt && s.alt_key()) || (c.cmd && s.super_key())) {
+                    if !((c.ctrl && self.mods.ctrl) || (c.alt && self.mods.alt) || (c.cmd && self.mods.cmd)) {
                         self.mru_mods = None;
                         self.mru.commit();
                     }

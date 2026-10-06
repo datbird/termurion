@@ -29,9 +29,11 @@ pub struct KeyEvent<'a> {
     pub bucky: Bucky,
 }
 
-/// Which Control and Win keys are down, left and right apart.
+/// Which Alt, Control and Win keys are down, left and right apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sides {
+    pub lalt: bool,
+    pub ralt: bool,
     pub lctrl: bool,
     pub rctrl: bool,
     pub lwin: bool,

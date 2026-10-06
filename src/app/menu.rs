@@ -216,6 +216,8 @@ impl App {
         crate::winkeys::set_hotkey_sink(Box::new(move |ids| {
             let _ = hotkeys.lock().unwrap().send_event(UserEvent::Hotkey(ids));
         }));
+        // Remap modifiers globally, before the hook sees its first key.
+        crate::winkeys::set_remap_global(self.globals.bool("RemapModifiersGlobally"));
         match crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             Err(e) => self.banners.set("keys", format!("Win chords are unavailable: {e}")),
             Ok(()) if !self.hotkeys_registered => {

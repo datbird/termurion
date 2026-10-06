@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, GetMessageW, GetSystemMetrics, SM_SWAPBUTTON, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
+    CallNextHookEx, GetForegroundWindow, GetMessageW, GetSystemMetrics, SM_SWAPBUTTON, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN,
     WM_SYSKEYDOWN,
 };
 
@@ -255,6 +255,9 @@ pub fn set_recording(on: bool) {
 pub fn set_settings_window(hwnd: isize) {
     SETTINGS.store(hwnd, Ordering::Relaxed);
 }
+/// Remap modifiers globally (iTerm2's RemapModifiersGlobally, default on). Read by the hook, so an atomic.
+static REMAP_GLOBAL: AtomicBool = AtomicBool::new(true);
+
 /// Marks the mask key Tandem sends, so the hook passes it and nothing else injected.
 /// Other software (a KVM tool such as bumbles) injects real keystrokes; those are handled.
 const MAGIC: usize = 0x5441_4E44;
@@ -301,6 +304,64 @@ fn is_modifier(vk: u16) -> bool {
     matches!(vk, 0x10..=0x12 | 0xA0..=0xA5 | VK_LWIN | VK_RWIN)
 }
 
+/// The text a key types under `mods` in the keyboard layout `hkl` (0: the calling thread's), or
+/// None for a key that types nothing or a dead key. The keyboard state is built from `mods`, not
+/// from the keys held, so a remapped modifier types what the key it stands for would. Flag 0x4
+/// leaves the layout's pending dead key alone, and a dead key itself yields None.
+pub fn text_for_layout(hkl: isize, vk: u16, scan: u32, mods: Mods) -> Option<String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, ToUnicodeEx};
+    let mut state = [0u8; 256];
+    for (on, key) in [(mods.shift, 0x10), (mods.ctrl, 0x11), (mods.alt, 0x12)] {
+        if on {
+            state[key] = 0x80;
+        }
+    }
+    let hkl = if hkl == 0 { unsafe { GetKeyboardLayout(0) } } else { hkl as *mut std::ffi::c_void };
+    let mut buf = [0u16; 8];
+    let n = unsafe { ToUnicodeEx(vk as u32, scan, state.as_ptr(), buf.as_mut_ptr(), buf.len() as i32, 0x4, hkl) };
+    if n <= 0 {
+        return None;
+    }
+    String::from_utf16(&buf[..n as usize]).ok()
+}
+
+/// `text_for_layout` in the calling thread's current layout. UI thread only, never the hook's.
+pub fn text_for(vk: u16, scan: u32, mods: Mods) -> Option<String> {
+    text_for_layout(0, vk, scan, mods)
+}
+
+/// Turns Remap modifiers globally on or off. Turning it off hands back every key the hook is
+/// still holding down for a remapped modifier, so none stays down in Windows. The hook reads the
+/// flag atomically; this takes the remapper's lock only for the release.
+pub fn set_remap_global(on: bool) {
+    if REMAP_GLOBAL.swap(on, Ordering::Relaxed) == on || on {
+        return;
+    }
+    if let Some(h) = HOOK.get() {
+        let keys = h.remapper.lock().map(|mut r| r.flush()).unwrap_or_default();
+        inject(&keys);
+    }
+}
+
+/// Removes the keyboard hook and the hotkeys, first releasing any remapped key still held. Called
+/// when Tandem ends and from the panic hook; a crash or kill needs nothing, as Windows removes a
+/// low-level hook and its hotkeys when the process dies. Waits a moment for the hook thread.
+pub fn uninstall() {
+    let thread = HOOK_THREAD.swap(0, Ordering::AcqRel);
+    if thread == 0 {
+        return;
+    }
+    if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(thread, WM_APP_UNHOOK, 0, 0) } == 0 {
+        return;
+    }
+    for _ in 0..40 {
+        if UNHOOKED.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Remapping, and Do Not Remap Modifiers. True when the event was swallowed.
 fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
@@ -308,7 +369,7 @@ fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let focused = is_tandem(fg) || fg == SETTINGS.load(Ordering::Relaxed);
     let tags = *h.tags.read().unwrap();
     let mut r = h.remapper.lock().unwrap();
-    if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags) {
+    if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags, REMAP_GLOBAL.load(Ordering::Relaxed)) {
         inject(&keys);
         return true;
     }
@@ -425,6 +486,16 @@ pub fn install(
                         if let Some((_, ids)) = registered.iter().find(|(rid, _)| *rid as usize == msg.wParam) {
                             fire(ids);
                         }
+                    }
+                    WM_APP_UNHOOK => {
+                        if let Some(h) = HOOK.get() {
+                            let keys = h.remapper.lock().map(|mut r| r.flush()).unwrap_or_default();
+                            inject(&keys);
+                        }
+                        unsafe { UnhookWindowsHookEx(h) };
+                        let _ = register(&mut registered, &last, true);
+                        UNHOOKED.store(true, Ordering::Release);
+                        break;
                     }
                     _ => {}
                 }
@@ -573,6 +644,9 @@ type Pending = (Vec<(u32, crate::hotkey::Chord)>, std::sync::mpsc::Sender<Vec<(u
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 const WM_APP_HOTKEYS: u32 = 0x8000 + 0x48;
 const WM_APP_RECORDING: u32 = 0x8000 + 0x49;
+const WM_APP_UNHOOK: u32 = 0x8000 + 0x4A;
+/// The hook thread has removed its hook and hotkeys.
+static UNHOOKED: AtomicBool = AtomicBool::new(false);
 
 /// Where hotkey presses go (their ids).
 pub fn set_hotkey_sink(sink: Box<dyn Fn(Vec<u32>) + Send + Sync>) {
@@ -688,6 +762,28 @@ fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
 mod tests {
     use super::*;
     use crate::menus::ChordKey;
+
+    #[test]
+    fn text_follows_remapped_mods() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList, MapVirtualKeyW};
+        // The US layout (id "04090409") from the layouts already installed, or the one this thread
+        // already has (a session without a desktop lists none); never loaded here.
+        let n = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+        let mut list = vec![std::ptr::null_mut(); n.max(0) as usize];
+        unsafe { GetKeyboardLayoutList(n, list.as_mut_ptr()) };
+        list.push(unsafe { GetKeyboardLayout(0) });
+        let Some(hkl) = list.iter().map(|h| *h as isize).find(|h| (*h as usize & 0xFFFF_FFFF) == 0x0409_0409) else {
+            eprintln!("US keyboard layout not installed; skipped");
+            return;
+        };
+        let scan = unsafe { MapVirtualKeyW(0x43, 0) };
+        let none = Mods::default();
+        assert_eq!(text_for_layout(hkl, 0x43, scan, none).as_deref(), Some("c"));
+        assert_eq!(text_for_layout(hkl, 0x43, scan, Mods { ctrl: true, ..none }).as_deref(), Some("\u{3}"));
+        assert_eq!(text_for_layout(hkl, 0x43, scan, Mods { shift: true, ..none }).as_deref(), Some("C"));
+        // A key with no text types nothing.
+        assert_eq!(text_for_layout(hkl, 0x10, 0x2A, none), None);
+    }
 
     fn key(vk: u16, down: bool) -> KeyEvent {
         KeyEvent { vk, down, win_held: true, focused: true, shift: false, alt: false, ctrl: false }
