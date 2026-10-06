@@ -411,6 +411,7 @@ impl App {
             Run::Coprocess(command) => self.start_coprocess(id, &command, false, crate::coprocess::Entry::SemanticHistory),
             Run::Blocked(why) => self.banners.set("action", why),
             Run::Reveal(path) => self.reveal_in_explorer(&path),
+            Run::OpenLocal { path, has_code } => self.open_local(id, path, has_code, background),
             Run::Spawn { program, args } => self.spawn_direct(&program, &args, cwd),
             Run::Window(command) => match event_loop {
                 Some(event_loop) => self.run_in_new_window(id, command, cwd, event_loop),
@@ -1021,6 +1022,7 @@ mod tests {
         ("app/semantic_ui.rs", "execute_with", "the sink itself; its callers are checked"),
         ("app/url_handler_ui.rs", "url_handler", "starts the person's own handler program directly; reached only from execute_with, the URL is one argument (handler_plan)"),
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
+        ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "spawn_direct", "the sink itself; execute's callers are checked"),

@@ -422,6 +422,9 @@ pub enum Run {
     Coprocess(String),
     /// Show a file in Explorer instead of running it.
     Reveal(String),
+    /// A local file the caller checks off the UI thread (`open_local_result`): the network-drive
+    /// and ignored-folder rule, then its existence, then `file_open`. Nothing here touches the disk.
+    OpenLocal { path: String, has_code: bool },
     /// A program started directly with arguments, never through a shell.
     Spawn { program: PathBuf, args: Vec<String> },
     /// A command line run in a new single-use window of the default profile.
@@ -804,7 +807,7 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
         None => Run::Blocked("Tandem opens only http, https, mailto, and ftp links, not paths or other text.".into()),
         Some(s) if WEB.contains(&s) => Run::Open(encode_url_chars(target)),
         Some("file") => match file_url_path(target) {
-            Some(p) if crate::scripts::stays_local(Path::new(&p)) => file_open(&p, None, None, has_code),
+            Some(p) if !crate::scripts::is_network_path(&p) => Run::OpenLocal { path: p, has_code },
             _ => Run::Blocked(format!("Tandem does not open network file links: {target}")),
         },
         // An ssh: link a bound handler would have opened never gets here; an unbound one is not
@@ -838,17 +841,24 @@ pub fn open_file_run(path: &str, cwd: Option<&Path>, _has_code: bool) -> Run {
         }
     };
     let text = full.to_string_lossy().to_string();
-    if crate::scripts::is_network_path(&text) || !crate::scripts::stays_local(&full) {
+    if crate::scripts::is_network_path(&text) {
         return Run::Blocked(format!("Tandem does not open network paths: {path}"));
     }
-    if !full.exists() {
-        return blocked("it does not exist.");
+    // The drive, the ignored folders, the links and the file's existence are asked off the UI thread.
+    Run::OpenLocal { path: text, has_code: false }
+}
+
+/// What `Run::OpenLocal` becomes: the one probe rule first (`netpath::may_probe`: a network path,
+/// a mapped drive or an ignored folder is never touched), then `exists`, then `file_open`. Runs
+/// on a worker, so a slow drive never freezes the window.
+pub fn open_local_result(path: &str, has_code: bool, probe: &crate::netpath::Probe, exists: &dyn Fn(&str) -> bool) -> Run {
+    if !crate::netpath::may_probe(path, probe) {
+        return Run::Blocked(format!("Tandem does not open network paths: {path}"));
     }
-    if runnable(&text) {
-        Run::Reveal(text)
-    } else {
-        Run::Open(text)
+    if !exists(path) {
+        return Run::Blocked("Tandem did not open this file: it does not exist.".into());
     }
+    file_open(path, None, None, has_code)
 }
 
 /// A Smart Selection `openUrl:`: a link, through the same guard as every other.
@@ -1415,7 +1425,7 @@ mod tests {
         let co = Prefs { action: "coprocess".into(), text: "x".into(), editor: String::new() };
         assert_eq!(plan(&file, &co, &around, false), Some(Run::Coprocess("x".into())));
         assert_eq!(plan(&Target::Url("https://a/".into()), &co, &around, false), Some(Run::Open("https://a/".into())));
-        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::Open("c:\\x".into())));
+        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::OpenLocal { path: "c:\\x".into(), has_code: false }));
     }
 
     #[test]
@@ -1518,12 +1528,16 @@ mod tests {
         assert_eq!(guard_open("mailto:a@b.c", false), Run::Open("mailto:a@b.c".into()));
         assert!(matches!(guard_open("ms-msdt:/id x", false), Run::Blocked(_)));
         assert!(matches!(guard_open("search-ms:query=x", false), Run::Blocked(_)));
-        assert_eq!(guard_open("file:///C:/Users/u/Downloads/x.exe", false), Run::Reveal("C:\\Users\\u\\Downloads\\x.exe".into()));
-        assert_eq!(guard_open("file:///C:/docs/a%20b.txt", false), Run::Open("C:\\docs\\a b.txt".into()));
+        let settle = |r: Run| match r {
+            Run::OpenLocal { path, has_code } => open_local_result(&path, has_code, &crate::netpath::Probe::default(), &|_| true),
+            other => other,
+        };
+        assert_eq!(settle(guard_open("file:///C:/Users/u/Downloads/x.exe", false)), Run::Reveal("C:\\Users\\u\\Downloads\\x.exe".into()));
+        assert_eq!(settle(guard_open("file:///C:/docs/a%20b.txt", false)), Run::Open("C:\\docs\\a b.txt".into()));
         assert!(matches!(guard_open("C:\\tools\\x.bat", false), Run::Blocked(_)));
         let best = Prefs::from_value(None);
         let link = Target::Link("file:///C:/x/evil.cmd".into());
-        assert_eq!(plan(&link, &best, &Around::default(), false), Some(Run::Reveal("C:\\x\\evil.cmd".into())));
+        assert_eq!(plan(&link, &best, &Around::default(), false).map(settle), Some(Run::Reveal("C:\\x\\evil.cmd".into())));
         assert!(matches!(plan(&Target::Url("javascript://x".into()), &best, &Around::default(), false), Some(Run::Blocked(_))));
     }
     #[test]
@@ -1557,6 +1571,36 @@ mod tests {
         assert_eq!(open_url_run("https://a.b/x", false), Run::Open("https://a.b/x".into()));
     }
 
+    /// Final wave item 5: openFile: and file: links obey the mapped-drive and ignored-folder rule,
+    /// and the existence test is not made where the link is planned (the UI thread).
+    #[test]
+    fn local_opens_obey_the_probe_rule_and_never_probe_when_planned() {
+        struct Z;
+        impl crate::netpath::Drives for Z {
+            fn is_remote(&self, root: &str) -> bool {
+                root.eq_ignore_ascii_case("Z:\\")
+            }
+        }
+        let probe = crate::netpath::Probe::from_settings("D:\\slow", false, std::sync::Arc::new(Z));
+        let asked = std::cell::Cell::new(0);
+        let exists = |_: &str| {
+            asked.set(asked.get() + 1);
+            true
+        };
+        for p in ["Z:\\x\\a.txt", "z:/x/a.txt", "\\\\?\\Z:\\x\\a.txt", "D:\\slow\\a.txt"] {
+            assert!(matches!(open_local_result(p, false, &probe, &exists), Run::Blocked(_)), "{p}");
+        }
+        assert_eq!(asked.get(), 0, "nothing was probed on a mapped drive or an ignored folder");
+        let allowed = crate::netpath::Probe::from_settings("D:\\slow", true, std::sync::Arc::new(Z));
+        assert_eq!(open_local_result("Z:\\x\\a.txt", false, &allowed, &exists), Run::Open("Z:\\x\\a.txt".into()), "EnableSemanticHistoryOnNetworkMounts allows it");
+        assert_eq!(asked.get(), 1);
+        // Planning touches no disk: a link and an openFile: give the marker and ask nothing.
+        assert!(matches!(guard_open("file:///Z:/x/a.txt", false), Run::OpenLocal { .. }));
+        assert!(matches!(open_file_run("Z:\\x\\a.txt", None, false), Run::OpenLocal { .. }));
+        assert!(matches!(open_file_run("C:\\definitely\\missing\\a.txt", None, false), Run::OpenLocal { .. }), "existence is the worker's question");
+        assert!(matches!(guard_open("file://evil/s/x", false), Run::Blocked(_)));
+    }
+
     #[test]
     fn open_file_is_never_a_protocol_open() {
         let d = dir("openfile", &["a b.txt", "run.exe"]);
@@ -1564,12 +1608,16 @@ mod tests {
             assert!(matches!(open_file_run(text, Some(&d), true), Run::Blocked(_)), "{text}");
         }
         let full = d.join("a b.txt");
-        assert_eq!(open_file_run(&full.to_string_lossy(), None, false), Run::Open(full.to_string_lossy().to_string()));
-        assert_eq!(open_file_run("a b.txt", Some(&d), true), Run::Open(full.to_string_lossy().to_string()), "relative to the pane folder; never code -g");
+        let local = |t: String| Run::OpenLocal { path: t, has_code: false };
+        assert_eq!(open_file_run(&full.to_string_lossy(), None, false), local(full.to_string_lossy().to_string()));
+        assert_eq!(open_file_run("a b.txt", Some(&d), true), local(full.to_string_lossy().to_string()), "relative to the pane folder; never code -g");
         assert!(matches!(open_file_run("a b.txt", None, false), Run::Blocked(_)), "no folder to resolve against");
-        assert!(matches!(open_file_run("missing.txt", Some(&d), false), Run::Blocked(_)));
         let exe = d.join("run.exe");
-        assert_eq!(open_file_run(&exe.to_string_lossy(), None, true), Run::Reveal(exe.to_string_lossy().to_string()));
+        let probe = crate::netpath::Probe::default();
+        let on_disk = |t: &str| Path::new(t).exists();
+        assert_eq!(open_local_result(&exe.to_string_lossy(), false, &probe, &on_disk), Run::Reveal(exe.to_string_lossy().to_string()));
+        assert_eq!(open_local_result(&full.to_string_lossy(), false, &probe, &on_disk), Run::Open(full.to_string_lossy().to_string()));
+        assert!(matches!(open_local_result(&d.join("missing.txt").to_string_lossy(), false, &probe, &on_disk), Run::Blocked(_)));
         assert!(matches!(open_file_run("a\u{1b}b.txt", Some(&d), false), Run::Blocked(_)));
         let pct = r"C:\t\a%CMDCMDLINE%&calc.exe";
         assert!(!matches!(open_file_run(pct, None, true), Run::Command(_) | Run::Open(_)));
@@ -1903,7 +1951,7 @@ mod tests {
     fn only_send_and_coprocess_need_a_live_session() {
         assert!(needs_live_session(&Run::Send("x".into())));
         assert!(needs_live_session(&Run::Coprocess("x".into())));
-        for r in [Run::Open("https://a.b".into()), Run::Command("x".into()), Run::Blocked("x".into()), Run::Reveal("C:\\x".into()), Run::Window("x".into())] {
+        for r in [Run::Open("https://a.b".into()), Run::Command("x".into()), Run::Blocked("x".into()), Run::Reveal("C:\\x".into()), Run::Window("x".into()), Run::OpenLocal { path: "C:\\x".into(), has_code: false }] {
             assert!(!needs_live_session(&r), "{r:?}");
         }
     }

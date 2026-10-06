@@ -42,6 +42,9 @@ enum Reply {
     Marks(PaneId, Vec<crate::pathnav::PathMark>),
     /// The subfolders of a folder the navigator lists.
     Listing(PaneId, String, Vec<String>),
+    /// A local file's open, settled off the UI thread: what to run (or why not), and whether the
+    /// click asked for a background open.
+    Opened(PaneId, crate::semantic::Run, bool),
 }
 
 /// The navigator's workers: one sniff at a time (a program printing prompts cannot start more),
@@ -122,6 +125,7 @@ impl App {
                     }
                 }
                 Reply::Listing(pane, base, subs) => self.navigator_listed(pane, &base, &subs),
+                Reply::Opened(pane, run, background) => self.execute(pane, run, None, background),
             }
         }
         self.pathnav_sniff();
@@ -166,6 +170,22 @@ impl App {
                 idle.store(false, std::sync::atomic::Ordering::SeqCst);
             }
             break;
+        }
+    }
+
+    /// Opens a local file the click named (`Run::OpenLocal`): the probe rule and the existence test
+    /// run on a worker, so a dead mapped drive never freezes the window, and the answer comes back
+    /// as a run (or the reason it did not).
+    pub(super) fn open_local(&mut self, pane: PaneId, path: String, has_code: bool, background: bool) {
+        let (probe, tx, notify) = (self.path_probe(), self.pathnav.tx.clone(), self.pathnav.notify.clone());
+        let started = std::thread::Builder::new().name("open-local".into()).spawn(move || {
+            let run = crate::semantic::open_local_result(&path, has_code, &probe, &|p| std::path::Path::new(p).exists());
+            if tx.send(Reply::Opened(pane, run, background)).is_ok() {
+                notify();
+            }
+        });
+        if started.is_err() {
+            self.banners.set("action", "Tandem could not start a worker to open this file.");
         }
     }
 
