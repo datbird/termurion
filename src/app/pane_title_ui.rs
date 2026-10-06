@@ -79,6 +79,9 @@ pub(super) struct Chrome {
     /// The pane's own status bar: in the title bar's slot when it sits at the top of a
     /// pane with a title bar, else a strip at the top or bottom of the rest.
     pub(super) bar: Option<Rect>,
+    /// A browser pane's toolbar, taken from the top of `rest` after the title bar (the one order
+    /// for every strip from a pane's top: title bar, then 13y1's workgroup toolbar, then this).
+    pub(super) browser_bar: Option<Rect>,
 }
 
 /// The pure split (`SessionView.m:2255-2275`): the title bar off the top, then a bottom bar
@@ -88,14 +91,14 @@ pub(super) struct Chrome {
 pub(super) fn chrome(rect: Rect, title_h: f32, title: bool, bar: Option<(f32, Position)>, scale: f32) -> Chrome {
     if !title {
         let (rest, bar) = sbl::pane_split(rect, bar);
-        return Chrome { rest, title: None, bar };
+        return Chrome { rest, title: None, bar, browser_bar: None };
     }
     let (title_rect, below) = pane_title::split(rect, title_h.min((rect.h - 1.0).max(0.0)));
     match bar {
-        Some((_, Position::Top)) => Chrome { rest: below, bar: Some(pane_title::geometry(title_rect, scale, false).status), title: Some(title_rect) },
+        Some((_, Position::Top)) => Chrome { rest: below, bar: Some(pane_title::geometry(title_rect, scale, false).status), title: Some(title_rect), browser_bar: None },
         other => {
             let (rest, bar) = sbl::pane_split(below, other);
-            Chrome { rest, title: Some(title_rect), bar }
+            Chrome { rest, title: Some(title_rect), bar, browser_bar: None }
         }
     }
 }
@@ -251,7 +254,14 @@ impl App {
     /// A pane's rectangle cut into title bar, status bar and terminal.
     pub(super) fn pane_chrome(&self, tab: &Tab, id: PaneId, rect: Rect) -> Chrome {
         let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));
-        chrome(rect, self.title_height(), self.tab_shows_titles(tab), bar, self.scale())
+        let mut c = chrome(rect, self.title_height(), self.tab_shows_titles(tab), bar, self.scale());
+        if self.is_browser_pane(id) {
+            let h = (crate::browser::TOOLBAR_H * self.scale()).min((c.rest.h - 1.0).max(0.0));
+            let (strip, below) = (Rect { h, ..c.rest }, Rect { y: c.rest.y + h, h: c.rest.h - h, ..c.rest });
+            c.browser_bar = Some(strip);
+            c.rest = below;
+        }
+        c
     }
 }
 
@@ -322,6 +332,15 @@ mod tests {
         assert_eq!((c.title, c.bar, c.rest), (None, None, rect), "turned off, the pane has its height back");
         let c = chrome(r(0.0, 0.0, 400.0, 10.0), 22.0, true, None, 1.0);
         assert!(c.rest.h >= 0.0 && c.title.unwrap().h <= 9.0, "a short pane keeps a pixel");
+    }
+
+    #[test]
+    fn the_browser_toolbar_follows_the_title_bar() {
+        let c = chrome(r(0.0, 0.0, 400.0, 100.0), 22.0, true, None, 1.0);
+        assert!(c.browser_bar.is_none());
+        let src = include_str!("pane_title_ui.rs");
+        let f = &src[src.find("fn pane_chrome").unwrap()..];
+        assert!(f.find("chrome(rect").unwrap() < f.find("browser_bar = Some").unwrap(), "title bar first, then the toolbar");
     }
 
     #[test]

@@ -5369,3 +5369,21 @@ label = "Enable browser-style profiles?"
 type = "bool"
 default = true
 help = "Enable browser-style profiles?\nYou must restart Tandem for this to take effect."
+
+[[setting]]
+key = "SearchCommand"
+tab = "Advanced"
+section = "General"
+label = "Template for URL of search engine."
+type = "string"
+default = "https://google.com/search?q=%@"
+help = "Template for URL of search engine.\nTandem replaces the string “%@” with the text to search for. Query parameter percent escaping is used."
+
+[[setting]]
+key = "SearchSuggestURL"
+tab = "Advanced"
+section = "General"
+label = "Template of URL for typeahead search suggestions."
+type = "string"
+default = "https://suggestqueries.google.com/complete/search?client=firefox&q=%@"
+help = "Template of URL for typeahead search suggestions.\nTandem replaces the string “%@” with the text to search for. Query parameter percent escaping is used."

@@ -1087,7 +1087,7 @@ mod tests {
         ("app/web_popover_app.rs", "quick_look_url", "only an http or https URL with a host (web_popover::quick_look_target) is shown or opened, the one kind a remote pane's link may open (P10)"),
         ("app/web_popover_app.rs", "web_popover_event", "opens the page the popover shows, only when its scheme is http or https (quick_look_scheme_ok)"),
         ("app/web_popover_app.rs", "web_popover_view_event", "an external protocol a popover's page asked for goes through external_uri_run (guard_open), only for a person's gesture"),
-        ("app/browser_app.rs", "browser_event", "an external protocol a browser page asked for goes through external_uri_run (guard_open), only for a person's gesture"),
+        ("app/browser_app.rs", "run_external", "an external protocol a browser page asked for or a person typed goes through external_uri_run (guard_open), only for a person's gesture"),
         ("app/web_popover_app.rs", "external_uri_run", "builds a decision and opens nothing; its caller is checked"),
         ("localfs.rs", "open_with_shell", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("localfs.rs", "shell_verb", "the file sink itself: it takes a judged LocalPath; its callers are checked"),

@@ -665,7 +665,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.cmd_button_picked(id, event_loop) || self.inline_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id, event_loop) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.chat_list_picked(id, event_loop) || self.chat_menu_picked(id, event_loop) || self.cmd_button_picked(id, event_loop) || self.inline_menu_picked(id) || self.browser_menu_picked(id) || self.find_mode_picked(id) || self.context_picked(id, event_loop) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
@@ -700,6 +700,10 @@ impl App {
         // Commands that change the terminal itself act on the pane's own screen, and do
         // nothing on a replaying pane (iTerm2 sends them to the shell-less replay view).
         let sel = item.selector.as_str();
+        // Make Text Bigger, Smaller, Normal Size, Copy and Paste reach a browser pane's page.
+        if self.browser_command(sel) {
+            return;
+        }
         if crate::replay::blocks_command(sel) {
             if let Some(id) = self.focused_id() {
                 if self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {

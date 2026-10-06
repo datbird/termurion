@@ -5255,6 +5255,10 @@ impl App {
         if self.composer_key(ev) {
             return;
         }
+        // A browser pane's address field takes its keys, releases too; Ctrl+L and F6 focus it.
+        if self.browser_key(ev) {
+            return;
+        }
         // The API's key up and flags changed notifications.
         self.api_key_early(ev);
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
@@ -5514,6 +5518,15 @@ impl App {
             }
             return;
         }
+        // A browser pane's toolbar, and the suggestions list under its address field.
+        if let Some(pane) = self.browser_bar_at(x, y) {
+            if button == MouseButton::Left && self.browser_toolbar_press(pane, x, y, event_loop) {
+                return;
+            }
+            if button != MouseButton::Left {
+                return;
+            }
+        }
         // After the divider grab (P7), so a lower pane's title bar does not take the strip.
         if self.title_hit_at(x, y).is_some() {
             let clicks = self.os_clicks(button_number(button));
@@ -5712,6 +5725,9 @@ impl App {
             return;
         }
         if self.title_release(button, event_loop) {
+            return;
+        }
+        if self.browser_toolbar_release(button, event_loop) {
             return;
         }
         let b = button_number(button);
@@ -6111,6 +6127,9 @@ impl App {
                 if self.is_browser_pane(id) {
                     if let Some(p) = self.panes.get(&id) {
                         frame.quads.push(scene::Quad { rect, color: scene::rgba(p.screen.palette.bg, 1.0) });
+                    }
+                    if let Some(bar) = self.pane_chrome(tab, id, rect).browser_bar {
+                        self.draw_browser_bar(&mut frame, id, bar, rect, self.cell());
                     }
                     continue;
                 }
@@ -6879,6 +6898,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.web_tick(event_loop);
         self.icon_tick();
         let icon_due = self.icon_due();
+        let browser_due = self.browser_tick();
         // OK in "Importing Settings and Data": Tandem quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);
@@ -6956,7 +6976,7 @@ impl ApplicationHandler<UserEvent> for App {
         let command_due = self.command_click_tick();
         // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
-        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
