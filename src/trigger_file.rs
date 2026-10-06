@@ -158,7 +158,7 @@ fn identity(t: &Table) -> Option<Table> {
 
 /// `TriggerController.m:717-735`: the stored list as it is, then each imported trigger whose
 /// canonical form no stored trigger has, in order (imported triggers are not compared with each
-/// other). A trigger that acts on the machine is stored turned off (B7).
+/// other). A trigger whose class is not display-only is stored turned off (B7).
 pub fn add_triggers(existing: Option<&Value>, imported: &[Table]) -> Value {
     let mut list: Vec<Value> = existing.and_then(Value::as_array).cloned().unwrap_or_default();
     let have: Vec<Table> = list.iter().filter_map(Value::as_table).filter_map(identity).collect();
@@ -167,7 +167,7 @@ pub fn add_triggers(existing: Option<&Value>, imported: &[Table]) -> Value {
             continue;
         }
         let mut t = t.clone();
-        if t.get("action").and_then(Value::as_str).is_some_and(crate::triggers::acts_on_machine) {
+        if t.get("action").and_then(Value::as_str).is_none_or(|a| !crate::triggers::imports_enabled(a)) {
             t.insert("disabled".into(), Value::Boolean(true));
         }
         list.push(Value::Table(t));
@@ -176,8 +176,8 @@ pub fn add_triggers(existing: Option<&Value>, imported: &[Table]) -> Value {
 }
 
 /// How many of these triggers import turned off.
-pub fn machine_count(imported: &[Table]) -> usize {
-    imported.iter().filter(|t| t.get("action").and_then(Value::as_str).is_some_and(crate::triggers::acts_on_machine)).count()
+pub fn off_count(imported: &[Table]) -> usize {
+    imported.iter().filter(|t| t.get("action").and_then(Value::as_str).is_none_or(|a| !crate::triggers::imports_enabled(a))).count()
 }
 
 /// `NSStringITerm.m:2988-3027` over `it_unsafeForDisplayCharacters`: LF as `\n`, ESC as `\e`, any
@@ -284,9 +284,9 @@ pub fn select_profiles_text(imported: &[Table]) -> String {
         lines.push(format!("\u{2026}and {} more", imported.len() - 10));
     }
     let mut text = format!("Select the profiles into which these triggers should be imported:\n\n{}", lines.join("\n"));
-    let off = machine_count(imported);
+    let off = off_count(imported);
     if off > 0 {
-        text.push_str(&format!("\n\n{off} of these triggers run commands or type text; they are imported turned off."));
+        text.push_str(&format!("\n\n{off} of these triggers act on your sessions or computer; they are imported turned off."));
     }
     text
 }
@@ -408,23 +408,44 @@ mod tests {
     }
 
     #[test]
+    fn display_only_import_enabled_and_the_rest_off() {
+        for class in ["iTermInjectTrigger", "iTermBufferInputTrigger", "iTermEnterWorkgroupTrigger", "iTermExitWorkgroupTrigger", "SetDirectoryTrigger", "SetHostnameTrigger", "iTermSetUserVariableTrigger", "NoSuchTrigger"] {
+            let off = add_triggers(None, &[table(json!({"action": class, "regex": "x", "parameter": "p", "disabled": false}))]);
+            assert_eq!(off.as_array().unwrap()[0].as_table().unwrap().get("disabled").and_then(toml::Value::as_bool), Some(true), "{class}");
+        }
+    }
+
+    #[test]
+    fn every_catalog_class_is_classified() {
+        use crate::triggers::{CATALOG, IMPORT_ENABLED, IMPORT_OFF, SYNONYMS};
+        let synonyms: Vec<&str> = SYNONYMS.iter().map(|(old, _)| *old).collect();
+        for class in CATALOG.iter().map(|a| a.class).chain(synonyms.iter().copied()) {
+            let n = IMPORT_ENABLED.iter().chain(IMPORT_OFF).filter(|c| **c == class).count();
+            assert_eq!(n, 1, "{class} must be in exactly one of IMPORT_ENABLED and IMPORT_OFF");
+        }
+        for c in IMPORT_ENABLED.iter().chain(IMPORT_OFF) {
+            assert!(CATALOG.iter().any(|a| a.class == *c) || synonyms.contains(c), "{c} is not a catalog class");
+        }
+    }
+
+    #[test]
     fn machine_triggers_import_disabled() {
         for class in ["ScriptTrigger", "CoprocessTrigger", "MuteCoprocessTrigger", "CaptureTrigger", "SendTextTrigger", "PasswordTrigger", "iTermRPCTrigger", "iTermSetProfileBooleanTrigger"] {
-            assert!(crate::triggers::acts_on_machine(class), "{class}");
+            assert!(!crate::triggers::imports_enabled(class), "{class}");
             let t = table(json!({"action": class, "regex": "x", "parameter": "p", "disabled": false}));
             let merged = add_triggers(None, &[canonical(&t).unwrap()]);
             let first = merged.as_array().unwrap()[0].as_table().unwrap();
             assert_eq!(first.get("disabled").and_then(toml::Value::as_bool), Some(true), "{class}");
         }
         for class in ["HighlightTrigger", "AlertTrigger", "BellTrigger", "iTermUserNotificationTrigger", "MarkTrigger"] {
-            assert!(!crate::triggers::acts_on_machine(class), "{class}");
+            assert!(crate::triggers::imports_enabled(class), "{class}");
         }
         let t = canonical(&table(json!({"action": "AlertTrigger", "regex": "x", "parameter": "p", "disabled": false}))).unwrap();
         assert_eq!(add_triggers(None, std::slice::from_ref(&t)).as_array().unwrap()[0].as_table().unwrap().get("disabled").and_then(toml::Value::as_bool), Some(false));
         // The chooser says how many are imported turned off, and shortens what it shows.
         let run = canonical(&table(json!({"action": "ScriptTrigger", "regex": "x", "parameter": format!("echo ok{}& calc", " ".repeat(500))}))).unwrap();
         let text = select_profiles_text(&[run.clone(), t]);
-        assert!(text.ends_with("\n\n1 of these triggers run commands or type text; they are imported turned off."), "{text}");
+        assert!(text.ends_with("\n\n1 of these triggers act on your sessions or computer; they are imported turned off."), "{text}");
         assert!(text.contains('\u{2026}') && !text.contains("calc"), "{text}");
     }
 

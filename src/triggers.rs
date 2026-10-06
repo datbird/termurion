@@ -155,7 +155,7 @@ pub const CATALOG: &[ActionInfo] = &[
 ];
 
 /// Older class names iTerm2 still reads.
-const SYNONYMS: &[(&str, &str)] = &[("GrowlTrigger", "iTermUserNotificationTrigger")];
+pub const SYNONYMS: &[(&str, &str)] = &[("GrowlTrigger", "iTermUserNotificationTrigger")];
 
 pub fn action_info(class: &str) -> Option<&'static ActionInfo> {
     let class = SYNONYMS.iter().find(|(old, _)| *old == class).map_or(class, |(_, new)| new);
@@ -181,11 +181,53 @@ pub fn runs_command(action: &str) -> bool {
     matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger" | "CaptureTrigger")
 }
 
-/// Whether the class acts on the shell or the machine: the command classes, Send Text (types into
-/// the shell), Open Password Manager (types a saved password), Invoke Script Function and Set
-/// Profile Setting. An imported trigger file turns these off until the person enables each (B7).
-pub fn acts_on_machine(action: &str) -> bool {
-    runs_command(action) || matches!(action, "SendTextTrigger" | "PasswordTrigger" | "iTermRPCTrigger" | "iTermSetProfileBooleanTrigger")
+/// The classes whose effect is only what is drawn or shown: these import turned on (B7, final
+/// review). Every other class, and any class the catalog does not know, imports turned off.
+pub const IMPORT_ENABLED: &[&str] = &[
+    "AnnotateTrigger",
+    "BounceTrigger",
+    "iTermSGRTrigger",
+    "iTermFoldTrigger",
+    "iTermHighlightLineTrigger",
+    "HighlightTrigger",
+    "iTermHyperlinkTrigger",
+    "iTermUserNotificationTrigger",
+    "GrowlTrigger",
+    "iTermShellPromptTrigger",
+    "BellTrigger",
+    "MarkTrigger",
+    "iTermSetNamedMarkTrigger",
+    "iTermSetTabStatusTrigger",
+    "iTermSetTitleTrigger",
+    "AlertTrigger",
+    "StopTrigger",
+];
+
+/// The classes that change what Tandem does or trusts (commands, typed text, injected escape
+/// sequences, held keystrokes, workgroups, the reported folder, host and user, user variables,
+/// settings, scripts). An imported trigger of these is stored turned off until the person enables it.
+pub const IMPORT_OFF: &[&str] = &[
+    "iTermBufferInputTrigger",
+    "CaptureTrigger",
+    "iTermEnterWorkgroupTrigger",
+    "iTermExitWorkgroupTrigger",
+    "iTermInjectTrigger",
+    "iTermRPCTrigger",
+    "PasswordTrigger",
+    "SetDirectoryTrigger",
+    "SetHostnameTrigger",
+    "ScriptTrigger",
+    "CoprocessTrigger",
+    "MuteCoprocessTrigger",
+    "SendTextTrigger",
+    "iTermSetProfileBooleanTrigger",
+    "iTermSetUserVariableTrigger",
+];
+
+/// Whether an imported trigger of this class is stored turned on. An allowlist: a class added to
+/// the catalog later imports turned off until it is listed (`every_catalog_class_is_classified`).
+pub fn imports_enabled(action: &str) -> bool {
+    IMPORT_ENABLED.contains(&action)
 }
 
 /// `substitute` for a cmd.exe command line, through the one builder
