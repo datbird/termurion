@@ -7,7 +7,8 @@
 //!
 //! The tip texts are iTerm2's with "iTerm2" as "Tandem", "the macOS Keychain" as "Windows
 //! Credential Manager", "Keychain" as "Credential Manager", "macOS-native" as "native",
-//! "/tmp/debuglog.txt" as "%TEMP%\debuglog.txt" and the Markdown marks removed. iTerm2's tip
+//! "/tmp/debuglog.txt" as "%TEMP%\debuglog.txt" (with the folder 13w's debug log falls back to) and
+//! the Markdown marks removed. iTerm2's tip
 //! images show macOS screenshots and are left out (Decision).
 
 use std::time::Duration;
@@ -108,7 +109,7 @@ pub const TIPS: &[MenuTip] = &[
     MenuTip { identifier: "GPU Renderer Availability", text: "Checks whether the GPU Renderer is currently being used in the active session. This is sometimes useful for debugging." },
     MenuTip { identifier: "Secure Keyboard Entry", text: "Secure Keyboard Entry prevents other programs from intercepting your keystrokes in the terminal. However, it also breaks some functionality: other programs cannot activate their windows while this is enabled. For example, the open command will still open an app, but it won\u{2019}t be activated." },
     MenuTip { identifier: "Install Shell Integration", text: "Shell Integration consists of shell scripts that run when you log in. They inform Tandem of where your shell prompt is. This enables dozens of useful features such as command history, directory history, AI features, and more." },
-    MenuTip { identifier: "Toggle Debug Logging", text: "Debug logs are saved in memory while this setting is enabled and written to %TEMP%\\debuglog.txt when you turn it off. Memory use is capped at about 200MB; if the log grows past that, the oldest entries are discarded so the most recent activity is always kept." },
+    MenuTip { identifier: "Toggle Debug Logging", text: "Debug logs are saved in memory while this setting is enabled and written to %TEMP%\\debuglog.txt (%LOCALAPPDATA%\\Tandem\\Logs\\debuglog.txt when %TEMP% is not a local folder) when you turn it off. Memory use is capped at about 200MB; if the log grows past that, the oldest entries are discarded so the most recent activity is always kept." },
     MenuTip { identifier: "Broadcast Input.Broadcast Input to All Panes in All Tabs", text: "When enabled, anything you type in this window is sent to all sessions in this window." },
     MenuTip { identifier: "Broadcast Input.Broadcast Input to All Panes in Current Tab", text: "When enabled, anything you type in this tab is sent to all sessions in this tab." },
     MenuTip { identifier: "Broadcast Input.Toggle Broadcast Input to Current Session", text: "Adds or removes this session from the set of sessions in this window that have broadcast enabled. When you type in a session with broadcast enabled, the keystrokes are sent to all other sessions in the same window that have broadcast enabled." },
@@ -137,7 +138,9 @@ pub fn tip_for(identifier: &str) -> Option<&'static str> {
 /// Toolbelt items (`append_toolbelt_menu` builds Tandem's). A submenu's own item counts, as
 /// iTerm2 shows tips on "Toolbelt", "Edit.Snippets" and the like.
 pub fn identifier_for(label: &str, parent: &str) -> Option<String> {
-    let found = menus::items().iter().find(|i| {
+    // Only this build's items: an item `hidden_in_menu` removes has no tip, even if some other
+    // menu (a submenu built elsewhere) showed the same label.
+    let found = menus::shown_items().find(|i| {
         !i.separator
             && menus::shown_label(i.label()) == label
             && match i.path.len() {
@@ -206,12 +209,51 @@ mod tests {
         assert_eq!(shown_from_menu_text("Work && Play"), "Work & Play");
     }
 
+    /// The 13v2 x 13w seam: a menu tip follows the one `hidden_in_menu` filter. No tip names an item
+    /// this build hides, and the label lookup never answers a hidden item's identifier (Capture GPU
+    /// Frame in release, Check Settings Control Truncation always).
+    #[test]
+    fn menu_tips_skip_hidden_items() {
+        for i in menus::items().iter().filter(|i| !i.separator && menus::hidden_in_menu(&i.selector, cfg!(debug_assertions))) {
+            assert!(tip_for(&i.identifier).is_none(), "{} is hidden but has a tip", i.identifier);
+            assert_eq!(identifier_for(&menus::shown_label(i.label()), "iTerm2"), None, "{}", i.identifier);
+        }
+        assert_eq!(identifier_for("Check Settings Control Truncation", "iTerm2"), None);
+        assert_eq!(identifier_for("Capture GPU Frame", "iTerm2").is_some(), cfg!(debug_assertions));
+    }
+
+    /// The 13v2 x 13w seam: the Toggle Debug Logging tip names the file 13w's debug log writes
+    /// (`dlog::FILE_NAME` in `%TEMP%`) and the folder used when `%TEMP%` is not a local folder
+    /// (`dlog::log_dirs_with`).
+    #[test]
+    fn debug_log_tip_names_the_real_file() {
+        let tip = tip_for("Toggle Debug Logging").unwrap();
+        assert!(tip.contains(&format!("%TEMP%\\{}", crate::dlog::FILE_NAME)), "{tip}");
+        assert!(tip.contains("%LOCALAPPDATA%\\Tandem\\Logs"), "{tip}");
+        #[cfg(windows)]
+        {
+            let temp = std::env::temp_dir();
+            let local = std::env::var("LOCALAPPDATA").unwrap();
+            let t = temp.display().to_string();
+            let dirs = crate::dlog::log_dirs_with(&|k| match k {
+                "TEMP" => Some(t.clone()),
+                "LOCALAPPDATA" => Some(local.clone()),
+                _ => None,
+            });
+            assert_eq!(dirs.first().map(|d| d.path().to_path_buf()), Some(temp.clone()), "a local TEMP is the first folder");
+            let fallback = std::path::Path::new(&local).join("Tandem").join("Logs");
+            assert_eq!(dirs.last().map(|d| d.path().to_path_buf()), Some(fallback.clone()));
+            let no_temp = crate::dlog::log_dirs_with(&|k| (k == "LOCALAPPDATA").then(|| local.clone()));
+            assert_eq!(no_temp.iter().map(|d| d.path().to_path_buf()).collect::<Vec<_>>(), [fallback]);
+        }
+    }
+
     /// `ADS:24-196`: 69 tips; 58 name an item of the menu file by its identifier and 11 are the
     /// toolbelt's tools.
     #[test]
     fn menu_tips_follow_iterm2() {
         assert_eq!(TIPS.len(), 69);
-        let in_menus = |id: &str| menus::items().iter().any(|i| !i.separator && !i.identifier.is_empty() && i.identifier == id);
+        let in_menus = |id: &str| menus::shown_items().any(|i| !i.separator && !i.identifier.is_empty() && i.identifier == id);
         let (tools, items): (Vec<&MenuTip>, Vec<&MenuTip>) = TIPS.iter().partition(|t| t.identifier.starts_with("Toolbelt."));
         assert_eq!(items.len(), 58);
         for t in &items {
@@ -239,7 +281,7 @@ mod tests {
         assert_eq!(identifier_for("No Such Item", "Shell"), None);
         // Every tip is reachable by some item's label and parent.
         for t in TIPS.iter().filter(|t| !t.identifier.starts_with("Toolbelt.")) {
-            let item = menus::items().iter().find(|i| !i.separator && i.identifier == t.identifier).unwrap();
+            let item = menus::shown_items().find(|i| !i.separator && i.identifier == t.identifier).unwrap();
             let parent = if item.path.len() > 1 { menus::shown_label(&item.path[item.path.len() - 2]) } else { String::new() };
             assert_eq!(identifier_for(&menus::shown_label(item.label()), &parent).as_deref(), Some(t.identifier), "{}", t.identifier);
         }
