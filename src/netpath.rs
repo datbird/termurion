@@ -21,8 +21,32 @@ impl Drives for LocalDrives {
     }
 }
 
-/// `GetDriveTypeW`, asked once per drive letter for the run (a drive remapped while Tandem
-/// runs keeps its first answer; Decision).
+/// `GetDriveTypeW`'s answers that never change for a letter and so are kept for the run: a
+/// mapped network drive and a fixed disk. Any other answer (no root directory, unknown, a card
+/// reader with no card) is asked again, so a drive mapped later (`net use Z:`) is seen.
+#[cfg(any(windows, test))]
+const DRIVE_FIXED: u32 = 3;
+/// `DRIVE_REMOTE`.
+#[cfg(any(windows, test))]
+const DRIVE_REMOTE: u32 = 4;
+
+/// Whether drive `letter` (0 for A) is a network drive: the kept answer, else `ask` for its type.
+#[cfg(any(windows, test))]
+fn remote_answer(cache: &std::sync::Mutex<[Option<bool>; 26]>, letter: usize, ask: impl FnOnce() -> u32) -> bool {
+    if let Some(known) = cache.lock().ok().and_then(|c| c[letter]) {
+        return known;
+    }
+    let kind = ask();
+    let remote = kind == DRIVE_REMOTE;
+    if matches!(kind, DRIVE_REMOTE | DRIVE_FIXED) {
+        if let Ok(mut c) = cache.lock() {
+            c[letter] = Some(remote);
+        }
+    }
+    remote
+}
+
+/// `GetDriveTypeW` per drive letter, the stable answers kept for the run (`remote_answer`).
 #[cfg(windows)]
 pub struct RealDrives;
 
@@ -36,22 +60,13 @@ impl Drives for RealDrives {
             Some(c) if c.is_ascii_alphabetic() => (c.to_ascii_uppercase() - b'A') as usize,
             _ => return false,
         };
-        if let Some(known) = CACHE.lock().ok().and_then(|c| c[letter]) {
-            return known;
-        }
-        let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
-        // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
-        let remote = unsafe { GetDriveTypeW(wide.as_ptr()) } == DRIVE_REMOTE;
-        if let Ok(mut c) = CACHE.lock() {
-            c[letter] = Some(remote);
-        }
-        remote
+        remote_answer(&CACHE, letter, || {
+            let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+            // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+            unsafe { GetDriveTypeW(wide.as_ptr()) }
+        })
     }
 }
-
-/// `DRIVE_REMOTE`.
-#[cfg(windows)]
-const DRIVE_REMOTE: u32 = 4;
 
 /// The drive answers for this platform.
 pub fn real_drives() -> Arc<dyn Drives + Send + Sync> {
@@ -242,6 +257,25 @@ mod tests {
         assert!(!has_ignored_prefix(r"D:\slow", &p.ignore));
         let spaced = Probe::from_settings(r" D:\slow", false, local());
         assert!(!has_ignored_prefix(r"D:\slow\a.txt", &spaced.ignore));
+    }
+
+    /// Final wave minor 10: a drive that was unmapped when first asked is asked again.
+    #[test]
+    fn a_drive_mapped_later_is_seen() {
+        let cache = std::sync::Mutex::new([None; 26]);
+        let asked = std::cell::Cell::new(0);
+        let asked = &asked;
+        let ask = |kind: u32| {
+            move || {
+                asked.set(asked.get() + 1);
+                kind
+            }
+        };
+        assert!(!remote_answer(&cache, 25, ask(1)), "no root directory yet");
+        assert!(remote_answer(&cache, 25, ask(DRIVE_REMOTE)), "mapped later in the session");
+        assert!(remote_answer(&cache, 25, ask(1)), "a network answer is kept");
+        assert_eq!(asked.get(), 2, "the kept answer asked nothing");
+        assert!(!remote_answer(&cache, 2, ask(DRIVE_FIXED)) && !remote_answer(&cache, 2, ask(DRIVE_REMOTE)), "a fixed disk is kept too");
     }
 
     #[test]

@@ -532,6 +532,10 @@ pub fn resolve_program(name: &str, path_var: &str, pathext: &str, exists: &dyn F
     let try_all = |list: Vec<String>| list.into_iter().filter(|c| !crate::scripts::is_network_path(c)).map(PathBuf::from).find(|p| exists(p));
     let folder_given = name.contains(['\\', '/']) || Path::new(name).is_absolute();
     if folder_given {
+        // A relative name with a folder would resolve against Tandem's own current folder.
+        if !Path::new(name).is_absolute() {
+            return None;
+        }
         return try_all(candidates(None));
     }
     path_var.split(';').map(str::trim).filter(|d| !d.is_empty() && !crate::scripts::is_network_path(d)).find_map(|d| try_all(candidates(Some(d))))
@@ -1853,6 +1857,16 @@ mod tests {
         assert_eq!(v(r#"p "" q"#), ["p", "", "q"]);
         // shell32: `""` inside quotes is a literal quote that also ends the quoted run.
         assert_eq!(v(r#"p "a""b c" d"#), ["p", "a\"b", "c d"]);
+    }
+
+    /// Final wave minor 11: a relative name with a folder is never resolved against Tandem's own folder.
+    #[test]
+    fn a_relative_program_with_a_folder_is_not_resolved() {
+        for name in [r"sub\p.exe", r"..\p.exe", "sub/p.exe", r".\p.exe"] {
+            assert_eq!(resolve_program(name, r"C:\t", ".EXE", &|_| true), None, "{name}");
+        }
+        assert_eq!(resolve_program("p", r"C:\t", ".EXE", &|_| true), Some(PathBuf::from(r"C:\t\p.exe")), "a bare name still walks PATH");
+        assert_eq!(resolve_program(r"C:\x\p.exe", "", ".EXE", &|_| true), Some(PathBuf::from(r"C:\x\p.exe")), "an absolute path still resolves");
     }
 
     #[test]
