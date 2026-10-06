@@ -182,9 +182,28 @@ pub fn current_ours_with(fake_boot: &str, real: Option<&str>) -> Option<String> 
     our_value(fake_boot, real)
 }
 
+/// How many times `cached_ours` really computed the HMAC (a test reads it).
+static OURS_COMPUTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `our_value`, remembered for the inputs it was last asked with: the status bar asks every
+/// frame, and the HMAC is computed again only when the fake boot identity changes.
+pub fn cached_ours(fake: &str, real: Option<&str>) -> Option<String> {
+    static LAST: std::sync::Mutex<Option<(String, Option<String>, Option<String>)>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((f, r, out)) = last.as_ref() {
+        if f == fake && r.as_deref() == real {
+            return out.clone();
+        }
+    }
+    OURS_COMPUTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out = our_value(fake, real);
+    *last = Some((fake.to_string(), real.map(str::to_string), out.clone()));
+    out
+}
+
 /// This machine's token value now.
 pub fn current_ours() -> Option<String> {
-    our_value(&fakes().1, real_identity())
+    cached_ours(&fakes().1, real_identity())
 }
 
 #[cfg(test)]
@@ -193,6 +212,25 @@ mod tests {
 
     fn names() -> Vec<String> {
         local_names("", "PC1", "pc1.corp")
+    }
+
+    /// The status bar asks every frame: the HMAC is computed once per fake boot identity.
+    #[test]
+    fn our_value_is_cached_per_fake_identity() {
+        use std::sync::atomic::Ordering::Relaxed;
+        // Inputs no other test uses, so the cache starts cold for them.
+        let (a, b) = ("cache-test-a", "cache-test-b");
+        let before = OURS_COMPUTED.load(Relaxed);
+        let first = cached_ours(a, Some("real"));
+        assert_eq!(first, our_value(a, Some("real")));
+        for _ in 0..50 {
+            assert_eq!(cached_ours(a, Some("real")), first);
+        }
+        // Other tests may fill the cache between calls, so count only a lower bound that a
+        // per-call HMAC would break: 51 calls on one input compute far fewer than 51 times.
+        assert!(OURS_COMPUTED.load(Relaxed) - before < 10, "the HMAC is not computed per call");
+        assert_ne!(cached_ours(b, Some("real")), first, "a different fake identity gives its own value");
+        assert_eq!(cached_ours(b, Some("real")), our_value(b, Some("real")));
     }
 
     /// `NSHost+iTerm.m:86-100`.
