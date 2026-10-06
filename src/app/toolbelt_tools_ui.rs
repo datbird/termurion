@@ -1418,9 +1418,18 @@ impl App {
     /// Win+Z while Snippets or Actions has the keyboard: that tool's last change is undone and
     /// saved (Edit > Undo stays disabled in sessions). True when the chord was the tool's.
     pub(super) fn toolbelt_chord(&mut self, chord: &Chord) -> bool {
-        let Some((tool, _)) = self.belt.focus.filter(|(t, _)| matches!(t, ToolId::Snippets | ToolId::Actions)) else { return false };
         let z = matches!(chord.key, ChordKey::Char(c) if c.eq_ignore_ascii_case(&'z'));
-        if !(z && chord.cmd && !chord.alt && !chord.shift && !chord.ctrl) || !self.belt.visible {
+        if !(z && chord.cmd && !chord.alt && !chord.shift && !chord.ctrl) {
+            return false;
+        }
+        self.toolbelt_undo()
+    }
+
+    /// Undo in the Snippets or Actions tool while it has the keyboard: its last change is undone
+    /// and saved. True when a tool had the keyboard, whether or not it had a change to undo.
+    pub(super) fn toolbelt_undo(&mut self) -> bool {
+        let Some((tool, _)) = self.belt.focus.filter(|(t, _)| matches!(t, ToolId::Snippets | ToolId::Actions)) else { return false };
+        if !self.belt.visible {
             return false;
         }
         let Some(undo) = self.tool_state(tool).undo.pop() else { return true };
@@ -1434,6 +1443,15 @@ impl App {
         self.tool_state(tool).selection.rows.clear();
         self.redraw();
         true
+    }
+
+    /// Key action 44, Undo: Edit > Undo does something only in a tool's text field; with a
+    /// terminal focused the item is disabled in a session (`commands::DISABLED_IN_SESSION`), and
+    /// the action beeps (`PS:12166-12168`, `PS:5148-5153`).
+    pub(super) fn undo_key_action(&mut self) {
+        if !self.toolbelt_undo() {
+            super::find_ui::beep();
+        }
     }
 
     /// A row drag let go: Actions move the selected actions above the drop row and push an

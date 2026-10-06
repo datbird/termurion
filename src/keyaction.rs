@@ -376,7 +376,6 @@ pub fn info(code: i64) -> Option<&'static ActionInfo> {
 /// Whether an action works now, or the milestone that brings it.
 pub fn status(code: i64) -> Status {
     match code {
-        44 => Status::Later(7),
         40 => Status::Later(13),
         _ => Status::Done,
     }
@@ -389,9 +388,15 @@ mod tests {
     #[test]
     fn status_of_move_actions() {
         assert_eq!(status(62), Status::Done, "Move Pane works with the pick mode");
-        assert!(matches!(status(44), Status::Later(_)), "the other action stays with its owner");
+        assert_eq!(status(44), Status::Done, "Undo works since 13u");
     }
     use crate::commands::Status;
+
+    #[test]
+    fn undo_action_is_done() {
+        assert_eq!(status(44), Status::Done, "Undo selects Edit > Undo");
+        assert_eq!(status(62), Status::Done, "Move Pane landed with 13h");
+    }
 
     fn b(version: i64, escaping: Option<i64>) -> Binding {
         Binding { action: 12, text: String::new(), label: String::new(), version, escaping, apply_mode: 0 }

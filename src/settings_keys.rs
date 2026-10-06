@@ -682,6 +682,54 @@ pub fn checkbox_shows(stored: bool, inverted: bool) -> bool {
     stored != inverted
 }
 
+/// The tmux attach rows' texts (`XIB:8600-8720`).
+pub const ATTACH_CHECKBOX_LABEL: &str = "Open tmux windows as tabs in the attaching window";
+pub const ATTACH_POPUP_LABEL: &str = "When attaching, open unrecognized windows in";
+pub const ATTACH_POPUP_CHOICES: [&str; 2] = ["Windows", "Tabs in a new window"];
+
+/// The checkbox over `OpenTmuxWindowsIn`: on for mode 2, tabs in the attaching window
+/// (`GP:2325-2361`; the Phony keys iTerm2 reads and writes are never stored here).
+pub fn attach_checkbox(mode: i64) -> bool {
+    mode == 2
+}
+
+/// The popup's choice for the stored mode: Windows (0) or Tabs in a new window (1); mode 2 shows as 1.
+pub fn attach_popup(mode: i64) -> i64 {
+    i64::from(mode != 0)
+}
+
+/// The mode to store from the checkbox and the popup's choice: checked is 2, else the popup's.
+pub fn attach_set(checked: bool, popup: i64) -> i64 {
+    if checked { 2 } else { i64::from(popup != 0) }
+}
+
+/// The popup takes input only while the checkbox is off.
+pub fn attach_popup_enabled(mode: i64) -> bool {
+    !attach_checkbox(mode)
+}
+
+/// General > tmux's two attach controls, both over `OpenTmuxWindowsIn`. True when it changed.
+pub fn tmux_attach_rows(ui: &mut egui::Ui, g: &mut Globals) -> bool {
+    let mode = g.int("OpenTmuxWindowsIn");
+    let (mut checked, mut popup) = (attach_checkbox(mode), attach_popup(mode));
+    let mut changed = false;
+    changed |= ui.checkbox(&mut checked, ATTACH_CHECKBOX_LABEL).changed();
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(attach_popup_enabled(attach_set(checked, popup)), |ui| {
+            ui.label(ATTACH_POPUP_LABEL);
+            egui::ComboBox::from_id_salt("OpenTmuxWindowsIn").selected_text(ATTACH_POPUP_CHOICES[popup.clamp(0, 1) as usize]).show_ui(ui, |ui| {
+                for (i, name) in ATTACH_POPUP_CHOICES.iter().enumerate() {
+                    changed |= ui.selectable_value(&mut popup, i as i64, *name).changed();
+                }
+            });
+        });
+    });
+    if changed {
+        g.set("OpenTmuxWindowsIn", Value::Integer(attach_set(checked, popup)));
+    }
+    changed
+}
+
 /// A control for one global setting (checkbox, menu, or text).
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
     let mut changed = false;
@@ -746,6 +794,21 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                     });
                     if r.changed() {
                         g.set(&s.key, Value::Integer(v));
+                        changed = true;
+                    }
+                    r.rect
+                })
+                .inner
+                .into()
+            }
+            // The keyboard locale: a text field until Task 5's layout popup replaces it.
+            Kind::String if s.key == "KeyboardLocale" => {
+                ui.horizontal(|ui| {
+                    ui.label(&s.label);
+                    let mut text = g.string(&s.key);
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+                    if r.changed() && text != g.string(&s.key) {
+                        g.set(&s.key, Value::String(text));
                         changed = true;
                     }
                     r.rect
@@ -838,7 +901,8 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
         ui.add_space(8.0);
         ui.strong("Remap Modifiers");
         for s in globals_in("Remap Modifiers") {
-            changed |= global_control(ui, g, s, true);
+            let enabled = row_enabled(g, &s.key);
+            changed |= global_control(ui, g, s, enabled);
         }
         if ui.button("Reset to Defaults").clicked() {
             for s in globals_in("Remap Modifiers").into_iter().filter(|s| s.kind == Kind::Enum) {
@@ -1128,6 +1192,8 @@ pub fn row_enabled_with(g: &Globals, key: &str, both_gpu_kinds: bool) -> bool {
         crate::presence::REQUIRES_HOTKEYS_KEY => g.bool(crate::presence::UI_ELEMENT_KEY),
         // The amount and Only Text apply while either dimming switch is on (`PT:12402-12422`, `SV:1497-1508`).
         "DimOnlyText" | "SplitPaneDimmingAmount" => g.bool("DimInactiveSplitPanes") || g.bool("DimBackgroundWindows"),
+        // The layout and the once-per-session switch apply only while a layout is forced (`KP:252-352`).
+        "KeyboardLocale" | "ForceKeyboardOncePerSession" => g.bool("ForceKeyboard"),
         "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
@@ -1312,6 +1378,11 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                     continue;
                 }
                 if s.key == crate::remote_prefs::FOLDER_KEY {
+                    continue;
+                }
+                // The checkbox and the popup are two views of the one stored mode (`GP:2325-2361`).
+                if s.key == "OpenTmuxWindowsIn" {
+                    changed |= tmux_attach_rows(ui, g);
                     continue;
                 }
                 let enabled = row_enabled(g, &s.key);
@@ -1662,6 +1733,102 @@ mod tests {
             let row = crate::advanced_pane::rows().into_iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} has no pane row"));
             assert_eq!(row.kind, want, "{key} row kind");
         }
+    }
+
+    /// 13u Task 1 (Review Focus 1): the Advanced rows with iTerm2's sections and help, the Keys
+    /// tab's layout rows, and the profile's Alt and Win rows no longer macOS-only.
+    #[test]
+    fn keys_rows_follow_iterm2() {
+        use crate::schema::Kind;
+        let b = |v: bool| Value::Boolean(v);
+        let force_once = "When \u{201c}Force keyboard\u{201d} is on, Tandem continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward.";
+        let rows: Vec<(&str, &str, &str, Kind, Value, &str, String)> = vec![
+            ("ShowPinnedIndicator", "Advanced", "Hotkey", Kind::Bool, b(false), "Show indicator for pinned hotkey windows.", "Show indicator for pinned hotkey windows.".into()),
+            ("UseBlackFillerColorForTmuxInFullScreen", "Advanced", "Tmux Integration", Kind::Bool, b(false), "Use black for filler area in tmux windows in full screen.", "Use black for filler area in tmux windows in full screen.".into()),
+            ("TmuxWindowsOpenInBackground", "Advanced", "Tmux Integration", Kind::Bool, b(false), "Open tmux windows and tabs in the background?", "Open tmux windows and tabs in the background?\nWhen enabled, attaching with tmux -CC (or when tmux creates a new window) will reveal the window or tab without moving keyboard focus to it. Focus stays on the attaching session.".into()),
+            ("SupportDecsetMetaSendsEscape", "Advanced", "Experimental Features", Kind::Bool, b(false), "Support DECSET 1036?", "Support DECSET 1036?\nThis allows apps in the terminal to control whether the Alt key sends esc+ or acts like a regular Alt key.".into()),
+            ("ForceKeyboard", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Force keyboard", "Forces Tandem to use the selected keyboard layout while it is active.".into()),
+            ("ForceKeyboardOncePerSession", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Only force once per session when it first receives keyboard focus", force_once.into()),
+            ("KeyboardLocale", "Keys", "Remap Modifiers", Kind::String, Value::String(String::new()), "Keyboard locale", "Keyboard locale".into()),
+            ("AllowSymbolicHotKeys", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Respect shortcuts from Windows keyboard shortcuts", "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Tandem's own menu shortcuts still work.".into()),
+            ("RemapModifiersGlobally", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Remap modifiers globally", "When off, Tandem remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys.".into()),
+        ];
+        for (key, tab, section, kind, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key} is missing"));
+            assert_eq!((s.tab.as_str(), s.section.as_str()), (tab, section), "{key} placement");
+            assert_eq!(s.kind, kind, "{key} kind");
+            assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
+            assert_eq!(s.label, label, "{key} label");
+            assert_eq!(s.help, help, "{key} help");
+            if tab == "Advanced" {
+                let row = crate::advanced_pane::rows().into_iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} has no pane row"));
+                assert_eq!(row.kind, crate::advanced_pane::RowKind::Bool, "{key} row kind");
+            }
+        }
+        // m14e's row (already on main) is not this task's: it keeps its own section.
+        assert_eq!(schema::find_global("restoreKeyModeAutomaticallyOnHostChange").map(|s| s.tab.as_str()), Some("Advanced"));
+        // The Keys tab keeps the layout rows after Remap modifiers globally, in iTerm2's order.
+        let order: Vec<&str> = schema::global().iter().filter(|s| s.section == "Remap Modifiers").map(|s| s.key.as_str()).collect();
+        let at = |k: &str| order.iter().position(|o| *o == k).unwrap_or_else(|| panic!("{k}"));
+        assert!(at("RemapModifiersGlobally") < at("ForceKeyboard"));
+        assert!(at("ForceKeyboard") < at("ForceKeyboardOncePerSession"));
+        assert!(at("ForceKeyboardOncePerSession") < at("KeyboardLocale"));
+        assert!(at("KeyboardLocale") < at("AllowSymbolicHotKeys"));
+        // The locale and the once-per-session switch follow Force keyboard.
+        let mut g = Globals::empty(std::path::Path::new("keys-rows-test.toml"));
+        for key in ["KeyboardLocale", "ForceKeyboardOncePerSession"] {
+            assert!(!row_enabled(&g, key), "{key} off while Force keyboard is off");
+        }
+        assert!(row_enabled(&g, "ForceKeyboard") && row_enabled(&g, "AllowSymbolicHotKeys"));
+        g.set("ForceKeyboard", Value::Boolean(true));
+        for key in ["KeyboardLocale", "ForceKeyboardOncePerSession"] {
+            assert!(row_enabled(&g, key), "{key} on with Force keyboard");
+        }
+        // The profile rows: not macOS-only, with the Windows texts.
+        let prof: [(&str, &str, Kind, Value, &str); 5] = [
+            ("Right Option Key Sends", "Alt Key Sends (Right)", Kind::Enum, Value::Integer(0), "Same popup for the right-hand Alt key, letting the two sides differ."),
+            ("Left Option Key Changeable", "Left Alt key changeable", Kind::Bool, b(true), "Whether left Alt key mode can be toggled at runtime"),
+            ("Right Option Key Changeable", "Right Alt key changeable", Kind::Bool, b(false), "Whether right Alt key mode can be toggled at runtime"),
+            ("Left Command Key", "Left Win Key", Kind::Enum, Value::Integer(0), "Left Win key behavior: Regular, Hyper, Meta, or Super"),
+            ("Right Command Key", "Right Win Key", Kind::Enum, Value::Integer(0), "Right Win key behavior: Regular, Hyper, Meta, or Super"),
+        ];
+        for (key, label, kind, default, help) in prof {
+            let s = schema::find(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!(s.tab, "Keys", "{key}");
+            assert!(!s.macos_only, "{key} is not macOS-only");
+            assert_eq!(s.kind, kind, "{key} kind");
+            assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
+            assert_eq!(s.label, label, "{key} label");
+            assert_eq!(s.help, help, "{key} help");
+        }
+    }
+
+    #[test]
+    fn tmux_attach_controls_follow_iterm2() {
+        use crate::schema::Kind;
+        // `GP:2325-2361`: the checkbox is mode 2; the popup shows Windows (0) or Tabs in a new
+        // window (1), and shows 2 as 1; checking sets 2 and the popup drives the other two.
+        assert!(attach_checkbox(2));
+        assert!(!attach_checkbox(0));
+        assert!(!attach_checkbox(1));
+        assert_eq!(attach_popup(2), 1);
+        assert_eq!(attach_popup(1), 1);
+        assert_eq!(attach_popup(0), 0);
+        assert_eq!(attach_set(true, 0), 2);
+        assert_eq!(attach_set(true, 1), 2);
+        assert_eq!(attach_set(false, 1), 1);
+        assert_eq!(attach_set(false, 0), 0);
+        // The popup is disabled while checked.
+        assert!(attach_popup_enabled(0) && attach_popup_enabled(1));
+        assert!(!attach_popup_enabled(2));
+        // The two Phony keys are never stored.
+        assert!(schema::find_global("OpenTmuxWindowsAsTabsInAttachingWindow").is_none());
+        let s = schema::find_global("OpenTmuxWindowsIn").unwrap();
+        assert_eq!(s.kind, Kind::Enum);
+        assert_eq!(s.default, Some(Value::Integer(0)));
+        assert_eq!(ATTACH_CHECKBOX_LABEL, "Open tmux windows as tabs in the attaching window");
+        assert_eq!(ATTACH_POPUP_LABEL, "When attaching, open unrecognized windows in");
+        assert_eq!(ATTACH_POPUP_CHOICES, ["Windows", "Tabs in a new window"]);
     }
 
     #[test]

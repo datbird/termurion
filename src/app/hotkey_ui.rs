@@ -537,6 +537,12 @@ impl App {
         self.hotkey.as_ref().and_then(|h| self.store.get(&h.guid)).is_some_and(|p| !p.bool("HotKey Window AutoHides"))
     }
 
+    /// Whether the pin indicator shows on this window's panes: the Advanced switch is on and
+    /// this is a hotkey window whose profile does not auto-hide (`PS:14295-14304`).
+    pub(super) fn in_pinned_hotkey_window(&self) -> bool {
+        self.globals.bool("ShowPinnedIndicator") && self.hotkey_pinned()
+    }
+
     /// A window the switcher and Next Window skip: a hidden hotkey window.
     pub(super) fn hidden_hotkey_key(&self, k: u64) -> bool {
         if self.windows.current() == Some(k) {

@@ -665,7 +665,7 @@ impl App {
         let routes = match kind {
             IndicatorKind::AiLinked => chat_routes::indicator_routes(true, false, &reference),
             IndicatorKind::AiStreaming => chat_routes::indicator_routes(false, true, &reference),
-            IndicatorKind::Other => return false,
+            IndicatorKind::Other | IndicatorKind::Pin => return false,
         };
         let Some(hwnd) = self.hwnd() else { return true };
         let menu = muda::Menu::new();
