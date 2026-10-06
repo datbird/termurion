@@ -149,6 +149,16 @@ mod tests {
         assert!(!include_str!("../schema/global.toml").contains('\u{2026}'));
     }
 
+    /// Invariant 6: typographic quotes in help and labels are `\u2018` to `\u201d` escapes, never raw.
+    #[test]
+    fn schema_text_has_no_raw_typographic_quotes() {
+        for (name, text) in [("global", include_str!("../schema/global.toml")), ("profile", include_str!("../schema/profile.toml"))] {
+            for (n, line) in text.lines().enumerate() {
+                assert!(!line.contains(['\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}']), "{name}.toml:{}: raw typographic quote; use a \\u escape", n + 1);
+            }
+        }
+    }
+
     #[test]
     fn loads_every_setting() {
         assert!(profile().len() >= 242, "{}", profile().len());

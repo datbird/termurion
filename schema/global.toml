@@ -4507,7 +4507,7 @@ section = "Experimental Features"
 label = "Detect base unicode characters with lookup table."
 type = "bool"
 default = true
-help = "Detect base unicode characters with lookup table.\nThe system’s algorithm for segmenting composed characters makes bad choices, such as for Tamil. Enable this to reduce text overlapping."
+help = "Detect base unicode characters with lookup table.\nThe system\u2019s algorithm for segmenting composed characters makes bad choices, such as for Tamil. Enable this to reduce text overlapping."
 
 [[setting]]
 key = "FontChangeAffectsBroadcastingSessions"
@@ -5239,10 +5239,10 @@ help = "Maximum number of lines of history to expose to Accessibility.\nAccessib
 key = "OpenFileOverridesSendText"
 tab = "Advanced"
 section = "General"
-label = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?"
+label = "Should opening a script with Tandem disable the default profile\u2019s \u201cSend Text at Start\u201d setting?"
 type = "bool"
 default = true
-help = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?\nIf you use “tandem.exe file.ps1” or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's “Send Text at Start” setting. If this setting is off then both will be executed."
+help = "Should opening a script with Tandem disable the default profile\u2019s \u201cSend Text at Start\u201d setting?\nIf you use \u201ctandem.exe file.ps1\u201d or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's \u201cSend Text at Start\u201d setting. If this setting is off then both will be executed."
 
 [[setting]]
 key = "MinRunningTime"
@@ -5284,37 +5284,37 @@ help = "Open a new window when you click the notification area icon and no windo
 key = "SaveProfilesToRecentDocuments"
 tab = "Advanced"
 section = "Tabs"
-label = "Add items to Recents (in the taskbar button’s Jump List) to reopen recently used profiles as tabs?"
+label = "Add items to Recents (in the taskbar button\u2019s Jump List) to reopen recently used profiles as tabs?"
 type = "bool"
 default = false
-help = "Add items to Recents (in the taskbar button’s Jump List) to reopen recently used profiles as tabs?"
+help = "Add items to Recents (in the taskbar button\u2019s Jump List) to reopen recently used profiles as tabs?"
 
 [[setting]]
 key = "OpenFileInNewWindows"
 tab = "Advanced"
 section = "Windows"
-label = "DEPRECATED: Use “How should new instances be opened” instead."
+label = "DEPRECATED: Use \u201cHow should new instances be opened\u201d instead."
 type = "bool"
 default = false
-help = "DEPRECATED: Use “How should new instances be opened” instead.\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also “Open files in split panes”."
+help = "DEPRECATED: Use \u201cHow should new instances be opened\u201d instead.\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also \u201cOpen files in split panes\u201d."
 
 [[setting]]
 key = "OpenFileInSplitPanes"
 tab = "Advanced"
 section = "Windows"
-label = "DEPRECATED: Use “How should new instances be opened” instead."
+label = "DEPRECATED: Use \u201cHow should new instances be opened\u201d instead."
 type = "bool"
 default = false
-help = "DEPRECATED: Use “How should new instances be opened” instead.\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set “Open files in new windows, not new tabs” to “No” for this to take effect. See also “When opening a file in a split pane, should it be a vertical split?”"
+help = "DEPRECATED: Use \u201cHow should new instances be opened\u201d instead.\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set \u201cOpen files in new windows, not new tabs\u201d to \u201cNo\u201d for this to take effect. See also \u201cWhen opening a file in a split pane, should it be a vertical split?\u201d"
 
 [[setting]]
 key = "OpenFileInVerticalSplitPane"
 tab = "Advanced"
 section = "Windows"
-label = "DEPRECATED: Use “How should new instances be opened” instead."
+label = "DEPRECATED: Use \u201cHow should new instances be opened\u201d instead."
 type = "bool"
 default = true
-help = "DEPRECATED: Use “How should new instances be opened” instead.\nWhen opening a file in a split pane, should it be a vertical split?"
+help = "DEPRECATED: Use \u201cHow should new instances be opened\u201d instead.\nWhen opening a file in a split pane, should it be a vertical split?"
 
 [[setting]]
 key = "NewInstanceOpenStyle"
@@ -5377,7 +5377,7 @@ section = "General"
 label = "Template for URL of search engine."
 type = "string"
 default = "https://google.com/search?q=%@"
-help = "Template for URL of search engine.\nTandem replaces the string “%@” with the text to search for. Query parameter percent escaping is used."
+help = "Template for URL of search engine.\nTandem replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
 
 [[setting]]
 key = "SearchSuggestURL"
@@ -5386,7 +5386,7 @@ section = "General"
 label = "Template of URL for typeahead search suggestions."
 type = "string"
 default = "https://suggestqueries.google.com/complete/search?client=firefox&q=%@"
-help = "Template of URL for typeahead search suggestions.\nTandem replaces the string “%@” with the text to search for. Query parameter percent escaping is used."
+help = "Template of URL for typeahead search suggestions.\nTandem replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
 
 # Debug log (13w)
 
