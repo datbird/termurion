@@ -109,9 +109,10 @@ pub(super) struct Fs<'a> {
     pub open: &'a dyn Fn(&Path) -> Result<dp::Opened, String>,
     /// Makes a new file (it must not exist) holding the bytes.
     pub write_new: &'a dyn Fn(&Path, &[u8]) -> std::io::Result<()>,
-    /// Renames the new file `tmp` over `target`, both names in `folder`, through a handle on the
-    /// folder (not a path that could be swapped under the call).
-    pub rename: &'a dyn Fn(&Path, &str, &str) -> std::io::Result<()>,
+    /// Renames the new file `tmp` over `target`, both bare names in `folder`, through a handle on
+    /// the folder that must be the one judged (`id`: volume serial and file index), not a path that
+    /// could be swapped under the call.
+    pub rename: &'a dyn Fn(&Path, Option<(u32, u64)>, &str, &str) -> std::io::Result<()>,
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -124,15 +125,16 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// The handle-based rename: the folder is opened without following a link and without the
 /// delete share right, so it cannot be renamed or replaced while the call runs; the new file is
 /// opened for DELETE (no link followed) and renamed with `FileRenameInfo` to `target` in that
-/// folder, replacing the old file. The target name is the judged folder's full path (the Win32
-/// call refuses a root directory handle).
+/// folder, replacing the old file. The folder must still be the judged one (`judged`: volume serial
+/// and file index). The target is the bare file name joined to the path the folder's own handle
+/// reports (links resolved), so the destination is never resolved again from the textual path.
 #[cfg(windows)]
-fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<()> {
+fn rename_in_folder(folder: &Path, judged: Option<(u32, u64)>, tmp: &str, target: &str) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, GetFileInformationByHandle, SetFileInformationByHandle};
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW, SetFileInformationByHandle};
     let dir = std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(folder)?;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: the handle is open for the call and `info` is a plain out structure.
@@ -142,6 +144,11 @@ fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<(
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(std::io::Error::other("the folder is a link"));
     }
+    // The folder reached by this path now is the folder that was judged, not one swapped in since.
+    let now = (info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow));
+    if judged.is_some_and(|j| j != now) {
+        return Err(std::io::Error::other("the folder is not the one that was judged"));
+    }
     let new = std::fs::OpenOptions::new()
         .access_mode(DELETE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -149,7 +156,19 @@ fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<(
         .open(folder.join(tmp))?;
     // FILE_RENAME_INFO: ReplaceIfExists (4 bytes, padded to 8), RootDirectory (8, none), FileNameLength
     // (4, in bytes), then the name.
-    let name: Vec<u16> = folder.join(target).as_os_str().encode_wide().collect();
+    // The folder's own path as the HANDLE reports it (links resolved), then the bare file name: a
+    // bare name alone is resolved against the process's current folder by the call.
+    let mut base = vec![0u16; 4096];
+    // SAFETY: the handle is open; the buffer length is passed.
+    let n = unsafe { GetFinalPathNameByHandleW(dir.as_raw_handle() as HANDLE, base.as_mut_ptr(), base.len() as u32, 0) } as usize;
+    if n == 0 || n >= base.len() {
+        return Err(std::io::Error::other("the folder's path could not be read from its handle"));
+    }
+    base.truncate(n);
+    if base.last() != Some(&(b'\\' as u16)) {
+        base.push(b'\\' as u16);
+    }
+    let name: Vec<u16> = base.into_iter().chain(std::ffi::OsStr::new(target).encode_wide()).collect();
     let mut buf = vec![0u8; 24 + name.len() * 2];
     buf[0] = 1;
     buf[16..20].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
@@ -163,7 +182,7 @@ fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<(
 }
 
 #[cfg(not(windows))]
-fn rename_in_folder(folder: &Path, tmp: &str, target: &str) -> std::io::Result<()> {
+fn rename_in_folder(folder: &Path, _judged: Option<(u32, u64)>, tmp: &str, target: &str) -> std::io::Result<()> {
     std::fs::rename(folder.join(tmp), folder.join(target))
 }
 
@@ -212,20 +231,23 @@ pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &
         return Outcome::Refused("its file is on a network path or reached through a link to one".into());
     }
     let trusted_folder = |p: &Path| match (fs.open)(p) {
-        Ok(o) if o.dir && o.trust.is_ok() => Ok(()),
+        Ok(o) if o.dir && o.trust.is_ok() => Ok(o.stat.id),
         Ok(o) if o.dir => Err(o.trust.err().unwrap_or_default()),
         Ok(_) => Err("it is not a folder".to_string()),
         Err(e) => Err(e),
     };
     let mut at = folder.to_path_buf();
-    if let Err(e) = trusted_folder(&at) {
-        return Outcome::Refused(format!("the Dynamic Profiles folder is not trusted: {e}"));
-    }
+    // The identity of the folder judged last is the one the rename must find again.
+    let mut parent_id = match trusted_folder(&at) {
+        Ok(id) => id,
+        Err(e) => return Outcome::Refused(format!("the Dynamic Profiles folder is not trusted: {e}")),
+    };
     let parts: Vec<_> = rel.components().collect();
     for part in &parts[..parts.len() - 1] {
         at.push(part);
-        if let Err(e) = trusted_folder(&at) {
-            return Outcome::Refused(format!("its folder is not trusted: {e}"));
+        match trusted_folder(&at) {
+            Ok(id) => parent_id = id,
+            Err(e) => return Outcome::Refused(format!("its folder is not trusted: {e}")),
         }
     }
     let opened = match (fs.open)(&path) {
@@ -269,7 +291,7 @@ pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &
         let _ = std::fs::remove_file(&tmp);
         return Outcome::Refused(format!("could not write: {e}"));
     }
-    if let Err(e) = (fs.rename)(parent, &tmp_name, &file_name) {
+    if let Err(e) = (fs.rename)(parent, parent_id, &tmp_name, &file_name) {
         let _ = std::fs::remove_file(&tmp);
         return Outcome::Refused(format!("could not replace the file: {e}"));
     }
@@ -292,7 +314,11 @@ pub(super) struct Source {
 /// when the profile has no recorded file or stamp.
 pub(super) fn rewrite_source(fs: &Fs, folder: &Path, files: &mut HashMap<String, Source>, guid: &str, change: &dyn Fn(&mut Entry)) -> Option<Outcome> {
     let source = files.get(guid)?.clone();
-    let stamp = source.stamp.clone()?;
+    let Some(stamp) = source.stamp.clone() else {
+        // The write before this one left the file in a state that could not be read again: say so
+        // (the edit is not written, and never silently dropped).
+        return Some(Outcome::Refused("its file's state after the last write could not be read".into()));
+    };
     let out = rewrite(fs, folder, &source.path, &stamp, guid, change);
     if let Outcome::Wrote(now) = &out {
         for other in files.values_mut().filter(|o| o.path == source.path) {
@@ -817,7 +843,7 @@ mod tests {
     fn write_back_stays_in_the_folder() {
         let dir = scratch("stay");
         let stamp = Stamp::new(b"x", dp::Stat::default());
-        let never = Fs { open: &|_| panic!("opened outside the folder"), write_new: &|_, _| panic!("wrote outside the folder"), rename: &|_, _, _| panic!("renamed outside the folder"), ..real() };
+        let never = Fs { open: &|_| panic!("opened outside the folder"), write_new: &|_, _| panic!("wrote outside the folder"), rename: &|_, _, _, _| panic!("renamed outside the folder"), ..real() };
         for name in ["..\\x.json", "..\\..\\x.json", "C:\\x.json", "\\\\h\\s\\x.json", "sub\\..\\..\\x.json", "\\x.json", "", ".", "C:x.json"] {
             assert!(matches!(rewrite(&never, &dir, name, &stamp, "G", &rename_it), Outcome::Refused(_)), "{name:?}");
         }
@@ -841,7 +867,7 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), before);
         assert!(leftovers(&dir).is_empty());
         // The rename fails: the original is intact and the temporary file is removed.
-        let fs = Fs { rename: &|_, _, _| Err(std::io::Error::other("locked")), ..real() };
+        let fs = Fs { rename: &|_, _, _, _| Err(std::io::Error::other("locked")), ..real() };
         assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Refused(_)));
         assert_eq!(std::fs::read(&p).unwrap(), before);
         assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
@@ -928,6 +954,46 @@ mod tests {
         apply_loaded(&mut s, &stale, false);
         assert_eq!(s.get("A").unwrap().name(), "A", "what the reload does to an unflushed edit");
         drop(files);
+    }
+
+    /// A missing stamp after a write is reported for the next pending edit of that file, never
+    /// dropped without a word.
+    #[test]
+    fn a_missing_stamp_is_reported_not_dropped() {
+        let (dir, _p, s, mut files) = two_in_one_file("nostamp");
+        for src in files.values_mut() {
+            src.stamp = None;
+        }
+        let pending: BTreeSet<String> = ["A", "B"].iter().map(|g| g.to_string()).collect();
+        let out = flush_writes(&real(), &dir, &mut files, &s, false, pending);
+        assert_eq!(out.len(), 2, "every pending edit has an outcome: {out:?}");
+        assert!(out.iter().all(|(_, o)| matches!(o, Outcome::Refused(_))), "{out:?}");
+    }
+
+    /// m13v2 Task 6 fix: the rename names the folder judged (volume serial and file index), asks the
+    /// handle for the bare file name, and refuses a folder that is not the judged one.
+    #[test]
+    fn rename_names_the_judged_folder() {
+        let dir = scratch("judged");
+        let other = scratch("judged-other");
+        let id_of = |d: &Path| dp::system_open(d).unwrap().stat.id;
+        let (a, b) = (id_of(&dir), id_of(&other));
+        assert!(a.is_some() && a != b);
+        std::fs::write(dir.join("t.tmp"), "new").unwrap();
+        std::fs::write(dir.join("a.json"), "old").unwrap();
+        let real_rename = Fs::real().rename;
+        assert!(real_rename(&dir, b, "t.tmp", "a.json").is_err(), "a folder that is not the judged one");
+        assert_eq!(std::fs::read_to_string(dir.join("a.json")).unwrap(), "old");
+        real_rename(&dir, a, "t.tmp", "a.json").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.json")).unwrap(), "new");
+        // rewrite hands the rename the judged folder's identity and the bare names.
+        let p = write_json(&dir, "c.json", json!({"Profiles": [{"Guid": "G", "Name": "Old"}]}));
+        let seen = std::cell::RefCell::new(None);
+        let fs = Fs { rename: &|f: &Path, id, t: &str, n: &str| { *seen.borrow_mut() = Some((id, t.to_string(), n.to_string())); std::fs::rename(f.join(t), f.join(n)) }, ..real() };
+        assert!(matches!(rewrite(&fs, &dir, "c.json", &stamp_of_file(&p), "G", &rename_it), Outcome::Wrote(_)));
+        let (id, tmp, target) = seen.borrow().clone().unwrap();
+        assert_eq!((id, target.as_str()), (a, "c.json"));
+        assert!(tmp.starts_with('.') && !tmp.contains(['\\', '/']));
     }
 
     #[test]

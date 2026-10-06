@@ -73,7 +73,7 @@ pub const TIPS: &[MenuTip] = &[
     MenuTip { identifier: "Marks and Annotations.Set Mark", text: "A Mark appears as a blue triangle in the left margin. You can easily navigate among marks using Jump to Mark, Next Mark, and Previous Mark. If Shell Integration is enabled, a Mark is automatically added at each shell prompt." },
     MenuTip { identifier: "Set Named Mark", text: "A Named Mark appears as a blue triangle in the left margin. In addition to being easy to navigate with Next Mark and Previous Mark, you can also find Named Marks in the Toolbelt\u{2019}s Named Marks tool." },
     MenuTip { identifier: "Toolbelt.Named Marks", text: "A Named Mark appears as a blue triangle in the left margin. In addition to being easy to navigate with Next Mark and Previous Mark, you can also find Named Marks in this Toolbelt tool." },
-    MenuTip { identifier: "Fold Selected Lines", text: "Fold lets you collapse multiple lines into a single line to hide distracting text. You can always unfold it by clicking the arrow in the margin." },
+    MenuTip { identifier: "Fold Selected Lines", text: "Fold lets you collapse multiple lines into a single line to hide distracting text. You can always unfold it by clicking the arrow in the margin, or right-clicking and choosing Unfold." },
     MenuTip { identifier: "Toolbelt.Captured Output", text: "Captured Output works in conjunction with a Trigger to detect interesting text in the terminal and make it easy to find. The Toolbelt tool shows a list of captured text. You can click to navigate to it or double-click to enter a programmable command. This is useful for finding errors in the output of a build command, for example. It requires Shell Integration." },
     MenuTip { identifier: "Toolbelt.Codecierge", text: "Codecierge uses AI to help you achieve a goal. Tell it what you want to do, and it can watch your terminal to interpret output and suggest commands. Shell Integration is required." },
     MenuTip { identifier: "Toolbelt.Command History", text: "If Shell Integration is installed, Command History shows a searchable list of recently run commands on the current host." },
@@ -259,6 +259,8 @@ mod tests {
         assert!(menus::items().iter().any(|i| i.path == ["Session", "Edit Session..."]), "Session > Edit Session");
         // iTerm2 also says to unfold with Edit > Unfold in Selection, which Tandem's Edit menu lacks.
         assert!(tip_for("Fold Selected Lines").is_some_and(|t| !t.contains("Unfold in Selection")));
+        // The right-click Unfold is Tandem's context menu item (semantic_ui.rs `CtxItem::Unfold`), so the clause stays.
+        assert!(tip_for("Fold Selected Lines").is_some_and(|t| t.ends_with("by clicking the arrow in the margin, or right-clicking and choosing Unfold.")));
         assert_eq!(COPY_MODE_URL, "https://iterm2.com/documentation-copymode.html");
     }
 
