@@ -19,6 +19,9 @@ pub struct Run {
     pub italic: bool,
     pub underline: bool,
     pub link: Option<String>,
+    /// The cell's background is the profile's default (`Named(Background)`, not reversed): what
+    /// Copy with Styles leaves unset with `CopyBackgroundColor` off.
+    pub default_bg: bool,
 }
 
 /// One row of the selection. `hard_end` is false when the row wraps into the next.
@@ -150,6 +153,7 @@ fn runs_spans(screen: &Screen, spans: &[(i32, usize, usize)], exact_last: bool) 
                 italic: c.flags.contains(Flags::ITALIC),
                 underline: c.flags.intersects(Flags::ALL_UNDERLINES),
                 link: c.hyperlink().map(|h| h.uri().to_string()),
+                default_bg: c.bg == Color::Named(NamedColor::Background) && !c.flags.contains(Flags::INVERSE),
             };
             match row.last_mut() {
                 Some(last) if Run { text: String::new(), ..last.clone() } == Run { text: String::new(), ..run.clone() } => last.text.push_str(&run.text),
@@ -186,18 +190,85 @@ fn cells_in(g: &alacritty_terminal::grid::Grid<Cell>, line: i32, from: usize, to
     (from..=end).filter(|c| !row[Column(*c)].flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).collect()
 }
 
+/// How Copy with Styles treats backgrounds (iTerm2's `CopyBackgroundColor` and
+/// `ExcludeBackgroundColorsFromCopiedStyle`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StyleOptions {
+    pub copy_background: bool,
+    pub exclude_backgrounds: bool,
+}
+
+impl StyleOptions {
+    pub fn from_globals(g: &crate::globals::Globals) -> StyleOptions {
+        StyleOptions { copy_background: g.bool("CopyBackgroundColor"), exclude_backgrounds: g.bool("ExcludeBackgroundColorsFromCopiedStyle") }
+    }
+}
+
+/// The most HTML or RTF a copy writes; the rest of a huge selection is left out.
+pub const MAX_STYLED_BYTES: usize = 8 << 20;
+
 fn hex(c: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
 
+/// Text for an HTML body or attribute: markup characters escaped (quotes of both kinds for
+/// attribute values), control characters other than tab dropped.
+fn esc(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    for c in t.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            '\t' => out.push(c),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A font name that is safe inside a quoted CSS value and an RTF font table: quotes,
+/// backslashes, semicolons, braces, angle brackets, ampersands and controls are dropped.
+fn font_name(f: &str) -> String {
+    f.chars().filter(|c| !c.is_control() && !"'\"\\;{}<>&".contains(*c)).collect()
+}
+
+fn point_size(pt: f32) -> f32 {
+    if pt.is_finite() && pt > 0.0 { pt.min(1000.0) } else { 12.0 }
+}
+
+/// A link target a copied document may carry: http, https and mailto only (a program-authored
+/// `javascript:` or `file:` target never reaches the clipboard), of sane length.
+fn safe_link(url: &str) -> Option<&str> {
+    (url.len() <= 4096 && crate::semantic::web_link(url)).then_some(url)
+}
+
+/// The background a run is written with, if any: none when every background is excluded, none
+/// for a default background with `CopyBackgroundColor` off (`CharacterAttributes.swift:114-117`).
+fn run_bg(r: &Run, opts: StyleOptions) -> Option<Rgb> {
+    (!opts.exclude_backgrounds && (opts.copy_background || !r.default_bg)).then_some(r.bg)
+}
+
 /// The selection as an HTML fragment: a `pre` in the pane's font and background, with a
-/// span per run and links as links.
-pub fn html(rows: &[Row], font: &str, size_pt: f32, bg: Rgb) -> String {
-    let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
-    let mut out = format!("<pre style=\"font-family:'{}';font-size:{}pt;background-color:{}\">", esc(font), size_pt, hex(bg));
-    for (i, row) in rows.iter().enumerate() {
+/// span per run and links as links. Output stops at `MAX_STYLED_BYTES`.
+pub fn html(rows: &[Row], font: &str, size_pt: f32, bg: Rgb, opts: StyleOptions) -> String {
+    let mut out = format!("<pre style=\"font-family:'{}';font-size:{}pt", font_name(font), point_size(size_pt));
+    if opts.copy_background && !opts.exclude_backgrounds {
+        out += &format!(";background-color:{}", hex(bg));
+    }
+    out += "\">";
+    'rows: for (i, row) in rows.iter().enumerate() {
         for r in &row.runs {
-            let mut style = format!("color:{};background-color:{}", hex(r.fg), hex(r.bg));
+            if out.len() > MAX_STYLED_BYTES {
+                break 'rows;
+            }
+            let mut style = format!("color:{}", hex(r.fg));
+            if let Some(b) = run_bg(r, opts) {
+                style += &format!(";background-color:{}", hex(b));
+            }
             if r.bold {
                 style += ";font-weight:bold";
             }
@@ -208,7 +279,7 @@ pub fn html(rows: &[Row], font: &str, size_pt: f32, bg: Rgb) -> String {
                 style += ";text-decoration:underline";
             }
             let span = format!("<span style=\"{style}\">{}</span>", esc(&r.text));
-            match &r.link {
+            match r.link.as_deref().and_then(safe_link) {
                 Some(url) => out += &format!("<a href=\"{}\">{span}</a>", esc(url)),
                 None => out += &span,
             }
@@ -236,7 +307,7 @@ pub fn cf_html(fragment: &str) -> String {
 }
 
 /// The selection as RTF with a color table.
-pub fn rtf(rows: &[Row], font: &str, size_pt: f32) -> String {
+pub fn rtf(rows: &[Row], font: &str, size_pt: f32, opts: StyleOptions) -> String {
     let mut colors: Vec<Rgb> = Vec::new();
     let index = |c: Rgb, colors: &mut Vec<Rgb>| match colors.iter().position(|x| *x == c) {
         Some(i) => i + 1,
@@ -246,10 +317,17 @@ pub fn rtf(rows: &[Row], font: &str, size_pt: f32) -> String {
         }
     };
     let mut body = String::new();
-    for (i, row) in rows.iter().enumerate() {
+    'rows: for (i, row) in rows.iter().enumerate() {
         for r in &row.runs {
-            let (f, b) = (index(r.fg, &mut colors), index(r.bg, &mut colors));
-            body += &format!("{{\\cf{f}\\chcbpat{b}\\cb{b}");
+            if body.len() > MAX_STYLED_BYTES {
+                break 'rows;
+            }
+            let f = index(r.fg, &mut colors);
+            body += &format!("{{\\cf{f}");
+            if let Some(bg) = run_bg(r, opts) {
+                let b = index(bg, &mut colors);
+                body += &format!("\\chcbpat{b}\\cb{b}");
+            }
             if r.bold {
                 body += "\\b";
             }
@@ -266,6 +344,7 @@ pub fn rtf(rows: &[Row], font: &str, size_pt: f32) -> String {
                         body.push('\\');
                         body.push(ch);
                     }
+                    c if c.is_ascii_control() => {}
                     c if c.is_ascii() => body.push(c),
                     c => {
                         let mut units = [0u16; 2];
@@ -282,7 +361,7 @@ pub fn rtf(rows: &[Row], font: &str, size_pt: f32) -> String {
         }
     }
     let table: String = colors.iter().map(|c| format!("\\red{}\\green{}\\blue{};", c.r, c.g, c.b)).collect();
-    format!("{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fmodern {font};}}}}{{\\colortbl;{table}}}\\f0\\fs{} {body}}}", (size_pt * 2.0).round() as i32)
+    format!("{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fmodern {};}}}}{{\\colortbl;{table}}}\\f0\\fs{} {body}}}", font_name(font), (point_size(size_pt) * 2.0).round() as i32)
 }
 
 /// Copy with Control Sequences: the text with iTerm2's SGR codes where the look changes,
@@ -412,6 +491,8 @@ mod tests {
         s.term_mut().selection = Some(sel);
     }
 
+    const DEFAULT_OPTS: StyleOptions = StyleOptions { copy_background: true, exclude_backgrounds: false };
+
     fn rgb(r: u8, g: u8, b: u8) -> Rgb {
         Rgb { r, g, b }
     }
@@ -502,8 +583,8 @@ mod tests {
 
     #[test]
     fn html_escapes_and_colors() {
-        let row = Row { runs: vec![Run { text: "<b>&\"".into(), fg: rgb(255, 0, 0), bg: rgb(0, 0, 0), bold: true, italic: true, underline: true, link: None }, Run { text: "go".into(), fg: rgb(0, 0, 255), bg: rgb(0, 0, 0), bold: false, italic: false, underline: true, link: Some("https://a.b/?q=1&r=2".into()) }], hard_end: true };
-        let h = html(&[row.clone(), row], "Cascadia Mono", 12.0, rgb(0, 0, 0));
+        let row = Row { runs: vec![Run { text: "<b>&\"".into(), fg: rgb(255, 0, 0), bg: rgb(0, 0, 0), bold: true, italic: true, underline: true, link: None, default_bg: false }, Run { text: "go".into(), fg: rgb(0, 0, 255), bg: rgb(0, 0, 0), bold: false, italic: false, underline: true, link: Some("https://a.b/?q=1&r=2".into()), default_bg: false }], hard_end: true };
+        let h = html(&[row.clone(), row], "Cascadia Mono", 12.0, rgb(0, 0, 0), DEFAULT_OPTS);
         assert!(h.contains("&lt;b&gt;&amp;&quot;"), "{h}");
         assert!(h.contains("color:#ff0000") && h.contains("background-color:#000000"));
         assert!(h.contains("font-weight:bold") && h.contains("font-style:italic") && h.contains("text-decoration:underline"));
@@ -522,11 +603,98 @@ mod tests {
         assert_eq!(offset("EndHTML:"), doc.len());
     }
 
+    fn bg_rows() -> Vec<Row> {
+        let run = |t: &str, bg: Rgb, default_bg: bool| Run { text: t.into(), fg: rgb(255, 255, 255), bg, bold: false, italic: false, underline: false, link: None, default_bg };
+        vec![Row { runs: vec![run("dflt", rgb(0, 0, 0), true), run("red", rgb(200, 0, 0), false)], hard_end: true }]
+    }
+
+    /// `CharacterAttributes.swift:114-117`, `PTYTextView+ARC.m:1060-1065`: the default
+    /// background is left unset with CopyBackgroundColor off; every background is dropped with
+    /// ExcludeBackgroundColorsFromCopiedStyle.
+    #[test]
+    fn styled_backgrounds_follow_iterm2() {
+        let rows = bg_rows();
+        let span_bgs = |h: &str| -> Vec<bool> { h.split("<span").skip(1).map(|s| s.split('>').next().unwrap().contains("background-color")).collect() };
+        let h = html(&rows, "Cascadia Mono", 12.0, rgb(0, 0, 0), DEFAULT_OPTS);
+        assert_eq!(span_bgs(&h), [true, true], "{h}");
+        assert!(h.starts_with("<pre style=\"") && h.split('>').next().unwrap().contains("background-color:#000000"), "{h}");
+        let off = StyleOptions { copy_background: false, exclude_backgrounds: false };
+        let h = html(&rows, "Cascadia Mono", 12.0, rgb(0, 0, 0), off);
+        assert_eq!(span_bgs(&h), [false, true], "{h}");
+        assert!(!h.split('>').next().unwrap().contains("background-color"), "the pre has none: {h}");
+        assert!(h.contains("background-color:#c80000"), "{h}");
+        let none = StyleOptions { copy_background: true, exclude_backgrounds: true };
+        let h = html(&rows, "Cascadia Mono", 12.0, rgb(0, 0, 0), none);
+        assert!(!h.contains("background-color"), "{h}");
+        // RTF writes \cb only where HTML writes a background.
+        let r = rtf(&rows, "Cascadia Mono", 12.0, DEFAULT_OPTS);
+        assert_eq!(r.matches("\\cb").count(), 2, "{r}");
+        let r = rtf(&rows, "Cascadia Mono", 12.0, off);
+        assert_eq!(r.matches("\\cb").count(), 1, "{r}");
+        assert!(r.contains("\\red200\\green0\\blue0;") && !r.contains("\\red0\\green0\\blue0;"), "{r}");
+        let r = rtf(&rows, "Cascadia Mono", 12.0, none);
+        assert!(!r.contains("\\cb") && !r.contains("chcbpat"), "{r}");
+    }
+
+    #[test]
+    fn default_bg_follows_the_cell() {
+        let mut s = Screen::new(12, 2);
+        s.feed(b"a\x1b[41mb\x1b[0m\x1b[7mc\x1b[0m\x1b[48;2;0;0;0md");
+        select(&mut s, (0, 0), (0, 3));
+        let r = &runs(&s)[0].runs;
+        let got: Vec<(&str, bool)> = r.iter().map(|x| (x.text.as_str(), x.default_bg)).collect();
+        assert_eq!(got, [("a", true), ("b", false), ("c", false), ("d", false)]);
+    }
+
+    #[test]
+    fn style_options_read_the_keys() {
+        let g = crate::globals::Globals::empty(std::path::Path::new("none.toml"));
+        assert_eq!(StyleOptions::from_globals(&g), StyleOptions { copy_background: true, exclude_backgrounds: false });
+    }
+
+    /// B9: a program-authored link target never reaches the clipboard unless it is http, https
+    /// or mailto; every attribute value is escaped, quotes both kinds.
+    #[test]
+    fn html_links_are_web_only() {
+        let link = |u: &str| Row { runs: vec![Run { text: "t".into(), fg: rgb(1, 1, 1), bg: rgb(0, 0, 0), bold: false, italic: false, underline: false, link: Some(u.into()), default_bg: true }], hard_end: true };
+        let h = |u: &str| html(&[link(u)], "Cascadia Mono", 12.0, rgb(0, 0, 0), DEFAULT_OPTS);
+        for bad in ["javascript:alert(1)", "file:///c:/x", "vbscript:x", "ms-msdt:/id", "JaVaScRiPt:1", "data:text/html,x", "//host/share", "C:\\x.exe", "ftp://h/x"] {
+            let out = h(bad);
+            assert!(!out.contains("<a ") && !out.contains("href"), "{bad}: {out}");
+            assert!(out.contains("<span"), "the span stays: {out}");
+        }
+        for good in ["https://a.b/x", "http://a.b", "mailto:a@b.c", "HTTPS://A.B"] {
+            assert!(h(good).contains("<a href=\""), "{good}");
+        }
+        let out = h("https://a.b/\"'<>&x\u{7}y");
+        assert!(out.contains("href=\"https://a.b/&quot;&#39;&lt;&gt;&amp;xy\""), "{out}");
+        assert!(!out.contains('\u{7}'));
+    }
+
+    #[test]
+    fn copied_text_is_escaped_and_bounded() {
+        let run = |t: &str| Run { text: t.into(), fg: rgb(1, 1, 1), bg: rgb(0, 0, 0), bold: false, italic: false, underline: false, link: None, default_bg: true };
+        let rows = vec![Row { runs: vec![run("a'b\u{1b}[31m\u{0}\t<")], hard_end: true }];
+        let h = html(&rows, "Bad'Font\";x<y>\u{1}", f32::NAN, rgb(0, 0, 0), DEFAULT_OPTS);
+        assert!(!h.chars().any(|c| c.is_control() && c != '\t' && c != '\n'), "{h:?}");
+        assert!(h.contains("a&#39;b[31m\t&lt;"), "{h}");
+        assert!(h.contains("font-family:'BadFontxy'") && h.contains("font-size:12pt"), "{h}");
+        let r = rtf(&rows, "A{B}\\;", 12.0, DEFAULT_OPTS);
+        assert!(!r.chars().any(|c| c.is_control() && c != '\n'), "{r:?}");
+        assert!(r.contains("\\f0\\fmodern AB;}"), "{r}");
+        // Bounded: a huge copy stops at the cap and is still well formed.
+        let big = vec![Row { runs: vec![run(&"x".repeat(1 << 20))], hard_end: true }; 40];
+        let h = html(&big, "F", 12.0, rgb(0, 0, 0), DEFAULT_OPTS);
+        assert!(h.len() <= MAX_STYLED_BYTES + 4096 && h.ends_with("</pre>"), "{}", h.len());
+        let r = rtf(&big, "F", 12.0, DEFAULT_OPTS);
+        assert!(r.len() <= MAX_STYLED_BYTES + 4096 && r.ends_with('}'), "{}", r.len());
+    }
+
     #[test]
     fn rtf_has_a_color_table() {
-        let run = |t: &str, fg: Rgb, bold: bool| Run { text: t.into(), fg, bg: rgb(0, 0, 0), bold, italic: false, underline: false, link: None };
+        let run = |t: &str, fg: Rgb, bold: bool| Run { text: t.into(), fg, bg: rgb(0, 0, 0), bold, italic: false, underline: false, link: None, default_bg: false };
         let rows = vec![Row { runs: vec![run("a{b}\\", rgb(255, 0, 0), true), run("\u{e9}\u{4e16}", rgb(255, 0, 0), false)], hard_end: true }];
-        let r = rtf(&rows, "Cascadia Mono", 11.0);
+        let r = rtf(&rows, "Cascadia Mono", 11.0, DEFAULT_OPTS);
         assert!(r.starts_with("{\\rtf1\\ansi"));
         assert!(r.contains("{\\fonttbl{\\f0\\fmodern Cascadia Mono;}}"));
         assert!(r.contains("{\\colortbl;\\red255\\green0\\blue0;\\red0\\green0\\blue0;}"), "{r}");

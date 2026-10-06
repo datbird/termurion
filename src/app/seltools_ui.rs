@@ -16,7 +16,7 @@ pub(super) const CHECKED: &[&str] =
 
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
-    fn copy_with_styles(&mut self, id: PaneId) {
+    pub(super) fn copy_with_styles(&mut self, id: PaneId) {
         if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::Styles) {
             return;
         }
@@ -26,8 +26,8 @@ impl App {
         let Some(text) = screen.selection_text() else { return };
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
         let rows = p.styled_rows();
-        let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg));
-        let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt);
+        let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
+        let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals));
         if let Err(e) = crate::winclip::set(&text, &html, &rtf) {
             self.banners.set("clipboard", format!("Copy failed: {e}"));
         }
@@ -41,7 +41,7 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
         let screen = &p.screen;
-        if what == crate::print::What::Selection && screen.term().selection.is_none() {
+        if what == crate::print::What::Selection && screen.selection_text().is_none() {
             unsafe { MessageBeep(0) };
             return;
         }

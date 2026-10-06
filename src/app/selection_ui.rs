@@ -107,6 +107,19 @@ fn make_live(pane: &mut crate::pane::Pane, a: Pos, b: Pos, mode: Mode, window: O
     pane.screen.sel.anchor = Some((a, b));
 }
 
+/// How a selection the person just made is copied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyKind {
+    Plain,
+    Styled,
+}
+
+/// What copy on selection does: nothing with `CopySelection` off, else plain text or, with
+/// `CopyWithStylesByDefault`, Copy with Styles (`PTYTextView.m:4089-4095`).
+pub fn copy_kind(copy_on_select: bool, with_styles: bool) -> Option<CopyKind> {
+    copy_on_select.then_some(if with_styles { CopyKind::Styled } else { CopyKind::Plain })
+}
+
 impl App {
     /// The text of every selection in `id`'s pane through `seltext::extract` with the copy
     /// options; None with no selection. `Screen::selection_text` is the one entry (every other
@@ -118,10 +131,11 @@ impl App {
     /// Copies a selection the person just made (mouse release, Smart Selection, Select All):
     /// nothing with `CopySelection` off (`TV:3940-3945`).
     pub(super) fn copy_on_selection(&mut self, id: PaneId) {
-        if !self.globals.bool("CopySelection") {
-            return;
+        match copy_kind(self.globals.bool("CopySelection"), self.globals.bool("CopyWithStylesByDefault")) {
+            None => {}
+            Some(CopyKind::Plain) => self.copy_selection(id),
+            Some(CopyKind::Styled) => self.copy_with_styles(id),
         }
-        self.copy_selection(id);
     }
 
     /// The selections a press keeps (`iTermSelection.m:391-400`): with `append` (Win without Alt)
@@ -245,6 +259,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_on_selection_uses_styles() {
+        assert_eq!(copy_kind(false, false), None);
+        assert_eq!(copy_kind(false, true), None);
+        assert_eq!(copy_kind(true, false), Some(CopyKind::Plain));
+        assert_eq!(copy_kind(true, true), Some(CopyKind::Styled));
+    }
 
     #[test]
     fn line_spans_follow_iterm2() {

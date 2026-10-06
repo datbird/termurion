@@ -2637,7 +2637,7 @@ mod tests {
         // The prompt prefix's colors map onto the editor's text, line by line.
         use crate::palette::rgb;
         let (fg, bg, red) = (rgb(1, 1, 1), rgb(0, 0, 0), rgb(9, 0, 0));
-        let run = |t: &str, c: Rgb| crate::styled_copy::Run { text: t.into(), fg: c, bg, bold: false, italic: false, underline: false, link: None };
+        let run = |t: &str, c: Rgb| crate::styled_copy::Run { text: t.into(), fg: c, bg, bold: false, italic: false, underline: false, link: None, default_bg: false };
         let rows = vec![crate::styled_copy::Row { runs: vec![run("ab", red)], hard_end: true }, crate::styled_copy::Row { runs: vec![run("$", fg)], hard_end: true }];
         let mut c = composer::Composer::default();
         c.set_prefix(Some(composer::auto_prefix(rows, vec!["ab".into(), "$".into()], fg, bg)));
