@@ -166,6 +166,7 @@ pub mod startup;
 pub mod jobtitle;
 pub mod profile;
 pub mod profile_list;
+pub mod profile_menu;
 pub mod profile_list_ui;
 pub mod color_presets;
 pub mod oklab;

@@ -8,6 +8,7 @@ use winit::window::WindowId;
 
 use crate::chrome;
 use crate::globals::Globals;
+use crate::layout::PaneId;
 use crate::mouse::Mods;
 use crate::profile::{self, Profile};
 use crate::schema::{self, Kind, Setting};
@@ -177,6 +178,96 @@ pub fn closes_after(key: bool, how: How) -> bool {
     key && !matches!(how, How::SplitRight | How::SplitDown)
 }
 
+/// The General tab's Shortcut popup (`PGP:1329-1418`): "none", A-Z and 0-9, each titled
+/// "Ctrl+Win+A", and "Ctrl+Win+A (Name)" for a key a profile holds. Answers the new key
+/// (None clears) when one was picked; the profile's own value is set here.
+fn shortcut_row(ui: &mut egui::Ui, s: &Setting, profile: &mut Profile, rows: &[(String, String, Option<char>)]) -> Option<Option<char>> {
+    let titles = crate::profile_menu::shortcut_titles(rows);
+    let current = crate::profile_menu::shortcut_tag(crate::profile_menu::stored_key(&profile.string("Shortcut")).unwrap_or(' '));
+    let shown = |title: &str| if title.is_empty() { "None".to_string() } else { title.to_string() };
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(&s.label).on_hover_text(&s.help);
+        let text = titles.iter().find(|(t, _)| *t == current).map(|(_, t)| shown(t)).unwrap_or_default();
+        egui::ComboBox::from_id_salt("profile_shortcut").selected_text(text).show_ui(ui, |ui| {
+            for (tag, title) in &titles {
+                if ui.selectable_label(*tag == current, shown(title)).clicked() && *tag != current {
+                    picked = Some(crate::profile_menu::shortcut_key(*tag));
+                }
+            }
+        });
+    });
+    if let Some(key) = picked {
+        match key {
+            Some(k) => profile.set("Shortcut", Value::String(k.to_string())),
+            None => {
+                profile.values.remove("Shortcut");
+            }
+        }
+    }
+    picked
+}
+
+/// Copy to Profile's button text (`PreferencePanel.xib:10840-10850`).
+pub const COPY_TO_PROFILE: &str = "Copy Current Settings to Selected Profile";
+
+/// Whether the Edit Session window follows the active session (`PseudoTerminal.m:5047-5049`):
+/// unless Advanced "Pin Edit Session" is on, while the window is open for a session.
+pub fn follows(pin: bool, open_for_session: bool) -> bool {
+    !pin && open_for_session
+}
+
+/// Whether typing a session name locks the title (`ProfilesGeneralPreferencesViewController.m:1617-1623`):
+/// "Allow Title Setting" is on and "Auto-lock session name after editing it" (`key`) is set.
+pub fn lock_after_name_edit(allow_title: bool, key: bool) -> bool {
+    allow_title && key
+}
+
+/// The pane Edit Session moves to when the active pane changed from `seen` to `now`.
+pub fn follow_target(seen: Option<PaneId>, now: Option<PaneId>, pin: bool, editing: Option<PaneId>) -> Option<PaneId> {
+    let now = now?;
+    (seen != Some(now) && editing.is_some_and(|e| e != now) && follows(pin, editing.is_some())).then_some(now)
+}
+
+/// The Edit Session pane after `closed` closed.
+pub fn edit_session_after_close(editing: Option<PaneId>, closed: PaneId) -> Option<PaneId> {
+    editing.filter(|&p| p != closed)
+}
+
+/// Whether the answer to the Replace question (button `index`) goes ahead.
+pub fn copy_confirmed(index: usize) -> bool {
+    index == 0
+}
+
+/// Copy to Profile (`ProfilePreferencesViewController.m:765-812`): the session's values with the
+/// destination's guid and name; the original guid, the session hotkey and the keys that make a
+/// profile transient or dynamic are removed (P4), each trigger's performance entry is dropped,
+/// and the one network-path filter runs over it (P3).
+pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
+    let mut values = session.values.clone();
+    for key in [profile::GUID, profile::NAME, "Shortcut"] {
+        values.remove(key);
+    }
+    for key in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Dynamic Profile Parent Name", "Dynamic Profile Parent GUID", "Dynamic Profile Filename", "Is Dynamic Profile", "Rewritable", "Bonjour Service Address"] {
+        values.remove(key);
+    }
+    for key in [profile::GUID, profile::NAME, "Shortcut"] {
+        if let Some(v) = destination.values.get(key) {
+            values.insert(key.to_string(), v.clone());
+        }
+    }
+    if let Some(Value::Array(tags)) = values.get_mut("Tags") {
+        tags.retain(|t| t.as_str() != Some("bonjour"));
+    }
+    if let Some(Value::Array(triggers)) = values.get_mut("Triggers") {
+        for t in triggers.iter_mut().filter_map(Value::as_table_mut) {
+            t.remove("performance");
+        }
+    }
+    crate::start_dir::scrub_map(&mut values);
+    Profile::from_values(values)
+}
+
 /// Opening more than this many sessions at once asks first (P6).
 pub const OPEN_ASK_ABOVE: usize = 8;
 
@@ -282,6 +373,15 @@ pub struct SettingsWindow {
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
+    /// The pane Settings is open for (Edit Session); None for plain Settings. The app keeps it
+    /// at the active session unless Pin Edit Session is on (`follow_target`); 13u's "Session
+    /// Hotkey" row reads it to know which pane to write.
+    pub edit_session: Option<PaneId>,
+    /// Edit Session's Copy to Profile: the destination picked (the shared profile until one is),
+    /// the one the question is about, and the confirmed copy the app takes after each frame.
+    copy_dest: Option<String>,
+    copy_pending: Option<String>,
+    pub copy_request: Option<(PaneId, String)>,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
     /// The registered session title providers as (display name, unique id), for the Title
@@ -443,6 +543,10 @@ impl SettingsWindow {
             scheme_ask: None,
             special_exceptions: None,
             tmux_session: false,
+            edit_session: None,
+            copy_dest: None,
+            copy_pending: None,
+            copy_request: None,
             open_editor: None,
             title_providers: Vec::new(),
             sleep_status: String::new(),
@@ -479,6 +583,7 @@ impl SettingsWindow {
     /// Shows this profile in the editor (Edit Session).
     pub fn select(&mut self, guid: &str) {
         self.selected = Some(guid.to_string());
+        self.copy_dest = None;
         self.host.window.request_redraw();
     }
 
@@ -568,6 +673,12 @@ impl SettingsWindow {
         let special_exceptions = &mut self.special_exceptions;
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
+        let edit_session = self.edit_session;
+        let copy_dest = &mut self.copy_dest;
+        let copy_pending = &mut self.copy_pending;
+        let copy_request = &mut self.copy_request;
+        let shortcut_rows: Vec<(String, String, Option<char>)> = store.profiles.iter().map(|p| (p.guid(), p.name(), crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
+        let mut shortcut_take: Option<(String, Option<char>)> = None;
         let title_providers = &self.title_providers;
         let sleep_status = &self.sleep_status;
         let advanced = &mut self.advanced;
@@ -601,6 +712,19 @@ impl SettingsWindow {
                                 }
                             }
                         }
+                        // Copy to Profile's question: Replace copies (the app does it), anything else
+                        // changes nothing; a dynamic destination then shows its warning.
+                        let replacing = answer.spec.id.as_deref() == Some("NoSyncReplaceProfileWarning");
+                        let mut then_dynamic = None;
+                        if replacing {
+                            let dest = copy_pending.take();
+                            if let (true, Some(pane), Some(dest)) = (copy_confirmed(answer.index), edit_session, dest) {
+                                if store.get(&dest).is_some_and(|d| !d.string("Dynamic Profile Filename").is_empty()) {
+                                    then_dynamic = store.get(&dest).map(Profile::name);
+                                }
+                                *copy_request = Some((pane, dest));
+                            }
+                        }
                         match sheet.take().map(|w| w.then) {
                             Some(settings_keys::SheetThen::SaveKey) => match settings_keys::held_answered(keys, answer.index, globals, store) {
                                 settings_keys::Saved::Nothing => {}
@@ -609,6 +733,9 @@ impl SettingsWindow {
                             },
                             Some(settings_keys::SheetThen::CreateHotkey(existing)) => crate::settings_hotkey::create_answered(hk, store, &existing, answer.index),
                             Some(settings_keys::SheetThen::Nothing) | None => {}
+                        }
+                        if let Some(name) = then_dynamic {
+                            *sheet = Some(settings_keys::SheetWarning::new(settings_keys::dynamic_profile_spec(&name), settings_keys::SheetThen::Nothing));
                         }
                     }
                     answered.push(answer);
@@ -883,6 +1010,26 @@ impl SettingsWindow {
                     }
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Edit Session: copy this session's settings to a profile (`02:984`).
+                    if edit_session.is_some() && schema::TABS[tab] == "General" {
+                        let dest = copy_dest.clone().filter(|d| profiles.iter().any(|(g, _)| g == d)).unwrap_or_else(|| selected.clone());
+                        let dest_name = profiles.iter().find(|(g, _)| *g == dest).map(|(_, n)| n.clone()).unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("copy_to_profile_dest").selected_text(crate::profile_list::display_text(&dest_name)).show_ui(ui, |ui| {
+                                for (g, n) in &profiles {
+                                    if ui.selectable_label(*g == dest, crate::profile_list::display_text(n)).clicked() {
+                                        *copy_dest = Some(g.clone());
+                                    }
+                                }
+                            });
+                            if ui.button(COPY_TO_PROFILE).clicked() && sheet.is_none() {
+                                *copy_pending = Some(dest.clone());
+                                *sheet = Some(settings_keys::SheetWarning::new(settings_keys::replace_profile_spec(&dest_name), settings_keys::SheetThen::Nothing));
+                                ui.ctx().request_repaint();
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
                     // The hue and chroma wheel sits at the right of the ANSI wells (it takes no
                     // room from them); a drag writes the key as a color well does.
                     if colors {
@@ -929,6 +1076,14 @@ impl SettingsWindow {
                             if s.key == "Bound Hosts" {
                                 let others: Vec<crate::aps::Candidate> = rule_owners.iter().filter(|c| c.guid != selected).cloned().collect();
                                 if crate::settings_lists::bound_hosts(ui, profile, &others, aps_warning) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            // The Shortcut popup of letters and digits, each with the profile bound to it.
+                            if s.key == "Shortcut" {
+                                if let Some(key) = shortcut_row(ui, s, profile, &shortcut_rows) {
+                                    shortcut_take = Some((selected.clone(), key));
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;
@@ -1032,6 +1187,19 @@ impl SettingsWindow {
                             } else {
                                 ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
                             }
+                            // Edit Session's name row: the lock button toggles "Allow Title Setting", and a
+                            // typed name locks the title (`PGP:1617-1623`).
+                            if s.key == "Name" && edit_session.is_some() {
+                                if changed && lock_after_name_edit(profile.bool("Allow Title Setting"), globals.bool("AutoLockSessionNameOnEdit")) {
+                                    profile.set("Allow Title Setting", Value::Boolean(false));
+                                }
+                                let allow = profile.bool("Allow Title Setting");
+                                let tip = "Allow Title Setting: when off, programs cannot change this session's title.";
+                                if ui.button(if allow { "Title unlocked" } else { "Title locked" }).on_hover_text(tip).clicked() {
+                                    profile.set("Allow Title Setting", Value::Boolean(!allow));
+                                    changed = true;
+                                }
+                            }
                             // The notes under Transparency and Blur Radius (PWP:157-170, 762-769).
                             if s.key == "Transparency" && profile.float("Transparency") > 0.0 {
                                 ui.label(egui::RichText::new(crate::transparency::OVERRIDE_NOTICE).small());
@@ -1076,6 +1244,10 @@ impl SettingsWindow {
                 });
             });
         });
+        // The shortcut a profile took leaves every other profile (`setShortcutValueToSelectedItem`).
+        if let Some((guid, key)) = shortcut_take {
+            crate::profile_menu::take_shortcut(&mut store.profiles, &guid, key);
+        }
         // A preview whose header is gone (another tab, page or profile) goes back now (B2).
         if self.presets.strand_check(store) && matches!(edit, Edit::None) {
             edit = Edit::Preview;
@@ -2548,4 +2720,76 @@ mod tests {
             assert!(!src.contains("self.store.save()"), "{name} saves the store around save_store");
         }
     }
+
+    #[test]
+    fn edit_session_follows_iterm2() {
+        assert!(follows(false, true));
+        assert!(!follows(true, true));
+        assert!(!follows(false, false));
+        assert!(!follows(true, false));
+    }
+
+    #[test]
+    fn edit_session_follows_the_active_pane() {
+        // The focus moved from pane 1 to pane 2 while Edit Session is open on pane 1.
+        assert_eq!(follow_target(Some(1), Some(2), false, Some(1)), Some(2));
+        // No change, nothing open, a pinned window and no active pane do nothing.
+        assert_eq!(follow_target(Some(2), Some(2), false, Some(1)), None);
+        assert_eq!(follow_target(Some(1), Some(2), false, None), None);
+        assert_eq!(follow_target(Some(1), Some(2), true, Some(1)), None);
+        assert_eq!(follow_target(Some(1), None, false, Some(1)), None);
+        // Already editing the new pane: nothing to do.
+        assert_eq!(follow_target(Some(1), Some(2), false, Some(2)), None);
+    }
+
+    #[test]
+    fn edit_session_clears_when_its_pane_closes() {
+        assert_eq!(edit_session_after_close(Some(4), 4), None);
+        assert_eq!(edit_session_after_close(Some(4), 5), Some(4));
+        assert_eq!(edit_session_after_close(None, 5), None);
+    }
+
+    #[test]
+    fn auto_lock_follows_iterm2() {
+        assert!(lock_after_name_edit(true, true), "Allow Title Setting turns off");
+        assert!(!lock_after_name_edit(false, true), "already locked");
+        assert!(!lock_after_name_edit(true, false), "the setting is off");
+        assert!(!lock_after_name_edit(false, false));
+    }
+
+    #[test]
+    fn copy_to_profile_follows_iterm2() {
+        assert_eq!(COPY_TO_PROFILE, "Copy Current Settings to Selected Profile");
+        let mut session = Profile::new("S");
+        session.set("Guid", Value::String("s".into()));
+        session.set(crate::session_profile::ORIGINAL_GUID, Value::String("d".into()));
+        session.set("Session Hotkey", Value::String("x".into()));
+        session.set("Shortcut", Value::String("Q".into()));
+        session.set("Ansi 1 Color", Value::String("changed".into()));
+        session.set("Bonjour Service Address", Value::String("10.0.0.2".into()));
+        session.set("Is Dynamic Profile", Value::Boolean(true));
+        session.set("Tags", Value::Array(vec![Value::String("bonjour".into()), Value::String("work".into())]));
+        session.set("Working Directory", Value::String("\\\\evil\\share".into()));
+        let trig: Value = toml::from_str("t = [{ regex = \"a\", action = \"X\", performance = 3 }]").map(|t: toml::Table| t["t"].clone()).unwrap();
+        session.set("Triggers", trig);
+        let mut dest = Profile::new("Work");
+        dest.set("Guid", Value::String("d".into()));
+        dest.set("Shortcut", Value::String("W".into()));
+        let c = copied_profile(&session, &dest);
+        assert_eq!((c.guid(), c.name()), ("d".to_string(), "Work".to_string()));
+        for gone in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Bonjour Service Address", "Is Dynamic Profile"] {
+            assert!(c.values.get(gone).is_none(), "{gone}");
+        }
+        assert_eq!(c.string("Ansi 1 Color"), "changed");
+        assert_eq!(c.string("Shortcut"), "W", "the destination keeps its own shortcut");
+        assert_eq!(c.get("Tags").unwrap().as_array().unwrap().len(), 1, "the bonjour tag goes");
+        assert_eq!(c.string("Working Directory"), "", "a network path is scrubbed");
+        let trig = c.get("Triggers").unwrap();
+        assert!(trig.as_array().unwrap()[0].as_table().unwrap().get("performance").is_none());
+        // The question is 13b's, and Cancel changes nothing: the copy is only made on Replace.
+        let q = settings_keys::replace_profile_spec("Work");
+        assert_eq!((q.id.as_deref(), q.labels.clone()), (Some("NoSyncReplaceProfileWarning"), vec!["Replace".to_string(), "Cancel".into()]));
+        assert!(copy_confirmed(0) && !copy_confirmed(1));
+    }
 }
+

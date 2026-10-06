@@ -136,6 +136,9 @@ pub struct Snapshot {
     /// A composer has the keyboard: its own Win chords (`composer::chord`) are Tandem's even
     /// when nothing else binds them (Win+Y).
     pub composer: bool,
+    /// The keys (A-Z, 0-9) some saved profile's Shortcut claims for Ctrl+Win+<key>
+    /// (`claimed_shortcuts`), rebuilt with the Profiles menu.
+    pub profile_shortcuts: Vec<char>,
 }
 
 impl Snapshot {
@@ -150,7 +153,7 @@ impl Snapshot {
                 }
             }
         }
-        Snapshot { keys, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false }
+        Snapshot { keys, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, profile_shortcuts: Vec::new() }
     }
 }
 
@@ -166,7 +169,65 @@ pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     }
     let mut typed = p.stroke.clone();
     typed.char_is_modified = true;
-    s.keys.contains(&p.stroke.legacy()) || s.keys.contains(&typed.modified_key()) || crate::commands::command_for_chord(chord).is_some()
+    s.keys.contains(&p.stroke.legacy()) || s.keys.contains(&typed.modified_key()) || crate::commands::command_for_chord(chord).is_some() || profile_chord(chord).is_some_and(|(k, _)| s.profile_shortcuts.contains(&k))
+}
+
+/// The key of a profile shortcut chord: Ctrl+Win+<A-Z or 0-9>, with Alt for the alternate
+/// (a new window). Never a bare key, and never with Shift.
+pub fn profile_chord(chord: &Chord) -> Option<(char, bool)> {
+    match chord.key {
+        ChordKey::Char(c) if chord.cmd && chord.ctrl && !chord.shift && c.is_ascii_alphanumeric() => Some((c.to_ascii_uppercase(), chord.alt)),
+        _ => None,
+    }
+}
+
+/// The keys the profiles' shortcuts claim, once each (the first profile wins, `P8`). A key whose
+/// Ctrl+Win chord Windows keeps for itself (`winkeys::shell_owned`) is never claimed: a profile
+/// shortcut can come from an imported file and must not take a Windows chord.
+pub fn claimed_shortcuts(keys: impl IntoIterator<Item = Option<char>>) -> Vec<char> {
+    let mut out: Vec<char> = Vec::new();
+    for k in keys.into_iter().flatten() {
+        let k = k.to_ascii_uppercase();
+        if k.is_ascii_alphanumeric() && !windows_keeps(k) && !out.contains(&k) {
+            out.push(k);
+        }
+    }
+    out
+}
+
+/// Whether Windows keeps Ctrl+Win+`key` (the key on its U.S. position).
+fn windows_keeps(key: char) -> bool {
+    #[cfg(windows)]
+    {
+        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_CONTROL, MOD_WIN};
+        const ROWS: [(&str, u32); 4] = [("1234567890", 0x02), ("QWERTYUIOP", 0x10), ("ASDFGHJKL", 0x1E), ("ZXCVBNM", 0x2C)];
+        let Some(scan) = ROWS.iter().find_map(|(row, first)| row.find(key).map(|i| first + i as u32)) else { return false };
+        crate::winkeys::shell_owned(HChord { key: HKey::Scan(scan), mods: MOD_WIN | MOD_CONTROL })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = key;
+        false
+    }
+}
+
+/// What a Win chord does once no key mapping and no number shortcut took it. One place for the
+/// order (menu chords, then a profile shortcut) so a later milestone extends it here.
+pub enum ChordAction {
+    Menu(&'static crate::menus::Item),
+    /// Open the profile bound to `key`, in a new window when `window`.
+    Profile { key: char, window: bool },
+    Nothing,
+}
+
+pub fn terminal_chord(shortcuts: &[char], chord: &Chord) -> ChordAction {
+    if let Some(item) = crate::commands::command_for_chord(chord) {
+        return ChordAction::Menu(item);
+    }
+    match profile_chord(chord) {
+        Some((key, window)) if shortcuts.contains(&key) => ChordAction::Profile { key, window },
+        _ => ChordAction::Nothing,
+    }
 }
 
 #[cfg(test)]
@@ -283,5 +344,62 @@ mod tests {
         let mut c = ctx(&e, &e);
         c.leader_on = true;
         assert!(win_chord_bound(&Snapshot::new(&c), &win(ChordKey::Char('j'))));
+    }
+
+    fn ctrl_win(c: char) -> Chord {
+        Chord { ctrl: true, ..win(ChordKey::Char(c)) }
+    }
+
+    #[test]
+    fn profile_shortcut_chords_are_bounded() {
+        assert_eq!(profile_chord(&ctrl_win('q')), Some(('Q', false)));
+        assert_eq!(profile_chord(&Chord { alt: true, ..ctrl_win('7') }), Some(('7', true)));
+        assert_eq!(profile_chord(&win(ChordKey::Char('q'))), None, "Ctrl is part of the chord");
+        assert_eq!(profile_chord(&Chord { cmd: false, ..ctrl_win('q') }), None, "never a bare key");
+        assert_eq!(profile_chord(&Chord { shift: true, ..ctrl_win('q') }), None);
+        assert_eq!(profile_chord(&ctrl_win('-')), None);
+        assert_eq!(profile_chord(&Chord { key: ChordKey::F(5), ..ctrl_win('q') }), None);
+    }
+
+    #[test]
+    fn claimed_shortcuts_skip_windows_chords_and_repeats() {
+        // Ctrl+Win+D, F, B and C belong to Windows (virtual desktops, Feedback, ...).
+        let keys = [Some('Q'), None, Some('q'), Some('D'), Some('7'), Some('F'), Some('#'), Some('Q'), Some('B'), Some('C'), Some('X')];
+        assert_eq!(claimed_shortcuts(keys), vec!['Q', '7', 'X']);
+    }
+
+    #[test]
+    fn profile_shortcut_is_claimed() {
+        let e = toml::Table::new();
+        let mut snap = Snapshot::new(&ctx(&e, &e));
+        assert!(!win_chord_bound(&snap, &ctrl_win('q')));
+        snap.profile_shortcuts = vec!['Q', 'X', 'B'];
+        assert!(win_chord_bound(&snap, &ctrl_win('q')));
+        assert!(win_chord_bound(&snap, &ctrl_win('x')));
+        assert!(win_chord_bound(&snap, &Chord { alt: true, ..ctrl_win('q') }), "Alt opens a window");
+        assert!(!win_chord_bound(&snap, &ctrl_win('w')), "an unbound key stays with Windows");
+        assert!(!win_chord_bound(&snap, &win(ChordKey::Char('b'))), "Win+B alone is not a profile shortcut");
+    }
+
+    /// The Ctrl+Win+key opens the profile in a tab, Alt in a window; a menu chord wins over it,
+    /// and the chord never takes the typed-bytes path (so it cannot clear a selection, S10).
+    #[test]
+    fn profile_shortcut_follows_iterm2() {
+        let shortcuts = ['Q', 'T'];
+        assert!(matches!(terminal_chord(&shortcuts, &ctrl_win('q')), ChordAction::Profile { key: 'Q', window: false }));
+        assert!(matches!(terminal_chord(&shortcuts, &Chord { alt: true, ..ctrl_win('q') }), ChordAction::Profile { key: 'Q', window: true }));
+        assert!(matches!(terminal_chord(&shortcuts, &ctrl_win('w')), ChordAction::Nothing));
+        assert!(matches!(terminal_chord(&[], &ctrl_win('q')), ChordAction::Nothing));
+        // Win+T is a menu command: a menu chord comes before a profile shortcut.
+        assert!(matches!(terminal_chord(&shortcuts, &win(ChordKey::Char('t'))), ChordAction::Menu(_)));
+    }
+
+    #[test]
+    fn profile_shortcut_does_not_clear_selection() {
+        let src = include_str!("app/mod.rs");
+        let arm = src.find("terminal_chord(").expect("the chord arm asks keyroute::terminal_chord");
+        let typed = src[arm..].find("self.to_terminal(").expect("the typed arm follows");
+        let between = &src[arm..arm + typed];
+        assert!(between.contains("} else if let Some((key, base)) = typed"), "a chord and typed bytes are separate arms");
     }
 }

@@ -5024,3 +5024,22 @@ label = "Profiles window: close after opening a profile"
 type = "bool"
 default = false
 help = "Remembered by the Profiles window's checkbox, \"Close this window after opening a profile.\""
+
+# 13t Task 8: Edit Session.
+[[setting]]
+key = "PinEditSession"
+tab = "Advanced"
+section = "General"
+label = "Pin Edit Session window to the session it originally edited."
+type = "bool"
+default = false
+help = "Pin Edit Session window to the session it originally edited.\nIf not set, it will affect the most recently active session."
+
+[[setting]]
+key = "AutoLockSessionNameOnEdit"
+tab = "Advanced"
+section = "Session"
+label = "Auto-lock session name after editing it."
+type = "bool"
+default = true
+help = "Auto-lock session name after editing it."

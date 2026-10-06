@@ -302,6 +302,8 @@ mod tests {
             ("clippingSeparator", "Pasteboard"),
             ("toolbeltFont", "Windows"),
             ("toolbeltFontSize", "Windows"),
+            ("PinEditSession", "General"),
+            ("AutoLockSessionNameOnEdit", "Session"),
         ];
         for (key, section) in expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

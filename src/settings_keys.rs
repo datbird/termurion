@@ -1010,6 +1010,22 @@ pub fn possible_override_spec() -> crate::warnings::Spec {
     settings_spec("NeverWarnAboutPossibleOverrides", text.into(), &[crate::api_auth::OK, crate::api_auth::CANCEL])
 }
 
+/// Editing a dynamic profile (`showDynamicProfileWarning`, `ProfilePreferencesViewController.m:1217-1245`):
+/// iTerm2's first paragraph; Tandem imports Dynamic Profiles once and never writes them back, so
+/// its second paragraph and its Mark as Rewritable and Reveal buttons are not offered.
+pub fn dynamic_profile_spec(name: &str) -> crate::warnings::Spec {
+    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem imports dynamic profiles once and does not write changes back to the file.");
+    crate::warnings::Spec {
+        id: Some("NoSyncDynamicProfileChangeWillBeLost".to_string()),
+        kind: crate::warnings::Kind::Temporary,
+        heading: "Changes Will Be Lost".to_string(),
+        text,
+        labels: vec![crate::api_auth::OK.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
 /// Copy to Profile's question (`PP:780-791`); 13t's Copy to Profile asks it.
 pub fn replace_profile_spec(name: &str) -> crate::warnings::Spec {
     let text = format!("Replace profile \u{201c}{name}\u{201d} with the current session's settings?");

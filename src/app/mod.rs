@@ -60,6 +60,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod paste_ui;
+mod edit_session_ui;
 mod history_ui;
 mod shell_history_ui;
 mod snippets_ui;
@@ -1141,6 +1142,8 @@ pub struct App {
     script_next: u64,
     /// Expression bindings per pane and bound key (`bindings_ui`); app-wide, so no `swap_live`.
     bindings: HashMap<(PaneId, String), bindings_ui::Bound>,
+    /// The active pane `follow_edit_session` last saw; app-wide, so no `swap_live`.
+    edit_follow_seen: Option<PaneId>,
     script_tokens: HashMap<u64, u64>,
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
     /// in the remembered mode).
@@ -2064,6 +2067,7 @@ pub fn run() {
         script_runs: BTreeMap::new(),
         script_next: 1,
         bindings: HashMap::new(),
+        edit_follow_seen: None,
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
@@ -3550,6 +3554,12 @@ impl App {
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
         self.bindings.retain(|(p, _), _| *p != id);
+        if let Some(s) = self.settings.as_mut() {
+            s.edit_session = crate::settings_ui::edit_session_after_close(s.edit_session, id);
+        }
+        if self.edit_follow_seen == Some(id) {
+            self.edit_follow_seen = None;
+        }
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
@@ -3851,6 +3861,7 @@ impl App {
         };
         if let Some(s) = slot {
             s.set_tmux_session(false);
+            s.edit_session = None;
         }
     }
 
@@ -4718,9 +4729,10 @@ impl App {
     }
 
     /// Hands the keyboard hook what it needs after a focus, profile, or settings change.
-    fn refresh_route(&self) {
+    fn refresh_route(&mut self) {
         let mut snapshot = self.with_route(keyroute::Snapshot::new);
         snapshot.composer = self.composer_has_keys();
+        snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
@@ -4730,6 +4742,9 @@ impl App {
             .collect();
         *self.exempt_map.write().unwrap() = exempt;
         *self.remap_tags.write().unwrap() = crate::remap::Tags::from_globals(&self.globals);
+        // Every focus, tab, window and profile change comes through here (B6): Edit Session
+        // follows the active session.
+        self.follow_edit_session();
     }
 
     /// Saves a custom scripts folder typed in the open Settings window and not yet applied,
@@ -4921,8 +4936,17 @@ impl App {
             Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
             Route::Terminal => {
                 if let Some(c) = chord {
-                    if let Some(item) = crate::commands::command_for_chord(c) {
-                        self.run_command(item, event_loop);
+                    // A menu chord, then a profile's Ctrl+Win shortcut (`keyroute::terminal_chord`);
+                    // neither sends bytes to the session, so neither clears a selection (S10).
+                    let shortcuts = self.route_snapshot.read().unwrap().profile_shortcuts.clone();
+                    match keyroute::terminal_chord(&shortcuts, c) {
+                        keyroute::ChordAction::Menu(item) => self.run_command(item, event_loop),
+                        keyroute::ChordAction::Profile { key, window } => {
+                            if let Some(guid) = self.profile_for_shortcut(key) {
+                                self.open_profile(&guid, window);
+                            }
+                        }
+                        keyroute::ChordAction::Nothing => {}
                     }
                 } else if let Some((key, base)) = typed {
                     self.to_terminal(&key, base.as_ref(), fallback, event_loop);
@@ -6524,6 +6548,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
                     // Profiles > Terminal's "Change Locale" opens the picker.
                     let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
+                    // Edit Session's Copy Current Settings to Selected Profile, after its question.
+                    let copy = slot.as_mut().and_then(|s| s.copy_request.take());
                     // "Edit Profiles\u{2026}" opens the Settings window, which needs the event loop.
                     let edit = match edit {
                         Edit::EditProfiles(guid) => {
@@ -6545,6 +6571,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(guid) = locale {
                         self.open_locale_settings(guid);
+                    }
+                    if let Some((pane, dest)) = copy {
+                        self.copy_to_profile(pane, &dest);
                     }
                     if let Some(path) = reveal {
                         self.reveal_in_explorer(&path);

@@ -71,7 +71,7 @@ section = ""
 label = "Profile shortcut"
 type = "string"
 default_note = "No default value (NSNull); no shortcut is assigned unless the user picks one."
-help = "A Cmd+Ctrl+letter or digit keystroke that opens a new window with this profile."
+help = "A Ctrl+Win+letter or digit keystroke that opens this profile in a new tab (Alt: in a new window)."
 light_dark = false
 macos_only = false
 
