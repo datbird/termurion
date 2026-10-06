@@ -431,6 +431,11 @@ pub(super) fn filter_step(p: &mut crate::pane::Pane, f: &mut FindState, now: Ins
     let base = base.min(f.shown.len());
     let old = f.shown.split_off(base);
     let grown = (!f.run_fresh && p.live.is_some()).then(|| crate::synthetic::appended(&old, &lines)).flatten();
+    let cap = {
+        use alacritty_terminal::grid::Dimensions;
+        let grid = p.own().term().grid();
+        grid.history_size() + grid.screen_lines()
+    };
     match grown {
         Some(tail) => {
             let mut bytes = String::new();
@@ -442,12 +447,24 @@ pub(super) fn filter_step(p: &mut crate::pane::Pane, f: &mut FindState, now: Ins
             }
             p.screen.feed(bytes.as_bytes());
             f.shown.extend(lines);
+            trim_shown(f, cap);
         }
         None => {
             f.shown.extend(lines);
+            trim_shown(f, cap);
             let view = crate::synthetic::view(&f.shown, p.own());
             p.show_view(view);
         }
+    }
+}
+
+/// Cuts Filter's lines from the front to `cap`, the own screen's line count (it cannot hold more
+/// matches than that), and moves the resume point with them: memory stays bounded under steady output.
+fn trim_shown(f: &mut FindState, cap: usize) {
+    let cut = f.shown.len().saturating_sub(cap);
+    if cut > 0 {
+        f.shown.drain(..cut);
+        f.tail = f.tail.take().map(|t| t.trimmed(cut));
     }
 }
 
@@ -1470,6 +1487,44 @@ mod tests {
         filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
         assert_eq!(f.shown.len(), 28);
         assert_eq!(f.shown.last().map(|l| l.text.as_str()), Some("partial needle done"));
+    }
+
+    /// Final re-review: under steady output Filter's lines stay within the own screen's
+    /// scrollback, and every pass (a partial line that changes its match included) reads only the tail.
+    #[test]
+    fn filter_shown_stays_within_the_scrollback() {
+        use alacritty_terminal::grid::Dimensions;
+        let mut p = crate::pane::Pane::recording(1, 40, 24);
+        p.screen = crate::screen::Screen::with_scrollback(40, 24, 200);
+        let t = Instant::now();
+        let mut f = typed("needle", t);
+        p.screen.feed(b"first needle\r\n");
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, true, t);
+        let cap = |p: &crate::pane::Pane| p.own().term().grid().history_size() + p.own().term().grid().screen_lines();
+        let mut worst = 0;
+        for i in 0..600 {
+            p.own_mut().feed(format!("m {i} needle\r\n").as_bytes());
+            filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+            while f.run.is_some() {
+                filter_step(&mut p, &mut f, t);
+            }
+            worst = worst.max(f.work);
+            assert!(f.shown.len() <= cap(&p), "{} shown lines at {i}, the scrollback holds {}", f.shown.len(), cap(&p));
+        }
+        assert!(worst < 10, "a pass read {worst} lines");
+        assert_eq!(f.shown.last().map(|l| l.text.as_str()), Some("m 599 needle"));
+        // A last line that grows and changes its match rebuilds from the kept lines only.
+        p.own_mut().feed(b"part");
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        p.own_mut().feed(b"ial needle\r\n");
+        filter_start(&mut p, &mut f, find::Mode::SmartCase, false, t);
+        while f.run.is_some() {
+            filter_step(&mut p, &mut f, t);
+        }
+        assert!(f.shown.len() <= cap(&p));
+        assert!(f.work < 10, "{} lines read", f.work);
+        assert_eq!(f.shown.last().map(|l| l.text.as_str()), Some("partial needle"));
+        assert_eq!(f.shown[f.shown.len() - 2].text, "m 599 needle");
     }
 
     /// The bar draws the run's fraction as a line in the selection color, and none when done.

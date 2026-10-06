@@ -84,6 +84,14 @@ pub struct Tail {
     cols: usize,
 }
 
+impl Tail {
+    /// The tail after `n` lines were cut from the front of the view's lines.
+    pub fn trimmed(mut self, n: usize) -> Tail {
+        self.keep = self.keep.saturating_sub(n);
+        self
+    }
+}
+
 impl Chunked {
     pub fn start(screen: &Screen, pattern: &str) -> Result<Chunked, String> {
         Chunked::start_in(screen, pattern, None)
