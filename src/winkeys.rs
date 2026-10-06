@@ -622,17 +622,27 @@ pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
     if chord.mods & MOD_WIN == 0 {
         return false;
     }
+    let shift = chord.mods & MOD_SHIFT != 0;
     let extra = chord.mods & !(MOD_WIN | MOD_SHIFT);
     // Win (+Shift) with a letter but Y, a digit, or the shell's other keys.
     const LETTERS: &[u32] = &[0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x2C];
     const OTHERS: &[u32] = &[0x39, 0x0F, 0x33, 0x34, 0x27, 0x1C, 0x0C, 0x0D, 0x01, 0xE04B, 0xE04D, 0xE048, 0xE050, 0xE047, 0xE037, 0x45];
+    // Win+1..0, and Win+Ctrl or Win+Alt with 1..9 (the pinned apps' last window and jump lists).
     let digit = (0x02..=0x0B).contains(&scan);
-    match extra {
-        0 => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
-        // Virtual desktops (Win+Ctrl+D, F4, Left, Right) and the like.
-        MOD_CONTROL => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E),
-        // Game Bar and pen shortcuts (Win+Alt+G, R, T, M, B, D, K, H, PrtSc).
-        MOD_ALT => matches!(scan, 0x22 | 0x13 | 0x14 | 0x32 | 0x30 | 0x20 | 0x25 | 0x23 | 0xE037),
+    let digit9 = (0x02..=0x0A).contains(&scan);
+    // The modifiers match exactly, as iTerm2's symbolic hotkeys do: Win+Shift is the shell's for
+    // Snipping (S), Restore (M), Notifications (V), Cycle taskbar (T), Reverse language (Space),
+    // new instance (1..0) and moving or stretching a window (Left, Right, Up), not every letter.
+    match (extra, shift) {
+        (0, false) => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
+        (0, true) => matches!(scan, 0x1F | 0x32 | 0x2F | 0x14 | 0x39 | 0xE04B | 0xE04D | 0xE048) || digit,
+        // Virtual desktops (Win+Ctrl+D, F4, Left, Right), Quick Assist (Q), Narrator (N), speech
+        // (S), sound output (V), the input language (Space), and the like.
+        (MOD_CONTROL, false) => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E | 0x10 | 0x31 | 0x1F | 0x2F | 0x39) || digit9,
+        // Reset the graphics driver (Win+Ctrl+Shift+B).
+        (MOD_CONTROL, true) => scan == 0x30,
+        // Game Bar and pen shortcuts (Win+Alt+G, R, T, M, B, D, K, H, PrtSc) and jump lists.
+        (MOD_ALT, false) => matches!(scan, 0x22 | 0x13 | 0x14 | 0x32 | 0x30 | 0x20 | 0x25 | 0x23 | 0xE037) || digit9,
         _ => false,
     }
 }
@@ -885,15 +895,22 @@ mod tests {
 
     #[test]
     fn shell_owned_chord_matches_shell_owned() {
-        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_WIN};
+        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_CONTROL, MOD_WIN};
         use crate::menus::{Chord, ChordKey as MKey};
         let chord = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
         let chars = |s: &str| s.chars().map(MKey::Char).collect::<Vec<_>>();
         // Win+letter: the shell keeps every letter but Y.
         for k in chars("abcdefghijklmnopqrstuvwxz") {
             assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
-            assert!(shell_owned_chord(&chord(k, false, false, true)));
         }
+        // Win+Shift is exact: the shell's own few, not every letter.
+        for k in [MKey::Char('s'), MKey::Char('m'), MKey::Char('v'), MKey::Char('t'), MKey::Space, MKey::Left, MKey::Right, MKey::Up, MKey::Char('3')] {
+            assert!(shell_owned_chord(&chord(k.clone(), false, false, true)), "Win+Shift+{k:?}");
+        }
+        for k in "qwazxe".chars() {
+            assert!(!shell_owned_chord(&chord(MKey::Char(k), false, false, true)), "Win+Shift+{k}");
+        }
+        assert!(shell_owned_chord(&chord(MKey::Char('b'), true, false, true)), "Win+Ctrl+Shift+B");
         assert!(!shell_owned_chord(&chord(MKey::Char('y'), false, false, false)), "Win+Y is free");
         for k in chars("1234567890") {
             assert!(shell_owned_chord(&chord(k, false, false, false)));
@@ -908,13 +925,26 @@ mod tests {
         for k in [MKey::Char('d'), MKey::F(4), MKey::Left, MKey::Right, MKey::Enter, MKey::Char('f'), MKey::Char('b'), MKey::Char('c')] {
             assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
         }
+        // Windows 11: Quick Assist, Narrator, speech, sound output, the input language, the last
+        // window of a pinned app.
+        for k in [MKey::Char('q'), MKey::Char('n'), MKey::Char('s'), MKey::Char('v'), MKey::Space, MKey::Char('1'), MKey::Char('9')] {
+            assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
+        }
         assert!(!shell_owned_chord(&chord(MKey::Char('e'), true, false, false)));
+        assert!(!shell_owned_chord(&chord(MKey::Char('0'), true, false, false)), "Win+Ctrl+0 is nobody's");
         // Win+Alt: Game Bar and pen.
         for k in "grtmbdkh".chars() {
             assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k}");
         }
+        for k in ['1', '5', '9'] {
+            assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k} (jump list)");
+        }
         assert!(!shell_owned_chord(&chord(MKey::Char('e'), false, true, false)));
         assert!(!shell_owned_chord(&chord(MKey::Char('d'), true, true, false)), "Win+Ctrl+Alt+D");
+        // The hotkey form agrees on the new chords.
+        let scan = |key, mods| shell_owned(HChord { key: HKey::Scan(key), mods });
+        assert!(scan(0x39, MOD_WIN | MOD_CONTROL) && scan(0x10, MOD_WIN | MOD_CONTROL) && scan(0x02, MOD_WIN | crate::hotkey::MOD_ALT));
+        assert!(!scan(0x10, MOD_WIN | crate::hotkey::MOD_SHIFT), "Win+Shift+Q");
         // Not a Win chord at all.
         assert!(!shell_owned_chord(&Chord { cmd: false, ..chord(MKey::Char('d'), false, false, false) }));
         // The two agree on every scan code both can name.
