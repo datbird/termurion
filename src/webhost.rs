@@ -727,7 +727,8 @@ fn without_fragment(url: &str) -> &str {
 impl LocalDoc {
     /// A document of `html` served under the policy `csp`.
     pub fn new(html: String, csp: &str) -> LocalDoc {
-        let url = format!("https://{LOCAL_HOST}/{}/doc", uuid::Uuid::new_v4().simple());
+        // A random host per document: each is its own origin (no shared storage between scripts).
+        let url = format!("https://{}.{LOCAL_HOST}/{}/doc", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
         LocalDoc { url, html, csp: csp.to_string(), seen: false, navigated: false }
     }
 
@@ -792,11 +793,26 @@ mod tests {
 
     /// Class ruling (Task 4 fix 1): program and model content is served by one function on a fixed
     /// Tandem-only origin, the policy is a response header, the markup is never parsed or changed.
+    /// Task 5 fix r1 (isolation): each document is its own origin, so one script's popover cannot
+    /// read another's localStorage, IndexedDB or cookies (the views share a persistent store).
+    #[test]
+    fn each_local_document_is_its_own_origin() {
+        let host = |d: &LocalDoc| d.url().split('/').nth(2).unwrap().to_string();
+        let (a, b) = (LocalDoc::new(String::new(), ""), LocalDoc::new(String::new(), ""));
+        assert_ne!(host(&a), host(&b), "a random host per document");
+        for d in [&a, &b] {
+            let h = host(d);
+            assert!(h.ends_with(&format!(".{LOCAL_HOST}")) && h.len() > LOCAL_HOST.len() + 8, "{h}");
+        }
+        assert_eq!(a.answer(&format!("https://{LOCAL_HOST}/{}", &a.url()[a.url().find("/doc").unwrap() - 32..])), Answer::Block, "the bare host is nobody's");
+        assert_eq!(a.answer(&a.url().replace(&host(&a), &host(&b))), Answer::Block, "another document's origin is refused");
+    }
+
     #[test]
     fn local_documents_get_their_policy_as_a_header() {
         let hostile = "<!-- --!><img src=\"https://x.test/p\"><!DOCTYPE html><script>fetch('https://x.test')</script><!--";
         let d = LocalDoc::new(hostile.to_string(), "default-src 'none'");
-        assert!(d.url().starts_with("https://tandem-local.invalid/") && d.url().ends_with("/doc"), "{}", d.url());
+        assert!(d.url().starts_with("https://") && d.url().contains(".tandem-local.invalid/") && d.url().ends_with("/doc"), "{}", d.url());
         assert_ne!(d.url(), LocalDoc::new(String::new(), "").url(), "a random path per document");
         let Answer::Respond { status, mime, body, headers } = d.answer(d.url()) else { panic!("the document is served") };
         assert_eq!((status, mime.as_str()), (200, "text/html; charset=utf-8"));
@@ -806,7 +822,7 @@ mod tests {
         assert_eq!(h("X-Content-Type-Options"), Some("nosniff"));
         assert_eq!(h("Cache-Control"), Some("no-store"));
         // Every other request of the view is refused (403); data and blob images cannot reach anything.
-        for other in ["https://tandem-local.invalid/other/doc", "https://x.test/p", "http://127.0.0.1/", "file:///C:/x", "https://tandem-local.invalid/", &format!("{}x", d.url())] {
+        for other in ["https://tandem-local.invalid/other/doc", &d.url().replace("/doc", "/other"), "https://x.test/p", "http://127.0.0.1/", "file:///C:/x", "https://tandem-local.invalid/", &format!("{}x", d.url())] {
             assert_eq!(d.answer(other), Answer::Block, "{other}");
         }
         assert_eq!(d.answer("data:image/png;base64,AAAA"), Answer::Continue);
