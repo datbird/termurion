@@ -20,21 +20,82 @@ pub fn is_hostile(c: char) -> bool {
 /// `sortedIndentedTags` (`ProfileTagsView.m:150-181`): every tag and each missing parent, sorted,
 /// as (indented label, full tag path), four spaces per level.
 pub fn tag_tree(tags: &[String]) -> Vec<(String, String)> {
+    tag_tree_counted(tags, &mut 0)
+}
+
+/// The tag tree kept until the tags change (iTerm2 caches it, `ProfileTagsView.m` `_cache`).
+#[derive(Default)]
+pub struct TagTreeCache {
+    tags: Vec<String>,
+    tree: Vec<(String, String)>,
+    /// How many times the tree was built (the tests count it).
+    pub builds: usize,
+}
+
+impl TagTreeCache {
+    pub fn get(&mut self, tags: &[String]) -> &[(String, String)] {
+        if self.builds == 0 || self.tags != tags {
+            self.tree = tag_tree(tags);
+            self.tags = tags.to_vec();
+            self.builds += 1;
+        }
+        &self.tree
+    }
+}
+
+/// `tag_tree`, adding the characters it builds to `work` (the tests bound it). A tag is read to
+/// `MAX_TAG_DEPTH` levels only, whatever the caller passes, and each path grows from the one before.
+pub fn tag_tree_counted(tags: &[String], work: &mut usize) -> Vec<(String, String)> {
     let mut sorted: Vec<&String> = tags.iter().collect();
     sorted.sort();
     sorted.dedup();
     let mut out = Vec::new();
     let mut previous: Vec<&str> = Vec::new();
     for tag in sorted {
-        let parts: Vec<&str> = tag.split('/').collect();
+        let parts: Vec<&str> = tag.split('/').take(MAX_TAG_DEPTH).collect();
         let mut matched = previous.iter().zip(&parts).take_while(|(a, b)| a == b).count();
+        let mut path = parts[..matched].join("/");
         while matched < parts.len() {
-            out.push((format!("{}{}", "    ".repeat(matched), display_text(parts[matched])), parts[..=matched].join("/")));
+            if matched > 0 {
+                path.push('/');
+            }
+            path.push_str(parts[matched]);
+            let label = format!("{}{}", "    ".repeat(matched), display_text(parts[matched]));
+            *work += label.chars().count() + path.chars().count();
+            out.push((label, path.clone()));
             matched += 1;
         }
         previous = parts;
     }
     out
+}
+
+/// The most tags a profile keeps, the longest tag and its deepest "/" nesting: tags reach the
+/// store from imports, the API and arrangements, so they are bounded at the one write point.
+pub const MAX_TAGS: usize = 64;
+pub const MAX_TAG_LEN: usize = 256;
+pub const MAX_TAG_DEPTH: usize = 8;
+
+/// A "Tags" value cleaned: only text tags, at most `MAX_TAGS` of them, each cut to `MAX_TAG_LEN`
+/// characters and `MAX_TAG_DEPTH` levels (`Profile::set`, `Profile::from_values`). None for a
+/// value that is not a list.
+pub fn clean_tags(value: toml::Value) -> Option<toml::Value> {
+    let toml::Value::Array(list) = value else { return None };
+    let kept = list
+        .into_iter()
+        .filter_map(|t| match t {
+            toml::Value::String(s) => Some(clean_tag(&s)),
+            _ => None,
+        })
+        .take(MAX_TAGS)
+        .map(toml::Value::String)
+        .collect();
+    Some(toml::Value::Array(kept))
+}
+
+fn clean_tag(tag: &str) -> String {
+    let leveled: Vec<&str> = tag.splitn(MAX_TAG_DEPTH + 1, '/').take(MAX_TAG_DEPTH).collect();
+    leveled.join("/").chars().take(MAX_TAG_LEN).collect()
 }
 
 /// The search field's text for the selected tags (`ProfileListView.m:1207-1212`).
@@ -121,6 +182,56 @@ mod tests {
     fn tag_tree_cleans_hostile_labels() {
         let t = tag_tree(&s(&["x\u{202e}y"]));
         assert_eq!(t[0].0, "xy");
+    }
+
+    #[test]
+    fn hostile_tags_are_bounded_where_they_are_written() {
+        let deep = "a/".repeat(50_000);
+        let many: Vec<toml::Value> = (0..1000).map(|i| toml::Value::String(format!("t{i}"))).collect();
+        let mut p = Profile::new("X");
+        p.set("Tags", toml::Value::Array(vec![toml::Value::String(deep.clone())]));
+        let stored = rows(&[p.clone()])[0].2.clone();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].chars().count() <= MAX_TAG_LEN, "len {}", stored[0].len());
+        assert!(stored[0].split('/').count() <= MAX_TAG_DEPTH);
+        p.set("Tags", toml::Value::Array(many.clone()));
+        assert_eq!(rows(&[p])[0].2.len(), MAX_TAGS);
+        // The same gate for a stored or imported table.
+        let mut table = std::collections::BTreeMap::new();
+        table.insert("Tags".to_string(), toml::Value::Array(vec![toml::Value::String(deep), toml::Value::Integer(3)]));
+        let stored = rows(&[Profile::from_values(table)])[0].2.clone();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].chars().count() <= MAX_TAG_LEN);
+        let mut table = std::collections::BTreeMap::new();
+        table.insert("Tags".to_string(), toml::Value::Array(many));
+        assert_eq!(rows(&[Profile::from_values(table)])[0].2.len(), MAX_TAGS);
+    }
+
+    #[test]
+    fn tag_tree_work_is_bounded_for_a_deep_tag() {
+        // Not through the write point: the tree bounds itself too.
+        let deep = vec!["a/".repeat(4_000)];
+        let mut work = 0;
+        let tree = tag_tree_counted(&deep, &mut work);
+        assert!(tree.len() <= MAX_TAG_DEPTH, "rows {}", tree.len());
+        assert!(work < 4_000, "work {work}");
+        // Fully capped tags cost at most their capped size.
+        let capped: Vec<String> = (0..MAX_TAGS).map(|i| format!("{i}{}", "/b".repeat(MAX_TAG_DEPTH - 1))).collect();
+        let mut work = 0;
+        tag_tree_counted(&capped, &mut work);
+        assert!(work < MAX_TAGS * MAX_TAG_DEPTH * 2 * (MAX_TAG_DEPTH + 4), "work {work}");
+    }
+
+    #[test]
+    fn the_tag_tree_is_built_only_when_the_tags_change() {
+        let mut cache = TagTreeCache::default();
+        let a = s(&["a/b", "c"]);
+        for _ in 0..50 {
+            assert_eq!(cache.get(&a).len(), 3);
+        }
+        assert_eq!(cache.builds, 1);
+        assert_eq!(cache.get(&s(&["z"])).len(), 1);
+        assert_eq!(cache.builds, 2);
     }
 
     #[test]

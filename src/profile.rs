@@ -65,6 +65,9 @@ fn to_rgb(v: &Value) -> Option<Rgb> {
     Some(rgb(byte(c("r")?), byte(c("g")?), byte(c("b")?)))
 }
 
+/// The profile's tag list.
+const TAGS_KEY: &str = "Tags";
+
 impl Profile {
     /// The values iTerm2 gives a new profile (its DefaultBookmark), with no Guid or name.
     /// `Profile::default()` is an empty profile: every key reads iTerm2's missing-key value,
@@ -115,16 +118,28 @@ impl Profile {
         if let Some(b) = values.remove(crate::bindings::KEY).and_then(crate::bindings::clean) {
             values.insert(crate::bindings::KEY.to_string(), b);
         }
+        if let Some(t) = values.remove(TAGS_KEY) {
+            if let Some(t) = crate::profile_list::clean_tags(t) {
+                values.insert(TAGS_KEY.to_string(), t);
+            }
+        }
         Profile { values }
     }
 
     /// The one write: the Settings window, the API, an arrangement's session copy and the
     /// escape codes all land here. "Bindings" is cleaned once, so every reader sees at most
-    /// `bindings::MAX_TABLE` bindable entries.
+    /// `bindings::MAX_TABLE` bindable entries, and "Tags" the same way (`profile_list::clean_tags`).
     pub fn set(&mut self, key: &str, value: Value) {
         if key == crate::bindings::KEY {
             match crate::bindings::clean(value) {
                 Some(b) => self.values.insert(key.to_string(), b),
+                None => self.values.remove(key),
+            };
+            return;
+        }
+        if key == TAGS_KEY {
+            match crate::profile_list::clean_tags(value) {
+                Some(t) => self.values.insert(key.to_string(), t),
                 None => self.values.remove(key),
             };
             return;

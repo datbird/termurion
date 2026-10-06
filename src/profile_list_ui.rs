@@ -1,15 +1,17 @@
 //! The profile list: a search field, a "Tags >" button, the tag sidebar and the rows, shared by
 //! the Settings window and the Profiles window (`ProfileListView.m`, `ProfileTagsView.m`).
 
-use crate::profile_list::{all_tags, click_selection, click_tags, display_text, filter, tag_query, tag_tree};
+use crate::profile_list::{all_tags, click_selection, click_tags, display_text, filter, tag_query, TagTreeCache};
 
 /// The list's state; the window that owns the list keeps it.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct ListState {
     pub query: String,
     pub tags_open: bool,
     pub selected_tags: Vec<String>,
     pub selection: Vec<String>,
+    /// The sidebar's tree, rebuilt only when the tags change.
+    pub tree: TagTreeCache,
 }
 
 /// What the person did in the list this frame.
@@ -59,7 +61,7 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
                 ui.label(egui::RichText::new("Tag Name").strong());
                 let tags = all_tags(&rows.iter().map(|r| (r.0.clone(), r.2.clone())).collect::<Vec<_>>());
                 egui::ScrollArea::vertical().id_salt("profile-tags").max_height(LIST_HEIGHT - 20.0).show(ui, |ui| {
-                    for (label, path) in tag_tree(&tags) {
+                    for (label, path) in st.tree.get(&tags).to_vec() {
                         let on = st.selected_tags.contains(&path);
                         if ui.selectable_label(on, label).clicked() {
                             st.selected_tags = click_tags(&st.selected_tags, &path, mods.ctrl || mods.command);
