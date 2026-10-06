@@ -163,12 +163,9 @@ pub enum Handed {
 /// and its image is this Tandem's own program (case ignored). Anything else, an unreadable image
 /// included, is not Tandem and is sent nothing.
 pub fn server_verdict(theirs: &crate::api_peer::Token, mine: &crate::api_peer::Token, their_image: Option<&str>, their_session: Option<u32>, my_session: Option<u32>, my_image: &str) -> Result<(), String> {
-    crate::api_peer::judge(theirs, mine)?;
-    // The same Windows session (a same-user Tandem of another session never takes a request).
-    match (their_session, my_session) {
-        (Some(a), Some(b)) if a == b => {}
-        _ => return Err("the launch pipe is held by a program of another session".into()),
-    }
+    // The one peer rule, with the same Windows session (a same-user Tandem of another session never takes a request).
+    let peer = |token: &crate::api_peer::Token, session| crate::api_peer::Peer { token: token.clone(), session };
+    crate::api_peer::judge_peer(&peer(theirs, their_session), &peer(mine, my_session)).map_err(|e| if e == crate::api_peer::OTHER_SESSION { "the launch pipe is held by a program of another session".to_string() } else { e })?;
     match their_image {
         Some(i) if i.eq_ignore_ascii_case(my_image) => Ok(()),
         Some(_) => Err("the launch pipe is held by a program that is not this Tandem".into()),
@@ -204,7 +201,7 @@ pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn 
 }
 
 #[cfg(windows)]
-pub use pipe::{hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running};
+pub use pipe::{Serving, hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running, serve_on};
 
 #[cfg(windows)]
 mod pipe {
@@ -309,34 +306,75 @@ mod pipe {
         }
     }
 
-    pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
-        listen_on(&winpipe::url_pipe_name()?, Duration::from_secs(2), notify)
+    /// The launch pipe served on its own thread until `stop`.
+    pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
+        serve_on(&winpipe::url_pipe_name()?, Duration::from_secs(2), notify)
     }
 
+    /// The listening thread of a pipe served for the life of the process.
     pub fn listen_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<std::thread::JoinHandle<()>, String> {
-        let mut listener = winpipe::Listener::bind(name)?;
-        Ok(std::thread::spawn(move || loop {
-            let pipe = match listener.accept(Duration::from_secs(1)) {
-                Ok(Some(p)) => p,
-                Ok(None) => continue,
-                Err(e) => {
-                    crate::host::log(&format!("url: accept failed: {e}"));
-                    if listener.renew().is_err() {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(200));
-                    continue;
-                }
-            };
-            // The DACL admits this user at this elevation only; nothing more is checked of the client.
-            let request = read_message(&pipe, wait);
-            // A silent or finished client is closed either way, so it never blocks the next one,
-            // and before the request runs, so the sender's answer never waits for the callback.
-            pipe.shutdown();
-            if let Some(request) = request {
-                notify(request);
+        let mut s = serve_on(name, wait, notify)?;
+        s.thread.take().ok_or_else(|| "no listening thread".to_string())
+    }
+
+    /// A served pipe. `stop` ends the serving: every request read before it returns has been
+    /// handed to `notify`, and the name is free afterwards (a later start finds no server).
+    pub struct Serving {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Serving {
+        /// Stops accepting and waits for the thread: at most one accept wait and one read.
+        pub fn stop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
             }
-        }))
+        }
+
+        pub fn stopped(&self) -> bool {
+            self.thread.is_none()
+        }
+    }
+
+    pub fn serve_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
+        let mut listener = winpipe::Listener::bind(name)?;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                let pipe = match listener.accept(Duration::from_secs(1)) {
+                    Ok(Some(p)) => p,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        crate::host::log(&format!("url: accept failed: {e}"));
+                        if listener.renew().is_err() {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                };
+                // The DACL admits this user at this elevation only; nothing more is checked of the client.
+                let request = read_message(&pipe, wait);
+                // A silent or finished client is closed either way, so it never blocks the next one,
+                // and before the request runs, so the sender's answer never waits for the callback.
+                pipe.shutdown();
+                if let Some(request) = request {
+                    notify(request);
+                }
+            }
+            // A client that connected as the last wait ended is served too, before the name goes.
+            if let Ok(Some(pipe)) = listener.accept(Duration::ZERO) {
+                let request = read_message(&pipe, wait);
+                pipe.shutdown();
+                if let Some(request) = request {
+                    notify(request);
+                }
+            }
+        });
+        Ok(Serving { stop, thread: Some(thread) })
     }
 
     /// One message, read within `wait` of the accept and at most `launch::MAX_MESSAGE` in all:
@@ -608,6 +646,24 @@ mod tests {
             assert!(matches!(second, Handed::Failed(_)), "the thread is stuck in the callback: no answer: {second:?}");
             assert!(t.elapsed() >= Duration::from_millis(1900) && t.elapsed() < Duration::from_secs(6), "{:?} {second:?}", t.elapsed());
             let _ = release.send(());
+        }
+
+        /// Task 5 review, Important 3: an idle `-Embedding` start stops serving before it ends. The
+        /// listener hands on every request it read before `stop` returns, then frees the name, so a
+        /// later start finds no server and runs itself instead of being answered and dropped.
+        #[test]
+        fn a_stopped_listener_hands_on_what_it_took_then_frees_the_name() {
+            let name = test_name("launch-stop");
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let mut serving = serve_on(&name, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::Taken);
+            let t = Instant::now();
+            serving.stop();
+            assert!(t.elapsed() < Duration::from_secs(4), "stop waits at most one accept and one read");
+            assert_eq!(rx.try_recv(), Ok(crate::launch::Request::Reopen), "what it took was handed on before stop returned");
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, &|_| {}), Handed::NoServer, "the name is free");
+            assert!(serving.stopped());
         }
 
         /// B1: a client that connects and says nothing never blocks the next request of any kind.

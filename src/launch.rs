@@ -83,7 +83,8 @@ fn valid(r: &Request) -> bool {
 }
 
 /// The request for the arguments after argv0. `--url` is exactly `url_launch::url_argument`'s one
-/// rule; `-Embedding` or `/Embedding` (any case) only as the sole argument (P24); anything that
+/// rule; `-Embedding` or `/Embedding` (any case) only as the sole argument, or twice (P24; COM appends
+/// it to the registered command); anything that
 /// is not a flag is a path, joined to `cwd` when relative. Explorer's `"D:\"` reaches the argv
 /// parser as `D:"`: that one shape is repaired, any other quote refuses.
 pub fn parse(args: &[String], cwd: &Path) -> Result<Request, String> {
@@ -101,8 +102,10 @@ pub fn parse(args: &[String], cwd: &Path) -> Result<Request, String> {
         crate::url_launch::UrlArg::Refused(_) => return usage(),
         crate::url_launch::UrlArg::None => {}
     }
+    // COM appends `-Embedding` to the registered command; a value that already ended in it (an
+    // older Tandem's registration) gives it twice, which is still the one COM start.
     if args.iter().any(|a| is_embedding(a)) {
-        return if args.len() == 1 { Ok(Request::Embedding) } else { usage() };
+        return if args.len() <= 2 && args.iter().all(|a| is_embedding(a)) { Ok(Request::Embedding) } else { usage() };
     }
     if first == "--new-window" || first == "--new-tab" {
         let guid = match &args[1..] {

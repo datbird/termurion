@@ -1,6 +1,6 @@
 //! The `ITerminalHandoff3` COM server (m13v1 Task 5): Windows hands a console program's console to
 //! the default terminal through this class. Any local program can call it, so every call is
-//! untrusted: the caller is checked first (`default_term::vet`), handles are duplicated and typed
+//! untrusted: the caller is checked first (`default_term::vet`: same user, session and integrity), handles are duplicated and typed
 //! before use, the title is bounded and cleaned, the rate and the live count are capped, and a
 //! handoff while Tandem closes is refused. Nothing here touches `App`: a good handoff becomes a
 //! `Handoff` sent to the UI thread, which owns its handles from then on.
@@ -158,7 +158,8 @@ struct Shared {
     close: CloseFn,
     gate: Mutex<Gate>,
     live: Arc<AtomicUsize>,
-    my_sid: String,
+    /// This process's token and session: the caller must match them (`api_peer::judge_peer`).
+    mine: crate::api_peer::Peer,
 }
 
 /// Set once Tandem is ending: a handoff after that is refused with `E_ABORT`.
@@ -168,14 +169,14 @@ pub fn begin_closing() {
     CLOSING.store(true, Ordering::SeqCst);
 }
 
-/// The user SID of whoever is calling, read from the impersonated thread token; None when COM
-/// cannot impersonate (no call in progress) or the token is unreadable.
-fn caller_sid() -> Option<String> {
+/// The token facts and session of whoever is calling, read from the impersonated thread token;
+/// None when COM cannot impersonate (no call in progress) or the token is unreadable.
+fn caller_peer() -> Option<crate::api_peer::Peer> {
     unsafe {
         CoImpersonateClient().ok()?;
-        let sid = crate::winpipe::thread_user_sid().ok();
+        let peer = crate::winpipe::thread_peer().ok();
         let _ = CoRevertToSelf();
-        sid
+        peer
     }
 }
 
@@ -199,9 +200,9 @@ unsafe fn establish(sh: &Shared, input: *mut HANDLE, output: *mut HANDLE, signal
         if !output.is_null() {
             *output = HANDLE(null_mut());
         }
-        let caller = caller_sid();
+        let caller = caller_peer();
         let args = Args { signal: signal.0 as isize, reference: reference.0 as isize, server: server.0 as isize, client: client.0 as isize, outputs: !input.is_null() && !output.is_null(), startup: !startup.is_null() };
-        vet(caller.as_deref(), &sh.my_sid, &args, &mut sh.gate.lock().unwrap_or_else(|e| e.into_inner()), Instant::now(), sh.live.load(Ordering::SeqCst), CLOSING.load(Ordering::SeqCst)).map_err(Refusal::hresult)?;
+        vet(caller.as_ref(), &sh.mine, &args, &mut sh.gate.lock().unwrap_or_else(|e| e.into_inner()), Instant::now(), sh.live.load(Ordering::SeqCst), CLOSING.load(Ordering::SeqCst)).map_err(Refusal::hresult)?;
         // Our own copies: the originals go back to COM when the call returns.
         let (mut sig, mut rf, mut srv, mut cli) = (Own::dup(signal)?, Own::dup(reference)?, Own::dup(server)?, Own::dup(client)?);
         check_file(&sig)?;
@@ -286,8 +287,8 @@ impl Server {
     /// calls arrive on COM's RPC threads and never through winit's message loop. `send` gets
     /// every good handoff; `close` is the api's `ConptyClosePseudoConsole`.
     pub fn register(send: Box<dyn Fn(Handoff) + Send + Sync>, pack: PackFn, close: CloseFn) -> Result<Server, String> {
-        let my_sid = crate::winpipe::user_sid()?;
-        let shared = Arc::new(Shared { send, pack, close, gate: Mutex::new(Gate::default()), live: Arc::new(AtomicUsize::new(0)), my_sid });
+        let mine = crate::winpipe::own_peer()?;
+        let shared = Arc::new(Shared { send, pack, close, gate: Mutex::new(Gate::default()), live: Arc::new(AtomicUsize::new(0)), mine });
         let (stop, wait) = mpsc::channel::<()>();
         let (done, result) = mpsc::channel::<Result<(), String>>();
         let for_thread = shared.clone();

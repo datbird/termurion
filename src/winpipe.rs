@@ -18,7 +18,7 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
     SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER, TokenElevation,
-    TokenIntegrityLevel, TokenIsAppContainer, TokenIsRestricted, TokenUser,
+    TokenIntegrityLevel, TokenIsAppContainer, TokenIsRestricted, TokenSessionId, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
@@ -156,18 +156,22 @@ pub fn user_sid() -> Result<String, String> {
     }
 }
 
-/// The user SID of the identity this thread is running as: after `CoImpersonateClient`, the
-/// caller's. The token is opened as this process (so the check does not depend on the caller's
-/// rights), and an anonymous or identification-level caller reads as a different SID.
-pub fn thread_user_sid() -> Result<String, String> {
+/// The peer facts (token and Windows session) of the identity this thread runs as: after
+/// `CoImpersonateClient`, the caller's. Read from one thread token opened as this process.
+pub fn thread_peer() -> Result<crate::api_peer::Peer, String> {
     unsafe {
         let mut token: HANDLE = null_mut();
         if windows_sys::Win32::System::Threading::OpenThreadToken(windows_sys::Win32::System::Threading::GetCurrentThread(), TOKEN_QUERY, 1, &mut token) == 0 {
             return Err(last_error("OpenThreadToken"));
         }
         let token = Owned(token);
-        token_sid(token.0)
+        Ok(crate::api_peer::Peer { token: token_facts(token.0)?, session: Some(token_dword(token.0, TokenSessionId, "TokenSessionId")?) })
     }
+}
+
+/// This process's peer facts (token and Windows session).
+pub fn own_peer() -> Result<crate::api_peer::Peer, String> {
+    Ok(crate::api_peer::Peer { token: own_token_facts()?, session: session_of(std::process::id()) })
 }
 
 /// Whether this process runs elevated (as administrator).

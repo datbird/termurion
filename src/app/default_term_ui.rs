@@ -123,8 +123,7 @@ impl App {
         if self.gpu.is_none() {
             if self.embedding.is_some() && self.start_handoff.is_none() {
                 self.start_handoff = Some(h);
-                self.embedding = None;
-                self.resumed(event_loop);
+                self.embedding_becomes_main(event_loop);
                 // The first window took it, or it could not start: nothing is kept.
                 self.start_handoff = None;
             } else if self.handoff_queue.len() < dt::MAX_LIVE {
@@ -133,6 +132,61 @@ impl App {
             return;
         }
         self.open_handoff(h, event_loop);
+    }
+
+    /// What an `-Embedding` start accepted that waits for a window: launches and links from the
+    /// pipe, files gathering to open, and handoffs queued before the first window.
+    pub(super) fn embedding_waiting_work(&self) -> usize {
+        self.launch_queue.len() + self.pending_urls_at_start.len() + self.open_batch.waiting() + self.handoff_queue.len()
+    }
+
+    /// An idle `-Embedding` start stops taking work before it ends: the launch pipe (every request
+    /// it read is handed to the loop before this returns) and the handoff class.
+    pub(super) fn embedding_stop_serving(&mut self) {
+        if let Some(s) = self.url_listener.as_mut() {
+            s.stop();
+        }
+        self.handoff = None;
+    }
+
+    /// An `-Embedding` start becomes the main instance: it serves the pipe and the handoff class
+    /// again if it had stopped, then starts like any Tandem (`resumed`). When another Tandem took
+    /// the pipe in between, the waiting launches and links go to it, and this process ends when it
+    /// has nothing of its own left. False when it ended.
+    pub(super) fn embedding_becomes_main(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        self.embedding = None;
+        if self.url_listener.as_ref().is_none_or(|s| s.stopped()) {
+            match crate::url_launch::listen(super::launch_events(self.proxy.clone())) {
+                Ok(s) => self.url_listener = Some(s),
+                Err(e) => {
+                    crate::host::log(&format!("embedding: the launch pipe is taken: {e}"));
+                    let mut left = Vec::new();
+                    let paths = self.open_batch.take_all();
+                    let urls = std::mem::take(&mut self.pending_urls_at_start).into_iter().map(|url| crate::launch::Request::Url { url });
+                    let opens = (!paths.is_empty()).then_some(crate::launch::Request::Open { paths });
+                    for r in urls.chain(std::mem::take(&mut self.launch_queue)).chain(opens) {
+                        if crate::url_launch::hand_to_running(&r) != crate::url_launch::AfterHand::Exit {
+                            left.push(r);
+                        }
+                    }
+                    if left.is_empty() && self.start_handoff.is_none() && self.handoff_queue.is_empty() {
+                        event_loop.exit();
+                        return false;
+                    }
+                    for r in left {
+                        match r {
+                            crate::launch::Request::Url { url } => self.pending_urls_at_start.push(url),
+                            crate::launch::Request::Open { paths } => self.open_batch.push(paths, std::time::Instant::now()),
+                            other => self.launch_queue.push(other),
+                        }
+                    }
+                    self.banners.set("launch-pipe", "Another program holds Tandem's launch pipe, so files and links opened with Tandem cannot reach this window.".to_string());
+                }
+            }
+        }
+        self.sync_handoff_server();
+        self.resumed(event_loop);
+        true
     }
 
     /// The handoffs that arrived before the first window.

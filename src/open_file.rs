@@ -344,6 +344,17 @@ impl Batch {
         self.due
     }
 
+    /// Paths gathered and not yet opened (an ignored-only batch still counts once, for its banner).
+    pub fn waiting(&self) -> usize {
+        self.pending.len().max(usize::from(self.due.is_some()))
+    }
+
+    /// Every gathered path, taken out unopened (to hand to the Tandem that owns the pipe).
+    pub fn take_all(&mut self) -> Vec<PathBuf> {
+        self.due = None;
+        std::mem::take(&mut self.pending)
+    }
+
     /// The batch once its window ended: the paths within the budget of this ten seconds, and how
     /// many were ignored (the bound, or the budget).
     pub fn take(&mut self, now: Instant) -> Option<(Vec<PathBuf>, usize)> {

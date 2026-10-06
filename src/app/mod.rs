@@ -641,9 +641,9 @@ pub struct App {
     background_windows: std::collections::HashSet<u64>,
     /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
     pending_urls_at_start: Vec<String>,
-    /// The URL pipe's listener thread, when this Tandem owns the pipe (it ends with the process).
-    #[allow(dead_code)]
-    url_listener: Option<std::thread::JoinHandle<()>>,
+    /// The launch pipe this Tandem serves, when it owns it (an idle `-Embedding` start stops it
+    /// before it ends; otherwise it ends with the process).
+    url_listener: Option<crate::url_launch::Serving>,
     /// The flood cap on URLs from outside (P13).
     url_flood: crate::url_launch::Flood,
     /// Requests of a second `tandem.exe` that wait for the first window, and the flood cap on
@@ -1666,16 +1666,8 @@ pub fn run() {
     // same user (another started at the same moment, or something holds the name): it hands its
     // own request over once more and ends, so it never installs a second keyboard hook, hotkeys
     // or tray icon beside the first (13u S4, R14de-6).
-    let url_proxy = proxy.clone();
     let mut pipe_problem: Option<String> = None;
-    let url_listener = match crate::url_launch::listen(Box::new(move |request| {
-        let _ = url_proxy.lock().map(|p| {
-            p.send_event(match request {
-                crate::launch::Request::Url { url } => UserEvent::OpenUrl(url),
-                other => UserEvent::Launch(other),
-            })
-        });
-    })) {
+    let url_listener = match crate::url_launch::listen(launch_events(proxy.clone())) {
         Ok(h) => Some(h),
         Err(e) => {
             crate::host::log(&format!("launch: not listening: {e}"));
@@ -1785,6 +1777,8 @@ pub fn run() {
     }
     // Tandem's own scheme registrations follow the exe when it moved (only schemes the person bound).
     crate::url_schemes::repair_at_start(&globals);
+    // So does the default-terminal handoff class (P11), under the same rule.
+    crate::default_term::repair_at_start();
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
     // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
     let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
@@ -6304,6 +6298,18 @@ fn us_digit(code: KeyCode) -> Option<u8> {
 }
 
 
+/// What the launch pipe hands the event loop: a link as `OpenUrl`, any other request as `Launch`.
+fn launch_events(proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>) -> Box<dyn Fn(crate::launch::Request) + Send> {
+    Box::new(move |request| {
+        let _ = proxy.lock().map(|p| {
+            p.send_event(match request {
+                crate::launch::Request::Url { url } => UserEvent::OpenUrl(url),
+                other => UserEvent::Launch(other),
+            })
+        });
+    })
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu.is_some() {
@@ -6510,13 +6516,26 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // An `-Embedding` start waits for its handoff with no window, and ends itself when none comes.
+        // An `-Embedding` start waits for its handoff with no window. Work that reached it (a launch,
+        // a link, files) makes it the main instance; with none it stops serving the pipe after
+        // `IDLE_EXIT` and ends on the next pass, once what the pipe took has arrived (review I3).
         if self.gpu.is_none() {
             if let Some(t0) = self.embedding {
-                if crate::default_term::idle_exit(t0, Instant::now(), self.handoffs_seen, 0) {
-                    return event_loop.exit();
+                use crate::default_term::Idle;
+                let serving = self.url_listener.as_ref().is_some_and(|s| !s.stopped());
+                match crate::default_term::embedding_next(t0, Instant::now(), self.handoffs_seen, self.embedding_waiting_work(), serving) {
+                    Idle::Wait(until) => return event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(until)),
+                    Idle::StopServing => {
+                        self.embedding_stop_serving();
+                        return event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                    }
+                    Idle::Exit => return event_loop.exit(),
+                    Idle::BecomeMain => {
+                        if !self.embedding_becomes_main(event_loop) {
+                            return;
+                        }
+                    }
                 }
-                return event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(t0 + crate::default_term::IDLE_EXIT));
             }
         }
         self.handoff_banner_tick();
