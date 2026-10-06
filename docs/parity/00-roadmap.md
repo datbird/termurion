@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 316 | 291 | 23 | 2 |
-| `02-global-settings.md` | 820 | 647 | 35 | 138 |
-| `03-features-and-menus.md` | 648 | 584 | 35 | 29 |
-| Total | 1,784 | 1,522 | 94 | 168 |
+| `02-global-settings.md` | 821 | 655 | 31 | 135 |
+| `03-features-and-menus.md` | 649 | 588 | 35 | 26 |
+| Total | 1,786 | 1,534 | 89 | 163 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -842,3 +842,5 @@ the command system, or shows up in a menu, so those come first.
 Milestone 13v1 Task 7 built staying resident (2026-10-06; 02: 3 rows to have, 2 from missing (minRunningTime, openUntitledFile) and QuitWhenAllWindowsClosed from partial): closing the last window keeps Tandem running with its notification area icon unless the key is on (R3), and a launch that plans no window starts resident (R3). Per file: 02 820 rows, 645 have, 35 partial, 140 missing; total 1,784 rows, 1,520 have, 93 partial, 171 missing (counted as the change from the 13u union). Rulings: docs/superpowers/rulings/m13v1-rulings.txt; checklist rows 23 to 29 of docs/acceptance/m13v1-checklist.md.
 
 Milestone 13v1 Task 8 built the Windows shutdown question and the Downloads folder (2026-10-06; 02: NeverBlockSystemShutdown from partial and downloadsDirectory from missing to have, showSuiteNameInDockIcon from missing to partial): one end-of-session subclass, shutdown asks as a quit would, `DownloadsDirectory` joins Windows' Downloads folder under the path judge.
+
+Milestone 13v1 closed (Task 9, 2026-10-06; app integration, 13v1 of 13v): a second `tandem.exe` hands its request to the running Tandem over 14e's launch pipe; opening a script (after "OK to run"), a folder or an iTerm2 document type, telnet: and ftp: links (14e built ssh:), the default terminal (Windows Terminal's console host paired with Tandem's own terminal class), the taskbar Jump List as iTerm2's dock menu with its recent profiles, staying resident with the notification area icon, and the Windows shutdown question. 02: 7 rows to have (openFileOverridesSendText, pathToFTP, pathToTelnet, openFileInNewWindows, openFileInSplitPanes, openFileInVerticalSplitPane from partial or missing, newInstanceOpenStyle from partial) and one row added, "-suite isolated instances" (missing, owner 13y); 03: one row added, the dock menu (have). 01:35 stays partial (14e: three schemes of 14, the other ten are not registered until a Browser profile exists, P8). Recounted with parity-count.py: 01 316 rows, 291 have, 23 partial, 2 missing; 02 821, 655, 31, 135; 03 649, 588, 35, 26; total 1,786 rows, 1,534 have, 89 partial, 163 missing. Rulings: docs/superpowers/rulings/m13v1-rulings.txt; checklist: docs/acceptance/m13v1-checklist.md.
