@@ -79,7 +79,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
-        Then::SshUpload { .. } | Then::BindScheme { .. } => Answer::Button(1),
+        Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
         Then::ClaudeUninstall | Then::ClaudeHooksFailed => Answer::Button(1),
         // Leave Enabled: a closed window never turns the person's API off (P10).
@@ -240,6 +240,9 @@ pub(super) enum Then {
     /// and binds the scheme to the profile `guid` once Windows reports Tandem as the handler;
     /// Cancel (1) does nothing. A closed window cancels: a close never changes Windows.
     BindScheme { guid: String, scheme: String },
+    /// "Open N sessions?" (P6): OK (0) opens the Profiles window's profiles as the way chosen;
+    /// Cancel (1) does nothing. A closed window cancels.
+    OpenProfiles(Vec<String>, crate::settings_ui::How),
     /// "Wrong Encoding Detected" for the custom `locale` of profile `guid` under a UTF-8 profile:
     /// Change Locale (0) asks for another, Keep This Locale (1) keeps it, storing it when
     /// `from_settings` (a pick made in Settings). A closed window does neither.
@@ -563,6 +566,11 @@ impl App {
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
             Then::LocaleMismatch { guid, locale, from_settings } => self.locale_mismatch_answered(guid, locale, from_settings, index),
+            Then::OpenProfiles(guids, how) => {
+                if index == 0 {
+                    self.open_selected_now(guids, how);
+                }
+            }
             Then::BindScheme { guid, scheme } => {
                 if index == 0 {
                     self.bind_scheme_confirmed(&guid, &scheme);

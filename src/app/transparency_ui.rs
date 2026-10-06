@@ -192,6 +192,7 @@ impl App {
         let of_tab = |t: &Tab| t.layout.panes().into_iter().filter_map(|id| self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(facts_of)).collect::<Vec<_>>();
         match first {
             NewWindow::Profile(g) => vec![facts_of(of_guid(g.as_deref()))],
+            NewWindow::ProfilesIn(first, rest) => std::iter::once(first).chain(rest.guids()).map(|g| facts_of(of_guid(Some(g)))).collect(),
             NewWindow::Tab(t) | NewWindow::TornOff(t, _) => of_tab(t),
             NewWindow::Tabs(ts) => ts.iter().flat_map(of_tab).collect(),
             NewWindow::Arrangement(w, _) | NewWindow::Restored(w) => self.arrangement_facts(w),

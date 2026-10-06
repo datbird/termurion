@@ -5015,3 +5015,12 @@ label = "Profiles window: tags sidebar open"
 type = "bool"
 default = false
 help = "Remembered by the Profiles window."
+
+[[setting]]
+key = "CloseBookmarksWindowAfterOpening"
+tab = "Stored"
+section = "Profiles"
+label = "Profiles window: close after opening a profile"
+type = "bool"
+default = false
+help = "Remembered by the Profiles window's checkbox, \"Close this window after opening a profile.\""

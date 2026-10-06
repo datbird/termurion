@@ -609,7 +609,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                    NewWindow::Profile(_) | NewWindow::ProfilesIn(..) | NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
                 // a changed order.
@@ -649,6 +649,7 @@ impl App {
         self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
+            NewWindow::ProfilesIn(g, _) => Some(g.clone()),
             NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Arrangement(w, _) | NewWindow::Restored(w) => self.first_arrangement_guid(w),
@@ -664,7 +665,7 @@ impl App {
         // A git command's single-use window is never full screen (`iTermController.m`
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && matches!(style, crate::frames::FULL_SCREEN | crate::frames::LION_FULL_SCREEN) { crate::frames::NORMAL } else { style };
-        let applies_space = matches!(first, NewWindow::Profile(_) | NewWindow::Hotkey(..));
+        let applies_space = matches!(first, NewWindow::Profile(_) | NewWindow::ProfilesIn(..) | NewWindow::Hotkey(..));
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::Restored(_) | NewWindow::HotkeyRestored(..));
         let torn_at = match &first {
             NewWindow::TornOff(_, at) => Some(*at),
@@ -675,6 +676,16 @@ impl App {
                 self.begin_window_start(from_pane, from_dir);
                 self.new_tab(guid.as_deref());
                 self.end_window_start();
+            }
+            NewWindow::ProfilesIn(guid, rest) => {
+                self.begin_window_start(from_pane, from_dir);
+                self.new_tab(Some(&guid));
+                self.end_window_start();
+                // The rest join the new window: tabs, or splits of its active pane.
+                match rest {
+                    crate::settings_ui::Rest::Tabs(guids) => guids.iter().for_each(|g| self.new_tab(Some(g))),
+                    crate::settings_ui::Rest::Splits(side_by_side, guids) => guids.iter().for_each(|g| self.split(if side_by_side { Axis::Row } else { Axis::Column }, Some(g))),
+                }
             }
             NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => {
                 self.tabs.push(tab);
@@ -1132,6 +1143,8 @@ impl App {
 pub(super) enum NewWindow {
     /// One tab of a profile (the default one when None).
     Profile(Option<String>),
+    /// The Profiles window's several profiles in one window: the first, and the rest as its tabs or splits.
+    ProfilesIn(String, crate::settings_ui::Rest),
     /// A tab moved from another window.
     Tab(Tab),
     /// A tab dragged out of every tab bar, and the screen point it was dropped at (the new

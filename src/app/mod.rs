@@ -42,7 +42,7 @@ use crate::render::Renderer;
 use crate::screen::Look;
 use crate::store::{self, Store};
 use crate::scene::{self, Frame, rgba};
-use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
+use crate::settings_ui::{Edit, Mode, SettingsWindow};
 
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
@@ -148,6 +148,7 @@ mod toolbelt_more_ui;
 mod pane_nav_ui;
 mod open_quickly_app;
 mod presets_ui;
+mod profiles_open_ui;
 mod bindings_ui;
 mod replay_ui;
 mod pwm_app;
@@ -3895,13 +3896,10 @@ impl App {
         }
         match edit {
             Edit::None | Edit::Preview => return,
-            Edit::Open(guid, how) => match how {
-                // A tab or split goes to the window the person used last.
-                How::Tab => self.new_tab(Some(&guid)),
-                How::Window => self.pending_windows.push(windows_ui::NewWindow::Profile(Some(guid))),
-                How::SplitRight => self.split(Axis::Row, Some(&guid)),
-                How::SplitDown => self.split(Axis::Column, Some(&guid)),
-            },
+            Edit::Open(guid, how) => self.open_selected_profiles(vec![guid], how),
+            Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how),
+            // Taken by the window's redraw handler, which has the event loop.
+            Edit::EditProfiles(_) => return,
             Edit::Error(e) => self.banners.set("import", e),
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => self.globals_changed(true),
@@ -6486,6 +6484,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
+        let window_exists = self.current_window().is_some();
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
             if !slot.as_ref().is_some_and(|s| s.id() == id) {
@@ -6510,6 +6509,7 @@ impl ApplicationHandler<UserEvent> for App {
                 WindowEvent::RedrawRequested => {
                     let win = slot.as_mut().unwrap();
                     win.show_remembered = self.show_remembered;
+                    win.window_exists = window_exists;
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
@@ -6524,6 +6524,14 @@ impl ApplicationHandler<UserEvent> for App {
                     let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
                     // Profiles > Terminal's "Change Locale" opens the picker.
                     let locale = slot.as_mut().and_then(|s| s.locale_pick.take());
+                    // "Edit Profiles\u{2026}" opens the Settings window, which needs the event loop.
+                    let edit = match edit {
+                        Edit::EditProfiles(guid) => {
+                            self.edit_profiles(event_loop, guid);
+                            Edit::None
+                        }
+                        other => other,
+                    };
                     self.apply_edit(edit);
                     self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {

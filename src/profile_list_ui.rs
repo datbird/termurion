@@ -24,6 +24,8 @@ pub enum ListEvent {
     Activated(String),
     /// A row was right-clicked: the selection the menu acts on.
     Context(Vec<String>),
+    /// A context menu item was chosen (its label); the selection holds what it acts on.
+    MenuItem(&'static str),
 }
 
 /// The list's height.
@@ -32,10 +34,12 @@ const LIST_HEIGHT: f32 = 300.0;
 const TAGS_WIDTH: f32 = 110.0;
 
 /// `rows` are (guid, name, tags, command). A star marks the default profile.
-pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, String, Vec<String>, String)], default_guid: &str, multi: bool) -> ListEvent {
+/// `menu` gives the context menu's items for a selection of that many rows (None: no menu).
+pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, String, Vec<String>, String)], default_guid: &str, multi: bool, menu: Option<&dyn Fn(usize) -> Vec<&'static str>>) -> ListEvent {
     let mut event = ListEvent::None;
     let focus_id = ui.id().with("profile-list-search");
     let mut field_focused = false;
+    let mut enter_pressed = false;
     ui.horizontal(|ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut st.query).id(focus_id).hint_text("Search").desired_width((ui.available_width() - 70.0).max(40.0)));
         // The search field has focus when the list opens (iTerm2's first responder).
@@ -45,6 +49,11 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
             r.request_focus();
         }
         field_focused = r.has_focus();
+        // Enter in the search field opens the selection (`PLV:980-990`): with several rows it needs a selected one.
+        enter_pressed = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if enter_pressed {
+            r.request_focus();
+        }
         if ui.button(if st.tags_open { "< Tags" } else { "Tags >" }).clicked() {
             st.tags_open = !st.tags_open;
         }
@@ -76,6 +85,11 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
         st.selection = followed;
         if let Some(g) = st.selection.first() {
             event = ListEvent::Picked(g.clone());
+        }
+    }
+    if enter_pressed && (shown.len() == 1 || !st.selection.is_empty()) {
+        if let Some(g) = st.selection.first() {
+            event = ListEvent::Activated(g.clone());
         }
     }
     let mods = ui.input(|i| i.modifiers);
@@ -134,6 +148,17 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
                         st.selection = vec![guid.clone()];
                     }
                     event = ListEvent::Context(st.selection.clone());
+                }
+                if let Some(menu) = menu {
+                    let count = st.selection.len();
+                    resp.context_menu(|ui| {
+                        for label in menu(count) {
+                            if ui.button(label).clicked() {
+                                event = ListEvent::MenuItem(label);
+                                ui.close();
+                            }
+                        }
+                    });
                 }
             }
         });

@@ -40,6 +40,8 @@ pub fn value_of_rgb(c: [u8; 3]) -> Value {
 
 /// The Profiles window's remembered tag sidebar state (`iTermProfilesWindowController.m:42`).
 const PROFILES_TAGS_OPEN: &str = "NoSyncProfilesWindowTagsOpen";
+/// "Close this window after opening a profile." (`kCloseBookmarksWindowAfterOpening`).
+pub const CLOSE_AFTER_OPENING: &str = "CloseBookmarksWindowAfterOpening";
 
 /// The side of the Colors tab's hue and chroma wheel.
 const HUE_WHEEL_SIZE: f32 = 180.0;
@@ -51,6 +53,10 @@ pub enum Edit {
     Error(String),
     /// Open a session with this profile Guid.
     Open(String, How),
+    /// Open these profiles (the Profiles window's selection, in list order) as `How`.
+    OpenMany(Vec<String>, How),
+    /// "Edit Profiles\u{2026}": Settings on this profile's General tab, or on the Profiles page.
+    EditProfiles(Option<String>),
     /// A global setting changed (Keys or Pointer).
     GlobalsChanged,
     /// The snippets changed (Settings > Shortcuts).
@@ -124,6 +130,115 @@ pub enum How {
     Window,
     SplitRight,
     SplitDown,
+    /// The first profile in a new window and the rest as its tabs ("New Tabs in New Window").
+    TabsInNewWindow,
+    /// The first profile in a new window and the rest split into it (Alt on a split button); the
+    /// flag is true for side by side.
+    SplitsInNewWindow(bool),
+}
+
+/// The Profiles window's buttons (`profileTableSelectionDidChange:`, `PWC:359-400`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buttons {
+    pub new_tab: bool,
+    pub new_window: bool,
+    pub new_window_title: &'static str,
+    pub new_tabs_in_new_window: bool,
+    pub splits: bool,
+}
+
+/// Which buttons are enabled for `selected` profiles; `window_exists` is whether a terminal window is open.
+pub fn profiles_buttons(selected: usize, window_exists: bool, any_prevents_tabs: bool) -> Buttons {
+    if selected == 0 {
+        return Buttons { new_tab: false, new_window: false, new_window_title: "New Window", new_tabs_in_new_window: false, splits: false };
+    }
+    // New Tab stays enabled with no window: its shortcut is Enter (`PWC:372-374`).
+    Buttons {
+        new_tab: !any_prevents_tabs,
+        new_window: true,
+        new_window_title: if selected > 1 { "New Windows" } else { "New Window" },
+        new_tabs_in_new_window: selected > 1 && !any_prevents_tabs,
+        splits: selected > 1 || window_exists,
+    }
+}
+
+/// The Profiles window's context menu for `selected` rows (`profileTable:menuForEvent:`).
+pub fn profiles_context_menu(selected: usize) -> Vec<&'static str> {
+    match selected {
+        0 => Vec::new(),
+        1 => vec!["Edit Profile\u{2026}", "Open in New Tab", "Open in New Window"],
+        _ => vec!["Open in New Tabs", "Open in New Windows"],
+    }
+}
+
+/// Whether "Close this window after opening a profile." closes the window after `how`
+/// (`PWC:285-340`): not after a split into the current window (an empty branch in iTerm2, kept).
+pub fn closes_after(key: bool, how: How) -> bool {
+    key && !matches!(how, How::SplitRight | How::SplitDown)
+}
+
+/// Opening more than this many sessions at once asks first (P6).
+pub const OPEN_ASK_ABOVE: usize = 8;
+
+/// Whether opening `count` profiles at once asks first.
+pub fn asks_before_opening(count: usize) -> bool {
+    count > OPEN_ASK_ABOVE
+}
+
+/// One step of opening several profiles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// A tab in the current window.
+    Tab(String),
+    /// A window of its own.
+    Window(String),
+    /// A split of the current pane (side by side when the flag is true).
+    Split(bool, String),
+    /// A new window with the first profile, and the rest as its tabs or splits.
+    NewWindow(String, Rest),
+}
+
+/// How the profiles after the first join a new window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rest {
+    Tabs(Vec<String>),
+    Splits(bool, Vec<String>),
+}
+
+impl Rest {
+    /// The profiles after the first.
+    pub fn guids(&self) -> impl Iterator<Item = &String> {
+        match self {
+            Rest::Tabs(g) | Rest::Splits(_, g) => g.iter(),
+        }
+    }
+}
+
+/// The steps that open `guids` (in list order) as `how` (`_openBookmarkInTab:firstInWindow:inPane:`,
+/// `_openProfilesAsSplitsInNewWindow:`, `PWC:213-290`).
+pub fn open_plan(guids: &[String], how: How, window_exists: bool) -> Vec<Step> {
+    let Some((first, rest)) = guids.split_first() else { return Vec::new() };
+    let in_new_window = |rest_of: Rest| if rest.is_empty() { Step::Window(first.clone()) } else { Step::NewWindow(first.clone(), rest_of) };
+    match how {
+        How::Tab => guids.iter().cloned().map(Step::Tab).collect(),
+        How::Window => guids.iter().cloned().map(Step::Window).collect(),
+        How::TabsInNewWindow => vec![in_new_window(Rest::Tabs(rest.to_vec()))],
+        How::SplitsInNewWindow(side) => vec![in_new_window(Rest::Splits(side, rest.to_vec()))],
+        How::SplitRight | How::SplitDown => {
+            let side = how == How::SplitRight;
+            if window_exists {
+                guids.iter().cloned().map(|g| Step::Split(side, g)).collect()
+            } else {
+                vec![in_new_window(Rest::Splits(side, rest.to_vec()))]
+            }
+        }
+    }
+}
+
+/// What Enter (or a double click) opens (`updateKeyEquivalents`, `profileTableRowSelected:`):
+/// tabs, windows with Shift; Enter opens windows when the profiles refuse tabs.
+pub fn enter_opens(buttons: &Buttons, shift: bool) -> How {
+    if shift || !buttons.new_tab { How::Window } else { How::Tab }
 }
 
 /// The settings editor, or iTerm2's Profiles window (Cmd+O): a list to start sessions from.
@@ -191,6 +306,9 @@ pub struct SettingsWindow {
     /// saved in `NoSyncProfilesWindowTagsOpen`; Settings keeps its own per window.
     list: crate::profile_list_ui::ListState,
     list_init: bool,
+    /// Whether a terminal window is open; the app sets it before each redraw (it enables the
+    /// Profiles window's split buttons).
+    pub window_exists: bool,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -336,6 +454,7 @@ impl SettingsWindow {
             presets: crate::settings_presets::State::new(host_dark),
             list: Default::default(),
             list_init: false,
+            window_exists: true,
         })
     }
 
@@ -343,6 +462,18 @@ impl SettingsWindow {
     pub fn set_tmux_session(&mut self, tmux: bool) {
         self.tmux_session = tmux;
         self.host.window.request_redraw();
+    }
+
+    /// "Edit Profiles\u{2026}" (`editBookmarks:`): the Profiles page, on this profile's General tab
+    /// when there is one.
+    pub fn show_profiles(&mut self, guid: Option<&str>) {
+        self.page = Page::Profiles;
+        if let Some(g) = guid {
+            self.selected = Some(g.to_string());
+            self.tab = 0;
+        }
+        self.host.window.request_redraw();
+        self.host.focus();
     }
 
     /// Shows this profile in the editor (Edit Session).
@@ -406,8 +537,10 @@ impl SettingsWindow {
             self.list_init = true;
             if self.mode == Mode::Profiles {
                 self.list.tags_open = globals.bool(PROFILES_TAGS_OPEN);
+                self.list.selection = vec![selected.clone()];
             }
         }
+        let window_exists = self.window_exists;
         let list = &mut self.list;
         let list_rows = crate::profile_list::rows(&store.profiles);
         let mode = self.mode;
@@ -570,35 +703,72 @@ impl SettingsWindow {
             if mode == Mode::Profiles {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.heading("Profiles");
-                    list.selection = vec![selected.clone()];
-                    match crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false) {
-                        crate::profile_list_ui::ListEvent::Picked(g) => pick = Some(g),
-                        crate::profile_list_ui::ListEvent::Activated(g) => edit = Edit::Open(g, How::Tab),
-                        _ => {}
-                    }
+                    let menu: &dyn Fn(usize) -> Vec<&'static str> = &profiles_context_menu;
+                    let event = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, true, Some(menu));
                     if list.tags_open != globals.bool(PROFILES_TAGS_OPEN) {
                         globals.set(PROFILES_TAGS_OPEN, Value::Boolean(list.tags_open));
                         if matches!(edit, Edit::None) {
                             edit = Edit::GlobalsChanged;
                         }
                     }
-                    ui.separator();
-                    // The buttons open the selected visible profile, never a hidden one.
-                    let target = list.selection.first().cloned();
-                    ui.horizontal(|ui| {
-                        for (label, how) in [("New Tab", How::Tab), ("New Window", How::Window), ("Split Right", How::SplitRight), ("Split Down", How::SplitDown)] {
-                            if ui.add_enabled(target.is_some(), egui::Button::new(label)).clicked() {
-                                edit = Edit::Open(target.clone().unwrap_or_default(), how);
+                    // The selected profiles in list order (`orderedSelectedGuids`).
+                    let ordered: Vec<String> = list_rows.iter().filter(|r| list.selection.contains(&r.0)).map(|r| r.0.clone()).collect();
+                    let any_prevents = ordered.iter().any(|g| store.get(g).is_some_and(|p| p.bool("Prevent Opening in a Tab")));
+                    let b = profiles_buttons(ordered.len(), window_exists, any_prevents);
+                    let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+                    let open = |how: How| Edit::OpenMany(ordered.clone(), how);
+                    match event {
+                        crate::profile_list_ui::ListEvent::Activated(_) if !ordered.is_empty() => edit = open(if shift { How::Window } else { enter_opens(&b, false) }),
+                        crate::profile_list_ui::ListEvent::MenuItem(label) => {
+                            edit = match label {
+                                "Edit Profile\u{2026}" => Edit::EditProfiles(ordered.first().cloned()),
+                                "Open in New Tab" | "Open in New Tabs" => open(How::Tab),
+                                _ => open(How::Window),
                             }
                         }
+                        _ => {}
+                    }
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add_enabled(b.new_tab, egui::Button::new("New Tab")).clicked() {
+                            edit = open(How::Tab);
+                        }
+                        if ui.add_enabled(b.new_window, egui::Button::new(b.new_window_title)).clicked() {
+                            edit = open(How::Window);
+                        }
+                        if ui.add_enabled(b.new_tabs_in_new_window, egui::Button::new("New Tabs in New Window")).clicked() {
+                            edit = open(How::TabsInNewWindow);
+                        }
+                        // Alt turns a split into "first in a new window, the rest split into it".
+                        for (label, alt_label, side_by_side) in [("Split Right", "New Window, Split Right", true), ("Split Down", "New Window, Split Down", false)] {
+                            if ui.add_enabled(b.splits, egui::Button::new(if alt { alt_label } else { label })).clicked() {
+                                edit = open(if alt {
+                                    How::SplitsInNewWindow(side_by_side)
+                                } else if side_by_side {
+                                    How::SplitRight
+                                } else {
+                                    How::SplitDown
+                                });
+                            }
+                        }
+                        if ui.button("Edit Profiles\u{2026}").clicked() {
+                            edit = Edit::EditProfiles(ordered.first().cloned());
+                        }
                     });
+                    let mut close = globals.bool(CLOSE_AFTER_OPENING);
+                    if ui.checkbox(&mut close, "Close this window after opening a profile.").changed() {
+                        globals.set(CLOSE_AFTER_OPENING, Value::Boolean(close));
+                        if matches!(edit, Edit::None) {
+                            edit = Edit::GlobalsChanged;
+                        }
+                    }
                 });
                 return;
             }
             egui::Panel::left("profiles").default_size(220.0).show(ui, |ui| {
                 ui.heading("Profiles");
                 list.selection = vec![selected.clone()];
-                if let crate::profile_list_ui::ListEvent::Picked(g) = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false) {
+                if let crate::profile_list_ui::ListEvent::Picked(g) = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false, None) {
                     pick = Some(g);
                 }
                 ui.separator();
@@ -1719,6 +1889,77 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn g(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn profiles_window_buttons_follow_iterm2() {
+        let none = profiles_buttons(0, true, false);
+        assert!(!none.new_tab && !none.new_window && !none.new_tabs_in_new_window && !none.splits);
+        let one = profiles_buttons(1, true, false);
+        assert!(one.new_tab && one.new_window && one.splits && !one.new_tabs_in_new_window);
+        assert_eq!(one.new_window_title, "New Window");
+        let no_window = profiles_buttons(1, false, false);
+        assert!(no_window.new_tab && no_window.new_window && !no_window.splits, "tab stays enabled for Enter");
+        let two = profiles_buttons(2, false, false);
+        assert_eq!(two.new_window_title, "New Windows");
+        assert!(two.new_tabs_in_new_window && two.splits, "several: splits even with no window");
+        let refuses = profiles_buttons(2, true, true);
+        assert!(!refuses.new_tab && !refuses.new_tabs_in_new_window && refuses.new_window && refuses.splits);
+        let one_refuses = profiles_buttons(1, true, true);
+        assert!(!one_refuses.new_tab && one_refuses.new_window);
+    }
+
+    #[test]
+    fn profiles_window_context_menu_follows_iterm2() {
+        assert!(profiles_context_menu(0).is_empty());
+        assert_eq!(profiles_context_menu(1), vec!["Edit Profile\u{2026}", "Open in New Tab", "Open in New Window"]);
+        assert_eq!(profiles_context_menu(2), vec!["Open in New Tabs", "Open in New Windows"]);
+        assert_eq!(profiles_context_menu(5), vec!["Open in New Tabs", "Open in New Windows"]);
+    }
+
+    #[test]
+    fn close_after_opening_follows_iterm2() {
+        for how in [How::Tab, How::Window, How::TabsInNewWindow, How::SplitsInNewWindow(true), How::SplitsInNewWindow(false)] {
+            assert!(closes_after(true, how), "{how:?}");
+            assert!(!closes_after(false, how), "{how:?} with the key off");
+        }
+        assert!(!closes_after(true, How::SplitRight), "kept quirk: a split into the current window");
+        assert!(!closes_after(true, How::SplitDown));
+        assert!(!closes_after(false, How::SplitDown));
+    }
+
+    #[test]
+    fn open_plan_follows_iterm2() {
+        let abc = g(&["a", "b", "c"]);
+        assert_eq!(open_plan(&abc, How::Tab, true), vec![Step::Tab("a".into()), Step::Tab("b".into()), Step::Tab("c".into())]);
+        assert_eq!(open_plan(&abc[..2], How::Window, true), vec![Step::Window("a".into()), Step::Window("b".into())]);
+        assert_eq!(open_plan(&abc, How::TabsInNewWindow, true), vec![Step::NewWindow("a".into(), Rest::Tabs(g(&["b", "c"])))]);
+        assert_eq!(open_plan(&abc, How::SplitRight, true), vec![Step::Split(true, "a".into()), Step::Split(true, "b".into()), Step::Split(true, "c".into())]);
+        assert_eq!(open_plan(&abc[..2], How::SplitDown, true), vec![Step::Split(false, "a".into()), Step::Split(false, "b".into())]);
+        assert_eq!(open_plan(&abc, How::SplitDown, false), vec![Step::NewWindow("a".into(), Rest::Splits(false, g(&["b", "c"])))], "no window: the first opens one");
+        assert_eq!(open_plan(&abc, How::SplitsInNewWindow(true), true), vec![Step::NewWindow("a".into(), Rest::Splits(true, g(&["b", "c"])))]);
+        assert_eq!(open_plan(&abc[..1], How::SplitsInNewWindow(true), true), vec![Step::Window("a".into())], "one profile is a plain window");
+        assert_eq!(open_plan(&abc[..1], How::TabsInNewWindow, true), vec![Step::Window("a".into())]);
+        assert!(open_plan(&[], How::Tab, true).is_empty());
+    }
+
+    #[test]
+    fn opening_many_asks_above_eight() {
+        assert!(!asks_before_opening(1) && !asks_before_opening(8));
+        assert!(asks_before_opening(9) && asks_before_opening(500));
+    }
+
+    #[test]
+    fn enter_opens_follows_iterm2() {
+        let ok = profiles_buttons(1, true, false);
+        assert_eq!(enter_opens(&ok, false), How::Tab);
+        assert_eq!(enter_opens(&ok, true), How::Window);
+        let refuses = profiles_buttons(1, true, true);
+        assert_eq!(enter_opens(&refuses, false), How::Window, "the Window button takes Enter when New Tab is disabled");
+    }
 
     struct Reg(Option<String>);
     impl crate::url_schemes::SchemeRegistry for Reg {
