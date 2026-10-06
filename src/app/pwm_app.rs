@@ -1470,7 +1470,7 @@ impl App {
     }
 
     /// A session's name as the broadcast warning shows it (`presentationSessionTitle`).
-    fn session_name(&self, pane: PaneId) -> String {
+    pub(super) fn session_name(&self, pane: PaneId) -> String {
         let Some(p) = self.panes.get(&pane) else { return String::new() };
         p.own().title().map(str::to_string).unwrap_or_else(|| self.store.get(&p.profile).map(|pr| pr.string("Name")).unwrap_or_default())
     }

@@ -246,13 +246,18 @@ pub fn chord_and_label(s: &Shortcut) -> Option<(Chord, String)> {
     Some((c, label))
 }
 
-/// The question text of a program-supplied session hotkey (`label` is the chord, "Ctrl+Alt+1").
-pub fn consent_text(origin: &Origin, label: &str) -> String {
+/// The question text of a program-supplied session hotkey (`label` is the chord, "Ctrl+Alt+1";
+/// `session` is the asking pane's title). The chord is the first line, on its own, so no supplied
+/// text can move it; every supplied name goes through `shown_name` (no bidi, control or
+/// zero-width character, and cut at `SHOWN_NAME`).
+pub fn consent_text(origin: &Origin, session: &str, label: &str) -> String {
+    let shown = crate::inert_files::shown_name;
     let who = match origin {
-        Origin::Program => "A program in a session".to_string(),
-        Origin::Tmux { name, .. } => format!("tmux session \u{201c}{name}\u{201d}"),
+        Origin::Program if shown(session).trim().is_empty() => "A program in a session".to_string(),
+        Origin::Program => format!("A program in session \u{201c}{}\u{201d}", shown(session)),
+        Origin::Tmux { name, .. } => format!("tmux session \u{201c}{}\u{201d}", shown(name)),
     };
-    format!("{who} asks to register {label} as a hotkey that works in every app.")
+    format!("{label}\n{who} asks to register this chord as a hotkey that works in every app.")
 }
 
 /// What a program's write did, for the app: the question to ask (None when it needs none) and the
@@ -680,7 +685,7 @@ mod tests {
         let ask = b.program_set(3, Some(s.clone()), Origin::Tmux { host: "me@box".into(), name: "x".into() }).ask;
         assert!(ask.is_some(), "the person is asked");
         assert!(b.live().is_empty(), "nothing registers before the answer");
-        assert_eq!(consent_text(&Origin::Tmux { host: "me@box".into(), name: "x".into() }, "Ctrl+Alt+1"), "tmux session \u{201c}x\u{201d} asks to register Ctrl+Alt+1 as a hotkey that works in every app.");
+        assert_eq!(consent_text(&Origin::Tmux { host: "me@box".into(), name: "x".into() }, "", "Ctrl+Alt+1"), "Ctrl+Alt+1\ntmux session \u{201c}x\u{201d} asks to register this chord as a hotkey that works in every app.");
         assert!(b.allow(3, &s));
         assert_eq!(b.live(), &[(3, s.clone())]);
         // A program rewriting it turns it off until asked again.
@@ -696,5 +701,24 @@ mod tests {
         assert_eq!(b.live().len(), 1);
         b.person_set(4, None);
         assert!(b.live().is_empty());
+    }
+
+    #[test]
+    fn a_supplied_name_cannot_move_the_chord() {
+        // A right-to-left override would reverse the rest of the line, the chord with it, and a
+        // 10 KB name would push the chord out of the dialog.
+        let hostile = format!("evil\u{202e}1+tlA+lrtC\u{200b}\n{}", "x".repeat(10 * 1024));
+        for text in [
+            consent_text(&Origin::Tmux { host: "me@box".into(), name: hostile.clone() }, "", "Ctrl+Alt+1"),
+            consent_text(&Origin::Program, &hostile, "Ctrl+Alt+1"),
+        ] {
+            assert_eq!(text.lines().next(), Some("Ctrl+Alt+1"), "the chord is the first line, on its own");
+            assert_eq!(text.lines().count(), 2, "the name adds no line");
+            assert!(!text.chars().filter(|c| *c != '\n').any(crate::inert_files::is_hidden), "no bidi, control or zero-width character from the name");
+            assert!(text.chars().count() < crate::inert_files::SHOWN_NAME + 120, "the name is cut");
+        }
+        // A program's question names its session; an untitled one reads as before.
+        assert!(consent_text(&Origin::Program, "build", "Ctrl+Alt+1").contains("A program in session \u{201c}build\u{201d}"));
+        assert!(consent_text(&Origin::Program, "\u{200b} ", "Ctrl+Alt+1").contains("A program in a session asks"));
     }
 }

@@ -116,6 +116,10 @@ Decision (Task 9): edge ease-in with a linear no-slide fade, a failed fade ends 
 Decision (Task 9, fix): the composed fade runs in its own pass on a non-sRGB view; an alpha-surface window not drawing see-through does not fade; a composed show renders one frame at opacity 0 before it is uncloaked. - cost if wrong: one extra pass or frame while a fade runs.
 Decision (Task 10): natural_size ignores gap; a sub-cell filler sliver shows when the area is not a whole number of cells; a new tmux window opens with with_active(false); a zoomed tmux tab keeps today's full-area layout; filler_follows_iterm2 lives in scene.rs's last test module. - cost if wrong: cosmetic; Windows may still raise a new window.
 
+-- Final review fix wave
+Ruling (final review 2): the session hotkey question puts the chord on its own first line, and every supplied name in it (a tmux session name, the asking pane's title) goes through inert_files::shown_name inside consent_text, so no caller can skip it. The tmux host is not shown. - cost if wrong: a hostile name garbles the line under the chord, never the chord.
+Decision (final review 5): a program's question names its session ("A program in session 'title'", presentationSessionTitle as the broadcast warning uses); an untitled session reads "A program in a session". - cost if wrong: a long title is cut at SHOWN_NAME.
+
 -- Deferred minors (final triage, each with its cost)
 Deferred: an unmapped Win key still reports 57444u and Ctrl+Win+a sends 97;5u to a kitty program (iTerm2 ignores events with an unmapped Command key). - cost if wrong: a kitty-protocol program sees a Win event iTerm2 would hide.
 Deferred: Bucky::from_profile has no test of its own. - cost if wrong: a profile key typo is caught only by the checklist row.

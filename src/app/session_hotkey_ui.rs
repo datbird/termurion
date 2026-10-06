@@ -59,7 +59,7 @@ impl App {
             return;
         }
         // The question names the chord that would register, never the shortcut's own characters.
-        let text = session_hotkeys::consent_text(&origin, &session_hotkeys::chord_label(&chord));
+        let text = session_hotkeys::consent_text(&origin, &self.session_name(pane), &session_hotkeys::chord_label(&chord));
         let ask = scripts_alerts::ask("Register a hotkey?", &text, &[REGISTER, IGNORE], Some(ASK_ID), Kind::Permanent, Then::SessionHotkey { pane, shortcut: s });
         self.ask_scripts(ask);
     }
