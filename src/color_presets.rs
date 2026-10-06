@@ -576,6 +576,87 @@ pub fn delete_custom(g: &mut Globals, name: &str) {
     g.set(CUSTOM_KEY, Value::Table(stored));
 }
 
+/// What key action 40 changes (`PS:12100-12116`): (the session, the backing profile). The session
+/// always changes; the profile (a divorced session's is found by its original guid) when it exists.
+pub fn action_plan(divorced: bool, backing_exists: bool) -> (bool, bool) {
+    let _ = divorced;
+    (true, backing_exists)
+}
+
+/// The preset's color for a base key and appearance as an sRGB byte color.
+fn rgb_of(p: &Preset, base: &str, dark: bool) -> Option<crate::palette::Rgb> {
+    let c = color_of(p, base, dark)?;
+    let v = crate::import::preset_color_to_value(&c);
+    let t = v.as_table()?;
+    let byte = |k: &str| (t.get(k).and_then(number).unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;
+    Some(crate::palette::Rgb { r: byte("r"), g: byte("g"), b: byte("b") })
+}
+
+/// The 25 colors an escape-code preset sets by name (the `SetColors` names), for one appearance. A
+/// color the preset lacks is left out. Underline, cursor guide and badge have no name and the tab
+/// color goes through `tab_color`.
+pub fn named_colors(p: &Preset, dark: bool) -> Vec<(&'static str, crate::osc1337::Color)> {
+    const NAMES: [(&str, &str); 25] = [
+        ("fg", "Foreground Color"),
+        ("bg", "Background Color"),
+        ("bold", "Bold Color"),
+        ("link", "Link Color"),
+        ("match", "Match Background Color"),
+        ("selbg", "Selection Color"),
+        ("selfg", "Selected Text Color"),
+        ("curbg", "Cursor Color"),
+        ("curfg", "Cursor Text Color"),
+        ("black", "Ansi 0 Color"),
+        ("red", "Ansi 1 Color"),
+        ("green", "Ansi 2 Color"),
+        ("yellow", "Ansi 3 Color"),
+        ("blue", "Ansi 4 Color"),
+        ("magenta", "Ansi 5 Color"),
+        ("cyan", "Ansi 6 Color"),
+        ("white", "Ansi 7 Color"),
+        ("br_black", "Ansi 8 Color"),
+        ("br_red", "Ansi 9 Color"),
+        ("br_green", "Ansi 10 Color"),
+        ("br_yellow", "Ansi 11 Color"),
+        ("br_blue", "Ansi 12 Color"),
+        ("br_magenta", "Ansi 13 Color"),
+        ("br_cyan", "Ansi 14 Color"),
+        ("br_white", "Ansi 15 Color"),
+    ];
+    NAMES.iter().filter_map(|(n, key)| Some((*n, crate::osc1337::Color::Rgb(rgb_of(p, key, dark)?)))).collect()
+}
+
+/// The preset's tab color for one appearance, None when it has none.
+pub fn tab_color(p: &Preset, dark: bool) -> Option<crate::palette::Rgb> {
+    rgb_of(p, "Tab Color", dark)
+}
+
+/// An Open Quickly row's swatch: the preset's foreground and background for one appearance (iTerm2's
+/// fallbacks, 0.75 and 0.25 gray, `OQM:629-630`).
+pub fn swatch(p: &Preset, dark: bool) -> (crate::palette::Rgb, crate::palette::Rgb) {
+    let gray = |v: u8| crate::palette::Rgb { r: v, g: v, b: v };
+    (rgb_of(p, "Foreground Color", dark).unwrap_or(gray(191)), rgb_of(p, "Background Color", dark).unwrap_or(gray(64)))
+}
+
+thread_local! {
+    static NAMES_HINT: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The settings window records the preset names it can offer, so a key binding's preset combo
+/// (drawn deep inside editors that hold no globals) lists them.
+pub fn remember_names(g: &Globals) {
+    let names = all_names(g);
+    NAMES_HINT.with(|h| *h.borrow_mut() = names);
+}
+
+/// The names `remember_names` last recorded, the built-in ones before any.
+pub fn remembered_names() -> Vec<String> {
+    NAMES_HINT.with(|h| {
+        let h = h.borrow();
+        if h.is_empty() { built_in().iter().map(|(n, _)| n.clone()).collect() } else { h.clone() }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

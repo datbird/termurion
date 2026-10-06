@@ -146,6 +146,7 @@ mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
 mod pane_nav_ui;
 mod open_quickly_app;
+mod presets_ui;
 mod replay_ui;
 mod pwm_app;
 mod api_ui;

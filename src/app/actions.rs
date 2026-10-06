@@ -353,6 +353,11 @@ impl App {
             // Move Tab Left and Right, as the menu's.
             33 | 34 => self.move_active_tab(if b.action == 34 { 1 } else { -1 }),
             37 => self.set_profile(&b.text),
+            40 => {
+                if let Some(id) = self.focused_pane_id() {
+                    self.load_preset_action(id, &b.text);
+                }
+            }
             49 => self.grow_focused(Axis::Column, false),
             50 => self.grow_focused(Axis::Column, true),
             51 => self.grow_focused(Axis::Row, false),

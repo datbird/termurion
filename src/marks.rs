@@ -1573,6 +1573,10 @@ impl Screen {
                 "SetColors" => {
                     for (name, v) in crate::osc1337::set_colors(&value) {
                         match (name.as_str(), crate::osc1337::color(&v)) {
+                            ("preset", _) => {
+                                self.requests.retain(|r| !matches!(r, Request::ColorPreset(_)));
+                                self.requests.push(Request::ColorPreset(v));
+                            }
                             ("tab", _) if v == "default" => self.requests.push(Request::TabColor(None)),
                             ("tab", Some(crate::osc1337::Color::Rgb(c))) => self.requests.push(Request::TabColor(Some(c))),
                             ("tab", Some(crate::osc1337::Color::Index(i))) => {
@@ -1731,6 +1735,54 @@ mod tests {
         assert_eq!(color(&marks[0].1, true), MarkColor::Error);
         assert_eq!(s.shell.history[0].command, "ls -l");
         assert_eq!(s.shell.history[0].code, Some(2));
+    }
+
+    #[test]
+    fn osc_preset_follows_iterm2() {
+        let mut s = Screen::new(40, 10);
+        let before = s.palette.clone();
+        s.feed(b"\x1b]1337;SetColors=preset=Solarized Dark\x07");
+        assert_eq!(s.take_requests(), vec![Request::ColorPreset("Solarized Dark".into())]);
+        assert!(s.palette == before, "the request, not the parser, changes colors");
+        // A program looping the sequence leaves one load pending.
+        s.feed(b"\x1b]1337;SetColors=preset=A\x07\x1b]1337;SetColors=preset=B\x07");
+        assert_eq!(s.take_requests(), vec![Request::ColorPreset("B".into())]);
+    }
+
+    fn built_in(name: &str) -> crate::color_presets::Preset {
+        crate::color_presets::built_in().iter().find(|(n, _)| n == name).unwrap().1.clone()
+    }
+
+    #[test]
+    fn osc_preset_sets_named_colors_and_ends_with_the_program() {
+        let mut s = Screen::new(40, 10);
+        let profile = s.palette.clone();
+        let tango = built_in("Tango Dark");
+        let named = crate::color_presets::named_colors(&tango, true);
+        s.set_named_colors(&named);
+        let (fg, _) = crate::color_presets::swatch(&tango, true);
+        assert_eq!(s.palette.fg, fg);
+        assert!(s.palette != profile);
+        // A profile change keeps what the program set; the program ending drops it.
+        s.set_palette(profile.clone());
+        assert_eq!(s.palette.fg, fg);
+        s.program_ended();
+        s.set_palette(profile.clone());
+        assert!(s.palette == profile, "the profile's colors are back");
+    }
+
+    #[test]
+    fn osc_preset_skips_unnameable_keys() {
+        // No built-in preset has a match color (an optional key), so the most one names is 24; a
+        // preset lacking a color (Solarized Dark has no link color) names fewer.
+        let most = crate::color_presets::built_in().iter().map(|(_, p)| crate::color_presets::named_colors(p, true).len()).max().unwrap();
+        assert_eq!(most, 24);
+        let names: Vec<&str> = crate::color_presets::named_colors(&built_in("Solarized Dark"), true).into_iter().map(|(n, _)| n).collect();
+        assert!(names.len() < 24 && !names.contains(&"link"), "{names:?}");
+        for n in ["fg", "bg", "bold", "selbg", "selfg", "curbg", "curfg", "black", "white", "br_black", "br_white"] {
+            assert!(names.contains(&n), "{n}");
+        }
+        assert!(!names.iter().any(|n| n.contains("underline") || n.contains("guide") || n.contains("badge") || *n == "tab"));
     }
 
     #[test]

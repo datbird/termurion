@@ -469,6 +469,8 @@ pub enum Request {
     RequestUpload(String),
     /// SetColors `tab`: the pane's tab color, or back to none.
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
+    /// SetColors `preset=Name`: load the named color preset into this pane.
+    ColorPreset(String),
     /// A trigger's action the window runs.
     Trigger(crate::trigger_eval::TriggerRequest),
     /// BEL.
@@ -1405,6 +1407,17 @@ impl Screen {
         }
         self.last_dark = dark;
         crate::reports::color_scheme(dark)
+    }
+
+    /// A preset's named colors as program-set colors (kept over the profile's by `set_palette`,
+    /// dropped by `program_ended`).
+    pub(crate) fn set_named_colors(&mut self, colors: &[(&'static str, crate::osc1337::Color)]) {
+        for (name, c) in colors {
+            if self.apply_color(name, *c) {
+                self.color_sets.retain(|(n, _)| n != name);
+                self.color_sets.push((name.to_string(), *c));
+            }
+        }
     }
 
     /// SetColors: one named color on the pane's palette. False for an unknown name.

@@ -132,7 +132,7 @@ impl App {
                 reply(req, Resp::SetBroadcastDomainsResponse(pb::SetBroadcastDomainsResponse { status: Some(status as i32) }))
             }
             Some(Req::TmuxRequest(r)) => self.api_tmux(conn, req, r, event_loop),
-            Some(Req::ColorPresetRequest(r)) => reply(req, Resp::ColorPresetResponse(api_misc::color_preset(r))),
+            Some(Req::ColorPresetRequest(r)) => reply(req, Resp::ColorPresetResponse(api_misc::color_preset(r, &|n| crate::color_presets::find(&self.globals, n), &crate::color_presets::all_names(&self.globals)))),
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))

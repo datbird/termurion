@@ -148,6 +148,7 @@ impl App {
                 };
                 self.redraw();
             }
+            Request::ColorPreset(name) => self.escape_preset(pane, &name),
             Request::AskClearHistory => self.ask_clear_history(pane),
             Request::AskDecrqcra => self.ask_decrqcra(pane),
             Request::Print(job) => self.print_request(pane, job),

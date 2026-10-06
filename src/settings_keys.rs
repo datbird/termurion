@@ -139,6 +139,8 @@ fn action_name(b: &Binding) -> String {
         _ if b.action == 64 => format!("Compose \u{201c}{}\u{201d}", b.text),
         Arg::Sequence => format!("{name} ({} steps)", keyaction::sequence(&b.text).len()),
         _ if b.text.is_empty() => name,
+        // Load Color Preset: `Load Color Preset \u{201c}<name>\u{201d}` (`iTermKeyBindingAction.m:341-342`).
+        Arg::ColorPreset => format!("Load Color Preset \u{201c}{}\u{201d}", b.text),
         // Paste... and Paste from Selection...: the configuration's summary (iTerm2's).
         _ if matches!(b.action, 41 | 42) => match crate::paste::Config::decode(&b.text).summary() {
             s if s.is_empty() => name,
@@ -386,6 +388,21 @@ fn profile_combo(ui: &mut egui::Ui, salt: &str, guid: &mut String, profiles: &[(
     changed
 }
 
+/// The color presets a Load Color Preset binding can name (`preset_names()`).
+fn preset_combo(ui: &mut egui::Ui, salt: &str, name: &mut String) -> bool {
+    let mut changed = false;
+    let shown = if name.is_empty() { "Select a preset".to_string() } else { name.clone() };
+    egui::ComboBox::from_id_salt(salt).width(240.0).height(420.0).selected_text(shown).show_ui(ui, |ui| {
+        for n in crate::color_presets::remembered_names() {
+            if ui.selectable_label(*name == n, &n).clicked() {
+                *name = n;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
 /// Menu items a binding can select, with their title and id.
 fn menu_items() -> Vec<(&'static str, String)> {
     crate::menus::items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()).map(|i| (i.label(), i.id())).collect()
@@ -510,6 +527,7 @@ pub(crate) fn param_editor(ui: &mut egui::Ui, salt: &str, b: &mut Binding, profi
                 }
             });
         }
+        Arg::ColorPreset => changed |= preset_combo(ui, &format!("{salt}-preset"), &mut b.text),
         Arg::VimText | Arg::Other => {
             let edit = egui::TextEdit::singleline(&mut b.text).hint_text(param_placeholder(b.action).unwrap_or(""));
             changed |= ui.add(edit).changed();

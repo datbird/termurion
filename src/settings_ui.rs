@@ -473,6 +473,7 @@ impl SettingsWindow {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
                             Page::Keys => {
+                                crate::color_presets::remember_names(globals);
                                 let mut c = settings_keys::keys_page(ui, globals, keys, &profiles, &key_maps);
                                 match crate::settings_hotkey::keys_section(ui, globals, store, hk, keys) {
                                     crate::settings_hotkey::KeysEdit::None => {}
@@ -507,7 +508,10 @@ impl SettingsWindow {
                             Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance").0,
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
-                            Page::Shortcuts => match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
+                            Page::Shortcuts => match {
+                                crate::color_presets::remember_names(globals);
+                                crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles)
+                            } {
                                 crate::settings_shortcuts::Changed::None => false,
                                 crate::settings_shortcuts::Changed::Actions => true,
                                 crate::settings_shortcuts::Changed::Snippets => {
@@ -686,6 +690,7 @@ impl SettingsWindow {
                                 continue;
                             }
                             if s.key == "Keyboard Map" {
+                                crate::color_presets::remember_names(globals);
                                 if settings_keys::profile_key_mappings(ui, profile, keys, &profiles, &global_keys) {
                                     edit = Edit::Changed(selected.clone());
                                 }

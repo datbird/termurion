@@ -189,6 +189,9 @@ use crate::egui_host::EguiHost;
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaletteRow {
     pub icon: char,
+    /// A color preset's swatch: the glyph in this foreground on this background, in place of
+    /// the plain icon (`OQM:624-626`).
+    pub swatch: Option<([u8; 3], [u8; 3])>,
     pub title: String,
     pub title_bold: Vec<usize>,
     pub detail: String,
@@ -580,7 +583,17 @@ impl OpenQuicklyWindow {
                             ui.painter().rect_filled(cell, 5.0, accent);
                         }
                         let icon = egui::Rect::from_min_size(egui::pos2(cell.min.x + 9.0, cell.min.y + 2.0), egui::vec2(40.0, 40.0));
-                        ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, row.icon, egui::FontId::new(24.0, icons()), title_color);
+                        match row.swatch {
+                            Some((fg, bg)) => {
+                                let tile = icon.shrink(4.0);
+                                ui.painter().rect_filled(tile, 6.0, egui::Color32::from_rgb(bg[0], bg[1], bg[2]));
+                                ui.painter().rect_stroke(tile, 6.0, egui::Stroke::new(1.0, weak), egui::StrokeKind::Inside);
+                                ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, row.icon, egui::FontId::new(20.0, icons()), egui::Color32::from_rgb(fg[0], fg[1], fg[2]));
+                            }
+                            None => {
+                                ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, row.icon, egui::FontId::new(24.0, icons()), title_color);
+                            }
+                        }
                         let title_bold: Vec<Range<usize>> = row.title_bold.iter().map(|&c| c..c + 1).collect();
                         let title = runs_job(&row.title, &title_bold, 13.0, title_color, 412.0);
                         let detail = runs_job(&row.detail, &row.detail_bold, 11.0, detail_color, 412.0);

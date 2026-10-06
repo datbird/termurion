@@ -312,6 +312,8 @@ pub enum ItemKind {
     Script(String),
     /// A script function invocation: the whole query (`OQM:699-716`).
     Invocation(String),
+    /// A color preset, by name (`OQM:617-646`).
+    ColorPreset(String),
 }
 
 /// One ranked result: its score, its display title with the query-matched char indexes to bold,
@@ -377,6 +379,8 @@ pub struct Sources {
     pub menu_items: Vec<(String, String, Vec<String>, bool)>,
     /// Every script's path under the Scripts folder (`allScripts`, "folder/name.py").
     pub scripts: Vec<String>,
+    /// Every color preset: (name, foreground, background) for the swatch (`OQM:617-646`).
+    pub color_presets: Vec<(String, crate::palette::Rgb, crate::palette::Rgb)>,
     /// The whole query when it parses as a call or a call sequence (`OQM:950-1003`).
     pub invocation: Option<String>,
 }
@@ -401,7 +405,7 @@ pub const MENU_DETAIL: &str = "Menu item under {}";
 pub const ALT_MENU_DETAIL: &str = "Alternate menu item under {}";
 /// `{}` is the preset name. The quotes are reversed in iTerm2's own string
 /// (`@"Load color preset \u{201d}%@\u{201c}"`); kept verbatim, though nothing produces this item
-/// yet (color presets are milestone 13; the source is empty).
+/// in the item.
 pub const COLOR_PRESET_DETAIL: &str = "Load color preset \u{201d}{}\u{201c}";
 pub const UNTITLED: &str = "Untitled";
 /// An invocation item's detail (`OQM:705`).
@@ -445,6 +449,8 @@ const MENU_ITEM_MULT: f64 = 0.096;
 /// `kProfileNameMultiplierForScriptItem`; its limit is twice that.
 const SCRIPT_MULT: f64 = 0.09;
 const WINDOW_MULT: f64 = 0.08;
+/// `kProfileNameMultiplierForColorPresetItem`; its limit is twice that.
+const COLOR_PRESET_MULT: f64 = 0.095;
 
 /// What a command restricts the search to (`supportsSessionLocation` and friends). Color
 /// presets and bookmarks have no Tandem source (milestone 13, and never), so their commands
@@ -461,6 +467,7 @@ struct Supports {
     named_marks: bool,
     menu_items: bool,
     script: bool,
+    color_preset: bool,
 }
 
 const NOTHING: Supports = Supports {
@@ -474,6 +481,7 @@ const NOTHING: Supports = Supports {
     named_marks: false,
     menu_items: false,
     script: false,
+    color_preset: false,
 };
 
 fn supports(cmd: Command) -> Supports {
@@ -489,6 +497,7 @@ fn supports(cmd: Command) -> Supports {
             named_marks: true,
             menu_items: true,
             script: true,
+            color_preset: true,
         },
         Command::InTabsArrangement => Supports { open_arrangement: Some(true), ..NOTHING },
         Command::Arrangement => Supports { open_arrangement: Some(false), ..NOTHING },
@@ -497,7 +506,8 @@ fn supports(cmd: Command) -> Supports {
         Command::Windows => Supports { window_location: true, ..NOTHING },
         Command::CreateTab => Supports { create_new_tab: true, ..NOTHING },
         Command::Script => Supports { script: true, ..NOTHING },
-        Command::ColorPreset | Command::Bookmark => NOTHING,
+        Command::ColorPreset => Supports { color_preset: true, ..NOTHING },
+        Command::Bookmark => NOTHING,
         Command::Action => Supports { action: true, ..NOTHING },
         Command::Snippet => Supports { snippet: true, ..NOTHING },
     }
@@ -799,6 +809,19 @@ fn add_scripts(items: &mut Vec<Item>, query: &str, s: &Sources) {
     }
 }
 
+/// Color preset items (`addChangeColorPresetToItems:withMatcher:`, `OQM:617-646`).
+fn add_color_presets(items: &mut Vec<Item>, query: &str, s: &Sources) {
+    for (name, _, _) in &s.color_presets {
+        let docs = vec![name.clone()];
+        let (score, result) = score_feature(query, &docs, COLOR_PRESET_MULT, 2.0 * COLOR_PRESET_MULT);
+        if score <= 0.0 {
+            continue;
+        }
+        let (title, title_bold) = title_from(&docs, result);
+        items.push(Item { kind: ItemKind::ColorPreset(name.clone()), score, title, title_bold, detail: fill(COLOR_PRESET_DETAIL, name), detail_bold: Vec::new() });
+    }
+}
+
 fn add_actions(items: &mut Vec<Item>, query: &str, s: &Sources) {
     let cap = 2.0 * ACTION_MULT;
     for (i, (title, display)) in s.actions.iter().enumerate() {
@@ -922,6 +945,9 @@ pub fn items(query: &str, s: &Sources) -> Vec<Item> {
     }
     if sup.script {
         add_scripts(&mut items, &text, s);
+    }
+    if sup.color_preset && s.has_window {
+        add_color_presets(&mut items, &text, s);
     }
     if sup.action && s.has_window {
         add_actions(&mut items, &text, s);
@@ -1250,8 +1276,29 @@ mod tests {
     }
 
     #[test]
-    fn color_preset_detail_string_kept_for_milestone_13() {
-        assert_eq!(fill(COLOR_PRESET_DETAIL, "Solarized"), "Load color preset \u{201d}Solarized\u{201c}");
+    fn open_quickly_presets_follow_iterm2() {
+        use crate::palette::Rgb;
+        let (fg, bg) = (Rgb { r: 1, g: 2, b: 3 }, Rgb { r: 4, g: 5, b: 6 });
+        let with = Sources {
+            has_window: true,
+            color_presets: vec![("Solarized".into(), fg, bg), ("Tango Dark".into(), fg, bg)],
+            ..Default::default()
+        };
+        let presets = |q: &str, s: &Sources| -> Vec<Item> { items(q, s).into_iter().filter(|i| matches!(i.kind, ItemKind::ColorPreset(_))).collect() };
+        let got = presets("sol", &with);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, ItemKind::ColorPreset("Solarized".into()));
+        assert_eq!(got[0].detail, "Load color preset \u{201d}Solarized\u{201c}");
+        let (score, result) = score_feature("sol", &["Solarized".to_string()], 0.095, 0.19);
+        assert!((got[0].score - score).abs() < 1e-9 && score > 0.0, "{} {score}", got[0].score);
+        assert_eq!((got[0].title.as_str(), Some(got[0].title_bold.clone())), ("Solarized", result.map(|(_, b)| b)));
+        let all = items("/c tango", &with);
+        assert!(!all.is_empty() && all.iter().all(|i| i.kind == ItemKind::ColorPreset("Tango Dark".into())), "{all:?}");
+        assert!(presets("/p tango", &with).is_empty());
+        assert!(items("/", &with).iter().any(|i| i.kind == ItemKind::Tip('c')), "the c tip still shows");
+        let none = Sources { has_window: false, ..with.clone() };
+        assert!(presets("sol", &none).is_empty() && presets("/c sol", &none).is_empty(), "no window, no presets (OQM:902)");
+        assert_eq!((COLOR_PRESET_MULT, fill(COLOR_PRESET_DETAIL, "x")), (0.095, "Load color preset \u{201d}x\u{201c}".to_string()));
     }
 
     #[test]
