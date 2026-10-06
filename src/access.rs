@@ -22,9 +22,13 @@ pub const MAX_ANNOUNCE_LINES: i64 = 256;
 /// How long output must stop before it is announced (`PTYTextView.m:3361`).
 pub const SETTLE: Duration = Duration::from_millis(150);
 
-/// `NumberOfLinesForAccessibility` as the number of rows to expose: 1 to `MAX_LINES`.
+/// `NumberOfLinesForAccessibility` as the number of rows to expose: 1 to `MAX_LINES`, and a
+/// value of zero or less (P16) reads as the default 1000.
 pub fn clamp_lines(n: i64) -> usize {
-    n.clamp(1, MAX_LINES as i64) as usize
+    if n <= 0 {
+        return 1000;
+    }
+    n.min(MAX_LINES as i64) as usize
 }
 
 /// The grid as the model reads it: each row's cells as their characters (an empty string for a
@@ -721,9 +725,10 @@ mod tests {
     fn lines_are_capped() {
         assert_eq!(clamp_lines(10_000_000_000), MAX_LINES);
         assert_eq!(MAX_LINES, 10_000);
-        assert_eq!(clamp_lines(0), 1);
+        assert_eq!(clamp_lines(0), 1000, "P16: zero or less reads as the default");
         assert_eq!(clamp_lines(1000), 1000);
-        assert_eq!(clamp_lines(-5), 1);
+        assert_eq!(clamp_lines(-5), 1000);
+        assert_eq!(clamp_lines(1), 1);
         let r = Rows { rows: (0..5).map(|_| row("abcdef", false)).collect(), cursor: (4, 0), first_line: 100 };
         let c = r.capped(14);
         assert_eq!(c.rows.len(), 2, "older rows go first, 7 units each");

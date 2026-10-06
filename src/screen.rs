@@ -4208,7 +4208,7 @@ mod tests {
         let mut a = Screen::new(10, 2);
         a.feed(b"x\r\ny\r\nz\x1b[?1049hq");
         assert_eq!(a.access_rows(100).rows.len(), 2);
-        assert_eq!(a.access_rows(0).rows.len(), 1, "at least one row");
+        assert_eq!(a.access_rows(1).rows.len(), 1, "at least one row");
     }
 
     /// The tick cache's key moves with any grid change: erasers and movers that touch no record.
