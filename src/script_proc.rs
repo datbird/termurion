@@ -71,7 +71,9 @@ impl ScriptProcess {
             .stderr(err_writer)
             .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         if let Some(dir) = cwd {
-            cmd.current_dir(dir);
+            // CreateProcess opens the working folder: judged first, like any probe.
+            let dir = crate::localfs::LocalPath::judge(dir).ok_or_else(|| crate::localfs::refused().to_string())?;
+            crate::localfs::set_cwd(&mut cmd, &dir);
         }
         let spawned = cmd.spawn();
         // The pipe's write ends go with the command, so the read ends when the script does.

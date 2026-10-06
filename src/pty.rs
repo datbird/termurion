@@ -167,6 +167,8 @@ pub struct Pty {
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
     reader_done: Receiver<()>,
+    /// Something kept alive as long as the pty (a handed-off console's slot in the live count).
+    held: Option<Box<dyn std::any::Any + Send>>,
 }
 
 /// How long Drop waits for ConPTY to close the output pipe before it ends the child.
@@ -246,9 +248,17 @@ fn assemble(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, process: HANDL
     let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
-    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, reader: Some(reader), reader_done };
+    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, reader: Some(reader), reader_done, held: None };
     watch_exit(pty.process, notify)?;
     Ok(pty)
+}
+
+/// The `Pty` of a console a console host handed over (the default-terminal handoff): `hpc` is the
+/// packed pseudoconsole (`ConptyPackPseudoConsole`), `input` our write end and `output` our read
+/// end of the two pipes, `client` the client process. Tandem owns all four from here: a failure
+/// closes them (the pseudoconsole through the api).
+pub fn from_handoff(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, client: HANDLE, notify: Notify) -> Result<Pty, String> {
+    assemble(api, hpc, input, output, client, notify)
 }
 
 /// Calls `notify` once the child exits. It waits on its own copy of the process
@@ -359,9 +369,17 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
     }
 }
 
-/// `cwd` as a null-terminated wide string for CreateProcessW.
+/// The working folder CreateProcessW opens for the child: judged like any probe. One the judge
+/// refuses (a share, a mapped or SUBST drive onto one, a link to one) is replaced by the home
+/// folder when that passes, else the child inherits Tandem's own.
+fn working_folder(cwd: Option<&std::path::Path>) -> Option<crate::localfs::LocalPath> {
+    let cwd = cwd?;
+    crate::localfs::LocalPath::judge(cwd).or_else(|| std::env::var_os("USERPROFILE").and_then(crate::localfs::LocalPath::judge))
+}
+
+/// A judged working folder as a null-terminated wide string for CreateProcessW.
 fn wide_dir(cwd: Option<&std::path::Path>) -> Option<Vec<u16>> {
-    cwd.map(|d| d.as_os_str().encode_wide().chain(Some(0)).collect())
+    working_folder(cwd).map(|d| d.path().as_os_str().encode_wide().chain(Some(0)).collect())
 }
 
 /// The null environment (inherit ours) unless there is something to add. Never logged: it can
@@ -527,6 +545,11 @@ fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::A
 }
 
 impl Pty {
+    /// Keeps `what` alive until the pty is dropped.
+    pub fn hold(&mut self, what: Box<dyn std::any::Any + Send>) {
+        self.held = Some(what);
+    }
+
     /// Queues `bytes` for the child. Returns at once. A failed earlier write is reported here.
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
         if let Some(e) = self.write_error.lock().unwrap().clone() {
@@ -735,6 +758,20 @@ impl Drop for Pty {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// Round 3: CreateProcessW opens the working folder, so a share or a path the judge refuses
+    /// never becomes one (the home folder takes its place when it passes).
+    #[test]
+    fn a_refused_working_folder_is_never_handed_to_create_process() {
+        for d in [r"\\attacker\share", r"\\?\UNC\h\s\x", "relative"] {
+            let got = super::working_folder(Some(std::path::Path::new(d)));
+            assert!(got.as_ref().is_none_or(|g| !g.path().to_string_lossy().eq_ignore_ascii_case(d)), "{d}: {got:?}");
+        }
+        let temp = std::env::temp_dir();
+        assert_eq!(super::working_folder(Some(&temp)).map(|g| g.into_path_buf()), Some(temp));
+        assert_eq!(super::working_folder(None), None);
+    }
+
     use super::*;
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
@@ -1153,7 +1190,7 @@ pub(crate) mod tests {
     #[test]
     fn flags_reach_create_pseudo_console() {
         use crate::ssh_transport::Transport;
-        let fake = Api { source: Source::Inbox, create: fake_create, resize: fake_resize, close: fake_close, clear: None };
+        let fake = Api { source: Source::Inbox, create: fake_create, resize: fake_resize, close: fake_close, clear: None, pack: None };
         let quiet: Notify = Arc::new(|| {});
         let err = spawn_transport(&fake, Transport::Passthrough, "cmd.exe", None, &[], 80, 24, quiet.clone()).err().unwrap();
         assert!(err.contains("0x80004005"), "{err}");

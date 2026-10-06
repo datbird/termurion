@@ -556,7 +556,7 @@ impl<R: Runner> Source for Adapter<R> {
     /// `checkAvailability`: whether the adapter executable exists, nothing more (`AP:1028-1030`).
     /// This never runs the adapter, so it never touches `runner`.
     fn available(&mut self) -> Result<(), String> {
-        if self.path.is_file() {
+        if crate::localfs::is_local_file(&self.path) {
             Ok(())
         } else {
             Err(AdapterError::NotFound.text())

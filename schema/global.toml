@@ -858,7 +858,7 @@ section = "Closing"
 label = "Quit when all windows are closed"
 type = "bool"
 default = false
-help = "Tandem ends when its last window closes. On Windows a Tandem with no window cannot be reached, so Tandem also ends when this is off, until hotkey windows (milestone 7e) can bring one back."
+help = "Tandem ends when its last window closes. When this is off, Tandem keeps running with its icon in the notification area; a click on the icon opens a window when Advanced > General > Open a new window when you click the notification area icon (OpenUntitledFile) is on."
 
 [[setting]]
 key = "NeverBlockSystemShutdown"
@@ -5234,3 +5234,111 @@ label = "Maximum number of lines of history to expose to Accessibility."
 type = "int"
 default = 1000
 help = "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
+
+[[setting]]
+key = "OpenFileOverridesSendText"
+tab = "Advanced"
+section = "General"
+label = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?"
+type = "bool"
+default = true
+help = "Should opening a script with Tandem disable the default profile’s “Send Text at Start” setting?\nIf you use “tandem.exe file.ps1” or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's “Send Text at Start” setting. If this setting is off then both will be executed."
+
+[[setting]]
+key = "MinRunningTime"
+tab = "Advanced"
+section = "General"
+label = "Grace period for automatic quitting after the last window is closed."
+type = "float"
+default = 10.0
+help = "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period."
+
+[[setting]]
+key = "DownloadsDirectory"
+tab = "Advanced"
+section = "General"
+label = "Downloads folder."
+type = "string"
+default = ""
+help = "Downloads folder.\nIf set, downloaded files go to this location instead of the user\u2019s Downloads folder."
+
+[[setting]]
+key = "ShowSuiteNameInDockIcon"
+tab = "Advanced"
+section = "General"
+label = "Overlay the suite name on the taskbar icon when launched with -suite."
+type = "bool"
+default = true
+help = "Overlay the suite name on the taskbar icon when launched with -suite.\nWhen you run an isolated instance with the -suite argument, its name is drawn across the lower third of the taskbar icon so you can tell instances apart."
+
+[[setting]]
+key = "OpenUntitledFile"
+tab = "Advanced"
+section = "General"
+label = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?"
+type = "bool"
+default = true
+help = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?"
+
+[[setting]]
+key = "SaveProfilesToRecentDocuments"
+tab = "Advanced"
+section = "Tabs"
+label = "Add items to Recents (in the taskbar button’s Jump List) to reopen recently used profiles as tabs?"
+type = "bool"
+default = false
+help = "Add items to Recents (in the taskbar button’s Jump List) to reopen recently used profiles as tabs?"
+
+[[setting]]
+key = "OpenFileInNewWindows"
+tab = "Advanced"
+section = "Windows"
+label = "DEPRECATED: Use “How should new instances be opened” instead."
+type = "bool"
+default = false
+help = "DEPRECATED: Use “How should new instances be opened” instead.\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also “Open files in split panes”."
+
+[[setting]]
+key = "OpenFileInSplitPanes"
+tab = "Advanced"
+section = "Windows"
+label = "DEPRECATED: Use “How should new instances be opened” instead."
+type = "bool"
+default = false
+help = "DEPRECATED: Use “How should new instances be opened” instead.\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set “Open files in new windows, not new tabs” to “No” for this to take effect. See also “When opening a file in a split pane, should it be a vertical split?”"
+
+[[setting]]
+key = "OpenFileInVerticalSplitPane"
+tab = "Advanced"
+section = "Windows"
+label = "DEPRECATED: Use “How should new instances be opened” instead."
+type = "bool"
+default = true
+help = "DEPRECATED: Use “How should new instances be opened” instead.\nWhen opening a file in a split pane, should it be a vertical split?"
+
+[[setting]]
+key = "NewInstanceOpenStyle"
+tab = "Advanced"
+section = "Windows"
+label = "How should new instances be opened when triggered by scripts or external applications?"
+type = "int"
+default = -1
+help = "How should new instances be opened when triggered by scripts or external applications?\n-1: Use legacy settings (default)\n0: New Window\n1: New Tab\n2: Vertical Split Pane\n3: Horizontal Split Pane\nThis provides a unified setting for controlling external instance creation."
+
+[[setting]]
+key = "PathToFTP"
+tab = "Advanced"
+section = "General"
+label = "Path to ftp for opening ftp: URLs."
+type = "string"
+default = "ftp"
+help = "Path to ftp for opening ftp: URLs.\nYou may want to set this to the full path of another ftp program."
+
+[[setting]]
+key = "PathToTelnet"
+tab = "Advanced"
+section = "General"
+label = "Path to telnet for opening telnet: URLs."
+type = "string"
+default = "telnet"
+help = "Path to telnet for opening telnet: URLs.\nYou may want to set this to the full path of another telnet program."

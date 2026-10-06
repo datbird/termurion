@@ -686,7 +686,7 @@ pub fn without_network_folders(copy: &mut Table) -> Vec<String> {
 pub fn has_mark_of_the_web(path: &std::path::Path) -> bool {
     let mut s = path.as_os_str().to_os_string();
     s.push(":Zone.Identifier");
-    std::fs::metadata(std::path::PathBuf::from(s)).is_ok()
+    crate::localfs::LocalPath::judge(std::path::PathBuf::from(s)).is_some_and(|stream| crate::localfs::stat(&stream).is_ok())
 }
 
 

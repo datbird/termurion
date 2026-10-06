@@ -218,7 +218,7 @@ pub(crate) enum Found {
 pub(crate) fn find(cwd: &Path, arg: &str) -> Found {
     match locate(cwd, arg) {
         Some((_, true)) => Found::Dir,
-        Some((p, false)) => std::fs::read(&p).map_or(Found::Missing, Found::File),
+        Some((p, false)) => crate::localfs::read(&p).map_or(Found::Missing, Found::File),
         None => Found::Missing,
     }
 }
@@ -226,15 +226,12 @@ pub(crate) fn find(cwd: &Path, arg: &str) -> Found {
 /// The path an argument names and whether it is a folder; None when it is missing or may
 /// not be probed (a network path, or one reached through a link to one; a verbatim local
 /// path is read in its plain form).
-pub(crate) fn locate(cwd: &Path, arg: &str) -> Option<(PathBuf, bool)> {
+pub(crate) fn locate(cwd: &Path, arg: &str) -> Option<(crate::localfs::LocalPath, bool)> {
     if arg.is_empty() || crate::prompted::network_path(util_cli::local_form(arg)) {
         return None;
     }
-    let p = util_cli::join_local(cwd, arg);
-    if !util_cli::may_open(&p) {
-        return None;
-    }
-    std::fs::metadata(&p).ok().map(|m| (p, m.is_dir()))
+    let p = crate::localfs::LocalPath::judge(util_cli::join_local(cwd, arg))?;
+    crate::localfs::stat(&p).ok().map(|m| (p, m.is_dir))
 }
 
 /// `basename -- "$1"`: the last component, trailing separators ignored.
@@ -412,13 +409,13 @@ pub fn it2dl(args: &[String], io: &mut Io) -> i32 {
                 Some(Ok(archive)) => put(io.out, &send_file_data(term, &format!("{}.tar.gz", basename(arg)), &b64(&archive), archive.len())),
                 Some(Err(_)) => put(io.err, &format!("Error: Failed to create tar.gz archive for directory: {arg}\n")),
             },
-            Some((p, false)) if wrapped(term) => match std::fs::read(&p) {
+            Some((p, false)) if wrapped(term) => match crate::localfs::read(&p) {
                 Ok(bytes) => put(io.out, &download(term, basename(arg), &bytes)),
                 Err(_) => missing(io),
             },
             // `b64_encode < file` streams: the head, the base64 piece by piece, then macOS
             // base64's newline and BEL.
-            Some((p, false)) => match std::fs::File::open(&p).and_then(|f| Ok((f.metadata()?.len(), f))) {
+            Some((p, false)) => match crate::localfs::open(&p).and_then(|f| Ok((crate::localfs::file_stat(&f)?.len, f))) {
                 Ok((size, mut f)) => {
                     put(io.out, &plain_head(basename(arg), size));
                     crate::util_osc::stream_b64(&mut f, PIECE, &mut |text| put(io.out, text));
@@ -433,10 +430,10 @@ pub fn it2dl(args: &[String], io: &mut Io) -> i32 {
 
 /// A folder by its real name (`..` and `.` resolved), in `local_form`; None when that name
 /// may not be opened (`util_cli::may_open`).
-fn real_folder(dir: &Path) -> Option<PathBuf> {
-    let real = std::fs::canonicalize(dir).ok()?;
-    let real = PathBuf::from(util_cli::local_form(&real.to_string_lossy()));
-    util_cli::may_open(&real).then_some(real)
+fn real_folder(dir: &crate::localfs::LocalPath) -> Option<PathBuf> {
+    let real = crate::localfs::canonicalize(dir)?;
+    let real = PathBuf::from(util_cli::local_form(&real.path().to_string_lossy()));
+    crate::localfs::judged(&real).then_some(real)
 }
 
 #[cfg(test)]

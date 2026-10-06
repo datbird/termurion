@@ -280,7 +280,7 @@ impl App {
     }
 
     /// Swaps a slot's fields with the live ones.
-    fn swap_live(&mut self, s: &mut WinSlot) {
+    pub(super) fn swap_live(&mut self, s: &mut WinSlot) {
         use std::mem::swap;
         swap(&mut self.gpu, &mut s.gpu);
         swap(&mut self.tabs, &mut s.tabs);
@@ -590,8 +590,13 @@ impl App {
         if matches!(&first, NewWindow::Tabs(ts) if ts.first().is_some_and(|t| self.background_windows.remove(&t.id))) {
             attrs = attrs.with_active(false);
         }
+        // A resident Tandem keeps one hidden, empty window with its GPU: the next window is that one (R3).
+        let reused = self.resident;
         let mut kind = self.surface_kind_for(&first);
         let made = loop {
+            if reused {
+                break Ok(None);
+            }
             let mut a = attrs.clone();
             if kind == crate::transparency::SurfaceKind::Alpha {
                 use winit::platform::windows::WindowAttributesExtWindows;
@@ -604,7 +609,7 @@ impl App {
                 kind = crate::transparency::SurfaceKind::Opaque;
                 continue;
             }
-            break made;
+            break made.map(Some);
         };
         let gpu = match made {
             Ok(g) => g,
@@ -629,30 +634,47 @@ impl App {
         // window that was current; the swap below puts an empty window in its place (R3).
         let from_pane = self.focused_id();
         let from_dir = self.previous_dir();
-        let id = gpu.window.id();
-        let mut slot = WinSlot::new(gpu);
-        slot.win_alpha_surface = kind;
-        self.swap_live(&mut slot);
+        let id = match &gpu {
+            Some(g) => g.window.id(),
+            None => previous.ok_or("no resident window")?,
+        };
+        let mut new_slot = gpu.map(|gpu| {
+            let mut slot = WinSlot::new(gpu);
+            slot.win_alpha_surface = kind;
+            slot
+        });
+        match new_slot.as_mut() {
+            Some(slot) => self.swap_live(slot),
+            // The resident window is current and empty already: it is a window again, with the hook,
+            // the watches and the subclasses it was made with.
+            None => self.leave_resident_for(hotkey),
+        }
         // Edge drags snap to the cell grid, and follow AllowLiveResize.
         self.install_sizing();
         // A forced Theme's title bar survives system setting changes.
         self.guard_theme();
-        // The screen reader's host (the key is the window's: the slot is current already).
-        if let Some(h) = self.hwnd() {
+        if let (Some(h), true) = (self.hwnd(), new_slot.is_some()) {
             crate::display_watch::watch(h);
             #[cfg(windows)]
-            crate::firstmouse_win::watch(h);
+            {
+                crate::firstmouse_win::watch(h);
+                super::logout_ui::watch(h);
+            }
         }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
         // A new window's side bar starts at `LeftTabBarWidth`.
         self.side_bar_preferred = super::side_bar_default(&self.globals);
-        if let Some(old) = self.windows.current() {
-            self.windows.park(old, slot);
+        if let Some(slot) = new_slot {
+            if let Some(old) = self.windows.current() {
+                self.windows.park(old, slot);
+            }
+            self.windows.start(key(id));
+            // The screen reader's host (the key is the window's: the slot is current already). A
+            // resident window gets its host back in `leave_resident_for`.
+            self.access_install_host();
+            self.registry.open(key(id));
         }
-        self.windows.start(key(id));
-        self.access_install_host();
-        self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::ProfilesIn(g, _) => Some(g.clone()),
@@ -778,6 +800,12 @@ impl App {
             if let Some((guid, slot)) = self.win_slot.take() {
                 self.slots.give(&guid, slot);
             }
+            if reused {
+                // The resident window stays: nothing started in it.
+                self.hotkey = None;
+                self.go_resident();
+                return Err(why);
+            }
             self.drop_current_window();
             if let Some(p) = previous {
                 self.enter(p);
@@ -790,6 +818,10 @@ impl App {
         // A hotkey window made by its hotkey shows now; a restored one waits for the hotkey.
         if hotkey && !arranged {
             self.roll_in();
+        }
+        // The resident window was hidden: a regular window shows now (a hotkey window waits for its key).
+        if reused && !hotkey {
+            self.show_awake_window();
         }
         Ok(id)
     }
@@ -825,6 +857,8 @@ impl App {
     /// Closes one window and its sessions (Cmd+Shift+W, the close box). The last window
     /// closing ends Tandem.
     pub(super) fn close_window(&mut self, id: WindowId, event_loop: &ActiveEventLoop) {
+        // A window the person closed ends the quit grace period (`PT:4775`).
+        self.note_interaction();
         // Tandem's own confirmation first, then tmux's question (iTerm2's order).
         if !self.enter(id) || !self.confirm_close(close_ui::Closing::Window) || self.tmux_close_window() {
             return;
@@ -947,7 +981,7 @@ impl App {
     }
 
     /// A window closed: its number and id go, and so do its API variables.
-    fn forget_window(&mut self, k: u64) {
+    pub(super) fn forget_window(&mut self, k: u64) {
         if let Some(g) = self.registry.guid(k) {
             self.api_vars.forget(crate::api_vars::Scope::Window, g);
         }
@@ -1128,6 +1162,7 @@ impl App {
             self.banners.set("menu", format!("Profiles menu: {e}"));
         }
         bar.profile_items = tree;
+        self.jump_list_due = true;
     }
 
     /// A profile picked in the Profiles menu: a tab, or a window with Alt held.
@@ -1223,7 +1258,47 @@ pub(super) enum NewWindow {
     HotkeyRestored(String, crate::arrangement::Value),
 }
 
+impl NewWindow {
+    /// The tabs this queued window makes from profiles; any other kind counts as one.
+    pub(super) fn queued_tabs(&self) -> usize {
+        match self {
+            NewWindow::ProfilesIn(_, rest) => 1 + rest.guids().count(),
+            _ => 1,
+        }
+    }
+}
+
+/// The resident wake's ONE window (final review item 3): the first profile tab asked for while
+/// resident queues a window (`wake` remembers where), and every later one before it opens joins it
+/// as a tab (`default` names the default profile for a tab of none). iTerm2 opens one window with
+/// N tabs, never N windows. True when a window was queued (the loop must be woken for it).
+pub(super) fn queue_wake_tab(pending: &mut Vec<NewWindow>, wake: &mut Option<usize>, guid: Option<String>, default: &str) -> bool {
+    let tab = |g: Option<String>| g.unwrap_or_else(|| default.to_string());
+    match wake.and_then(|i| pending.get_mut(i)) {
+        Some(NewWindow::ProfilesIn(_, crate::settings_ui::Rest::Tabs(rest))) => {
+            rest.push(tab(guid));
+            false
+        }
+        Some(w @ NewWindow::Profile(_)) => {
+            let NewWindow::Profile(first) = std::mem::replace(w, NewWindow::Orphans(Vec::new())) else { unreachable!() };
+            *w = NewWindow::ProfilesIn(tab(first), crate::settings_ui::Rest::Tabs(vec![tab(guid)]));
+            false
+        }
+        _ => {
+            pending.push(NewWindow::Profile(guid));
+            *wake = Some(pending.len() - 1);
+            true
+        }
+    }
+}
+
 impl App {
+    /// The tabs queued windows will make: a resident wake's tabs join one window, so a caller that
+    /// compares before and after counts tabs, not windows.
+    pub(super) fn pending_tabs(&self) -> usize {
+        self.pending_windows.iter().map(NewWindow::queued_tabs).sum()
+    }
+
     pub(super) fn open_pending(&mut self, event_loop: &ActiveEventLoop, w: NewWindow) {
         if let Err(e) = self.open_window_with(event_loop, w) {
             self.banners.set("window", format!("Could not open a window: {e}"));

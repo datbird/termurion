@@ -1980,7 +1980,10 @@ mod tests {
     fn sniff_never_probes_on_the_parse_path() {
         struct Panics;
         impl crate::netpath::Drives for Panics {
-            fn is_remote(&self, _: &str) -> bool {
+            fn dos_device(&self, _: char) -> Option<String> {
+                panic!("the parse path asked a drive");
+            }
+            fn drive_type(&self, _: char) -> u32 {
                 panic!("the parse path asked a drive");
             }
         }

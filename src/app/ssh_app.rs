@@ -17,7 +17,7 @@ use crate::ssh_session::Hop;
 fn ssh_config_paths() -> Vec<std::path::PathBuf> {
     let var = |name: &str| std::env::var_os(name).map(std::path::PathBuf::from).unwrap_or_default();
     let paths = crate::ssh_args::config_paths(&var("APPDATA"), &var("USERPROFILE"), &var("ProgramData"));
-    paths.into_iter().filter(|p| p.is_absolute() && crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link)).collect()
+    paths.into_iter().filter(|p| p.is_absolute() && crate::scripts::ancestors_stay_local(p, &crate::netpath::read_reparse)).collect()
 }
 
 impl App {

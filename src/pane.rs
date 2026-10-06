@@ -525,6 +525,12 @@ impl Pane {
         Ok(Pane::with_io(id, Io::Local(pty), cols, rows))
     }
 
+    /// A pane around a console a console host handed over (`pty::from_handoff`).
+    pub fn from_pty(id: PaneId, pty: Pty, cols: u16, rows: u16) -> Pane {
+        let (cols, rows) = (cols.max(2), rows.max(1));
+        Pane::with_io(id, Io::Local(pty), cols, rows)
+    }
+
     /// A pane whose shell the session host runs.
     pub fn start_hosted(id: PaneId, host: &crate::host_client::Client, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_hosted_transport(id, host, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)

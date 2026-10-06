@@ -371,7 +371,7 @@ pub fn home() -> std::path::PathBuf {
 /// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
 /// session's directory"). A missing or unusable directory falls back to home.
 pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::path::PathBuf, Option<String>) {
-    start_dir_probing(p, previous, &|d| d.is_dir())
+    start_dir_probing(p, previous, &|d| crate::localfs::is_local_dir(d))
 }
 
 /// `start_dir_with`, with the local folder check given (tests record what it is asked). A

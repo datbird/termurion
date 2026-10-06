@@ -241,6 +241,8 @@ fn command_line(command: &str) -> String {
 
 /// Creates the job and the process in it. Returns (job, pid).
 unsafe fn spawn(command: &str, cwd: &std::path::Path, ends: [HANDLE; 3]) -> Result<(HANDLE, u32), String> {
+    // CreateProcessW opens the working folder: judged first, before anything is created.
+    let cwd = crate::localfs::LocalPath::judge(cwd).ok_or_else(|| crate::localfs::refused().to_string())?;
     unsafe {
         let job = CreateJobObjectW(null(), null());
         if job.is_null() {
@@ -279,7 +281,7 @@ unsafe fn spawn(command: &str, cwd: &std::path::Path, ends: [HANDLE; 3]) -> Resu
         let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
         let line = command_line(command);
         let mut cmd: Vec<u16> = OsStr::new(&line).encode_wide().chain(Some(0)).collect();
-        let dir: Vec<u16> = cwd.as_os_str().encode_wide().chain(Some(0)).collect();
+        let dir: Vec<u16> = cwd.path().as_os_str().encode_wide().chain(Some(0)).collect();
         let ok = CreateProcessW(null(), cmd.as_mut_ptr(), null(), null(), 1, EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_SUSPENDED, null(), dir.as_ptr(), &si.StartupInfo, &mut pi);
         DeleteProcThreadAttributeList(attrs);
         if ok == 0 {

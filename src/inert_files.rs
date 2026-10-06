@@ -36,7 +36,9 @@ pub fn refused_path(path: &str) -> bool {
 /// Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1`
 /// to `LPT9`), which no file may be called, with or without an extension, in any case.
 pub fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', '.']).to_ascii_uppercase();
+    // The one device-name rule (scripts::is_device_name and zip_check::device_name call it): the part
+    // before the first dot, trailing spaces and colons ignored, as Windows reads it.
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', ':']).to_ascii_uppercase();
     // COM and LPT take the superscript digits too (Microsoft's "Naming Files").
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.chars().count() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.chars().nth(3), Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')))
 }
@@ -103,19 +105,24 @@ pub fn zone_of(text: &str) -> Option<u32> {
 /// file (writing a stream would create it), or a drive that keeps no streams (FAT). For a
 /// download that must not land unmarked; `write_marked` stays lenient for inline files (12d).
 pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
-    if !std::fs::symlink_metadata(path)?.is_file() {
+    if !crate::localfs::lstat(&crate::localfs::judge_io(path)?)?.is_file {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
     }
+    crate::localfs::write(&zone_stream(path)?, zone_text(host_url))
+}
+
+/// `path`'s Zone.Identifier stream, judged.
+fn zone_stream(path: &Path) -> std::io::Result<crate::localfs::LocalPath> {
     let mut stream = path.as_os_str().to_os_string();
     stream.push(":Zone.Identifier");
-    std::fs::write(stream, zone_text(host_url))
+    crate::localfs::judge_io(std::path::PathBuf::from(stream))
 }
 
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
 /// unmarked.
 pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)?;
+    crate::localfs::write(&crate::localfs::judge_io(path)?, bytes)?;
     mark(path);
     Ok(())
 }
@@ -123,9 +130,7 @@ pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// The Zone.Identifier stream alone, for a writer that wrote the file through its own handle
 /// (a failure is ignored: a drive without streams keeps the file unmarked).
 pub fn mark(path: &Path) {
-    let mut stream = path.as_os_str().to_os_string();
-    stream.push(":Zone.Identifier");
-    let _ = std::fs::write(stream, ZONE_MARK);
+    let _ = zone_stream(path).and_then(|s| crate::localfs::write(&s, ZONE_MARK));
 }
 
 /// `write_marked` for a name someone else chose that is not yet checked: refused with an error
@@ -165,7 +170,7 @@ mod tests {
             assert!(!refused_on_listing(fine), "{fine:?}");
             assert!(!is_device_name(fine), "{fine:?}");
         }
-        assert!(is_device_name("con.txt") && is_device_name("LPT3"));
+        assert!(is_device_name("con.txt") && is_device_name("LPT3") && is_device_name("NUL:"));
         // The superscript digits are devices too, and a device name as a folder is refused.
         for bad in ["COM\u{b9}", "com\u{b2}.txt", "COM\u{b3}", "LPT\u{b9}", "lpt\u{b2}", "LPT\u{b3}.log"] {
             assert!(is_device_name(bad) && refused_on_listing(bad), "{bad:?}");

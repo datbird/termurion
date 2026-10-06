@@ -94,8 +94,7 @@ pub fn safe_file_name(formatted: &str) -> String {
         return FALLBACK_NAME.to_string();
     }
     let name = cut_name(trimmed);
-    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    if is_device(&stem) {
+    if crate::inert_files::is_device_name(&name) {
         return format!("_{name}");
     }
     name
@@ -140,17 +139,6 @@ fn cut_name(name: &str) -> String {
     }
     let kept = kept.trim_end_matches(['.', ' ']);
     format!("{}{ext}", if kept.is_empty() { "session" } else { kept })
-}
-
-/// A Windows device name as the stem of a file name (upper case, trimmed): `CON`, `PRN`, `AUX`,
-/// `NUL`, `CONIN$`, `CONOUT$`, and `COM`/`LPT` followed by 1 to 9 or a superscript 1, 2 or 3
-/// (Windows opens `COM\u{b9}` as COM1 in every folder).
-fn is_device(stem: &str) -> bool {
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| {
-        let mut chars = n.chars();
-        matches!((chars.next(), chars.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
-    });
-    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
 /// `PSA:160-166`: the folder (empty is the home folder, a leading "~" is the home folder)
@@ -686,11 +674,16 @@ impl FileSink {
             };
             // Appending opens in append mode: every write goes to the end, whoever else writes the
             // file (a restart's new log while the old writer drains); replacing truncates once.
-            let opened = if append {
-                std::fs::OpenOptions::new().create(true).append(true).open(&thread_path)
-            } else {
-                std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&thread_path)
-            };
+            // The log folder is a profile setting: the file is judged before it is opened.
+            let opened = crate::localfs::judge_io(&thread_path).and_then(|p| {
+                crate::localfs::open_custom(&p, |o| {
+                    if append {
+                        o.create(true).append(true);
+                    } else {
+                        o.create(true).write(true).truncate(true);
+                    }
+                })
+            });
             let file = match opened {
                 Ok(f) => {
                     #[cfg(test)]
@@ -1033,15 +1026,13 @@ pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -
     crate::interp::check(name_template)?;
     // Every substituted value is one path segment, whoever set it.
     let segment = |n: &str| lookup(n).map(|v| path_segment(&v, OWN_VALUES.contains(&n.strip_prefix("session.").unwrap_or(n))));
-    // A share is the person's only when the template names it in plain text.
-    let typed = !raw_dir.contains("\\(") && crate::start_dir::network_folder(raw_dir);
     // The folder is 13p's working-directory rule itself (`start_dir::resolve`: trim, no control
     // characters, text with no `\(` used as written, an expanded value held to a local drive
     // path or `~`, never a network or device path). Whether the folder exists is the log's own
     // question (`folder_action`), so every folder counts as one here, and a refusal is an
     // error instead of a fallback to home.
     let expand = |t: &str| crate::interp::evaluate(t, &segment, &[]).unwrap_or_else(|_| t.to_string());
-    let (dir, refused) = crate::start_dir::resolve(&crate::start_dir::Mode::Custom(raw_dir.to_string()), None, home, &expand, &|_| true);
+    let (dir, refused) = crate::start_dir::resolve_with(&crate::start_dir::Mode::Custom(raw_dir.to_string()), None, home, &expand, &|_| true, &|_| true);
     if refused.is_some() {
         return Err("the log folder is not a local folder".to_string());
     }
@@ -1049,7 +1040,7 @@ pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -
     let plain = |t: &str| !t.contains("\\(");
     let name = if plain(name_template) { name_template.to_string() } else { crate::interp::evaluate(name_template, &segment, &[])? };
     let joined = join_log_path(&dir, &name, home);
-    if is_network_log_path(&joined) && !typed {
+    if is_network_log_path(&joined) {
         return Err("the log folder is a network path".to_string());
     }
     if !joined.is_absolute() {
@@ -1585,11 +1576,11 @@ mod tests {
         assert!(auto_log_path("", "a.log", &lookup_for(&[]), net_home).is_err());
         assert!(auto_log_path("~", "a.log", &lookup_for(&[]), net_home).is_err());
         assert!(auto_log_path("~\\logs", "a.log", &lookup_for(&[]), net_home).is_err());
-        // Typed by the person in the template, a share is theirs (13p ruling), padded or not.
-        assert_eq!(auto_log_path("\\\\srv\\logs", "a.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"\\srv\logs\a.log"));
-        // A padded one is trimmed as 13p's working directory trims it, so it is the person's
-        // share too; the join alone still does not trim, and the one filter names it a share.
-        assert_eq!(auto_log_path(" \\\\srv\\logs ", "a.log", &lookup_for(&[]), home).unwrap(), PathBuf::from(r"\\srv\logs\a.log"));
+        // Round 3: a share typed in the template is refused too (opening the log file there would
+        // connect to it), padded or not; the join alone still does not trim, and the one filter
+        // names it a share.
+        assert!(auto_log_path("\\\\srv\\logs", "a.log", &lookup_for(&[]), home).is_err());
+        assert!(auto_log_path(" \\\\srv\\logs ", "a.log", &lookup_for(&[]), home).is_err());
         assert!(auto_log_path(" \\(path)", "a.log", &lookup_for(&[("path", "x\u{1}y")]), home).is_err(), "a control character in an expanded folder is refused");
         assert!(is_network_log_path(&join_log_path(" \\\\srv\\logs", "a.log", home)));
         // A relative folder would land in Tandem's working folder.

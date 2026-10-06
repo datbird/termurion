@@ -109,7 +109,7 @@ pub const DOCK_SHOW_IF_NONE: i64 = 2;
 
 /// Whether the notification area icon is there: iTerm2's rule (`APP:979-993`), the status item
 /// exists only in UI-element mode and with `StatusBarIcon` on (read at start). The way back
-/// without it is starting Tandem again, which acts as the dock click (`forwards_reopen`).
+/// without it is starting Tandem again, which acts as the dock click (`launch::Request::Reopen`).
 pub fn tray_wanted(ui_element_now: bool, status_bar_icon: bool) -> bool {
     ui_element_now && status_bar_icon
 }
@@ -127,13 +127,6 @@ pub fn tray_settle(want: bool, on: bool, done: bool) -> bool {
 /// Whether a pass has anything to do for the icon.
 pub fn tray_changes(want: bool, on: bool) -> bool {
     want != on
-}
-
-/// What a second, bare start of Tandem does for iTerm2's `applicationShouldHandleReopen`: only
-/// a start with no arguments that is not the relaunch after an import hands the dock click to
-/// the running Tandem.
-pub fn forwards_reopen(arg_count: usize, relaunch: bool) -> bool {
-    arg_count <= 1 && !relaunch
 }
 
 /// What the reopen (a dock click with no preference handling it) does.
@@ -340,15 +333,6 @@ mod tests {
         assert_eq!(reopen_target(Some(9), &minimized), Reopen::NewWindow);
         let shown_hotkey = [(4u32, Some(true), true)];
         assert_eq!(reopen_target(Some(4), &shown_hotkey), Reopen::Focus(4));
-    }
-
-    /// Starting Tandem again is the reopen only for a bare launch, never a URL start or the
-    /// relaunch after an import.
-    #[test]
-    fn a_bare_launch_forwards_the_reopen() {
-        assert!(forwards_reopen(1, false));
-        assert!(!forwards_reopen(3, false));
-        assert!(!forwards_reopen(1, true));
     }
 
     /// Windows that left the taskbar (Settings, chat, panels) are in the tray menu too.

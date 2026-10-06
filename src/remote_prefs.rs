@@ -157,11 +157,11 @@ pub fn writable(dir: &Path) -> bool {
     if text.trim().is_empty() || is_unc(&text) {
         return false;
     }
-    let probe = dir.join(format!(".testwritable.{}", std::process::id()));
-    if std::fs::write(&probe, "test").is_err() {
+    let Some(probe) = crate::localfs::LocalPath::judge(dir.join(format!(".testwritable.{}", std::process::id()))) else { return false };
+    if crate::localfs::write(&probe, "test").is_err() {
         return false;
     }
-    let _ = std::fs::remove_file(&probe);
+    let _ = crate::localfs::remove_file(&probe);
     true
 }
 

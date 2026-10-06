@@ -405,12 +405,8 @@ mod tests {
         assert!(choose("C:\\a%b", "", Some("cmd")).is_err());
     }
 
-    struct Remote;
-    impl crate::netpath::Drives for Remote {
-        fn is_remote(&self, root: &str) -> bool {
-            root.eq_ignore_ascii_case("Z:\\")
-        }
-    }
+    #[allow(non_upper_case_globals)]
+    const Remote: crate::netpath::MappedLetters = crate::netpath::MappedLetters(&['Z']);
 
     fn cand(text: &str) -> PathCandidate {
         PathCandidate { anchor: crate::marks::Anchor { mark: 1, lines: 0, offset: 3 }, start: 3, end: 3 + text.chars().count(), text: text.into() }

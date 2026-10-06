@@ -10,6 +10,8 @@ use crate::inert_files::{refused_on_listing, refused_path};
 use crate::layout::PaneId;
 use std::path::{Path, PathBuf};
 
+use crate::localfs;
+
 /// A download's own hidden file or folder; the person never sees it.
 pub const TEMP_PREFIX: &str = ".Tandem.";
 
@@ -176,15 +178,14 @@ impl Local {
 /// Whether the files under `dir` (symlinks not followed) add up to more than `cap` bytes; the
 /// walk stops as soon as they do, so a huge folder is never read through (P19).
 pub fn tree_over(dir: &Path, cap: u64) -> std::io::Result<bool> {
-    let (mut total, mut stack) = (0u64, vec![dir.to_path_buf()]);
+    let (mut total, mut stack) = (0u64, vec![localfs::judge_io(dir)?]);
     while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d)? {
-            let e = e?;
-            let m = std::fs::symlink_metadata(e.path())?;
-            if m.is_dir() {
-                stack.push(e.path());
-            } else if m.is_file() {
-                total = total.saturating_add(m.len());
+        for e in localfs::entries(&d)? {
+            let m = e.stat;
+            if m.is_dir {
+                stack.push(e.local().ok_or_else(localfs::refused)?);
+            } else if m.is_file {
+                total = total.saturating_add(m.len);
                 if total > cap {
                     return Ok(true);
                 }
@@ -208,18 +209,20 @@ pub fn progress_text(l: &Local) -> String {
 /// quarantine", or `NOT_REMOVED` when it will not go); then it replaces `final_path`, and a
 /// failed move removes it and reports the error (iTerm2 reports success).
 pub fn finish_with(temp: &Path, final_path: &Path, host_url: &str, mark: &dyn Fn(&Path, &str) -> std::io::Result<()>) -> Result<PathBuf, String> {
+    let local = localfs::judge_io(temp).map_err(|e| e.to_string())?;
     if refused_path(&final_path.to_string_lossy()) {
-        let _ = std::fs::remove_file(temp);
+        let _ = localfs::remove_file(&local);
         return Err(NOT_ALLOWED.to_string());
     }
     if mark(temp, host_url).is_err() {
-        let gone = std::fs::remove_file(temp).is_ok() || !temp.exists();
+        let gone = localfs::remove_file(&local).is_ok() || !localfs::exists(&local);
         return Err(if gone { FAILED_TO_QUARANTINE } else { NOT_REMOVED }.to_string());
     }
-    match std::fs::rename(temp, final_path) {
+    let to = localfs::judge_io(final_path).map_err(|e| e.to_string())?;
+    match localfs::rename(&local, &to) {
         Ok(()) => Ok(final_path.to_path_buf()),
         Err(e) => {
-            let _ = std::fs::remove_file(temp);
+            let _ = localfs::remove_file(&local);
             Err(e.to_string())
         }
     }
@@ -251,15 +254,14 @@ pub fn watchdog(written: u64, claimed: u64, free: u64) -> Verdict {
 
 /// The bytes of the files under `dir`, symlinks not followed (a folder being extracted into).
 pub fn dir_bytes(dir: &Path) -> u64 {
-    let (mut total, mut stack) = (0u64, vec![dir.to_path_buf()]);
+    let (mut total, mut stack) = (0u64, localfs::LocalPath::judge(dir).into_iter().collect::<Vec<_>>());
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
-            if m.is_dir() {
-                stack.push(e.path());
-            } else if m.is_file() {
-                total = total.saturating_add(m.len());
+        let Ok(entries) = localfs::entries(&d) else { continue };
+        for e in entries {
+            if e.stat.is_dir {
+                stack.extend(e.local());
+            } else if e.stat.is_file {
+                total = total.saturating_add(e.stat.len);
             }
         }
     }
@@ -272,34 +274,21 @@ pub const EXPANDED_TOO_FAR: &str = "The folder expanded to more data than its ar
 /// What a zip may weigh as a file we read whole before checking it.
 const ZIP_FILE_MAX: u64 = 1 << 30;
 
-fn is_reparse(m: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        m.file_attributes() & 0x400 != 0 || m.file_type().is_symlink()
-    }
-    #[cfg(not(windows))]
-    {
-        m.file_type().is_symlink()
-    }
-}
-
-/// Every file and folder under `root` (relative), walked with `symlink_metadata` only.
+/// Every file and folder under `root` (relative), from the listings only (nothing followed).
 fn tree(root: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
+    let root = localfs::judge_io(root).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    let mut stack = vec![PathBuf::new()];
-    while let Some(rel) = stack.pop() {
-        for e in std::fs::read_dir(root.join(&rel)).map_err(|e| e.to_string())? {
-            let e = e.map_err(|e| e.to_string())?;
-            let path = rel.join(e.file_name());
-            let m = std::fs::symlink_metadata(root.join(&path)).map_err(|e| e.to_string())?;
-            if is_reparse(&m) {
+    let mut stack = vec![(PathBuf::new(), root)];
+    while let Some((rel, dir)) = stack.pop() {
+        for e in localfs::entries(&dir).map_err(|e| e.to_string())? {
+            let path = rel.join(&e.name);
+            if e.stat.is_reparse {
                 return Err(crate::zip_check::refused(&format!("\u{201c}{}\u{201d} is a link", path.display())));
             }
-            if m.is_dir() {
-                stack.push(path.clone());
+            if e.stat.is_dir {
+                stack.push((path.clone(), e.local().ok_or_else(|| localfs::refused().to_string())?));
             }
-            out.push((path, m.is_dir()));
+            out.push((path, e.stat.is_dir));
         }
     }
     out.sort();
@@ -336,24 +325,25 @@ pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn F
             return Err(FAILED_TO_QUARANTINE.to_string());
         }
     }
-    let ok_place = |p: &Path| std::fs::symlink_metadata(p).map(|m| !is_reparse(&m)).unwrap_or(true);
-    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    let judged = |p: &Path| localfs::judge_io(p).map_err(|e| format!("{}: {e}", p.display()));
+    let ok_place = |p: &localfs::LocalPath| localfs::lstat(p).map(|m| !m.is_reparse).unwrap_or(true);
+    localfs::create_dir_all(&judged(dest)?).map_err(|e| e.to_string())?;
     for (rel, is_dir) in &entries {
-        let to = dest.join(rel);
+        let to = judged(&dest.join(rel))?;
         if !ok_place(&to) {
-            return Err(format!("{} is a link", to.display()));
+            return Err(format!("{} is a link", to.path().display()));
         }
         if *is_dir {
-            match std::fs::create_dir(&to) {
+            match localfs::create_dir_all(&to) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && to.is_dir() => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && localfs::is_dir(&to) => {}
                 Err(e) => return Err(e.to_string()),
             }
         }
     }
     for (rel, is_dir) in &entries {
         if !is_dir {
-            std::fs::rename(from.join(rel), dest.join(rel)).map_err(|e| e.to_string())?;
+            localfs::rename(&judged(&from.join(rel))?, &judged(&dest.join(rel))?).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -366,11 +356,12 @@ pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn F
 /// removes the zip.
 #[cfg(windows)]
 pub fn unzip_with(zip: &Path, dest: &Path, host_url: &str, extract: &mut dyn FnMut(&Path, &Path, u64) -> Result<(), String>) -> Result<(), String> {
-    let size = std::fs::metadata(zip).map_err(|e| e.to_string())?.len();
+    let local = localfs::judge_io(zip).map_err(|e| e.to_string())?;
+    let size = localfs::stat(&local).map_err(|e| e.to_string())?.len;
     if size > ZIP_FILE_MAX {
         return Err(crate::zip_check::refused("the archive is too large"));
     }
-    let bytes = std::fs::read(zip).map_err(|e| e.to_string())?;
+    let bytes = localfs::read(&local).map_err(|e| e.to_string())?;
     let claimed = crate::zip_check::check_total(&bytes, crate::zip_check::Limits::DEFAULT)?;
     drop(bytes);
     let parent = dest.parent().ok_or_else(|| "no folder to unzip into".to_string())?;
@@ -378,10 +369,10 @@ pub fn unzip_with(zip: &Path, dest: &Path, host_url: &str, extract: &mut dyn FnM
     if !crate::ssh_transfer::has_room(free_space(parent)?, claimed) {
         return Err(NOT_ENOUGH_SPACE.to_string());
     }
-    let fresh = parent.join(temp_name(&uuid::Uuid::new_v4().to_string().to_uppercase()));
-    std::fs::create_dir(&fresh).map_err(|e| e.to_string())?;
-    let result = extract(zip, &fresh, claimed).and_then(|()| mark_and_move(&fresh, dest, host_url));
-    let _ = std::fs::remove_dir_all(&fresh);
+    let fresh = localfs::judge_io(parent.join(temp_name(&uuid::Uuid::new_v4().to_string().to_uppercase()))).map_err(|e| e.to_string())?;
+    localfs::create_dir(&fresh).map_err(|e| e.to_string())?;
+    let result = extract(zip, fresh.path(), claimed).and_then(|()| mark_and_move(fresh.path(), dest, host_url));
+    let _ = localfs::remove_dir_all(&fresh);
     result
 }
 
@@ -413,14 +404,7 @@ pub fn unzip(zip: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
 /// The bytes free for the person on the drive holding `dir` (`GetDiskFreeSpaceExW`).
 #[cfg(windows)]
 pub fn free_space(dir: &Path) -> Result<u64, String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut free = 0u64;
-    if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) } == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    Ok(free)
+    localfs::free_space(&localfs::judge_io(dir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 /// A stale temp: a `.Tandem.` file or folder, or a `Tandem-<UUID>` batch folder, untouched for
@@ -432,17 +416,18 @@ pub fn is_stale_temp(name: &str, is_dir: bool, age_secs: u64) -> bool {
 
 /// Removes the stale temps directly in `dir` (never follows a link).
 pub fn sweep_stale(dir: &Path, now: std::time::SystemTime) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
-        let age = m.modified().ok().and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs()).unwrap_or(0);
-        if !is_stale_temp(&e.file_name().to_string_lossy(), m.is_dir(), age) {
+    let Some(Ok(entries)) = localfs::LocalPath::judge(dir).map(|d| localfs::entries(&d)) else { return };
+    for e in entries {
+        let m = e.stat;
+        let age = m.modified.and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs()).unwrap_or(0);
+        if !is_stale_temp(&e.name.to_string_lossy(), m.is_dir, age) {
             continue;
         }
-        if m.is_dir() && !is_reparse(&m) {
-            let _ = std::fs::remove_dir_all(e.path());
-        } else {
-            let _ = std::fs::remove_file(e.path()).or_else(|_| std::fs::remove_dir(e.path()));
+        // A link is removed itself, never followed.
+        if m.is_reparse {
+            let _ = e.unlink();
+        } else if let Some(p) = e.local() {
+            let _ = if m.is_dir { localfs::remove_dir_all(&p) } else { localfs::remove_file(&p) };
         }
     }
 }

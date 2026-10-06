@@ -372,7 +372,10 @@ impl App {
         if let Some(h) = menu::hwnd_of(&window) {
             crate::display_watch::watch(h);
             #[cfg(windows)]
-            crate::firstmouse_win::watch(h);
+            {
+                crate::firstmouse_win::watch(h);
+                super::logout_ui::watch(h);
+            }
         }
         self.refresh_caption_frame();
         self.apply_corners();

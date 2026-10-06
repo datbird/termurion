@@ -108,7 +108,7 @@ impl SshConfigs {
 
     /// Reads each file; an unreadable or missing one is skipped (`iTermSSHHelpers.m:26-35`).
     pub fn load(paths: &[PathBuf]) -> SshConfigs {
-        SshConfigs { texts: paths.iter().filter_map(|p| std::fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).collect() }
+        SshConfigs { texts: paths.iter().filter_map(crate::localfs::LocalPath::judge).filter_map(|p| crate::localfs::read(&p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).collect() }
     }
 }
 

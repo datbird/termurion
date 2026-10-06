@@ -92,6 +92,8 @@ pub(super) struct MenuBar {
     /// Edit > Engage Artificial Intelligence, enabled only while `GenerativeAIAllowed` is on
     /// (`PTA:169-171`; `sync_checks`).
     pub(super) engage_ai: Option<MenuItem>,
+    /// iTerm2 > Make Tandem Default Term, enabled while Tandem is not the default terminal (`AD:481-482`).
+    pub(super) make_default: Option<MenuItem>,
     /// Edit > Explain Output with AI, enabled with a selection or a command mark in the focused
     /// pane (`PTA:172-174`; `sync_checks`).
     pub(super) explain_ai: Option<MenuItem>,
@@ -143,6 +145,8 @@ impl App {
         let mut checks = HashMap::new();
         let mut install_runtime = None;
         let mut engage_ai = None;
+        let mut make_default = None;
+        let default_now = crate::default_term::make_enabled(&crate::reg::HkcuRegistry);
         let mut explain_ai = None;
         let mut tip_item = None;
         let mut ssh_disconnect = None;
@@ -150,6 +154,10 @@ impl App {
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
         let mut suppressed = None;
         for item in menus::items() {
+            // With the recents off at launch the item is removed (`AD:1340-1342`).
+            if item.selector == "removeRecentProfilesFromDockMenu:" && !self.globals.bool(super::jumplist_ui::KEY) {
+                continue;
+            }
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
             } else if item.submenu {
@@ -158,7 +166,7 @@ impl App {
                 (&item.path[..item.path.len() - 1], Box::new(s))
             } else {
                 // Disconnect is enabled by `refresh_ssh_menu`, for a session that has a conductor.
-                let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:" && item.selector != "explainOutputWithAI:" && (item.selector != "downloadFiles:" || self.download_files_enabled()) && (item.selector != "performNaturalLanguageQuery:" || self.globals.bool(crate::ai_settings::ADMIN));
+                let enabled = Self::menu_enabled(item) && item.selector != "sshDisconnect:" && item.selector != "explainOutputWithAI:" && (item.selector != "downloadFiles:" || self.download_files_enabled()) && (item.selector != "performNaturalLanguageQuery:" || self.globals.bool(crate::ai_settings::ADMIN)) && (item.selector != "makeDefaultTerminal:" || default_now);
                 let parent = &item.path[..item.path.len() - 1];
                 let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:" | "startStopLogging:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
@@ -173,6 +181,9 @@ impl App {
                     }
                     if item.selector == "performNaturalLanguageQuery:" {
                         engage_ai = Some(m.clone());
+                    }
+                    if item.selector == "makeDefaultTerminal:" {
+                        make_default = Some(m.clone());
                     }
                     if item.selector == "explainOutputWithAI:" {
                         explain_ai = Some(m.clone());
@@ -263,7 +274,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -711,7 +722,7 @@ impl App {
             // Help pages and the license file: fixed targets, the page through the one guard.
             "copyModeShortcuts:" => match crate::semantic::guard_open(crate::menu_tips::COPY_MODE_URL, false) {
                 crate::semantic::Run::Open(url) => {
-                    if let Err(e) = super::semantic_ui::shell_open(&url, None, false) {
+                    if let Err(e) = super::semantic_ui::shell_open(&url, false) {
                         self.banners.set("action", format!("Could not open {url}: {e}"));
                     }
                 }
@@ -720,9 +731,10 @@ impl App {
             },
             "openSourceLicenses:" => {
                 let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Tandem");
-                match crate::licenses::write_to(&dir, crate::licenses::text()) {
+                // The folder goes through the one path judge (a redirected LocalAppData on a share is refused).
+                match crate::localfs::judge_io(&dir).and_then(|d| crate::licenses::write_to(&d, crate::licenses::text())) {
                     Ok(path) => {
-                        if let Err(e) = super::semantic_ui::shell_open(&path.to_string_lossy(), None, false) {
+                        if let Err(e) = crate::localfs::open_with_shell(&path, None, false) {
                             self.banners.set("action", format!("Could not open the license list: {e}"));
                         }
                     }
@@ -844,6 +856,9 @@ impl App {
             }
             "openDashboard:" => self.open_tmux_dashboard(event_loop),
             "performNaturalLanguageQuery:" => self.engage_ai(event_loop),
+            "makeDefaultTerminal:" => self.make_default_terminal(),
+            "unmakeDefaultTerminal:" => self.unmake_default_terminal(),
+            "removeRecentProfilesFromDockMenu:" => self.remove_recent_profiles(),
             "explainOutputWithAI:" => self.explain_output(event_loop),
             "revealCockpit:" => self.reveal_cockpit(event_loop),
             "openAIChats:" => self.open_ai_chats(event_loop),
@@ -884,6 +899,8 @@ impl App {
                 }
             }
             "closeCurrentSession:" => {
+                // Close counts as using Tandem (`AD:2728`): no grace period after it.
+                self.note_interaction();
                 if let Some(id) = self.focused_id().filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_session_undoable(id, event_loop);
                 }
@@ -993,7 +1010,7 @@ impl App {
             "gpuRendererAvailability:" => self.gpu_renderer_availability(),
             "clearInstantReplay:" => self.clear_instant_replay(),
             "exportRecording:" => self.export_recording_menu(),
-            "loadRecording:" => self.import_recording(None),
+            "loadRecording:" => self.import_recording_dialog(),
             // Window > Password Manager: no account, the window's current session
             // (`openPasswordManager:`, `AD:2815-2819`).
             "openPasswordManager:" => self.open_password_manager(None, None),
@@ -1126,10 +1143,10 @@ impl App {
         let text = if selection_only { p.screen.selection_text() } else { Some(p.screen.all_text()) };
         let Some(text) = text.filter(|t| !t.is_empty()) else { return };
         let name = if selection_only { "selection.txt" } else { "session.txt" };
-        if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-            match std::fs::write(&path, text) {
+        if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().set_file_name(name)) {
+            match crate::localfs::write(&path, text) {
                 Ok(()) => self.banners.clear("save-text"),
-                Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", path.display())),
+                Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", path.path().display())),
             }
         }
     }

@@ -58,6 +58,25 @@ pub fn judge(theirs: &Token, mine: &Token) -> Result<(), String> {
     Ok(())
 }
 
+pub const OTHER_SESSION: &str = "Peer runs in another Windows session.";
+
+/// A peer's token and its Windows session (None when it could not be read).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub token: Token,
+    pub session: Option<u32>,
+}
+
+/// `judge`, and the same Windows session (an unreadable one is another). The one rule for every
+/// local caller that may drive Tandem: the launch pipe's server and the console handoff's caller.
+pub fn judge_peer(theirs: &Peer, mine: &Peer) -> Result<(), String> {
+    judge(&theirs.token, &mine.token)?;
+    match (theirs.session, mine.session) {
+        (Some(a), Some(b)) if a == b => Ok(()),
+        _ => Err(OTHER_SESSION.to_string()),
+    }
+}
+
 /// iTerm2's "Peer's euid of %@ not equal to my euid of %@" with the user's SID for the euid.
 pub fn other_user(theirs: &str, mine: &str) -> String {
     format!("Peer's user of {theirs} not equal to my user of {mine}")

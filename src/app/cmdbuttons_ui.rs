@@ -144,9 +144,9 @@ impl App {
     /// names in a Save dialog.
     fn cmd_save_output(&mut self, pane: PaneId, mark: u32, command: &str) {
         let output = self.panes.get(&pane).and_then(|p| p.screen.output_text(mark)).unwrap_or_default();
-        let Some(path) = rfd::FileDialog::new().set_title("Save Command & Output").set_file_name(save_name(command)).add_filter("Text", &["txt"]).save_file() else { return };
-        if let Err(e) = std::fs::write(&path, format!("{command}\n{output}\n")) {
-            self.banners.set("action", format!("Could not save {}: {e}", path.display()));
+        let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().set_title("Save Command & Output").set_file_name(save_name(command)).add_filter("Text", &["txt"])) else { return };
+        if let Err(e) = crate::localfs::write(&path, format!("{command}\n{output}\n")) {
+            self.banners.set("action", format!("Could not save {}: {e}", path.path().display()));
         }
     }
 }

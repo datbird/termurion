@@ -74,7 +74,8 @@ impl App {
         let excluded = self.globals.bool(presence::EXCLUDED_FROM_CYCLING_KEY);
         let look_of = |hotkey: Option<bool>, style: i64| presence::with_accessory(presence::window_look(now, hotkey, excluded), style == crate::frames::ACCESSORY);
         let mut flipped = false;
-        if let Some(g) = &self.gpu {
+        // A resident window stays hidden and off the taskbar: no look is applied to it.
+        if let (Some(g), false) = (&self.gpu, self.resident) {
             let hotkey = self.hotkey.as_ref().map(|h| h.shown);
             flipped = apply_look(&g.window, look_of(hotkey, self.win_style), &mut self.look_seen, hotkey.is_some());
         }
@@ -130,9 +131,7 @@ const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
 impl App {
     /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) {
-        // A second start reaches an excluded Tandem whether or not the icon shows.
-        crate::notify::set_reopen(ui_element_now);
-        let want = presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY));
+        let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
         if !presence::tray_changes(want, self.tray_on) {
             return;
         }
@@ -145,7 +144,7 @@ impl App {
     }
 
     /// Terminal windows: (id, Some(shown) for a hotkey window, on screen), current first.
-    fn terminal_window_states(&self) -> Vec<(WindowId, Option<bool>, bool)> {
+    pub(super) fn terminal_window_states(&self) -> Vec<(WindowId, Option<bool>, bool)> {
         let on_screen = |w: &winit::window::Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
         let mut out = Vec::new();
         if let Some(g) = &self.gpu {
@@ -165,6 +164,12 @@ impl App {
         if right {
             return self.show_tray_menu();
         }
+        self.dock_click_now(event_loop);
+    }
+
+    /// iTerm2's dock click (`AD:946-952`): the icon's left click, and a second bare start of
+    /// `tandem.exe` (`launch::Request::Reopen`, which reaches here over the launch pipe).
+    pub(super) fn dock_click_now(&mut self, event_loop: &ActiveEventLoop) {
         let states = self.terminal_window_states();
         let hotkeys = states.iter().filter(|(_, h, on)| *h == Some(true) && *on).count();
         let regular = states.iter().filter(|(_, h, on)| h.is_none() && *on).count();
@@ -186,11 +191,7 @@ impl App {
                 }
             }
             // The reopen macOS runs: the last window comes forward, or a new one opens.
-            presence::DockClick::Unhandled => match presence::reopen_target(self.last_window, &states) {
-                presence::Reopen::Focus(w) => self.focus_terminal_window(w),
-                presence::Reopen::NewWindow => self.new_window(event_loop, None),
-                presence::Reopen::Nothing => {}
-            },
+            presence::DockClick::Unhandled => self.reopen(event_loop),
         }
     }
 
@@ -356,6 +357,9 @@ mod tests {
         let win = n.split("fn window()").nth(1).and_then(|r| r.split("\nfn base").next()).expect("window()");
         assert!(!win.contains("HWND_MESSAGE"), "a message-only window never hears TaskbarCreated");
         let run = m.split("pub fn run()").nth(1).and_then(|r| r.split("let event_loop").next()).expect("run");
-        assert!(run.contains("forward_reopen"), "a second bare start acts as the dock click");
+        let after_wait = run.split("wait_for_pid(pid)").nth(1).expect("the wait comes first");
+        assert!(after_wait.contains("forwardable_start(&request, wait_pid.is_some())") && after_wait.contains("hand_to_running(&request)"), "a second bare start hands its Reopen to the running Tandem, after the import wait");
+        assert!(include_str!("launch_ui.rs").contains("Request::Reopen => self.dock_click_now"), "and the running Tandem acts as the dock click");
+        assert!(!include_str!("../notify.rs").contains("forward_reopen"), "no second start channel beside the pipe");
     }
 }

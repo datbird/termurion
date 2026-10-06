@@ -320,10 +320,14 @@ fn existing(text: &str, cwd: Option<&Path>, probe: &crate::netpath::Probe, budge
         // folder that may not be probed hides every relative candidate under it), and only
         // through folders and links that stay local, outside ignored folders and mapped
         // drives (`netpath::may_probe`, `IPF:fileExistsAtPathLocally`). Never a probe first.
-        if budget.left() == 0 || !crate::netpath::may_probe_with(&p.to_string_lossy(), probe, &crate::scripts::read_link, budget) || !budget.spend() {
+        if budget.left() == 0 {
             return None;
         }
-        p.exists().then_some(p)
+        let local = crate::localfs::LocalPath::semantic_with(&p.to_string_lossy(), probe, budget)?;
+        if !budget.spend() {
+            return None;
+        }
+        crate::localfs::exists(&local).then_some(p)
     })
 }
 
@@ -555,7 +559,7 @@ pub fn resolve_program(name: &str, path_var: &str, pathext: &str, exists: &dyn F
 pub fn resolve_on_path(name: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let name = name.to_string_lossy();
     let path_var = path.map(|p| std::env::split_paths(p).map(|d| d.to_string_lossy().to_string()).collect::<Vec<_>>().join(";")).unwrap_or_default();
-    resolve_program(&name, &path_var, ".COM;.EXE;.BAT;.CMD", &|p| p.is_file())
+    resolve_program(&name, &path_var, ".COM;.EXE;.BAT;.CMD", &|p| crate::localfs::is_local_file(p))
 }
 
 /// Whether a program's arguments are parsed by cmd.exe: a batch file, or cmd.exe itself.
@@ -995,9 +999,23 @@ pub fn encode_url_chars(s: &str) -> String {
 }
 
 /// What `shell_open` hands ShellExecute: a web or mail URL is percent-encoded (`encode_url_chars`),
-/// anything else (a path, a folder) is passed as written.
+/// anything else (a settings page, another scheme) is passed as written.
 pub fn shell_target(target: &str) -> String {
     if web_link(target) { encode_url_chars(target) } else { target.to_string() }
+}
+
+/// The schemes the URL sink hands the shell besides Tandem's registered ones (`url_schemes::SCHEMES`):
+/// web and mail links, and the Settings app's pages (Default apps).
+const SHELL_SCHEMES: &[&str] = &["http", "https", "mailto", "ms-settings"];
+
+/// The URL sink's input (judge round 5): `target` as `shell_target` gives it, only when it is a
+/// URL of a scheme Tandem means to open (`SHELL_SCHEMES` and Tandem's own ftp, ssh and telnet) and no
+/// network path. A path, a drive path, a file link, a shell namespace (`search-ms:`, `shell:`) or any
+/// other protocol handler is None (round 5 item 3; a file opens only as a judged `LocalPath`,
+/// `localfs::open_with_shell`).
+pub fn shell_url(target: &str) -> Option<String> {
+    let url = scheme(target).is_some_and(|s| SHELL_SCHEMES.contains(&s.as_str()) || crate::url_schemes::SCHEMES.contains(&s.as_str())) && !crate::scripts::is_network_path(target);
+    url.then(|| shell_target(target))
 }
 
 /// Percent-encodes everything but letters, digits, and "-._~".
@@ -1103,11 +1121,46 @@ mod tests {
         assert_eq!(shell_target("https://a.b/p%20q"), "https://a.b/p%20q");
         assert_eq!(shell_target("C:\\My Docs\\a b.txt"), "C:\\My Docs\\a b.txt", "a path is not a URL");
         let sink = include_str!("app/semantic_ui.rs");
-        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, cwd").unwrap()..];
-        assert!(body[..body.find("ShellExecuteW(std").unwrap()].contains("crate::semantic::shell_target(target)"), "shell_open encodes through shell_target");
+        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, background: bool)").unwrap()..];
+        assert!(body[..body.find("ShellExecuteW(std").unwrap()].contains("crate::semantic::shell_url(target)"), "shell_open encodes through shell_url (shell_target)");
         let porthole = include_str!("app/porthole_ui.rs");
         let f = &porthole[porthole.find("fn open_link_target").unwrap()..];
-        assert!(f[..f.find("pub(super) fn porthole_link_bar").unwrap()].contains("shell_open("), "Porthole links open through shell_open");
+        assert!(f[..f.find("pub(super) fn porthole_link_bar").unwrap()].contains("shell_open("), "Porthole web links open through shell_open");
+    }
+
+    /// Judge round 5, item 3: the shell sink takes URLs only. A path, a drive path, a network path
+    /// or a file: link is refused there (a file goes through `localfs::open_with_shell`, which
+    /// takes a judged `LocalPath`), so no caller can hand ShellExecute an unjudged file.
+    #[test]
+    fn the_shell_sink_opens_only_urls() {
+        assert_eq!(shell_url("https://a.b/x y").as_deref(), Some("https://a.b/x%20y"));
+        assert_eq!(shell_url("mailto:a@b.c").as_deref(), Some("mailto:a@b.c"));
+        assert_eq!(shell_url("ms-settings:defaultapps").as_deref(), Some("ms-settings:defaultapps"));
+        for bad in [r"C:\x.txt", "c:/x.txt", r"Z:\share\x.pdf", r"\\host\s\x", "//host/s/x", r"\\?\C:\x", "file:///C:/x.txt", "FILE://host/s/x", "x.txt", r"..\x", ""] {
+            assert_eq!(shell_url(bad), None, "{bad}");
+        }
+        // Round 5 item 3: only the schemes Tandem means to hand the shell. A shell namespace or any
+        // other protocol handler (search-ms: makes Explorer connect to a share) is refused.
+        for good in ["http://h/x", "HTTPS://h", "mailto:a@b.c", "ftp://h/f", "ssh://u@h", "telnet://h", crate::url_schemes::DEFAULT_APPS_URI] {
+            assert!(shell_url(good).is_some(), "{good}");
+        }
+        for bad in ["search-ms:query=x&crumb=location:\\\\evil\\s", "shell:startup", "ms-msdt:/id x", "javascript:alert(1)", "vscode://file/c:/x", "ms-word:ofe|u|https://h/x", "itms://x", "res://x.dll/1", "mk:@MSITStore:x"] {
+            assert_eq!(shell_url(bad), None, "{bad}");
+        }
+        let sink = include_str!("app/semantic_ui.rs");
+        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, background: bool)").unwrap()..];
+        let body = &body[..body.find("ShellExecuteW(std").unwrap()];
+        assert!(body.contains("crate::semantic::shell_url(target)"), "the sink refuses anything but a URL first");
+        let porthole = include_str!("app/porthole_ui.rs");
+        let f = &porthole[porthole.find("fn open_link_target").unwrap()..];
+        let f = &f[..f.find("pub(super) fn porthole_link_bar").unwrap()];
+        let judged = f.find("LocalPath::judge(").expect("a document's file link is judged");
+        assert!(judged < f.find("reveal_in_explorer(").unwrap() && judged < f.find("open_with_shell(").unwrap(), "judged before Explorer or the shell sees it");
+        assert!(!include_str!("porthole/mod.rs").contains("local_path_ok"), "the text check is no gate for document links");
+        let ui = include_str!("app/semantic_ui.rs");
+        let open = &ui[ui.find("Run::Open(target) => {").unwrap()..];
+        let open = &open[..open.find("Run::Command(line)").unwrap()];
+        assert!(open.contains("LocalPath::semantic(") && open.contains("open_with_shell("), "a Semantic History file opens as a judged LocalPath");
     }
 
     #[test]
@@ -1560,8 +1613,11 @@ mod tests {
     /// Every drive is a mapped network drive.
     struct AllRemote;
     impl Drives for AllRemote {
-        fn is_remote(&self, _root: &str) -> bool {
-            true
+        fn dos_device(&self, letter: char) -> Option<String> {
+            Some(format!(r"\Device\LanmanRedirector\;{letter}:0000000000012345\srv\share"))
+        }
+        fn drive_type(&self, _letter: char) -> u32 {
+            4
         }
     }
 
@@ -1661,13 +1717,7 @@ mod tests {
     /// and the existence test is not made where the link is planned (the UI thread).
     #[test]
     fn local_opens_obey_the_probe_rule_and_never_probe_when_planned() {
-        struct Z;
-        impl crate::netpath::Drives for Z {
-            fn is_remote(&self, root: &str) -> bool {
-                root.eq_ignore_ascii_case("Z:\\")
-            }
-        }
-        let probe = crate::netpath::Probe::from_settings("D:\\slow", false, std::sync::Arc::new(Z));
+        let probe = crate::netpath::Probe::from_settings("D:\\slow", false, std::sync::Arc::new(crate::netpath::MappedLetters(&['Z'])));
         let asked = std::cell::Cell::new(0);
         let exists = |_: &str| {
             asked.set(asked.get() + 1);
@@ -1677,7 +1727,7 @@ mod tests {
             assert!(matches!(open_local_result(p, false, &probe, &exists), Run::Blocked(_)), "{p}");
         }
         assert_eq!(asked.get(), 0, "nothing was probed on a mapped drive or an ignored folder");
-        let allowed = crate::netpath::Probe::from_settings("D:\\slow", true, std::sync::Arc::new(Z));
+        let allowed = crate::netpath::Probe::from_settings("D:\\slow", true, std::sync::Arc::new(crate::netpath::MappedLetters(&['Z'])));
         assert_eq!(open_local_result("Z:\\x\\a.txt", false, &allowed, &exists), Run::Open("Z:\\x\\a.txt".into()), "EnableSemanticHistoryOnNetworkMounts allows it");
         assert_eq!(asked.get(), 1);
         // Planning touches no disk: a link and an openFile: give the marker and ask nothing.

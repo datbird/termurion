@@ -17,14 +17,17 @@ pub struct SshUrl {
     pub path: String,
 }
 
-/// The four settings (`SshIntegrationForURLs`, `sshSchemePath`, `validCharactersInSSHUserNames`,
-/// `sshURLsSupportPath`), read each time a URL opens.
+/// The settings a URL reads (`SshIntegrationForURLs`, `sshSchemePath`, `validCharactersInSSHUserNames`,
+/// `sshURLsSupportPath`, and for ftp: and telnet: `PathToFTP`, `PathToTelnet`), read each time a URL opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub integration: bool,
     pub scheme_path: String,
     pub valid_user_chars: String,
     pub support_path: bool,
+    /// `PathToFTP` and `PathToTelnet`: the program an ftp: or telnet: URL runs (`url_open`).
+    pub ftp_path: String,
+    pub telnet_path: String,
 }
 
 impl Settings {
@@ -34,6 +37,8 @@ impl Settings {
             scheme_path: g.string("sshSchemePath"),
             valid_user_chars: g.string("validCharactersInSSHUserNames"),
             support_path: g.bool("sshURLsSupportPath"),
+            ftp_path: g.string("PathToFTP"),
+            telnet_path: g.string("PathToTelnet"),
         }
     }
 }
@@ -101,11 +106,16 @@ fn percent_decode(s: &str) -> Option<String> {
 /// Parses an `ssh:` URL. None: not an `ssh:` URL, or it does not parse (a space or control in
 /// it, bad percent-encoding, a port that is not 1-65535). No `//`, or an empty host, means no host.
 pub fn parse(url: &str) -> Option<SshUrl> {
+    parse_as(url, "ssh")
+}
+
+/// The same grammar for another scheme (`telnet`, `ftp`: `url_open`), the one parser of all three.
+pub fn parse_as(url: &str, wanted: &str) -> Option<SshUrl> {
     if url.len() > MAX_URL || url.chars().any(is_hostile_char) {
         return None;
     }
     let (scheme, rest) = url.split_once(':')?;
-    if !scheme.eq_ignore_ascii_case("ssh") {
+    if !scheme.eq_ignore_ascii_case(wanted) {
         return None;
     }
     let Some(after) = rest.strip_prefix("//") else {
@@ -274,17 +284,17 @@ pub fn ssh_change(url: &SshUrl, s: &Settings) -> Result<Change, UrlError> {
 }
 
 /// The profile a URL opens (`SL:471-509`): changed when its command is "$$" or its type is not
-/// Custom. Ok(None): the profile is used unchanged (not an ssh: URL, or a custom command of its own).
-/// An ssh: URL that does not parse is `NoHost`: nothing opens (iTerm2 would open bare ssh).
+/// Custom. Ok(None): the profile is used unchanged (not an ssh:, telnet: or ftp: URL, or a custom
+/// command of its own). A URL that does not parse is `NoHost`: nothing opens (iTerm2 would open
+/// a bare command).
 pub fn profile_for_url(profile: &Profile, url: &str, s: &Settings) -> Result<Option<Profile>, UrlError> {
-    let is_ssh = url.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"));
-    if !is_ssh {
+    if crate::url_open::scheme_of(url).is_none() {
         return Ok(None);
     }
     if profile.string("Custom Command") == "Yes" && profile.string("Command") != "$$" {
         return Ok(None);
     }
-    let change = ssh_change(&parse(url).ok_or(UrlError::NoHost)?, s)?;
+    let Some(change) = crate::url_open::change_for(url, s)? else { return Ok(None) };
     let mut changed = profile.clone();
     changed.set("Custom Command", Value::String(change.custom_command.into()));
     changed.set("Command", Value::String(change.command));
@@ -305,7 +315,7 @@ mod tests {
     }
 
     fn settings(integration: bool) -> Settings {
-        Settings { integration, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true }
+        Settings { integration, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true, ftp_path: "ftp".into(), telnet_path: "telnet".into() }
     }
 
     fn url(u: &str) -> SshUrl {
@@ -645,11 +655,13 @@ mod tests {
     fn settings_read_the_four_rows() {
         let dir = std::env::temp_dir().join(format!("tandem-ssh-url-{}", std::process::id()));
         let mut g = crate::globals::Globals::empty(&dir.join("g.toml"));
-        assert_eq!(Settings::from_globals(&g), Settings { integration: false, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true });
+        assert_eq!(Settings::from_globals(&g), Settings { integration: false, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true, ftp_path: "ftp".into(), telnet_path: "telnet".into() });
         g.set("SshIntegrationForURLs", Value::Boolean(true));
         g.set("sshSchemePath", s("plink"));
         g.set("validCharactersInSSHUserNames", s("_"));
         g.set("sshURLsSupportPath", Value::Boolean(false));
-        assert_eq!(Settings::from_globals(&g), Settings { integration: true, scheme_path: "plink".into(), valid_user_chars: "_".into(), support_path: false });
+        g.set("PathToFTP", s("ncftp"));
+        g.set("PathToTelnet", s("putty"));
+        assert_eq!(Settings::from_globals(&g), Settings { integration: true, scheme_path: "plink".into(), valid_user_chars: "_".into(), support_path: false, ftp_path: "ncftp".into(), telnet_path: "putty".into() });
     }
 }

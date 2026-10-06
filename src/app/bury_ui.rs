@@ -4,13 +4,18 @@
 use super::*;
 use crate::bury::{self, Buried, Restore};
 
+/// "Quit when all windows are closed".
+const QUIT_KEY: &str = "QuitWhenAllWindowsClosed";
+
 /// Menu ids: a buried session, and a hidden tmux window ("buried-tmux:GW:WINDOW").
 pub(super) const BURIED_ID: &str = "buried:";
 pub(super) const BURIED_TMUX_ID: &str = "buried-tmux:";
 
 impl App {
-    /// Buries a session. The last session of the last window stays (Tandem ends when its
-    /// last window closes). True when it was buried.
+    /// Buries a session (`PTYSession.m:15145`). Burying the last session of the last window hides the
+    /// window and Tandem stays resident with the session buried, as closing the last window does,
+    /// unless "Quit when all windows are closed" is on (Tandem would end, and the session with it).
+    /// True when it was buried.
     pub(super) fn bury_pane(&mut self, id: PaneId) -> bool {
         // A tmux pane is not buried: its tmux window is hidden (iTerm2's bury of a tmux client).
         if let Some((gw, _, window)) = self.tmux_of(id) {
@@ -25,8 +30,8 @@ impl App {
             return false;
         }
         let only = self.tabs.len() == 1 && self.tabs[0].layout.panes().len() == 1 && self.windows.parked().next().is_none() && self.pending_windows.is_empty();
-        if only {
-            self.banners.set("bury", "The last session cannot be buried: Tandem ends when its last window closes.");
+        if only && self.globals.bool(QUIT_KEY) {
+            self.banners.set("bury", "The last session cannot be buried: Tandem quits when its last window closes (Settings > General > Closing).");
             return false;
         }
         let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) else { return false };
@@ -52,7 +57,11 @@ impl App {
         self.menus_dirty = true;
         self.refresh_buried_menu();
         if self.tabs.is_empty() {
-            self.drop_current_window();
+            if only {
+                self.go_resident();
+            } else {
+                self.drop_current_window();
+            }
         } else {
             self.relayout();
         }
@@ -64,6 +73,14 @@ impl App {
         let Some(b) = self.buried.take(id) else { return };
         self.menus_dirty = true;
         self.refresh_buried_menu();
+        // A buried session restored while resident comes back as the hidden window's tab (its own
+        // window was the one that went resident).
+        if self.resident {
+            let tab = Tab::new(self.next_tab_id, Layout::new(id), id);
+            self.next_tab_id += 1;
+            self.wake_from_resident(super::resident_ui::Wake::Tabs(vec![tab]));
+            return;
+        }
         let window = self.window_id_of_key(b.window);
         let window_open = window.is_some_and(|w| self.enter(w));
         let tab_open = window_open && self.tabs.iter().any(|t| t.id == b.tab);

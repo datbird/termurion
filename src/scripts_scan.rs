@@ -2,14 +2,13 @@
 //! a scan at start, then one 500 ms after the last change a subtree change notification saw.
 //! The slow-scan question goes to the app and the worker waits for its answer.
 
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows_sys::Win32::Storage::FileSystem::{FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Storage::FileSystem::{FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FindCloseChangeNotification, FindNextChangeNotification};
 use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
 
 use crate::pty::Notify;
@@ -67,7 +66,7 @@ impl Scanner {
     /// network path (`scripts::ancestors_stay_local`) is not made, watched or polled: the
     /// scanner gives one empty result and nothing more.
     pub fn start(folder: PathBuf, notify: Notify) -> Scanner {
-        Scanner::start_with(folder, notify, &scripts::read_link)
+        Scanner::start_with(folder, notify, &crate::netpath::read_reparse)
     }
 
     /// `start`, reading links with `read_link`.
@@ -134,9 +133,8 @@ impl Drop for Scanner {
 
 /// A change notification on the whole tree under `folder`, None when it cannot be watched.
 fn watch(folder: &Path) -> Option<HANDLE> {
-    let wide: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
-    let h = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 1, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME) };
-    (h != INVALID_HANDLE_VALUE).then_some(h)
+    // Watching opens the folder: judged first (a custom Scripts folder is a setting).
+    crate::localfs::watch_tree(&crate::localfs::LocalPath::judge(folder)?, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME)
 }
 
 struct Worker {
@@ -197,7 +195,7 @@ impl Worker {
             } else if let (true, Some(h)) = (r == WAIT_OBJECT_0 + 1, change) {
                 // A watch that cannot go on (its folder was removed) is dropped at once, or
                 // it would stay signaled and spin; the scan then finds the folder missing.
-                if unsafe { FindNextChangeNotification(h) } == 0 || !self.folder.is_dir() {
+                if unsafe { FindNextChangeNotification(h) } == 0 || !crate::localfs::is_local_dir(&self.folder) {
                     unsafe { FindCloseChangeNotification(h) };
                     change = None;
                     due = Some(Instant::now());
@@ -205,7 +203,7 @@ impl Worker {
                     due = Some(Instant::now() + SETTLE);
                 }
             } else if r == WAIT_TIMEOUT {
-                if change.is_none() && self.folder.is_dir() {
+                if change.is_none() && crate::localfs::is_local_dir(&self.folder) {
                     change = watch(&self.folder);
                     if change.is_some() {
                         due = Some(Instant::now());

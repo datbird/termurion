@@ -104,7 +104,7 @@ impl App {
         let Some(path) = b64_text(&value).map(|p| p.trim_end().to_string()) else { return };
         // Network paths are refused before anything touches them (a lookup alone would
         // send the user's credentials to the server).
-        if !path.is_empty() && (!prompted::local_path_ok(&path) || !std::path::Path::new(&path).exists()) {
+        if !path.is_empty() && (!prompted::local_path_ok(&path) || !crate::localfs::local_exists(std::path::Path::new(&path))) {
             return;
         }
         match prompted::background_decision(&path, &self.global_list("AlwaysAllowBackgroundImage"), &self.global_list("AlwaysDenyBackgroundImage")) {

@@ -209,7 +209,7 @@ impl App {
     fn learn_more(&mut self, url: &str) {
         match learn_more_target(url) {
             crate::semantic::Run::Open(target) => {
-                if let Err(e) = super::semantic_ui::shell_open(&target, None, false) {
+                if let Err(e) = super::semantic_ui::shell_open(&target, false) {
                     self.banners.set("action", format!("Could not open {target}: {e}"));
                 }
             }

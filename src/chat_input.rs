@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::localfs::{self, LocalPath};
+
 use serde_json::Value;
 
 use crate::ai_gate::{Alert, Then};
@@ -377,22 +379,19 @@ pub fn rejected_alert(names: &[String], provider: Option<&str>) -> Alert {
 /// A file's bytes, only for a regular local file no larger than `FILE_BYTES_MAX` (a network
 /// path is never probed, a device or a folder is not a regular file).
 pub fn read_capped(path: &Path, max: u64, budget: &Budget, total_max: u64) -> Result<Vec<u8>, Reason> {
-    if crate::remote_prefs::is_unc(&path.to_string_lossy()) {
-        return Err(Reason::Network);
-    }
-    top_link(path)?;
-    let meta = std::fs::metadata(path).map_err(|_| Reason::Unreadable)?;
-    if !meta.is_file() {
+    let path = LocalPath::judge(path).ok_or(Reason::Network)?;
+    let meta = localfs::stat(&path).map_err(|_| Reason::Unreadable)?;
+    if !meta.is_file {
         return Err(Reason::Unreadable);
     }
-    if meta.len() > max {
+    if meta.len > max {
         return Err(Reason::TooLarge);
     }
-    if !budget.fits(meta.len(), total_max) {
+    if !budget.fits(meta.len, total_max) {
         return Err(Reason::OverTotal);
     }
     // Counted once it is read: a file that fails to read takes nothing from the others.
-    let bytes = std::fs::read(path).map_err(|_| Reason::Unreadable)?;
+    let bytes = localfs::read(&path).map_err(|_| Reason::Unreadable)?;
     budget.take(bytes.len() as u64, total_max);
     Ok(bytes)
 }
@@ -450,20 +449,17 @@ fn clean(path: &Path) -> PathBuf {
     out
 }
 
-/// Whether a directory entry is a symbolic link or a junction. Any other reparse point is an
-/// ordinary file: a OneDrive or Files On-Demand placeholder is read (and fetched) like any file.
-fn is_link(meta: &std::fs::Metadata) -> bool {
-    meta.file_type().is_symlink()
-}
-
 /// A link inside a chosen folder is followed only when it ends at a local place below that
 /// folder, by way of no other link (each hop is read by name, never opened, so a link to a
 /// network share is never touched). Otherwise why it is not.
 fn check_link(link: &Path, roots: &[PathBuf]) -> Result<(), Reason> {
-    let mut cur = link.to_path_buf();
+    // The one judge first: every hop's target and its folders are local before any is read here.
+    let mut cur = LocalPath::judge(link).ok_or(Reason::Network)?;
+    let lstat = |p: &Path| LocalPath::judge(p).ok_or(Reason::Network).and_then(|p| localfs::lstat(&p).map_err(|_| Reason::Unreadable));
     for _ in 0..8 {
-        let target = std::fs::read_link(&cur).map_err(|_| Reason::Unreadable)?;
-        let abs = clean(&if target.is_absolute() { target } else { cur.parent().unwrap_or(Path::new("")).join(target) });
+        let target = localfs::read_link(&cur).ok_or(Reason::Unreadable)?;
+        let cur_path = cur.path().to_path_buf();
+        let abs = clean(&if target.is_absolute() { target } else { cur_path.parent().unwrap_or(Path::new("")).join(target) });
         if crate::remote_prefs::is_unc(&abs.to_string_lossy()) {
             return Err(Reason::Network);
         }
@@ -473,64 +469,23 @@ fn check_link(link: &Path, roots: &[PathBuf]) -> Result<(), Reason> {
         let mut between: Vec<&Path> = abs.ancestors().skip(1).take_while(|a| inside(root, a)).collect();
         between.reverse();
         for a in between {
-            match std::fs::symlink_metadata(a) {
-                Ok(m) if is_link(&m) => return Err(Reason::Link),
-                Ok(_) => {}
-                Err(_) => return Err(Reason::Unreadable),
+            if lstat(a)?.is_link {
+                return Err(Reason::Link);
             }
         }
-        match std::fs::symlink_metadata(&abs) {
-            Ok(m) if is_link(&m) => cur = abs,
-            Ok(_) => return Ok(()),
-            Err(_) => return Err(Reason::Unreadable),
+        if !lstat(&abs)?.is_link {
+            return Ok(());
         }
+        cur = LocalPath::judge(&abs).ok_or(Reason::Network)?;
     }
     Err(Reason::Link)
 }
 
-/// Whether the item a person dropped or picked may be touched at all: neither it nor a folder
-/// above it is a link (read by its own entry, nothing it names is opened) whose chain reaches
-/// a network path. Err(Network) otherwise, and Err(Unreadable) for a link that cannot be read.
-pub fn top_verdict(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), Reason> {
-    verdict_from(path, is_link, read_link, 0)
-}
-
-/// Windows resolves every folder of a path when one entry is asked, so the entries are asked
-/// from the top folder DOWN and the walk stops at the first link to a network path: nothing
-/// below it is asked. A link to a local place is followed hop by hop with the same rule, so a
-/// hop whose own folder is a link to a share is refused too.
-fn verdict_from(path: &Path, is_link: &dyn Fn(&Path) -> bool, read_link: &dyn Fn(&Path) -> Option<PathBuf>, depth: usize) -> Result<(), Reason> {
-    if depth > 8 {
-        return Err(Reason::Network);
-    }
-    let mut entries: Vec<&Path> = path.ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
-    entries.reverse();
-    for a in entries {
-        if !is_link(a) {
-            continue;
-        }
-        // A link that cannot be read might lead to a share: refused and named, not skipped.
-        let Some(target) = read_link(a) else { return Err(Reason::Unreadable) };
-        let target = match a.parent() {
-            Some(parent) if target.is_relative() => parent.join(target),
-            _ => target,
-        };
-        if crate::scripts::is_network_path(&target.to_string_lossy()) {
-            return Err(Reason::Network);
-        }
-        verdict_from(&target, is_link, read_link, depth + 1)?;
-    }
-    Ok(())
-}
-
-/// `top_verdict` on the disk: each entry is asked with `symlink_metadata`, which never follows.
-pub fn top_link(path: &Path) -> Result<(), Reason> {
-    top_verdict(path, &|p| std::fs::symlink_metadata(p).is_ok_and(|m| is_link(&m)), &crate::scripts::read_link)
-}
-
 /// A dropped or picked item that is, or sits under, a link to a network location.
+/// The one judge (`localfs::LocalPath`): a network path, a mapped or SUBST drive onto a share, or a
+/// link to one anywhere on the way.
 pub fn links_to_network(path: &Path) -> bool {
-    top_link(path).is_err()
+    LocalPath::judge(path).is_none()
 }
 
 /// The regular files below `dir`, sorted by path within each folder and folders after the
@@ -540,11 +495,26 @@ pub fn links_to_network(path: &Path) -> bool {
 pub fn list_folder(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize) -> Option<Listing> {
     // The item itself first, by its own entry: a link to a network path is never followed (a send
     // then reads it as a file and names it as one that was never read).
-    if crate::remote_prefs::is_unc(&dir.to_string_lossy()) || top_link(dir).is_err() || !std::fs::metadata(dir).ok()?.is_dir() {
+    let judged = LocalPath::judge(dir)?;
+    if !localfs::stat(&judged).ok()?.is_dir {
         return None;
     }
-    let entries = |folder: &Path| -> std::io::Result<Vec<std::io::Result<PathBuf>>> { Ok(std::fs::read_dir(folder)?.map(|e| e.map(|e| e.path())).collect()) };
-    let kind = |path: &Path| std::fs::symlink_metadata(path).map(|m| Kind { link: is_link(&m), dir: m.is_dir(), file: m.is_file() });
+    // A folder on the stack is judged before it is listed; its entries' kinds come from the listing
+    // itself (no further I/O), so a plain entry of a judged folder is never probed again.
+    let known = std::cell::RefCell::new(std::collections::HashMap::<PathBuf, Kind>::new());
+    let of = |s: &localfs::Stat| Kind { link: s.is_link, dir: s.is_dir, file: s.is_file };
+    let entries = |folder: &Path| -> std::io::Result<Vec<std::io::Result<PathBuf>>> {
+        let listed = localfs::entries(&localfs::judge_io(folder)?)?;
+        let mut known = known.borrow_mut();
+        Ok(listed.into_iter().map(|e| {
+            known.insert(e.path().to_path_buf(), of(&e.stat));
+            Ok(e.path().to_path_buf())
+        }).collect())
+    };
+    let kind = |path: &Path| match known.borrow().get(path) {
+        Some(k) => Ok(*k),
+        None => localfs::judge_io(path).and_then(|p| localfs::lstat(&p)).map(|s| of(&s)),
+    };
     Some(list_with(dir, accepts, max, &Disk { entries: &entries, kind: &kind }))
 }
 
@@ -565,7 +535,7 @@ pub struct Disk<'a> {
 /// `list_folder` over a disk.
 pub fn list_with(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize, disk: &Disk) -> Listing {
     let mut roots = vec![dir.to_path_buf()];
-    roots.extend(std::fs::canonicalize(dir).ok());
+    roots.extend(LocalPath::judge(dir).and_then(|d| localfs::canonicalize(&d)).map(LocalPath::into_path_buf));
     let rel = |p: &Path| {
         let r = p.strip_prefix(dir).map_or_else(|_| file_name(p), |r| r.to_string_lossy().to_string());
         if r.is_empty() { file_name(dir) } else { r }
@@ -587,7 +557,7 @@ pub fn list_with(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize, disk: &
     };
     // The real place of each folder on the way down: a link back to one of them is a loop and is
     // not entered (the same files again and again until a cap).
-    let place = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_lowercase();
+    let place = |p: &Path| LocalPath::judge(p).and_then(|p| localfs::canonicalize(&p)).map_or_else(|| p.to_path_buf(), LocalPath::into_path_buf).to_string_lossy().to_lowercase();
     let (mut stack, mut seen) = (vec![(dir.to_path_buf(), 0usize, Vec::<String>::new())], 0usize);
     while let Some((folder, depth, mut above)) = stack.pop() {
         above.push(place(&folder));
@@ -629,8 +599,8 @@ pub fn list_with(dir: &Path, accepts: &dyn Fn(&str) -> bool, max: usize, disk: &
                     skip(&mut listing, rel(&path), reason);
                     continue;
                 }
-                match std::fs::metadata(&path) {
-                    Ok(m) => (m.is_dir(), m.is_file()),
+                match localfs::judge_io(&path).and_then(|p| localfs::stat(&p)) {
+                    Ok(m) => (m.is_dir, m.is_file),
                     Err(_) => {
                         skip(&mut listing, rel(&path), Reason::Unreadable);
                         continue;
@@ -1172,6 +1142,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Round 3: a dropped or picked item is judged by the one judge (`netpath::judge`), the same
+    /// scenarios the old per-module walk had: the item or a folder above it a link to a share, a chain
+    /// ending at one, a loop, a hop whose own folder is a link to a share; nothing below such a link
+    /// is read.
     #[test]
     fn a_dropped_item_that_links_to_a_network_path_is_never_touched() {
         let links: std::collections::HashMap<&str, &str> = [
@@ -1180,72 +1154,30 @@ mod tests {
             ("C:\\up", "\\\\?\\UNC\\host\\share"),
             ("C:\\drop\\local", "C:\\elsewhere\\f"),
             ("C:\\drop\\loop", "C:\\drop\\loop"),
+            ("C:\\mnt", "\\\\host\\s"),
+            ("C:\\drop\\x", "C:\\mnt\\f"),
+            ("C:\\drop\\odd", crate::netpath::UNREADABLE_LINK),
         ]
         .into_iter()
         .collect();
-        let is_link = |q: &Path| links.contains_key(q.to_string_lossy().as_ref());
-        let read_link = |q: &Path| links.get(q.to_string_lossy().as_ref()).map(PathBuf::from);
-        let verdict = |t: &str| top_verdict(Path::new(t), &is_link, &read_link);
-        assert_eq!(verdict("C:\\drop\\share"), Err(Reason::Network), "the item itself is a link to a share");
-        assert_eq!(verdict("C:\\drop\\hop"), Err(Reason::Network), "a chain that ends at a share");
-        assert_eq!(verdict("C:\\up\\f.txt"), Err(Reason::Network), "a folder above it is a link to a share");
-        assert_eq!(verdict("C:\\drop\\loop"), Err(Reason::Network), "a chain that never ends is not followed");
-        assert_eq!(verdict("C:\\drop\\local"), Ok(()), "a link to a local place is the person's own choice");
-        assert_eq!(verdict("C:\\drop\\plain.txt"), Ok(()));
-        // The verdict never asks about the target's own entry beyond reading the link.
-        let asked = std::cell::RefCell::new(Vec::new());
-        let spy = |q: &Path| {
+        let asked = std::cell::RefCell::new(Vec::<String>::new());
+        let read_link = |q: &Path| {
             asked.borrow_mut().push(q.to_string_lossy().to_string());
-            is_link(q)
+            links.get(q.to_string_lossy().as_ref()).map(PathBuf::from)
         };
-        let _ = top_verdict(Path::new("C:\\drop\\share"), &spy, &read_link);
-        assert!(!asked.borrow().iter().any(|a| a.starts_with("\\\\")), "{:?}", asked.borrow());
+        let local = |t: &str| crate::netpath::judge(Path::new(t), &read_link, &crate::netpath::LocalDrives);
+        for t in ["C:\\drop\\share", "C:\\drop\\hop", "C:\\up\\f.txt", "C:\\drop\\loop", "C:\\drop\\x", "C:\\drop\\odd", "C:\\drop\\odd\\f.txt"] {
+            assert!(!local(t), "{t}");
+        }
+        assert!(local("C:\\drop\\local") && local("C:\\drop\\plain.txt"));
+        assert!(!asked.borrow().iter().any(|a| a.starts_with("\\\\") || a.starts_with("C:\\up\\") || a.starts_with("C:\\mnt\\")), "{:?}", asked.borrow());
+        assert!(links_to_network(Path::new("\\\\host\\share\\x")) && links_to_network(Path::new("relative.txt")));
         // A drop sorts such an item out before it is asked whether it is a folder.
         let paths = [p("C:\\drop\\share"), p("C:\\a.txt")];
         let network = |q: &Path| q == Path::new("C:\\drop\\share");
         let probing = |q: &Path| -> bool { assert_ne!(q, Path::new("C:\\drop\\share"), "probed the link"); false };
         let (ok, no) = split_by_model(&paths, &network, &probing, &|_| true);
         assert_eq!((ok, no), (vec![p("C:\\a.txt")], vec![p("C:\\drop\\share")]));
-    }
-
-    #[test]
-    fn a_link_whose_target_cannot_be_read_is_refused_not_skipped() {
-        // A link read_link cannot resolve might lead to a share: it is refused and named, never
-        // let through unchecked.
-        let is_link = |q: &Path| q == Path::new("C:\\drop\\odd");
-        let read_link = |_: &Path| None;
-        assert_eq!(top_verdict(Path::new("C:\\drop\\odd"), &is_link, &read_link), Err(Reason::Unreadable));
-        assert_eq!(top_verdict(Path::new("C:\\drop\\odd\\f.txt"), &is_link, &read_link), Err(Reason::Unreadable), "a folder above it");
-        assert_eq!(top_verdict(Path::new("C:\\drop\\plain.txt"), &is_link, &read_link), Ok(()));
-    }
-
-    #[test]
-    fn the_folders_above_an_item_are_asked_before_it_and_every_hop_the_same_way() {
-        // Windows resolves every folder in a path, so asking about C:\up\f.txt reaches the share when
-        // C:\up is a link to it: the top folder must be asked first, and nothing below a link to a
-        // share may be asked at all.
-        let links: std::collections::HashMap<&str, &str> = [("C:\\up", "\\\\host\\share"), ("C:\\mnt", "\\\\host\\s"), ("C:\\drop\\x", "C:\\mnt\\f"), ("C:\\ok", "C:\\local")].into_iter().collect();
-        let asked = std::cell::RefCell::new(Vec::<String>::new());
-        let is_link = |q: &Path| {
-            asked.borrow_mut().push(q.to_string_lossy().to_string());
-            links.contains_key(q.to_string_lossy().as_ref())
-        };
-        let read_link = |q: &Path| {
-            asked.borrow_mut().push(format!("read {}", q.to_string_lossy()));
-            links.get(q.to_string_lossy().as_ref()).map(PathBuf::from)
-        };
-        assert_eq!(top_verdict(Path::new("C:\\up\\f.txt"), &is_link, &read_link), Err(Reason::Network));
-        let first_up = asked.borrow().iter().position(|a| a == "C:\\up").expect("C:\\up asked");
-        let below_up = asked.borrow().iter().position(|a| a.starts_with("C:\\up\\"));
-        assert!(first_up < 3 && below_up.is_none(), "nothing below a link to a share is asked: {:?}", asked.borrow());
-        asked.borrow_mut().clear();
-        // One hop to a local folder that is itself a link to a share.
-        assert_eq!(top_verdict(Path::new("C:\\drop\\x"), &is_link, &read_link), Err(Reason::Network), "the hop's own folders are walked top down");
-        let a = asked.borrow().clone();
-        let mnt = a.iter().position(|q| q == "C:\\mnt" || q == "read C:\\mnt");
-        let below = a.iter().position(|q| q.starts_with("C:\\mnt\\") || q.starts_with("read C:\\mnt\\"));
-        assert!(mnt.is_some() && below.is_none(), "C:\\mnt is read, nothing under it is: {a:?}");
-        assert_eq!(top_verdict(Path::new("C:\\ok\\y"), &is_link, &read_link), Ok(()));
     }
 
     fn io_err() -> std::io::Error {

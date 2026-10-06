@@ -18,7 +18,7 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
     SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER, TokenElevation,
-    TokenIntegrityLevel, TokenIsAppContainer, TokenIsRestricted, TokenUser,
+    TokenIntegrityLevel, TokenIsAppContainer, TokenIsRestricted, TokenSessionId, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
@@ -156,6 +156,24 @@ pub fn user_sid() -> Result<String, String> {
     }
 }
 
+/// The peer facts (token and Windows session) of the identity this thread runs as: after
+/// `CoImpersonateClient`, the caller's. Read from one thread token opened as this process.
+pub fn thread_peer() -> Result<crate::api_peer::Peer, String> {
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if windows_sys::Win32::System::Threading::OpenThreadToken(windows_sys::Win32::System::Threading::GetCurrentThread(), TOKEN_QUERY, 1, &mut token) == 0 {
+            return Err(last_error("OpenThreadToken"));
+        }
+        let token = Owned(token);
+        Ok(crate::api_peer::Peer { token: token_facts(token.0)?, session: Some(token_dword(token.0, TokenSessionId, "TokenSessionId")?) })
+    }
+}
+
+/// This process's peer facts (token and Windows session).
+pub fn own_peer() -> Result<crate::api_peer::Peer, String> {
+    Ok(crate::api_peer::Peer { token: own_token_facts()?, session: session_of(std::process::id()) })
+}
+
 /// Whether this process runs elevated (as administrator).
 pub fn elevated() -> Result<bool, String> {
     unsafe {
@@ -241,6 +259,30 @@ pub fn process_token_facts(pid: u32) -> Result<crate::api_peer::Token, String> {
     token_facts(process_token(pid)?.0)
 }
 
+/// The full path of process `pid`'s program, when it can be read.
+pub fn process_image(pid: u32) -> Option<String> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let h = Owned(h);
+        let mut buf = vec![0u16; 4096];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h.0, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0;
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+/// The Windows session id of process `pid` (`ProcessIdToSessionId`), when it can be read.
+pub fn session_of(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    let mut session = 0u32;
+    // SAFETY: `session` is a valid out pointer for the call.
+    (unsafe { ProcessIdToSessionId(pid, &mut session) } != 0).then_some(session)
+}
+
 /// The peer check's facts about this process's token.
 pub fn own_token_facts() -> Result<crate::api_peer::Token, String> {
     unsafe {
@@ -267,7 +309,8 @@ pub fn secret_pipe_name() -> Result<String, String> {
 }
 
 /// `\\.\pipe\tandem-url-<user SID>`, plus `-admin` when elevated: the pipe a second `tandem.exe
-/// --url` hands an ssh: URL to (m14e).
+/// --url` hands an ssh: URL to (m14e). It is also the one channel for every other request of a
+/// second `tandem.exe` (`launch::Request`, m13v1): there is no second app pipe.
 pub fn url_pipe_name() -> Result<String, String> {
     // As the host pipe: an elevated Tandem's URLs are its own, never a normal one's.
     Ok(format!(r"\\.\pipe\tandem-url-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))

@@ -38,16 +38,16 @@ pub struct RealFs;
 
 impl Fs for RealFs {
     fn list(&self, dir: &Path) -> Vec<(String, bool)> {
-        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-        rd.flatten().take(MAX_DIR_ENTRIES).map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().is_ok_and(|t| t.is_dir()))).collect()
+        let Some(Ok(entries)) = crate::localfs::LocalPath::judge(dir).map(|d| crate::localfs::entries_upto(&d, MAX_DIR_ENTRIES)) else { return Vec::new() };
+        entries.into_iter().map(|e| (e.name.to_string_lossy().into_owned(), e.stat.is_dir)).collect()
     }
 
     fn is_file(&self, path: &Path) -> bool {
-        path.is_file()
+        crate::localfs::is_local_file(path)
     }
 
     fn exists(&self, path: &Path) -> bool {
-        path.exists()
+        crate::localfs::local_exists(path)
     }
 
     fn env(&self, name: &str) -> String {

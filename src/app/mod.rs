@@ -121,7 +121,12 @@ mod windows_ui;
 #[cfg(windows)]
 mod chrome_ui;
 mod desktops_ui;
+mod launch_ui;
+mod jumplist_ui;
+mod default_term_ui;
+mod open_file_ui;
 mod presence_ui;
+mod resident_ui;
 #[cfg(windows)]
 mod sizing_ui;
 #[cfg(windows)]
@@ -229,11 +234,22 @@ pub enum UserEvent {
     Caption(isize, crate::caption::Event),
     /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
     OpenUrl(String),
+    /// Another `tandem.exe` handed over a request (the launch pipe, `launch_ui`).
+    Launch(crate::launch::Request),
+    /// A console handed over by the Windows default-terminal handoff (`handoff_win`, `default_term_ui`).
+    Handoff(crate::handoff_win::Handoff),
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
     /// A screen reader asked to select text or scroll, or attached (`uia_win::Request`).
     Uia(crate::uia_win::Request),
+    /// Windows asks whether the session may end (WM_QUERYENDSESSION on window `hwnd`): the app sets
+    /// `end_now` (true = nothing to ask) and then `done` (`logout_ui`, `resident_ui::shutdown_decide`).
+    ShutdownQuery { done: Arc<std::sync::atomic::AtomicBool>, end_now: Arc<std::sync::atomic::AtomicBool>, hwnd: isize },
+    /// The shutdown was held for the quit question: ask it now, after the window procedure returned.
+    ShutdownAsk,
+    /// The quit question's answer (true: OK), from the thread that showed it.
+    ShutdownAnswer(bool),
 }
 
 #[derive(Clone)]
@@ -648,11 +664,48 @@ pub struct App {
     background_windows: std::collections::HashSet<u64>,
     /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
     pending_urls_at_start: Vec<String>,
-    /// The URL pipe's listener thread, when this Tandem owns the pipe (it ends with the process).
-    #[allow(dead_code)]
-    url_listener: Option<std::thread::JoinHandle<()>>,
+    /// The launch pipe this Tandem serves, when it owns it (an idle `-Embedding` start stops it
+    /// before it ends; otherwise it ends with the process).
+    url_listener: Option<crate::url_launch::Serving>,
     /// The flood cap on URLs from outside (P13).
     url_flood: crate::url_launch::Flood,
+    /// Requests of a second `tandem.exe` that wait for the first window, and the flood cap on
+    /// them (app-wide, not in `swap_live`; m13v1).
+    launch_queue: Vec<crate::launch::Request>,
+    launch_flood: crate::url_launch::Flood,
+    /// Tandem runs with no window (m13v1 Task 7, R3): the last window is hidden, empty and off the
+    /// taskbar, the notification area icon is its way back. App-wide, not in `swap_live`.
+    resident: bool,
+    /// The Downloads folder chosen for the run (final review item 17). App-wide.
+    downloads_cache: files_ui::DownloadsCache,
+    /// Where in `pending_windows` the resident wake's one window waits (final review item 3): later
+    /// tabs asked for before it opens join it. Cleared when the window is awake. App-wide.
+    pending_wake: Option<usize>,
+    /// When this Tandem started, and whether the person has done anything yet (a key in a
+    /// session, Close, a window they closed): iTerm2's grace period for quitting (`AD:915-942`).
+    launched_at: Instant,
+    user_interacted: bool,
+    /// The recent profiles behind the Jump List's Recents (Task 6); app-wide.
+    recents: crate::jumplist::Recents,
+    /// The Jump List needs a rebuild (the profiles, the arrangements or the recents changed).
+    jump_list_due: bool,
+    jump_sync: crate::jumplist::Sync,
+    /// The default-terminal handoff class, registered while Tandem is the default (m13v1 Task 5).
+    handoff: Option<crate::handoff_win::Server>,
+    /// The handed-off console the next started pane takes (`spawn_pane`), and the ones that
+    /// arrived before the first window.
+    start_handoff: Option<crate::handoff_win::Handoff>,
+    handoff_queue: Vec<crate::handoff_win::Handoff>,
+    /// When an `-Embedding` start began: it makes no window until its handoff arrives.
+    embedding: Option<Instant>,
+    handoffs_seen: usize,
+    /// Files and folders opened with Tandem: the batch gathering, the workers that check them and
+    /// the scripts the person said OK to run (app-wide, not in `swap_live`; m13v1 Task 2).
+    open_batch: crate::open_file::Batch,
+    open_ignored: crate::open_file::IgnoredCount,
+    open_work: open_file_ui::OpenWork,
+    open_runs: Vec<crate::open_file::Launch>,
+    open_with_done: bool,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -1025,6 +1078,10 @@ pub struct App {
     save_due: Option<Instant>,
     /// The logoff watch is on (`logout_ui`): one setting for every window.
     logout_armed: bool,
+    /// The end-of-session watch has been armed once (`logout_ui::tick_logout`).
+    logout_set: bool,
+    /// The shutdown query has been armed once.
+    query_set: bool,
     /// Session restoration: when to save the windows, whether saving is over (quit, or the
     /// last window closed), and a focus loss waiting to be saved.
     state_debounce: crate::restore_state::Debounce,
@@ -1566,6 +1623,7 @@ pub(crate) fn teardown_process() {
     crate::winkeys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
+    crate::handoff_win::begin_closing();
     // A running update check ends with Tandem (its curl.exe), not after it.
     #[cfg(windows)]
     crate::update_fetch_win::cancel_running();
@@ -1593,7 +1651,7 @@ pub fn run() {
         crate::url_launch::UrlArg::Refused(why) => return crate::host::log(&format!("url: refused {why}")),
         // Only when no Tandem of this user runs does this one start (fix r1): a busy or failed
         // hand-over never opens a second Tandem beside the first.
-        crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&url) {
+        crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&crate::launch::Request::Url { url: url.clone() }) {
             crate::url_launch::AfterHand::Exit => return,
             crate::url_launch::AfterHand::Start => pending_urls_at_start.push(url),
             crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("url: refused: {why}")),
@@ -1606,10 +1664,45 @@ pub fn run() {
     if let Some(pid) = wait_pid {
         settings_export_ui::wait_for_pid(pid);
     }
-    // A second bare start while Tandem is excluded from the taskbar is iTerm2's reopen: the
-    // running one takes it as the dock click and this process ends.
-    if crate::presence::forwards_reopen(std::env::args_os().count(), wait_pid.is_some()) && crate::notify::forward_reopen() {
-        return;
+    // The rest of the command line (m13v1): a running Tandem of this user takes the request over
+    // the same pipe and this process ends (after the wait above, so the relaunch after an import
+    // never hands its start to the Tandem it replaced). With none running, this one starts and
+    // runs the request after its first window.
+    let mut launch_queue = Vec::new();
+    let mut embedding = false;
+    let request = match std::env::args_os().skip(1).map(|a| a.into_string()).collect::<Result<Vec<String>, _>>() {
+        Ok(args) => crate::launch::parse(&args, &std::env::current_dir().unwrap_or_default()),
+        Err(_) => Err(crate::launch::USAGE.to_string()),
+    };
+    match request {
+        Err(usage) => return message_box(&usage),
+        // Handled above (its hand-over and its queue are the URL's own).
+        Ok(crate::launch::Request::Url { .. }) => {}
+        // COM starts `tandem.exe -Embedding` for one handoff; any local program can too. It runs
+        // only while Tandem is the default terminal with its pack and no Tandem answers the
+        // launch pipe; it forwards nothing and makes no window until a handoff arrives (B9).
+        Ok(crate::launch::Request::Embedding) => {
+            let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
+            let pack = conpty::load(&Source::Shipped(exe)).is_ok_and(|a| a.pack.is_some());
+            let tandem = crate::default_term::is_tandem(&crate::default_term::current(&crate::reg::HkcuRegistry));
+            match crate::default_term::embedding_start(tandem, pack, &crate::url_launch::probe_running()) {
+                crate::default_term::EmbeddingStart::Run => embedding = true,
+                crate::default_term::EmbeddingStart::Exit(why) => return crate::host::log(&format!("embedding: not started: {why}")),
+            }
+        }
+        Ok(request) => {
+            if crate::launch::forwardable_start(&request, wait_pid.is_some()) {
+                match crate::url_launch::hand_to_running(&request) {
+                    crate::url_launch::AfterHand::Exit => return,
+                    crate::url_launch::AfterHand::Start => {}
+                    crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("launch: refused: {why}")),
+                }
+            }
+            // A bare start is the startup plan's own window: it has nothing more to do.
+            if request != crate::launch::Request::Reopen {
+                launch_queue.push(request);
+            }
+        }
     }
     // A panic on the main thread (it ends Tandem) takes the keyboard hook down first, so no remap
     // outlives it; a worker thread's panic leaves the hook alone.
@@ -1641,14 +1734,36 @@ pub fn run() {
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
     }));
-    // This Tandem takes URLs sent to it; a second one of the same user cannot bind and does not listen.
-    let url_proxy = proxy.clone();
-    let url_listener = match crate::url_launch::listen(Box::new(move |url| {
-        let _ = url_proxy.lock().map(|p| p.send_event(UserEvent::OpenUrl(url)));
-    })) {
+    // This Tandem takes the requests sent to it. One that cannot bind is a second Tandem of the
+    // same user (another started at the same moment, or something holds the name): it hands its
+    // own request over once more and ends, so it never installs a second keyboard hook, hotkeys
+    // or tray icon beside the first (13u S4, R14de-6).
+    let mut pipe_problem: Option<String> = None;
+    let url_listener = match crate::url_launch::listen(launch_events(proxy.clone())) {
         Ok(h) => Some(h),
         Err(e) => {
-            crate::host::log(&format!("url: not listening: {e}"));
+            crate::host::log(&format!("launch: not listening: {e}"));
+            if embedding {
+                return;
+            }
+            let mut again = pending_urls_at_start.iter().map(|u| crate::launch::Request::Url { url: u.clone() }).chain(launch_queue.iter().cloned()).collect::<Vec<_>>();
+            if again.is_empty() {
+                again.push(crate::launch::Request::Reopen);
+            }
+            let after: Vec<_> = again.iter().map(crate::url_launch::hand_to_running).collect();
+            // A holder that is not this Tandem (another user, a lower integrity level, another
+            // program) is sent nothing and does not stop Tandem from starting: this one runs
+            // without a listener and says so (review r1, Important 1). Only a holder that may
+            // be Tandem but did not answer ends the launch.
+            match crate::url_launch::lost_pipe(&after, false) {
+                crate::url_launch::LostPipe::Handed => return,
+                crate::url_launch::LostPipe::Refused => {
+                    message_box(&format!("Tandem could not take its launch pipe: {e}"));
+                    return;
+                }
+                crate::url_launch::LostPipe::RunWithout => {}
+            }
+            pipe_problem = Some("Another program holds Tandem's launch pipe, so files and links opened with Tandem cannot reach this window.".to_string());
             None
         }
     };
@@ -1657,17 +1772,11 @@ pub fn run() {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
 
-    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
-    // launch's other housekeeping (P24), off the launch path.
-    std::thread::spawn(|| {
-        let now = std::time::SystemTime::now();
-        if let Some(d) = files_ui::downloads_dir() {
-            crate::ssh_local::sweep_stale(&d, now);
-        }
-        crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
-    });
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
+    if let Some(text) = pipe_problem {
+        banners.set("launch-pipe", text);
+    }
     let api = match conpty::load(&Source::Shipped(exe_dir.clone())) {
         Ok(api) => api,
         Err(e) => match conpty::load(&Source::Inbox) {
@@ -1730,6 +1839,20 @@ pub fn run() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
     }
+    // Tandem's own scheme registrations follow the exe when it moved (only schemes the person bound).
+    crate::url_schemes::repair_at_start(&globals);
+    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
+    // launch's other housekeeping (P24), off the launch path.
+    let downloads_setting = globals.string("DownloadsDirectory");
+    std::thread::spawn(move || {
+        let now = std::time::SystemTime::now();
+        if let Some(d) = files_ui::downloads(&downloads_setting).dir {
+            crate::ssh_local::sweep_stale(&d, now);
+        }
+        crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
+    });
+    // So does the default-terminal handoff class (P11), under the same rule.
+    crate::default_term::repair_at_start();
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
     // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
     let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
@@ -1778,6 +1901,7 @@ pub fn run() {
     // Discovered Ollama models from the last run resolve at once while a refresh runs.
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
+    let open_work = open_file_ui::OpenWork::new(notify.clone());
     let pathnav = pathnav_ui::PathNav::new(notify.clone());
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
@@ -1939,6 +2063,26 @@ pub fn run() {
         pending_urls_at_start,
         url_listener,
         url_flood: Default::default(),
+        launch_queue,
+        launch_flood: Default::default(),
+        resident: false,
+        downloads_cache: Default::default(),
+        pending_wake: None,
+        launched_at: Instant::now(),
+        user_interacted: false,
+        recents: Default::default(),
+        jump_list_due: false,
+        jump_sync: Default::default(),
+        handoff: None,
+        start_handoff: None,
+        handoff_queue: Vec::new(),
+        embedding: embedding.then(Instant::now),
+        handoffs_seen: 0,
+        open_batch: Default::default(),
+        open_ignored: Default::default(),
+        open_work,
+        open_runs: Vec::new(),
+        open_with_done: false,
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         dnd_dropped: Vec::new(),
@@ -2112,6 +2256,8 @@ pub fn run() {
         settings: None,
         save_due: None,
         logout_armed: false,
+        logout_set: false,
+        query_set: false,
         state_debounce: Default::default(),
         state_frozen: second_copy,
         focus_lost: false,
@@ -2368,6 +2514,8 @@ pub fn run() {
         restored_scripts,
         restored_dir: None,
     };
+    // The handoff class is registered before the first window, so COM's wait for it is short.
+    app.sync_handoff_server();
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
     }
@@ -3069,10 +3217,10 @@ impl App {
             AddTab::Default => self.new_tab(None),
             AddTab::CurrentProfile => {
                 let guid = pane.and_then(|p| self.profile_for_new_session(p));
-                let (tabs, windows) = (self.tabs.len(), self.pending_windows.len());
+                let (tabs, windows) = (self.tabs.len(), self.pending_tabs());
                 self.new_tab(guid.as_deref());
                 // Nothing opened: a copy made for it goes.
-                if let Some(g) = guid.filter(|_| self.tabs.len() == tabs && self.pending_windows.len() == windows) {
+                if let Some(g) = guid.filter(|_| self.tabs.len() == tabs && self.pending_tabs() == windows) {
                     self.forget_session_profile(&g);
                 }
             }
@@ -3722,6 +3870,7 @@ impl App {
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
+        let handed = self.start_handoff.is_some();
         match self.spawn_pane(id, rect, guid, None) {
             Ok((pane, p)) => {
                 self.install_pane(id, pane, &p, false);
@@ -3730,7 +3879,7 @@ impl App {
                 // copy never type the profile's text (B2). The API's CreateTab with custom
                 // properties starts the base profile's own shell with the text, as iTerm2's does
                 // (the API is authenticated; its command is a profile property, not an override).
-                if self.start_command_override.is_none() && self.start_env_override.is_none() {
+                if self.start_command_override.is_none() && self.start_env_override.is_none() && !handed {
                     self.send_initial_text(id, &p);
                 }
                 true
@@ -3752,6 +3901,10 @@ impl App {
         let p = self.profile(guid);
         let cell = self.profile_cell(&p);
         let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
+        // A console handed over by Windows is the pane; no shell is started (m13v1 Task 5).
+        if let Some(h) = self.start_handoff.take() {
+            return self.pane_from_handoff(id, p, h, cols, rows);
+        }
         let (cmd, transport) = match self.start_command_override.clone() {
             // The API's create command never takes the SSH path.
             Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
@@ -3759,7 +3912,7 @@ impl App {
         };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
-            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| d.is_dir()) => (PathBuf::from(d), None),
+            Some(crate::arrangement::Folder::Forced(d)) if crate::start_dir::probe_ok(std::path::Path::new(d), &|d| crate::localfs::is_local_dir(d)) => (PathBuf::from(d), None),
             // A git command's window runs only in its folder, never the profile's.
             Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
                 return Err(format!("The folder {d} no longer exists, so git did not run."));
@@ -3771,7 +3924,7 @@ impl App {
             Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
             // A restart reuses the folder the shell first started in, never OSC 7 or the focused
             // pane (`PS:4890-4896`, P13).
-            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| d.is_dir()),
+            _ if restart_dir.is_some() => crate::session_end::restart_dir(restart_dir, &p, &|d| crate::localfs::is_local_dir(d)),
             _ => self.profile_start_dir(&p),
         };
         match warning {
@@ -3890,6 +4043,13 @@ impl App {
         self.apply_session_start(id);
         // Automatic logging at the start, the restart and a restore (`PS:3549-3560`).
         self.start_auto_log(id);
+        // A session of a saved profile is a recent (`SF:393-397`).
+        if !relaunch {
+            let saved = self.store.shared_guid(&p.guid());
+            if let Some((guid, name)) = self.store.profiles.iter().find(|q| q.guid() == saved).map(|q| (q.guid(), q.name())) {
+                self.note_recent(&guid, &name);
+            }
+        }
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
@@ -3965,7 +4125,7 @@ impl App {
             None => text.to_string(),
         };
         let mode = crate::start_dir::mode(p, self.start_object);
-        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| d.is_dir())
+        crate::start_dir::resolve(&mode, previous.as_deref(), &profile::home(), &expand, &|d| crate::localfs::is_local_dir(d))
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine
@@ -4148,7 +4308,7 @@ impl App {
         let folder = self.scripts_folder();
         // Reached through a link to a network path: the scanner refuses it (an empty tree,
         // nothing made, watched or polled), and the app-wide entry says why once.
-        if !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+        if !crate::scripts::ancestors_stay_local(&folder, &crate::netpath::read_reparse) {
             self.script_log_app(crate::scripts::scripts_folder_not_local(&folder));
         }
         // The old scanner's thread ends on its own; a scan it is in finishes first.
@@ -4394,6 +4554,9 @@ impl App {
     /// (iTerm2 guards user tab creation through menu validation, `PT:13832`, and its API
     /// handler has no lock check, `H:2465-2588`).
     fn add_tab(&mut self, guid: Option<&str>) {
+        if self.wake_from_resident(resident_ui::Wake::Window(guid)) {
+            return;
+        }
         if self.new_tab_opens_window(guid) {
             self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
             return self.redraw();
@@ -4608,6 +4771,12 @@ impl App {
             // The window's last tab closed: the window goes; the last window ends Tandem. The
             // settings folder's quit question may open after it has gone, with its GPU.
             self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
+            // iTerm2's rule for the last window (`AD:915-942`, R3): Tandem stays resident unless
+            // "Quit when all windows are closed" says otherwise (and the grace period has passed).
+            if self.windows.parked().next().is_none() && self.after_last_window_now() == crate::resident::AfterLast::StayResident {
+                self.prefs_gpu = None;
+                return self.go_resident_after_last();
+            }
             if !self.drop_current_window() {
                 self.save_pending_settings();
                 self.save_empty_state();
@@ -4978,6 +5147,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // A key in a session ends the quit grace period (`PTYTextView.m:7505-7509`).
+        if ev.state == ElementState::Pressed {
+            self.note_interaction();
+        }
         // Remap modifiers globally off: this key is read with the remapped modifiers.
         let remapped = self.remapped_key(ev);
         let ev = remapped.as_ref().unwrap_or(ev);
@@ -5648,7 +5821,9 @@ impl App {
                     Axis::Column => (y - parent.y) / parent.h,
                 };
                 let path = path.clone();
-                self.tabs[self.active].layout.set_ratio(&path, ratio);
+                // A hidden resident window has no tabs and no drag (Task 7).
+                let Some(tab) = self.tabs.get_mut(self.active) else { return };
+                tab.layout.set_ratio(&path, ratio);
                 self.relayout();
             }
             Drag::App { pane, button, .. } => {
@@ -6244,9 +6419,25 @@ fn us_digit(code: KeyCode) -> Option<u8> {
 }
 
 
+/// What the launch pipe hands the event loop: a link as `OpenUrl`, any other request as `Launch`.
+fn launch_events(proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>) -> Box<dyn Fn(crate::launch::Request) + Send> {
+    Box::new(move |request| {
+        let _ = proxy.lock().map(|p| {
+            p.send_event(match request {
+                crate::launch::Request::Url { url } => UserEvent::OpenUrl(url),
+                other => UserEvent::Launch(other),
+            })
+        });
+    })
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu.is_some() {
+            return;
+        }
+        // An `-Embedding` start makes its window when the handoff arrives (`handoff_arrived`).
+        if self.embedding.is_some() && self.start_handoff.is_none() {
             return;
         }
         // Disable App Nap: opt out of EcoQoS once at start (effective after a restart).
@@ -6267,7 +6458,7 @@ impl ApplicationHandler<UserEvent> for App {
         let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();
         let system_policy = !arrangement_policy && !hotkey_only;
         // `state_frozen` at launch: a second copy of Tandem, which leaves the state to the first.
-        let mut saved = if (system_policy || hotkey_only) && !self.state_frozen { self.saved_windows() } else { None };
+        let mut saved = if (system_policy || hotkey_only) && !self.state_frozen && self.start_handoff.is_none() { self.saved_windows() } else { None };
         let regular_saved = saved.as_ref().is_some_and(|(w, _)| w.iter().any(|w| crate::arrangement::hotkey_guid(w).is_none()));
         let g = &self.globals;
         let policy = if arrangement_policy { crate::startup::DEFAULT_ARRANGEMENT } else if hotkey_only { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
@@ -6276,9 +6467,13 @@ impl ApplicationHandler<UserEvent> for App {
         // Nothing to show at launch (Only Restore Hotkey Window, or policy 0 with a hotkey
         // window and nothing restored): the first window is a hotkey window, made hidden.
         let quiet = hotkey_only || (system_policy && !early.window && !early.restore);
-        let startup_hotkey = if quiet && !self.state_frozen { hotkey_profiles.first().cloned() } else { None };
+        let startup_hotkey = if quiet && !self.state_frozen && self.start_handoff.is_none() { hotkey_profiles.first().cloned() } else { None };
+        // R3: when the plan opens no window (and no hotkey window comes up), Tandem starts resident, as
+        // iTerm2 runs with no window: the first window is made hidden and empty, the icon is the way in.
+        // The icon-click key never decides a launch window (`AD:2463-2470`): only the plan does.
+        let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && !early.window;
         let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
-        if startup_hotkey.is_some() {
+        if startup_hotkey.is_some() || resident_start {
             use winit::platform::windows::WindowAttributesExtWindows;
             attrs = attrs.with_visible(false).with_skip_taskbar(true);
         }
@@ -6299,7 +6494,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gpu = Some(gpu);
                 self.load_cursors(event_loop);
                 self.windows.start(k);
-                self.registry.open(k);
+                // A resident start has no window in the list until a tab makes it one.
+                if resident_start {
+                    self.resident = true;
+                } else {
+                    self.registry.open(k);
+                }
                 // Edge drags snap to the cell grid, and follow AllowLiveResize.
                 self.install_sizing();
                 // A forced Theme's title bar survives system setting changes.
@@ -6307,7 +6507,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(h) = self.hwnd() {
                     crate::display_watch::watch(h);
                     #[cfg(windows)]
-                    crate::firstmouse_win::watch(h);
+                    {
+                        crate::firstmouse_win::watch(h);
+                        logout_ui::watch(h);
+                    }
                 }
                 self.refresh_caption_frame();
                 self.apply_corners();
@@ -6356,7 +6559,9 @@ impl ApplicationHandler<UserEvent> for App {
         let default_arrangement = self
             .globals
             .bool("OpenArrangementAtStartup")
-            .then(|| {
+            .then_some(())
+            .filter(|_| self.start_handoff.is_none())
+            .map(|_| {
                 let store = self.arrangements();
                 store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
             })
@@ -6395,6 +6600,7 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     self.hotkey = Some(hotkey_ui::HotkeyWin::new(guid.clone()));
                 }
+                None if resident_start => {}
                 None => self.new_tab(None),
             },
         }
@@ -6415,13 +6621,15 @@ impl ApplicationHandler<UserEvent> for App {
         self.install_menus();
         // A window the default arrangement filled keeps its frame, style, and locks.
         let steps = crate::winmodel::open_steps(arranged);
-        if steps.place && startup_hotkey.is_none() {
+        if resident_start {
+            // Hidden and empty: nothing to place or style until a window opens.
+        } else if steps.place && startup_hotkey.is_none() {
             self.place_window();
         } else {
             self.claim_slot();
             self.anchor_from_profile(startup_hotkey.as_deref());
         }
-        if steps.profile_window && startup_hotkey.is_none() {
+        if steps.profile_window && startup_hotkey.is_none() && !resident_start {
             self.apply_window_profile(None);
         }
         // The Profiles window follows Open profiles window.
@@ -6432,7 +6640,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.open_settings(event_loop, Mode::Profiles);
         }
         let style = startup_hotkey.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
-        if steps.profile_style && style != crate::frames::NORMAL {
+        if steps.profile_style && style != crate::frames::NORMAL && !resident_start {
             self.apply_window_style(style, false);
         }
         // The first window is made on the primary instance; one whose profiles want alpha is recreated now.
@@ -6440,6 +6648,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.alpha_recreate_tick(event_loop);
         // URLs that came with the start or before the window open now, after the first window.
         self.open_pending_urls();
+        self.open_launch_queue(event_loop);
+        self.open_handoff_queue(event_loop);
+        self.register_open_with();
         // After the first window and the launch's own requests: the second launch's question.
         self.update_start();
         self.tips_launch();
@@ -6447,6 +6658,29 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // An `-Embedding` start waits for its handoff with no window. Work that reached it (a launch,
+        // a link, files) makes it the main instance; with none it stops serving the pipe after
+        // `IDLE_EXIT` and ends on the next pass, once what the pipe took has arrived (review I3).
+        if self.gpu.is_none() {
+            if let Some(t0) = self.embedding {
+                use crate::default_term::Idle;
+                let serving = self.url_listener.as_ref().is_some_and(|s| !s.stopped());
+                match crate::default_term::embedding_next(t0, Instant::now(), self.handoffs_seen, self.embedding_waiting_work(), serving) {
+                    Idle::Wait(until) => return event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(until)),
+                    Idle::StopServing => {
+                        self.embedding_stop_serving();
+                        return event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+                    }
+                    Idle::Exit => return event_loop.exit(),
+                    Idle::BecomeMain => {
+                        if !self.embedding_becomes_main(event_loop) {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        self.handoff_banner_tick();
         // Timers (blink, bells, activity, marks, animations) act for the window the person
         // uses; the window that drew last may be another one.
         if let Some(w) = self.last_window {
@@ -6456,6 +6690,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.session_hotkeys_flush();
         self.flush_dropped();
         self.ssh_suggest_purge();
+        // The queue is taken whole: a wake's index into it means nothing after this.
+        self.pending_wake = None;
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();
@@ -6631,8 +6867,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.bonjour_tick();
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
+        let open_due = self.open_tick(event_loop);
+        let jump_due = self.jump_list_tick();
         let command_due = self.command_click_tick();
-        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, self.access_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, self.update_due, self.tip_due, self.access_due, dynamic_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6677,6 +6915,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ThemeReset => return self.reapply_forced_theme(),
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
+            UserEvent::Launch(request) => return self.receive_launch(request, event_loop),
+            UserEvent::Handoff(h) => return self.handoff_arrived(h, event_loop),
             UserEvent::Logoff(done) => {
                 #[cfg(windows)]
                 self.logoff_now(&done);
@@ -6684,6 +6924,16 @@ impl ApplicationHandler<UserEvent> for App {
                 done.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
+            UserEvent::ShutdownQuery { done, end_now, hwnd } => {
+                #[cfg(windows)]
+                self.shutdown_decide(hwnd, &end_now);
+                #[cfg(not(windows))]
+                let _ = (hwnd, end_now);
+                done.store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            UserEvent::ShutdownAsk => return self.shutdown_query(event_loop),
+            UserEvent::ShutdownAnswer(ok) => return self.shutdown_answered(ok, event_loop),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -6739,7 +6989,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
-        let window_exists = self.current_window().is_some();
+        let window_exists = self.current_window().is_some() && !self.resident;
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
             if !slot.as_ref().is_some_and(|s| s.id() == id) {
@@ -6817,7 +7067,7 @@ impl ApplicationHandler<UserEvent> for App {
                         self.reveal_in_explorer(&path);
                     }
                     if let Some(url) = url {
-                        if let Err(e) = semantic_ui::shell_open(&url, None, false) {
+                        if let Err(e) = semantic_ui::shell_open(&url, false) {
                             self.banners.set("window", format!("Could not open {url}: {e}"));
                         }
                     }

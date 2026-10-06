@@ -20,21 +20,25 @@ pub const FILE_NAME: &str = "Tandem Licenses.txt";
 /// Tandem's own (`%LOCALAPPDATA%\Tandem`), not the predictable temp folder; the text goes to a
 /// fresh temp file in it (`create_new`, never through an existing link) and is renamed over the
 /// final name; a link at the final name is refused.
-pub fn write_to(dir: &std::path::Path, text: &str) -> std::io::Result<std::path::PathBuf> {
+pub fn write_to(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<crate::localfs::LocalPath> {
+    use crate::localfs;
     use std::io::Write;
-    std::fs::create_dir_all(dir)?;
-    let target = dir.join(FILE_NAME);
-    if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+    localfs::create_dir_all(dir)?;
+    // Each name is an entry of the judged folder (13v1's one path judge): a link there is judged whole.
+    let target = dir.child(FILE_NAME).ok_or_else(localfs::refused)?;
+    if localfs::lstat(&target).is_ok_and(|s| s.is_link || s.is_reparse) {
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the license file name is a link"));
     }
-    let tmp = dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id()));
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let tmp = dir.child(format!("{FILE_NAME}.{}.tmp", std::process::id())).ok_or_else(localfs::refused)?;
+    let mut f = localfs::open_custom(&tmp, |o| {
+        o.write(true).create_new(true);
+    })?;
     let done = f.write_all(text.as_bytes()).and_then(|_| f.sync_all());
     drop(f);
-    match done.and_then(|_| std::fs::rename(&tmp, &target)) {
+    match done.and_then(|_| localfs::rename(&tmp, &target)) {
         Ok(()) => Ok(target),
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = localfs::remove_file(&tmp);
             Err(e)
         }
     }
@@ -48,11 +52,12 @@ mod tests {
     fn the_list_file_is_written_whole_and_replaced() {
         let dir = std::env::temp_dir().join(format!("tandem-licenses-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let p = write_to(&dir, "first").unwrap();
-        assert_eq!(p, dir.join("Tandem Licenses.txt"));
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "first");
-        write_to(&dir, "second").unwrap();
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "second");
+        let judged = crate::localfs::LocalPath::judge(&dir).unwrap();
+        let p = write_to(&judged, "first").unwrap();
+        assert_eq!(p.path(), dir.join("Tandem Licenses.txt"));
+        assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "first");
+        write_to(&judged, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "second");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp file is left");
         let _ = std::fs::remove_dir_all(&dir);
     }

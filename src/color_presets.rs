@@ -543,7 +543,7 @@ pub fn read_itermcolors(bytes: &[u8]) -> Option<Preset> {
 /// `read_itermcolors` over a file, reading at most one byte past the limit.
 pub fn read_file(path: &Path) -> Option<Preset> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(MAX_ITERMCOLORS as u64 + 1).read_to_end(&mut bytes).ok()?;
+    crate::localfs::open(&crate::localfs::LocalPath::judge(path)?).ok()?.take(MAX_ITERMCOLORS as u64 + 1).read_to_end(&mut bytes).ok()?;
     read_itermcolors(&bytes)
 }
 

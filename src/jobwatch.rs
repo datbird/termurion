@@ -82,7 +82,8 @@ fn image_path(h: &Handle) -> Option<String> {
 pub fn is_gui_exe(path: &str) -> bool {
     use std::io::Read;
     let mut head = [0u8; 1024];
-    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    // The image path of a running process may be on a share: judged before it is opened.
+    let n = crate::localfs::judge_io(path).and_then(|p| crate::localfs::open(&p)).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
     subsystem(&head[..n]) == Some(2)
 }
 

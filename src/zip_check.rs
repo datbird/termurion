@@ -48,23 +48,10 @@ fn corrupt() -> String {
 }
 
 /// Whether one part of a path is a Windows device name (CON, PRN, AUX, NUL, CONIN$,
-/// CONOUT$, COM0-9 and LPT0-9 with the superscript digits too), with any extension: the
+/// CONOUT$, COM1-9 and LPT1-9 with the superscript digits too), with any extension: the
 /// part before its first dot, trailing spaces ignored, as Windows reads it.
 pub fn device_name(part: &str) -> bool {
-    let stem = part.split('.').next().unwrap_or("").trim_end_matches(' ').to_uppercase();
-    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str()) {
-        return true;
-    }
-    let digits = |c: char| c.is_ascii_digit() || matches!(c, '\u{b9}' | '\u{b2}' | '\u{b3}');
-    for prefix in ["COM", "LPT"] {
-        if let Some(rest) = stem.strip_prefix(prefix) {
-            let mut chars = rest.chars();
-            if chars.next().is_some_and(digits) && chars.next().is_none() {
-                return true;
-            }
-        }
-    }
-    false
+    crate::inert_files::is_device_name(part)
 }
 
 /// Why one part of a path is refused as a file or folder name on Windows: empty, "." or
@@ -501,10 +488,10 @@ pub(crate) mod tests {
 
     #[test]
     fn device_names_follow_windows() {
-        for d in ["CON", "con", "Con.txt", "PRN", "AUX", "NUL", "COM0", "COM9", "LPT1", "COM\u{b2}", "LPT\u{b3}", "CONIN$", "CONOUT$", "NUL .txt", "aux.tar.gz"] {
+        for d in ["CON", "con", "Con.txt", "PRN", "AUX", "NUL", "COM9", "LPT1", "COM\u{b2}", "LPT\u{b3}", "CONIN$", "CONOUT$", "NUL .txt", "aux.tar.gz"] {
             assert!(device_name(d), "{d}");
         }
-        for n in ["CONSOLE", "COM10", "LPT", "xCON", "nul_", "com1x"] {
+        for n in ["CONSOLE", "COM0", "COM10", "LPT", "xCON", "nul_", "com1x"] {
             assert!(!device_name(n), "{n}");
         }
         assert_eq!(bad_part("tool"), None);

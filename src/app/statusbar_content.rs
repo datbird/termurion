@@ -810,7 +810,7 @@ impl App {
             "dir-copy-name" => self.copy_status_text(folder_name(path)),
             // "Reveal in Finder": Explorer opens the folder; nothing runs. Never a remote pane's.
             "dir-reveal" if !dir_menu_reveals(remote) => self.banners.set("action", format!("{path} is on the remote host, not this computer.")),
-            "dir-reveal" => match crate::profile::local_path(path).filter(|p| p.is_dir()) {
+            "dir-reveal" => match crate::profile::local_path(path).filter(|p| crate::localfs::is_local_dir(p)) {
                 Some(dir) => {
                     if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
                         self.banners.set("action", format!("Could not show {path}: {e}"));

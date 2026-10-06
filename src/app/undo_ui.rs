@@ -79,6 +79,17 @@ impl App {
         self.undo.push(entry, deadline);
     }
 
+    /// The last window closed and Tandem stays resident: what the close in progress captured ends
+    /// with it, logs first (the shells are killed next), so nothing dead or orphaned reaches the Undo
+    /// Close stack and the tray's Undo Close never restores it.
+    pub(super) fn end_capture(&mut self) {
+        let Some(mut c) = self.undo_capture.take() else { return };
+        for p in &mut c.panes {
+            p.stop_log();
+        }
+        self.end_undone(Undone::Window { tabs: Vec::new(), panes: c.panes });
+    }
+
     /// The shells of closes past their deadline end now.
     pub(super) fn expire_undo(&mut self) -> Option<Instant> {
         for gone in self.undo.expire(Instant::now()) {

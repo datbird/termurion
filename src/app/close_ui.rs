@@ -9,7 +9,8 @@ pub(super) enum Closing {
     Session(PaneId),
     Tab(usize),
     Window,
-    /// Quit: every session in every window.
+    /// Quit: every session in every window. (A Windows shutdown asks the same through
+    /// `resident_ui::shutdown_query`, on a thread of its own.)
     App,
 }
 
@@ -107,15 +108,7 @@ impl App {
                 (Kind::Window, close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect(), pinned_reasons(&self.tabs))
             }
             Closing::App => {
-                let panes: Vec<PaneId> = self.panes.keys().copied().collect();
-                let prefs = close_rules::QuitPrefs {
-                    prompt_on_quit: self.globals.bool("PromptOnQuit"),
-                    even_if_no_windows: self.globals.bool("PromptOnQuitEvenIfThereAreNoWindows"),
-                    confirm_multiple: self.globals.bool("OnlyWhenMoreTabs"),
-                };
-                let mut reasons = close_rules::quit_reasons(&self.close_reasons(&panes), self.registry.order().len(), panes.len(), prefs, false);
-                // Every window's pinned tabs, window by window in tab order (`POC:241-244`).
-                reasons.extend(self.pinned_reasons_everywhere().into_iter().map(|text| close_rules::Reason { priority: close_prompt::PINNED_PRIORITY, kind: close_rules::ReasonKind::Message, text }));
+                let reasons = self.quit_reasons_now();
                 if reasons.is_empty() {
                     return true;
                 }
@@ -131,6 +124,22 @@ impl App {
         let notes: Vec<String> = pinned.into_iter().chain(notes).collect();
         let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len(), panes.iter().any(|id| self.panes.get(id).is_some_and(|p| p.locked))), &close_rules::counted(&names)), &notes);
         confirm(self.hwnd(), &title, &body)
+    }
+
+    /// Why a quit asks (and so a shutdown): the sessions' reasons, the Closing settings and every
+    /// window's pinned tabs. Reads only.
+    pub(super) fn quit_reasons_now(&self) -> Vec<crate::close_rules::Reason> {
+        use crate::close_rules;
+        let panes: Vec<PaneId> = self.panes.keys().copied().collect();
+        let prefs = close_rules::QuitPrefs {
+            prompt_on_quit: self.globals.bool("PromptOnQuit"),
+            even_if_no_windows: self.globals.bool("PromptOnQuitEvenIfThereAreNoWindows"),
+            confirm_multiple: self.globals.bool("OnlyWhenMoreTabs"),
+        };
+        let mut reasons = close_rules::quit_reasons(&self.close_reasons(&panes), self.registry.order().len(), panes.len(), prefs, false);
+        // Every window's pinned tabs, window by window in tab order (`POC:241-244`).
+        reasons.extend(self.pinned_reasons_everywhere().into_iter().map(|text| close_rules::Reason { priority: close_prompt::PINNED_PRIORITY, kind: close_rules::ReasonKind::Message, text }));
+        reasons
     }
 
     /// "Tab #N is pinned." for each pinned tab of every window, the windows in number order.
@@ -153,6 +162,14 @@ impl App {
 /// "Tab #N is pinned." for each pinned tab, in tab order.
 fn pinned_reasons(tabs: &[Tab]) -> Vec<String> {
     tabs.iter().enumerate().filter(|(_, t)| t.pinned).map(|(i, _)| close_prompt::pinned_reason(i + 1)).collect()
+}
+
+/// The shutdown's quit question, shown by a thread that owns no window: an OK and Cancel box on
+/// top and in front (no owner, so no window of the app thread is tied to it); true for OK.
+pub(super) fn confirm_on_top(title: &str, text: &str) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST) == IDOK }
 }
 
 /// An OK and Cancel question; true for OK.

@@ -87,7 +87,7 @@ fn work_dir(pane_dir: Option<&Path>, may_probe: &dyn Fn(&str) -> bool) -> Option
         s.as_bytes().get(1) == Some(&b':') && s.as_bytes()[0].is_ascii_alphabetic() && !crate::scripts::is_network_path(&s)
     };
     let home = || std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).filter(|h| drive(h));
-    pane_dir.filter(|d| drive(d) && may_probe(&d.to_string_lossy()) && d.is_dir()).map(Path::to_path_buf).or_else(home)
+    pane_dir.filter(|d| drive(d) && may_probe(&d.to_string_lossy()) && crate::localfs::is_local_dir(d)).map(Path::to_path_buf).or_else(home)
 }
 
 impl App {
@@ -105,7 +105,7 @@ impl App {
         let lookup = |n: &str| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), &vars);
         let path_var = std::env::var("PATH").unwrap_or_default();
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        let resolve = |name: &str| semantic::resolve_program(name, &path_var, &pathext, &|p| p.is_file());
+        let resolve = |name: &str| semantic::resolve_program(name, &path_var, &pathext, &|p| crate::localfs::is_local_file(p));
         let mut child = None;
         let result = handle(&template, url, background, &lookup, lax, &resolve, &mut |program, args| {
             let mut cmd = std::process::Command::new(program);
@@ -115,8 +115,8 @@ impl App {
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x0800_0000);
             }
-            if let Some(d) = &dir {
-                cmd.current_dir(d);
+            if let Some(d) = dir.as_deref().and_then(|d| crate::localfs::LocalPath::semantic(&d.to_string_lossy(), &probe)) {
+                crate::localfs::set_cwd(&mut cmd, &d);
             }
             child = Some(cmd.spawn().map_err(|e| e.to_string())?);
             Ok(())

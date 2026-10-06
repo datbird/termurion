@@ -15,6 +15,10 @@ pub type CloseFn = unsafe extern "system" fn(HPCON);
 /// `ConptyClearPseudoConsole(hPC, keepCursorRow)`, shipped conpty.dll only.
 pub type ClearFn = unsafe extern "system" fn(HPCON, i32) -> HRESULT;
 
+/// `ConptyPackPseudoConsole(server, reference, signal, &hpc)`, shipped conpty.dll only: makes an
+/// HPCON from a console host's handles (the default-terminal handoff). It takes the three handles.
+pub type PackFn = unsafe extern "system" fn(HANDLE, HANDLE, HANDLE, *mut HPCON) -> HRESULT;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     /// conpty.dll and OpenConsole.exe in this folder.
@@ -40,6 +44,8 @@ pub struct Api {
     pub close: CloseFn,
     /// None for the Windows copy, which does not export a clear.
     pub clear: Option<ClearFn>,
+    /// None for the Windows copy, which does not export a pack.
+    pub pack: Option<PackFn>,
 }
 
 pub fn load(want: &Source) -> Result<Api, String> {
@@ -50,6 +56,7 @@ pub fn load(want: &Source) -> Result<Api, String> {
             resize: ResizePseudoConsole,
             close: ClosePseudoConsole,
             clear: None,
+            pack: None,
         }),
         Source::Shipped(dir) => load_shipped(dir),
     }
@@ -75,6 +82,8 @@ fn load_shipped(dir: &Path) -> Result<Api, String> {
         let resize = get("ConptyResizePseudoConsole")?;
         let close = get("ConptyClosePseudoConsole")?;
         let clear = get("ConptyClearPseudoConsole")?;
+        // Older shipped copies may lack the pack: Tandem then cannot be the default terminal.
+        let pack = get("ConptyPackPseudoConsole").ok();
         type Raw = unsafe extern "system" fn() -> isize;
         Ok(Api {
             source: Source::Shipped(dir.to_path_buf()),
@@ -82,6 +91,7 @@ fn load_shipped(dir: &Path) -> Result<Api, String> {
             resize: std::mem::transmute::<Raw, ResizeFn>(resize),
             close: std::mem::transmute::<Raw, CloseFn>(close),
             clear: Some(std::mem::transmute::<Raw, ClearFn>(clear)),
+            pack: pack.map(|p| std::mem::transmute::<Raw, PackFn>(p)),
         })
     }
 }

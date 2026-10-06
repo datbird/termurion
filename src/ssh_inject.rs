@@ -542,41 +542,41 @@ fn resolve_links(path: &Path, link_target: &mut dyn FnMut(&Path) -> Result<Optio
 
 /// The target of `path` when it is a symbolic link or a junction (neither is followed).
 fn disk_link_target(path: &Path) -> Result<Option<PathBuf>, String> {
-    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if !meta.file_type().is_symlink() {
+    let local = crate::localfs::judge_io(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = crate::localfs::lstat(&local).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_link {
         return Ok(None);
     }
-    std::fs::read_link(path).map(Some).map_err(|e| format!("{}: {e}", path.display()))
+    crate::localfs::read_link(&local).map(Some).ok_or_else(|| format!("{}: the link cannot be read", path.display()))
 }
 
 /// A local file, or a folder with everything under it (symbolic links inside a folder are
 /// skipped, Decision). `path` holds no links (`resolve_links`).
 fn put_disk<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, path: &Path, budget: &mut Budget) -> Result<(), String> {
     use std::io::Read;
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if !meta.is_dir() {
-        budget.take(meta.len(), &path.display().to_string())?;
+    let local = crate::localfs::judge_io(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = crate::localfs::stat(&local).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_dir {
+        budget.take(meta.len, &path.display().to_string())?;
         // A file that grew since its size was read stops at the budget's edge.
-        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut bytes = Vec::with_capacity(meta.len() as usize);
-        file.take(meta.len() + budget.bytes + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        let grown = (bytes.len() as u64).saturating_sub(meta.len());
+        let file = crate::localfs::open(&local).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut bytes = Vec::with_capacity(meta.len as usize);
+        file.take(meta.len + budget.bytes + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let grown = (bytes.len() as u64).saturating_sub(meta.len);
         budget.bytes = budget.bytes.checked_sub(grown).ok_or_else(|| format!("{}: more than 64 MiB of files", path.display()))?;
         return put(tar, name, Some(&bytes));
     }
     budget.take(0, &path.display().to_string())?;
     put(tar, name, None)?;
     let mut children: Vec<(String, PathBuf)> = Vec::new();
-    for entry in std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
-        let entry = entry.map_err(|e| format!("{}: {e}", path.display()))?;
-        let kind = entry.file_type().map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        if kind.is_symlink() {
+    for entry in crate::localfs::entries(&local).map_err(|e| format!("{}: {e}", path.display()))? {
+        if entry.stat.is_link {
             continue;
         }
         if children.len() >= budget.entries {
             return Err(format!("{}: more than {MAX_JOB_ENTRIES} entries", path.display()));
         }
-        children.push((entry.file_name().to_string_lossy().into_owned(), entry.path()));
+        children.push((entry.name.to_string_lossy().into_owned(), entry.path().to_path_buf()));
     }
     children.sort();
     for (child, p) in children {
@@ -608,7 +608,8 @@ fn tarball_within(sources: &[Source], job: &TarJob, mut budget: Budget) -> Resul
                 put(&mut tar, name, Some(file.bytes))?;
             }
             Source::Disk(p) => {
-                if !crate::prompted::local_path_ok(&p.to_string_lossy()) {
+                // The one judge first (mapped and SUBST drives, links to shares on the way).
+                if !crate::prompted::local_path_ok(&p.to_string_lossy()) || !crate::localfs::judged(p) {
                     return Err(format!("{}: only an absolute local path is read", p.display()));
                 }
                 let real = resolve_links(p, &mut disk_link_target)?;

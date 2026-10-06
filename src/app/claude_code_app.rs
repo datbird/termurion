@@ -155,7 +155,7 @@ impl App {
             match act {
                 OnboardAct::DoIt(step) => self.claude_do_step(step),
                 OnboardAct::Learn => {
-                    if let Err(e) = super::semantic_ui::shell_open(cc::HELP_URL, None, false) {
+                    if let Err(e) = super::semantic_ui::shell_open(cc::HELP_URL, false) {
                         self.banners.set("action", format!("Could not open {}: {e}", cc::HELP_URL));
                     }
                 }
@@ -300,7 +300,7 @@ impl App {
         if !self.claude_health_done && self.globals.bool(cc::COMPLETED_KEY) && !self.claude_alert_busy() {
             self.claude_health_done = true;
             if let Ok((_, file)) = self.claude_paths() {
-                let text = cc::read_settings(std::fs::read(&file), &file).ok().flatten();
+                let text = cc::read_settings(crate::localfs::judge_io(&file).and_then(|f| crate::localfs::read(&f)), &file).ok().flatten();
                 if !cc::healthy(text.as_deref(), &cc::runnable_path) {
                     self.ask_scripts(repair_ask(&file));
                 }

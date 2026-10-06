@@ -1564,7 +1564,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         }
     }
     let on = g.bool(rp::LOAD_KEY);
-    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::scripts::read_link, &rp::writable) {
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::netpath::read_reparse, &rp::writable) {
         action = PrefsAction::CopyNow;
     }
     let mut text = g.string(rp::FOLDER_KEY);
@@ -1591,7 +1591,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         valid = match cached {
             Some((checked, valid)) if checked == text => valid,
             _ => {
-                let valid = rp::location_valid(&text, home, &crate::scripts::read_link, &rp::writable);
+                let valid = rp::location_valid(&text, home, &crate::netpath::read_reparse, &rp::writable);
                 ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
                 valid
             }
@@ -2972,6 +2972,113 @@ mod tests {
         for key in ["SshIntegrationForURLs", "sshSchemePath", "validCharactersInSSHUserNames", "sshURLsSupportPath"] {
             assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
         }
+    }
+
+    /// `AS:444-450` and `AS:880-885`: the ftp: and telnet: URL rows (Task 3). The ssh rows are
+    /// 14e's (`sshSchemePath`, `validCharactersInSSHUserNames`: lower-case, one row each, P20).
+    #[test]
+    fn url_rows_follow_iterm2() {
+        for (key, label, help) in [
+            ("PathToFTP", "Path to ftp for opening ftp: URLs.", "Path to ftp for opening ftp: URLs.\nYou may want to set this to the full path of another ftp program."),
+            ("PathToTelnet", "Path to telnet for opening telnet: URLs.", "Path to telnet for opening telnet: URLs.\nYou may want to set this to the full path of another telnet program."),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::String), "{key}");
+            assert_eq!(row.default, Some(Value::String(key.trim_start_matches("PathTo").to_lowercase())), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help), "{key}");
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+        for dup in ["SshSchemePath", "ValidCharactersInSSHUserNames"] {
+            assert!(schema::find_global(dup).is_none(), "{dup}: the built lower-case row is the only one");
+        }
+    }
+
+    /// 13v1 Task 7 (`AS` MinRunningTime, OpenUntitledFile): the grace period and the icon click rows; the quit
+    /// row keeps its label and no longer says Tandem cannot stay without a window (R3).
+    #[test]
+    fn resident_rows_follow_iterm2() {
+        let min = schema::find_global("MinRunningTime").expect("MinRunningTime");
+        assert_eq!((min.tab.as_str(), min.section.as_str(), min.kind, min.default.clone()), ("Advanced", "General", Kind::Float, Some(Value::Float(10.0))));
+        assert_eq!(min.label, "Grace period for automatic quitting after the last window is closed.");
+        assert_eq!(min.help, "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period.");
+        let open = schema::find_global("OpenUntitledFile").expect("OpenUntitledFile");
+        assert_eq!((open.tab.as_str(), open.section.as_str(), open.kind, open.default.clone()), ("Advanced", "General", Kind::Bool, Some(Value::Boolean(true))));
+        let text = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?";
+        assert_eq!((open.label.as_str(), open.help.as_str()), (text, text));
+        for key in ["MinRunningTime", "OpenUntitledFile"] {
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+        let quit = schema::find_global("QuitWhenAllWindowsClosed").unwrap();
+        assert_eq!((quit.tab.as_str(), quit.label.as_str()), ("General", "Quit when all windows are closed"));
+        assert!(!quit.help.contains("7e") && !quit.help.contains("milestone"), "{}", quit.help);
+        assert!(quit.help.contains("notification area icon"), "{}", quit.help);
+    }
+
+    #[test]
+    fn downloads_rows_follow_iterm2() {
+        let d = schema::find_global("DownloadsDirectory").expect("DownloadsDirectory");
+        assert_eq!((d.tab.as_str(), d.section.as_str(), d.kind, d.default.clone()), ("Advanced", "General", Kind::String, Some(Value::String(String::new()))));
+        assert_eq!(d.label, "Downloads folder.");
+        assert_eq!(d.help, "Downloads folder.\nIf set, downloaded files go to this location instead of the user\u{2019}s Downloads folder.");
+        let s = schema::find_global("ShowSuiteNameInDockIcon").expect("ShowSuiteNameInDockIcon");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind, s.default.clone()), ("Advanced", "General", Kind::Bool, Some(Value::Boolean(true))));
+        assert_eq!(s.label, "Overlay the suite name on the taskbar icon when launched with -suite.");
+        assert_eq!(s.help, "Overlay the suite name on the taskbar icon when launched with -suite.\nWhen you run an isolated instance with the -suite argument, its name is drawn across the lower third of the taskbar icon so you can tell instances apart.");
+        for key in ["DownloadsDirectory", "ShowSuiteNameInDockIcon"] {
+            assert!(page_rows("Advanced").iter().any(|r| r.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|r| r.key == key).count(), 1, "{key}");
+        }
+    }
+
+    /// `AS:853-885`: the five open-file rows (Task 2): tab, section, kind, default, label and help.
+    #[test]
+    fn open_file_rows_follow_iterm2() {
+        let dep = "DEPRECATED: Use \u{201c}How should new instances be opened\u{201d} instead.";
+        let rows: [(&str, &str, Kind, Value, String, String); 5] = [
+            (
+                "OpenFileOverridesSendText",
+                "General",
+                Kind::Bool,
+                Value::Boolean(true),
+                "Should opening a script with Tandem disable the default profile\u{2019}s \u{201c}Send Text at Start\u{201d} setting?".into(),
+                "\nIf you use \u{201c}tandem.exe file.ps1\u{201d} or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's \u{201c}Send Text at Start\u{201d} setting. If this setting is off then both will be executed.".into(),
+            ),
+            ("OpenFileInNewWindows", "Windows", Kind::Bool, Value::Boolean(false), dep.into(), "\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also \u{201c}Open files in split panes\u{201d}.".into()),
+            ("OpenFileInSplitPanes", "Windows", Kind::Bool, Value::Boolean(false), dep.into(), "\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set \u{201c}Open files in new windows, not new tabs\u{201d} to \u{201c}No\u{201d} for this to take effect. See also \u{201c}When opening a file in a split pane, should it be a vertical split?\u{201d}".into()),
+            ("OpenFileInVerticalSplitPane", "Windows", Kind::Bool, Value::Boolean(true), dep.into(), "\nWhen opening a file in a split pane, should it be a vertical split?".into()),
+            (
+                "NewInstanceOpenStyle",
+                "Windows",
+                Kind::Int,
+                Value::Integer(-1),
+                "How should new instances be opened when triggered by scripts or external applications?".into(),
+                "\n-1: Use legacy settings (default)\n0: New Window\n1: New Tab\n2: Vertical Split Pane\n3: Horizontal Split Pane\nThis provides a unified setting for controlling external instance creation.".into(),
+            ),
+        ];
+        for (key, section, kind, default, label, rest) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}{rest}"), "{key}");
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+            assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
+        }
+    }
+
+    /// `AS:` saveProfilesToRecentDocuments (Task 6): the Jump List's Recents switch.
+    #[test]
+    fn recents_row_follows_iterm2() {
+        let key = "SaveProfilesToRecentDocuments";
+        let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+        assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Tabs", Kind::Bool));
+        assert_eq!(row.default, Some(Value::Boolean(false)));
+        assert_eq!(row.label, "Add items to Recents (in the taskbar button\u{2019}s Jump List) to reopen recently used profiles as tabs?");
+        assert_eq!(row.help, row.label);
+        assert!(page_rows("Advanced").iter().any(|s| s.key == key));
+        assert_eq!(schema::global().iter().filter(|s| s.key.eq_ignore_ascii_case(key)).count(), 1, "one row, whatever the case");
     }
 
     #[test]

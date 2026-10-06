@@ -241,7 +241,7 @@ impl App {
         for (part, path) in parts.into_iter().zip(paths) {
             let (w, h, px) = self.render_annotated(start + part.start, start + part.end - 1).ok_or("no screenshot")??;
             let bytes = screenshot::png(w, h, px)?;
-            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
             first_path.get_or_insert(path);
         }
         first_path.ok_or_else(|| "nothing to save".to_string())
@@ -255,7 +255,7 @@ impl App {
             (Some(rest), Ok(home)) => format!("{home}{rest}"),
             _ => set,
         };
-        if !set.is_empty() && crate::prompted::local_path_ok(&set) && std::path::Path::new(&set).is_dir() {
+        if !set.is_empty() && crate::prompted::local_path_ok(&set) && crate::localfs::is_local_dir(std::path::Path::new(&set)) {
             return Some(set.into());
         }
         desktop()

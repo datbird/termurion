@@ -171,7 +171,7 @@ impl App {
                 return Err(local::NOT_ENOUGH_SPACE.to_string());
             }
         }
-        let mut f = std::fs::OpenOptions::new().append(true).open(l.place.temp()).map_err(|e| e.to_string())?;
+        let mut f = crate::localfs::judge_io(l.place.temp()).and_then(|t| crate::localfs::open_custom(&t, |o| { o.append(true); })).map_err(|e| e.to_string())?;
         f.write_all(bytes).map_err(|e| e.to_string())?;
         self.ssh_progress(job, bytes.len() as u64);
         Ok(())
@@ -220,7 +220,7 @@ impl App {
         std::thread::spawn(move || {
             // Last one wins in the batch folder: an earlier item of this name never merges in.
             let r = super::ssh_panel_app::clear_earlier(&dest).map_err(|e| e.to_string()).and_then(|()| local::unzip(&temp, &dest, &url));
-            let _ = std::fs::remove_file(&temp);
+            let _ = crate::localfs::judge_io(&temp).and_then(|t| crate::localfs::remove_file(&t));
             let _ = tx.send(r);
             wake();
         });
@@ -272,9 +272,9 @@ impl App {
         if let Some(why) = local::refused_name(&l.short_name) {
             return fail(&l, why);
         }
-        let Some(dir) = super::files_ui::downloads_dir() else { return fail(&l, local::NO_DOWNLOADS) };
+        let Some(dir) = self.downloads_folder() else { return fail(&l, local::NO_DOWNLOADS) };
         let temp = dir.join(local::temp_name(&uuid::Uuid::new_v4().to_string().to_uppercase()));
-        if let Err(e) = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+        if let Err(e) = crate::localfs::judge_io(&temp).and_then(|t| crate::localfs::open_custom(&t, |o| { o.write(true).create_new(true); })) {
             return fail(&l, &e.to_string());
         }
         l.place = Place::Downloads { temp, dir };
@@ -394,12 +394,12 @@ impl App {
         }
         let Some(id) = self.framing(pane).map(|c| c.identity()) else { return };
         let host = if id.hostname.is_empty() { id.host.clone() } else { id.hostname.clone() };
-        let meta = match std::fs::symlink_metadata(file) {
-            Ok(m) => m,
+        let (local_file, meta) = match crate::localfs::judge_io(file).and_then(|l| crate::localfs::lstat(&l).map(|m| (l, m))) {
+            Ok(found) => found,
             Err(e) => return fail(&e.to_string()),
         };
         let too_big = || ssh_files::upload_refused("", Some(ssh_files::UPLOAD_MAX + 1)).unwrap_or_default();
-        let (data, dest) = if meta.is_dir() {
+        let (data, dest) = if meta.is_dir {
             match local::tree_over(file, ssh_files::UPLOAD_MAX) {
                 Ok(false) => {}
                 Ok(true) => return fail(&too_big()),
@@ -410,13 +410,13 @@ impl App {
                 Ok(_) => return fail(&too_big()),
                 Err(e) => return fail(&e),
             }
-        } else if meta.is_file() {
-            if let Some(why) = ssh_files::upload_refused("", Some(meta.len())) {
+        } else if meta.is_file {
+            if let Some(why) = ssh_files::upload_refused("", Some(meta.len)) {
                 return fail(&why);
             }
             // Read whole, but never past the cap even if the file grew since the check.
             let mut data = Vec::new();
-            let read = std::fs::File::open(file).and_then(|f| f.take(ssh_files::UPLOAD_MAX + 1).read_to_end(&mut data));
+            let read = crate::localfs::open(&local_file).and_then(|f| f.take(ssh_files::UPLOAD_MAX + 1).read_to_end(&mut data));
             if let Err(e) = read {
                 return fail(&e.to_string());
             }
@@ -453,7 +453,7 @@ impl App {
             Ok(o) => o,
             Err(why) => {
                 let l = self.ssh_locals.remove(&job).unwrap();
-                let _ = std::fs::remove_file(l.place.temp());
+                let _ = crate::localfs::judge_io(l.place.temp()).and_then(|t| crate::localfs::remove_file(&t));
                 // A Download Files item reports to its batch, which notifies once it is over.
                 match &l.place {
                     Place::Temp { batch, .. } => self.ssh_batch_item_ended(*batch, &l.short_name, Err(why)),
@@ -465,7 +465,7 @@ impl App {
         match &l.place {
             Place::Downloads { dir, .. } => {
                 l.zip = outcome == Outcome::ZipOfFolder;
-                let (_, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| p.exists());
+                let (_, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| crate::localfs::local_exists(p));
                 match plain {
                     None => self.ssh_finish_download(job, None),
                     Some(plain) => {
@@ -524,7 +524,7 @@ impl App {
     fn ssh_finish_download(&mut self, job: u64, replace: Option<bool>) {
         let Some(l) = self.ssh_locals.remove(&job) else { return };
         let Place::Downloads { temp, dir } = &l.place else { return };
-        let (free, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| p.exists());
+        let (free, plain) = local::final_destination(dir, &l.short_name, l.zip, &|p| crate::localfs::local_exists(p));
         let dest = match (replace, plain) {
             (Some(true), Some(plain)) => plain,
             _ => free,

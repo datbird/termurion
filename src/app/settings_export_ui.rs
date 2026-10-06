@@ -230,7 +230,7 @@ fn stage_scripts(from: &Path, to: &Path) -> Vec<PathBuf> {
 pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
     let marker = appdata_tandem.join(se::MARKER);
     let text = std::fs::read_to_string(&marker).ok();
-    let staging = match se::pending(text.as_deref(), &|p| p.is_dir()) {
+    let staging = match se::pending(text.as_deref(), &|p| crate::localfs::is_local_dir(p)) {
         Pending::None => return Vec::new(),
         Pending::Stale => {
             let _ = std::fs::remove_file(&marker);
@@ -413,7 +413,7 @@ impl App {
     /// end, every path goes (links as links) and Tandem exits at once, saving nothing (iTerm2's
     /// `_exit(0)`). Credential Manager entries are not touched.
     pub(super) fn erase_confirmed(&mut self, dry_run: bool) {
-        let scripts = se::scripts_to_erase(self.scripts_folder()).filter(|s| crate::scripts::ancestors_stay_local(s, &crate::scripts::read_link));
+        let scripts = se::scripts_to_erase(self.scripts_folder()).filter(|s| crate::scripts::ancestors_stay_local(s, &crate::netpath::read_reparse));
         let tandem = appdata_tandem();
         let listed = all_entries(&tandem).map_err(|e| format!("{}: {e}", tandem.display())).and_then(|own| {
             let scripts = match &scripts {
@@ -448,9 +448,9 @@ impl App {
         let settings = crate::globals::default_path();
         let app_support = settings.parent().unwrap_or(&settings).to_path_buf();
         let scripts = self.scripts_folder();
-        let local = crate::scripts::ancestors_stay_local(&scripts, &crate::scripts::read_link) && !crate::remote_prefs::is_unc(&scripts.to_string_lossy());
+        let local = crate::scripts::ancestors_stay_local(&scripts, &crate::netpath::read_reparse) && !crate::remote_prefs::is_unc(&scripts.to_string_lossy());
         let user_defaults = Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles());
-        let entry_local = |p: &Path| crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link);
+        let entry_local = |p: &Path| crate::scripts::ancestors_stay_local(p, &crate::netpath::read_reparse);
         export_into(out, &Sources { app_support: &app_support, scripts: local.then_some(scripts.as_path()), user_defaults: &user_defaults, local: &entry_local })
     }
 }

@@ -14,11 +14,95 @@ pub(super) fn size_text(n: usize) -> String {
     }
 }
 
-/// The Downloads folder (the user's profile when there is none).
-pub(super) fn downloads_dir() -> Option<std::path::PathBuf> {
-    let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE")?);
-    let d = home.join("Downloads");
-    Some(if d.is_dir() { d } else { home })
+/// The Downloads folder and why a setting was passed over: `DownloadsDirectory` when it is a
+/// local absolute folder Tandem can write, else Windows' Downloads folder (`FOLDERID_Downloads`,
+/// where a redirection puts it) on the same terms, else the profile folder
+/// (`NSFileManager+iTerm.m:297-313`). A folder on a share is never used (the path judge): it
+/// would leak the person's credentials, and `DownloadsDirectory` can arrive in an imported
+/// settings file. The note names what was refused, for a banner.
+pub(super) struct Downloads {
+    pub dir: Option<std::path::PathBuf>,
+    pub note: Option<String>,
+}
+
+/// The Downloads folder chosen for one DownloadsDirectory value, for the run (final review item 17):
+/// the folders are probed again only when the setting changes, and the banner is raised once per change.
+#[derive(Default)]
+pub(super) struct DownloadsCache {
+    key: Option<String>,
+    dir: Option<std::path::PathBuf>,
+}
+
+impl DownloadsCache {
+    /// The folder for `setting`, from `compute` only when the setting changed; the second value is
+    /// the banner to set (Some(None) clears it) when it was computed now, None when it was cached.
+    pub(super) fn get(&mut self, setting: &str, compute: impl FnOnce(&str) -> Downloads) -> (Option<std::path::PathBuf>, Option<Option<String>>) {
+        if self.key.as_deref() == Some(setting) {
+            return (self.dir.clone(), None);
+        }
+        let d = compute(setting);
+        self.key = Some(setting.to_string());
+        self.dir = d.dir.clone();
+        (d.dir, Some(d.note))
+    }
+}
+
+/// A folder the judge accepts and a probe-free test file can be made in (made and removed).
+fn writable_folder(dir: &std::path::Path) -> bool {
+    let Some(d) = crate::localfs::judge(dir) else { return false };
+    if !dir.is_absolute() || !crate::localfs::is_dir(&d) {
+        return false;
+    }
+    let probe = dir.join(format!(".Tandem.{}", uuid::Uuid::new_v4().to_string().to_uppercase()));
+    let Some(p) = crate::localfs::judge(&probe) else { return false };
+    let made = crate::localfs::open_custom(&p, |o| {
+        o.write(true).create_new(true);
+    })
+    .is_ok();
+    if made {
+        let _ = crate::localfs::remove_file(&p);
+    }
+    made
+}
+
+/// The folder Windows keeps Downloads in for this user.
+#[cfg(windows)]
+fn known_downloads() -> Option<std::path::PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
+    let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
+    // SAFETY: `out` receives a CoTaskMem string that is freed below.
+    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_Downloads, 0, std::ptr::null_mut(), &mut out) };
+    if hr < 0 || out.is_null() {
+        return None;
+    }
+    let len = (0..).take_while(|&i| unsafe { *out.add(i) } != 0).count();
+    let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(out, len) });
+    unsafe { CoTaskMemFree(out as _) };
+    Some(path.into())
+}
+
+#[cfg(not(windows))]
+fn known_downloads() -> Option<std::path::PathBuf> {
+    None
+}
+
+pub(super) fn downloads(override_path: &str) -> Downloads {
+    let known = known_downloads().or_else(|| std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join("Downloads")));
+    let mut notes = Vec::new();
+    // The setting is probed once: its answer serves the note and the choice.
+    let override_ok = !override_path.is_empty() && writable_folder(std::path::Path::new(override_path));
+    if !override_path.is_empty() && !override_ok {
+        notes.push("the Downloads folder in Settings is not a local folder Tandem can write");
+    }
+    let writable = |p: &std::path::Path| if !override_path.is_empty() && p == std::path::Path::new(override_path) { override_ok } else { writable_folder(p) };
+    let chosen = crate::resident::downloads_dir(override_path, known.clone(), &writable);
+    if chosen.is_none() && known.is_some() {
+        notes.push("Windows' Downloads folder is not a local folder Tandem can write");
+    }
+    let dir = chosen.or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
+    let note = (!notes.is_empty()).then(|| format!("Downloads go to {}: {}.", dir.as_ref().map_or("nowhere".to_string(), |d| d.display().to_string()), notes.join("; ")));
+    Downloads { dir, note }
 }
 
 #[cfg(windows)]
@@ -130,7 +214,7 @@ impl App {
             if self.alert_waits(|then| download_ask_of(then) == Some(pane)) {
                 continue;
             }
-            let Some(dir) = downloads_dir() else {
+            let Some(dir) = self.downloads_folder() else {
                 self.banners.set("action", "No Downloads folder: USERPROFILE is not set.");
                 continue;
             };
@@ -236,12 +320,25 @@ impl App {
         self.redraw();
     }
 
+    /// The folder downloads go to now (`DownloadsDirectory`, then Windows' Downloads folder, then
+    /// the profile folder); a setting or a redirection that was refused shows one banner. Probed once
+    /// per run and again only when the setting changes (`DownloadsCache`, P19).
+    pub(super) fn downloads_folder(&mut self) -> Option<std::path::PathBuf> {
+        let (dir, banner) = self.downloads_cache.get(&self.globals.string("DownloadsDirectory"), downloads);
+        match banner {
+            Some(Some(note)) => self.banners.set("downloads", note),
+            Some(None) => self.banners.clear("downloads"),
+            None => {}
+        }
+        dir
+    }
+
     /// The download question answered: Yes (0) saves the file, or first asks the large file
     /// question when the answer was remembered and the file is large.
     pub(super) fn download_answered(&mut self, pane: PaneId, d: crate::inline_file::Download, was_silenced: bool, index: usize) {
         let allowed = index == 0;
         if needs_big_question(was_silenced, allowed, d.bytes.len()) {
-            let name = downloads_dir().map_or_else(|| d.name.clone(), |dir| saved_name(&dir, &d.name));
+            let name = self.downloads_folder().map_or_else(|| d.name.clone(), |dir| saved_name(&dir, &d.name));
             self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(&name), super::scripts_alerts::Then::BigDownload(pane, d)));
         } else if allowed {
             self.save_download(d);
@@ -250,7 +347,7 @@ impl App {
 
     /// Saves an allowed download in the Downloads folder.
     pub(super) fn save_download(&mut self, d: crate::inline_file::Download) {
-        let Some(dir) = downloads_dir() else {
+        let Some(dir) = self.downloads_folder() else {
             self.banners.set("action", "No Downloads folder: USERPROFILE is not set.");
             return;
         };
@@ -266,6 +363,27 @@ impl App {
 mod tests {
     use super::*;
     use crate::inert_files::SHOWN_NAME;
+
+    /// Final review item 17 (Task 8 M3, P19): the Downloads folder is probed once per run, again only
+    /// when DownloadsDirectory changes, and its banner is raised once per change, not per download.
+    #[test]
+    fn the_downloads_folder_is_probed_once_per_setting() {
+        let probes = std::cell::Cell::new(0);
+        let compute = |s: &str| {
+            probes.set(probes.get() + 1);
+            Downloads { dir: Some(std::path::PathBuf::from(format!("C:\\{s}"))), note: Some(format!("note {s}")) }
+        };
+        let mut c = DownloadsCache::default();
+        let (dir, banner) = c.get("a", compute);
+        assert_eq!((dir.as_deref(), banner), (Some(std::path::Path::new("C:\\a")), Some(Some("note a".to_string()))));
+        let (dir, banner) = c.get("a", compute);
+        assert_eq!((dir.as_deref(), banner), (Some(std::path::Path::new("C:\\a")), None), "cached: no probe, the banner is not raised again");
+        assert_eq!(probes.get(), 1);
+        let (_, banner) = c.get("b", compute);
+        assert_eq!((banner, probes.get()), (Some(Some("note b".to_string())), 2), "a changed setting probes again");
+        let src = include_str!("files_ui.rs").split("\n#[cfg(test)]").next().unwrap();
+        assert!(!src.contains("pub(super) fn downloads_dir("), "every caller goes through the cache");
+    }
 
     /// Only the inline file questions name a pane and file.
     #[test]

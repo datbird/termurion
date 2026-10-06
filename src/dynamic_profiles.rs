@@ -521,10 +521,11 @@ pub struct Gate<'a> {
     pub open: &'a dyn Fn(&Path) -> Result<Opened, String>,
 }
 
-/// The network judge as the app uses it: the path and every folder above it, no link leading
-/// to a network path (`scripts::ancestors_stay_local`).
+/// The network judge as the app uses it: 13v1's one path judge (`netpath::judge` through
+/// `localfs::judged`: the text rule, device names, the drive's device map and type, every folder's
+/// links root first).
 pub fn system_local(path: &Path) -> bool {
-    crate::scripts::ancestors_stay_local(path, &crate::scripts::read_link)
+    crate::localfs::judged(path)
 }
 
 /// The open as the app uses it (`dynamic_profiles_trust::open`, at most `MAX_FILE` bytes).

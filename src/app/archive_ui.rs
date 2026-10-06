@@ -34,7 +34,7 @@ fn writer() -> Option<&'static Writer> {
             .name("archive-write".into())
             .spawn(move || {
                 for (path, bytes, done) in rx {
-                    let result = std::fs::write(&path, &bytes).map_err(|e| e.to_string());
+                    let result = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::write(&p, &bytes)).map_err(|e| e.to_string());
                     done(result);
                     let (n, cv) = &*count;
                     if let Ok(mut n) = n.lock() {
@@ -94,13 +94,14 @@ fn written_paths() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
 fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
     // The size comes from a stat first: a file that is too large is never read on the UI thread.
-    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    let path = crate::localfs::judge_io(path).map_err(|e| e.to_string())?;
+    let len = crate::localfs::stat(&path).map_err(|e| e.to_string())?.len;
     if let Some(why) = ar::size_refusal(len).filter(|_| limit == ar::MAX_FILE_BYTES).or_else(|| (len > limit).then(|| format!("the file is larger than {limit} bytes"))) {
         return Err(why);
     }
     // `take` still guards against a file that grows between the stat and the read.
     let mut bytes = Vec::new();
-    std::fs::File::open(path).map_err(|e| e.to_string())?.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    crate::localfs::open(&path).map_err(|e| e.to_string())?.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     match ar::size_refusal(bytes.len() as u64).filter(|_| limit == ar::MAX_FILE_BYTES).or_else(|| (bytes.len() as u64 > limit).then(|| format!("the file is larger than {limit} bytes"))) {
         Some(why) => Err(why),
         None => Ok(bytes),
@@ -358,7 +359,7 @@ mod tests {
         assert!(!dir.exists(), "no folder was created");
         // Restore Archive stats the file the person picked (its size, before reading it); the
         // folders of the writer are never probed.
-        let src = production().replace("std::fs::metadata(path)", "");
+        let src = production().replace("crate::localfs::stat(&path)", "");
         for forbidden in ["create_dir", ".exists()", "is_dir()", "metadata(", "canonicalize"] {
             assert!(!src.contains(forbidden), "archive_ui never probes or creates a folder: {forbidden}");
         }
@@ -373,8 +374,9 @@ mod tests {
         let arrange = include_str!("arrange_ui.rs");
         let shared = body(arrange, "    pub(super) fn open_arrangement_windows(");
         assert!(shared.contains("has_mark_of_the_web") && shared.contains("trust_text"));
-        let load = body(arrange, "    pub(super) fn load_arrangement_file(");
+        let load = body(arrange, "    fn load_arrangement_from(");
         assert!(load.contains("open_arrangement_windows("), "Load Arrangement uses the same gate");
+        assert!(body(arrange, "    pub(super) fn load_arrangement_path(").contains("self.load_arrangement_from("), "from outside too");
         let read = restore.find("read_bounded(").unwrap();
         let pick = restore.find("pick_file").unwrap();
         assert!(pick < read, "the dialog returns the path before anything reads it");

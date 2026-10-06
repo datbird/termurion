@@ -5,9 +5,10 @@
 use super::*;
 
 /// The profile and whether it came from a binding for a URL from outside (iTerm2's `getUrl`
-/// falls back to the default profile). Only `ssh:` URLs (any case): None for anything else.
+/// falls back to the default profile). Only `ssh:`, `telnet:` and `ftp:` URLs (any case): None for
+/// anything else.
 pub(super) fn url_plan(url: &str, bound: Option<&str>, default_guid: &str) -> Option<(String, bool)> {
-    if !is_ssh(url) {
+    if crate::url_open::scheme_of(url).is_none() {
         return None;
     }
     Some(match bound {
@@ -17,7 +18,11 @@ pub(super) fn url_plan(url: &str, bound: Option<&str>, default_guid: &str) -> Op
 }
 
 /// A clicked link opens only when a profile is bound; an unbound one stays refused (Decision).
+/// Only ssh: links are clickable (14e); telnet: and ftp: arrive from outside.
 pub(super) fn url_plan_for_click(url: &str, bound: Option<&str>) -> Option<String> {
+    if !is_ssh(url) {
+        return None;
+    }
     url_plan(url, bound, "").filter(|(_, from_binding)| *from_binding).map(|(g, _)| g)
 }
 
@@ -42,8 +47,7 @@ pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crat
     let Some(changed) = crate::ssh_url::profile_for_url(base, url, s)? else {
         // A profile with a command of its own is used unchanged, but an ssh: launch still never
         // types its Initial Text (`iTermController.m:2188`).
-        let is_ssh = url.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ssh"));
-        let blank = is_ssh && !base.string("Initial Text").is_empty();
+        let blank = crate::url_open::scheme_of(url).is_some() && !base.string("Initial Text").is_empty();
         return Ok(blank.then(|| vec![("Initial Text".to_string(), Some(toml::Value::String(String::new())))]));
     };
     let mut values: Vec<(String, Option<toml::Value>)> = changed.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
@@ -58,16 +62,21 @@ pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crat
 impl App {
     /// The profile `ssh` is bound to, when Tandem is the default handler (iTerm2's `profileForScheme`).
     pub(super) fn bound_ssh_profile(&self) -> Option<String> {
-        let exe = std::env::current_exe().ok()?;
-        let table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
-        crate::url_schemes::profile_for_scheme(&table, crate::url_schemes::system().as_ref(), "ssh", &exe, &|g| self.store.get(g).is_some())
+        self.bound_profile("ssh")
     }
 
-    /// An ssh: URL for Tandem to open (iTerm2's `getUrl`): the bound profile, else the default.
-    /// False when Tandem does not handle it (not ssh:).
+    /// The profile `scheme` (ssh, telnet or ftp) is bound to, when Tandem is its default handler.
+    pub(super) fn bound_profile(&self, scheme: &str) -> Option<String> {
+        let exe = std::env::current_exe().ok()?;
+        let table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
+        crate::url_schemes::profile_for_scheme(&table, crate::url_schemes::system().as_ref(), scheme, &exe, &|g| self.store.get(g).is_some())
+    }
+
+    /// An ssh:, telnet: or ftp: URL for Tandem to open (iTerm2's `getUrl`): the scheme's bound
+    /// profile, else the default. False when Tandem does not handle it (another scheme).
     pub(super) fn open_url_in_tandem(&mut self, url: &str) -> bool {
         let default = self.store.default_profile().guid();
-        let bound = self.bound_ssh_profile();
+        let bound = crate::url_open::scheme_of(url).and_then(|scheme| self.bound_profile(scheme));
         let Some((guid, _)) = url_plan(url, bound.as_deref(), &default) else { return false };
         self.open_ssh_url(url, Some(guid))
     }
@@ -93,7 +102,7 @@ impl App {
             // A bad host or no host opens nothing and shows nothing (iTerm2's; Decision).
             Err(_) => return false,
         };
-        let before = (self.tabs.len(), self.pending_windows.len());
+        let before = (self.tabs.len(), self.pending_tabs());
         let copy = values.map(|values| {
             let saved = self.store.shared_guid(&guid);
             let shared = self.store.profiles.iter().find(|p| p.guid() == saved).unwrap_or_else(|| self.store.default_profile()).clone();
@@ -102,14 +111,14 @@ impl App {
             self.add_session_copy(divorced, &shared, &values, fresh)
         });
         self.new_tab(Some(copy.as_deref().unwrap_or(&guid)));
-        let started = (self.tabs.len(), self.pending_windows.len()) != before;
+        let started = (self.tabs.len(), self.pending_tabs()) != before;
         if let (false, Some(copy)) = (started, &copy) {
             self.forget_session_profile(copy);
         }
         started
     }
 
-    /// An ssh: URL from outside (the pipe, or the command line once the window exists): the flood
+    /// An ssh:, telnet: or ftp: URL from outside (the pipe, or the command line once the window exists): the flood
     /// cap, then a tab, a banner naming the target (P13), and the window comes forward.
     pub(super) fn receive_url(&mut self, url: String) {
         if !crate::url_launch::url_ok(&url) {
@@ -210,7 +219,7 @@ mod session_tests {
     use crate::ssh_url::Settings;
 
     fn settings(integration: bool) -> Settings {
-        Settings { integration, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true }
+        Settings { integration, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true, ftp_path: "ftp".into(), telnet_path: "telnet".into() }
     }
 
     fn get<'a>(v: &'a [(String, Option<toml::Value>)], k: &str) -> Option<&'a toml::Value> {
@@ -335,5 +344,52 @@ mod session_tests {
         plain.set("Initial Text", toml::Value::String(String::new()));
         assert_eq!(session_values(&plain, "ssh://h/", &settings(true)).unwrap(), None, "nothing to blank, the profile is used as it is");
         assert_eq!(session_values(&base, "https://example.com/", &settings(true)).unwrap(), None, "only ssh: links");
+    }
+
+    /// B4/P18: no URL text reaches Command (beyond the generated words), Name or Working
+    /// Directory, and no URL session types the person's Initial Text, for every external scheme.
+    #[test]
+    fn url_sessions_never_substitute_or_type() {
+        let hostile = [
+            "ssh://h//attacker.example/share",
+            "telnet://h:23/$$PATH$$",
+            "ftp://h//attacker.example/share",
+            "ftp://u:p@h/$$URL$$",
+            "telnet://u@h",
+            "ssh://u@h/~/w",
+        ];
+        for custom in [true, false] {
+            for url in hostile {
+                let mut base = Profile::default();
+                base.set("Initial Text", toml::Value::String("echo hi".into()));
+                base.set("Working Directory", toml::Value::String("$$PATH$$".into()));
+                base.set("Name", toml::Value::String("$$HOST$$".into()));
+                if custom {
+                    base.set("Custom Command", toml::Value::String("Yes".into()));
+                    base.set("Command", toml::Value::String("x $$URL$$".into()));
+                }
+                let values = session_values(&base, url, &settings(false)).unwrap().expect("a copy blanking the text");
+                let mut copy = base.clone();
+                for (k, v) in values {
+                    if let Some(v) = v {
+                        copy.set(&k, v);
+                    }
+                }
+                assert_eq!(copy.string("Initial Text"), "", "{url} custom {custom}");
+                assert_eq!(copy.string("Working Directory"), "$$PATH$$", "{url}: never substituted");
+                assert_eq!(copy.string("Name"), "$$HOST$$", "{url}: never substituted");
+                if custom {
+                    assert_eq!(copy.string("Command"), "x $$URL$$", "{url}: a custom command is used unchanged");
+                } else {
+                    assert!(!copy.string("Command").contains("echo hi"), "{url}: {}", copy.string("Command"));
+                }
+                let calls = std::cell::RefCell::new(Vec::new());
+                let _ = crate::profile::start_dir_probing(&copy, None, &|d| {
+                    calls.borrow_mut().push(d.to_path_buf());
+                    false
+                });
+                assert!(calls.borrow().iter().all(|d| !d.to_string_lossy().contains("attacker")), "{url}: {:?}", calls.borrow());
+            }
+        }
     }
 }

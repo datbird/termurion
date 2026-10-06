@@ -1652,13 +1652,23 @@ fn url_schemes_control(ui: &mut egui::Ui, globals: &mut Globals, guid: &str, ask
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(us::LABEL);
-        ui.menu_button(us::SELECT, |ui| {
+        // The checks are read once when the menu opens (a registry query per scheme), never per frame.
+        let cache_id = egui::Id::new(("url_scheme_checks", guid));
+        let shown = ui.menu_button(us::SELECT, |ui| {
             let Ok(exe) = std::env::current_exe() else { return };
             let reg = us::system();
             let mut table = globals.table(us::HANDLERS_KEY);
-            for scheme in us::SCHEMES {
-                let on = us::handles(&table, reg.as_ref(), scheme, guid, &exe);
-                if ui.selectable_label(on, scheme).clicked() {
+            let items: Vec<(String, bool)> = match ui.ctx().data(|d| d.get_temp::<Vec<(String, bool)>>(cache_id)) {
+                Some(items) => items,
+                None => {
+                    let items = us::row_items(&table, reg.as_ref(), guid, &exe);
+                    ui.ctx().data_mut(|d| d.insert_temp(cache_id, items.clone()));
+                    items
+                }
+            };
+            // The first item is the title, which is not a choice.
+            for (scheme, on) in items.iter().skip(1) {
+                if ui.selectable_label(*on, scheme).clicked() {
                     if let us::Pick::Ask { text, info } = url_scheme_toggled(&mut table, reg.as_ref(), scheme, guid, &exe) {
                         *ask = Some(SchemeAsk { guid: guid.to_string(), scheme: scheme.to_string(), text, info });
                     } else {
@@ -1669,6 +1679,9 @@ fn url_schemes_control(ui: &mut egui::Ui, globals: &mut Globals, guid: &str, ask
                 }
             }
         });
+        if shown.inner.is_none() {
+            ui.ctx().data_mut(|d| d.remove_temp::<Vec<(String, bool)>>(cache_id));
+        }
     });
     changed
 }

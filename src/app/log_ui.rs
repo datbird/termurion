@@ -88,7 +88,7 @@ impl App {
     /// `CANNOT_WRITE`).
     fn begin_log(&mut self, id: PaneId, path: PathBuf, append: bool, style: Style, profile: Option<&str>) {
         let dir = path.parent().map(PathBuf::from).unwrap_or_default();
-        match sl::folder_action(&dir, sl::is_network_log_path(&path), &|d| d.is_dir()) {
+        match sl::folder_action(&dir, sl::is_network_log_path(&path), &|d| crate::localfs::is_local_dir(d)) {
             FolderAction::AskCreate => {
                 let text = sl::create_folder_text(&dir.display().to_string());
                 self.ask_scripts(ask(sl::FOLDER_HEADING, &text, &["OK", "Cancel"], Some("CreateDirectory_LoggingFolder"), Kind::Permanent, Then::CreateLogFolder { pane: id, path, append, style }));
@@ -169,7 +169,7 @@ impl App {
         }
         let Some(path) = rfd::FileDialog::new().set_title("Log to File").set_directory(profile::home()).save_file() else { return };
         // A network file is replaced with no question: it is never probed (13p UNC invariant).
-        if sl::is_network_log_path(&path) || !path.exists() {
+        if sl::is_network_log_path(&path) || !crate::localfs::local_exists(&path) {
             return self.ask_log_style(id, path, false);
         }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -204,7 +204,7 @@ impl App {
             return;
         }
         let Some(dir) = path.parent() else { return };
-        if let Err(e) = std::fs::create_dir_all(dir) {
+        if let Err(e) = crate::localfs::judge_io(dir).and_then(|d| crate::localfs::create_dir_all(&d)) {
             return self.banners.set("log", format!("Failed to create {}: {e}", dir.display()));
         }
         if let Err(e) = self.start_log(pane, path, append, style) {

@@ -84,6 +84,10 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
         Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
+        // Cancel: a closed window never runs an opened script or adds a preset (B6).
+        Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) => Answer::Button(1),
+        // Cancel is the third button: a closed window never opens a profile either way (B6).
+        Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
         Then::ClaudeUninstall | Then::ClaudeHooksFailed => Answer::Button(1),
         // Leave Enabled: a closed window never turns the person's API off (P10).
@@ -272,6 +276,17 @@ pub(super) enum Then {
     /// "Dynamic Profiles Error": OK (0), View Log (1) shows the Dynamic Profiles console entry, and
     /// Reveal in Explorer (2, only with the file) selects the file of the first error.
     DynamicProfilesError(Option<std::path::PathBuf>),
+    /// "OK to run ...?" for a script opened with Tandem (Task 2): OK (0) opens the session that
+    /// runs it; Cancel (1) does nothing. A closed window cancels; another process raises it, so
+    /// it is capped (B6).
+    RunOpenedFile(crate::open_file::Launch),
+    /// "Add duplicate color preset?" for an opened `.itermcolors`: Cancel (0) or Add it anyway (1).
+    AddDuplicateColorPreset(std::path::PathBuf),
+    /// "Profile Renamed" for an opened `.itermtab` (Task 6): the first button opens the profile by
+    /// its guid (the one now named {new}), the second the profile that has the old name, Cancel
+    /// nothing (`PD:44-61`, a faithful quirk). A closed window cancels; another process can raise it,
+    /// so it is capped (B6).
+    OpenRenamedProfile { by_guid: String, by_name: String },
 }
 
 impl Then {
@@ -298,8 +313,13 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. })
     }
+}
+
+/// How many ignored files a question that never shows stands for (the opened-file questions).
+pub(super) fn dropped_open_files(then: &Then) -> usize {
+    matches!(then, Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. }) as usize
 }
 
 /// The queue holds at most this many capped asks (`Then::capped`); later ones are dropped (a
@@ -344,6 +364,10 @@ impl App {
     /// An ask that will never show: the slow-scan question answers Continue, so the scan
     /// worker does not wait for ever; any other is dropped.
     fn scripts_dropped(&mut self, then: Then) {
+        let files = dropped_open_files(&then);
+        if files > 0 {
+            return self.open_files_ignored(files);
+        }
         match then {
             Then::SlowScan => self.scripts_answered(then, 1),
             // Canceled: what waits on a consent or on the replace question hears so.
@@ -392,7 +416,12 @@ impl App {
                 self.globals.set(crate::url_schemes::HANDLERS_KEY, toml::Value::Table(table));
                 self.save_globals();
             }
-            Err(e) => self.banners.set("url-schemes", e),
+            Err(e) => {
+                // Windows keeps the person's own choice (a UserChoice a program cannot set): Tandem's
+                // page in Default apps is where they pick Tandem.
+                let opened = e == crate::url_schemes::protected(scheme) && super::semantic_ui::shell_open(crate::url_schemes::DEFAULT_APPS_URI, false).is_err();
+                self.banners.set("url-schemes", if opened { format!("{e} Windows could not open Default apps; open it from Settings.") } else { e })
+            }
         }
     }
 
@@ -618,6 +647,17 @@ impl App {
                 }
             }
             Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie => self.claude_answered(&then, index),
+            Then::RunOpenedFile(launch) => {
+                if index == 0 {
+                    self.open_runs.push(launch);
+                }
+            }
+            Then::AddDuplicateColorPreset(path) => {
+                if index == 1 {
+                    self.open_recheck(path);
+                }
+            }
+            Then::OpenRenamedProfile { by_guid, by_name } => self.renamed_profile_answered(&by_guid, &by_name, index),
         }
     }
 }
@@ -812,5 +852,54 @@ mod tests {
         assert_eq!(a.spec.cancel, None);
         assert!(a.spec.never_remember.is_empty());
         assert!(!a.then.capped());
+    }
+
+    /// B6: the questions another process can raise close as Cancel and count against the cap.
+    #[test]
+    fn closing_the_run_question_cancels() {
+        let launch = crate::open_file::Launch { guid: "G".into(), dir: None, text: Some("x".into()), style: crate::open_file::Style::Tab, new_window: false };
+        for then in [Then::RunOpenedFile(launch.clone()), Then::AddDuplicateColorPreset(std::path::PathBuf::from(r"C:.itermcolors"))] {
+            assert_eq!(on_close(&then, 0), Answer::Button(1), "{then:?}");
+            assert!(then.capped(), "{then:?}");
+        }
+    }
+
+    #[test]
+    fn a_flood_of_open_requests_is_capped() {
+        let launch = crate::open_file::Launch { guid: "G".into(), dir: None, text: Some("x".into()), style: crate::open_file::Style::Tab, new_window: false };
+        let mut queue = VecDeque::new();
+        let mut dropped = 0;
+        for _ in 0..40 {
+            let a = ask("", "OK to run?", &["OK", "Cancel"], None, Kind::Persistent, Then::RunOpenedFile(launch.clone()));
+            if push_capped(&mut queue, a).is_some() {
+                dropped += 1;
+            }
+        }
+        assert_eq!((queue.len(), dropped), (LIMIT, 40 - LIMIT));
+    }
+
+    /// Review fix 2: an "OK to run" (or duplicate-preset question) past the queue's cap is counted
+    /// into the one "N files ignored" banner, never dropped silently; a closed one is a Cancel and
+    /// is not counted.
+    #[test]
+    fn a_capped_open_question_is_counted_not_dropped_silently() {
+        let launch = crate::open_file::Launch { guid: "G".into(), dir: None, text: Some("x".into()), style: crate::open_file::Style::Tab, new_window: false };
+        let mut queue = VecDeque::new();
+        let mut tally = crate::open_file::IgnoredCount::default();
+        let t0 = std::time::Instant::now();
+        let mut banner = String::new();
+        for i in 0..(LIMIT + 3) {
+            let then = if i % 2 == 0 { Then::RunOpenedFile(launch.clone()) } else { Then::AddDuplicateColorPreset(std::path::PathBuf::from(r"C:\a.itermcolors")) };
+            if let Some(over) = push_capped(&mut queue, ask("", "x", &["OK", "Cancel"], None, Kind::Persistent, then)) {
+                assert_eq!(dropped_open_files(&over.then), 1);
+                banner = crate::open_file::ignored_banner(tally.add(t0, 1));
+            }
+        }
+        assert_eq!(banner, "3 files ignored");
+        assert_eq!(dropped_open_files(&Then::Nothing), 0);
+        assert_eq!(dropped_open_files(&Then::SlowScan), 0);
+        let src = include_str!("scripts_alerts.rs");
+        let body = &src[src.find("fn scripts_dropped").unwrap()..];
+        assert!(body.contains("dropped_open_files(&then)"), "scripts_dropped counts them");
     }
 }
