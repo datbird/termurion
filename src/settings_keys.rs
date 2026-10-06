@@ -801,18 +801,27 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
-            // The keyboard locale: a text field until Task 5's layout popup replaces it.
+            // The keyboard locale: the installed layouts by name (`KP:252-352`); a stored id that is
+            // no longer installed shows empty, and an unknown id forces nothing.
             Kind::String if s.key == "KeyboardLocale" => {
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
-                    let mut text = g.string(&s.key);
-                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0).char_limit(KEYBOARD_LOCALE_LIMIT));
-                    let text = limit_locale(&text);
-                    if r.changed() && text != g.string(&s.key) {
-                        g.set(&s.key, Value::String(text));
+                    let stored = g.string(&s.key);
+                    let layouts = crate::input_locale::layouts_cached();
+                    let shown = layouts.iter().find(|(_, id)| id.eq_ignore_ascii_case(&stored)).map_or("", |(n, _)| n.as_str());
+                    let mut picked = None;
+                    egui::ComboBox::from_id_salt("KeyboardLocale").selected_text(shown).width(220.0).show_ui(ui, |ui| {
+                        for (name, id) in &layouts {
+                            if ui.selectable_label(id.eq_ignore_ascii_case(&stored), name).clicked() {
+                                picked = Some(id.clone());
+                            }
+                        }
+                    });
+                    if let Some(id) = picked {
+                        g.set(&s.key, Value::String(limit_locale(&id)));
                         changed = true;
                     }
-                    r.rect
+                    ui.min_rect()
                 })
                 .inner
                 .into()

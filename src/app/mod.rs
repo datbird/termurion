@@ -85,6 +85,7 @@ mod files_ui;
 mod find_ui;
 mod infobar_ui;
 mod keyproto_ui;
+mod keys_ui;
 mod fold_ui;
 mod labels_ui;
 mod screenshot_ui;
@@ -381,6 +382,10 @@ pub struct App {
     /// The modifiers as the keys are physically held, before an in-app remap.
     phys_mods: Mods,
     phys_sides: crate::keyproto::Sides,
+    /// Force keyboard: app-wide (nothing here is per window).
+    locale: crate::input_locale::Forcer,
+    /// The layout last seen (or forced), to notice the person changing it.
+    locale_seen: String,
     pointer_clicks: pointer::Clicks,
     /// The last press for the pointer multi-click count: when, button, where, count.
     pointer_last: Option<(Instant, u8, (f32, f32), u8)>,
@@ -1523,6 +1528,7 @@ pub fn run() {
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().name() == Some("main") {
             crate::winkeys::uninstall();
+            crate::input_locale::restore_after_panic();
         }
         previous_hook(info);
     }));
@@ -1719,6 +1725,8 @@ pub fn run() {
         sides: crate::keyproto::Sides::default(),
         phys_mods: Mods::default(),
         phys_sides: crate::keyproto::Sides::default(),
+        locale: Default::default(),
+        locale_seen: String::new(),
         pointer_clicks: pointer::Clicks::default(),
         pointer_last: None,
         pointer_down: None,
@@ -2244,6 +2252,7 @@ pub fn run() {
         message_box(&format!("Tandem stopped: {e}"));
     }
     // The keyboard hook and its hotkeys end with Tandem (a crash needs nothing: Windows removes them).
+    app.locale_exit();
     crate::winkeys::uninstall();
     // Every exit that is not a crash takes the notification area icon with it.
     crate::notify::remove(0);
@@ -3953,6 +3962,7 @@ impl App {
         self.menus_dirty = true;
         self.sync_checks();
         self.remap_setting_changed();
+        self.locale_update();
         self.register_hotkeys();
         self.scripts_folder_changed();
         // The Theme may have changed: every window follows the forced mode (or Windows' again).
@@ -6249,6 +6259,9 @@ impl ApplicationHandler<UserEvent> for App {
         } else if !active && self.app_active {
             self.ffm_became_inactive();
         }
+        self.locale_focus(self.app_active, active);
+        self.locale_tick();
+        self.force_for_session();
         self.app_active = active;
         // The Win-hover underline follows the window's key state (`TVA:466-472`).
         if edge {

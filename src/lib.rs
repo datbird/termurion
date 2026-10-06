@@ -350,6 +350,7 @@ pub mod bury;
 pub mod tmux_prefix;
 pub mod doubletap;
 pub mod hotkey_motion;
+pub mod input_locale;
 pub mod winpipe;
 pub mod toolbelt;
 pub mod toolbelt_layout;
