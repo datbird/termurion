@@ -56,7 +56,9 @@ pub enum Act {
 /// "Open in <name>", else "Open in Default Browser" (`WVW:53`, `:98`). The name comes from the
 /// registry: shown without control or bidi characters, at most 64 characters.
 pub fn open_in_title(browser: Option<&str>) -> String {
-    let name: String = browser.map(|b| crate::inert_files::display_text(b, 64, false)).unwrap_or_default().trim().to_string();
+    // A control character is a space (as before the merge), then THE display sanitizer.
+    let spaced = |b: &str| b.chars().take(256).map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
+    let name: String = browser.map(|b| crate::inert_files::display_text(&spaced(b), 64, false)).unwrap_or_default().trim().to_string();
     if name.is_empty() { "Open in Default Browser".to_string() } else { format!("Open in {name}") }
 }
 

@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(name("menu.copy-1 ok").to_string(), "menu.copy-1 ok");
         // The 13w x 13x merge: a URL is logged as its scheme and host only.
         assert_eq!(origin("https://user:pw@Example.COM:8443/p/a?token=x#f").to_string(), "https example.com");
-        assert_eq!(origin("http://[::1]:80/x").to_string(), "http [??1]");
+        assert_eq!(origin("http://[::1]:80/x").to_string(), "http ???1?", "brackets are not name characters");
         assert_eq!(origin("data:text/html,<b>secret</b>").to_string(), "data");
         assert_eq!(origin("about:blank").to_string(), "about");
         assert_eq!(origin("iterm2-about:history").to_string(), "iterm2-about");
