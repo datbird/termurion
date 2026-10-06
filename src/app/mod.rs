@@ -3856,6 +3856,12 @@ impl App {
         }
         match edit {
             Edit::None => return,
+            // A color preset's hover preview: the panes redraw, nothing is saved (B2).
+            Edit::Preview => {
+                self.refresh_panes();
+                self.redraw();
+                return;
+            }
             Edit::Open(guid, how) => match how {
                 // A tab or split goes to the window the person used last.
                 How::Tab => self.new_tab(Some(&guid)),
@@ -4662,6 +4668,12 @@ impl App {
     /// Saves a custom scripts folder typed in the open Settings window and not yet applied,
     /// before Tandem ends, so nothing typed is lost.
     fn save_pending_settings(&mut self) {
+        // A color preset still previewed goes back before anything is saved (B2).
+        for slot in [&mut self.settings, &mut self.profiles_win] {
+            if let Some(w) = slot.as_mut() {
+                w.restore_preview(&mut self.store);
+            }
+        }
         if self.settings.as_mut().is_some_and(|s| s.take_folder_pending()) {
             self.save_globals();
         }
@@ -6349,8 +6361,13 @@ impl ApplicationHandler<UserEvent> for App {
                     // A custom scripts folder typed and not yet applied is applied as the
                     // window closes (iTerm2's `windowWillClose`, `GP:3428-3430`).
                     let pending = slot.as_mut().is_some_and(|s| s.take_folder_pending());
+                    // A color preset still previewed goes back before the window does (B2).
+                    let previewed = slot.as_mut().is_some_and(|s| s.restore_preview(&mut self.store));
                     *slot = None;
                     crate::winkeys::set_recording(false);
+                    if previewed {
+                        self.apply_edit(Edit::Preview);
+                    }
                     if pending {
                         self.apply_edit(Edit::GlobalsChanged);
                     }
@@ -6364,6 +6381,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     // Configure SSH's help button opens its page in the browser.
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
+                    // An exported color preset is shown in Explorer.
+                    let reveal = slot.as_mut().and_then(|s| s.take_reveal());
                     // Profiles > General's URL schemes menu asks before Tandem becomes the handler.
                     let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     // Profiles > Text's "Manage Special Exceptions" opens its window.
@@ -6383,6 +6402,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     if let Some(guid) = locale {
                         self.open_locale_settings(guid);
+                    }
+                    if let Some(path) = reveal {
+                        self.reveal_in_explorer(&path);
                     }
                     if let Some(url) = url {
                         if let Err(e) = semantic_ui::shell_open(&url, None, false) {

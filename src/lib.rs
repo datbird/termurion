@@ -254,6 +254,7 @@ pub mod session_profile;
 
 #[cfg(windows)]
 pub mod settings_ui;
+pub mod settings_presets;
 
 #[cfg(windows)]
 pub mod egui_host;

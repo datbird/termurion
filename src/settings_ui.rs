@@ -60,6 +60,14 @@ pub enum Edit {
     ImportAll,
     /// General > Settings' Erase All Settings and Data button.
     EraseAll,
+    /// A color preset is being previewed (or the preview was put back): the panes redraw, and
+    /// nothing is saved (B2).
+    Preview,
+}
+
+/// Whether an edit starts the pause before the profiles are saved: a preview never does.
+pub fn edit_arms_save(edit: &Edit) -> bool {
+    !matches!(edit, Edit::Preview | Edit::None)
 }
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
@@ -152,6 +160,8 @@ pub struct SettingsWindow {
     /// The warnings answered since the app last took them: it lists the automatic answers in
     /// Suppressed Alerts and saves the settings a remembered answer changed.
     pub answered: Vec<settings_keys::SheetAnswer>,
+    /// The Colors tab's presets: the Editing mode, a live hover preview, the questions and dialogs.
+    presets: crate::settings_presets::State,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -188,6 +198,17 @@ impl SettingsWindow {
     /// pickers and Manage AI Models read the discovered models.
     pub fn shows_ai_models(&self) -> bool {
         shows_ai_models_on(self.mode, self.page, self.ai.sub)
+    }
+
+    /// A file to show in Explorer (an exported color preset), taken after each frame.
+    pub fn take_reveal(&mut self) -> Option<String> {
+        self.presets.reveal.take()
+    }
+
+    /// Puts a live color preview's colors back before anything is saved or the window goes (B2).
+    /// True when a profile changed.
+    pub fn restore_preview(&mut self, store: &mut Store) -> bool {
+        self.presets.restore(store)
     }
 
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
@@ -249,6 +270,7 @@ impl SettingsWindow {
             Mode::Profiles => ("Profiles", 420.0, 460.0),
         };
         let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
+        let host_dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         settings_keys::add_icon_font(host.ctx());
         if mode == Mode::Settings {
             if let Some(h) = host.hwnd() {
@@ -282,6 +304,7 @@ impl SettingsWindow {
             sheet: None,
             show_remembered: false,
             answered: Vec::new(),
+            presets: crate::settings_presets::State::new(host_dark),
         })
     }
 
@@ -346,6 +369,8 @@ impl SettingsWindow {
         // A fixed Theme forces its mode here too (`tab_theme::forced_dark`).
         let style = crate::tab_theme::from_value(globals.int(crate::tab_theme::KEY));
         let dark = crate::tab_theme::forced_dark(style).unwrap_or_else(|| self.host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark));
+        self.presets.editing.follow(dark);
+        let presets = &mut self.presets;
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
@@ -395,6 +420,15 @@ impl SettingsWindow {
                 if let Some(answer) = settings_keys::sheet_warning(ui.ctx(), globals, w, show_remembered) {
                     // Forget shows the warning again; any other answer ends it.
                     if answer.index < answer.spec.labels.len() {
+                        // "Update Which Modes?": load the preset the click was about (P21).
+                        if crate::settings_presets::is_question_id(answer.spec.id.as_deref()) {
+                            if let Some((name, _)) = presets.pending.take() {
+                                if let (Some(p), Some(preset)) = (store.get_mut(&selected), crate::color_presets::find(globals, &name)) {
+                                    crate::settings_presets::load(&preset, p, answer.index == 0, presets.editing.dark, dark);
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                            }
+                        }
                         match sheet.take().map(|w| w.then) {
                             Some(settings_keys::SheetThen::SaveKey) => match settings_keys::held_answered(keys, answer.index, globals, store) {
                                 settings_keys::Saved::Nothing => {}
@@ -592,10 +626,45 @@ impl SettingsWindow {
                 let saved_guid = store.shared_guid(&selected);
                 let Some(profile) = store.get_mut(&selected) else { return };
                 let separate = profile.bool("Use Separate Colors for Light and Dark Mode");
-                if separate && schema::TABS[tab] == "Colors" {
-                    ui.label(format!("Editing the {} mode colors (Windows is in {} mode).", if dark { "Dark" } else { "Light" }, if dark { "dark" } else { "light" }));
+                let system_dark = dark;
+                let colors = schema::TABS[tab] == "Colors";
+                // The Colors tab's wells edit the mode the Editing selector names, not Windows' mode.
+                let dark = if colors { presets.editing.dark } else { dark };
+                if colors {
+                    let h = crate::settings_presets::colors_header(ui, presets, globals, profile, &selected, system_dark);
+                    if h.previewed {
+                        edit = Edit::Preview;
+                    }
+                    if h.import {
+                        crate::settings_presets::begin_import(presets);
+                    }
+                    if h.export {
+                        crate::settings_presets::begin_export(presets, profile);
+                    }
+                    if h.save_as {
+                        crate::settings_presets::begin_save_as(presets, globals, profile);
+                    }
+                    if h.delete {
+                        crate::settings_presets::begin_delete(presets, globals);
+                    }
+                    if h.gallery {
+                        *open_url = Some(crate::settings_presets::GALLERY_URL.to_string());
+                    }
+                    if let Some(name) = h.clicked {
+                        match crate::settings_presets::click(presets, &name, globals, profile, system_dark) {
+                            crate::settings_presets::Click::Loaded => edit = Edit::Changed(selected.clone()),
+                            crate::settings_presets::Click::Ask(spec) => {
+                                *sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::Nothing));
+                                ui.ctx().request_repaint();
+                            }
+                            crate::settings_presets::Click::Missing => {}
+                        }
+                    }
+                    if crate::settings_presets::pump_dialogs(ui.ctx(), presets, globals, profile) {
+                        edit = Edit::GlobalsChanged;
+                    }
                     // iTerm2 shows a warning button whose click shows this text; Tandem shows the text.
-                    if crate::tab_theme::mode_warning(style, separate) {
+                    if separate && crate::tab_theme::mode_warning(style, separate) {
                         ui.colored_label(ui.visuals().warn_fg_color, crate::tab_theme::MODE_WARNING);
                     }
                 }
@@ -1993,5 +2062,13 @@ mod tests {
         p.set("Archive On Closure", Value::Boolean(true));
         assert!(on(&p, "Archive Directory"));
         assert!(on(&p, "Columns"));
+    }
+
+    /// B2: a color preview redraws the panes and never starts the save timer.
+    #[test]
+    fn preview_never_arms_the_save() {
+        assert!(!edit_arms_save(&Edit::Preview));
+        assert!(edit_arms_save(&Edit::Changed("g".into())));
+        assert!(include_str!("app/mod.rs").contains("Edit::Preview => {\n                self.refresh_panes();"));
     }
 }

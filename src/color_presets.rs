@@ -546,10 +546,7 @@ pub fn duplicate_of(g: &Globals, p: &Preset) -> Option<String> {
 /// Returns the name used, or an error text when `MAX_CUSTOM` presets are stored. The name is
 /// cleaned to what `custom` will show.
 pub fn add_custom(g: &mut Globals, name: &str, p: Preset) -> Result<String, String> {
-    let mut base: String = name.chars().filter(|c| name_ok(&c.to_string())).take(MAX_NAME - 6).collect();
-    if base.is_empty() {
-        base = "Untitled".into();
-    }
+    let base = clean_name(name);
     let mut stored = g.table(CUSTOM_KEY);
     if stored.len() >= MAX_CUSTOM {
         return Err(format!("At most {MAX_CUSTOM} custom color presets can be kept."));
@@ -564,6 +561,13 @@ pub fn add_custom(g: &mut Globals, name: &str, p: Preset) -> Result<String, Stri
     stored.insert(used.clone(), Value::Table(t));
     g.set(CUSTOM_KEY, Value::Table(stored));
     Ok(used)
+}
+
+/// The name a custom preset is stored under: hostile characters dropped, 58 characters (room for
+/// " (99)"), "Untitled" when nothing is left.
+pub fn clean_name(name: &str) -> String {
+    let base: String = name.chars().filter(|c| name_ok(&c.to_string())).take(MAX_NAME - 6).collect();
+    if base.is_empty() { "Untitled".into() } else { base }
 }
 
 pub fn delete_custom(g: &mut Globals, name: &str) {

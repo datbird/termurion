@@ -1059,7 +1059,7 @@ mod tests {
         ("app/toolbelt_more_ui.rs", "run_captured", "a Captured Output command the user's own Capture Output trigger built through the one cmd.exe builder and its refusal"),
         ("app/host_offers_ui.rs", "host_offer_bar", "a fixed help page"),
         ("app/menu.rs", "run_command", "the Help menu's fixed documentation page"),
-        ("app/mod.rs", "window_event", "the Configure SSH help page"),
+        ("app/mod.rs", "window_event", "the Configure SSH help page, the color gallery page, an exported color preset revealed"),
         ("app/prefs_ui.rs", "curl_fetch", "the settings URL the user typed in Settings"),
         ("app/screenshot_ui.rs", "shot_event", "reveals the screenshot Tandem just saved"),
         ("app/scripts_app.rs", "edit_new_script", "the user's new script, edited, never run"),
