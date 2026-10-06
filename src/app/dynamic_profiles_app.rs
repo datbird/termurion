@@ -153,7 +153,8 @@ fn rename_in_folder(folder: &Path, judged: Option<(u32, u64)>, tmp: &str, target
     }
     // The folder reached by this path now is the folder that was judged, not one swapped in since.
     let now = (info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow));
-    if judged.is_some_and(|j| j != now) {
+    // An unknown identity is a refusal too: the folder cannot be shown to be the judged one.
+    if judged != Some(now) {
         return Err(std::io::Error::other("the folder is not the one that was judged"));
     }
     let tmp = folder.unfollowed(tmp).ok_or_else(crate::localfs::refused)?;
@@ -569,6 +570,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// Final review 7: the rename refuses a folder whose judged identity is unknown.
+    #[test]
+    fn the_rename_refuses_an_unknown_judged_folder() {
+        let src = include_str!("dynamic_profiles_app.rs");
+        let at = src.find("fn rename_in_folder(folder: &Path, judged").unwrap();
+        let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+        assert!(body.contains("judged != Some(now)"));
+        assert!(!body.contains("judged.is_some_and"));
+    }
+
     use super::*;
     use crate::dynamic_profiles::{Entry, FileType, Loaded};
     use crate::profile::Profile;

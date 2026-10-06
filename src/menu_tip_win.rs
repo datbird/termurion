@@ -238,6 +238,17 @@ fn highlighted(hwnd: isize, wparam: usize, lparam: isize) {
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    // A panic must never leave the menu loop (it would abort the process): the bodies run guarded.
+    let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| proc_body(hwnd, msg, wparam, lparam)));
+    if let Ok(Some(r)) = handled {
+        return r;
+    }
+    // SAFETY: forwarding the message the system delivered, unchanged.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// The messages this subclass acts on; `Some` when it answers one itself.
+fn proc_body(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
     let h = hwnd as isize;
     match msg {
         WM_MENUSELECT => highlighted(h, wparam, lparam),
@@ -248,7 +259,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             if let Some((menu, pos, text)) = pending {
                 show(h, &Hit { menu, pos, text });
             }
-            return 0;
+            return Some(0);
         }
         WM_EXITMENULOOP => hide(h),
         WM_NCDESTROY => {
@@ -266,12 +277,19 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         }
         _ => {}
     }
-    // SAFETY: forwarding the message the system delivered, unchanged.
-    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    None
 }
 
 #[cfg(test)]
 mod tests {
+    /// Final review 10: the proc runs inside the menu loop, so a panic never leaves it.
+    #[test]
+    fn the_proc_has_a_panic_guard() {
+        let src = include_str!("menu_tip_win.rs");
+        let at = src.find("unsafe extern \"system\" fn proc(").unwrap();
+        assert!(src[at..at + src[at..].find("\n}\n").unwrap()].contains("catch_unwind"));
+    }
+
     use super::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::{AppendMenuW, CreateMenu, CreatePopupMenu, SetMenu, MF_STRING};
 

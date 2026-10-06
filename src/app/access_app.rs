@@ -264,6 +264,7 @@ impl App {
             if !ids.contains(id) {
                 st.snap = None;
                 st.signal = None;
+                st.tracker = access::Tracker::default();
             }
         }
         self.access_trackers.retain(|id, _| self.panes.contains_key(id));
@@ -346,6 +347,11 @@ impl App {
         for (id, st) in self.access_trackers.iter_mut() {
             if st.tracker.due().is_some_and(|d| d <= now) {
                 if let Some(p) = self.panes.get(id) {
+                    // A pane that turned secure inside the build hold says nothing: drop the burst.
+                    if p.text_is_secure() {
+                        st.tracker = access::Tracker::default();
+                        continue;
+                    }
                     let ev = st.tracker.settle(now, &|a| access_screen(p).abs_line_text(a), access_screen(p).cursor_abs());
                     raised.push((*id, ev));
                 }
@@ -400,6 +406,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// Final review 3 and 4: a settle skips a pane that turned secure, and a pane that leaves the
+    /// shown set forgets its tracker.
+    #[test]
+    fn trackers_follow_secure_and_shown() {
+        let src = include_str!("access_app.rs");
+        let from = |n: &str| { let at = src.find(n).unwrap_or_else(|| panic!("{n}")); &src[at..at + src[at..].find("\n    }\n").unwrap()] };
+        assert!(from("fn access_settle(").contains("text_is_secure()"), "a secure pane is never settled");
+        assert!(from("// Panes that are not shown keep no text.").contains("st.tracker = "), "a hidden pane's tracker is reset");
+    }
+
     use super::*;
 
     fn text_of(spec: &[(&str, bool)]) -> access::Text {

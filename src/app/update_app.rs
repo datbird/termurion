@@ -156,7 +156,10 @@ impl App {
                     self.update_show = Some(view);
                     self.update_show_manual = manual;
                 }
-                None if closes || manual => self.update_window = None,
+                None if closes || manual => {
+                    self.update_window = None;
+                    self.update_show = None;
+                }
                 None => {}
             }
         }
@@ -242,6 +245,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// Final review 5: a manual check that decides nothing clears the pending Checking view too,
+    /// so a GPU that arrives later does not open a Checking window with no check running.
+    #[test]
+    fn a_manual_check_that_decides_nothing_clears_the_checking_view() {
+        let src = include_str!("update_app.rs");
+        let arm = src.split("None if closes || manual =>").nth(1).expect("arm").split("None => {}").next().unwrap();
+        assert!(arm.contains("self.update_show = None"), "{arm}");
+    }
+
     use super::*;
     use crate::globals::Globals;
     use crate::update::{self, classify, FeedResult, Fetched};

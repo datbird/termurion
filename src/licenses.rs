@@ -30,6 +30,10 @@ pub fn write_to(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the license file name is a link"));
     }
     let tmp = dir.child(format!("{FILE_NAME}.{}.tmp", std::process::id())).ok_or_else(localfs::refused)?;
+    // A leftover of this exact name (a crashed run with the same pid) is removed first.
+    if localfs::lstat(&tmp).is_ok() {
+        localfs::remove_file(&tmp)?;
+    }
     let mut f = localfs::open_custom(&tmp, |o| {
         o.write(true).create_new(true);
     })?;
@@ -46,6 +50,20 @@ pub fn write_to(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<
 
 #[cfg(test)]
 mod tests {
+    /// Final review 12: a stale temp file with this process's name (a crashed run with the same
+    /// pid) does not stop the file from being written.
+    #[test]
+    fn a_stale_temp_file_does_not_block_the_write() {
+        let dir = std::env::temp_dir().join(format!("tandem-licenses-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id())), "left over").unwrap();
+        let judged = crate::localfs::LocalPath::judge(&dir).unwrap();
+        let p = write_to(&judged, "fresh").unwrap();
+        assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "fresh");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
