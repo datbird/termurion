@@ -6099,7 +6099,8 @@ impl App {
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (gpu.config.width, gpu.config.height);
-        if let Err(e) = gpu.renderer.draw(&frame, &view, w, h) {
+        let raw = gpu.config.view_formats.first().map(|f| texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(*f), ..Default::default() }));
+        if let Err(e) = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h) {
             if self.hotkey.as_ref().is_some_and(|h| h.fading()) {
                 self.fade_failed = true;
             }
