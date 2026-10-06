@@ -136,73 +136,62 @@ static HOOK: OnceLock<Hook> = OnceLock::new();
 static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 fn is_tandem(hwnd: isize) -> bool {
-    WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&WINDOWS).contains(&hwnd)
 }
 
 /// A terminal window closed.
 pub fn remove_window(hwnd: isize) {
-    if let Ok(mut w) = WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&WINDOWS).retain(|h| *h != hwnd);
 }
 /// Password manager windows: Win+B, Win+U and Win+C go to them (Windows keeps those chords
 /// for itself otherwise).
 static PWM_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 pub fn add_pwm_window(hwnd: isize) {
-    if let Ok(mut w) = PWM_WINDOWS.lock() {
-        if !w.contains(&hwnd) {
-            w.push(hwnd);
-        }
+    let mut w = locked(&PWM_WINDOWS);
+    if !w.contains(&hwnd) {
+        w.push(hwnd);
     }
 }
 
 pub fn remove_pwm_window(hwnd: isize) {
-    if let Ok(mut w) = PWM_WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&PWM_WINDOWS).retain(|h| *h != hwnd);
 }
 
 /// The AI Chat window: Win+W and Shift+Win+Y go to it (Windows keeps Win+W for itself).
 static CHAT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 pub fn add_chat_window(hwnd: isize) {
-    if let Ok(mut w) = CHAT_WINDOWS.lock() {
-        if !w.contains(&hwnd) {
-            w.push(hwnd);
-        }
+    let mut w = locked(&CHAT_WINDOWS);
+    if !w.contains(&hwnd) {
+        w.push(hwnd);
     }
 }
 
 pub fn remove_chat_window(hwnd: isize) {
-    if let Ok(mut w) = CHAT_WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&CHAT_WINDOWS).retain(|h| *h != hwnd);
 }
 
 fn is_chat(hwnd: isize) -> bool {
-    CHAT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&CHAT_WINDOWS).contains(&hwnd)
 }
 
 /// The Cockpit window: Window > Cockpit (Alt+Win+Shift+C) works while it has the focus.
 static COCKPIT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 pub fn add_cockpit_window(hwnd: isize) {
-    if let Ok(mut w) = COCKPIT_WINDOWS.lock() {
-        if !w.contains(&hwnd) {
-            w.push(hwnd);
-        }
+    let mut w = locked(&COCKPIT_WINDOWS);
+    if !w.contains(&hwnd) {
+        w.push(hwnd);
     }
 }
 
 pub fn remove_cockpit_window(hwnd: isize) {
-    if let Ok(mut w) = COCKPIT_WINDOWS.lock() {
-        w.retain(|h| *h != hwnd);
-    }
+    locked(&COCKPIT_WINDOWS).retain(|h| *h != hwnd);
 }
 
 fn is_cockpit(hwnd: isize) -> bool {
-    COCKPIT_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&COCKPIT_WINDOWS).contains(&hwnd)
 }
 
 /// The one chord the Cockpit window takes: Window > Cockpit, Alt+Win+Shift+C.
@@ -219,7 +208,7 @@ pub fn chord_foreground() -> isize {
 }
 
 fn is_pwm(hwnd: isize) -> bool {
-    PWM_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+    locked(&PWM_WINDOWS).contains(&hwnd)
 }
 
 /// The chords a password manager window takes: Win+B, Win+U, Win+C with no other modifier
@@ -338,7 +327,7 @@ pub fn set_remap_global(on: bool) {
         return;
     }
     if let Some(h) = HOOK.get() {
-        let keys = h.remapper.lock().map(|mut r| r.flush()).unwrap_or_default();
+        let keys = locked(&h.remapper).flush();
         inject(&keys);
     }
 }
@@ -364,8 +353,15 @@ pub fn uninstall() {
 
 /// Locks a hook mutex through a poison: after a panic in the hook (caught by `guarded`) the data
 /// is still consistent for a key press, and unwrapping here would panic on every later keystroke.
+/// Every lock in this module is taken here (a source test holds it).
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The Remap Modifiers settings, read through a poison (a panic while the settings side held the
+/// write lock leaves the last whole value in place).
+fn read_tags(t: &RwLock<Tags>) -> Tags {
+    *t.read().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Remapping, and Do Not Remap Modifiers. True when the event was swallowed.
@@ -373,7 +369,7 @@ fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
     let fg = unsafe { GetForegroundWindow() } as isize;
     let focused = is_tandem(fg) || fg == SETTINGS.load(Ordering::Relaxed);
-    let tags = *h.tags.read().unwrap();
+    let tags = read_tags(&h.tags);
     let mut r = locked(&h.remapper);
     if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags, REMAP_GLOBAL.load(Ordering::Relaxed)) {
         inject(&keys);
@@ -405,6 +401,36 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     })
 }
 
+/// Whether the hook thread's message loop goes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flow {
+    Go,
+    Stop,
+}
+
+/// Runs one message-loop arm; a panic in it is caught and the loop goes on.
+fn pump_guarded(arm: impl FnOnce() -> Flow) -> Flow {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(arm)).unwrap_or(Flow::Go)
+}
+
+/// Runs its closure when dropped: on a normal end and while unwinding. A panic in the closure is
+/// caught (a second panic during an unwind would abort).
+struct OnEnd<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> OnEnd<F> {
+    fn new(f: F) -> Self {
+        OnEnd(Some(f))
+    }
+}
+
+impl<F: FnOnce()> Drop for OnEnd<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        }
+    }
+}
+
 /// Runs `body`; a panic in it runs `recover` instead.
 fn guarded(body: impl FnOnce() -> LRESULT, recover: impl FnOnce() -> LRESULT) -> LRESULT {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| recover())
@@ -414,7 +440,7 @@ fn guarded(body: impl FnOnce() -> LRESULT, recover: impl FnOnce() -> LRESULT) ->
 /// anyway: this runs after a panic).
 fn release_remapped() {
     if let Some(h) = HOOK.get() {
-        let keys = h.remapper.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        let keys = locked(&h.remapper).flush();
         inject(&keys);
     }
 }
@@ -448,7 +474,7 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                     down,
                     // Remapping off and a Win side remapped away: that key is read in the app as its
                     // target, so it makes no Win chord here (`APP:252-285`).
-                    win_held: crate::remap::win_chord_held(&h.tags.read().map_or(Tags::identity(), |t| *t), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
+                    win_held: crate::remap::win_chord_held(&read_tags(&h.tags), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
                     focused: is_tandem(fg) || recording || pwm || chat || cockpit,
                     shift: held(0x10),
                     alt: held(0x12),
@@ -482,7 +508,8 @@ pub fn install(
     tags: Arc<RwLock<Tags>>,
     exempt: Box<dyn Fn(u16, Mods) -> bool + Send + Sync>,
 ) -> Result<(), String> {
-    if let Ok(mut w) = WINDOWS.lock() {
+    {
+        let mut w = locked(&WINDOWS);
         if !w.contains(&hwnd) {
             w.push(hwnd);
         }
@@ -500,6 +527,15 @@ pub fn install(
                 let _ = tx.send(Err(format!("SetWindowsHookExW failed: {}", std::io::Error::last_os_error())));
                 return;
             }
+            // However this thread ends (the unhook message, a failed GetMessageW, an unwind), the
+            // hook goes first: a low-level hook with no thread pumping its messages makes every
+            // keystroke on the machine wait for LowLevelHooksTimeout.
+            let _unhook = OnEnd::new(move || {
+                release_remapped();
+                unsafe { UnhookWindowsHookEx(h) };
+                HOOK_THREAD.store(0, Ordering::Release);
+                UNHOOKED.store(true, Ordering::Release);
+            });
             HOOK_THREAD.store(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }, Ordering::Release);
             let _ = tx.send(Ok(()));
             let mut msg: MSG = unsafe { std::mem::zeroed() };
@@ -508,27 +544,32 @@ pub fn install(
             let mut last: Vec<(u32, crate::hotkey::Chord)> = Vec::new();
             const WM_HOTKEY: u32 = 0x0312;
             while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
-                match msg.message {
-                    WM_APP_HOTKEYS => apply_pending(&mut registered, &mut last),
+                // A panic in one message (a registration, a hotkey's sink) must not end the loop
+                // while the hook is installed.
+                let flow = pump_guarded(|| match msg.message {
+                    WM_APP_HOTKEYS => {
+                        apply_pending(&mut registered, &mut last);
+                        Flow::Go
+                    }
                     WM_APP_RECORDING => {
                         let _ = register(&mut registered, &last, RECORDING.load(Ordering::Relaxed));
+                        Flow::Go
                     }
                     WM_HOTKEY => {
                         if let Some((_, ids)) = registered.iter().find(|(rid, _)| *rid as usize == msg.wParam) {
                             fire(ids);
                         }
+                        Flow::Go
                     }
                     WM_APP_UNHOOK => {
-                        if let Some(h) = HOOK.get() {
-                            let keys = h.remapper.lock().map(|mut r| r.flush()).unwrap_or_default();
-                            inject(&keys);
-                        }
-                        unsafe { UnhookWindowsHookEx(h) };
+                        // The hotkeys go here; the guard then releases held keys and the hook.
                         let _ = register(&mut registered, &last, true);
-                        UNHOOKED.store(true, Ordering::Release);
-                        break;
+                        Flow::Stop
                     }
-                    _ => {}
+                    _ => Flow::Go,
+                });
+                if flow == Flow::Stop {
+                    break;
                 }
             }
         })
@@ -755,9 +796,9 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
         return Err("the keyboard hook is not running".into());
     }
     let paused = RECORDING.load(Ordering::Relaxed);
-    *GLOBAL.lock().unwrap() = Some(Global { taps: taps.into_iter().map(|(id, m)| (crate::doubletap::Machine::new(m, min, max), id)).collect(), paused, ..Default::default() });
+    *locked(&GLOBAL) = Some(Global { taps: taps.into_iter().map(|(id, m)| (crate::doubletap::Machine::new(m, min, max), id)).collect(), paused, ..Default::default() });
     let (tx, rx) = std::sync::mpsc::channel();
-    *PENDING.lock().unwrap() = Some((chords, tx));
+    *locked(&PENDING) = Some((chords, tx));
     if unsafe { PostThreadMessageW(thread, WM_APP_HOTKEYS, 0, 0) } == 0 {
         return Err(format!("could not reach the keyboard hook: {}", std::io::Error::last_os_error()));
     }
@@ -766,7 +807,7 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
 
 /// On the hook thread: registers the pending chords (RegisterHotKey is per thread).
 fn apply_pending(registered: &mut Vec<(i32, Vec<u32>)>, last: &mut Vec<(u32, crate::hotkey::Chord)>) {
-    let Some((chords, reply)) = PENDING.lock().unwrap().take() else { return };
+    let Some((chords, reply)) = locked(&PENDING).take() else { return };
     *last = chords.clone();
     let out = register(registered, &chords, RECORDING.load(Ordering::Relaxed));
     let _ = reply.send(out);
@@ -781,7 +822,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
     }
     if paused {
         // A poisoned lock (the app panicked holding it) must not stop the unhook's cleanup.
-        if let Some(g) = GLOBAL.lock().ok().as_mut().and_then(|guard| guard.as_mut()) {
+        if let Some(g) = locked(&GLOBAL).as_mut() {
             g.paused = true;
         }
         return Vec::new();
@@ -813,7 +854,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
         };
         out.extend(ids.iter().map(|id| (*id, result.clone())));
     }
-    if let Some(g) = GLOBAL.lock().unwrap().as_mut() {
+    if let Some(g) = locked(&GLOBAL).as_mut() {
         g.hooked = hooked;
         g.system = system;
         g.paused = false;
@@ -824,7 +865,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
 /// The hook's part of system-wide hotkeys.
 fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
-    let mut guard = GLOBAL.lock().unwrap();
+    let mut guard = locked(&GLOBAL);
     let Some(g) = guard.as_mut() else { return HookVerdict::Continue };
     const LLKHF_EXTENDED: u32 = 0x01;
     let mods = [(held(VK_LWIN as i32) || held(VK_RWIN as i32), crate::hotkey::MOD_WIN), (held(0x12), crate::hotkey::MOD_ALT), (held(0x11), crate::hotkey::MOD_CONTROL), (held(0x10), crate::hotkey::MOD_SHIFT)]
@@ -1107,5 +1148,132 @@ mod tests {
         assert!(is_cockpit(79));
         remove_cockpit_window(79);
         assert!(!is_cockpit(79));
+    }
+
+    /// Leaves `m` poisoned, as a panic while holding it would.
+    fn poison<T>(m: &Mutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("poison it");
+        }));
+        assert!(m.is_poisoned());
+    }
+
+    fn kb(vk: u32) -> KBDLLHOOKSTRUCT {
+        KBDLLHOOKSTRUCT { vkCode: vk, scanCode: 0x1E, flags: 0, time: 0, dwExtraInfo: 0 }
+    }
+
+    #[test]
+    fn every_poisoned_hook_thread_lock_still_registers_and_passes_keys() {
+        // One test owns the module's statics, so no other test sees them poisoned.
+        for m in [&WINDOWS, &PWM_WINDOWS, &CHAT_WINDOWS, &COCKPIT_WINDOWS] {
+            poison(m);
+        }
+        poison(&GLOBAL);
+        poison(&PENDING);
+        // The window lists still answer (a poisoned list read as empty would drop Win chords).
+        add_pwm_window(91);
+        add_chat_window(92);
+        add_cockpit_window(93);
+        locked(&WINDOWS).push(94);
+        assert!(is_pwm(91) && is_chat(92) && is_cockpit(93) && is_tandem(94));
+        remove_pwm_window(91);
+        remove_chat_window(92);
+        remove_cockpit_window(93);
+        remove_window(94);
+        assert!(!is_pwm(91) && !is_chat(92) && !is_cockpit(93) && !is_tandem(94));
+        // A key press reads the hotkeys through the poison (empty chords: nothing registers for real).
+        *locked(&GLOBAL) = Some(Global::default());
+        assert_eq!(global_hotkeys(&kb(0x41), true), HookVerdict::Continue);
+        assert_eq!(global_hotkeys(&kb(0x41), false), HookVerdict::Continue);
+        // Registration (a settings change) and its pause run on the message loop.
+        let mut registered = Vec::new();
+        assert!(register(&mut registered, &[], true).is_empty());
+        assert!(locked(&GLOBAL).as_ref().is_some_and(|g| g.paused));
+        assert!(register(&mut registered, &[], false).is_empty());
+        assert!(locked(&GLOBAL).as_ref().is_some_and(|g| !g.paused));
+        let (tx, rx) = std::sync::mpsc::channel();
+        *locked(&PENDING) = Some((Vec::new(), tx));
+        let mut last = Vec::new();
+        apply_pending(&mut registered, &mut last);
+        assert_eq!(rx.try_recv().ok(), Some(Vec::new()), "the settings side gets its answer");
+        *locked(&GLOBAL) = None;
+        for m in [&WINDOWS, &PWM_WINDOWS, &CHAT_WINDOWS, &COCKPIT_WINDOWS] {
+            m.clear_poison();
+        }
+        GLOBAL.clear_poison();
+        PENDING.clear_poison();
+    }
+
+    #[test]
+    fn poisoned_remap_locks_still_pass_keys() {
+        let tags = Arc::new(RwLock::new(Tags::identity()));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = tags.write().unwrap_or_else(|e| e.into_inner());
+            panic!("poison it");
+        }));
+        assert!(tags.is_poisoned());
+        let h = Hook {
+            gate: Mutex::new(Gate::default()),
+            send: Box::new(|_| {}),
+            bound: Box::new(|_| false),
+            remapper: Mutex::new(Remapper::default()),
+            tags,
+            exempt: Box::new(|_, _| false),
+            exempting: Mutex::new(None),
+        };
+        poison(&h.remapper);
+        poison(&h.exempting);
+        poison(&h.gate);
+        // Identity tags and a plain letter: nothing is replaced, so nothing is injected.
+        assert!(!remap(&h, &kb(0x41), true));
+        assert!(!remap(&h, &kb(0x41), false));
+        assert_eq!(read_tags(&h.tags), Tags::identity());
+    }
+
+    #[test]
+    fn the_hook_thread_never_unwraps_a_lock_and_never_outlives_its_pump() {
+        let src = include_str!("winkeys.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        // Every lock is taken through `locked` or `read_tags`, which read through a poison.
+        for bad in [".lock().unwrap()", ".read().unwrap()", ".write().unwrap()", ".lock().ok()", ".lock().map(", ".read().map", "if let Ok(mut w) = ", ".lock().is_ok_and"] {
+            assert!(!code.contains(bad), "winkeys.rs takes a lock with {bad}");
+        }
+        assert_eq!(code.matches(".lock()").count(), 1, "only `locked` calls lock()");
+        assert_eq!(code.matches(".read()").count(), 1, "only `read_tags` calls read()");
+        // Each message-loop arm runs inside catch_unwind, and the thread's hook is removed when
+        // the thread ends for any reason.
+        let pump = code.split("fn install(").nth(1).expect("install");
+        assert!(pump.contains("pump_guarded("), "the message loop dispatches through pump_guarded");
+        assert!(pump.contains("OnEnd::new("), "the hook thread holds an unhook guard");
+    }
+
+    #[test]
+    fn the_hook_closures_read_their_locks_through_a_poison() {
+        // `send`, `bound`, `exempt` and the hotkey sink run on the hook thread, inside every key.
+        let src = include_str!("app/menu.rs");
+        let start = src.find("let send = Box::new(").expect("send");
+        let end = src.find("crate::winkeys::set_remap_global(").expect("set_remap_global");
+        let closures = &src[start..end];
+        assert!(closures.contains("set_hotkey_sink("));
+        assert!(!closures.contains(".unwrap()"), "a hook closure unwraps a lock");
+        assert!(!closures.contains(".expect("), "a hook closure can panic");
+    }
+
+    #[test]
+    fn a_panicking_message_arm_keeps_the_loop_and_the_guard_unhooks_on_any_end() {
+        assert_eq!(pump_guarded(|| Flow::Go), Flow::Go);
+        assert_eq!(pump_guarded(|| Flow::Stop), Flow::Stop);
+        assert_eq!(pump_guarded(|| panic!("forced panic in a message arm")), Flow::Go, "the loop goes on");
+        let ran = std::cell::Cell::new(0);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = OnEnd::new(|| ran.set(ran.get() + 1));
+            panic!("the thread unwinds");
+        }));
+        assert_eq!(ran.get(), 1, "the unhook runs when the thread unwinds");
+        {
+            let _g = OnEnd::new(|| ran.set(ran.get() + 1));
+        }
+        assert_eq!(ran.get(), 2, "and when the loop ends normally");
     }
 }
