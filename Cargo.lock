@@ -3607,6 +3607,7 @@ dependencies = [
  "uuid",
  "wgpu",
  "windows",
+ "windows-core",
  "windows-future",
  "windows-sys 0.59.0",
  "winit",

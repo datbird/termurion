@@ -1173,14 +1173,12 @@ impl App {
         answer
     }
 
-    /// Selection (`H:3952-4099`) of a session's own screen. Get: the selection as one
-    /// sub-selection (none: no payload, as iTerm2 never touches it), OK. Set: every
-    /// sub-selection checked (`api_misc::to_sel`), then more than one refused (alacritty keeps
-    /// one); none clears the selection, one replaces it, OK. No session or an unset request is
+    /// Selection (`H:3952-4099`) of a session's own screen. Get: every sub-selection with its
+    /// mode, window and connection (none: no payload, as iTerm2 never touches it), OK. Set:
+    /// every sub-selection checked (`api_misc::to_sel`); none clears the selection, several
+    /// replace it (the last is the live one), OK. No session or an unset request is
     /// REQUEST_MALFORMED.
     fn api_selection(&mut self, r: &pb::SelectionRequest) -> pb::SelectionResponse {
-        use alacritty_terminal::index::{Column, Line, Point, Side};
-        use alacritty_terminal::selection::Selection;
         use pb::selection_request::Request;
         use pb::selection_response::{GetSelectionResponse, Response, Status};
         let answer = |s: Status, response: Option<Response>| pb::SelectionResponse { status: Some(s as i32), response };
@@ -1190,22 +1188,7 @@ impl App {
                 let Some(p) = self.api_session_pane(g.session_id.as_deref()).and_then(|id| self.panes.get(&id)) else { return answer(Status::RequestMalformed, None) };
                 let screen = p.own();
                 let f = api_buffer::facts(screen);
-                let term = screen.term();
-                let at = |pt: Point| (pt.line.0 as i64 + f.history, pt.column.0 as i32);
-                let subs: Vec<pb::SubSelection> = match term.selection.as_ref().filter(|s| !s.runs.is_empty()) {
-                    // A visual (bidi) drag: one sub-selection per logical run.
-                    Some(sel) => {
-                        let runs: Vec<_> = sel.runs.iter().map(|(a, b)| (at(*a), at(*b))).collect();
-                        api_misc::from_runs(&runs, f.lost(), f.cols)
-                    }
-                    None => term
-                        .selection
-                        .as_ref()
-                        .and_then(|s| Some((s.ty, s.to_range(term)?)))
-                        .map(|(ty, range)| api_misc::from_sel(ty, at(range.start), at(range.end), f.lost(), f.cols))
-                        .into_iter()
-                        .collect(),
-                };
+                let subs: Vec<pb::SubSelection> = screen.subs().iter().map(|s| api_misc::from_sub(s, f.lost(), f.cols)).collect();
                 let response = (!subs.is_empty()).then_some(Response::GetSelectionResponse(GetSelectionResponse { selection: Some(pb::Selection { sub_selections: subs }) }));
                 answer(Status::Ok, response)
             }
@@ -1217,21 +1200,11 @@ impl App {
                 let Some(sels) = subs.iter().map(|s| api_misc::to_sel(s, f.cols, f.lost())).collect::<Option<Vec<_>>>() else {
                     return answer(Status::RequestMalformed, None);
                 };
-                if sels.len() > 1 {
-                    return answer(Status::RequestMalformed, None);
+                // The API's end is exclusive; a range that covers nothing is left out.
+                let subs: Vec<_> = sels.iter().filter_map(|s| s.to_sub(f.cols)).collect();
+                if p.own_mut().set_subs(subs) {
+                    self.banners.set("select-matches", format!("Selected the first {} selections", crate::seltext::MAX_SUBS));
                 }
-                // The API's end is exclusive: the left side of its column, or the right side of
-                // the last column when it is the width.
-                let point = |(index, x): (i64, i32)| {
-                    let line = Line((index - f.history).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-                    if x >= f.cols { (Point::new(line, Column(f.cols.max(1) as usize - 1)), Side::Right) } else { (Point::new(line, Column(x.max(0) as usize)), Side::Left) }
-                };
-                p.own_mut().term_mut().selection = sels.first().map(|s| {
-                    let ((a, a_side), (b, b_side)) = (point(s.start), point(s.end));
-                    let mut sel = Selection::new(s.ty, a, a_side);
-                    sel.update(b, b_side);
-                    sel
-                });
                 // The window that shows the pane redraws (the current one for a buried pane).
                 self.enter_pane_window(pane);
                 self.redraw();

@@ -14,10 +14,15 @@ fn unix_now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
+/// The word characters Settings > General > Selection names (letters and digits count too).
+fn word_chars_from(g: &Globals) -> String {
+    g.string("WordCharacters")
+}
+
 impl App {
-    /// The profile's word characters (letters and digits count too).
-    fn word_chars(&self, pane: PaneId) -> String {
-        self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).map(|pr| pr.string("Characters considered part of a word for selection")).unwrap_or_else(|| "/-+\\~_.".into())
+    /// The word characters of Settings > General > Selection (letters and digits count too).
+    fn word_chars(&self, _pane: PaneId) -> String {
+        word_chars_from(&self.globals)
     }
 
     /// Session > Open Autocomplete... (again while it shows: "more", as iTerm2).
@@ -217,5 +222,18 @@ impl App {
     pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
         let Some((rows, selected, footer, at, bounds)) = self.completion_box(pane, rect, cell) else { return None };
         scene::completion_list(frame, &rows, selected, footer, at, bounds, cell)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autocomplete_reads_word_characters() {
+        let mut g = Globals::empty(std::path::Path::new("word-chars-test.toml"));
+        assert_eq!(word_chars_from(&g), "/-+\\~_.");
+        g.set("WordCharacters", "x".into());
+        assert_eq!(word_chars_from(&g), "x");
     }
 }

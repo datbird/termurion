@@ -1,13 +1,12 @@
 //! Loads the ConPTY functions, from the shipped conpty.dll or from Windows.
 
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
 use windows_sys::core::HRESULT;
 
 pub type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
@@ -65,12 +64,9 @@ fn load_shipped(dir: &Path) -> Result<Api, String> {
             return Err(format!("{} not found", file.display()));
         }
     }
-    let wide: Vec<u16> = dll.as_os_str().encode_wide().chain(Some(0)).collect();
+    // By full path, searching only that folder and System32; a relative folder is refused.
+    let module = crate::dll::load_bundled(&dll)?;
     unsafe {
-        let module = LoadLibraryW(wide.as_ptr());
-        if module.is_null() {
-            return Err(format!("LoadLibraryW({}) failed: {}", dll.display(), std::io::Error::last_os_error()));
-        }
         let get = |name: &str| {
             let cname = format!("{name}\0");
             GetProcAddress(module, cname.as_ptr()).ok_or_else(|| format!("{} has no {name}", dll.display()))

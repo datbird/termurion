@@ -1484,6 +1484,32 @@ impl WidthCache {
     }
 }
 
+/// One GPU per test process (final review fix 1). Every test that needs a device takes it from
+/// here: the instance, adapter and device are made once, under `LOCK`, and never dropped, so no
+/// `vkDestroyInstance` ever runs while another thread creates one.
+#[cfg(test)]
+pub(crate) mod test_gpu {
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serializes anything that makes its own instance against the shared one's creation.
+    pub(crate) static LOCK: Mutex<()> = Mutex::new(());
+    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+
+    pub(crate) fn shared() -> (wgpu::Device, wgpu::Queue) {
+        GPU.get_or_init(|| {
+            let _gpu = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+            let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+            // Kept for the life of the process: dropping an instance is the racy call.
+            std::mem::forget(instance);
+            std::mem::forget(adapter);
+            made
+        })
+        .clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,9 +1559,51 @@ mod tests {
     }
 
     fn device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap()
+        super::test_gpu::shared()
+    }
+
+    /// Final review fix 1: no GPU test makes its own instance. The Vulkan loader (vulkan-1.dll
+    /// 1.4.341) faults when instances are created and destroyed on several threads at once, so a
+    /// test takes the process-wide device from `test_gpu::shared`, and only `adapters_are_recorded`
+    /// (which must build its own two) makes instances, under `test_gpu::LOCK`.
+    #[test]
+    fn gpu_tests_share_one_instance() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let call = concat!("wgpu::Instance", "::new(");
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut bad = Vec::new();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let is_render = f == std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("render.rs");
+            // Production code may build instances; only what follows a test marker is checked.
+            let test_part = match text.find(concat!("#[cfg(", "test)]")) {
+                Some(at) => &text[at..],
+                None => continue,
+            };
+            let n = test_part.matches(call).count();
+            // render.rs: the shared helper (1) and adapters_are_recorded (2), nothing else.
+            let allowed = if is_render { 3 } else { 0 };
+            if is_render && !test_part.contains("mod test_gpu") {
+                bad.push("render.rs: the shared test_gpu module is gone".to_string());
+            }
+            if n > allowed {
+                bad.push(format!("{}: {n} test instances, {allowed} allowed", f.display()));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+        let own = include_str!("render.rs");
+        let rec = &own[own.find("fn adapters_are_recorded").unwrap()..];
+        assert!(rec[..400].contains("test_gpu::LOCK"), "adapters_are_recorded must hold the GPU lock");
     }
 
     fn read(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
@@ -1566,6 +1634,7 @@ mod tests {
     /// instances are built without a display handle.
     #[test]
     fn adapters_are_recorded() {
+        let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let default = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = wgpu::Backends::DX12;

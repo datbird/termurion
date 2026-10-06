@@ -99,6 +99,7 @@ mod archive_ui;
 mod logout_ui;
 mod session_ui;
 mod seltools_ui;
+mod selection_ui;
 mod view_ui;
 mod marks_ui;
 mod offscreen_ui;
@@ -258,8 +259,12 @@ struct PointerDown {
 enum Drag {
     None,
     /// `anchor` is Some for a character drag, whose press the selection holds as a visual
-    /// position (`Selection::set_visual_anchor`, moved with scrolling output).
-    Select { pane: PaneId, anchor: Option<(i32, usize, bool)> },
+    /// position (`Selection::set_visual_anchor`, moved with scrolling output). `command` is Some
+    /// for a plain single click, whether its press removed a selection: the release may select a
+    /// command (13s Task 9).
+    Select { pane: PaneId, anchor: Option<(i32, usize, bool)>, scroll: Option<selection_ui::SelScroll>, scroll_off: bool, command: Option<bool> },
+    /// A press on the selection waiting to become a drag of its text out of the window.
+    Out(selection_ui::DragOut),
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
     /// The thumb of a pane's scrollbar, held this far below its top (pixels).
     Scrollbar { pane: PaneId, grab: f32 },
@@ -396,6 +401,11 @@ pub struct App {
     mark_pos: HashMap<PaneId, u32>,
     /// Each pane's find bar and matches.
     finds: HashMap<PaneId, find_ui::FindState>,
+    /// The query every find bar shares with `SynchronizeQueryWithFindPasteboard` on (iTerm2's find
+    /// pasteboard; Windows has none, so it lives in Tandem). App-wide, not swapped per window.
+    find_pasteboard: String,
+    /// The pane that had the keyboard when the shared query was last loaded.
+    find_focus_seen: Option<PaneId>,
     /// Where the focused pane's find bar and its mode label were last drawn.
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
@@ -411,6 +421,8 @@ pub struct App {
     hover_hand: bool,
     /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
     hover_key: Option<(PaneId, i32, usize, bool, bool)>,
+    command_click: Option<(Instant, PaneId, usize)>,
+    command_info: Option<selection_ui::CommandInfo>,
     /// The annotation or session note window: its pane and note (None for the session note).
     note_win: Option<(crate::note_ui::NoteWindow, PaneId, Option<u32>)>,
     /// Annotation navigation: the row each pane is at.
@@ -1705,6 +1717,8 @@ pub fn run() {
         alt_infer_focus: None,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
+        find_pasteboard: String::new(),
+        find_focus_seen: None,
         find_bar_rect: None,
         find_mode_rect: None,
         title_bars: Vec::new(),
@@ -1713,6 +1727,8 @@ pub fn run() {
         hover: None,
         hover_hand: false,
         hover_key: None,
+        command_click: None,
+        command_info: None,
         popup_menu: None,
         color_pick: None,
         shortcuts: None,
@@ -3691,6 +3707,7 @@ impl App {
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile, relaunch: bool) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
         pane.set_bidi_rules(crate::bidi::Rules::from_globals(&self.globals));
+        pane.set_copy_options(crate::seltext::Options::from_globals(&self.globals));
         screen_follows_profile(&mut pane.screen, p);
         pane.screen.set_path_probe(self.path_probe());
         pane.profile = p.guid();
@@ -4033,10 +4050,12 @@ impl App {
         self.tools_changed();
         let dark = self.dark();
         let bidi = crate::bidi::Rules::from_globals(&self.globals);
+        let copy = crate::seltext::Options::from_globals(&self.globals);
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
             pane.set_bidi_rules(bidi);
+            pane.set_copy_options(copy);
             screen_follows_profile(pane.own_mut(), p);
         }
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
@@ -4311,6 +4330,12 @@ impl App {
         if self.pathnav_due.is_some_and(|(_, p, _)| p == id) {
             self.pathnav_due = None;
         }
+        if self.command_click.is_some_and(|(_, p, _)| p == id) {
+            self.command_click = None;
+        }
+        if self.command_info.is_some_and(|i| i.pane == id) {
+            self.command_info = None;
+        }
         self.pathnav_press = self.pathnav_press.filter(|(p, _)| *p != id);
         if self.cmdinfo.as_ref().is_some_and(|w| w.pane == id) {
             self.cmdinfo = None;
@@ -4563,7 +4588,7 @@ impl App {
     fn cell_at(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (u32, u32, Side) {
         let inner = self.text_rect(id, rect);
         let term = self.panes[&id].screen.term();
-        let (col, row, side) = fonts_ui::pointer_cell(self.pane_cell(id), (inner.x, inner.y), x, y, term.columns() as u32, term.screen_lines() as u32);
+        let (col, row, side) = fonts_ui::pointer_cell(self.pane_cell(id), (inner.x, inner.y), x, y, term.columns() as u32, term.screen_lines() as u32, self.neighbor_fraction());
         // A right-to-left row: the pointer's visual cell is a different logical cell, and its
         // halves turn over (the left half of the cell is the character's end). Mouse reports
         // do not use this column: iTerm2 reports the visual one (`report_cell`).
@@ -4588,7 +4613,7 @@ impl App {
     fn visual_pos(&self, id: PaneId, rect: Rect, x: f32, y: f32) -> (i32, usize, bool) {
         let (col, row) = self.report_cell(id, rect, x, y);
         let (cw, _) = self.pane_cell(id);
-        let right = (x - self.text_rect(id, rect).x) - col as f32 * cw > cw / 2.0;
+        let right = crate::seltext::side_for(((x - self.text_rect(id, rect).x) - col as f32 * cw) / cw, self.neighbor_fraction()) == Side::Right;
         let offset = self.panes[&id].screen.term().grid().display_offset() as i32;
         (row as i32 - offset, col as usize, right)
     }
@@ -4598,11 +4623,21 @@ impl App {
         viewport_to_point(offset, Point::new(row as usize, Column(col as usize)))
     }
 
+    /// Copy as the person asked for it (Edit > Copy, a key, copy mode): the selection's text
+    /// goes to the clipboard, except an empty one with `DisallowCopyEmptyString` (`TV:4089-4150`).
     fn copy_selection(&mut self, id: PaneId) {
+        self.copy_selection_with(id, None);
+    }
+
+    /// `copy_selection` with the text already extracted, when the caller has it.
+    fn copy_selection_with(&mut self, id: PaneId, text: Option<&str>) {
         if self.copy_porthole_selection(id, porthole_ui::CopyAs::Plain) {
             return;
         }
-        let Some(text) = self.panes.get(&id).and_then(|p| p.screen.selection_text()) else { return };
+        let Some(text) = text.map(str::to_string).or_else(|| self.selected_text(id)) else { return };
+        if !crate::seltext::copy_decision(&text, self.globals.bool("DisallowCopyEmptyString")) {
+            return;
+        }
         self.remember_paste(&text);
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
@@ -4939,8 +4974,16 @@ impl App {
             }
         }
         if let Some(bytes) = bytes {
-            pane.scroll(Scroll::Bottom);
             let sender = pane.id;
+            pane.scroll(Scroll::Bottom);
+            // A key for the session removes a finished selection, not one being dragged (R3).
+            // Only a key with bytes: a bare Win press for a Win-drag keeps it (B4).
+            let live = matches!(&self.drag, Drag::Select { pane: dragged, .. } if *dragged == sender);
+            if selection_ui::typing_clears(live, self.globals.bool("TypingClearsSelection")) {
+                if let Some(p) = self.panes.get_mut(&sender) {
+                    p.clear_selection();
+                }
+            }
             if self.tmux_key_by_name(sender, key) {
                 return;
             }
@@ -4961,6 +5004,12 @@ impl App {
         // cancels it (`TV:7924-7933`).
         self.pathnav_due = None;
         self.pathnav_press = None;
+        // A second click cancels a command click waiting out the double-click time
+        // (`mouseHandlerCancelSingleClick:`), and a press ends the first-selection notice.
+        self.command_click = None;
+        if self.command_info_press(button) {
+            return;
+        }
         self.hide_tab_tip();
         // A press starts over on the tab bar too: a bar press whose release never came (focus
         // went mid-press) must not take this press's release; a press on the bar stores itself.
@@ -5144,35 +5193,56 @@ impl App {
                 }
                 // The path mark under a plain single click: the release decides (no drag).
                 self.pathnav_press = if count == 1 && plain { self.path_mark_index(id, point).map(|i| (id, i)) } else { None };
+                // Win without Alt adds a selection (`MH:360-431`); the earlier ones are held while the new
+                // one is made and put back beside it. Win with Ctrl did not reach the open above.
+                let append = mods.cmd && !mods.alt;
+                // The Win release must not open the Start menu, whether or not CommandSelection
+                // masked it above (it is off: a Win-drag still appends).
+                #[cfg(windows)]
+                if mods.cmd {
+                    crate::winkeys::mask_start_menu();
+                }
+                // A press on the selection waits for a drag of its text (R3, `MH:379-391`).
+                let on_selection = count == 1 && !mods.shift && !self.first_mouse_down && self.cell_is_selected(id, point);
+                if selection_ui::drag_decision(on_selection, self.globals.bool("RequireCmdForDraggingText"), mods.cmd) == selection_ui::PressKind::MaybeDrag {
+                    self.drag = Drag::Out(selection_ui::DragOut { pane: id, from: (x, y), win: mods.cmd, command: plain && !self.first_mouse_down });
+                    return self.redraw();
+                }
+                // Whether this press removes a selection: a single click off it (`MH:337-350`).
+                let removed_selection = count == 1 && !mods.shift && !append && self.panes.get(&id).is_some_and(|p| !p.screen.subs().is_empty());
+                let carried = self.commit_live_selection(id, append, count > 1);
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
                 // A character drag on a bidi row is visual: remember where it began on screen.
                 let anchor = (!smart && pick == input::Pick::Type(input::SelectionType::Simple)).then(|| self.visual_pos(id, rect, x, y));
                 if !smart {
-                    let ty = match pick {
-                        input::Pick::Type(t) => t,
-                        input::Pick::Smart => input::SelectionType::Semantic,
-                    };
-                    let mut sel = Selection::new(ty, point, side);
-                    if let Some(a) = anchor {
-                        sel.set_visual_anchor(a);
+                    match pick {
+                        input::Pick::Smart | input::Pick::Word => self.select_word_at(id, point),
+                        input::Pick::Line => self.select_line_at(id, point),
+                        input::Pick::Type(ty) => {
+                            let mut sel = Selection::new(ty, point, side);
+                            if let Some(a) = anchor {
+                                sel.set_visual_anchor(a);
+                            }
+                            let mode = if ty == input::SelectionType::Block { crate::seltext::Mode::Box } else { crate::seltext::Mode::Character };
+                            self.panes.get_mut(&id).unwrap().set_selection(Some(sel), mode);
+                        }
                     }
-                    self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(sel);
+                } else {
+                    self.smart_window(id, point);
                 }
-                if smart || pick == input::Pick::Type(input::SelectionType::Semantic) {
-                    self.clip_selection_to_dividers(id, point);
-                }
+                self.carry_subs(id, carried);
                 let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
                 let follow = mouse::press_follow_up(self.first_mouse_down, smart, count, alt_only);
                 if follow.copy_now {
                     // iTerm2 copies a selection as soon as it is made.
-                    self.copy_selection(id);
+                    self.copy_on_selection(id);
                 }
                 // A terminal selection ends any porthole's.
                 self.clear_porthole_selections();
                 // A Smart Selection is whole; moving the pointer does not reshape it. The
                 // click that activated the window never extends or copies one (`MH:778-782`).
-                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor } } else { Drag::None };
+                self.drag = if follow.drag_selects { Drag::Select { pane: id, anchor, scroll: None, scroll_off: false, command: (count == 1 && plain && !self.first_mouse_down).then_some(removed_selection) } } else { Drag::None };
                 self.alt_click = follow.alt_click.then_some((id, (col, row)));
                 self.key_click = (count == 1 && !mods.shift).then_some(id);
             }
@@ -5247,11 +5317,19 @@ impl App {
             }
             // Its press went (the tab moved away under it): the drag ends with nothing dropped.
             Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } | Drag::Window { .. } => self.end_tab_drag(),
-            Drag::Select { pane, .. } => {
-                let empty = self.panes.get(&pane).and_then(|p| p.screen.selection_text()).map_or(true, |s| s.is_empty());
-                if empty {
+            Drag::Select { pane, command, .. } => {
+                // The text is extracted once (an autoscroll drag over a big buffer is a big extraction)
+                // and only when a selection exists; the live one and the extras decide that cheaply.
+                let any = self.panes.get(&pane).is_some_and(|p| !p.screen.subs().is_empty());
+                let text = if any { self.selected_text(pane).filter(|s| !s.is_empty()) } else { None };
+                let empty = text.is_none();
+                // A Win-click with no drag (B11): the selection it held comes back as the live one.
+                let kept = self.panes.get(&pane).filter(|p| p.screen.live_is_empty()).map(|p| p.screen.extra_subs()).filter(|k| !k.is_empty());
+                if let Some(kept) = kept {
+                    self.set_subs(pane, kept);
+                } else if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
-                        p.screen.term_mut().selection = None;
+                        p.clear_selection();
                     }
                     if let Some((p, cell)) = alt_click.filter(|(p, _)| *p == pane) {
                         self.alt_click_moves_cursor(p, cell);
@@ -5265,11 +5343,15 @@ impl App {
                     // manager.
                     if key_click == Some(pane) && self.released_on_key_cursor(pane) {
                         self.open_password_manager(None, Some(pane));
+                    } else if let Some(removed) = command {
+                        // Last (`TV:7940-7962`): no fold, note, key cursor or path mark took the click.
+                        self.click_after_release(pane, removed);
                     }
-                } else {
+                } else if let Some(text) = text {
+                    self.selection_ended_with(pane, &text);
                     // iTerm2 copies a selection as soon as it is made.
-                    self.copy_selection(pane);
-                    self.chat_offer_selection(pane);
+                    self.copy_on_selection_with(pane, Some(&text));
+                    self.chat_offer_selection_with(pane, &text);
                 }
             }
             Drag::App { pane, button, clicks, at } => {
@@ -5291,6 +5373,19 @@ impl App {
                     if let Some(bytes) = mouse::encode(modes, ev) {
                         self.write_mouse_report(pane, &bytes);
                     }
+                }
+            }
+            // A click on the selection with no drag clears it (R3, `MH:692-700`); a drag that
+            // started cleared `Drag::Out` before it ran, so its release never gets here.
+            Drag::Out(d) => {
+                if selection_ui::release_clears_selection(selection_ui::PressKind::MaybeDrag, false) {
+                    if let Some(p) = self.panes.get_mut(&d.pane) {
+                        p.clear_selection();
+                    }
+                }
+                // The press did not remove a selection (it was on one), so the click selects the command too.
+                if d.command {
+                    self.click_after_release(d.pane, false);
                 }
             }
             // A scrollbar drag ends with the press; the view stays where the thumb left it.
@@ -5350,22 +5445,14 @@ impl App {
                 let (pane, grab) = (*pane, *grab);
                 self.scroll_drag_to(pane, grab, y);
             }
-            Drag::Select { pane, anchor } => {
-                let (pane, visual) = (*pane, anchor.is_some());
-                let Some(rect) = self.pane_rect(pane) else { return };
-                let (col, row, side) = self.cell_at(pane, rect, x, y);
-                let point = self.grid_point(pane, col, row);
-                let end = visual.then(|| self.visual_pos(pane, rect, x, y));
-                if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
-                    sel.update(point, side);
-                }
-                // On a bidi row the drag is the cells swept on screen (iTerm2's live visual range).
-                if let Some(b) = end {
-                    if let Some(p) = self.panes.get_mut(&pane) {
-                        p.screen.drag_visual_to(b);
-                    }
-                }
-                self.redraw();
+            Drag::Select { pane, .. } => {
+                let pane = *pane;
+                self.sel_scroll_update(pane, x, y);
+                self.select_drag_to(pane, x, y);
+            }
+            Drag::Out(d) => {
+                let d = *d;
+                self.drag_out_move(d, x, y);
             }
             Drag::Divider { path, axis, parent } => {
                 let ratio = match axis {
@@ -5565,6 +5652,8 @@ impl App {
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
                     scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
                 }
+                // The selected command's rows (None in a view and in the alternate screen).
+                let command_region = self.panes.get_mut(&id).and_then(|p| p.selected_region());
                 self.draw_badge(&mut frame, id, rect);
                 // The badge sizes itself in pixels against the default font and keeps the default
                 // face; the rows from here on are laid out in the pane's cell and take its face.
@@ -5580,7 +5669,8 @@ impl App {
                     let bg_alpha = if see_through { alphas.iter().find(|(a, _)| *a == id).map_or(1.0, |(_, a)| *a) } else { 1.0 };
                     let opaque_colors = see_through && self.store.get(&p.profile).is_some_and(|pr| pr.bool("Only The Default BG Color Uses Transparency"));
                     let dim = self.pane_dim(tab, id, &bview);
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused };
+                    let selections = p.screen.extra_subs();
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, dim, key_cursor: self.focused && id == tab.focused && p.at_password_prompt(), bg_alpha, opaque_colors, text_blink_on: self.blink.visible || !self.focused, selections: &selections, command_region, shade: command_region.map(|_| crate::cmdsel::shade_color(p.screen.palette.bg, self.globals.number("AlphaForDeselectedCommandShade").map_or(0.25, |a| (a as f32).clamp(0.0, 1.0)))), outline: crate::cmdsel::outline_colors(p.screen.palette.selection, p.screen.palette.bg) };
                     // The margins, one layer per pixel and the only margin painter: the pane's
                     // color, or an alternate screen's edge colors (`ExtendBackgroundColorIntoMargins`).
                     {
@@ -5677,6 +5767,9 @@ impl App {
                     let off = g.display_offset() as i32;
                     let folded = |row: usize| g[alacritty_terminal::index::Line(row as i32 - off)].fold() != 0;
                     let (cols, inner) = (g.columns(), self.text_rect(id, rect));
+                    // The selected command's rows on screen: a line-style mark inside it is not drawn (13m hand-over).
+                    let top = g.history_size().saturating_sub(g.display_offset());
+                    let view_region = command_region.filter(|(_, last)| *last >= top).map(|(first, last)| (first.saturating_sub(top), last - top));
                     let pad = self.margins().0;
                     let mut bars: Vec<(usize, crate::marks::MarkColor)> = Vec::new();
                     for (row, m) in p.screen.visible_marks() {
@@ -5686,7 +5779,7 @@ impl App {
                         let color = crate::marks::color(&m, self.globals.bool("ShowYellowMarkForJobStoppedBySignal"));
                         // A line-style mark draws a line, and no bar unless its row is folded.
                         if m.line_style {
-                            if !scene::line_mark_hidden(row, None) {
+                            if !scene::line_mark_hidden(row, view_region) {
                                 let line = scene::line_mark_color(scene::mark_color(color, &p.screen.palette, theme), p.screen.palette.bg);
                                 scene::line_mark(&mut frame, inner, row, cell, line, !m.command.is_empty(), cols);
                             }
@@ -5724,11 +5817,14 @@ impl App {
             // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar.
             let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none());
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
-                let count = if f.filter { "Filter".to_string() } else { f.results.label() };
+                let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();
-                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some() };
+                let restricted = self.panes.get_mut(&tab.focused).is_some_and(|p| find_ui::find_restricted(p.search_region().is_some(), f.filter, p.live.is_some()));
+                let palette_selection = self.panes.get(&tab.focused).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
+                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE), progress: f.progress, selection: palette_selection };
+                let first_quad = frame.quads.len();
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
-                self.find_bar_rect = frame.quads.last().map(|q| q.rect);
+                self.find_bar_rect = frame.quads.get(first_quad).map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
             }
         }
@@ -5758,6 +5854,8 @@ impl App {
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             overlay_drawn.push((mouse::Overlay::Toast, scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell)));
         }
+        // The first-selection notice of a clicked command (13s Task 9), over the panes and the toast.
+        overlay_drawn.extend(self.draw_command_info(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell).map(|r| (mouse::Overlay::CommandInfo, r)));
         // The tab tooltip over everything but the banner, under the pointer (a pointer's
         // height below it).
         if let Some(text) = self.tab_tip_shown().and_then(|i| self.tab_tip_text(i)) {
@@ -6268,6 +6366,7 @@ impl ApplicationHandler<UserEvent> for App {
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let cursor_due = self.tick_cursor();
+        let sel_scroll_due = self.sel_scroll_tick();
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
@@ -6280,7 +6379,8 @@ impl ApplicationHandler<UserEvent> for App {
         let bindings_due = self.tick_bindings();
         let cmdinfo_due = self.cmdinfo_tick();
         let pathnav_due = self.pathnav_tick();
-        let wake = [bindings_due, cmdinfo_due, pathnav_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let command_due = self.command_click_tick();
+        let wake = [bindings_due, cmdinfo_due, pathnav_due, command_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -6527,6 +6627,8 @@ impl ApplicationHandler<UserEvent> for App {
                     self.tmux_drag_cancel();
                     // A title bar drag ends with nothing moved.
                     self.title_drag_lost(pane_move_ui::DragLost::FocusLost);
+                    // A command click waiting out the double-click time does not outlive the focus (B7).
+                    self.command_click = None;
                     // So does a press on the tab bar (a held close button lets go).
                     if self.tab_press.take().is_some() {
                         self.redraw();

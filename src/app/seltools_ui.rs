@@ -1,7 +1,7 @@
 //! The selection tools in the window: Replace Selection, Clear to Start of Selection,
 //! Selection Respects Soft Boundaries, and the selection endpoint moves.
 
-use alacritty_terminal::index::{Line, Point};
+use alacritty_terminal::index::Point;
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 
@@ -16,18 +16,29 @@ pub(super) const CHECKED: &[&str] =
 
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
-    fn copy_with_styles(&mut self, id: PaneId) {
+    pub(super) fn copy_with_styles(&mut self, id: PaneId) {
+        self.copy_with_styles_with(id, None);
+    }
+
+    /// `copy_with_styles` with the text already extracted, when the caller has it.
+    pub(super) fn copy_with_styles_with(&mut self, id: PaneId, text: Option<&str>) {
         if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::Styles) {
             return;
         }
-        let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
+        let Some(text) = text.map(str::to_string).or_else(|| self.panes.get(&id).and_then(|p| p.screen.selection_text())) else { return };
+        // An empty copy never clears the clipboard with DisallowCopyEmptyString (`PTYTextView.m:4189-4193`).
+        if !crate::seltext::copy_decision(&text, self.globals.bool("DisallowCopyEmptyString")) {
+            return;
+        }
+        // The styled copy reaches Paste History as the plain one does (`PTYTextView.m:4210`).
+        self.remember_paste(&text);
+        let Some(p) = self.panes.get(&id) else { return };
         let screen = &p.screen;
-        let Some(text) = screen.selection_text() else { return };
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
         let rows = p.styled_rows();
-        let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg));
-        let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt);
+        let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
+        let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals));
         if let Err(e) = crate::winclip::set(&text, &html, &rtf) {
             self.banners.set("clipboard", format!("Copy failed: {e}"));
         }
@@ -41,7 +52,7 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
         let screen = &p.screen;
-        if what == crate::print::What::Selection && screen.term().selection.is_none() {
+        if what == crate::print::What::Selection && screen.selection_text().is_none() {
             unsafe { MessageBeep(0) };
             return;
         }
@@ -102,7 +113,7 @@ impl App {
         }
     }
 
-    fn selection_pos(&self, id: PaneId) -> Option<(Pos, Pos)> {
+    pub(super) fn selection_pos(&self, id: PaneId) -> Option<(Pos, Pos)> {
         let p = self.panes.get(&id)?;
         let term = p.screen.term();
         let r = term.selection.as_ref()?.to_range(term)?;
@@ -113,7 +124,7 @@ impl App {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let mut sel = Selection::new(SelectionType::Simple, to_point(&p.screen, a), Side::Left);
         sel.update(to_point(&p.screen, b), Side::Right);
-        p.screen.term_mut().selection = Some(sel);
+        p.set_selection(Some(sel), crate::seltext::Mode::Character);
     }
 
     /// The selection tools' menu commands. Returns false for other selectors.
@@ -212,29 +223,6 @@ impl App {
         }
     }
 
-    /// With Selection Respects Soft Boundaries on, a one-row selection made by a double
-    /// click or Smart Selection stops at tmux and vim pane dividers.
-    pub(super) fn clip_selection_to_dividers(&mut self, id: PaneId, click: Point) {
-        if !self.globals.bool("Selection Respects Soft Boundaries") {
-            return;
-        }
-        let Some((a, b)) = self.selection_pos(id) else { return };
-        if a.row != b.row {
-            return;
-        }
-        let Some(p) = self.panes.get(&id) else { return };
-        let grid = p.screen.term().grid();
-        let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
-        let line = to_point(&p.screen, a).line.0;
-        let (from, to) = ((line - seltools::DIVIDER_RUN as i32).max(top), (line + seltools::DIVIDER_RUN as i32).min(bottom));
-        let rows: Vec<Vec<char>> = (from..=to).map(|l| (0..grid.columns()).map(|c| grid[Line(l)][Column(c)].c).collect()).collect();
-        let dividers = seltools::divider_columns(&rows, (line - from) as usize);
-        let (lo, hi) = seltools::clip_to_dividers(a.col, b.col, click.column.0, &dividers);
-        if (lo, hi) != (a.col, b.col) && lo <= hi {
-            self.set_simple_selection(id, Pos { row: a.row, col: lo }, Pos { row: a.row, col: hi });
-        }
-    }
-
     /// Key actions 45 to 48: one end of the selection moves `count` cells.
     pub(super) fn move_selection_end(&mut self, id: PaneId, action: i64, count: &str) {
         let n = count.trim().parse::<usize>().unwrap_or(1);
@@ -250,6 +238,6 @@ impl App {
         };
         let (a, b) = seltools::move_endpoint(sel, which, left, n, grid.columns(), last_row);
         self.set_simple_selection(id, a, b);
-        self.copy_selection(id);
+        self.copy_on_selection(id);
     }
 }

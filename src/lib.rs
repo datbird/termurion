@@ -18,6 +18,8 @@ pub mod desktops;
 #[cfg(windows)]
 pub mod display_watch;
 #[cfg(windows)]
+pub mod dragtext_win;
+#[cfg(windows)]
 pub mod firstmouse_win;
 pub mod dvr;
 pub mod replay;
@@ -55,6 +57,9 @@ pub mod tab_menu;
 pub mod tab_position;
 pub mod status_tool;
 pub mod seltools;
+pub mod dll;
+pub mod seltext;
+pub mod wordsel;
 pub mod netpath;
 pub mod sh_context;
 pub mod copymode;
@@ -68,6 +73,7 @@ pub mod kitty;
 pub mod stamps;
 pub mod cmdbuttons;
 pub mod cmdinfo;
+pub mod cmdsel;
 pub mod pathnav;
 pub mod session_log;
 pub mod archive;

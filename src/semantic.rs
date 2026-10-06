@@ -1210,6 +1210,56 @@ mod tests {
         assert_eq!(url_like(&b, &a, true), None);
     }
 
+    /// R3, 02:839, merged onto 13r's guard (S1): a colon string is a URL only with one of the
+    /// schemes 13r allows (B1), whatever the slash rule says; a bare host with a port or a line
+    /// number is never guessed (13s's own port branch is gone with `url_in`).
+    #[test]
+    fn colon_strings_need_the_slash_too() {
+        for slash in [true, false] {
+            for text in ["see exam|ple.com:8080 now", "at main|.py:42", "x ex|ample.org:443", "see exam|ple.com:8080/x now"] {
+                let (b, a) = click(text);
+                assert_eq!(url_like(&b, &a, slash), None, "{text} {slash}");
+            }
+            let (b, a) = click("see https://exam|ple.com:8080/x now");
+            assert_eq!(url_like(&b, &a, slash).as_deref(), Some("https://example.com:8080/x"));
+        }
+    }
+
+    /// Merge seam (S1): 13r's `url_guess` is the one URL guess; semantic.rs keeps only thin
+    /// wrappers (no second scanner, no second character set).
+    #[test]
+    fn the_url_guess_is_one_copy() {
+        let code = include_str!("semantic.rs");
+        let code = &code[..code.find("#[cfg(test)]\nmod tests").unwrap()];
+        for gone in ["fn url_in(", "fn url_char(", "require_slash: bool,\n"] {
+            assert!(!code.contains(gone), "{gone}");
+        }
+        assert!(code.contains("crate::url_guess::looks_like_url(s, require_slash, &crate::url_guess::CharSet::default())"));
+        assert!(code.contains("crate::url_guess::guess(before, after, prefs)"));
+    }
+
+    #[test]
+    fn looks_like_url_follows_iterm2() {
+        for (s, want) in [("example.com", false), ("example.com/", true), ("foo/bar", true), ("/usr/bin", false), ("", false), ("a b", false)] {
+            assert_eq!(looks_like_url(s, true), want, "require_slash true: {s:?}");
+        }
+        for (s, want) in [("example.com", true), ("10.0.0.1", true), ("256.1.1.1", true), ("localhost", false), ("-a.com", false), ("a b", false), ("/usr/bin", false), ("foo/bar", true)] {
+            assert_eq!(looks_like_url(s, false), want, "require_slash false: {s:?}");
+        }
+    }
+
+    #[test]
+    fn url_guess_needs_a_slash() {
+        let guess = |text: &str, slash: bool| {
+            let (b, a) = click(text);
+            url_like(&b, &a, slash)
+        };
+        assert_eq!(guess("exam|ple.com", true), None);
+        assert_eq!(guess("exam|ple.com/x", true).as_deref(), Some("https://example.com/x"));
+        assert_eq!(guess("exam|ple.com", false).as_deref(), Some("https://example.com"));
+        assert_eq!(guess("go https://exa|mple.com", true).as_deref(), Some("https://example.com"));
+    }
+
     #[test]
     fn path_uses_filename_parts() {
         let d = dir("fnparts", &["x.txt"]);

@@ -66,7 +66,7 @@ impl App {
         }
         let (a, b) = range.unwrap_or((Point::new(cursor.line, Column(0)), Point::new(cursor.line, Column(cols - 1))));
         if let Some(p) = self.panes.get_mut(&id) {
-            p.screen.term_mut().selection = None;
+            p.clear_selection();
         }
         self.add_and_open_note(id, a, b, event_loop);
     }

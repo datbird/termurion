@@ -3,6 +3,19 @@
 
 use crate::screen::Screen;
 
+/// The cells the text builders below have read on this thread: the work counter the bound tests
+/// watch (a huge wrapped line must cost the same as a short one).
+#[cfg(test)]
+pub(crate) mod work {
+    thread_local!(static CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+    pub(crate) fn add(n: usize) {
+        CELLS.with(|c| c.set(c.get() + n));
+    }
+    pub(crate) fn take() -> usize {
+        CELLS.with(|c| c.replace(0))
+    }
+}
+
 /// iTerm2's `findMode_iTerm` values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -116,7 +129,7 @@ pub fn logical_lines(screen: &Screen) -> Vec<Logical> {
     logical_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
 }
 
-fn wraps(screen: &Screen, line: i32) -> bool {
+pub(crate) fn wraps(screen: &Screen, line: i32) -> bool {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     let grid = screen.term().grid();
@@ -159,6 +172,33 @@ pub fn logical_lines_around(screen: &Screen, row: usize, radius: usize) -> (Vec<
     (logical_between(screen, first, last), above)
 }
 
+/// The logical line holding buffer row `row`, built from at most `up` cells of rows above it and
+/// `down` cells of rows below it (a wrapped line of any length costs no more than that), or only
+/// that row's cells inside the columns `window`. None past the buffer.
+pub fn logical_around(screen: &Screen, row: usize, window: Option<(usize, usize)>, up: usize, down: usize) -> Option<Logical> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    let line = row as i32 + top;
+    if line < top || line > bottom {
+        return None;
+    }
+    if window.is_some() {
+        let r = rows_text(screen, line, line, window).into_iter().next()?;
+        return Some(Logical { text: r.text, cells: r.cells });
+    }
+    let cols = grid.columns().max(1);
+    let (rows_up, rows_down) = ((up / cols + 1) as i32, (down / cols + 1) as i32);
+    let (mut first, mut last) = (line, line);
+    while first > top && line - first < rows_up && wraps(screen, first - 1) {
+        first -= 1;
+    }
+    while last < bottom && last - line < rows_down && wraps(screen, last) {
+        last += 1;
+    }
+    logical_between(screen, first, last).into_iter().next()
+}
+
 /// The text of every logical line, oldest first, without the cell map (for Filter).
 pub fn logical_texts(screen: &Screen) -> Vec<String> {
     use alacritty_terminal::grid::Dimensions;
@@ -166,17 +206,19 @@ pub fn logical_texts(screen: &Screen) -> Vec<String> {
     texts_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
 }
 
-/// The logical lines on screen, widened to whole lines.
-pub fn visible_lines(screen: &Screen) -> Vec<Logical> {
+/// The logical lines on screen, widened over the lines that run past it by at most `reach` cells
+/// each way (a visible line can be a whole scrollback of wrapped rows, P10).
+pub fn visible_lines(screen: &Screen, reach: usize) -> Vec<Logical> {
     use alacritty_terminal::grid::Dimensions;
     let grid = screen.term().grid();
     let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
-    let mut a = -(grid.display_offset() as i32);
-    let mut b = (a + grid.screen_lines() as i32 - 1).min(bottom);
-    while a > top && wraps(screen, a - 1) {
+    let (a0, b0) = (-(grid.display_offset() as i32), (-(grid.display_offset() as i32) + grid.screen_lines() as i32 - 1).min(bottom));
+    let room = (reach / grid.columns().max(1) + 1) as i32;
+    let (mut a, mut b) = (a0, b0);
+    while a > top && a0 - a < room && wraps(screen, a - 1) {
         a -= 1;
     }
-    while b < bottom && wraps(screen, b) {
+    while b < bottom && b - b0 < room && wraps(screen, b) {
         b += 1;
     }
     logical_between(screen, a, b)
@@ -192,6 +234,11 @@ pub fn visible_rows(screen: &Screen) -> std::ops::RangeInclusive<usize> {
 
 /// The text of the logical lines over buffer rows `first..=last`, widened to whole lines.
 pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<String> {
+    lines_over(screen, first, last).into_iter().map(|(text, _, _)| text).collect()
+}
+
+/// `logical_texts_over` with each line's first and last grid line.
+pub(crate) fn lines_over(screen: &Screen, first: usize, last: usize) -> Vec<(String, i32, i32)> {
     use alacritty_terminal::grid::Dimensions;
     let grid = screen.term().grid();
     let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
@@ -203,7 +250,7 @@ pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<Str
     while b < bottom && wraps(screen, b) {
         b += 1;
     }
-    texts_between(screen, a, b)
+    lines_between(screen, a, b)
 }
 
 /// One cell's text as it is shown: its characters in the profile's normalization form, so a
@@ -222,6 +269,12 @@ fn push_cell_text(out: &mut String, screen: &Screen, cell: &alacritty_terminal::
 }
 
 fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
+    lines_between(screen, top, bottom).into_iter().map(|(text, _, _)| text).collect()
+}
+
+/// The text of the logical lines over grid lines `top..=bottom` (which must start a logical
+/// line), each with its first and last grid line.
+pub(crate) fn lines_between(screen: &Screen, top: i32, bottom: i32) -> Vec<(String, i32, i32)> {
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::cell::Flags;
@@ -229,6 +282,7 @@ fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
     let cols = grid.columns();
     let mut out = Vec::new();
     let mut cur = String::new();
+    let mut first = top;
     for l in top..=bottom {
         let row = &grid[Line(l)];
         let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
@@ -242,10 +296,32 @@ fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
         if !wrapped || l == bottom {
             let kept = cur.trim_end_matches(' ').len();
             cur.truncate(kept);
-            out.push(std::mem::take(&mut cur));
+            out.push((std::mem::take(&mut cur), first, l));
+            first = l + 1;
         }
     }
     out
+}
+
+/// Where a chunk that starts at grid line `start` (a logical line's first) ends: the last row
+/// of the `max_lines`th logical line, or of the first line that takes the chunk past
+/// `max_cells` cells, or `end`. A line is never split, so a chunk can pass `max_cells` by one.
+pub(crate) fn chunk_end(screen: &Screen, start: i32, end: i32, max_lines: usize, max_cells: usize) -> i32 {
+    use alacritty_terminal::grid::Dimensions;
+    let cols = screen.term().columns();
+    let (mut l, mut lines, mut cells) = (start, 0usize, 0usize);
+    loop {
+        while l < end && wraps(screen, l) {
+            l += 1;
+            cells += cols;
+        }
+        lines += 1;
+        cells += cols;
+        if l >= end || lines >= max_lines || cells >= max_cells {
+            return l.min(end);
+        }
+        l += 1;
+    }
 }
 
 /// Logical lines over grid lines `top..=bottom`, which must start a logical line.
@@ -263,6 +339,8 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
         let r = (l + history) as usize;
         let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
         let end = if wrapped { cols } else { (0..cols).rev().find(|&c| row[Column(c)].c != ' ').map_or(0, |c| c + 1) };
+        #[cfg(test)]
+        work::add(end);
         for c in 0..end {
             let cell = &row[Column(c)];
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
@@ -307,6 +385,8 @@ pub fn rows_text(screen: &Screen, first: i32, last: i32, window: Option<(usize, 
         let wraps = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
         let end = if wraps { to + 1 } else { (from..=to).rev().find(|&c| row[Column(c)].c != ' ').map_or(from, |c| c + 1) };
         let mut r = RowText { text: String::new(), cells: Vec::new(), wraps };
+        #[cfg(test)]
+        work::add(end.saturating_sub(from));
         for c in from..end {
             let cell = &row[Column(c)];
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
@@ -335,17 +415,50 @@ pub fn find_all(screen: &Screen, pattern: &str) -> Result<Vec<Match>, String> {
     Ok(find_hits(screen, pattern)?.into_iter().map(|(m, _, _)| m).collect())
 }
 
+/// `find_all` over buffer rows `rows` (first, last inclusive) only, the selected command's
+/// (`updateSearchRange`, `PS:21819-21834`): a match counts when it starts on one of them. None
+/// searches the whole buffer.
+pub fn find_all_in(screen: &Screen, pattern: &str, rows: Option<(usize, usize)>) -> Result<Vec<Match>, String> {
+    Ok(find_hits_in(screen, pattern, rows)?.into_iter().map(|(m, _, _)| m).collect())
+}
+
 /// Like `find_all`, with each match's logical line and its byte range there.
 pub fn find_hits(screen: &Screen, pattern: &str) -> Result<Vec<(Match, String, std::ops::Range<usize>)>, String> {
+    find_hits_in(screen, pattern, None)
+}
+
+/// `find_hits` restricted to the matches that start on buffer rows `rows`; only the logical lines
+/// over those rows are read.
+pub fn find_hits_in(screen: &Screen, pattern: &str, rows: Option<(usize, usize)>) -> Result<Vec<(Match, String, std::ops::Range<usize>)>, String> {
+    use alacritty_terminal::grid::Dimensions;
     if pattern.is_empty() {
         return Ok(Vec::new());
     }
     let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for line in logical_lines(screen) {
+    let lines = match rows {
+        None => logical_lines(screen),
+        Some((first, last)) => {
+            let grid = screen.term().grid();
+            let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+            let (a, b) = ((first as i32 + top).clamp(top, bottom), (last as i32 + top).clamp(top, bottom));
+            let (mut a, mut b) = (a, b);
+            while a > top && wraps(screen, a - 1) {
+                a -= 1;
+            }
+            while b < bottom && wraps(screen, b) {
+                b += 1;
+            }
+            logical_between(screen, a, b)
+        }
+    };
+    for line in lines {
         let found: Vec<_> = re.find_iter(&line.text).filter(|m| !m.is_empty()).map(|m| m.range()).collect();
         for r in found {
             let m = Match { start: line.pos_before(r.start), end: line.pos_before(r.end - 1) };
+            if rows.is_some_and(|(first, last)| m.start.row < first || m.start.row > last) {
+                continue;
+            }
             out.push((m, line.text.clone(), r));
         }
     }
@@ -394,11 +507,12 @@ impl Results {
         self.current = anchor.or(was).and_then(|start| self.matches.iter().position(|m| m.start == start));
     }
 
-    /// "N", or "i/N" with a current match, i counted from the bottom.
-    pub fn label(&self) -> String {
+    /// "N", or "i/N" with a current match, i counted from the bottom with `swap` on (iTerm2's
+    /// default) and from the top with it off (`iTermSearchFieldCell.m:299`).
+    pub fn label(&self, swap: bool) -> String {
         let n = self.matches.len();
         match self.current {
-            Some(i) if i < n => format!("{}/{n}", n - i),
+            Some(i) if i < n => format!("{}/{n}", if swap { n - i } else { i + 1 }),
             _ => n.to_string(),
         }
     }
@@ -406,6 +520,20 @@ impl Results {
 
 #[cfg(test)]
 mod tests {
+    /// A chunk ends on a logical line's last row, at the line budget or the cell budget (P7).
+    #[test]
+    fn chunks_end_on_whole_lines() {
+        let mut s = Screen::with_scrollback(10, 4, 100);
+        // Rows 0 to 2 are one logical line (25 characters), then "a" and "b".
+        s.feed(format!("{}\r\na\r\nb", "x".repeat(25)).as_bytes());
+        use alacritty_terminal::grid::Dimensions;
+        let top = -(s.term().grid().history_size() as i32);
+        assert_eq!(chunk_end(&s, top, top + 4, 1, usize::MAX), top + 2, "the budget in lines");
+        assert_eq!(chunk_end(&s, top, top + 4, 2, usize::MAX), top + 3);
+        assert_eq!(chunk_end(&s, top, top + 4, usize::MAX, 10), top + 2, "a line is never split by the cell budget");
+        assert_eq!(chunk_end(&s, top, top + 4, usize::MAX, usize::MAX), top + 4, "no budget reads to the end");
+    }
+
     use super::*;
 
     #[test]
@@ -525,15 +653,25 @@ mod tests {
         assert_eq!(r.current, Some(0));
     }
 
+    /// `iTermSearchFieldCell.m:299`: with the swap on i counts from the bottom, off from the top.
+    #[test]
+    fn label_follows_swap() {
+        let m = |r| Match { start: at_pos(r, 0), end: at_pos(r, 1) };
+        let r = Results { matches: (0..5).map(m).collect(), current: Some(1) };
+        assert_eq!(r.label(true), "4/5");
+        assert_eq!(r.label(false), "2/5");
+        assert_eq!(Results::default().label(false), "0");
+    }
+
     #[test]
     fn the_count_counts_from_the_bottom() {
         let mut r = three();
-        assert_eq!(r.label(), "3");
+        assert_eq!(r.label(true), "3");
         r.current = Some(2);
-        assert_eq!(r.label(), "1/3");
+        assert_eq!(r.label(true), "1/3");
         r.current = Some(0);
-        assert_eq!(r.label(), "3/3");
-        assert_eq!(Results::default().label(), "0");
+        assert_eq!(r.label(true), "3/3");
+        assert_eq!(Results::default().label(true), "0");
     }
 
     #[test]
@@ -586,7 +724,7 @@ mod tests {
         // Scrollback is full: 3 lines dropped off the top, so every row moved up by 3.
         r.update(vec![m(2), m(3), m(4), m(8)], Some(at_pos(3, 0)));
         assert_eq!(r.current, Some(1));
-        assert_eq!(r.label(), "3/4");
+        assert_eq!(r.label(true), "3/4");
     }
 
     #[test]

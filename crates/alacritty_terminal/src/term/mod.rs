@@ -390,6 +390,10 @@ pub struct Term<T> {
     /// Tandem patch: how many times RIS has run, for a holder that must react to a reset.
     pub resets: u64,
 
+    /// Tandem patch: how many times the scrollback was cleared (`ClearMode::Saved`), for a
+    /// holder of row numbers that a clear shifts.
+    pub history_clears: u64,
+
     /// Tandem patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
     pub tabs_wrap: bool,
 
@@ -555,6 +559,7 @@ impl<T> Term<T> {
             focus_reporting_allowed: true,
             resize_reports: false,
             resets: 0,
+            history_clears: 0,
             tabs_wrap: false,
             max_url_len: 2_097_152,
             alt_scrollback: true,
@@ -654,6 +659,11 @@ impl<T> Term<T> {
 
         // Damage everything on config updates.
         self.mark_fully_damaged();
+    }
+
+    /// Tandem patch: whether a tab stop is set at `column`.
+    pub fn is_tab_stop(&self, column: Column) -> bool {
+        self.tabs[column]
     }
 
     /// Convert the active selection to a String.
@@ -2329,6 +2339,7 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::Saved if self.history_size() > 0 => {
                 self.grid.clear_history();
+                self.history_clears += 1;
 
                 self.vi_mode_cursor.point.line =
                     self.vi_mode_cursor.point.line.grid_clamp(self, Boundary::Cursor);

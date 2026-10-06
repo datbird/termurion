@@ -5,5 +5,7 @@
 
 fn main() {
     #[cfg(windows)]
+    tandem::dll::harden_process();
+    #[cfg(windows)]
     std::process::exit(tandem::util_console::real_main());
 }

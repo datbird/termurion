@@ -4,6 +4,7 @@
 
 #[cfg(windows)]
 fn main() {
+    tandem::dll::harden_process();
     use tandem::conpty::{self, Source, dev_vendor_dir};
 
     let filter = std::env::args().nth(1).unwrap_or_default();

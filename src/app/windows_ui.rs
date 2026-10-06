@@ -21,6 +21,10 @@ pub(super) struct WinSlot {
     hover_hand: bool,
     /// What `update_hover` last computed for: pane, cell and the two hover keys (P2).
     hover_key: Option<(PaneId, i32, usize, bool, bool)>,
+    /// A command click waiting out the double-click time: when, which pane, the clicked buffer row (13s Task 9).
+    command_click: Option<(Instant, PaneId, usize)>,
+    /// The first-selection notice on show (13s Task 9).
+    command_info: Option<selection_ui::CommandInfo>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
     /// The title bars drawn last frame (pane, geometry), for clicks.
@@ -163,6 +167,8 @@ impl WinSlot {
             hover: None,
             hover_hand: false,
             hover_key: None,
+            command_click: None,
+            command_info: None,
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),
@@ -286,6 +292,8 @@ impl App {
         swap(&mut self.hover, &mut s.hover);
         swap(&mut self.hover_hand, &mut s.hover_hand);
         swap(&mut self.hover_key, &mut s.hover_key);
+        swap(&mut self.command_click, &mut s.command_click);
+        swap(&mut self.command_info, &mut s.command_info);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
         swap(&mut self.title_bars, &mut s.title_bars);
@@ -973,6 +981,8 @@ impl WinSlot {
             hover: None,
             hover_hand: false,
             hover_key: None,
+            command_click: None,
+            command_info: None,
             find_bar_rect: None,
             find_mode_rect: None,
             title_bars: Vec::new(),

@@ -771,6 +771,19 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
+            // The two word rows are single-line text fields stored as typed, drawn
+            // with no label of their own: the mode popup above them carries the title (`XIB:8010`).
+            // Other String rows stay as they were (drawn elsewhere or on the Advanced pane).
+            Kind::String if matches!(s.key.as_str(), "WordCharacters" | "WordSelectionRegexPattern") => {
+                let mut text = g.string(&s.key);
+                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(220.0));
+                // Stored as it is typed: the buffer is rebuilt from the globals every frame.
+                if r.changed() && text != g.string(&s.key) {
+                    g.set(&s.key, Value::String(text));
+                    changed = true;
+                }
+                Some(r.rect)
+            }
             _ => None,
         };
         if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
@@ -1255,6 +1268,16 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
     (changed, ended)
 }
 
+/// Whether a row shows now: the word list only in mode 0 and the word regular expression only
+/// in mode 1 (iTerm2 hides the other text field); every other row always.
+pub fn row_visible(g: &Globals, key: &str) -> bool {
+    match key {
+        "WordCharacters" => g.int("WordSelectionMode") != 1,
+        "WordSelectionRegexPattern" => g.int("WordSelectionMode") == 1,
+        _ => true,
+    }
+}
+
 /// Rows a schema page never draws: the Advanced rows that need Apple Intelligence, which is
 /// not available on Windows (ruling 7). Ruling 12e-4 also keeps them out of the schema.
 pub fn row_hidden(key: &str) -> bool {
@@ -1291,6 +1314,9 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
         for section in sections {
             ui.strong(section);
             for s in rows.iter().copied().filter(|s| s.section == section) {
+                if !row_visible(g, &s.key) {
+                    continue;
+                }
                 if s.key == "CustomScriptsFolder" {
                     // The typed text is saved and applied when editing ends, not per key.
                     let (_, ended) = custom_scripts_folder_row(ui, g, &home);
@@ -2225,6 +2251,131 @@ mod tests {
             };
             assert_eq!(drawn.kind, want, "{key}");
         }
+    }
+
+    #[test]
+    fn selection_rows_follow_iterm2() {
+        let word_regex = "-|\\+|\\\\|~|_";
+        let click_help = "When this is enabled, you can click on a command or its output to restrict Find and Filter to its output. The selected command gets highlighted and other commands get dimmed. This requires shell integration to be installed.";
+        let rows: [(&str, Kind, Value, &str, &str); 8] = [
+            ("CopySelection", Kind::Bool, Value::Boolean(true), "Copy to clipboard on selection", "Copy to clipboard on selection"),
+            ("CopyLastNewline", Kind::Bool, Value::Boolean(false), "Copied text includes trailing newline", "Copied text includes trailing newline"),
+            (
+                "WordSelectionMode",
+                Kind::Enum,
+                Value::Integer(0),
+                "Characters considered part of a word",
+                "How double-click word selection decides what a word is: a list of extra characters, or a regular expression.",
+            ),
+            ("WordCharacters", Kind::String, Value::String("/-+\\~_.".into()), "Characters considered part of a word", "Characters considered part of a word"),
+            ("WordSelectionRegexPattern", Kind::String, Value::String(word_regex.into()), "Characters considered part of a word", "Characters considered part of a word"),
+            (
+                "TripleClickSelectsFullWrappedLines",
+                Kind::Bool,
+                Value::Boolean(true),
+                "Triple-click selects entire wrapped lines",
+                "If disabled, then triple click selects one line as it appears onscreen.",
+            ),
+            ("ClickToSelectCommand", Kind::Bool, Value::Boolean(true), "Clicking on a command selects it to restrict Find and Filter", click_help),
+            (
+                "WrapDroppedFilenamesInQuotesWhenPasting",
+                Kind::Bool,
+                Value::Boolean(false),
+                "When pasting a dropped filename, wrap it in double quotes",
+                "When pasting a dropped filename, wrap it in double quotes",
+            ),
+        ];
+        for (key, kind, default, label, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("General", "Selection"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help), "{key}");
+        }
+        let mode = schema::find_global("WordSelectionMode").unwrap();
+        let choices: Vec<(Value, &str)> = mode.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, vec![(Value::Integer(0), "List of Characters"), (Value::Integer(1), "Regular Expression")]);
+        // iTerm2's pane order: copy, trailing newline, clipboard access, the word rows, triple
+        // click, command click, dropped names.
+        let order: Vec<&str> = page_rows("General").iter().filter(|s| s.section == "Selection").map(|s| s.key.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "CopySelection",
+                "CopyLastNewline",
+                "AllowClipboardAccess",
+                "WordSelectionMode",
+                "WordCharacters",
+                "WordSelectionRegexPattern",
+                "TripleClickSelectsFullWrappedLines",
+                "ClickToSelectCommand",
+                "WrapDroppedFilenamesInQuotesWhenPasting"
+            ]
+        );
+    }
+
+    #[test]
+    fn find_rows_follow_iterm2() {
+        use crate::advanced_pane::{self, RowKind};
+        let url_regex = r#"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\-]+(\.[a-z0-9A-Z\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\.\-_+%~?&amp;@=#\(\)]*)?"#;
+        let fraction = "Fraction of character\u{2019}s width on its right side that can be used to select the character to its right.";
+        let swap = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Tandem's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app.";
+        let sync = "Synchronize search queries across windows and applications.\nNormally, when you enter a search query in a Find field all find fields in all applications get updated to hold the same value. This is utter nonsense, and can be disabled by setting this preference to No.";
+        let bg = "Exclude the default background color when text is copied with color and font style?\nWhen off, the default background color will be left unset. Non-default background colors will remain.";
+        let empty = "Disallow copying empty string to pasteboard.\nIf enabled, selecting an empty string (or all whitespace if trimming is enabled) will not erase the contents of the pasteboard.";
+        let nobg = "Exclude all background colors when text is copied with color and font style?\nThis includes both the default background color and non-default background colors.";
+        let b = Value::Boolean;
+        let f = Value::Float;
+        let rows: Vec<(&str, &str, Kind, Value, &str)> = vec![
+            ("FractionOfCharacterSelectingNextNeighbor", "Mouse", Kind::Float, f(0.35), fraction),
+            ("UseDoubleClickDelayForCommandSelection", "Mouse", Kind::Bool, b(false), "Wait to be sure it's not a double click before selecting a command"),
+            ("FindUrlsRegex", "Terminal", Kind::String, Value::String(url_regex.into()), "Regular expression for \u{201c}Find URLs\u{201d} command."),
+            ("FindURLsRespectsSoftBoundaries", "Terminal", Kind::Bool, b(true), "When using \u{201c}Find URLs\u{201d}, extend results across soft boundaries like tmux pane dividers."),
+            ("RequireCmdForDraggingText", "Terminal", Kind::Bool, b(false), "To drag images or selected text, you must hold Win. This prevents accidental drags."),
+            ("FindDelaySeconds", "General", Kind::Float, f(1.0), "Time to wait before performing Find action on 1- or 2- character queries."),
+            ("SwapFindNextPrevious", "General", Kind::Bool, b(true), swap),
+            ("SynchronizeQueryWithFindPasteboard", "General", Kind::Bool, b(true), sync),
+            ("SmartSelectionRadius", "General", Kind::Int, Value::Integer(2), "Maximum number of lines before and after the click location to include in smart selection."),
+            ("AlphaForDeselectedCommandShade", "Drawing", Kind::Float, f(0.25), "Alpha value for shade that covers areas outside the currently selected command."),
+            ("TrimWhitespaceOnCopy", "Pasteboard", Kind::Bool, b(true), "Trim whitespace when copying to pasteboard."),
+            ("CopyWithStylesByDefault", "Pasteboard", Kind::Bool, b(false), "Copy to pasteboard on selection includes color and font style."),
+            ("CopyBackgroundColor", "Pasteboard", Kind::Bool, b(true), bg),
+            ("DisallowCopyEmptyString", "Pasteboard", Kind::Bool, b(false), empty),
+            ("TypingClearsSelection", "Pasteboard", Kind::Bool, b(true), "Pressing a key will remove the selection."),
+            ("ExcludeBackgroundColorsFromCopiedStyle", "Pasteboard", Kind::Bool, b(false), nobg),
+            ("AutoSearch", "Experimental Features", Kind::Bool, b(false), "Automatically search for selected text after making a selection?"),
+        ];
+        // RequireSlashInURLGuess sits in 13r's Semantic History table since the merge (S1, S8).
+        assert_eq!(rows.len(), 17);
+        let pane = advanced_pane::rows();
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            let shown = pane.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} is not on the Advanced pane"));
+            let want = match row.kind {
+                Kind::Float => RowKind::Float,
+                Kind::Int => RowKind::Int,
+                Kind::String => RowKind::Text,
+                _ => RowKind::Bool,
+            };
+            assert_eq!(shown.kind, want, "{key}");
+        }
+    }
+
+    #[test]
+    fn word_rows_follow_the_mode() {
+        let mut g = Globals::empty(std::path::Path::new("word-rows-test.toml"));
+        assert!(row_visible(&g, "WordCharacters"));
+        assert!(!row_visible(&g, "WordSelectionRegexPattern"));
+        assert!(row_visible(&g, "FindDelaySeconds"));
+        g.set("WordSelectionMode", Value::Integer(1));
+        assert!(!row_visible(&g, "WordCharacters"));
+        assert!(row_visible(&g, "WordSelectionRegexPattern"));
+        assert!(row_visible(&g, "FindDelaySeconds"));
     }
 
     #[test]
@@ -3456,6 +3607,39 @@ mod tests {
         }
     }
 
+    /// Task 1 fix 1: the word field is rewritten from the globals every frame, so what is
+    /// typed must be stored as it is typed, not only on losing focus.
+    #[test]
+    fn word_field_keeps_typed_text() {
+        let ctx = egui::Context::default();
+        let mut g = Globals::empty(std::path::Path::new("word-field-test.toml"));
+        let s = schema::find_global("WordCharacters").unwrap();
+        let before = g.string("WordCharacters");
+        let frame = |events: Vec<egui::Event>, g: &mut Globals| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                global_control(ui, g, s, true);
+            });
+            out.textures_delta.clear();
+        };
+        let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame(vec![], &mut g);
+        frame(vec![tab], &mut g);
+        frame(vec![], &mut g);
+        frame(vec![egui::Event::Text("x".into())], &mut g);
+        frame(vec![], &mut g);
+        let now = g.string("WordCharacters");
+        assert!(now.contains('x') && now != before, "typed text was lost: {now:?}");
+    }
+
+    /// Task 1 fix 2: a hand-edited WordSelectionMode other than 1 is the list mode.
+    #[test]
+    fn out_of_range_word_mode_is_the_list() {
+        let mut g = Globals::empty(std::path::Path::new("word-mode-test.toml"));
+        g.set("WordSelectionMode", Value::Integer(2));
+        assert!(row_visible(&g, "WordCharacters"));
+        assert!(!row_visible(&g, "WordSelectionRegexPattern"));
+    }
+
     /// 13l P5: an Int row draws a drag value for its stored integer.
     #[test]
     fn int_rows_draw_a_control() {
@@ -3639,6 +3823,8 @@ mod tests {
             ("ShowYellowMarkForJobStoppedBySignal", "Semantic History", D::B(true), "Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal.".into()),
             ("ConservativeURLGuessing", "Semantic History", D::B(false), "URLs must contain a scheme?\nEnable this to reduce the number of false positives that semantic history thinks are a URL".into()),
             ("TrailingPunctuationMarks", "Semantic History", D::S("!?\u{2026})].\"';:,"), "Characters to ignore at the end of a URL".into()),
+            // 13s's row (Task 7, 02:839), in this section since the merge (S1).
+            ("RequireSlashInURLGuess", "Semantic History", D::B(true), "Only consider a two+ part domain-name to be a URL if it also contains a slash.\nThis setting is used when guessing if a string is a URL for semantic history. When enabled, `example.com` would not be considered a URL but `example.com/` would be.".into()),
             ("DefaultURLScheme", "Semantic History", D::S("https"), "Default URL scheme.\nThis is applied to hostnames that are not a single word.".into()),
             ("UrlHandlerCommand", "Semantic History", D::S(""), "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Tandem would otherwise hand to the system. Tandem splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u{201c}explorer.exe \\(url)\u{201d} to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Tandem-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected.".into()),
             ("RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow", "Semantic History", D::B(true), "Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands?\nDue to a long-standing bug this did not used to be respected. Soft boundaries were always respected for deciding what text was clicked on, but the prefix and suffix did not. If you have a semantic history command that depends on the bug, you can switch this off to get the pre-3.1.2 behavior.".into()),
@@ -3646,7 +3832,7 @@ mod tests {
             ("PrioritizeSmartSelectionActions", "Semantic History", D::B(false), "Check smart selection actions before existing files on Win-click?".into()),
             ("DisableSmartSelectionActionsOnClick", "Semantic History", D::B(false), "Disable performing the first matching Smart Selection\u{2019}s Action on Win-click?".into()),
         ];
-        assert_eq!(table.len(), 20);
+        assert_eq!(table.len(), 21);
         let advanced = rows();
         for (key, section, default, help) in &table {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} has no row"));
@@ -3666,6 +3852,18 @@ mod tests {
         let nav = schema::find("Prompt Path Click Opens Navigator").unwrap();
         assert_eq!(nav.label, "Click on a path in a shell prompt to open Navigator");
         assert_eq!(nav.help, "Whether clicking path in prompt opens file navigator");
+    }
+
+    /// Merge seam (S1, S8): the slash rule is a row of 13r's Semantic History block in the
+    /// schema, not 13s's own block, and appears once.
+    #[test]
+    fn the_slash_row_joins_the_semantic_history_block() {
+        let schema = include_str!("../schema/global.toml");
+        assert_eq!(schema.matches("key = \"RequireSlashInURLGuess\"").count(), 1);
+        let ours = schema.find("# Selection, copy and find (13s)").unwrap();
+        let theirs = schema.find("# Semantic history (13r)").unwrap();
+        let at = schema.find("key = \"RequireSlashInURLGuess\"").unwrap();
+        assert!(ours < theirs && at > theirs, "the row sits after 13r's heading");
     }
 
     /// 13q Task 1 (`AS:661-682`, `AS:733`, `AS:769`, `AS:853-896`): the session-end Advanced

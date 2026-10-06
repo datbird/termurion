@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 316 | 272 | 33 | 11 |
-| `02-global-settings.md` | 820 | 598 | 52 | 170 |
-| `03-features-and-menus.md` | 647 | 566 | 43 | 38 |
-| Total | 1,783 | 1,436 | 128 | 219 |
+| `01-profile-settings.md` | 316 | 273 | 32 | 11 |
+| `02-global-settings.md` | 820 | 624 | 41 | 155 |
+| `03-features-and-menus.md` | 648 | 574 | 37 | 37 |
+| Total | 1,784 | 1,471 | 110 | 203 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -709,6 +709,15 @@ argument per variable and refuses shells and forwarders; Command Info and the na
 syntax, or anything into a password prompt or an ended pane. Rulings and deferred minors are in `docs/superpowers/rulings/m13r-rulings.txt`; what a
 person must see on screen is in `docs/acceptance/m13r-checklist.md`. Nothing of 13r was checked on screen during the build. Open: ssh:// text underlines
 and then the guard refuses (milestone 14e's handler owns it), and 13s's command-selection click must call the path-mark check first.
+On the m13s branch, main (13r) merged into 13s's Tasks 1-8 (2026-10-05): 13s changes no parity row before its docs task, so the union is
+13r's (01: 316 rows, 272 have, 33 partial, 11 missing; 02: 820, 598, 52, 170; 03: 647, 566, 43, 38; 1,783 rows, 1,436 have, 128 partial,
+219 missing). Seams wired at the merge: 13r's URL guess is the one copy (13s's slash rule and colon strings run through it, and
+RequireSlashInURLGuess sits in 13r's Semantic History section); Smart Selection reads SmartSelectionRadius lines each way; Semantic History's
+soft-boundary window is word selection's; the command region (buffer rows) is defined once over 13r's grid-line helper for 13s Task 9 to
+select commands with (showButtonsForSelectedCommand stays partial until then, and that click calls the path-mark check first); dropped file
+names typed into the shell pass 13r's one guard for terminal writes (control characters, the union refusal, the network rule) and are quoted
+for the reported shell; 13r adds no runtime DLL load, so 13s's DLL hardening covers it.
+13s Task 9 (clicking a command selects it, 2026-10-05): 02: ClickToSelectCommand from missing to have and showButtonsForSelectedCommand from partial to have (02: 820, 600, 51, 169; 1,783 rows, 1,438 have, 127 partial, 218 missing). The click asks 13r's path-mark check first; Find, Filter and Select All work inside the selected command and the shade and outline follow iTerm2.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's
@@ -789,6 +798,8 @@ window-style click and a
 local mode set in the same output chunk as the restore. Nothing of 14e was checked on screen during the
 build. Every kept quirk is listed in `docs/acceptance/m14e-checklist.md` and ruled on in
 `docs/superpowers/rulings/m14e-rulings.txt`.
+
+Milestone 13s parity close (2026-10-05): 28 existing rows to have and one new row: 02 CopySelection (already have; the key is CopySelection, the row named SelectionCopiesText), CopyLastNewline, WordSelectionMode, WordCharacters, WordSelectionRegexPattern, TripleClickSelectsFullWrappedLines, WrapDroppedFilenamesInQuotesWhenPasting, fractionOfCharacterSelectingNextNeighbor, useDoubleClickDelayForCommandSelection, findUrlsRegex, findURLsRespectsSoftBoundaries, requireCmdForDraggingText, findDelaySeconds, swapFindNextPrevious, synchronizeQueryWithFindPasteboard, smartSelectionRadius, alphaForDeselectedCommandShade, requireSlashInURLGuess, trimWhitespaceOnCopy, copyWithStylesByDefault, copyBackgroundColor, disallowCopyEmptyString, typingClearsSelection, excludeBackgroundColorsFromCopiedStyle and autoSearch; 01 Drag to Scroll in Alternate Screen Mode Disabled; 03 Selection Respects Soft Boundaries, Select Matches (two rows), and the new row Multiple selections. Per file: 01 316 rows, 273 have, 32 partial, 11 missing; 02 820, 624, 41, 155; 03 648, 570, 40, 38; total 1,784 rows, 1,467 have, 113 partial, 204 missing. Task 10 (d436ac2, colored Filter and Zoom, chunked filter, progress line) then moved 03 Filter, Filter mode and Zoom In on Selection from partial to have and Filter progress indicator from missing to have: 03 648 rows, 574 have, 37 partial, 37 missing; total 1,784 rows, 1,471 have, 110 partial, 203 missing. The commands filter: and zoomOnSelection: stay partial in the command registry. Tandem's security work in this milestone: every runtime DLL load names a search path (src/dll.rs), every program restricts the process's DLL search first thing, the C runtime is linked statically and every import loads from System32 only (build.rs keeps both), copied HTML links are web or mailto only, and dropped names pass 13r's one guard. The rulings are docs/superpowers/rulings/m13s-rulings.txt and the checklist docs/acceptance/m13s-checklist.md.
 
 ## Order
 

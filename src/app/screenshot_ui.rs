@@ -220,7 +220,7 @@ impl App {
             })
             .collect();
         let spans: Vec<(usize, usize, usize)> = spans.into_iter().map(|(l, a, b)| ((l + history) as usize, a, b)).collect();
-        p.screen.term_mut().selection = None;
+        p.clear_selection();
         if let Some(s) = self.shot.as_mut() {
             s.window.panel.annotate(kind, spans, is_box, &lines);
         }
@@ -283,7 +283,7 @@ impl App {
             }
             WindowEvent::RedrawRequested => {
                 let pane = shot.pane;
-                shot.window.can_annotate = self.panes.get(&pane).is_some_and(|p| p.screen.term().selection.as_ref().is_some_and(|s| !s.is_empty()));
+                shot.window.can_annotate = self.panes.get(&pane).is_some_and(|p| !p.screen.live_is_empty() || !p.screen.sel.extras.is_empty());
                 let Some(shot) = self.shot.as_mut() else { return true };
                 let ev = shot.window.redraw();
                 match ev {

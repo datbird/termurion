@@ -87,13 +87,7 @@ impl App {
         let command = m.command.clone();
         let Some(&label) = cmdbuttons::menu(button, &command).get(n) else { return true };
         match label {
-            cmdbuttons::DISABLE_SELECTION => {
-                self.globals.set("ClickToSelectCommand", toml::Value::Boolean(false));
-                self.save_globals();
-                for p in self.panes.values_mut() {
-                    p.selected_command = None;
-                }
-            }
+            cmdbuttons::DISABLE_SELECTION => self.disable_command_selection(),
             cmdbuttons::HELP => menu::info_box(cmdbuttons::HELP_TEXT),
             cmdbuttons::COPY_COMMAND => {
                 self.cmdinfo_copy(command);
@@ -172,17 +166,21 @@ mod tests {
     use super::*;
     const SRC: &str = include_str!("cmdbuttons_ui.rs");
 
-    /// Fix round 2, item 3: 13s brings `Screen::command_region(&mut self, mark) -> Option<(usize,
-    /// usize)>` (buffer rows) and `App::command_region`; 13r's grid-line helper has another name and
-    /// no `App::command_region` is defined here, so the merge is a union.
+    /// Merge seam (S6): one region rule. 13s's `Screen::command_region` (buffer rows) and
+    /// `App::command_region` are defined once and derive from 13r's `command_grid_lines`, which
+    /// the buttons keep reading in grid lines.
     #[test]
-    fn the_seam_names_stay_free_for_13s() {
+    fn the_command_region_is_one_rule() {
         let code = &SRC[..SRC.find("#[cfg(test)]").unwrap()];
-        assert!(!code.contains("fn command_region"), "13s defines App::command_region");
-        assert!(!code.contains(".command_region("), "13r reads grid lines through command_grid_lines");
+        assert!(!code.contains("fn command_region"), "App::command_region lives in selection_ui");
         assert!(code.contains("command_grid_lines("));
-        assert!(include_str!("../marks.rs").contains("pub fn command_grid_lines(&self"));
-        assert!(!include_str!("../marks.rs").contains("pub fn command_region"));
+        let marks = include_str!("../marks.rs");
+        assert!(marks.contains("pub fn command_grid_lines(&self"));
+        assert_eq!(marks.matches("pub fn command_region(&mut self, id: u32) -> Option<(usize, usize)>").count(), 1);
+        let region = &marks[marks.find("pub fn command_region(").unwrap()..];
+        assert!(region[..region.find("\n    }").unwrap()].contains("self.command_grid_lines(id)"));
+        let sel = include_str!("selection_ui.rs");
+        assert_eq!(sel.matches("pub(super) fn command_region(&mut self, id: PaneId) -> Option<(usize, usize)>").count(), 1);
     }
 
     #[test]

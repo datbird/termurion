@@ -444,13 +444,13 @@ impl App {
                     return;
                 }
                 let bytes = input::alt_arrows(delta >= 0.0, vertical, mods, mode.contains(TermMode::APP_CURSOR), wheel::arrow_count(delta));
-                p.screen.term_mut().selection = None;
+                p.clear_selection();
                 // Arrows are keys: they follow broadcast input as iTerm2's do (reports stay local).
                 self.user_write(id, &bytes, crate::broadcast::Write::WheelArrows);
                 return self.redraw();
             }
             AltScroll::Swallow => {
-                p.screen.term_mut().selection = None;
+                p.clear_selection();
                 return self.redraw();
             }
             AltScroll::NoAndInfer => {
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn tandem_ui_at_reads_every_overlay_list() {
         let b = body(UI, "ui_rects");
-        let recorded = [crate::mouse::Overlay::InfoBar, crate::mouse::Overlay::Completion, crate::mouse::Overlay::Composer, crate::mouse::Overlay::ComposerPopup, crate::mouse::Overlay::Toast, crate::mouse::Overlay::Banner, crate::mouse::Overlay::PaneMove];
+        let recorded = [crate::mouse::Overlay::InfoBar, crate::mouse::Overlay::Completion, crate::mouse::Overlay::Composer, crate::mouse::Overlay::ComposerPopup, crate::mouse::Overlay::Toast, crate::mouse::Overlay::Banner, crate::mouse::Overlay::PaneMove, crate::mouse::Overlay::CommandInfo];
         let frame = body(MOD, "build_frame");
         for kind in crate::mouse::Overlay::ALL {
             let name = format!("Overlay::{kind:?}");

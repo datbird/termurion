@@ -110,7 +110,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. (milestone 4) | have |
 | Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | have |
 | Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | have |
-| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | partial |
+| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | have, milestone 13s: word, wrapped-line, line and Smart Selection clicks stay inside the pane's columns between tmux dividers, and a drag leaving the window lets it grow. |
 | Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. (milestone 4) | have |
 | Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. (milestone 4) | have |
 | Edit > Find > Find... | Cmd+F | Opens the in-session find bar. (milestone 4) | have |
@@ -119,11 +119,11 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Find > Use Selection for Find | Cmd+E | Loads the current selection as the find query. (milestone 4) | have |
 | Edit > Find > Clear Find | Opt+Cmd+E | Clears the find query and highlights. (milestone 4) | have |
 | Edit > Find > Find Globally... | Cmd+F | Searches across all open sessions at once. (milestone 4) | have |
-| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. (milestone 4) | partial |
+| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. (milestone 4) | have, milestone 13s: one selection per match, nothing copied, the view scrolls to the first; capped at 10000 matches with a banner. |
 | Edit > Find > Find URLs | Opt+Cmd+U | Highlights all URLs detected in the buffer for quick opening. (milestone 4) | have |
 | Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. (milestone 4) | have |
 | Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. (milestone 4) | have |
-| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. (milestone 4) | partial |
+| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. | have | Milestone 13s Task 10: the kept lines show their colors, bold, italic and underline (SGR with control characters removed); the run is chunked and stops when the bar closes; with a command selected it filters only that command. |
 | Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. (milestone 4) | have |
 | Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. (milestone 4) | have |
 | Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. (milestone 4) | have |
@@ -156,7 +156,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | have |
 | View > Use Transparency | Cmd+U | Toggles background transparency for the window. (milestone 7) | partial, milestone 13g: built; see-through proof pending checklist line 1 (P1: one process, a DirectComposition swapchain and an HWND swapchain on the desktop GPU); have once it passes (Win+U, check mark follows the window) |
 | View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | partial, milestone 13g: built; see-through proof pending checklist line 1 (P1: one process, a DirectComposition swapchain and an HWND swapchain on the desktop GPU); have once it passes |
-| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | partial |
+| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. | have | Milestone 13s Task 10: the zoomed lines keep their colors and attributes; Zoom Out returns. |
 | View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | have |
 | View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | have |
 | View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. (milestone 4) | have |
@@ -585,12 +585,13 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Find | Use Selection for Find | Populates the find query from the current text selection. | have |  |
 | Find | Clear Find | Clears the find query and highlighted matches. | have |  |
 | Find | Find Globally | Searches across all sessions/tabs/windows at once, not just the active pane. | have |  |
-| Find | Select Matches | Converts all current find matches into multiple text selections. | partial | A selection is one range in Tandem, so it runs from the first match to the last, and every match is copied, one per line. |
+| Find | Select Matches | Converts all current find matches into multiple text selections. | have | Milestone 13s: each match is its own selection (see Multiple selections); iTerm2 does not copy them, and neither does Tandem. |
+| Selection | Multiple selections | Cmd-drag adds a selection that copies, draws and is read through the API with the others; Select Matches makes one per match. | have | Milestone 13s: Win-drag adds a selection (Win+Alt does not; a plain press clears them all; a Win-click with no drag keeps them), they draw as one selection and copy together in order, overlaps cancel, GetSelection and SetSelection carry several with their modes (capped at 10000). They die with the live selection when output clears it, and a clear scrollback, a reflow or an alternate-screen switch drops them. Windows note: a Win-drag that starts on a link or path still opens it. |
 | Find | Find URLs | Special search mode that highlights only URL-shaped text. | have |  |
 | Find | Find All Smart Selection Matches | Highlights every match of the active Smart Selection rule. | have |  |
 | Find | Pick Result to Open | Lets you choose one match and open it, for example as a URL or file. | have |  |
-| Find | Filter mode | Hides all scrollback lines that do not match the query, showing only matching lines. | partial | Shows the lines as plain text, without their colors. |
-| Find | Filter progress indicator | Shows progress while a filter search runs over large scrollback. | missing | |
+| Find | Filter mode | Hides all scrollback lines that do not match the query, showing only matching lines. | have | Milestone 13s Task 10: lines keep their colors; 20 000 lines or 8 Mi cells per step; output that arrives during a run is added by one catch-up pass. |
+| Find | Filter progress indicator | Shows progress while a filter search runs over large scrollback. | have | Milestone 13s Task 10: a 2 px line at the bottom of the find bar in the selection color grows with the run; the status-bar Filter Tool shows none. |
 | Find | Jump to Selection | Scrolls the viewport to the current selection/match. | have |  |
 
 ### paste special / paste history

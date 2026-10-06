@@ -458,11 +458,9 @@ mod tests {
     #[ignore]
     #[cfg(windows)]
     fn generate_table() {
-        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-        let name: Vec<u16> = "icu.dll\0".encode_utf16().collect();
+        use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
         unsafe {
-            let module = LoadLibraryW(name.as_ptr());
-            assert!(!module.is_null(), "icu.dll did not load");
+            let module = crate::dll::load_system("icu.dll").expect("icu.dll did not load");
             let mirror = GetProcAddress(module, c"u_charMirror".as_ptr().cast()).expect("u_charMirror");
             let version = GetProcAddress(module, c"u_getUnicodeVersion".as_ptr().cast()).expect("u_getUnicodeVersion");
             let mirror: unsafe extern "C" fn(i32) -> i32 = std::mem::transmute(mirror);

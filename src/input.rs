@@ -36,6 +36,10 @@ pub enum Pick {
     Type(SelectionType),
     /// Smart Selection's best rule match, else a word.
     Smart,
+    /// iTerm2's word (`iTermWordExtractor`), not alacritty's separator list.
+    Word,
+    /// A line: a whole wrapped line or one screen row by the setting (the app decides).
+    Line,
 }
 
 /// iTerm2's clicks: double selects a word, triple a line, quadruple a Smart Selection.
@@ -46,21 +50,9 @@ pub fn click_pick(clicks: u8, mods: Mods, double_is_smart: bool) -> Pick {
     }
     match (clicks, double_is_smart) {
         (2, true) | (4, false) => Pick::Smart,
-        (2, false) | (4, true) => Pick::Type(SelectionType::Semantic),
-        (3, _) => Pick::Type(SelectionType::Lines),
+        (2, false) | (4, true) => Pick::Word,
+        (3, _) => Pick::Line,
         _ => Pick::Type(SelectionType::Simple),
-    }
-}
-
-/// Double-click selects a word, triple-click a line, Ctrl+Alt-drag a rectangle.
-pub fn selection_type(clicks: u8, mods: Mods) -> SelectionType {
-    if mods.ctrl && mods.alt {
-        return SelectionType::Block;
-    }
-    match clicks {
-        2 => SelectionType::Semantic,
-        3 => SelectionType::Lines,
-        _ => SelectionType::Simple,
     }
 }
 
@@ -128,25 +120,27 @@ mod tests {
     #[test]
     fn quad_click_is_smart_selection() {
         assert_eq!(click_pick(4, NONE, false), Pick::Smart);
-        assert_eq!(click_pick(2, NONE, false), Pick::Type(SelectionType::Semantic));
-        assert_eq!(click_pick(3, NONE, false), Pick::Type(SelectionType::Lines));
+        assert_eq!(click_pick(2, NONE, false), Pick::Word);
+        assert_eq!(click_pick(3, NONE, false), Pick::Line);
         assert_eq!(click_pick(1, NONE, false), Pick::Type(SelectionType::Simple));
     }
 
     #[test]
     fn double_click_setting_swaps_word_and_smart() {
         assert_eq!(click_pick(2, NONE, true), Pick::Smart);
-        assert_eq!(click_pick(4, NONE, true), Pick::Type(SelectionType::Semantic));
+        assert_eq!(click_pick(4, NONE, true), Pick::Word);
         let block = Mods { ctrl: true, alt: true, shift: false, cmd: false };
         assert_eq!(click_pick(2, block, true), Pick::Type(SelectionType::Block));
     }
 
     #[test]
-    fn selection_kinds() {
-        assert_eq!(selection_type(1, NONE), SelectionType::Simple);
-        assert_eq!(selection_type(2, NONE), SelectionType::Semantic);
-        assert_eq!(selection_type(3, NONE), SelectionType::Lines);
-        assert_eq!(selection_type(1, Mods { ctrl: true, alt: true, shift: false, cmd: false }), SelectionType::Block);
+    fn triple_click_rows_follow_iterm2() {
+        assert_eq!(click_pick(3, NONE, false), Pick::Line);
+        assert_eq!(click_pick(3, NONE, true), Pick::Line);
+        assert_eq!(click_pick(2, NONE, false), Pick::Word);
+        assert_eq!(click_pick(2, NONE, true), Pick::Smart);
+        assert_eq!(click_pick(4, NONE, true), Pick::Word);
+        assert_eq!(click_pick(1, NONE, false), Pick::Type(SelectionType::Simple));
     }
 
     #[test]

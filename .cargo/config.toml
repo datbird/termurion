@@ -1,0 +1,5 @@
+# Load-time DLL safety (security ruling, M13s Task 4 review): the C runtime is linked into every
+# program, so no vcruntime140.dll is looked up beside the exe or in the current folder before
+# main, and every load-time import resolves in System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]

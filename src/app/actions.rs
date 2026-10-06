@@ -479,7 +479,7 @@ impl App {
                 let point = self.grid_point(pane, cell.0, cell.1);
                 if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
                     sel.update(point, Side::Right);
-                    self.copy_selection(pane);
+                    self.copy_on_selection(pane);
                 }
             }
             // The clicked pane's session (`PTYTextView.m:8711-8713`).
@@ -499,7 +499,7 @@ impl App {
             "kSmartSelectionPointerAction" | "kSmartSelectionIgnoringNewlinesPointerAction" => {
                 let point = self.grid_point(pane, cell.0, cell.1);
                 if self.smart_select(pane, point, b.action == "kSmartSelectionIgnoringNewlinesPointerAction").is_some() {
-                    self.copy_selection(pane);
+                    self.copy_on_selection(pane);
                 }
             }
             "kCopyLinkAddressPointerAction" => {

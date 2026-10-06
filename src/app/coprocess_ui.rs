@@ -229,14 +229,55 @@ impl App {
         if self.ssh_drop(pane, files.clone()) {
             return;
         }
+        // Dropped names are typed text or a coprocess's input: never at a password prompt or into
+        // an ended session (13q/13r gates).
+        if let Some(why) = self.panes.get(&pane).and_then(|p| drop_refusal(p.exited.is_some(), p.ended, p.at_password_prompt())) {
+            return self.banners.set("action", why);
+        }
         match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
             Some(Ok(cmd)) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
             // A dropped name the one cmd.exe builder refuses: nothing runs, and the banner says why.
             Some(Err(why)) => self.banners.set("action", why),
             None => {
-                let text = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
-                self.user_paste(pane, &text, crate::broadcast::Write::Drop);
+                // The names pass 13r's one guard for terminal writes (B5): a refused name types
+                // nothing and the banner says why.
+                let shell = self.composer_shell(pane);
+                match coprocess::drop_text(&files, self.globals.bool("WrapDroppedFilenamesInQuotesWhenPasting"), shell.as_deref()) {
+                    Ok(text) => self.user_paste(pane, &text, crate::broadcast::Write::Drop),
+                    Err(why) => self.banners.set("action", why),
+                }
             }
         }
+    }
+}
+
+/// Why dropped names are not written to a pane: its session has ended, or it waits at a
+/// password prompt.
+pub(super) fn drop_refusal(exited: bool, ended: bool, password: bool) -> Option<&'static str> {
+    if exited || ended {
+        Some(super::cmdinfo_app::ENDED)
+    } else if password {
+        Some(super::cmdinfo_app::PASSWORD_PROMPT)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 8 fix round 1, item 2: a dropped name is never typed at a password prompt or into an
+    /// ended session (13q/13r gates), whichever route carries it.
+    #[test]
+    fn dropped_text_refuses_a_password_prompt_and_an_ended_pane() {
+        assert_eq!(drop_refusal(false, false, false), None);
+        assert_eq!(drop_refusal(false, true, false), Some(super::super::cmdinfo_app::ENDED));
+        assert_eq!(drop_refusal(true, false, false), Some(super::super::cmdinfo_app::ENDED));
+        assert_eq!(drop_refusal(false, false, true), Some(super::super::cmdinfo_app::PASSWORD_PROMPT));
+        let src = include_str!("coprocess_ui.rs");
+        let body = &src[src.find("fn flush_dropped").unwrap()..];
+        let (gate, coproc, paste) = (body.find("drop_refusal(").expect("asks the gate"), body.find("start_coprocess(").unwrap(), body.find("user_paste(").unwrap());
+        assert!(gate < coproc && gate < paste, "the gate comes before either route");
     }
 }

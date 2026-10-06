@@ -14,8 +14,12 @@ use crate::api_session::Snapshot;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sel {
     pub ty: SelectionType,
+    pub mode: crate::seltext::Mode,
     pub start: (i64, i32),
     pub end: (i64, i32),
+    /// The column window `(first, last)` inclusive, when the request gave one.
+    pub window: Option<(usize, usize)>,
+    pub connected: bool,
 }
 
 /// A sub-selection of a SetSelection request (`H:4050-4091`) on a screen `width` columns
@@ -36,11 +40,23 @@ pub fn to_sel(s: &pb::SubSelection, width: i32, lost: i64) -> Option<Sel> {
     if end.x() as i64 > width || cols.length() < 0 || cols.location() + cols.length() > width || start.x() < 0 || cols.location() < 0 || start.y() < 0 || end.y() < 0 {
         return None;
     }
-    let ty = match s.selection_mode.and_then(|m| M::try_from(m).ok()).unwrap_or(M::Character) {
+    let api_mode = s.selection_mode.and_then(|m| M::try_from(m).ok()).unwrap_or(M::Character);
+    let ty = match api_mode {
         M::Box => SelectionType::Block,
         M::Character | M::Word | M::Smart | M::Line | M::WholeLine => SelectionType::Simple,
     };
-    Some(Sel { ty, start: ((start.y() - lost).max(0), start.x()), end: ((end.y() - lost).max(0), end.x()) })
+    use crate::seltext::Mode;
+    let mode = match api_mode {
+        M::Character => Mode::Character,
+        M::Word => Mode::Word,
+        M::Line => Mode::Line,
+        M::Smart => Mode::Smart,
+        M::Box => Mode::Box,
+        M::WholeLine => Mode::WholeLine,
+    };
+    // A window of no columns is none.
+    let window = (cols.length() > 0).then(|| (cols.location() as usize, (cols.location() + cols.length() - 1) as usize));
+    Some(Sel { ty, mode, start: ((start.y() - lost).max(0), start.x()), end: ((end.y() - lost).max(0), end.x()), window, connected: s.connected() })
 }
 
 /// A GetSelection sub-selection (`H:3970-4015`) from a selection of type `ty` whose start
@@ -60,6 +76,47 @@ pub fn from_sel(ty: SelectionType, start: (i64, i32), end_inclusive: (i64, i32),
     pb::SubSelection { windowed_coord_range: Some(pb::WindowedCoordRange { coord_range: Some(range), columns: None }), selection_mode: Some(mode as i32), connected: Some(false) }
 }
 
+/// A GetSelection sub-selection from `sub` (buffer rows, the end inclusive): its mode, its
+/// column window and whether it is connected to the next.
+pub fn from_sub(sub: &crate::seltext::Sub, lost: i64, width: i32) -> pb::SubSelection {
+    use crate::seltext::Mode;
+    let ty = if sub.mode == Mode::Box { SelectionType::Block } else { SelectionType::Simple };
+    let mut out = from_sel(ty, (sub.start.row as i64, sub.start.col as i32), (sub.end.row as i64, sub.end.col as i32), lost, width);
+    let mode = match sub.mode {
+        Mode::Character => pb::SelectionMode::Character,
+        Mode::Word => pb::SelectionMode::Word,
+        Mode::Line => pb::SelectionMode::Line,
+        Mode::Smart => pb::SelectionMode::Smart,
+        Mode::Box => pb::SelectionMode::Box,
+        Mode::WholeLine => pb::SelectionMode::WholeLine,
+    };
+    out.selection_mode = Some(mode as i32);
+    out.connected = Some(sub.connected);
+    if let (Some((lo, hi)), Some(w)) = (sub.window, out.windowed_coord_range.as_mut()) {
+        w.columns = Some(pb::Range { location: Some(lo as i64), length: Some((hi - lo + 1) as i64) });
+    }
+    out
+}
+
+impl Sel {
+    /// This sub-selection as a `Sub` on a `width`-column buffer (the API's end is exclusive);
+    /// None when it covers nothing.
+    pub fn to_sub(&self, width: i32) -> Option<crate::seltext::Sub> {
+        use crate::find::Pos;
+        let (row, x) = self.end;
+        let end = if x > 0 {
+            Pos { row: row as usize, col: (x.min(width) - 1) as usize }
+        } else if self.mode != crate::seltext::Mode::Box && row > self.start.0 {
+            Pos { row: (row - 1) as usize, col: (width - 1).max(0) as usize }
+        } else {
+            return None;
+        };
+        let start = Pos { row: self.start.0 as usize, col: self.start.1.max(0) as usize };
+        (end.row > start.row || (end.row == start.row && end.col >= start.col))
+            .then_some(crate::seltext::Sub { start, end, mode: self.mode, window: self.window, connected: self.connected })
+    }
+}
+
 /// GetSelection sub-selections for a visual (bidi) drag: one Character sub-selection per
 /// logical run, as iTerm2's `logicalSubSelections` answers (`iTermSelection.m`
 /// `decomposedLogicalSubSelectionsForVisualLiveRange`). Each run is `(first, last)` inclusive
@@ -67,20 +124,14 @@ pub fn from_sel(ty: SelectionType, start: (i64, i32), end_inclusive: (i64, i32),
 /// ended at the last column of the line above, and merges into it; a run followed by another on
 /// its own line is `connected`.
 pub fn from_runs(runs: &[((i64, i32), (i64, i32))], lost: i64, width: i32) -> Vec<pb::SubSelection> {
-    let mut merged: Vec<((i64, i32), (i64, i32))> = Vec::new();
-    for &(a, b) in runs {
-        match merged.last_mut() {
-            Some(prev) if a.1 == 0 && a.0 == prev.1.0 + 1 && prev.1.1 == width - 1 => prev.1 = b,
-            _ => merged.push((a, b)),
-        }
-    }
-    let mut out: Vec<pb::SubSelection> = Vec::new();
-    for (i, &(a, b)) in merged.iter().enumerate() {
-        let mut sub = from_sel(SelectionType::Simple, a, b, lost, width);
-        sub.connected = Some(merged.get(i + 1).is_some_and(|n| n.0.0 == b.0));
-        out.push(sub);
-    }
-    out
+    crate::seltext::merge_runs(runs, width)
+        .into_iter()
+        .map(|(a, b, connected)| {
+            let mut sub = from_sel(SelectionType::Simple, a, b, lost, width);
+            sub.connected = Some(connected);
+            sub
+        })
+        .collect()
 }
 
 /// SetBroadcastDomains' check (`H:4146-4182`): each domain's sessions, by id as
@@ -229,7 +280,7 @@ mod tests {
     fn selection_follows_iterm2() {
         use pb::SelectionMode as M;
         let c = |start, end| to_sel(&sub(start, end, None, M::Character), 80, 10);
-        assert_eq!(c((0, 12), (5, 13)), Some(Sel { ty: SelectionType::Simple, start: (2, 0), end: (3, 5) }));
+        assert_eq!(c((0, 12), (5, 13)), Some(Sel { ty: SelectionType::Simple, mode: crate::seltext::Mode::Character, start: (2, 0), end: (3, 5), window: None, connected: false }));
         // A line above the history is the first one kept (`H:4046-4049`).
         assert_eq!(c((0, 5), (5, 13)).map(|s| s.start), Some((0, 0)));
         assert_eq!(c((0, 12), (80, 13)).map(|s| s.end), Some((3, 80)), "the width itself is allowed");
@@ -240,7 +291,7 @@ mod tests {
         assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((0, -1)), M::Character), 80, 10), None);
         assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((70, 20)), M::Character), 80, 10), None);
         assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((-1, 5)), M::Character), 80, 10), None);
-        assert!(to_sel(&sub((0, 12), (5, 13), Some((70, 10)), M::Character), 80, 10).is_some(), "a window is checked, then ignored");
+        assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((70, 10)), M::Character), 80, 10).map(|s| s.window), Some(Some((70, 79))), "a window is checked, then kept");
         // iTerm2 keeps the range as sent for every mode (`iTermSelection.m:1082-1093`): only a
         // box stays a box; the others are the exact range, never widened to words or lines.
         let ty = |m| to_sel(&sub((0, 12), (5, 13), None, m), 80, 10).map(|s| s.ty);
@@ -252,7 +303,7 @@ mod tests {
         let mut s = sub((0, 12), (5, 13), None, M::Character);
         s.selection_mode = Some(99);
         assert_eq!(to_sel(&s, 80, 10).map(|s| s.ty), Some(SelectionType::Simple));
-        assert_eq!(to_sel(&pb::SubSelection::default(), 80, 10), Some(Sel { ty: SelectionType::Simple, start: (0, 0), end: (0, 0) }));
+        assert_eq!(to_sel(&pb::SubSelection::default(), 80, 10), Some(Sel { ty: SelectionType::Simple, mode: crate::seltext::Mode::Character, start: (0, 0), end: (0, 0), window: None, connected: false }));
 
         let got = from_sel(SelectionType::Simple, (2, 0), (3, 4), 10, 80);
         let range = got.windowed_coord_range.unwrap();
@@ -265,6 +316,45 @@ mod tests {
         assert_eq!(mode(SelectionType::Block), Some(M::Box as i32));
         assert_eq!(mode(SelectionType::Semantic), Some(M::Word as i32));
         assert_eq!(mode(SelectionType::Lines), Some(M::Line as i32));
+    }
+
+    /// Several sub-selections with their modes, windows and connection go through `to_sel` and
+    /// back through `from_sub` unchanged (the "one sub only" refusal is gone).
+    #[test]
+    fn api_selection_round_trips_many() {
+        use pb::SelectionMode as M;
+        let mut a = sub((2, 12), (7, 12), None, M::Character);
+        a.connected = Some(false);
+        let mut b = sub((1, 13), (6, 15), None, M::Box);
+        b.connected = Some(false);
+        let mut c = sub((0, 16), (80, 17), Some((10, 20)), M::WholeLine);
+        c.connected = Some(true);
+        let mut w = sub((3, 18), (9, 18), None, M::Word);
+        w.connected = Some(false);
+        for s in [a, b, c, w] {
+            let sel = to_sel(&s, 80, 10).unwrap();
+            let sub = sel.to_sub(80).expect("it covers cells");
+            assert_eq!(from_sub(&sub, 10, 80), s, "{:?}", s.selection_mode);
+        }
+        let sel = to_sel(&sub((0, 16), (80, 17), Some((10, 20)), M::WholeLine), 80, 10).unwrap();
+        let got = sel.to_sub(80).unwrap();
+        assert_eq!((got.window, got.mode, got.start, got.end), (Some((10, 29)), crate::seltext::Mode::WholeLine, crate::find::Pos { row: 6, col: 0 }, crate::find::Pos { row: 7, col: 79 }));
+        // An empty range (the end is exclusive) covers nothing.
+        assert_eq!(to_sel(&sub((4, 12), (4, 12), None, M::Character), 80, 10).unwrap().to_sub(80), None);
+        // An end at column 0 ends the line above.
+        let got = to_sel(&sub((2, 12), (0, 14), None, M::Character), 80, 10).unwrap().to_sub(80).unwrap();
+        assert_eq!(got.end, crate::find::Pos { row: 3, col: 79 });
+    }
+
+    /// Final review minor 7: the column-0 end rule is for run modes; a Box ending at column 0
+    /// covers no column, not the last one.
+    #[test]
+    fn a_box_end_at_column_zero_covers_nothing() {
+        use pb::SelectionMode as M;
+        let b = to_sel(&sub((2, 12), (0, 14), None, M::Box), 80, 10).unwrap();
+        assert_eq!(b.to_sub(80), None);
+        let line = to_sel(&sub((2, 12), (0, 14), None, M::Character), 80, 10).unwrap();
+        assert_eq!(line.to_sub(80).unwrap().end, crate::find::Pos { row: 3, col: 79 });
     }
 
     /// Window key 1 "pty-A" with tabs 5 (panes 1, 2) and 6 (pane 3), window key 2 "pty-B"

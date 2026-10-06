@@ -982,7 +982,7 @@ pub fn auto_prefix(rows: Vec<styled_copy::Row>, text: Vec<String>, fg: crate::pa
                 left -= r.text.len().min(left);
                 !r.text.is_empty()
             });
-            row.runs.push(styled_copy::Run { text: " ".into(), fg, bg, bold: false, italic: false, underline: false, link: None });
+            row.runs.push(styled_copy::Run { text: " ".into(), fg, bg, bold: false, italic: false, underline: false, link: None, default_bg: false });
         }
     }
     Prompt { rows, text, by_trigger: false }
@@ -1743,7 +1743,7 @@ mod tests {
     fn auto_prefix_trims_and_ends_in_a_space() {
         use crate::palette::{rgb, Rgb};
         let (fg, bg, red) = (rgb(1, 1, 1), rgb(0, 0, 0), rgb(9, 0, 0));
-        let run = |t: &str, c: Rgb| styled_copy::Run { text: t.into(), fg: c, bg, bold: false, italic: false, underline: false, link: None };
+        let run = |t: &str, c: Rgb| styled_copy::Run { text: t.into(), fg: c, bg, bold: false, italic: false, underline: false, link: None, default_bg: false };
         let rows = vec![styled_copy::Row { runs: vec![run("info", fg)], hard_end: true }, styled_copy::Row { runs: vec![run("PS", red), run(">  ", fg)], hard_end: true }];
         let p = auto_prefix(rows, vec!["info".into(), "PS>  ".into()], fg, bg);
         // `PS:8037-8058`: trailing whitespace trimmed, then one space in the default colors.

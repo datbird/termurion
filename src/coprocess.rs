@@ -170,7 +170,8 @@ pub fn trigger_warning(action_title: &str) -> String {
 /// each a value for the one cmd.exe builder (`semantic::build_cmd_line`: quoted, or bare inside
 /// the template's own quotes). None when the setting is empty; Err (`CMD_REFUSED`) when a
 /// dropped name holds what cmd.exe would read (a downloaded `a&calc&.txt`, `%`, parentheses,
-/// a drive root's trailing backslash): nothing runs.
+/// a drive root's trailing backslash) or the union rule refuses (`pathnav::quote_for`: `$ ; ' ` and
+/// the rest a second shell reads): nothing runs.
 pub fn drop_command(template: &str, files: &[String]) -> Option<Result<String, String>> {
     use crate::semantic::CmdPiece;
     let t = template.trim();
@@ -189,7 +190,38 @@ pub fn drop_command(template: &str, files: &[String]) -> Option<Result<String, S
         }
         pieces.push(CmdPiece::Text(text.to_string()));
     }
-    Some(crate::semantic::build_cmd_line(&pieces).ok_or_else(|| crate::semantic::CMD_REFUSED.to_string()))
+    let line = match crate::semantic::build_cmd_line(&pieces) {
+        Some(line) => line,
+        None => return Some(Err(crate::semantic::CMD_REFUSED.to_string())),
+    };
+    // A template can hand a name to a second shell (`wsl x \(filenames)`, `pwsh -c ...`), so the
+    // names also pass 13r's union rule, the one guard for what a name may hold. Only the refusal is
+    // used: the raw name is what the cmd.exe builder already quoted above.
+    for f in files {
+        if let Err(why) = crate::pathnav::quote_for(f, crate::pathnav::Shell::Unknown) {
+            return Some(Err(why));
+        }
+    }
+    Some(Ok(line))
+}
+
+/// Dropped filenames as text for the shell prompt (`NSPasteboard+iTerm.m:31-35`). Every name
+/// first passes 13r's one guard for terminal writes (`pathnav::quote_for`: control characters,
+/// the union refusal, the network rule), so Err is the banner and nothing is typed. What passes
+/// is quoted for the shell the pane reports (`shell`, as `App::composer_shell` names it): every
+/// name with `always_quote`, else a name holding whitespace or a character PowerShell or cmd.exe
+/// splits on (`,` `=` `+`); a POSIX shell always gets its escaped form (a bare backslash would be
+/// read as an escape). Typed text for the person's shell: never a coprocess command (S13).
+pub fn drop_text(files: &[String], always_quote: bool, shell: Option<&str>) -> Result<String, String> {
+    let kind = crate::pathnav::shell_of(shell);
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let quoted = crate::pathnav::quote_for(f, kind)?;
+        let bare = !always_quote && kind != crate::pathnav::Shell::Posix && !f.is_empty() && !f.contains(|c: char| c.is_whitespace() || ",=+".contains(c));
+        // A bare drive root takes the same `X:\.` form as a quoted one.
+        out.push(if bare { crate::semantic::drive_root_form(f).unwrap_or_else(|| f.clone()) } else { quoted });
+    }
+    Ok(out.join(" "))
 }
 
 /// The banner when a coprocess ends with stderr output.
@@ -200,6 +232,60 @@ pub fn stderr_banner(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_names_follow_the_key() {
+        let two = ["C:\\a b\\c.txt".to_string(), "D:\\x".to_string()];
+        assert_eq!(drop_text(&two, false, None).as_deref(), Ok("\"C:\\a b\\c.txt\" D:\\x"));
+        assert_eq!(drop_text(&two, true, None).as_deref(), Ok("\"C:\\a b\\c.txt\" \"D:\\x\""));
+        for c in [',', '=', '+'] {
+            let name = format!("D:\\a{c}b");
+            assert_eq!(drop_text(&[name.clone()], false, None), Ok(format!("\"{name}\"")), "{c}");
+        }
+        assert_eq!(drop_text(&[], false, None).as_deref(), Ok(""));
+    }
+
+    /// Merge seam (13r B5): a dropped name is typed into the shell, so it passes the one guard
+    /// for terminal writes, the union refusal for every shell, not a quoting of its own.
+    #[test]
+    fn dropped_names_pass_the_union_refusal() {
+        use crate::pathnav::{NETWORK_REFUSED, REFUSED, UNION_REFUSED};
+        for c in ['&', '(', ')', ';', '^', '%', '!', '[', '`', '$', '\'', '"', '\u{2019}', '\u{ff02}'] {
+            let name = format!("D:\\a{c}b");
+            for shell in [None, Some("cmd"), Some("pwsh"), Some("bash")] {
+                assert_eq!(drop_text(&[name.clone()], false, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
+                assert_eq!(drop_text(&[name.clone()], true, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
+            }
+        }
+        // One bad name refuses the whole drop: nothing is typed.
+        assert_eq!(drop_text(&["D:\\ok".into(), "D:\\a&calc".into()], false, None), Err(UNION_REFUSED.to_string()));
+        assert_eq!(drop_text(&["D:\\a\nb".into()], false, None), Err(REFUSED.to_string()));
+        assert_eq!(drop_text(&["\\\\evil\\s\\x".into()], false, None), Err(NETWORK_REFUSED.to_string()));
+        // The reported shell picks the quoting of what passes.
+        assert_eq!(drop_text(&["C:\\a b".into()], false, Some("pwsh")).as_deref(), Ok("'C:\\a b'"));
+        assert_eq!(drop_text(&["C:\\x".into()], false, Some("bash")).as_deref(), Ok("C\\:\\\\x"));
+    }
+
+    /// Task 8 fix round 1, item 1: the named attacks, each through every shell (the merge routed
+    /// the drop through 13r's union rule; these pin the cases the review listed).
+    #[test]
+    fn dropped_names_refuse_the_reviewed_attacks() {
+        use crate::pathnav::{REFUSED, UNION_REFUSED};
+        for name in ["D:\\$(calc).txt", "D:\\a&calc&.txt", "D:\\%PATH%.txt", "D:\\a`b", "D:\\a\u{201c}b", "D:\\a\u{201d} & calc & \u{201c}b.txt", "D:\\a\u{201e}b", "D:\\x\\"] {
+            for shell in [None, Some("cmd"), Some("pwsh"), Some("bash")] {
+                for key in [false, true] {
+                    assert_eq!(drop_text(&[name.to_string()], key, shell), Err(UNION_REFUSED.to_string()), "{name:?} {shell:?} {key}");
+                }
+            }
+        }
+        for name in ["D:\\a\nb", "D:\\a\rb", "D:\\a\u{7}b", "D:\\a\u{202e}b"] {
+            assert_eq!(drop_text(&[name.to_string()], true, Some("pwsh")), Err(REFUSED.to_string()), "{name:?}");
+        }
+        // A drive root takes 13r's X:\. form, never `C:\` (a trailing backslash swallows the quote).
+        assert_eq!(drop_text(&["C:\\".into()], true, None).as_deref(), Ok("\"C:\\.\""));
+        assert_eq!(drop_text(&["C:\\".into()], true, Some("pwsh")).as_deref(), Ok("'C:\\.'"));
+        assert_eq!(drop_text(&["C:\\".into()], false, None).as_deref(), Ok("C:\\."));
+    }
 
     #[test]
     fn mru_keeps_twenty() {
@@ -264,6 +350,32 @@ mod tests {
     #[test]
     fn stderr_banner_text() {
         assert_eq!(stderr_banner("grep x"), "Coprocess \u{201c}grep x\u{201d} terminated with output on stderr.");
+    }
+
+    /// Final review fix 2: a coprocess template can hand a name to a second shell (`wsl x \(filenames)`,
+    /// `pwsh -c ... \(filenames)`), so a drop also passes 13r's union rule (`pathnav::quote_for`):
+    /// `$`, `;`, `'`, a backtick, braces and brackets are refused with the union banner and
+    /// nothing runs, as for a drop typed into a shell.
+    #[test]
+    fn coprocess_drops_pass_the_union_rule() {
+        use crate::pathnav::{NETWORK_REFUSED, UNION_REFUSED};
+        let templates = ["pwsh -c Write-Output \\(filenames)", "wsl ls \\(filenames)", "wsl ls \"\\(filenames)\"", "upload \\(filenames)"];
+        for name in [r"C:\d\$(calc).txt", r"C:\d\a;b.txt", r"C:\d\it's.txt", "C:\\d\\a`b", r"C:\d\{x}", r"C:\d\[x]"] {
+            for t in templates {
+                let files = vec![r"C:\ok.txt".to_string(), name.to_string()];
+                let got = drop_command(t, &files);
+                assert!(matches!(got, Some(Err(_))), "{name} {t}: {got:?}");
+                // A name only the union rule refuses (cmd.exe reads parentheses and the backtick itself) reports that rule.
+                if !name.contains("(calc)") && !name.contains('`') {
+                    assert_eq!(got, Some(Err(UNION_REFUSED.to_string())), "{name} {t}");
+                }
+            }
+        }
+        // A control character is the cmd.exe builder's refusal, which comes first.
+        assert_eq!(drop_command("x \\(filenames)", &["C:\\d\\a\nb".into()]), Some(Err(crate::semantic::CMD_REFUSED.to_string())));
+        assert_eq!(drop_command("x \\(filenames)", &["\\\\evil\\s\\x".into()]), Some(Err(NETWORK_REFUSED.to_string())));
+        // A name that passes both rules is unchanged.
+        assert_eq!(drop_command("pwsh -c ls \\(filenames)", &[r"C:\a b\x.txt".to_string()]), Some(Ok(r#"pwsh -c ls "C:\a b\x.txt""#.into())));
     }
 
     #[test]

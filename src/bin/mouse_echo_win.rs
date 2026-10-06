@@ -2,6 +2,7 @@
 
 #[cfg(windows)]
 fn main() {
+    tandem::dll::harden_process();
     use windows_sys::Win32::System::Console::{
         ENABLE_EXTENDED_FLAGS, ENABLE_MOUSE_INPUT, ENABLE_WINDOW_INPUT, GetStdHandle, INPUT_RECORD,
         MOUSE_EVENT, ReadConsoleInputW, STD_INPUT_HANDLE, SetConsoleMode,

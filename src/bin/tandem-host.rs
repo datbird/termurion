@@ -3,6 +3,8 @@
 
 fn main() {
     #[cfg(windows)]
+    tandem::dll::harden_process();
+    #[cfg(windows)]
     std::process::exit(run());
 }
 

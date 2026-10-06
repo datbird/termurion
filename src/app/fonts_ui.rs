@@ -51,11 +51,12 @@ fn widen_to_tmux_windows(targets: &mut Vec<PaneId>, all: &[PaneId], window_of: &
 }
 
 /// The cell under a point of a pane whose text area starts at `origin`, and which half of the
-/// cell it is in.
-pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: u32, rows: u32) -> (u32, u32, Side) {
+/// cell it is in: the right side once the pointer is within `fraction` of the cell's right edge
+/// (`FractionOfCharacterSelectingNextNeighbor`).
+pub fn pointer_cell(cell: (f32, f32), origin: (f32, f32), x: f32, y: f32, cols: u32, rows: u32, fraction: f32) -> (u32, u32, Side) {
     let (cw, ch) = cell;
     let (col, row) = mouse::cell_at((x - origin.0) as f64, (y - origin.1) as f64, cw as f64, ch as f64, cols, rows);
-    let side = if (x - origin.0) - col as f32 * cw > cw / 2.0 { Side::Right } else { Side::Left };
+    let side = crate::seltext::side_for(((x - origin.0) - col as f32 * cw) / cw, fraction);
     (col, row, side)
 }
 
@@ -703,9 +704,7 @@ mod tests {
 
     #[test]
     fn pane_cell_is_warm_before_the_first_frame() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let (device, queue) = crate::render::test_gpu::shared();
         let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let mut faces = PaneFaces::default();
         let default = FaceKey::new("Cascadia Mono", None, 16.0, 1.0, 1.0);
@@ -794,11 +793,14 @@ mod tests {
     fn pointer_cells_follow_the_pane() {
         let origin = (100.0, 40.0);
         // x = 45 into the text: column 4 where cells are 10 wide, column 5 where they are 8.
-        assert_eq!(pointer_cell((10.0, 20.0), origin, 145.0, 41.0, 80, 24).0, 4);
-        assert_eq!(pointer_cell((8.0, 16.0), origin, 145.0, 41.0, 80, 24).0, 5);
+        assert_eq!(pointer_cell((10.0, 20.0), origin, 145.0, 41.0, 80, 24, 0.5).0, 4);
+        assert_eq!(pointer_cell((8.0, 16.0), origin, 145.0, 41.0, 80, 24, 0.5).0, 5);
         // Rows, and the half of the cell.
-        let (_, row, side) = pointer_cell((10.0, 20.0), origin, 147.0, 100.0, 80, 24);
+        let (_, row, side) = pointer_cell((10.0, 20.0), origin, 147.0, 100.0, 80, 24, 0.5);
         assert_eq!((row, side), (3, Side::Right));
-        assert_eq!(pointer_cell((10.0, 20.0), origin, 143.0, 100.0, 80, 24).2, Side::Left);
+        assert_eq!(pointer_cell((10.0, 20.0), origin, 143.0, 100.0, 80, 24, 0.5).2, Side::Left);
+        // iTerm2's 0.35: the last 0.35 of the cell picks the next one (R3).
+        assert_eq!(pointer_cell((10.0, 20.0), origin, 147.0, 100.0, 80, 24, 0.35).2, Side::Right);
+        assert_eq!(pointer_cell((10.0, 20.0), origin, 144.0, 100.0, 80, 24, 0.35).2, Side::Left);
     }
 }

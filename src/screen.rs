@@ -217,6 +217,10 @@ pub const ANSWERBACK_MAX: usize = 256;
 
 pub struct Screen {
     pub(crate) term: Term<Listener>,
+    /// What the live selection is beyond alacritty's own: its mode, column window and anchor.
+    /// It travels with the screen (a Zoom or Filter view swaps both), so a view never reads
+    /// another screen's window.
+    pub sel: crate::seltext::State,
     parser: Processor,
     events: Receiver<Event>,
     pub palette: Palette,
@@ -224,6 +228,8 @@ pub struct Screen {
     pub blink_allowed: bool,
     /// Right-to-left display rules (the globals `Bidi` and its Advanced siblings); the app sets them.
     pub bidi_rules: crate::bidi::Rules,
+    /// What a copy does with whitespace (the globals `TrimWhitespaceOnCopy`, `CopyLastNewline`); the app sets it.
+    pub copy_options: crate::seltext::Options,
     /// Display orders by row content (`row_order`); `pane_with` holds `&Screen` and fills it.
     bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, BidiEntry>>,
     /// When the program hid the cursor (DECTCEM), until it shows it again (Reduce Flicker).
@@ -283,6 +289,8 @@ pub struct Screen {
     pub(crate) saw_location_code: bool,
     /// Moves with every change to the main grid's rows, marks or notes; the scrollbar's tick cache keys on it.
     tick_gen: u64,
+    /// The selected command's region by (tick digest, mark): one scan per grid change (13s P15).
+    pub(crate) region_cache: Option<(u64, u32, Option<(usize, usize)>)>,
     /// `offscreen_facts`' answer for the tick digest it was made at.
     pub(crate) offscreen_cache: Option<(u64, Vec<crate::offscreen::PromptFacts>)>,
     /// Key reporting chosen in the menu (on top of the program's requests).
@@ -326,6 +334,8 @@ pub struct Screen {
     pub progress: crate::progress::Progress,
     /// `Term::resets` as last looked at.
     resets_seen: u64,
+    /// History splices taken so far (an alternate screen's rows joined the main history).
+    splices_taken: u64,
     /// When output last arrived (Idle and Activity After Idle event triggers).
     pub last_output: Option<std::time::Instant>,
     /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
@@ -629,8 +639,10 @@ impl Screen {
         term.width_rule = Some(width_rule(&look, &crate::emu::Rules::default(), 0));
         Self {
             term,
+            sel: Default::default(),
             blink_allowed: look.blink_allowed,
             bidi_rules: crate::bidi::Rules::default(),
+            copy_options: crate::seltext::Options { trim: true, last_newline: false },
             bidi_cache: Default::default(),
             parser: Processor::new(),
             events,
@@ -665,6 +677,7 @@ impl Screen {
             term_name: "xterm-256color".to_string(),
             saw_location_code: false,
             tick_gen: 0,
+            region_cache: None,
             offscreen_cache: None,
             keys: KeyState::new(look.csi_u),
             trusted: true,
@@ -679,6 +692,7 @@ impl Screen {
             bell_count: 0,
             progress: crate::progress::Progress::Stopped,
             resets_seen: 0,
+            splices_taken: 0,
             last_output: None,
             next_porthole: 0,
             porthole_wide_default: false,
@@ -957,6 +971,7 @@ impl Screen {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.bump_ticks();
         self.term.resize(GridSize { cols, rows });
+        self.sync_selection();
         // Reflow moved rows: triggers go on from the cursor.
         self.triggers_from_cursor();
         self.composer_rows_moved();
@@ -969,6 +984,170 @@ impl Screen {
     pub fn term_mut(&mut self) -> &mut Term<Listener> {
         self.bump_ticks();
         &mut self.term
+    }
+
+    /// Replaces the live selection (None clears it) made in `mode`. The column window, the
+    /// word or line a drag snaps around and the extra selections start over.
+    pub fn set_selection(&mut self, sel: Option<alacritty_terminal::selection::Selection>, mode: crate::seltext::Mode) {
+        self.sel = crate::seltext::State { live_mode: mode, epoch: self.epoch(), ..Default::default() };
+        self.term_mut().selection = sel;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.set_selection(None, crate::seltext::Mode::Character);
+    }
+
+    /// Reshapes the live selection a drag is extending, keeping its mode, window and anchor.
+    pub fn reshape_selection(&mut self, sel: alacritty_terminal::selection::Selection) {
+        self.term_mut().selection = Some(sel);
+    }
+
+    /// What numbered extra selections depend on (B2).
+    pub fn epoch(&self) -> crate::seltext::Epoch {
+        use alacritty_terminal::grid::Dimensions;
+        crate::seltext::Epoch { columns: self.term.columns(), lines: self.term.screen_lines(), resets: self.term.resets, history_clears: self.term.history_clears, splices: self.splices_taken, alt: self.alt_screen() }
+    }
+
+    /// Output may have taken the live selection away or moved the rows under the extras: with
+    /// no live selection the extras and the window go; with a changed epoch (a resize, a reset,
+    /// rows spliced into the history, the other screen) the extras go. A full history dropping
+    /// its oldest line needs nothing: extras are numbered lines, read back against `dropped`.
+    pub fn sync_selection(&mut self) {
+        if self.term.selection.is_none() {
+            if self.sel.extras.is_empty() && self.sel.window.is_none() {
+                return;
+            }
+            self.sel = crate::seltext::State { live_mode: self.sel.live_mode, epoch: self.epoch(), ..Default::default() };
+        } else if self.sel.epoch != self.epoch() {
+            self.sel.extras.clear();
+            self.sel.epoch = self.epoch();
+        }
+    }
+
+    /// Adds a selection beside the live one; `sub`'s rows are buffer rows now.
+    pub fn push_extra(&mut self, mut sub: crate::seltext::Sub) {
+        let dropped = self.term.grid().dropped() as usize;
+        sub.start.row += dropped;
+        sub.end.row += dropped;
+        self.sel.epoch = self.epoch();
+        self.sel.extras.push(sub);
+    }
+
+    /// The selections a Win-press keeps beside the one it starts (B11: they join at the press,
+    /// never at the release): every selection now, as buffer rows; none for a plain press.
+    ///
+    /// `multi` is a second or third press of a multi-click: iTerm2 resumes there, removing the
+    /// previous click's word or line selection before the new one (`iTermSelection.m:391-394`),
+    /// so a Win+triple-click replaces the Win+double-click's word instead of cutting it out.
+    pub fn carried_subs(&self, append: bool, multi: bool) -> Vec<crate::seltext::Sub> {
+        use crate::seltext::Mode;
+        if !append {
+            return Vec::new();
+        }
+        let mut subs = self.subs();
+        if multi && !self.live_is_empty() && matches!(self.sel.live_mode, Mode::Word | Mode::Line | Mode::WholeLine | Mode::Smart) {
+            subs.pop();
+        }
+        subs
+    }
+
+    /// Puts `subs` (buffer rows now) beside the live selection a press just made.
+    pub fn carry_subs(&mut self, subs: Vec<crate::seltext::Sub>) {
+        for s in subs {
+            self.push_extra(s);
+        }
+    }
+
+    /// Whether the live selection covers no cell (a press with no drag).
+    pub fn live_is_empty(&self) -> bool {
+        self.term.selection.as_ref().map_or(true, |s| s.runs.is_empty() && s.to_range(&self.term).is_none())
+    }
+
+    /// The extras alone, as buffer rows (the live selection is alacritty's).
+    pub fn extra_subs(&self) -> Vec<crate::seltext::Sub> {
+        use crate::find::Pos;
+        let dropped = self.term.grid().dropped() as usize;
+        self.sel
+            .extras
+            .iter()
+            .filter(|e| e.end.row >= dropped)
+            .map(|e| {
+                let mut e = e.clone();
+                if e.start.row < dropped {
+                    e.start = Pos { row: 0, col: 0 };
+                } else {
+                    e.start.row -= dropped;
+                }
+                e.end.row -= dropped;
+                e
+            })
+            .collect()
+    }
+
+    /// Makes `subs` the selection: the last is alacritty's live one, the rest extras. True when
+    /// more than `MAX_SUBS` were given and the rest dropped.
+    pub fn set_subs(&mut self, mut subs: Vec<crate::seltext::Sub>) -> bool {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let capped = subs.len() > crate::seltext::MAX_SUBS;
+        subs.truncate(crate::seltext::MAX_SUBS);
+        // Rows and columns come from a client (the API): keep every sub inside the buffer, so a
+        // copy or a draw never walks a range of 10^12 rows, and drop one that starts past it.
+        let last_row = (self.term.grid().history_size() + self.term.grid().screen_lines()).saturating_sub(1);
+        let last_col = self.term.columns().saturating_sub(1);
+        subs.retain_mut(|sub| {
+            if sub.start.row > last_row {
+                return false;
+            }
+            sub.end.row = sub.end.row.min(last_row);
+            sub.start.col = sub.start.col.min(last_col);
+            sub.end.col = sub.end.col.min(last_col);
+            if let Some((lo, hi)) = sub.window {
+                sub.window = Some((lo.min(last_col), hi.min(last_col)));
+            }
+            true
+        });
+        let Some(last) = subs.pop() else {
+            self.clear_selection();
+            return false;
+        };
+        let history = self.term.grid().history_size() as i32;
+        let point = |p: crate::find::Pos| Point::new(Line(p.row as i32 - history), Column(p.col));
+        let ty = if last.mode == crate::seltext::Mode::Box { SelectionType::Block } else { SelectionType::Simple };
+        let mut sel = Selection::new(ty, point(last.start), Side::Left);
+        sel.update(point(last.end), Side::Right);
+        self.set_selection(Some(sel), last.mode);
+        self.sel.window = last.window;
+        self.carry_subs(subs);
+        capped
+    }
+
+    /// Every selection as buffer rows: the extras (read back against the lines dropped since
+    /// they were made; one that straddles the oldest kept line is clipped to it, one wholly
+    /// above is gone), then the live one. A visual (bidi) live selection is one sub per run
+    /// (`seltext::merge_runs`).
+    pub fn subs(&self) -> Vec<crate::seltext::Sub> {
+        use crate::find::Pos;
+        let history = self.term.grid().history_size();
+        let mut out = self.extra_subs();
+        let Some(sel) = self.term.selection.as_ref() else { return out };
+        if !sel.runs.is_empty() {
+            let top = self.term.topmost_line().0;
+            let runs: Vec<((i64, i32), (i64, i32))> =
+                sel.runs.iter().filter(|(a, _)| a.line.0 >= top).map(|(a, b)| ((i64::from(a.line.0) + history as i64, a.column.0 as i32), (i64::from(b.line.0) + history as i64, b.column.0 as i32))).collect();
+            for (a, b, connected) in crate::seltext::merge_runs(&runs, self.term.columns() as i32) {
+                out.push(crate::seltext::Sub {
+                    start: Pos { row: a.0 as usize, col: a.1 as usize },
+                    end: Pos { row: b.0 as usize, col: b.1 as usize },
+                    mode: crate::seltext::Mode::Character,
+                    window: None,
+                    connected,
+                });
+            }
+        } else if let Some(r) = sel.to_range(&self.term) {
+            out.push(crate::seltext::from_range(&r, history, self.sel.live_mode, self.sel.window));
+        }
+        out
     }
 
     /// Instant Replay's frame (`TV:2876-2917`, `S:683-699`): None when nothing changed since
@@ -1880,7 +2059,7 @@ impl Screen {
             return Vec::new();
         }
         self.bump_ticks();
-        self.term.selection = None;
+        self.clear_selection();
         let removed = self.term.primary_grid_mut().splice(Line(first), Line(last), with);
         // Rows moved: triggers go on from the cursor.
         self.triggers_from_cursor();
@@ -2070,6 +2249,7 @@ impl Screen {
             self.set_progress(crate::progress::Progress::Stopped);
         }
         let splices = self.term.take_history_splices();
+        self.splices_taken += splices.len() as u64;
         let mut after: usize = splices.iter().map(|(_, by)| *by).sum();
         for (below, by) in splices {
             // The API numbering's base before this splice: what is above the screen now less the
@@ -2102,6 +2282,7 @@ impl Screen {
         if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
             self.prune_tags();
         }
+        self.sync_selection();
         self.drain_events()
     }
 
@@ -2195,12 +2376,16 @@ impl Screen {
         crate::encoding::normalize(text, self.normalization)
     }
 
-    /// The selected text as it leaves the grid (Copy, find, the API): normalized.
+    /// The selected text as it leaves the grid (Copy, find, the API): every selection through
+    /// `seltext::extract` with the copy options, normalized once.
     pub fn selection_text(&self) -> Option<String> {
-        self.term.selection_to_string().map(|mut t| {
-            crate::encoding::normalize_in_place(&mut t, self.normalization);
-            t
-        })
+        let subs = self.subs();
+        if subs.is_empty() {
+            return None;
+        }
+        let mut t = crate::seltext::extract(self, &subs, self.copy_options);
+        crate::encoding::normalize_in_place(&mut t, self.normalization);
+        Some(t)
     }
 
     /// Notes that the main grid's rows, marks or notes may have changed.
@@ -2278,6 +2463,7 @@ impl Screen {
         self.term.clear_screen(ClearMode::Saved);
         self.prune_tags();
         self.prune_marks();
+        self.sync_selection();
     }
 
     /// iTerm2's Reset (a soft reset, DECSTR): modes, attributes, margins, and charset go back
@@ -2390,6 +2576,52 @@ impl Screen {
             out.push('\n');
         }
         out
+    }
+}
+
+/// The displayed grid as the selection text model reads it (rows from the oldest line).
+impl crate::seltext::Cells for Screen {
+    fn width(&self) -> usize {
+        self.term.columns()
+    }
+
+    fn rows(&self) -> usize {
+        let grid = self.term.grid();
+        grid.history_size() + grid.screen_lines()
+    }
+
+    fn wraps(&self, row: usize) -> bool {
+        let grid = self.term.grid();
+        let line = Line(row as i32 - grid.history_size() as i32);
+        grid[line][Column(grid.columns() - 1)].flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE)
+    }
+
+    /// A cell's text as alacritty's `line_to_string` reads it: the character and its zero-width
+    /// ones, nothing for a wide character's spacers, and nothing for the blanks a tab skipped.
+    fn push_cell(&self, row: usize, col: usize, out: &mut String) -> bool {
+        use alacritty_terminal::term::cell::Flags;
+        let grid = self.term.grid();
+        let line = Line(row as i32 - grid.history_size() as i32);
+        let cells = &grid[line];
+        let cell = &cells[Column(col)];
+        if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+            return false;
+        }
+        if cell.c == ' ' {
+            // Blanks after a tab up to the next tab stop belong to the tab.
+            let mut c = col;
+            while c > 0 && cells[Column(c)].c == ' ' && !self.term.is_tab_stop(Column(c)) {
+                c -= 1;
+                if cells[Column(c)].c == '\t' {
+                    return false;
+                }
+            }
+        }
+        out.push(cell.c);
+        for z in cell.zerowidth().into_iter().flatten() {
+            out.push(*z);
+        }
+        true
     }
 }
 
@@ -5208,5 +5440,185 @@ mod tests {
         s.soft_reset();
         s.feed(b"ok");
         assert!(s.all_text().contains("ok"), "{:?}", s.all_text());
+    }
+
+    fn hist_extra(s: &mut Screen, row: usize, from: usize, to: usize) {
+        s.push_extra(crate::seltext::Sub { start: crate::find::Pos { row, col: from }, end: crate::find::Pos { row, col: to }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+    }
+
+    fn live_over(s: &mut Screen, line: i32, from: usize, to: usize) {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(line), Column(from)), Side::Left);
+        sel.update(Point::new(Line(line), Column(to)), Side::Right);
+        s.set_selection(Some(sel), crate::seltext::Mode::Character);
+    }
+
+    /// Review I2: subs from a client are clamped to the buffer; a huge BOX cannot hang a copy.
+    #[test]
+    fn set_subs_clamps_to_the_buffer() {
+        use crate::seltext::{Mode, Sub};
+        let mut s = Screen::new(10, 3);
+        s.feed(b"one\r\ntwo\r\nthree");
+        let sub = |a: (usize, usize), b: (usize, usize), mode| Sub { start: crate::find::Pos { row: a.0, col: a.1 }, end: crate::find::Pos { row: b.0, col: b.1 }, mode, window: Some((0, 1 << 40)), connected: false };
+        let huge = usize::MAX / 2;
+        let capped = s.set_subs(vec![
+            sub((0, 0), (huge, 1 << 40), Mode::Box),
+            sub((huge, 0), (huge, 3), Mode::Character),
+            sub((2, 0), (2, 4), Mode::Character),
+        ]);
+        assert!(!capped);
+        let subs = s.subs();
+        assert_eq!(subs.len(), 2, "the sub past the buffer is gone: {subs:?}");
+        assert_eq!(subs[0].end.row, 2);
+        assert!(subs[0].end.col <= 9 && subs[0].window.is_none_or(|(_, hi)| hi <= 9));
+        assert!(s.selection_text().is_some());
+        assert!(!crate::styled_copy::runs(&s).is_empty());
+    }
+
+    #[test]
+    fn extras_copy_with_the_live_selection() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"one\r\ntwo\r\nthree");
+        live_over(&mut s, 2, 0, 4);
+        hist_extra(&mut s, 0, 0, 2);
+        assert_eq!(s.selection_text().as_deref(), Some("one\nthree"));
+    }
+
+    /// B2: a full scrollback dropping its oldest lines moves nothing the extras name.
+    #[test]
+    fn extras_follow_a_full_history() {
+        let mut s = Screen::with_scrollback(10, 3, 4);
+        s.feed(b"l0\r\nl1\r\nl2\r\nl3\r\nl4\r\nl5\r\nl6\r\nl7");
+        let history = s.term().grid().history_size();
+        live_over(&mut s, 2, 0, 1);
+        hist_extra(&mut s, history, 0, 1);
+        assert_eq!(s.selection_text().as_deref(), Some("l5\nl7"));
+        s.feed(b"\r\nl8\r\nl9");
+        assert!(s.term().grid().dropped() >= 3);
+        assert_eq!(s.selection_text().as_deref(), Some("l5\nl7"), "same text after more lines were dropped");
+        // Five more lines push l5 out of the buffer: that extra is gone, the live one too.
+        s.feed(b"\r\na\r\nb\r\nc\r\nd\r\ne");
+        assert!(!s.selection_text().unwrap_or_default().contains("l5"), "a line that left the buffer is not copied");
+        assert_ne!(s.selection_text().as_deref(), Some("l5\nl7"), "and nothing stands in for it");
+    }
+
+    #[test]
+    fn extras_die_on_reflow_and_splice() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"one\r\ntwo\r\nthree");
+        live_over(&mut s, 2, 0, 4);
+        hist_extra(&mut s, 0, 0, 2);
+        s.resize(8, 3);
+        assert!(s.sel.extras.is_empty(), "a resize drops them");
+        live_over(&mut s, 2, 0, 4);
+        hist_extra(&mut s, 0, 0, 2);
+        s.feed(b"\x1b[?1049h");
+        assert!(s.sel.extras.is_empty(), "so does the other screen");
+        live_over(&mut s, 0, 0, 1);
+        hist_extra(&mut s, 1, 0, 1);
+        s.feed(b"\x1bc");
+        assert!(s.sel.extras.is_empty(), "and a reset");
+    }
+
+    /// Review I1 (B2): clearing the scrollback renumbers the rows without moving `dropped`, so
+    /// extras made before it must go (CSI 3 J with consent, Clear Scrollback Buffer).
+    #[test]
+    fn extras_die_on_history_clear() {
+        let fill = || {
+            let mut s = Screen::new(10, 3);
+            s.set_rules(crate::emu::Rules { clear_history: Some(false), ..Default::default() });
+            s.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+            assert!(s.term().grid().history_size() >= 2);
+            // A live selection on the screen (it survives a history clear) and an extra in the history.
+            live_over(&mut s, 2, 0, 3);
+            hist_extra(&mut s, 0, 0, 2);
+            assert_eq!(s.selection_text().as_deref(), Some("one\nfive"));
+            s
+        };
+        let mut s = fill();
+        s.feed(b"\x1b[3J");
+        assert_eq!(s.term().grid().history_size(), 0);
+        assert!(s.sel.extras.is_empty(), "CSI 3 J drops the extras");
+        assert_ne!(s.selection_text().as_deref(), Some("two\nfive"), "no wrong rows copied");
+        let mut s = fill();
+        s.clear(true);
+        assert!(s.sel.extras.is_empty(), "Clear Scrollback Buffer drops the extras");
+        assert_eq!(s.selection_text().as_deref(), Some("five"), "only the live selection is left");
+    }
+
+    #[test]
+    fn internal_clears_drop_extras() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"one\r\ntwo\r\nthree");
+        live_over(&mut s, 2, 0, 4);
+        hist_extra(&mut s, 0, 0, 2);
+        s.splice_rows(0, 0, Vec::new());
+        assert!(s.sel.extras.is_empty() && s.term().selection.is_none(), "splice_rows");
+        live_over(&mut s, 2, 0, 4);
+        hist_extra(&mut s, 0, 0, 2);
+        s.clear_from(0);
+        assert!(s.sel.extras.is_empty() && s.term().selection.is_none(), "clear_from");
+    }
+
+    #[test]
+    fn output_that_clears_the_live_selection_drops_extras() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"one\r\ntwo\r\nthree");
+        live_over(&mut s, 2, 0, 4);
+        hist_extra(&mut s, 0, 0, 2);
+        s.term_mut().selection = None;
+        s.sync_selection();
+        assert!(s.sel.extras.is_empty());
+        assert_eq!(s.selection_text(), None);
+    }
+
+    #[test]
+    fn visual_runs_copy_through_subs() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let p = |col: usize| Point::new(Line(0), Column(col));
+        s.set_selection(Some(Selection::new(SelectionType::Simple, p(0), Side::Left)), crate::seltext::Mode::Character);
+        assert!(s.drag_visual_selection((0, 0, false), (0, 3, true)));
+        assert_eq!(s.subs().len(), 2, "one sub per run");
+        assert_eq!(s.selection_text().as_deref(), Some("ab \u{5d1}"), "the aleph, never swept, stays out");
+        s.set_selection(Some(Selection::new(SelectionType::Simple, p(0), Side::Left)), crate::seltext::Mode::Character);
+        assert!(s.drag_visual_selection((0, 3, false), (1, 1, true)));
+        assert_eq!(s.selection_text().as_deref(), Some("\u{5d0}\u{5d1}\npl"));
+    }
+
+    #[test]
+    fn extras_with_a_visual_live_selection() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut s = Screen::new(10, 3);
+        s.feed("ab \u{5d0}\u{5d1}\r\nplain".as_bytes());
+        let p = |col: usize| Point::new(Line(0), Column(col));
+        s.set_selection(Some(Selection::new(SelectionType::Simple, p(0), Side::Left)), crate::seltext::Mode::Character);
+        assert!(s.drag_visual_selection((0, 0, false), (0, 3, true)));
+        hist_extra(&mut s, 1, 0, 4);
+        assert_eq!(s.selection_text().as_deref(), Some("ab \u{5d1}\nplain"));
+    }
+
+    #[test]
+    fn copy_options_reach_the_text() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"ab   \r\ncd");
+        live_over(&mut s, 0, 0, 9);
+        assert_eq!(s.selection_text().as_deref(), Some("ab"));
+        s.copy_options.trim = false;
+        assert_eq!(s.selection_text().as_deref(), Some("ab        "), "a line keeps its spaces up to the selection's end");
+        s.copy_options = crate::seltext::Options { trim: true, last_newline: true };
+        assert_eq!(s.selection_text().as_deref(), Some("ab\n"));
+    }
+
+    #[test]
+    fn a_tab_copies_as_one_tab() {
+        let mut s = Screen::new(20, 2);
+        s.feed(b"a\tb");
+        live_over(&mut s, 0, 0, 9);
+        assert_eq!(s.selection_text().as_deref(), Some("a\tb"));
     }
 }

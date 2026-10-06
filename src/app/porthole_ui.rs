@@ -143,7 +143,7 @@ impl App {
         if !crate::porthole::selection_can_render(1, dragging, overlaps) {
             return beep();
         }
-        p.screen.term_mut().selection = None;
+        p.clear_selection();
         if self.make_porthole(id, first, last, Source { hint: None, filename: None, wide }).is_none() {
             beep();
         }
@@ -393,13 +393,13 @@ impl App {
                 let styled: Vec<crate::styled_copy::Row> = rows
                     .iter()
                     .map(|(runs, hard)| crate::styled_copy::Row {
-                        runs: runs.iter().map(|r| crate::styled_copy::Run { text: r.text.clone(), fg: r.color, bg, bold: r.bold, italic: r.italic, underline: r.underline, link: r.link.clone() }).collect(),
+                        runs: runs.iter().map(|r| crate::styled_copy::Run { text: r.text.clone(), fg: r.color, bg, bold: r.bold, italic: r.italic, underline: r.underline, link: r.link.clone(), default_bg: true }).collect(),
                         hard_end: *hard,
                     })
                     .collect();
                 let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
-                let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&styled, &font.family, font.size_pt, bg));
-                let rtf = crate::styled_copy::rtf(&styled, &font.family, font.size_pt);
+                let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&styled, &font.family, font.size_pt, bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
+                let rtf = crate::styled_copy::rtf(&styled, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals));
                 Some(crate::winclip::set(&text, &html, &rtf))
             }
         };

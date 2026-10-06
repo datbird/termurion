@@ -19,7 +19,7 @@ pub enum What {
 pub fn text_rows(text: &str, fg: alacritty_terminal::vte::ansi::Rgb, bg: alacritty_terminal::vte::ansi::Rgb) -> Vec<Row> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     text.split('\n')
-        .map(|line| Row { runs: vec![crate::styled_copy::Run { text: line.to_string(), fg, bg, bold: false, italic: false, underline: false, link: None }], hard_end: true })
+        .map(|line| Row { runs: vec![crate::styled_copy::Run { text: line.to_string(), fg, bg, bold: false, italic: false, underline: false, link: None, default_bg: false }], hard_end: true })
         .collect()
 }
 
@@ -85,6 +85,19 @@ mod tests {
 
     fn text(rows: &[Row]) -> Vec<String> {
         rows.iter().map(|r| r.runs.iter().map(|x| x.text.as_str()).collect()).collect()
+    }
+
+    /// B3: Print Selection prints every selection, the ones `Screen::selection_text` copies.
+    #[test]
+    fn print_selection_includes_the_extras() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"one\r\ntwo\r\nthree");
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(2), Column(0)), Side::Left);
+        sel.update(Point::new(Line(2), Column(4)), Side::Right);
+        s.set_selection(Some(sel), crate::seltext::Mode::Character);
+        s.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 0, col: 0 }, end: crate::find::Pos { row: 0, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        assert_eq!(s.selection_text().as_deref(), Some("one\nthree"));
+        assert_eq!(text(&rows(&s, What::Selection)).join("\n"), s.selection_text().unwrap());
     }
 
     #[test]

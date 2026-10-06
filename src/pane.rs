@@ -2087,6 +2087,16 @@ impl Pane {
         true
     }
 
+    /// Every write to the selection goes through here, so the live mode and the column window
+    /// stay consistent with it.
+    pub fn set_selection(&mut self, sel: Option<alacritty_terminal::selection::Selection>, mode: crate::seltext::Mode) {
+        self.screen.set_selection(sel, mode);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.screen.clear_selection();
+    }
+
     /// iTerm2's Clear to Last Mark: clears from after the last mark above the prompt, then
     /// clears ConPTY's buffer too (keeping the cursor row), so both agree.
     pub fn clear_to_last_mark(&mut self) {
@@ -2095,7 +2105,7 @@ impl Pane {
         let cursor = self.screen.term().grid().cursor.point.line.0;
         let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
         self.screen.clear_from(start);
-        self.screen.term_mut().selection = None;
+        self.screen.clear_selection();
         if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
@@ -2123,7 +2133,7 @@ impl Pane {
         let line = end - 1;
         self.end_view();
         self.screen.clear_from(line);
-        self.screen.term_mut().selection = None;
+        self.screen.clear_selection();
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.clear() {
                 self.error = Some(e);
@@ -2203,6 +2213,39 @@ impl Pane {
         self.password_input && self.live.is_none() && self.replay.is_none()
     }
 
+    /// The selected command's region in the pane's own screen, in buffer rows, inclusive (13s
+    /// P15). None with no command selected and while the alternate screen shows. A mark that is
+    /// gone ends the selection.
+    pub fn own_region(&mut self) -> Option<(usize, usize)> {
+        let mark = self.selected_command?;
+        let own = self.own_mut();
+        if own.alt_screen() {
+            return None;
+        }
+        let region = own.command_region(mark);
+        if region.is_none() {
+            self.selected_command = None;
+        }
+        region
+    }
+
+    /// `own_region` for what the pane shows: None in a Filter or Zoom view, whose rows are not
+    /// the buffer's.
+    pub fn selected_region(&mut self) -> Option<(usize, usize)> {
+        if self.live.is_some() {
+            return None;
+        }
+        self.own_region()
+    }
+
+    /// The rows Find, Filter and Select All work in (`updateSearchRange`, `PS:21819-21834`): the
+    /// region, one row higher for a line-style mark. In a view the own screen's rows.
+    pub fn search_region(&mut self) -> Option<(usize, usize)> {
+        let (first, last) = self.own_region()?;
+        let line_style = self.selected_command.and_then(|m| self.own().command_record(m)).is_some_and(|m| m.line_style);
+        Some((if line_style { first.saturating_sub(1) } else { first }, last))
+    }
+
     /// The pane's own screen, also while a view shows.
     pub fn own(&self) -> &Screen {
         self.live.as_ref().unwrap_or(&self.screen)
@@ -2253,12 +2296,21 @@ impl Pane {
         self.screen.bidi_rules = rules;
     }
 
+    /// What a copy does with whitespace, on the pane's own screen and any view.
+    pub fn set_copy_options(&mut self, options: crate::seltext::Options) {
+        if let Some(live) = &mut self.live {
+            live.copy_options = options;
+        }
+        self.screen.copy_options = options;
+    }
+
     /// Shows a read-only view in place of the pane's screen.
     pub fn show_view(&mut self, mut view: Screen) {
         if self.frozen {
             return;
         }
         view.bidi_rules = self.screen.bidi_rules;
+        view.copy_options = self.screen.copy_options;
         let own = std::mem::replace(&mut self.screen, view);
         if self.live.is_none() {
             self.live = Some(own);
@@ -4098,7 +4150,7 @@ mod tests {
     fn a_view_keeps_the_panes_own_modes_and_style() {
         let mut p = start("cmd.exe");
         p.own_mut().feed(b"\x1b[?2004h");
-        let view = crate::synthetic::view(&["x".to_string()], p.own());
+        let view = crate::synthetic::view(&[crate::synthetic::Styled { text: "x".into(), sgr: "x".into() }], p.own());
         p.show_view(view);
         assert!(p.paste_payload("a\nb").starts_with(b"\x1b[200~"));
         let mut red = crate::palette::Palette::default();
@@ -4107,6 +4159,47 @@ mod tests {
         p.end_view();
         assert_eq!(p.screen.palette.bg, red.bg);
     }
+    #[test]
+    fn selection_writes_keep_state() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        p.screen.feed(b"one\r\ntwo");
+        let sel = || Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        p.set_selection(Some(sel()), crate::seltext::Mode::Word);
+        assert_eq!(p.screen.sel.live_mode, crate::seltext::Mode::Word);
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.screen.sel.window = Some((1, 2));
+        assert_eq!(p.screen.sel.extras.len(), 1);
+        // A new selection starts the extras and the window over.
+        p.set_selection(Some(sel()), crate::seltext::Mode::Character);
+        assert!(p.screen.sel.extras.is_empty() && p.screen.sel.window.is_none());
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.clear_selection();
+        assert!(p.screen.sel.extras.is_empty());
+        // What alacritty does on output: the selection goes, and the extras with it.
+        p.set_selection(Some(sel()), crate::seltext::Mode::Character);
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.screen.term_mut().selection = None;
+        p.screen.sync_selection();
+        assert!(p.screen.sel.extras.is_empty());
+    }
+
+    /// B1: the extras travel with the screen a Zoom or Filter view swaps out.
+    #[test]
+    fn extras_ride_with_the_screen() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        p.screen.feed(b"one\r\ntwo");
+        p.set_selection(Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left)), crate::seltext::Mode::Character);
+        p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
+        p.show_view(Screen::new(20, 4));
+        assert!(p.screen.sel.extras.is_empty(), "the view shows none");
+        p.end_view();
+        assert_eq!(p.screen.sel.extras.len(), 1, "the own screen gets them back");
+    }
+
     #[test]
     fn copies_read_the_screen_the_user_selects_in() {
         use alacritty_terminal::index::{Column, Line, Point, Side};

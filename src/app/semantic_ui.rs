@@ -4,13 +4,20 @@
 use alacritty_terminal::index::Point;
 
 use super::*;
-use super::find_ui::{reveal, to_pos};
+use super::find_ui::{reveal_as, to_pos};
 use crate::find::{self, Logical, Match};
 use crate::sh_context;
 use crate::semantic::{self, Around, ClickContext, Prefs, Run, Target};
 use crate::smartsel;
 use crate::ssh_files;
 
+/// `SmartSelectionRadius` (iTerm2's 2): the logical lines Smart Selection looks at each way from
+/// the click. Clamped to 0..=50 (P6), so a negative value is 0 and a hand-edited huge one cannot
+/// make every click read thousands of lines.
+pub(super) fn radius(g: &crate::globals::Globals) -> usize {
+    let n = g.number("SmartSelectionRadius").filter(|v| !v.is_nan()).unwrap_or(2.0);
+    n.clamp(0.0, 50.0) as usize
+}
 /// How a plan is run beyond the plan itself.
 #[derive(Clone, Copy)]
 pub(super) struct Exec<'a> {
@@ -31,11 +38,8 @@ pub(super) fn hover_cells(target_cells: Match, underline: bool) -> Option<Match>
 /// The columns between soft boundaries (the vertical dividers apps draw) around a click, when
 /// `restrict` is on and a divider stands in the click's row (`UAH:86`, `UAH:401-430`).
 pub(super) fn window_for(rows: &[Vec<char>], row: usize, col: usize, width: usize, restrict: bool) -> Option<(usize, usize)> {
-    if !restrict || width == 0 {
-        return None;
-    }
-    let dividers = crate::seltools::divider_columns(rows, row);
-    (!dividers.is_empty()).then(|| crate::seltools::clip_to_dividers(0, width - 1, col, &dividers))
+    // One rule with word selection's soft boundaries (S2).
+    restrict.then(|| crate::wordsel::window_at(rows, row, col, width)).flatten()
 }
 
 /// The columns between soft boundaries around `at`, when `restrict` is on.
@@ -67,10 +71,10 @@ fn rows_each_way(columns: usize, max: usize) -> i32 {
     (sh_context::ROW_CLAMP.max(max / columns.max(1) + 2)).min(200) as i32
 }
 
-/// The logical lines Smart Selection reads around `at` (`RADIUS` each way) and the index of the
+/// The logical lines Smart Selection reads around `at` (`radius` each way, `SmartSelectionRadius`) and the index of the
 /// one holding `at`, built from a bounded span of rows (`rows_each_way`) inside the column
 /// window, never from whole logical lines: one huge wrapped line costs the same as a short one.
-fn smart_lines(screen: &crate::screen::Screen, at: find::Pos, window: Option<(usize, usize)>, max: usize) -> (Vec<Logical>, usize) {
+fn smart_lines(screen: &crate::screen::Screen, at: find::Pos, window: Option<(usize, usize)>, max: usize, radius: usize) -> (Vec<Logical>, usize) {
     use alacritty_terminal::grid::Dimensions;
     let grid = screen.term().grid();
     let top = -(grid.history_size() as i32);
@@ -93,7 +97,7 @@ fn smart_lines(screen: &crate::screen::Screen, at: find::Pos, window: Option<(us
             lines.push(std::mem::replace(&mut cur, Logical { text: String::new(), cells: Vec::new() }));
         }
     }
-    let (lo, hi) = (clicked.saturating_sub(RADIUS), (clicked + RADIUS + 1).min(lines.len()));
+    let (lo, hi) = (clicked.saturating_sub(radius), (clicked + radius + 1).min(lines.len()));
     let kept: Vec<Logical> = lines.drain(lo..hi).collect();
     (kept, clicked - lo)
 }
@@ -105,9 +109,6 @@ pub(super) fn hover_key(at: Option<(PaneId, Point)>, underline: bool, preview: b
     at.map(|(id, p)| (id, p.line.0, p.column.0, underline, preview))
 }
 
-/// Smart Selection looks this many logical lines each way from the click.
-const RADIUS: usize = 2;
-
 impl App {
     /// Selects the best Smart Selection match at `point`. Returns the rule and match, or
     /// None (and selects nothing) when no rule matches there.
@@ -116,12 +117,12 @@ impl App {
         let p = self.panes.get_mut(&id)?;
         let at = to_pos(&p.screen, point);
         let max = self.globals.int("MaxSemanticHistoryPrefixOrSuffix").max(0) as usize;
-        let (lines, _) = smart_lines(&p.screen, at, None, max);
+        let (lines, _) = smart_lines(&p.screen, at, None, max, radius(&self.globals));
         let joined = find::Logical::join(&lines, if ignore_newlines { "" } else { "\n" });
         let click = joined.offset_of(at)?;
         let found = smartsel::select_at(&joined.text, click, &rules)?;
         let m = Match { start: joined.pos_before(found.range.start), end: joined.pos_before(found.range.end - 1) };
-        reveal(p, &m);
+        reveal_as(p, &m, crate::seltext::Mode::Smart);
         Some(found)
     }
 
@@ -137,7 +138,7 @@ impl App {
         // Detection stays between soft boundaries (`UAH:86`), Smart Selection included (P12),
         // over a bounded number of rows, never whole logical lines.
         let window = click_window(&p.screen, at, true);
-        let (lines, i) = smart_lines(&p.screen, at, window, max);
+        let (lines, i) = smart_lines(&p.screen, at, window, max, radius(&self.globals));
         let line = lines.get(i)?.clone_line();
         line.offset_of(at)?;
         let joined = Logical::join(&lines, "\n");
@@ -205,8 +206,7 @@ impl App {
             chars,
             trailing: self.globals.string("TrailingPunctuationMarks"),
             conservative: self.globals.bool("ConservativeURLGuessing"),
-            // 13s's RequireSlashInURLGuess (default true); until its row exists the default holds.
-            require_slash: self.globals.get("RequireSlashInURLGuess").and_then(|v| v.as_bool()).unwrap_or(true),
+            require_slash: self.globals.bool("RequireSlashInURLGuess"),
             default_scheme: self.globals.string("DefaultURLScheme"),
             cwd_is_local,
         }
@@ -916,6 +916,20 @@ mod title_menu_tests {
     use super::*;
 
     #[test]
+    fn smart_selection_radius_follows_the_key() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("radius-test.toml"));
+        assert_eq!(radius(&g), 2);
+        g.set("SmartSelectionRadius", toml::Value::Integer(0));
+        assert_eq!(radius(&g), 0);
+        g.set("SmartSelectionRadius", toml::Value::Integer(5));
+        assert_eq!(radius(&g), 5);
+        g.set("SmartSelectionRadius", toml::Value::Integer(-4));
+        assert_eq!(radius(&g), 0);
+        g.set("SmartSelectionRadius", toml::Value::Integer(100_000));
+        assert_eq!(radius(&g), 50);
+    }
+
+    #[test]
     fn picks_act_on_the_menus_pane() {
         let (a, b): (PaneId, PaneId) = (1, 2);
         // Menu for B while A is focused: a provider pick and a Swap reach B only.
@@ -1256,16 +1270,51 @@ mod smart_lines_tests {
     fn smart_text_is_bounded_on_a_huge_logical_line() {
         let s = long_line(40_000);
         let at = find::Pos { row: 100, col: 5 };
-        let (lines, i) = smart_lines(&s, at, None, 2000);
+        let (lines, i) = smart_lines(&s, at, None, 2000, 2);
         let bytes: usize = lines.iter().map(|l| l.text.len()).sum();
         // 27 rows each way at 80 columns, not the 500 rows of the line.
         assert!(bytes <= 55 * 80, "{bytes}");
         assert!(lines[i].offset_of(at).is_some(), "the clicked cell is still in its line");
         // A window cuts the columns too, and the bound holds on the whole buffer's far end.
-        let (win, _) = smart_lines(&s, at, Some((0, 9)), 2000);
+        let (win, _) = smart_lines(&s, at, Some((0, 9)), 2000, 2);
         assert!(win.iter().map(|l| l.text.len()).sum::<usize>() <= 55 * 10);
-        let (top, i) = smart_lines(&s, find::Pos { row: 0, col: 0 }, None, 2000);
+        let (top, i) = smart_lines(&s, find::Pos { row: 0, col: 0 }, None, 2000, 2);
         assert!(top[i].offset_of(find::Pos { row: 0, col: 0 }).is_some());
+    }
+
+    /// Merge seam (S3): `smart_lines` reads `SmartSelectionRadius` lines each way, not 13r's
+    /// fixed 2.
+    #[test]
+    fn smart_lines_take_the_radius() {
+        let mut s = crate::screen::Screen::with_scrollback(80, 24, 100);
+        s.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\n");
+        let history = {
+            use alacritty_terminal::grid::Dimensions;
+            s.term().grid().history_size()
+        };
+        let at = find::Pos { row: history + 3, col: 0 };
+        let texts = |r: usize| smart_lines(&s, at, None, 2000, r).0.into_iter().map(|l| l.text).collect::<Vec<_>>();
+        assert_eq!(texts(0), ["d"]);
+        assert_eq!(texts(1), ["c", "d", "e"]);
+        assert_eq!(texts(3), ["a", "b", "c", "d", "e", "f", "g"]);
+        let code = include_str!("semantic_ui.rs");
+        let code = &code[..code.find("#[cfg(test)]").unwrap()];
+        assert!(!code.contains("const RADIUS"));
+        assert_eq!(code.matches(", radius(&self.globals))").count(), 2, "both Smart Selection call sites");
+        assert!(code.contains("require_slash: self.globals.bool(\"RequireSlashInURLGuess\")"), "url_prefs reads the row (S1)");
+    }
+
+    /// Merge seam (S2): one soft-boundary window rule, word selection's.
+    #[test]
+    fn semantic_windows_are_word_selection_windows() {
+        let rows: Vec<Vec<char>> = (0..crate::seltools::DIVIDER_RUN).map(|_| "abc \u{2502} def \u{2502} ghi".chars().collect()).collect();
+        assert_eq!(window_for(&rows, 1, 7, 15, true), Some((5, 9)), "between the dividers");
+        for col in [0, 2, 7, 13] {
+            assert_eq!(window_for(&rows, 1, col, 15, true), crate::wordsel::window_at(&rows, 1, col, 15), "{col}");
+        }
+        assert_eq!(window_for(&rows, 1, 7, 15, false), None);
+        let plain: Vec<Vec<char>> = vec!["no dividers".chars().collect()];
+        assert_eq!(window_for(&plain, 0, 3, 11, true), None);
     }
 
     #[test]
@@ -1277,7 +1326,7 @@ mod smart_lines_tests {
             s.term().grid().history_size()
         };
         let at = find::Pos { row: history + 1, col: 4 };
-        let (lines, i) = smart_lines(&s, at, None, 2000);
+        let (lines, i) = smart_lines(&s, at, None, 2000, 2);
         assert_eq!(lines[i].text, "two https://a.b/c");
         assert_eq!(lines[i - 1].text, "one");
         assert_eq!(lines[i + 1].text, "three");

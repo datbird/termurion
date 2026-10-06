@@ -246,10 +246,12 @@ pub enum Overlay {
     Banner,
     /// The Move Pane pick's looks over the session views.
     PaneMove,
+    /// The first-selection notice of Clicking on a Command (13s Task 9).
+    CommandInfo,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 12] = [Overlay::InfoBar, Overlay::Porthole, Overlay::Pill, Overlay::Picker, Overlay::Indicator, Overlay::Find, Overlay::Completion, Overlay::Composer, Overlay::ComposerPopup, Overlay::Toast, Overlay::Banner, Overlay::PaneMove];
+    pub const ALL: [Overlay; 13] = [Overlay::InfoBar, Overlay::Porthole, Overlay::Pill, Overlay::Picker, Overlay::Indicator, Overlay::Find, Overlay::Completion, Overlay::Composer, Overlay::ComposerPopup, Overlay::Toast, Overlay::Banner, Overlay::PaneMove, Overlay::CommandInfo];
 }
 
 /// Tandem's own surfaces that never lie inside a pane's terminal rectangle, so `pane_at` never
@@ -572,7 +574,7 @@ mod tests {
             assert!(!ui.hit(50.0, 5.0), "{kind:?} outside");
         }
         assert!(!UiRects::default().hit(5.0, 5.0));
-        for want in ["InfoBar", "Porthole", "Pill", "Picker", "Indicator", "Find", "Completion", "Composer", "ComposerPopup", "Toast", "Banner", "PaneMove"] {
+        for want in ["InfoBar", "Porthole", "Pill", "Picker", "Indicator", "Find", "Completion", "Composer", "ComposerPopup", "Toast", "Banner", "PaneMove", "CommandInfo"] {
             assert!(Overlay::ALL.iter().any(|k| format!("{k:?}") == want), "{want} is an overlay kind");
         }
         for want in ["title bar", "status bar", "inline AI panel", "clip panel", "scrollbar"] {
@@ -618,7 +620,7 @@ mod tests {
     #[test]
     fn the_pane_move_pick_is_an_overlay_kind() {
         assert!(Overlay::ALL.iter().any(|k| format!("{k:?}") == "PaneMove"));
-        assert_eq!(Overlay::ALL.len(), 12);
+        assert_eq!(Overlay::ALL.len(), 13, "13s Task 9 added CommandInfo");
     }
 
     /// Fix round 2, structural: the box a completion list is drawn in is the box it holds clicks in.
