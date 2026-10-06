@@ -14,6 +14,8 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 
 use super::*;
 use crate::access::{self, Event, Signal};
+use crate::pane::Pane;
+use crate::screen::Screen;
 use crate::uia_win::{Host, PaneSnapshot, Request, WindowSnapshot};
 
 /// What the screen reader side keeps of one pane while a client listens.
@@ -38,6 +40,17 @@ pub(super) const BUILD_GAP: Duration = Duration::from_millis(16);
 /// inside the gap folds into that one build).
 pub(super) fn build_wait(last: Option<Instant>, now: Instant, gap: Duration) -> Option<Instant> {
     last.map(|l| l + gap).filter(|d| *d > now)
+}
+
+/// The screen a client reads: the pane's own, never a view standing in for it.
+pub(super) fn access_screen(p: &Pane) -> &Screen {
+    p.own()
+}
+
+/// A view (Instant Replay, Filter, Zoom, a frozen screenshot) is shown in place of the pane's own
+/// screen: what a client holds is not what the view draws, so requests that act on it are refused.
+pub(super) fn view_shown(p: &Pane) -> bool {
+    p.live.is_some() || p.replay.is_some()
 }
 
 /// The current window's title, rectangle and shown panes at the last publish.
@@ -218,11 +231,12 @@ impl App {
         let mut signals: Vec<(PaneId, Signal)> = Vec::with_capacity(shown.len());
         for (id, r) in &shown {
             let p = &self.panes[id];
-            let term = p.screen.term();
+            let screen = access_screen(p);
+            let term = screen.term();
             let sel = term.selection.as_ref().and_then(|s| s.to_range(term)).map(|r| ((r.start.line.0, r.start.column.0), (r.end.line.0, r.end.column.0)));
             let (cw, ch) = self.pane_cell(*id);
             let rect = (wx + r.x as i32, wy + r.y as i32, wx + (r.x + r.w) as i32, wy + (r.y + r.h) as i32);
-            signals.push((*id, Signal { tick: p.screen.tick_digest(), sel, offset: term.grid().display_offset(), focused: self.focused && tab_focus == Some(*id), rect, cell: (cw.round() as u32, ch.round() as u32) }));
+            signals.push((*id, Signal { tick: screen.tick_digest(), sel, offset: term.grid().display_offset(), focused: self.focused && tab_focus == Some(*id), rect, cell: (cw.round() as u32, ch.round() as u32) }));
         }
         let last: HashMap<PaneId, Signal> = self.access_trackers.iter().filter_map(|(id, s)| s.signal.clone().map(|g| (*id, g))).collect();
         let mut changed = access::changed_panes(&last, &signals);
@@ -270,7 +284,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     fn access_build(&self, id: PaneId, rect: crate::layout::Rect, sig: &Signal, lines: i64, win: (i32, i32), now: Instant, st: &mut AccessPane) -> Vec<Event> {
         let p = &self.panes[&id];
-        let screen = &p.screen;
+        let screen = access_screen(p);
         let grid = screen.term().grid();
         let rows = screen.access_rows(snapshot_rows(lines as usize, grid.history_size(), grid.screen_lines()));
         let cursor_abs = screen.cursor_abs();
@@ -332,7 +346,7 @@ impl App {
         for (id, st) in self.access_trackers.iter_mut() {
             if st.tracker.due().is_some_and(|d| d <= now) {
                 if let Some(p) = self.panes.get(id) {
-                    let ev = st.tracker.settle(now, &|a| p.screen.abs_line_text(a), p.screen.cursor_abs());
+                    let ev = st.tracker.settle(now, &|a| access_screen(p).abs_line_text(a), access_screen(p).cursor_abs());
                     raised.push((*id, ev));
                 }
             }
@@ -357,11 +371,11 @@ impl App {
             Request::Select { pane, start, end } => {
                 let Some(st) = self.access_trackers.get(&pane) else { return };
                 let Some(snap) = st.snap.as_ref().filter(|s| !s.secure) else { return };
-                let Some(p) = self.panes.get_mut(&pane).filter(|p| !p.text_is_secure()) else { return };
+                let Some(p) = self.panes.get_mut(&pane).filter(|p| !p.text_is_secure() && !view_shown(p)) else { return };
                 if start >= end.min(snap.text.text.len()) {
                     p.clear_selection();
                 } else {
-                    let base = p.screen.cursor_abs() - i64::from(p.screen.term().grid().cursor.point.line.0);
+                    let base = access_screen(p).cursor_abs() - i64::from(access_screen(p).term().grid().cursor.point.line.0);
                     let ((r1, c1), (r2, c2)) = selection_cells(&snap.text, start, end);
                     let line = |row: usize| Line((st.first_abs + row as i64 - base).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
                     let mut sel = Selection::new(SelectionType::Simple, Point::new(line(r1), Column(c1)), Side::Left);
@@ -374,8 +388,8 @@ impl App {
                 let Some(st) = self.access_trackers.get(&pane) else { return };
                 let Some(snap) = st.snap.as_ref().filter(|s| !s.secure) else { return };
                 let row = access::cell_of(&snap.text, offset).0.min(snap.text.breaks.len().saturating_sub(1));
-                let Some(p) = self.panes.get_mut(&pane).filter(|p| !p.text_is_secure()) else { return };
-                let base = p.screen.cursor_abs() - i64::from(p.screen.term().grid().cursor.point.line.0);
+                let Some(p) = self.panes.get_mut(&pane).filter(|p| !p.text_is_secure() && !view_shown(p)) else { return };
+                let base = access_screen(p).cursor_abs() - i64::from(access_screen(p).term().grid().cursor.point.line.0);
                 let line = (st.first_abs + row as i64 - base).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
                 super::find_ui::show_line(p, line);
                 self.redraw();
@@ -431,6 +445,47 @@ mod tests {
         assert_eq!(due, t0 + BUILD_GAP);
         assert_eq!(build_wait(last, due, BUILD_GAP), None);
         assert_eq!(build_wait(None, t0, BUILD_GAP), None);
+    }
+
+    /// P12: with a view shown (Filter and Zoom show their view this way, Instant Replay and a frozen
+    /// screenshot too), the model, the digest, the cursor and the settle read the own screen.
+    #[test]
+    fn the_own_screen_is_read_while_a_view_shows() {
+        let mut views: Vec<(&str, Box<dyn Fn(&mut Pane, Screen)>)> = Vec::new();
+        views.push(("view", Box::new(|p, v| p.show_view(v))));
+        views.push(("freeze", Box::new(|p, v| p.freeze(v))));
+        for (name, show) in &views {
+            let mut p = Pane::recording(1, 20, 4);
+            p.screen.feed(b"live secret line\r\nlive 2");
+            let (digest, cursor, at) = (p.screen.tick_digest(), p.screen.cursor_abs(), p.screen.abs_line_text(p.screen.cursor_abs()));
+            let mut v = Screen::new(30, 6);
+            for chunk in [&b"VIEW frame\r\n"[..], b"\r\n", b"\r\n", b"more view text", b"!"] {
+                v.feed(chunk);
+            }
+            assert_ne!(v.tick_digest(), digest, "{name}: the two differ");
+            show(&mut p, v);
+            assert!(view_shown(&p), "{name}: a view shows");
+            let s = access_screen(&p);
+            let rows = s.access_rows(100);
+            let text: String = rows.rows.iter().map(|(c, _)| c.concat()).collect::<Vec<_>>().join("\n");
+            assert!(text.contains("live secret line") && !text.contains("VIEW"), "{name}: {text}");
+            assert_eq!((s.tick_digest(), s.cursor_abs(), s.abs_line_text(s.cursor_abs())), (digest, cursor, at), "{name}");
+        }
+        let p = Pane::recording(1, 20, 4);
+        assert!(!view_shown(&p), "no view");
+    }
+
+    /// P12 in the wiring: nothing here reads `p.screen` (the shown view), and Select and
+    /// ScrollIntoView are refused while a view shows.
+    #[test]
+    fn requests_refuse_while_a_view_shows() {
+        let src = std::fs::read_to_string(format!("{}/src/app/access_app.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!code.contains("p.screen"), "the shown view is read");
+        let req = code.split("fn uia_request(").nth(1).unwrap();
+        let (select, scroll) = req.split_once("Request::ScrollIntoView").unwrap();
+        assert!(select.contains("view_shown("), "Select");
+        assert!(scroll.contains("view_shown("), "ScrollIntoView");
     }
 
     #[test]
