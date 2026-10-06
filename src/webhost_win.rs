@@ -32,6 +32,12 @@ use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
 use crate::webhost::{self, Answer, EnvOptions, Event, Posted, Sink, Store, ViewGate, ViewId};
 
+/// Runs the body of a COM callback. A panic must never unwind into COM (that aborts Tandem with
+/// every session, the 13u rule for callbacks): it becomes `E_FAIL`, so WebView2 ignores the event.
+fn guard(body: impl FnOnce() -> windows::core::Result<()>) -> windows::core::Result<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| Err(windows::Win32::Foundation::E_FAIL.into()))
+}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -328,7 +334,7 @@ impl Env {
         }
         let options: ICoreWebView2EnvironmentOptions = options.into();
         let (done_in, store_copy) = (done.clone(), store);
-        let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |hr, env| {
+        let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |hr, env| guard(|| {
             let result = match (hr, env) {
                 (Ok(()), Some(env)) => Ok(Env { store: store_copy, env }),
                 (Err(e), _) => Err(format!("the WebView2 environment could not be created: {e}")),
@@ -339,7 +345,7 @@ impl Env {
                 f(result);
             }
             Ok(())
-        }));
+        })));
         let wfolder = fixed.map(|p| wide(&p.to_string_lossy()));
         let wdata = wide(&folder.to_string_lossy());
         // SAFETY: the strings outlive the call; the loader takes its own references on the two objects.
@@ -480,7 +486,7 @@ impl WebView {
         }));
         let weak = Rc::downgrade(&inner);
         let fail_poster = poster.clone();
-        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |hr, ctrl| {
+        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |hr, ctrl| guard(|| {
             let Some(inner) = weak.upgrade() else { return Ok(()) };
             match (hr, ctrl) {
                 (Ok(()), Some(ctrl)) => match unsafe { ctrl.CoreWebView2() } {
@@ -507,7 +513,7 @@ impl WebView {
                 (Ok(()), None) => poster_failed(&inner, "the web view was not created".to_string()),
             }
             Ok(())
-        }));
+        })));
         let hwnd = HWND(parent_hwnd as *mut c_void);
         let started = (|| -> Result<(), String> {
             if setup.in_private {
@@ -610,11 +616,11 @@ impl WebView {
         };
         self.with(move |c| {
             let p = poster.clone();
-            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |hr, json| {
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |hr, json| guard(|| {
                 let json = hr.map(|_| json).map_err(|e| e.to_string());
                 p.post(Event::ScriptDone { view: id, token, json });
                 Ok(())
-            }));
+            })));
             if let Err(e) = unsafe { c.view.ExecuteScript(PCWSTR(w.as_ptr()), &handler) } {
                 poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
             }
@@ -673,7 +679,7 @@ impl WebView {
                 return poster.post(Event::ScriptDone { view: id, token, json: Err("no stream for the capture".into()) });
             };
             let (p, s) = (poster.clone(), stream.clone());
-            let handler = CapturePreviewCompletedHandler::create(Box::new(move |hr| {
+            let handler = CapturePreviewCompletedHandler::create(Box::new(move |hr| guard(|| {
                 let json = hr.map_err(|e| e.to_string()).and_then(|_| {
                     unsafe { s.Seek(0, STREAM_SEEK_SET, None) }.map_err(|e| e.to_string())?;
                     let mut out: Vec<u8> = Vec::new();
@@ -697,7 +703,7 @@ impl WebView {
                 });
                 p.post(Event::ScriptDone { view: id, token, json });
                 Ok(())
-            }));
+            })));
             if let Err(e) = unsafe { c.view.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, &stream, &handler) } {
                 poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
             }
@@ -794,7 +800,7 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     }
     for script in &setup.scripts {
         let w = wide(script);
-        let handler = webview2_com::AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|_hr, _id| Ok(())));
+        let handler = webview2_com::AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|_hr, _id| guard(|| Ok(()))));
         unsafe { view.AddScriptToExecuteOnDocumentCreated(PCWSTR(w.as_ptr()), &handler) }.map_err(|x| e("script", x))?;
     }
     let mut token = 0i64;
@@ -815,7 +821,7 @@ fn source_of(view: &ICoreWebView2) -> Option<String> {
 fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
     // ONE NavigationStarting handler: later plans add their post to it.
     let weak = Rc::downgrade(inner);
-    let starting = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+    let starting = NavigationStartingEventHandler::create(Box::new(move |sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         let uri = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
         let (user, redirect) = (bool_out(|b| unsafe { args.IsUserInitiated(b) }), bool_out(|b| unsafe { args.IsRedirected(b) }));
@@ -861,11 +867,11 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
         let i = inner.borrow();
         i.poster.post(Event::Loading(i.id, true));
         Ok(())
-    }));
+    })));
     unsafe { view.add_NavigationStarting(&starting, token) }?;
 
     let weak = Rc::downgrade(inner);
-    let completed = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
+    let completed = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         let ok = bool_out(|b| unsafe { args.IsSuccess(b) });
         let mut nav = 0u64;
@@ -887,39 +893,39 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
         i.poster.post(Event::Navigated { view: id, ok, status, url, nav });
         i.poster.post(Event::Loading(id, false));
         Ok(())
-    }));
+    })));
     unsafe { view.add_NavigationCompleted(&completed, token) }?;
 
     let weak = Rc::downgrade(inner);
-    let source = SourceChangedEventHandler::create(Box::new(move |sender, _| {
+    let source = SourceChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
         let Some(inner) = weak.upgrade() else { return Ok(()) };
         if let Some(s) = sender.as_ref().and_then(source_of) {
             let i = inner.borrow();
             i.poster.post(Event::Source(i.id, s));
         }
         Ok(())
-    }));
+    })));
     unsafe { view.add_SourceChanged(&source, token) }?;
 
     let weak = Rc::downgrade(inner);
-    let title = DocumentTitleChangedEventHandler::create(Box::new(move |sender, _| {
+    let title = DocumentTitleChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
         let Some(inner) = weak.upgrade() else { return Ok(()) };
         if let Some(t) = sender.and_then(|v| pwstr_out(|p| unsafe { v.DocumentTitle(p) })) {
             let i = inner.borrow();
             i.poster.post(Event::Title(i.id, webhost::clean_title(&t)));
         }
         Ok(())
-    }));
+    })));
     unsafe { view.add_DocumentTitleChanged(&title, token) }?;
 
     let weak = Rc::downgrade(inner);
-    let history = HistoryChangedEventHandler::create(Box::new(move |sender, _| {
+    let history = HistoryChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
         let (Some(inner), Some(v)) = (weak.upgrade(), sender) else { return Ok(()) };
         let (back, forward) = (bool_out(|b| unsafe { v.CanGoBack(b) }), bool_out(|b| unsafe { v.CanGoForward(b) }));
         let i = inner.borrow();
         i.poster.post(Event::History { view: i.id, back, forward });
         Ok(())
-    }));
+    })));
     unsafe { view.add_HistoryChanged(&history, token) }?;
     Ok(())
 }
@@ -928,7 +934,7 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
     // ONE WebMessageReceived handler. A page's message is untrusted: size-capped here, its source
     // reported, its shape judged by the consumer (`webhost::invoke_request`, `logger_message`).
     let weak = Rc::downgrade(inner);
-    let message = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| {
+    let message = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         let Some(json) = pwstr_out(|p| unsafe { args.WebMessageAsJson(p) }) else { return Ok(()) };
         if json.len() > webhost::MAX_MESSAGE {
@@ -938,13 +944,13 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
         let i = inner.borrow();
         i.poster.post(Event::Message { view: i.id, json, source });
         Ok(())
-    }));
+    })));
     unsafe { view.add_WebMessageReceived(&message, token) }?;
 
     // Every new-window request is handled: no popup window ever appears (iTerm2's tool views
     // refuse automatic windows).
     let weak = Rc::downgrade(inner);
-    let window = NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
+    let window = NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         let _ = unsafe { args.SetHandled(true) };
         let user = bool_out(|b| unsafe { args.IsUserInitiated(b) });
@@ -959,24 +965,24 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
             i.poster.post(Event::NewWindow { view: id, url: webhost::cap_url(&uri).0 });
         }
         Ok(())
-    }));
+    })));
     unsafe { view.add_NewWindowRequested(&window, token) }?;
     Ok(())
 }
 
 fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
     // Permissions are denied (preflight P5): 13x6 asks the person as iTerm2 does.
-    let denied = PermissionRequestedEventHandler::create(Box::new(|_sender, args| {
+    let denied = PermissionRequestedEventHandler::create(Box::new(|_sender, args| guard(|| {
         if let Some(args) = args {
             let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
         }
         Ok(())
-    }));
+    })));
     unsafe { view.add_PermissionRequested(&denied, token) }?;
 
     // A failed process is reported; the app recreates the view (once).
     let weak = Rc::downgrade(inner);
-    let failed = ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
+    let failed = ProcessFailedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let Some(inner) = weak.upgrade() else { return Ok(()) };
         let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
         if let Some(a) = args {
@@ -985,14 +991,14 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
         let i = inner.borrow();
         i.poster.post(Event::Failed(i.id, format!("the web view's process failed ({})", kind.0)));
         Ok(())
-    }));
+    })));
     unsafe { view.add_ProcessFailed(&failed, token) }?;
 
     // An external protocol (ms-msdt:, search-ms:, mailto:, any registered handler) is always
     // cancelled here; the app opens it only through `semantic::guard_open` (preflight B4).
     if let Ok(v18) = view.cast::<ICoreWebView2_18>() {
         let weak = Rc::downgrade(inner);
-        let external = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_sender, args| {
+        let external = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_sender, args| guard(|| {
             let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
             let _ = unsafe { args.SetCancel(true) };
             let url = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
@@ -1000,7 +1006,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
             let i = inner.borrow();
             i.poster.post(Event::ExternalUri { view: i.id, url: webhost::cap_url(&url).0, user });
             Ok(())
-        }));
+        })));
         unsafe { v18.add_LaunchingExternalUriScheme(&external, token) }?;
     } else {
         crate::host::log("webhost: this WebView2 Runtime cannot cancel external protocol launches");
@@ -1011,12 +1017,12 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
 fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Controller, token: &mut i64) -> windows::core::Result<()> {
     for gained in [true, false] {
         let weak = Rc::downgrade(inner);
-        let handler = FocusChangedEventHandler::create(Box::new(move |_sender, _| {
+        let handler = FocusChangedEventHandler::create(Box::new(move |_sender, _| guard(|| {
             let Some(inner) = weak.upgrade() else { return Ok(()) };
             let i = inner.borrow();
             i.poster.post(Event::Focus(i.id, gained));
             Ok(())
-        }));
+        })));
         if gained {
             unsafe { ctrl.add_GotFocus(&handler, token) }?;
         } else {
@@ -1026,7 +1032,7 @@ fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Co
     // Every key with its modifiers; the app decides what a Tandem shortcut is (marking a key
     // handled needs a synchronous answer, which later plans add).
     let weak = Rc::downgrade(inner);
-    let keys = AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
+    let keys = AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         let mut kind = COREWEBVIEW2_KEY_EVENT_KIND(-1);
         let _ = unsafe { args.KeyEventKind(&mut kind) };
@@ -1038,7 +1044,7 @@ fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Co
         let i = inner.borrow();
         i.poster.post(Event::Key { view: i.id, vk, mods: modifier_bits() });
         Ok(())
-    }));
+    })));
     unsafe { ctrl.add_AcceleratorKeyPressed(&keys, token) }
 }
 
@@ -1053,7 +1059,7 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
     // `WebResourceRequested` sees every matching request: take a deferral, post, return at once; the app
     // completes it through `answer_request`. Over 256 pending, the request simply continues.
     let weak = Rc::downgrade(inner);
-    let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| {
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         if inner.borrow().pending.len() >= MAX_PENDING_REQUESTS {
             return Ok(());
@@ -1070,7 +1076,7 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         let id = i.id;
         i.poster.post(Event::Request { view: id, token: t, url: webhost::cap_url(&url).0, context: context.0, top_url: top });
         Ok(())
-    }));
+    })));
     unsafe { view.add_WebResourceRequested(&handler, token) }?;
     for f in filters {
         let w = wide(f);
@@ -1109,6 +1115,32 @@ mod tests {
         // The one NavigationStarting and one WebMessageReceived handler.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
         assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 1);
+    }
+
+    /// Final review round 1, item 1 (class fix): every COM callback body runs inside `guard`, so a
+    /// panic becomes E_FAIL and never unwinds into COM.
+    #[test]
+    fn every_com_callback_goes_through_the_unwind_guard() {
+        let this = include_str!("webhost_win.rs");
+        let code = this.split("#[cfg(test)]").next().unwrap_or("");
+        let mut seen = 0;
+        let mut rest = code;
+        while let Some(i) = rest.find("Handler::create(Box::new(") {
+            let tail = &rest[i + "Handler::create(Box::new(".len()..];
+            let params_end = tail.match_indices('|').nth(1).map(|(k, _)| k).expect("closure params");
+            let body = tail[params_end + 1..].trim_start();
+            assert!(body.starts_with("guard(||"), "a COM callback runs outside the unwind guard: {}", &tail[..params_end + 1]);
+            seen += 1;
+            rest = tail;
+        }
+        assert!(seen >= 15, "the callbacks are seen ({seen})");
+    }
+
+    #[test]
+    fn a_panicking_callback_becomes_e_fail() {
+        let r = guard(|| -> windows::core::Result<()> { panic!("boom") });
+        assert_eq!(r.unwrap_err().code(), windows::Win32::Foundation::E_FAIL);
+        assert!(guard(|| Ok(())).is_ok());
     }
 
     /// Later plans add fields to `ViewSetup`: it is only ever built with `..Default::default()`.
