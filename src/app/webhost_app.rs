@@ -181,6 +181,7 @@ impl App {
         if let Some(why) = refusal {
             self.banners.set("webview2", format!("The WebView2 Runtime folder in Advanced > Web Browser was not used: {why}"));
         }
+        self.web_focus_recheck();
         for _ in 0..DRAIN_PER_TICK {
             let Ok(posted) = self.web_events.try_recv() else { break };
             if let Some((store, result)) = &posted.env {
@@ -195,12 +196,58 @@ impl App {
         }
     }
 
+    /// A held focus (a web view has keyboard focus, so the parent saw `Focused(false)` while still the
+    /// foreground window): once another window is in front the real loss runs, once, in the window
+    /// that held it (13x Task 1a). The parent gets no event for that deactivation.
+    pub(super) fn web_focus_recheck(&mut self) {
+        let Some(held) = self.web_focus_held else { return };
+        let Some(hwnd) = self.window_hwnd(held) else {
+            // The window is gone.
+            self.web_focus_held = None;
+            return;
+        };
+        if !crate::webhost::held_focus_lost(hwnd, webhost_win::foreground_root()) {
+            return;
+        }
+        self.web_focus_held = None;
+        let back = self.current_window();
+        if self.enter(held) {
+            self.apply_focus(crate::webhost::FocusStep::Normal, false, held);
+            if let Some(b) = back {
+                self.enter(b);
+            }
+        }
+    }
+
+    /// Whether `pane` is a browser pane. No pane is one until 13x Task 5 adds `Io::Browser`.
+    #[allow(dead_code)]
+    pub(super) fn is_browser_pane(&self, _pane: crate::layout::PaneId) -> bool {
+        false
+    }
+
+    /// The active session of the key window changed from `prev` to `next` (`PTYTab.m:955-960`): a
+    /// terminal pane that hands focus to a browser pane is told it lost focus and one that takes it
+    /// back is told it gained it, when its program asked for DECSET 1004. Task 5 calls this.
+    #[allow(dead_code)]
+    pub(super) fn browser_focus_moved(&mut self, prev: Option<crate::layout::PaneId>, next: Option<crate::layout::PaneId>) {
+        let tag = |p: Option<crate::layout::PaneId>| p.map(|p| (p, self.is_browser_pane(p)));
+        for (pane, gained) in crate::webhost::pane_focus_reports(tag(prev), tag(next)) {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                if p.screen.term().mode().contains(alacritty_terminal::term::TermMode::FOCUS_IN_OUT) {
+                    p.focus_report(gained);
+                }
+            }
+        }
+    }
+
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.
     fn web_route(&mut self, event: &Event, _event_loop: &ActiveEventLoop) {
         match event {
             Event::Created(v) => crate::host::log(&format!("webhost: view {v} created")),
             // The text is Tandem's own (an error from COM), never the page's.
             Event::Failed(v, why) => crate::host::log(&format!("webhost: view {v} failed: {why}")),
+            // A view lost focus: another window may now be in front of a window that held it.
+            Event::Focus(_, false) => self.web_focus_recheck(),
             _ => {}
         }
     }
@@ -242,7 +289,7 @@ mod tests {
     #[test]
     fn web_state_is_not_swapped_per_window() {
         let swap = include_str!("windows_ui.rs");
-        for name in ["web_envs", "web_events"] {
+        for name in ["web_envs", "web_events", "web_focus_held"] {
             assert!(!swap.contains(name), "{name} must not be per window");
         }
     }

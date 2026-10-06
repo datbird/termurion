@@ -123,6 +123,13 @@ pub(super) fn cursor_line(rows: &access::Rows) -> Vec<(usize, String)> {
     rows.rows.get(rows.cursor.0).map(|(cells, _)| cells.iter().cloned().enumerate().collect()).unwrap_or_default()
 }
 
+/// Whether UI Automation is told the focused element is the terminal pane (B7): not while a child
+/// web view holds the keyboard, and not for a browser pane (WebView2's own tree answers there). The
+/// browser pane flag is always false until browser panes exist (13x Task 5).
+pub(super) fn access_target<T>(focused: bool, web_held: bool, pane_is_browser: bool, target: T) -> Option<T> {
+    (focused && !web_held && !pane_is_browser).then_some(target)
+}
+
 impl App {
     /// Puts the screen reader's host on the current window (after its GPU is up): it answers
     /// `WM_GETOBJECT` from then on and builds nothing until a client listens.
@@ -201,7 +208,9 @@ impl App {
 
     fn access_raise_focus(&mut self) {
         let Some(key) = self.windows.current() else { return };
-        let target = if self.focused { self.tabs.get(self.active).map(|t| (key, t.focused)) } else { None };
+        // The keyboard may be in a web view: WebView2 raises its own UI Automation focus then (B7).
+        let web_held = self.web_focus_held.is_some() && self.web_focus_held == self.current_window();
+        let target = access_target(self.focused, web_held, false, ()).and_then(|()| self.tabs.get(self.active).map(|t| (key, t.focused)));
         if target == self.access_focus_sent {
             return;
         }
@@ -406,6 +415,18 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::access_target;
+
+    /// Preflight B7: UI Automation is told the terminal pane has focus only when the window is
+    /// focused, no web view holds the keyboard and the pane is not a browser pane.
+    #[test]
+    fn access_skips_focus_for_a_browser_pane() {
+        assert_eq!(access_target(true, false, false, 7), Some(7));
+        assert_eq!(access_target(false, false, false, 7), None);
+        assert_eq!(access_target(true, true, false, 7), None, "a web view holds the keyboard");
+        assert_eq!(access_target(true, false, true, 7), None, "WebView2 raises its own focus for a browser pane");
+    }
+
     /// Final review 3 and 4: a settle skips a pane that turned secure, and a pane that leaves the
     /// shown set forgets its tracker.
     #[test]

@@ -1605,6 +1605,9 @@ pub struct App {
     /// post. App-wide, never per window.
     web_envs: webhost_app::Envs,
     web_events: std::sync::mpsc::Receiver<crate::webhost::Posted>,
+    /// The window whose keyboard focus sits in one of its own web views (13x Task 1a): the parent saw
+    /// `Focused(false)` but is still the foreground window. App-wide, never per window.
+    web_focus_held: Option<WindowId>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -2527,6 +2530,7 @@ pub fn run() {
         restored_dir: None,
         web_envs,
         web_events,
+        web_focus_held: None,
     };
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
@@ -7166,73 +7170,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.apply_fonts();
                 self.relayout();
             }
-            WindowEvent::Focused(f) => {
-                // A divider drag loses its release when focus goes, and so do keys.
-                if !f {
-                    self.tmux_drag_cancel();
-                    // A title bar drag ends with nothing moved.
-                    self.title_drag_lost(pane_move_ui::DragLost::FocusLost);
-                    // A command click waiting out the double-click time does not outlive the focus (B7).
-                    self.command_click = None;
-                    // So does a press on the tab bar (a held close button lets go).
-                    if self.tab_press.take().is_some() {
-                        self.redraw();
-                    }
-                    // And the tab tooltip goes, as a macOS tooltip does when the app deactivates.
-                    self.hide_tab_tip();
-                    // And the tab bar's flash stops (`PT windowDidResignKey:`, `PT:5470-5471`):
-                    // it fades, and in full screen a second stop ends it at once (`PT:5484`).
-                    self.stop_tab_flash();
-                    self.tab_flash.set_win_held(false, Instant::now());
-                    if self.full_screen() {
-                        self.stop_tab_flash();
-                    }
-                    self.belt_keys.clear();
-                    self.replay_keys.clear();
-                    self.composer_keys.clear();
-                    // A half-typed composition is dropped, not committed.
-                    self.ime_cancel();
-                }
-                self.focused = f;
-                self.access_focus();
-                // The border takes the focused or unfocused color.
-                self.apply_border();
-                // Tandem going to the background saves the windows (iTerm2 saves on resign
-                // active); a switch between Tandem's own windows gains focus again at once.
-                self.focus_lost = !f;
-                if !f && self.hotkey.is_some() {
-                    self.hotkey_focus_lost();
-                }
-                if f {
-                    self.last_window = Some(id);
-                    self.stamp_focus();
-                    // The Window menu checks the focused window.
-                    self.refresh_window_list();
-                }
-                self.jobs.set_fast(f);
-                // Keys held while the window loses focus send no release to Tandem.
-                if !f {
-                    self.sent_keys.clear();
-                    self.api_focus_lost();
-                }
-                // iTerm2 drops a pending Leader when the app goes to the background.
-                if !f && self.leader_on {
-                    self.leader_on = false;
-                    self.refresh_route();
-                }
-                // Focus reporting (DECSET 1004): tell the app the window gained or lost focus.
-                if let Some(p) = self.focused_pane() {
-                    if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
-                        p.focus_report(f);
-                    }
-                }
-                // A closed password manager's hold ends with the window's next gain, which is
-                // not reported either (its loss was not).
-                if f {
-                    self.pwm_focus_gained();
-                }
-                self.redraw();
-            }
+            WindowEvent::Focused(f) => self.window_focus(id, f),
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.phys_mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
@@ -7532,6 +7470,172 @@ fn resize_report_px(rows: u16, cols: u16, (cw, ch): (f32, f32)) -> (u32, u32) {
     ((f32::from(rows) * ch).round() as u32, (f32::from(cols) * cw).round() as u32)
 }
 
+/// What one window focus event does, by effect group (preflight B6): `apply_focus` runs ONLY what
+/// this table names, so a web view taking keyboard focus (`IntoOwnChild`) can skip the window
+/// losses and keep the cleanup that still applies. Every statement of the arm is classified in the
+/// source test `focus_arm_statements_are_classified`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct FocusActions {
+    /// `focused`, the border, the job poll rate (13i dimming reads the flag): None leaves them.
+    pub flag: Option<bool>,
+    /// `focus_lost`: the window save marker.
+    pub save: bool,
+    /// A hotkey window hides.
+    pub hotkey_hide: bool,
+    /// The API's focus-lost event.
+    pub api_lost: bool,
+    /// The DECSET 1004 report sent to the focused pane.
+    pub report: Option<bool>,
+    /// Key state that would wait for a release or a commit: belt, replay and composer keys, `sent_keys`, a half-typed composition.
+    pub clear_keys: bool,
+    /// A pending Leader.
+    pub drop_leader: bool,
+    /// A divider or title drag, a command click, a tab press and the tab tip: the pointer is elsewhere.
+    pub mouse_cancel: bool,
+    /// The tab bar's flash stops (the window resigned key).
+    pub flash_stop: bool,
+    /// UI Automation is told the focus (it decides its own target, B7).
+    pub access: bool,
+    /// A gain that was reported: last window, the stamp, the Window menu, a closed password manager's hold.
+    pub gain_stamps: bool,
+}
+
+pub(super) fn focus_actions(step: crate::webhost::FocusStep, gained: bool) -> FocusActions {
+    use crate::webhost::FocusStep::*;
+    match (step, gained) {
+        // A loss that stays in the window (focus went to its own web view): the pointer is
+        // elsewhere and keys go to the child, so those cleanups run; the window did not resign
+        // key, so nothing else does (`PseudoTerminal.m:5421-5500` runs only on resignation).
+        (IntoOwnChild, _) => FocusActions { mouse_cancel: true, clear_keys: true, access: true, ..FocusActions::default() },
+        // The loss was never reported, so neither is this gain; only UI Automation follows.
+        (ReturnFromChild, _) => FocusActions { access: true, ..FocusActions::default() },
+        (Normal, false) => FocusActions {
+            flag: Some(false),
+            save: true,
+            hotkey_hide: true,
+            api_lost: true,
+            report: Some(false),
+            clear_keys: true,
+            drop_leader: true,
+            mouse_cancel: true,
+            flash_stop: true,
+            access: true,
+            gain_stamps: false,
+        },
+        (Normal, true) => FocusActions { flag: Some(true), report: Some(true), access: true, gain_stamps: true, ..FocusActions::default() },
+    }
+}
+
+impl App {
+    /// `WindowEvent::Focused`. Keyboard focus moving into this window's own web view arrives as a
+    /// loss, but the window is still the foreground window: `focus_step` tells the two apart and
+    /// `apply_focus` runs only what `focus_actions` names. A held focus is re-checked by
+    /// `web_focus_recheck`, because the real deactivation sends the parent nothing.
+    fn window_focus(&mut self, id: WindowId, f: bool) {
+        let held = self.web_focus_held == Some(id);
+        let step = match self.hwnd() {
+            Some(hwnd) => crate::webhost::focus_step(f, hwnd, crate::webhost_win::foreground_root(), held),
+            None => crate::webhost::FocusStep::Normal,
+        };
+        match step {
+            crate::webhost::FocusStep::IntoOwnChild => self.web_focus_held = Some(id),
+            // A real event (either way) ends the hold: the loss or gain it carries is reported now.
+            crate::webhost::FocusStep::ReturnFromChild | crate::webhost::FocusStep::Normal => {
+                if held {
+                    self.web_focus_held = None;
+                }
+            }
+        }
+        self.apply_focus(step, f, id);
+    }
+
+    /// Runs one focus step in the current window: only what the table names (preflight B6).
+    fn apply_focus(&mut self, step: crate::webhost::FocusStep, f: bool, id: WindowId) {
+        let a = focus_actions(step, f);
+        // A divider drag loses its release when focus goes, and so do keys.
+        if a.mouse_cancel {
+            self.tmux_drag_cancel();
+            // A title bar drag ends with nothing moved.
+            self.title_drag_lost(pane_move_ui::DragLost::FocusLost);
+            // A command click waiting out the double-click time does not outlive the focus (B7).
+            self.command_click = None;
+            // So does a press on the tab bar (a held close button lets go).
+            if self.tab_press.take().is_some() {
+                self.redraw();
+            }
+            // And the tab tooltip goes, as a macOS tooltip does when the app deactivates.
+            self.hide_tab_tip();
+        }
+        if a.flash_stop {
+            // And the tab bar's flash stops (`PT windowDidResignKey:`, `PT:5470-5471`):
+            // it fades, and in full screen a second stop ends it at once (`PT:5484`).
+            self.stop_tab_flash();
+            self.tab_flash.set_win_held(false, Instant::now());
+            if self.full_screen() {
+                self.stop_tab_flash();
+            }
+        }
+        if a.clear_keys {
+            self.belt_keys.clear();
+            self.replay_keys.clear();
+            self.composer_keys.clear();
+            // A half-typed composition is dropped, not committed.
+            self.ime_cancel();
+            // Keys held while the window loses focus send no release to Tandem.
+            self.sent_keys.clear();
+        }
+        if let Some(flag) = a.flag {
+            self.focused = flag;
+            // The border takes the focused or unfocused color.
+            self.apply_border();
+            self.jobs.set_fast(flag);
+            // Tandem going to the background saves the windows (iTerm2 saves on resign
+            // active); a switch between Tandem's own windows gains focus again at once.
+            self.focus_lost = a.save;
+        }
+        if a.access {
+            self.access_focus();
+        }
+        if a.hotkey_hide && self.hotkey.is_some() {
+            self.hotkey_focus_lost();
+        }
+        if a.gain_stamps {
+            self.last_window = Some(id);
+            self.stamp_focus();
+            // The Window menu checks the focused window.
+            self.refresh_window_list();
+            // A closed password manager's hold ends with the window's next gain, which is
+            // not reported either (its loss was not).
+            self.pwm_focus_gained();
+        }
+        if a.api_lost {
+            self.api_focus_lost();
+        }
+        // iTerm2 drops a pending Leader when the app goes to the background.
+        if a.drop_leader && self.leader_on {
+            self.leader_on = false;
+            self.refresh_route();
+        }
+        // Focus reporting (DECSET 1004): tell the app the window gained or lost focus.
+        if let Some(gained) = a.report {
+            if let Some(p) = self.focused_pane() {
+                if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
+                    p.focus_report(gained);
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    /// A window's Win32 handle, the current one or a parked one.
+    fn window_hwnd(&self, id: WindowId) -> Option<isize> {
+        if self.current_window() == Some(id) {
+            return self.hwnd();
+        }
+        self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().filter(|g| g.window.id() == id).and_then(|g| menu::hwnd_of(&g.window)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7540,6 +7644,124 @@ mod tests {
     fn fn_body<'a>(src: &'a str, name: &str, indent: &str) -> &'a str {
         let rest = src.split(name).nth(1).unwrap_or_else(|| panic!("{name}"));
         rest.split(&format!("\n{indent}}}\n")).next().unwrap()
+    }
+
+    #[test]
+    fn focus_into_web_view_keeps_the_window() {
+        use crate::webhost::FocusStep::*;
+        let a = focus_actions(IntoOwnChild, false);
+        assert_eq!(a.flag, None, "the window stays focused for 13i's dimming");
+        assert!(!a.save && !a.hotkey_hide && !a.api_lost && !a.drop_leader);
+        assert_eq!(a.report, None, "no DECSET 1004 focus-out");
+        assert!(a.clear_keys, "key releases go to the child, never to winit");
+        let n = focus_actions(Normal, false);
+        assert_eq!(n.flag, Some(false));
+        assert!(n.save && n.hotkey_hide && n.api_lost && n.clear_keys && n.drop_leader && n.mouse_cancel && n.flash_stop && n.access);
+        assert_eq!(n.report, Some(false));
+        assert!(!n.gain_stamps);
+        let r = focus_actions(ReturnFromChild, true);
+        assert_eq!(r.flag, None);
+        assert_eq!(r.report, None, "the loss was never reported, so no focus-in either");
+        assert!(!r.gain_stamps, "the gain stamps belong to a reported gain");
+        let g = focus_actions(Normal, true);
+        assert_eq!(g.flag, Some(true));
+        assert_eq!(g.report, Some(true));
+        assert!(g.gain_stamps && g.access);
+        assert!(!g.save && !g.hotkey_hide && !g.api_lost && !g.clear_keys && !g.drop_leader && !g.mouse_cancel && !g.flash_stop);
+    }
+
+    #[test]
+    fn into_own_child_runs_mouse_and_key_cleanup_only() {
+        use crate::webhost::FocusStep::*;
+        let a = focus_actions(IntoOwnChild, false);
+        let expected = FocusActions { mouse_cancel: true, clear_keys: true, access: true, ..FocusActions::default() };
+        assert_eq!(a, expected, "the pointer is elsewhere and keys go to the child; the tab flash and every window loss stay");
+        assert!(!a.flash_stop, "the window stays key");
+        // The gain that follows runs nothing but UI Automation.
+        assert_eq!(focus_actions(ReturnFromChild, true), FocusActions { access: true, ..FocusActions::default() });
+    }
+
+    /// Every `self.` path the arm's body uses, with the field of `FocusActions` that guards it
+    /// (`always` for the unguarded redraw). A statement added to the arm (13w's bell reset, a log
+    /// line, a later plan's effect) that is not here fails `focus_arm_statements_are_classified`.
+    const CLASSIFIED: &[(&str, &str)] = &[
+        ("self.tmux_drag_cancel", "mouse_cancel"),
+        ("self.title_drag_lost", "mouse_cancel"),
+        ("self.command_click", "mouse_cancel"),
+        ("self.tab_press.take", "mouse_cancel"),
+        ("self.hide_tab_tip", "mouse_cancel"),
+        ("self.stop_tab_flash", "flash_stop"),
+        ("self.tab_flash.set_win_held", "flash_stop"),
+        ("self.full_screen", "flash_stop"),
+        ("self.belt_keys.clear", "clear_keys"),
+        ("self.replay_keys.clear", "clear_keys"),
+        ("self.composer_keys.clear", "clear_keys"),
+        ("self.ime_cancel", "clear_keys"),
+        ("self.sent_keys.clear", "clear_keys"),
+        ("self.focused", "flag"),
+        ("self.apply_border", "flag"),
+        ("self.jobs.set_fast", "flag"),
+        ("self.focus_lost", "save"),
+        ("self.access_focus", "access"),
+        ("self.hotkey.is_some", "hotkey_hide"),
+        ("self.hotkey_focus_lost", "hotkey_hide"),
+        ("self.last_window", "gain_stamps"),
+        ("self.stamp_focus", "gain_stamps"),
+        ("self.refresh_window_list", "gain_stamps"),
+        ("self.pwm_focus_gained", "gain_stamps"),
+        ("self.api_focus_lost", "api_lost"),
+        ("self.leader_on", "drop_leader"),
+        ("self.refresh_route", "drop_leader"),
+        ("self.focused_pane", "report"),
+        ("self.redraw", "always"),
+    ];
+
+    /// The body of `fn apply_focus` and the struct's field names, from the source text.
+    fn focus_source() -> (&'static str, Vec<&'static str>) {
+        let src: &'static str = include_str!("mod.rs");
+        let body = fn_body(src, "fn apply_focus(", "    ");
+        let def = src.split("pub(super) struct FocusActions {").nth(1).unwrap().split("\n}\n").next().unwrap();
+        let fields = def.lines().filter_map(|l| l.trim().strip_prefix("pub ")).map(|l| l.split(':').next().unwrap().trim()).collect();
+        (body, fields)
+    }
+
+    /// Preflight B6/S2: the arm calls only `window_focus`, and everything `apply_focus` touches is classified.
+    #[test]
+    fn focus_arm_statements_are_classified() {
+        let src = include_str!("mod.rs");
+        let arm = src.split("WindowEvent::Focused(f) =>").nth(1).unwrap().lines().next().unwrap();
+        assert_eq!(arm.trim(), "self.window_focus(id, f),", "the arm is one call; every effect goes through the table");
+        let (body, fields) = focus_source();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut rest = body;
+        while let Some(i) = rest.find("self.") {
+            let tail = &rest[i..];
+            let end = tail.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(tail.len());
+            seen.insert(tail[..end].trim_end_matches('.').to_string());
+            rest = &tail[end..];
+        }
+        for path in &seen {
+            assert!(CLASSIFIED.iter().any(|(p, _)| p == path), "apply_focus uses {path}, which no FocusActions field classifies (add the effect to the table)");
+        }
+        for (path, field) in CLASSIFIED {
+            assert!(seen.contains(*path), "{path} is classified but apply_focus no longer uses it");
+            if *field != "always" {
+                assert!(fields.contains(field), "{field} is not a FocusActions field");
+                assert!(body.contains(&format!("a.{field}")), "apply_focus never reads a.{field}");
+            }
+        }
+    }
+
+    #[test]
+    fn focus_actions_cover_the_arm() {
+        let (_, fields) = focus_source();
+        let classified: std::collections::BTreeSet<&str> = CLASSIFIED.iter().map(|(_, f)| *f).filter(|f| *f != "always").collect();
+        let mut named: Vec<&str> = fields.clone();
+        named.sort();
+        assert_eq!(named.len(), classified.len(), "the table has one field per statement group");
+        assert_eq!(named, classified.into_iter().collect::<Vec<_>>());
+        // report is read through `a.report` too, and the web hold is the arm's own state.
+        assert!(include_str!("mod.rs").contains("web_focus_held: Option<WindowId>"));
     }
 
     #[test]

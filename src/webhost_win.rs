@@ -47,6 +47,19 @@ fn bool_out(f: impl FnOnce(*mut BOOL) -> windows::core::Result<()>) -> bool {
     f(&mut b).is_ok() && b.as_bool()
 }
 
+/// The root window that is in front right now (`GetAncestor(GetForegroundWindow(), GA_ROOT)`), None
+/// when no window is.
+pub fn foreground_root() -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetForegroundWindow};
+    // SAFETY: both calls take and return plain handles.
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_null() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(fg, GA_ROOT) };
+    (!root.is_null()).then_some(root as isize)
+}
+
 /// The WebView2 Runtime's version: the fixed-version folder's when one is given, else the
 /// Evergreen runtime the system has. Err is an HRESULT: `Runtime::Missing`.
 pub fn runtime_version(fixed: Option<&Path>) -> Result<String, i32> {

@@ -608,6 +608,50 @@ pub fn physical_bounds(r: Rect) -> (i32, i32, i32, i32) {
     (left, top, n(r.x + r.w).max(left), n(r.y + r.h).max(top))
 }
 
+// --- Focus (Task 1a) ---
+
+/// What a `WindowEvent::Focused` means while web views exist. A click into a web view moves
+/// keyboard focus to its child HWND and winit reports `Focused(false)` for the parent even though
+/// the window is still the foreground window; in iTerm2 the web view is inside the key window, so
+/// that is not a resignation (`PseudoTerminal.m:5421-5500` runs only when the window resigns key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusStep {
+    /// A real gain or loss: today's path.
+    Normal,
+    /// A loss whose foreground root is this window: focus went to its own child.
+    IntoOwnChild,
+    /// A gain while a child held the focus: the loss was never reported, so no gain is either.
+    ReturnFromChild,
+}
+
+/// The step for one focus event of the window `window_hwnd`. `foreground_root` is
+/// `GetAncestor(GetForegroundWindow(), GA_ROOT)`.
+pub fn focus_step(gained: bool, window_hwnd: isize, foreground_root: Option<isize>, held: bool) -> FocusStep {
+    match (gained, foreground_root) {
+        (false, Some(root)) if root == window_hwnd => FocusStep::IntoOwnChild,
+        (true, _) if held => FocusStep::ReturnFromChild,
+        _ => FocusStep::Normal,
+    }
+}
+
+/// A held focus whose foreground root is no longer this window: the real loss, run late. No
+/// foreground window at all (a transition) answers false and is asked again on the next check.
+pub fn held_focus_lost(window_hwnd: isize, foreground_root: Option<isize>) -> bool {
+    foreground_root.is_some_and(|root| root != window_hwnd)
+}
+
+/// The focus reports a change of the active session owes (`PTYTab.m:955-960`: every session of
+/// the key window hears it). Each pair is (pane id, is a browser pane). A terminal pane that
+/// hands focus to a browser pane is told it lost focus, one that takes it back is told it
+/// gained it; terminal to terminal is no change (the pane's own path reports nothing today).
+pub fn pane_focus_reports(prev: Option<(crate::layout::PaneId, bool)>, next: Option<(crate::layout::PaneId, bool)>) -> Vec<(crate::layout::PaneId, bool)> {
+    match (prev, next) {
+        (Some((from, false)), Some((_, true))) => vec![(from, false)],
+        (Some((_, true)), Some((to, false))) => vec![(to, true)],
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,5 +962,28 @@ mod tests {
         assert!(!Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.droppable());
         assert!(!Event::ScriptDone { view: 1, token: 1, json: Ok("2".into()) }.droppable());
         assert!(Event::Message { view: 1, json: String::new(), source: String::new() }.droppable());
+    }
+
+    /// Review Focus 11: a focus loss into this window's own child is not a window focus loss.
+    #[test]
+    fn focus_into_web_view_follows_iterm2() {
+        assert_eq!(focus_step(false, 100, Some(100), false), FocusStep::IntoOwnChild);
+        assert_eq!(focus_step(false, 100, Some(200), false), FocusStep::Normal);
+        assert_eq!(focus_step(false, 100, None, false), FocusStep::Normal);
+        assert_eq!(focus_step(true, 100, Some(100), true), FocusStep::ReturnFromChild);
+        assert_eq!(focus_step(true, 100, Some(100), false), FocusStep::Normal);
+        assert!(held_focus_lost(100, Some(300)));
+        assert!(!held_focus_lost(100, Some(100)));
+        // No foreground window is a transition, not a loss.
+        assert!(!held_focus_lost(100, None));
+    }
+
+    #[test]
+    fn pane_focus_reports_follow_iterm2() {
+        assert_eq!(pane_focus_reports(Some((1, false)), Some((2, true))), vec![(1, false)]);
+        assert_eq!(pane_focus_reports(Some((2, true)), Some((1, false))), vec![(1, true)]);
+        assert_eq!(pane_focus_reports(Some((1, false)), Some((3, false))), Vec::<(u64, bool)>::new());
+        assert_eq!(pane_focus_reports(Some((2, true)), Some((4, true))), Vec::<(u64, bool)>::new());
+        assert_eq!(pane_focus_reports(None, Some((1, false))), Vec::<(u64, bool)>::new());
     }
 }
