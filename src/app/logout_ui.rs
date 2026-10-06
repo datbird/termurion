@@ -4,7 +4,7 @@
 //! HWND_MESSAGE windows get no broadcast; the subclass goes on every terminal window, and the
 //! closure it runs is one app-wide setting (the keys decide it, not the current window).
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -17,9 +17,20 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MsgWaitForMu
 
 const SUBCLASS_ID: usize = 0x7464_6C67;
 
-/// The time a logoff gives the app thread to flush logs and archives and end the shells (the
-/// flushes and the kill wait are bounded inside it: 2 s + 0.5 s + 2 s).
-pub(super) const LOGOFF_LIMIT: Duration = Duration::from_secs(6);
+/// The time a logoff gives the app thread to write out and end the shells (the flushes and the
+/// kill wait are bounded inside it: `ARCHIVE_LIMIT` + 0.5 s of logs + `KILL_LIMIT`). With the
+/// question's close and the busy-app fallback the whole session end stays under Windows' ~5 s
+/// WM_ENDSESSION allowance (final review item 2): 0.5 s + 3.5 s + 0.5 s.
+pub(super) const LOGOFF_LIMIT: Duration = Duration::from_millis(3500);
+
+/// The kill's wait when the app thread was too busy to do the write-out.
+pub(super) const FALLBACK_KILL_LIMIT: Duration = Duration::from_millis(500);
+
+/// The write-out's wait for the archives.
+pub(super) const ARCHIVE_LIMIT: Duration = Duration::from_millis(1500);
+
+/// The write-out's wait for the ended shells.
+pub(super) const KILL_LIMIT: Duration = Duration::from_secs(1);
 
 type OnEnd = Arc<dyn Fn() + Send + Sync>;
 
@@ -60,6 +71,15 @@ static RAN: AtomicBool = AtomicBool::new(false);
 /// the app and no message is pumped inside the window procedure.
 static QUESTION_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// True while the quit question is on screen (its own thread, `ask_on_thread`).
+static QUESTION_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// The thread the question is shown on (0: not started yet, or ended).
+static QUESTION_THREAD: AtomicU32 = AtomicU32::new(0);
+
+/// The longest a session end waits for the open question to close before the write-out.
+pub(super) const QUESTION_CLOSE_LIMIT: Duration = Duration::from_millis(500);
+
 /// The window the shutdown block reason stands on (0: none). One for the app, owned here.
 static BLOCKED: AtomicIsize = AtomicIsize::new(0);
 
@@ -76,6 +96,76 @@ pub(super) fn begin_question() -> bool {
 /// Clears the pending question; true when one was pending (the caller acts on its answer).
 pub(super) fn end_question() -> bool {
     QUESTION_PENDING.swap(false, Ordering::SeqCst)
+}
+
+/// Shows the quit question on a thread of its own (final review item 2), so no app handler is
+/// held while it is open: a session end that arrives meanwhile reaches the app's write-out.
+/// `ask` shows it and returns the answer (true: OK); `answered` gets that answer, also when the
+/// question was closed by `close_question` (Cancel).
+pub(super) fn ask_on_thread(ask: impl FnOnce() -> bool + Send + 'static, answered: impl FnOnce(bool) + Send + 'static) {
+    QUESTION_OPEN.store(true, Ordering::SeqCst);
+    let started = std::thread::Builder::new().name("quit-question".into()).spawn(move || {
+        // SAFETY: reads this thread's id.
+        QUESTION_THREAD.store(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }, Ordering::SeqCst);
+        let ok = ask();
+        QUESTION_THREAD.store(0, Ordering::SeqCst);
+        QUESTION_OPEN.store(false, Ordering::SeqCst);
+        answered(ok);
+    });
+    if let Err(e) = started {
+        // No question can be shown: the shutdown is not held for one.
+        crate::host::log(&format!("shutdown: the quit question could not start: {e}"));
+        QUESTION_OPEN.store(false, Ordering::SeqCst);
+        end_question();
+        destroy_block();
+    }
+}
+
+/// Whether the question is on screen.
+pub(super) fn question_open() -> bool {
+    QUESTION_OPEN.load(Ordering::SeqCst)
+}
+
+/// Closes the open question (as Cancel) and waits at most `limit` for it to go; messages sent to
+/// this thread meanwhile are handled, posted ones are left queued. True when none is open.
+pub(super) fn close_question(limit: Duration) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, PM_NOREMOVE, PM_QS_SENDMESSAGE, QS_SENDMESSAGE};
+    let end = Instant::now() + limit;
+    let mut posted: Option<Instant> = None;
+    while question_open() {
+        if Instant::now() >= end {
+            return false;
+        }
+        let tid = QUESTION_THREAD.load(Ordering::SeqCst);
+        // Posted again now and then: the box may not exist yet when the thread has just started.
+        if tid != 0 && posted.is_none_or(|t| t.elapsed() >= Duration::from_millis(50)) {
+            // SAFETY: enumerates the question thread's top-level windows; the callback only posts.
+            unsafe { EnumThreadWindows(tid, Some(close_one), 0) };
+            posted = Some(Instant::now());
+        }
+        let mut msg: MSG = unsafe { std::mem::zeroed() };
+        // SAFETY: waits for and handles sent messages only (a cross-thread owner's), nothing posted.
+        unsafe {
+            MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 10, QS_SENDMESSAGE);
+            PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+        }
+    }
+    true
+}
+
+/// Posts WM_CLOSE (Cancel, for an OK and Cancel box) to one top-level window of the question
+/// thread; the input method's own windows are left alone.
+unsafe extern "system" fn close_one(hwnd: HWND, _: LPARAM) -> windows_sys::Win32::Foundation::BOOL {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, PostMessageW, WM_CLOSE};
+    let mut class = [0u16; 32];
+    // SAFETY: `class` is a buffer of the given length.
+    let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) }.max(0) as usize;
+    let name = String::from_utf16_lossy(&class[..n]);
+    if name != "IME" && !name.starts_with("MSCTFIME") {
+        // SAFETY: a window of this process's question thread.
+        unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+    }
+    1
 }
 
 /// Raises the block reason on `hwnd` (Windows shows why Tandem holds the shutdown); a reason
@@ -193,7 +283,7 @@ impl super::App {
                 if !run_on_app(sent, LOGOFF_LIMIT) {
                     // The app thread was busy: the shells still end when the keys say so.
                     if let Some(host) = &host {
-                        host.kill_all_and_wait(Duration::from_secs(2));
+                        host.kill_all_and_wait(FALLBACK_KILL_LIMIT);
                     }
                 }
             }) as OnEnd));
@@ -223,13 +313,13 @@ impl super::App {
         end_question();
         self.destroy_block_reason();
         if self.logout_armed {
-            self.finish_archives(true, Duration::from_secs(2));
+            self.finish_archives(true, ARCHIVE_LIMIT);
             self.close_all_logs();
             if let Some(host) = &self.host {
-                host.kill_all_and_wait(Duration::from_secs(2));
+                host.kill_all_and_wait(KILL_LIMIT);
             }
         } else {
-            self.finish_archives(!keep, Duration::from_secs(2));
+            self.finish_archives(!keep, ARCHIVE_LIMIT);
             self.close_all_logs();
             self.leave_host(keep);
         }
@@ -259,6 +349,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         let on_end = armed().lock().ok().and_then(|a| a.clone());
         if let Some(f) = on_end {
             if !RAN.swap(true, Ordering::SeqCst) {
+                // "Shut down anyway" while the quit question is open: the question goes first (as
+                // Cancel), then the write-out runs; it never waits behind the question.
+                close_question(QUESTION_CLOSE_LIMIT);
                 f();
             }
         }
@@ -494,6 +587,62 @@ mod tests {
         destroy_block();
         arm_query(None);
         unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// Final review item 2: "Shut down anyway" while the quit question is open. The question runs on a
+    /// thread of its own (no app handler is held), and WM_ENDSESSION closes it, as Cancel, BEFORE the
+    /// write-out runs.
+    #[test]
+    fn a_session_end_closes_the_open_question_before_the_write_out() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+        let _g = serial();
+        let hwnd = message_window();
+        watch(hwnd as isize);
+        let (shown, is_shown) = std::sync::mpsc::channel();
+        let (answer, got) = std::sync::mpsc::channel();
+        assert!(begin_question());
+        ask_on_thread(
+            move || {
+                // A stand-in for the question box: a hidden window of this thread that ends on WM_CLOSE.
+                let w = hidden_window();
+                shown.send(()).unwrap();
+                while unsafe { IsWindow(w) } != 0 {
+                    let mut msg: MSG = unsafe { std::mem::zeroed() };
+                    unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 20, QS_ALLINPUT) };
+                    while unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+                        unsafe {
+                            TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        }
+                    }
+                }
+                false
+            },
+            move |ok| answer.send(ok).unwrap(),
+        );
+        is_shown.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(question_open());
+        let open_at_write_out = Arc::new(AtomicBool::new(true));
+        let seen = open_at_write_out.clone();
+        arm(Some(Arc::new(move || seen.store(question_open(), Ordering::SeqCst))));
+        unsafe { SendMessageW(hwnd, WM_ENDSESSION, 1, 0) };
+        assert!(!open_at_write_out.load(Ordering::SeqCst), "the question was closed before the write-out ran");
+        assert_eq!(got.recv_timeout(Duration::from_secs(2)), Ok(false), "a closed question is Cancel");
+        end_question();
+        arm(None);
+        unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// Final review item 2: the whole session end fits Windows' allowance of about 5 s, and the app's
+    /// own write-out fits inside the wait for it.
+    #[test]
+    fn the_session_end_fits_windows_allowance() {
+        assert!(QUESTION_CLOSE_LIMIT + LOGOFF_LIMIT + FALLBACK_KILL_LIMIT < Duration::from_millis(4600));
+        assert!(ARCHIVE_LIMIT + Duration::from_millis(500) + KILL_LIMIT < LOGOFF_LIMIT, "archives, logs (0.5 s) and the kill");
+        let src = include_str!("logout_ui.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        let now = &src[src.find("pub(super) fn logoff_now(").unwrap()..];
+        assert!(!now.contains("from_secs(2)"), "the inner bounds are the named limits");
+        assert!(include_str!("log_ui.rs").contains("wait_for_writers(Duration::from_millis(500))"), "the logs wait 0.5 s");
     }
 
     /// Task 8 M2: a cancelled session end takes the block reason down app-wide (no stale record of it

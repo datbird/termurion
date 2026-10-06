@@ -9,11 +9,9 @@ pub(super) enum Closing {
     Session(PaneId),
     Tab(usize),
     Window,
-    /// Quit: every session in every window.
+    /// Quit: every session in every window. (A Windows shutdown asks the same through
+    /// `resident_ui::shutdown_query`, on a thread of its own.)
     App,
-    /// A Windows shutdown asking what a quit asks (`AD:1010`): skipped when
-    /// `NeverBlockSystemShutdown` is on.
-    Shutdown,
 }
 
 impl App {
@@ -93,7 +91,6 @@ impl App {
     /// session alone in its tab closes as its tab (iTerm2).
     pub(super) fn confirm_close(&self, what: Closing) -> bool {
         use crate::close_rules::{self, Kind};
-        let shutting_down = matches!(what, Closing::Shutdown);
         let tab_of = |id: PaneId| self.tabs.iter().position(|t| t.layout.panes().contains(&id));
         let what = match what {
             Closing::Session(id) if tab_of(id).is_some_and(|i| self.tabs[i].layout.panes().len() == 1) => Closing::Tab(tab_of(id).unwrap_or(0)),
@@ -110,8 +107,8 @@ impl App {
             Closing::Window => {
                 (Kind::Window, close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect(), pinned_reasons(&self.tabs))
             }
-            Closing::App | Closing::Shutdown => {
-                let reasons = if crate::resident::reasons_collected(shutting_down, self.globals.bool("NeverBlockSystemShutdown")) { self.quit_reasons_now() } else { Vec::new() };
+            Closing::App => {
+                let reasons = self.quit_reasons_now();
                 if reasons.is_empty() {
                     return true;
                 }
@@ -165,6 +162,14 @@ impl App {
 /// "Tab #N is pinned." for each pinned tab, in tab order.
 fn pinned_reasons(tabs: &[Tab]) -> Vec<String> {
     tabs.iter().enumerate().filter(|(_, t)| t.pinned).map(|(i, _)| close_prompt::pinned_reason(i + 1)).collect()
+}
+
+/// The shutdown's quit question, shown by a thread that owns no window: an OK and Cancel box on
+/// top and in front (no owner, so no window of the app thread is tied to it); true for OK.
+pub(super) fn confirm_on_top(title: &str, text: &str) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST) == IDOK }
 }
 
 /// An OK and Cancel question; true for OK.

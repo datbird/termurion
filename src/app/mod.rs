@@ -242,6 +242,8 @@ pub enum UserEvent {
     ShutdownQuery { done: Arc<std::sync::atomic::AtomicBool>, end_now: Arc<std::sync::atomic::AtomicBool>, hwnd: isize },
     /// The shutdown was held for the quit question: ask it now, after the window procedure returned.
     ShutdownAsk,
+    /// The quit question's answer (true: OK), from the thread that showed it.
+    ShutdownAnswer(bool),
 }
 
 #[derive(Clone)]
@@ -6836,6 +6838,7 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
             UserEvent::ShutdownAsk => return self.shutdown_query(event_loop),
+            UserEvent::ShutdownAnswer(ok) => return self.shutdown_answered(ok, event_loop),
             UserEvent::Wake => {}
         }
         let mut changed = false;

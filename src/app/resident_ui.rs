@@ -220,17 +220,35 @@ impl App {
         super::logout_ui::destroy_block();
     }
 
-    /// The quit question for a held shutdown (`UserEvent::ShutdownAsk`): OK takes the reason down
-    /// and quits as Quit does, without asking again; Cancel takes it down and Tandem keeps running
-    /// (Windows does not retry: the person starts the shutdown again, Decision).
+    /// The quit question for a held shutdown (`UserEvent::ShutdownAsk`), shown on a thread of its own
+    /// so no handler is held while it is open (final review item 2): a session end meanwhile closes it
+    /// and writes out. Nothing left to ask quits at once, as Quit does.
     pub(super) fn shutdown_query(&mut self, event_loop: &ActiveEventLoop) {
-        if self.confirm_close(close_ui::Closing::Shutdown) {
-            super::logout_ui::end_question();
-            self.destroy_block_reason();
+        if !super::logout_ui::question_pending() {
+            return;
+        }
+        let reasons = if resident::reasons_collected(true, self.globals.bool("NeverBlockSystemShutdown")) { self.quit_reasons_now() } else { Vec::new() };
+        if reasons.is_empty() {
+            return self.shutdown_answered(true, event_loop);
+        }
+        let text = crate::close_rules::quit_text(&reasons, self.keep_jobs_on_quit());
+        let proxy = self.proxy.clone();
+        super::logout_ui::ask_on_thread(move || close_ui::confirm_on_top("Quit Tandem?", &text), move |ok| {
+            let _ = proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAnswer(ok)));
+        });
+    }
+
+    /// The question's answer (`UserEvent::ShutdownAnswer`): OK takes the reason down and quits as Quit
+    /// does, without asking again; Cancel takes it down and Tandem keeps running (Windows does not
+    /// retry: the person starts the shutdown again, Decision). An answer after the session end wrote
+    /// out (the question closed as Cancel) does nothing.
+    pub(super) fn shutdown_answered(&mut self, ok: bool, event_loop: &ActiveEventLoop) {
+        if !super::logout_ui::end_question() {
+            return;
+        }
+        self.destroy_block_reason();
+        if ok {
             self.quit_confirmed(event_loop);
-        } else {
-            super::logout_ui::end_question();
-            self.destroy_block_reason();
         }
     }
 }
@@ -453,9 +471,13 @@ mod tests {
         assert!(pending < decide.find("ShutdownAsk").unwrap(), "pending before the question is posted (M1)");
         assert!(decide.find("question_pending()").unwrap() < decide.find("quit_reasons_now()").unwrap(), "a pending question holds without deciding again");
         assert!(!decide.contains("confirm"), "no dialog inside the query");
-        let ask = &src[src.find("fn shutdown_query(").unwrap()..];
-        assert_eq!(ask.matches("destroy_block_reason()").count(), 2, "OK and Cancel both take it down");
-        assert!(ask.contains("Closing::Shutdown") && ask.contains("quit_confirmed"), "OK quits without asking again");
+        let ask = &src[src.find("fn shutdown_query(").unwrap()..src.find("fn shutdown_answered(").unwrap()];
+        assert!(ask.contains("ask_on_thread(") && !ask.contains("confirm_close(") && !ask.contains("quit_confirmed"), "the question runs on its own thread, never inside the handler (item 2)");
+        let answered = &src[src.find("fn shutdown_answered(").unwrap()..];
+        let taken = answered.find("end_question()").unwrap();
+        assert!(taken < answered.find("destroy_block_reason()").unwrap() && taken < answered.find("quit_confirmed").unwrap(), "OK and Cancel both take it down; a stale answer does nothing");
+        let m = include_str!("mod.rs");
+        assert!(m.contains("UserEvent::ShutdownAnswer(ok) => return self.shutdown_answered(ok, event_loop)"));
         let logoff = include_str!("logout_ui.rs");
         assert!(logoff.contains("self.destroy_block_reason()"), "the session end takes it down");
     }
