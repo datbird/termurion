@@ -517,8 +517,11 @@ pub fn system_trusted(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `load_gated` with the network judge and no trust check: for the pure tests. The app loads
-/// through `load_gated` with `system_local` and `system_trusted`.
+/// `load_gated` with the network judge and no trust check: for the pure tests only. The ruling
+/// is that an ungated load must not exist for app code: it is compiled in tests alone, and a
+/// source test (`app_code_never_loads_without_the_gate`) fails if a non-test caller appears. The
+/// app loads through `load_gated` with `system_local` and `system_trusted`.
+#[cfg(test)]
 pub fn load(folder: &Path, read: &dyn Fn(&Path) -> Result<Vec<u8>, String>, list: &dyn Fn(&Path) -> Vec<String>, saved_guids: &dyn Fn(&str) -> bool) -> Loaded {
     load_gated(folder, read, list, saved_guids, &Gate { local: &|p: &Path| crate::scripts::stays_local(p), trusted: &|_: &Path| Ok(()) })
 }
@@ -800,6 +803,40 @@ pub fn alert_text(errors: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The ruling "an ungated load must not exist": no source file outside its tests calls the
+    /// ungated `load`, and the function itself is test-only.
+    #[test]
+    fn app_code_never_loads_without_the_gate() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![here.clone()];
+        let mut seen = Vec::new();
+        while let Some(dir) = files.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    files.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    seen.push(p);
+                }
+            }
+        }
+        let mut wrong = Vec::new();
+        for p in seen {
+            let text = std::fs::read_to_string(&p).unwrap();
+            // Everything after the first test module is test code (the repo's layout).
+            let body = text.split("#[cfg(test)]").next().unwrap_or("");
+            for needle in ["dynamic_profiles::load(", "dp::load(", "dynamic_profiles::load,"] {
+                if body.contains(needle) {
+                    wrong.push(format!("{} calls the ungated {needle}", p.display()));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        let own = include_str!("dynamic_profiles.rs");
+        let at = own.find("pub fn load(").expect("load");
+        assert!(own[..at].trim_end().ends_with("#[cfg(test)]"), "the ungated load is not test-only");
+    }
+
     use super::*;
     use crate::profile::Profile;
     use serde_json::json;
