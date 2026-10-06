@@ -82,12 +82,13 @@ pub fn judge_facts(f: &Facts, me: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Ok when `owner` is `me` (or the Administrators group) and the access list (None: no list, which lets everyone write) grants
+/// Ok when `owner` is `me` (or the Administrators group or TrustedInstaller) and the access list (None: no list, which lets everyone write) grants
 /// no write right to anyone but `me` and the always trusted accounts.
 pub fn judge(owner: &str, me: &str, dacl: Option<&[Ace]>) -> Result<(), String> {
     // An elevated process makes files owned by the Administrators group; its members can change
-    // anything of the person's already.
-    if owner != me && owner != "S-1-5-32-544" {
+    // anything of the person's already. TrustedInstaller owns the system's protected folders (a
+    // WebView2 runtime among them) and may always write, so owning one adds nothing.
+    if owner != me && owner != "S-1-5-32-544" && owner != TRUSTED_INSTALLER {
         return Err("owned by another user".into());
     }
     let Some(aces) = dacl else { return Err("writable by other users".into()) };
@@ -294,6 +295,16 @@ mod tests {
     }
 
     /// Only the TrustedInstaller service may write, not any service account.
+    /// 13x review round 1 item 4 (B2): a folder TrustedInstaller owns (a system-protected runtime
+    /// folder) is trusted as an owner; any other account is not.
+    #[test]
+    fn a_trusted_installer_owned_folder_is_trusted() {
+        let me = "S-1-5-21-1-2-3-1001";
+        assert!(judge(TRUSTED_INSTALLER, me, Some(&[ace(TRUSTED_INSTALLER, 0x1f01ff), ace("S-1-5-32-545", 0x1200a9)])).is_ok());
+        assert!(judge("S-1-5-21-1-2-3-1002", me, Some(&[])).is_err());
+        assert!(judge("S-1-5-80-1-2-3-4-5", me, Some(&[])).is_err(), "another service account is no one special");
+    }
+
     #[test]
     fn only_trusted_installer_is_a_trusted_service() {
         let ti = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
