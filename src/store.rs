@@ -52,10 +52,7 @@ impl Store {
         let mut profiles: Vec<Profile> = file
             .profile
             .into_iter()
-            .map(|mut values| {
-                crate::bindings::cap_table(&mut values);
-                Profile { values }
-            })
+            .map(Profile::from_values)
             .collect();
         ensure_unique_guids(&mut profiles);
         if profiles.is_empty() {

@@ -1482,7 +1482,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     // The widget that takes the value, and whether it is enabled, for the non-default bar.
     let mut widget: Option<(egui::Rect, bool)> = None;
     // A color well or a checkbox can be bound to an expression (`ExpressionBindableView`).
-    let bound_expression = matches!(s.kind, Kind::Bool | Kind::Color).then(|| crate::bindings::get(profile).get(&key).map(|b| b.expression().to_string())).flatten();
+    let bound_expression = matches!(s.kind, Kind::Bool | Kind::Color).then(|| crate::bindings::expression_of(profile, &key).map(str::to_string)).flatten();
     let mut bind_action = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {

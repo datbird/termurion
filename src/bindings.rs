@@ -87,7 +87,10 @@ pub fn set(profile: &mut Profile, key: &str, expression: Option<&str>) {
         drop_palette_in(profile, base_key(key));
     }
     let expression = expression.filter(|e| !e.is_empty());
-    let mut t = table(profile).cloned().unwrap_or_default();
+    let mut t = match profile.values.remove(KEY) {
+        Some(toml::Value::Table(t)) => t,
+        _ => toml::Table::new(),
+    };
     match expression {
         Some(e) => {
             t.insert(key.to_string(), toml::Value::String(e.to_string()));
@@ -96,9 +99,7 @@ pub fn set(profile: &mut Profile, key: &str, expression: Option<&str>) {
             t.remove(key);
         }
     }
-    if t.is_empty() {
-        profile.values.remove(KEY);
-    } else {
+    if !t.is_empty() {
         profile.values.insert(KEY.to_string(), toml::Value::Table(t));
     }
 }
@@ -118,22 +119,20 @@ pub fn drop_palette(bindings: &mut BTreeMap<String, BindingValue>, base: &str) -
 
 /// `drop_palette` on the profile's stored dictionary (other entries untouched).
 pub fn drop_palette_in(profile: &mut Profile, base: &str) -> bool {
-    let Some(mut t) = table(profile).cloned() else { return false };
-    let mut any = false;
-    for k in variants(base) {
-        if t.get(&k).is_some_and(|v| matches!(BindingValue::from_value(v), Some(BindingValue::Palette(_)))) {
-            t.remove(&k);
-            any = true;
-        }
+    let Some(t) = table(profile) else { return false };
+    let drop: Vec<String> = variants(base).into_iter().filter(|k| t.get(k).is_some_and(|v| matches!(BindingValue::from_value(v), Some(BindingValue::Palette(_))))).collect();
+    if drop.is_empty() {
+        return false;
     }
-    if any {
+    if let Some(toml::Value::Table(t)) = profile.values.get_mut(KEY) {
+        for k in &drop {
+            t.remove(k);
+        }
         if t.is_empty() {
             profile.values.remove(KEY);
-        } else {
-            profile.values.insert(KEY.to_string(), toml::Value::Table(t));
         }
     }
-    any
+    true
 }
 
 /// A concrete color picked for `key` by the person (the Settings well or wheel) drops the
@@ -149,14 +148,24 @@ pub fn drop_for_write(profile: &mut Profile, key: &str) -> bool {
 /// (a profile's Bindings can come from an import or a script).
 pub fn bindable(key: &str) -> bool {
     use crate::schema::Kind;
-    if key == crate::profile::GUID || key == crate::profile::NAME || key == crate::session_profile::ORIGINAL_GUID || crate::start_dir::SCRUBBED_KEYS.contains(&key) {
-        return false;
-    }
-    if let Some(s) = crate::schema::find(key) {
-        return matches!(s.kind, Kind::Color | Kind::Bool);
-    }
-    let base = base_key(key);
-    base != key && crate::schema::find(base).is_some_and(|s| s.light_dark && matches!(s.kind, Kind::Color | Kind::Bool))
+    use std::sync::OnceLock;
+    static KEYS: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    let keys = KEYS.get_or_init(|| {
+        let mut set = std::collections::HashSet::new();
+        for s in crate::schema::profile().iter().filter(|s| matches!(s.kind, Kind::Color | Kind::Bool)) {
+            let excluded = s.key == crate::profile::GUID || s.key == crate::profile::NAME || s.key == crate::session_profile::ORIGINAL_GUID || crate::start_dir::SCRUBBED_KEYS.contains(&s.key.as_str());
+            if excluded {
+                continue;
+            }
+            set.insert(s.key.clone());
+            if s.light_dark {
+                set.insert(format!("{} (Light)", s.key));
+                set.insert(format!("{} (Dark)", s.key));
+            }
+        }
+        set
+    });
+    keys.contains(key)
 }
 
 /// The bindings the app evaluates: bindable keys only, at most `MAX_BINDINGS`, as (key,
@@ -186,24 +195,37 @@ pub fn bound_from<'a>(entries: impl Iterator<Item = (&'a String, &'a toml::Value
     out
 }
 
+/// The expression bound to `key`, borrowed from the stored table.
+pub fn expression_of<'a>(profile: &'a Profile, key: &str) -> Option<&'a str> {
+    match table(profile)?.get(key)? {
+        toml::Value::String(s) => Some(s),
+        toml::Value::Table(t) => t.get(EXPRESSION)?.as_str(),
+        _ => None,
+    }
+}
+
 /// Whether the profile binds `key` (a bindable key with a readable expression): one lookup, not
 /// the whole table.
 pub fn is_bound(profile: &Profile, key: &str) -> bool {
     bindable(key) && table(profile).and_then(|t| t.get(key)).and_then(BindingValue::from_value).is_some_and(|b| b.expression().chars().count() <= MAX_EXPRESSION)
 }
 
-/// The most entries a profile's "Bindings" table keeps when it comes in from a file (an import,
-/// the profiles file): bindable keys first. Nothing legitimate is near it (`MAX_BINDINGS` are read).
+/// The most entries a profile's "Bindings" table keeps. Nothing legitimate is near it
+/// (`MAX_BINDINGS` are read).
 pub const MAX_TABLE: usize = 256;
 
-/// Caps an incoming profile's "Bindings" table at `MAX_TABLE` entries, keeping the bindable ones.
-pub fn cap_table(values: &mut BTreeMap<String, toml::Value>) {
-    let Some(toml::Value::Table(t)) = values.get_mut(KEY) else { return };
-    if t.len() <= MAX_TABLE {
-        return;
-    }
-    let keep: std::collections::BTreeSet<String> = t.keys().filter(|k| bindable(k)).take(MAX_TABLE).cloned().collect();
-    t.retain(|k, _| keep.contains(k));
+/// The cleaned form of an incoming "Bindings" value, made at the one write point
+/// (`Profile::set`, `Profile::from_values`) so nothing downstream sees an unbounded or
+/// unbindable table: bindable keys with a readable expression only, at most `MAX_TABLE` of them
+/// (one hash lookup per entry). None for a value that is not a table or has nothing left.
+pub fn clean(value: toml::Value) -> Option<toml::Value> {
+    let toml::Value::Table(t) = value else { return None };
+    let kept: toml::Table = t
+        .into_iter()
+        .filter(|(k, v)| k.len() <= 128 && bindable(k) && BindingValue::from_value(v).is_some_and(|b| b.expression().chars().count() <= MAX_EXPRESSION))
+        .take(MAX_TABLE)
+        .collect();
+    (!kept.is_empty()).then_some(toml::Value::Table(kept))
 }
 
 /// iTerm2's descriptions of the mode color keys, for the failed-color log line
@@ -506,8 +528,8 @@ mod tests {
         let keys: Vec<&str> = b.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["Blur", "Foreground Color", "Tab Color (Dark)"]);
         assert!(b.iter().any(|(k, e)| k == "Tab Color (Dark)" && e == "user.tab"));
-        // The dictionary keeps what it ignores.
-        assert_eq!(get(&p).len(), 11);
+        // The one write point drops what a binding may never name.
+        assert_eq!(get(&p).len(), 3);
     }
 
     #[test]
@@ -549,26 +571,63 @@ mod tests {
         assert_eq!(bound(&with(&refs)).len(), MAX_BINDINGS);
     }
 
-    #[test]
-    fn an_incoming_bindings_table_is_capped() {
+    fn junk_first_table() -> toml::Value {
         let mut t = toml::Table::new();
         for i in 0..100_000 {
-            t.insert(format!("junk {i}"), s("user.x"));
+            t.insert(format!("Aaa junk {i}"), s("user.x"));
         }
         t.insert("Foreground Color".into(), s("user.fg"));
         t.insert("Blur".into(), s("user.b"));
-        let mut values = BTreeMap::new();
-        values.insert(KEY.to_string(), toml::Value::Table(t));
-        values.insert("Name".to_string(), s("kept"));
-        cap_table(&mut values);
-        let t = values[KEY].as_table().unwrap();
-        assert!(t.len() <= MAX_TABLE, "{}", t.len());
-        assert!(t.contains_key("Foreground Color") && t.contains_key("Blur"), "bindable entries stay");
-        assert_eq!(values["Name"], s("kept"));
-        // A small table is untouched.
-        let mut small = BTreeMap::new();
-        small.insert(KEY.to_string(), toml::Value::Table(toml::Table::from_iter([("junk".to_string(), s("x"))])));
-        cap_table(&mut small);
-        assert_eq!(small[KEY].as_table().unwrap().len(), 1);
+        toml::Value::Table(t)
+    }
+
+    /// Walks the stored table the way a pass does and says how many entries it pulled.
+    fn pass_work(p: &Profile) -> (usize, usize) {
+        let pulled = std::cell::Cell::new(0usize);
+        let walk = table(p).into_iter().flat_map(|t| t.iter()).map(|(k, v)| {
+            pulled.set(pulled.get() + 1);
+            (k, v)
+        });
+        let n = bound_from(walk).len();
+        (pulled.get(), n)
+    }
+
+    /// Every write funnel stores a cleaned table: the API, an arrangement's session write, an
+    /// import or a file load all end in `Profile::set` or `Profile::from_values`.
+    #[test]
+    fn every_write_funnel_stores_a_cleaned_table() {
+        let mut api = Profile::default();
+        api.set(KEY, junk_first_table());
+        let mut session = crate::session_profile::divorce(&Profile::new("S"), "g".into());
+        session.set(&[(KEY.to_string(), Some(junk_first_table()))], &Profile::new("S"));
+        let loaded = Profile::from_values(BTreeMap::from([(KEY.to_string(), junk_first_table()), ("Name".to_string(), s("kept"))]));
+        for (what, p) in [("API set", &api), ("session set", &session.profile), ("from_values", &loaded)] {
+            let t = table(p).unwrap_or_else(|| panic!("{what}: table"));
+            assert!(t.len() <= MAX_TABLE, "{what}: {}", t.len());
+            assert!(t.keys().all(|k| bindable(k)), "{what}: only bindable keys are stored");
+            assert!(t.contains_key("Foreground Color") && t.contains_key("Blur"), "{what}");
+            let (pulled, n) = pass_work(p);
+            assert_eq!(n, 2, "{what}");
+            assert!(pulled <= MAX_BINDINGS + 1, "{what}: a pass pulled {pulled} entries");
+        }
+        assert_eq!(loaded.string("Name"), "kept");
+        // A non-table value is not stored; a short expression table is kept as it is.
+        let mut p = Profile::default();
+        p.set(KEY, s("not a table"));
+        assert!(table(&p).is_none());
+        p.set(KEY, toml::Value::Table(toml::Table::from_iter([("Blur".to_string(), s("user.b"))])));
+        assert_eq!(table(&p).unwrap().len(), 1);
+    }
+
+    /// Reading one binding borrows the table (no copy of every entry), and a color write that
+    /// drops nothing leaves the table alone.
+    #[test]
+    fn readers_borrow_the_table() {
+        let p = with(&[("Foreground Color", s("user.fg")), ("Blur", s("user.b"))]);
+        assert_eq!(expression_of(&p, "Blur"), Some("user.b"));
+        assert_eq!(expression_of(&p, "Cursor Color"), None);
+        let mut q = p.clone();
+        assert!(!drop_palette_in(&mut q, "Foreground Color"));
+        assert_eq!(q, p);
     }
 }

@@ -109,7 +109,26 @@ impl Profile {
         }
     }
 
+    /// A profile from a stored or imported table.
+    /// A profile from a stored or imported table; its "Bindings" is cleaned (`bindings::clean`).
+    pub fn from_values(mut values: BTreeMap<String, Value>) -> Profile {
+        if let Some(b) = values.remove(crate::bindings::KEY).and_then(crate::bindings::clean) {
+            values.insert(crate::bindings::KEY.to_string(), b);
+        }
+        Profile { values }
+    }
+
+    /// The one write: the Settings window, the API, an arrangement's session copy and the
+    /// escape codes all land here. "Bindings" is cleaned once, so every reader sees at most
+    /// `bindings::MAX_TABLE` bindable entries.
     pub fn set(&mut self, key: &str, value: Value) {
+        if key == crate::bindings::KEY {
+            match crate::bindings::clean(value) {
+                Some(b) => self.values.insert(key.to_string(), b),
+                None => self.values.remove(key),
+            };
+            return;
+        }
         self.values.insert(key.to_string(), value);
     }
 

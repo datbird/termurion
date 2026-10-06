@@ -168,7 +168,7 @@ pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store
     // in Settings (`start_dir::scrub_map`).
     let mut profiles: Vec<Profile> = snap.profiles.iter().cloned().map(|mut values| {
         crate::start_dir::scrub_map(&mut values);
-        Profile { values }
+        Profile::from_values(values)
     }).collect();
     if profiles.is_empty() {
         profiles.push(Profile::new("Default"));
