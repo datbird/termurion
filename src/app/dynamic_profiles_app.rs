@@ -3,7 +3,7 @@
 //! (`iTermDynamicProfileManager.m`). The pure parts (`apply_loaded`, `rewrite`) take what they
 //! touch as arguments; the `App` methods wire them to the store, the scanner and the console.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
@@ -287,6 +287,50 @@ pub(super) struct Source {
     stamp: Option<Stamp>,
 }
 
+/// Rewrites the file profile `guid` came from with `change`. A written file's new stamp goes to
+/// every profile of that file (a second edit in the same file must not find it "changed"). None
+/// when the profile has no recorded file or stamp.
+pub(super) fn rewrite_source(fs: &Fs, folder: &Path, files: &mut HashMap<String, Source>, guid: &str, change: &dyn Fn(&mut Entry)) -> Option<Outcome> {
+    let source = files.get(guid)?.clone();
+    let stamp = source.stamp.clone()?;
+    let out = rewrite(fs, folder, &source.path, &stamp, guid, change);
+    if let Outcome::Wrote(now) = &out {
+        for other in files.values_mut().filter(|o| o.path == source.path) {
+            other.stamp = now.clone();
+        }
+    }
+    Some(out)
+}
+
+/// The edits of the rewritable dynamic profile `guid` go back to its file: only the keys that
+/// differ from its parent (`DP:676-828`). None when it is not a rewritable dynamic profile.
+pub(super) fn write_back(fs: &Fs, folder: &Path, files: &mut HashMap<String, Source>, store: &Store, add_tag: bool, guid: &str) -> Option<Outcome> {
+    let profile = store.profiles.iter().find(|p| p.guid() == guid && is_dynamic(p) && p.bool(dp::REWRITABLE_KEY))?.clone();
+    let (profiles, default) = (&store.profiles, store.default_profile().clone());
+    let change = |e: &mut Entry| {
+        let others = || profiles.iter().filter(|p| p.guid() != guid);
+        let parent = match dp::parent_of(e, &|g| others().any(|p| p.guid() == g), &|n| others().find(|p| p.name() == n).map(|p| p.guid())) {
+            Parent::Found(g) => others().find(|p| p.guid() == g).cloned(),
+            _ => None,
+        }
+        .unwrap_or_else(|| default.clone());
+        *e = dp::rewritten(e, &profile, &parent, add_tag);
+    };
+    rewrite_source(fs, folder, files, guid, &change)
+}
+
+/// Writes every pending profile back, one after the other, and never reloads in between: a reload
+/// would replace a profile still waiting with the file's old values (B7, "never lose edits").
+pub(super) fn flush_writes(fs: &Fs, folder: &Path, files: &mut HashMap<String, Source>, store: &Store, add_tag: bool, pending: BTreeSet<String>) -> Vec<(String, Outcome)> {
+    pending.into_iter().filter_map(|g| write_back(fs, folder, files, store, add_tag, &g).map(|o| (g, o))).collect()
+}
+
+/// Whether the tick reloads: the watch asked, or an edit's write-back fell due (the reload writes
+/// every pending edit first, so a watch reload never reverts one).
+pub(super) fn reload_due(asked: bool, due: Option<Instant>, now: Instant) -> bool {
+    asked || due.is_some_and(|t| now >= t)
+}
+
 impl App {
     /// At launch, before the first window (an arrangement may name a dynamic profile): the
     /// folder is made, watched, and read.
@@ -303,17 +347,12 @@ impl App {
         self.reload_dynamic_profiles();
     }
 
-    /// Each loop pass: a reload the watch asked for, and the write-back an edit waits on. Gives
-    /// when the write-back falls due (nothing while nothing waits).
+    /// Each loop pass: a reload the watch asked for or an edit's write-back fell due (the reload
+    /// writes the pending edits first). Gives when a write-back falls due (nothing while nothing waits).
     pub(super) fn dynamic_profiles_tick(&mut self) -> Option<Instant> {
-        if self.dynamic_scan.as_ref().is_some_and(|s| s.take_reload()) {
+        let asked = self.dynamic_scan.as_ref().is_some_and(|s| s.take_reload());
+        if reload_due(asked, self.dynamic_write_due, Instant::now()) {
             self.reload_dynamic_profiles();
-        }
-        if self.dynamic_write_due.is_some_and(|t| Instant::now() >= t) {
-            self.dynamic_write_due = None;
-            for guid in std::mem::take(&mut self.dynamic_write) {
-                self.write_back_dynamic(&guid);
-            }
         }
         self.dynamic_write_due
     }
@@ -328,6 +367,9 @@ impl App {
     /// ask once (`DP:167-222`).
     pub(super) fn reload_dynamic_profiles(&mut self) {
         let Some(folder) = self.dynamic_scan.as_ref().map(|s| s.folder().to_path_buf()) else { return };
+        // Edits still waiting for their write-back go to the files first: the reload would
+        // otherwise replace them with what the files say.
+        self.flush_dynamic_writes();
         let add_tag = self.globals.bool("AddDynamicTagToDynamicProfiles");
         let stamps: std::cell::RefCell<HashMap<String, Stamp>> = Default::default();
         let loaded = {
@@ -428,36 +470,34 @@ impl App {
         self.dynamic_write_due = Some(Instant::now() + super::SAVE_DELAY);
     }
 
-    /// The edits of a rewritable dynamic profile go back to its file (`DP:676-828`): only the
-    /// keys that differ from its parent, the file's own type kept. Then one reload.
-    pub(super) fn write_back_dynamic(&mut self, guid: &str) {
-        let Some(profile) = self.store.profiles.iter().find(|p| p.guid() == guid && is_dynamic(p) && p.bool(dp::REWRITABLE_KEY)).cloned() else { return };
+    /// Writes every pending edit back (no reload) and logs what was not written.
+    fn flush_dynamic_writes(&mut self) {
+        self.dynamic_write_due = None;
+        let pending = std::mem::take(&mut self.dynamic_write);
+        let Some(folder) = self.dynamic_scan.as_ref().map(|s| s.folder().to_path_buf()).filter(|_| !pending.is_empty()) else { return };
         let add_tag = self.globals.bool("AddDynamicTagToDynamicProfiles");
-        let (profiles, default) = (self.store.profiles.clone(), self.store.default_profile().clone());
-        let change = |e: &mut Entry| {
-            let others = || profiles.iter().filter(|p| p.guid() != guid);
-            let parent = match dp::parent_of(e, &|g| others().any(|p| p.guid() == g), &|n| others().find(|p| p.name() == n).map(|p| p.guid())) {
-                Parent::Found(g) => others().find(|p| p.guid() == g).cloned(),
-                _ => None,
-            }
-            .unwrap_or_else(|| default.clone());
-            *e = dp::rewritten(e, &profile, &parent, add_tag);
-        };
-        self.rewrite_dynamic(guid, &change);
+        let results = flush_writes(&Fs::real(), &folder, &mut self.dynamic_files, &self.store, add_tag, pending);
+        for (guid, out) in results {
+            self.dynamic_outcome(&guid, out);
+        }
     }
 
-    /// "Mark as Rewritable": writes `Rewritable` true into the profile's own entry.
+    /// "Mark as Rewritable": writes `Rewritable` true into the profile's own entry, then reloads.
     pub(super) fn mark_rewritable(&mut self, guid: &str) {
-        self.rewrite_dynamic(guid, &|e: &mut Entry| {
+        let Some(folder) = self.dynamic_scan.as_ref().map(|s| s.folder().to_path_buf()) else { return };
+        let change = |e: &mut Entry| {
             e.insert(dp::REWRITABLE_KEY.into(), Json::Bool(true));
-        });
+        };
+        if let Some(out) = rewrite_source(&Fs::real(), &folder, &mut self.dynamic_files, guid, &change) {
+            self.dynamic_outcome(guid, out);
+        }
+        // One reload: the file's own state is what the profile shows.
+        self.reload_dynamic_profiles();
     }
 
-    fn rewrite_dynamic(&mut self, guid: &str, change: &dyn Fn(&mut Entry)) {
-        let (Some(folder), Some(source)) = (self.dynamic_scan.as_ref().map(|s| s.folder().to_path_buf()), self.dynamic_files.get(guid).cloned()) else { return };
-        let Some(stamp) = source.stamp.clone() else { return };
+    fn dynamic_outcome(&mut self, guid: &str, out: Outcome) {
         let name = self.store.profiles.iter().find(|p| p.guid() == guid).map(|p| crate::profile_list::display_text(&p.name())).unwrap_or_default();
-        match rewrite(&Fs::real(), &folder, &source.path, &stamp, guid, change) {
+        match out {
             Outcome::Wrote(_) => {}
             Outcome::Changed => self.dynamic_log(&format!("Dynamic profile {name} changed on disk, not rewritten.")),
             Outcome::Refused(why) => {
@@ -466,8 +506,6 @@ impl App {
                 self.banners.set("dynamic", line);
             }
         }
-        // One reload either way: the file's own state is what the profile shows.
-        self.reload_dynamic_profiles();
     }
 
     /// "Reveal in Explorer" for a dynamic profile's file (Settings' warning).
@@ -842,5 +880,76 @@ mod tests {
         }
         let rewrite = body.split("pub(super) fn rewrite(").nth(1).unwrap().split("// ---- The app").next().unwrap();
         assert!(rewrite.contains("fs.open") && rewrite.contains("fs.rename"));
+    }
+
+    // ---- pending edits are never reverted (B7, fix r1 item 1) ---------------------------------
+
+    /// A rewritable file of two profiles, a store that loaded it, and the loader's record of it.
+    fn two_in_one_file(tag: &str) -> (PathBuf, PathBuf, Store, HashMap<String, Source>) {
+        let dir = scratch(tag);
+        let p = write_json(&dir, "a.json", json!({"Profiles": [{"Guid": "A", "Name": "A", "Rewritable": true}, {"Guid": "B", "Name": "B", "Rewritable": true}]}));
+        let mut s = store();
+        let read = |q: &Path| std::fs::read(q).map_err(|e| e.to_string());
+        let list = |f: &Path| crate::dynamic_profiles::list_dir(f, &|_| true, 100);
+        apply_loaded(&mut s, &crate::dynamic_profiles::load(&dir, &read, &list, &|_| false), false);
+        let stamp = stamp_of_file(&p);
+        let files = ["A", "B"].iter().map(|g| (g.to_string(), Source { path: p.display().to_string(), stamp: Some(stamp.clone()) })).collect();
+        (dir, p, s, files)
+    }
+
+    fn rename_in_store(s: &mut Store, guid: &str, name: &str) {
+        s.profiles.iter_mut().find(|p| p.guid() == guid).unwrap().set("Name", toml::Value::String(name.into()));
+    }
+
+    /// Two edits waiting in one file are both written (the first write refreshes the stamp the
+    /// second needs), and a reload after the flush keeps both; reloading first would revert them.
+    #[test]
+    fn two_pending_edits_in_one_file_both_land() {
+        let (dir, p, mut s, mut files) = two_in_one_file("pending");
+        rename_in_store(&mut s, "A", "A2");
+        rename_in_store(&mut s, "B", "B2");
+        let pending: BTreeSet<String> = ["A", "B"].iter().map(|g| g.to_string()).collect();
+        let out = flush_writes(&real(), &dir, &mut files, &s, false, pending);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(_, o)| matches!(o, Outcome::Wrote(_))), "{out:?}");
+        assert_eq!(names(&p), ["A2", "B2"]);
+        // The reload after the flush reads what was written and changes nothing.
+        let read = |q: &Path| std::fs::read(q).map_err(|e| e.to_string());
+        let list = |f: &Path| crate::dynamic_profiles::list_dir(f, &|_| true, 100);
+        let again = crate::dynamic_profiles::load(&dir, &read, &list, &|_| false);
+        let (changes, _) = apply_loaded(&mut s, &again, false);
+        assert!(changes.update.is_empty(), "{changes:?}");
+        assert_eq!((s.get("A").unwrap().name(), s.get("B").unwrap().name()), ("A2".to_string(), "B2".to_string()));
+        // The old order: a reload first reverts both edits.
+        let (dir, _, mut s, files) = two_in_one_file("pending-old");
+        rename_in_store(&mut s, "A", "A2");
+        rename_in_store(&mut s, "B", "B2");
+        let stale = crate::dynamic_profiles::load(&dir, &read, &list, &|_| false);
+        apply_loaded(&mut s, &stale, false);
+        assert_eq!(s.get("A").unwrap().name(), "A", "what the reload does to an unflushed edit");
+        drop(files);
+    }
+
+    #[test]
+    fn the_tick_reloads_when_asked_or_due() {
+        let now = Instant::now();
+        let (past, future) = (now - std::time::Duration::from_secs(1), now + std::time::Duration::from_secs(60));
+        assert!(reload_due(true, None, now));
+        assert!(reload_due(true, Some(future), now), "a watch reload also writes what waits");
+        assert!(reload_due(false, Some(past), now));
+        assert!(!reload_due(false, Some(future), now));
+        assert!(!reload_due(false, None, now));
+    }
+
+    /// Every reload writes the pending edits first (before it reads a file), and the tick never
+    /// writes on its own: the write is part of the reload.
+    #[test]
+    fn a_reload_flushes_before_it_reads() {
+        let body = include_str!("dynamic_profiles_app.rs").split("#[cfg(test)]").next().unwrap();
+        let reload = body.split("pub(super) fn reload_dynamic_profiles(").nth(1).unwrap();
+        let (flush, read) = (reload.find("self.flush_dynamic_writes()").expect("flush"), reload.find("load_gated(").expect("load"));
+        assert!(flush < read, "the pending edits are written before the folder is read");
+        let tick = body.split("pub(super) fn dynamic_profiles_tick(").nth(1).unwrap().split("fn dynamic_log").next().unwrap();
+        assert!(!tick.contains("flush_writes") && !tick.contains("write_back"), "the tick writes only through a reload");
     }
 }
