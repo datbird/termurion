@@ -189,6 +189,12 @@ impl SelScroll {
     }
 }
 
+/// Whether the autoscroll goes on: the primary button is still down and the pane still exists
+/// (a lost release or a closed pane ends the drag).
+pub(super) fn scroll_continues(primary_down: bool, pane_exists: bool) -> bool {
+    primary_down && pane_exists
+}
+
 /// When the next autoscroll step is due, None with no scroll under way.
 pub(super) fn sel_scroll_wake(scroll: Option<&SelScroll>) -> Option<Instant> {
     scroll.map(SelScroll::wake)
@@ -320,7 +326,7 @@ impl App {
         let Drag::Select { scroll: Some(s), .. } = &self.drag else { return None };
         let mut s = *s;
         let (swapped, l, r) = crate::winkeys::mouse_buttons();
-        if !pane_move_ui::primary_down(swapped, l, r) || !self.panes.contains_key(&s.pane) {
+        if !scroll_continues(pane_move_ui::primary_down(swapped, l, r), self.panes.contains_key(&s.pane)) {
             self.drag = Drag::None;
             return None;
         }
@@ -564,6 +570,19 @@ mod tests {
         assert_eq!(scroll_direction(5.0, 10.0, 100.0), Some(true));
         assert_eq!(scroll_direction(50.0, 10.0, 100.0), None);
         assert_eq!(scroll_direction(100.0, 10.0, 100.0), Some(false));
+    }
+
+    /// B7: the autoscroll ends with the button (a lost release) or with the pane, and the tick
+    /// asks this rule.
+    #[test]
+    fn autoscroll_ends_with_the_button() {
+        assert!(scroll_continues(true, true));
+        assert!(!scroll_continues(false, true), "the button is up: the drag ends");
+        assert!(!scroll_continues(true, false), "the pane is gone");
+        let src = include_str!("selection_ui.rs");
+        let tick = &src[src.find("fn sel_scroll_tick").unwrap()..];
+        let (ask, end) = (tick.find("scroll_continues(").expect("the tick asks"), tick.find("self.drag = Drag::None").unwrap());
+        assert!(ask < end);
     }
 
     /// The wake is idle with no scroll and never sooner than a frame (B7, P13).
