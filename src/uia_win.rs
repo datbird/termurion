@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use windows::core::{implement, AsImpl, Error, Interface, Ref, Result, BOOL, BSTR, HRESULT, IUnknown};
@@ -298,6 +299,9 @@ struct Shared {
     /// empties both to break the cycle.
     root: Mutex<Option<IRawElementProviderSimple>>,
     panes: Mutex<HashMap<u64, IRawElementProviderSimple>>,
+    /// The window is closed: every object a client still holds answers
+    /// UIA_E_ELEMENTNOTAVAILABLE and the snapshot is gone.
+    closed: AtomicBool,
 }
 
 /// The vtable of `RangeProvider`'s interface, recorded when the first range is made: a range a
@@ -305,13 +309,38 @@ struct Shared {
 static RANGE_VTBL: OnceLock<usize> = OnceLock::new();
 
 impl Shared {
-    fn snap(&self) -> Arc<WindowSnapshot> {
-        lock(&self.snap).clone()
+    /// The snapshot while the window is open.
+    fn snap(&self) -> Result<Arc<WindowSnapshot>> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(unavailable());
+        }
+        Ok(lock(&self.snap).clone())
+    }
+
+    /// The window is gone: the snapshot is dropped (no text outlives it), every provider is
+    /// disconnected and the window hands out no root. Safe to call twice.
+    fn close(&self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        *lock(&self.snap) = Arc::default();
+        let root = lock(&self.root).take();
+        let panes: Vec<IRawElementProviderSimple> = lock(&self.panes).drain().map(|(_, p)| p).collect();
+        // SAFETY: disconnecting this host's providers, then releasing the window's one; no lock is held.
+        unsafe {
+            for p in &panes {
+                let _ = UiaDisconnectProvider(p);
+            }
+            if let Some(r) = &root {
+                let _ = UiaDisconnectProvider(r);
+            }
+            let _ = UiaReturnRawElementProvider(HWND(self.hwnd as *mut c_void), WPARAM(0), LPARAM(0), None::<&IRawElementProviderSimple>);
+        }
     }
 
     /// The snapshot and the index of pane `id` in it.
     fn pane(&self, id: u64) -> Result<(Arc<WindowSnapshot>, usize)> {
-        let snap = self.snap();
+        let snap = self.snap()?;
         let i = snap.panes.iter().position(|p| p.id == id).ok_or_else(unavailable)?;
         Ok((snap, i))
     }
@@ -359,7 +388,7 @@ impl IRawElementProviderSimple_Impl for RootProvider_Impl {
         guard(|| {
             Ok(match id {
                 UIA_ControlTypePropertyId => VARIANT::from(UIA_PaneControlTypeId.0),
-                UIA_NamePropertyId => VARIANT::from(self.shared.snap().title.as_str()),
+                UIA_NamePropertyId => VARIANT::from(self.shared.snap()?.title.as_str()),
                 UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId | UIA_IsEnabledPropertyId => VARIANT::from(true),
                 UIA_FrameworkIdPropertyId => VARIANT::from("Tandem"),
                 _ => VARIANT::default(),
@@ -369,6 +398,7 @@ impl IRawElementProviderSimple_Impl for RootProvider_Impl {
 
     fn HostRawElementProvider(&self) -> Result<IRawElementProviderSimple> {
         guard(|| {
+            self.shared.snap()?;
             // SAFETY: asks UI Automation for the window's own provider.
             unsafe { UiaHostProviderFromHwnd(HWND(self.shared.hwnd as *mut c_void)) }
         })
@@ -378,7 +408,7 @@ impl IRawElementProviderSimple_Impl for RootProvider_Impl {
 impl IRawElementProviderFragment_Impl for RootProvider_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> Result<IRawElementProviderFragment> {
         guard(|| {
-            let snap = self.shared.snap();
+            let snap = self.shared.snap()?;
             let pick = match direction {
                 NavigateDirection_FirstChild => snap.panes.first(),
                 NavigateDirection_LastChild => snap.panes.last(),
@@ -398,7 +428,7 @@ impl IRawElementProviderFragment_Impl for RootProvider_Impl {
 
     fn BoundingRectangle(&self) -> Result<UiaRect> {
         guard(|| {
-            let r = self.shared.snap().rect;
+            let r = self.shared.snap()?.rect;
             Ok(UiaRect { left: r.0 as f64, top: r.1 as f64, width: (r.2 - r.0).max(0) as f64, height: (r.3 - r.1).max(0) as f64 })
         })
     }
@@ -419,7 +449,7 @@ impl IRawElementProviderFragment_Impl for RootProvider_Impl {
 impl IRawElementProviderFragmentRoot_Impl for RootProvider_Impl {
     fn ElementProviderFromPoint(&self, x: f64, y: f64) -> Result<IRawElementProviderFragment> {
         guard(|| {
-            let snap = self.shared.snap();
+            let snap = self.shared.snap()?;
             let hit = snap.panes.iter().find(|p| x >= p.rect.0 as f64 && x < p.rect.2 as f64 && y >= p.rect.1 as f64 && y < p.rect.3 as f64);
             match hit {
                 Some(p) => self.shared.pane_fragment(p.id),
@@ -430,7 +460,7 @@ impl IRawElementProviderFragmentRoot_Impl for RootProvider_Impl {
 
     fn GetFocus(&self) -> Result<IRawElementProviderFragment> {
         guard(|| {
-            let snap = self.shared.snap();
+            let snap = self.shared.snap()?;
             match snap.panes.iter().find(|p| p.focused) {
                 Some(p) => self.shared.pane_fragment(p.id),
                 None => none(),
@@ -860,7 +890,7 @@ impl Host {
     /// Subclasses `hwnd`: `WM_GETOBJECT` for `UiaRootObjectId` returns the root provider.
     /// `send` is called on UI Automation's threads and must only post.
     pub fn install(hwnd: isize, send: Box<dyn Fn(Request) + Send + Sync>) -> std::result::Result<Host, String> {
-        let shared = Arc::new(Shared { hwnd, snap: Mutex::new(Arc::default()), send, root: Mutex::new(None), panes: Mutex::new(HashMap::new()) });
+        let shared = Arc::new(Shared { hwnd, snap: Mutex::new(Arc::default()), send, root: Mutex::new(None), panes: Mutex::new(HashMap::new()), closed: AtomicBool::new(false) });
         let root: IRawElementProviderSimple = RootProvider { shared: shared.clone() }.into();
         *lock(&shared.root) = Some(root);
         // SAFETY: hwnd is a live window of this thread; the refdata outlives the subclass (Drop removes it first).
@@ -874,6 +904,9 @@ impl Host {
 
     /// Replaces the snapshot; providers of panes that are gone are disconnected.
     pub fn publish(&self, snap: WindowSnapshot) {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return;
+        }
         let new = Arc::new(snap);
         let gone: Vec<IRawElementProviderSimple> = {
             let mut cache = lock(&self.shared.panes);
@@ -944,19 +977,9 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let root = lock(&self.shared.root).take();
-        let panes: Vec<IRawElementProviderSimple> = lock(&self.shared.panes).drain().map(|(_, p)| p).collect();
-        // SAFETY: disconnecting this host's providers, releasing the window's one, then removing the subclass.
-        unsafe {
-            for p in &panes {
-                let _ = UiaDisconnectProvider(p);
-            }
-            if let Some(r) = &root {
-                let _ = UiaDisconnectProvider(r);
-            }
-            let _ = UiaReturnRawElementProvider(HWND(self.shared.hwnd as *mut c_void), WPARAM(0), LPARAM(0), None::<&IRawElementProviderSimple>);
-            RemoveWindowSubclass(self.shared.hwnd as _, Some(proc), SUBCLASS_ID);
-        }
+        self.shared.close();
+        // SAFETY: removing the subclass this host installed.
+        unsafe { RemoveWindowSubclass(self.shared.hwnd as _, Some(proc), SUBCLASS_ID) };
     }
 }
 
@@ -966,7 +989,7 @@ mod tests {
     use std::ffi::c_void;
     use std::sync::{Arc, Mutex};
     use windows::core::{Interface, BSTR, IUnknown};
-    use windows::Win32::Foundation::{E_FAIL, HWND};
+    use windows::Win32::Foundation::E_FAIL;
     use windows::Win32::System::Com::SAFEARRAY;
     use windows::Win32::System::Ole::{SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetUBound};
     use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_I4, VT_UNKNOWN};
@@ -1319,15 +1342,39 @@ mod tests {
         }
     }
 
+    /// A client that still holds objects of a closed window gets no text and no title: every
+    /// method answers UIA_E_ELEMENTNOTAVAILABLE, and the window no longer hands out its root.
     #[test]
-    fn the_host_unhooks_the_window() {
+    fn a_closed_window_serves_no_text() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
         let w = Win::new();
-        let (h, _s) = host(&w, win_snap(vec![pane(7, &["ab"])]));
+        let (h, _s) = host(&w, win_snap(vec![pane(7, &["secret"])]));
         let root = h.root_provider();
-        drop(h);
-        // a provider kept by a client after the window's host is gone answers, never crashes
+        let tp = text_provider(&root);
+        // SAFETY: plain COM calls and a message to this test's own window.
+        unsafe {
+            let doc = tp.DocumentRange().unwrap();
+            let p = first_pane(&root);
+            assert_ne!(SendMessageW(w.0 as _, WM_GETOBJECT, 0, UiaRootObjectId as isize), 0, "the subclass answers WM_GETOBJECT");
+            drop(h);
+            assert_eq!(SendMessageW(w.0 as _, WM_GETOBJECT, 0, UiaRootObjectId as isize), 0, "a closed window hands out no root");
+            let errs = [
+                doc.GetText(-1).err().map(|e| e.code().0 as u32),
+                doc.Clone().err().map(|e| e.code().0 as u32),
+                tp.DocumentRange().err().map(|e| e.code().0 as u32),
+                p.GetPropertyValue(UIA_NamePropertyId).err().map(|e| e.code().0 as u32),
+                root.GetPropertyValue(UIA_NamePropertyId).err().map(|e| e.code().0 as u32),
+                first_pane_err(&root),
+            ];
+            for (i, e) in errs.iter().enumerate() {
+                assert_eq!(*e, Some(UIA_E_ELEMENTNOTAVAILABLE), "call {i} on a closed window");
+            }
+        }
+    }
+
+    fn first_pane_err(root: &IRawElementProviderSimple) -> Option<u32> {
+        let frag: IRawElementProviderFragment = root.cast().unwrap();
         // SAFETY: plain COM call.
-        let _ = unsafe { root.GetPropertyValue(UIA_ControlTypePropertyId) };
-        let _ = HWND(std::ptr::null_mut());
+        unsafe { frag.Navigate(NavigateDirection_FirstChild) }.err().map(|e| e.code().0 as u32)
     }
 }
