@@ -298,6 +298,22 @@ pub(super) fn select_all_matches(screen: &mut crate::screen::Screen, matches: &[
     Some(screen.set_subs(subs))
 }
 
+/// The results of a fresh search. A loud one (the person's own typing, Enter, Find...) makes the
+/// nearest match at or above `from` current and selects and shows it; a quiet one (B5: the
+/// shared query, auto search) keeps the matches and highlights only, so no match is current (the
+/// bar shows a count, not "i/N", `iTermSearchFieldCell.m:299`) and the selection that caused the
+/// search stays where it is.
+fn fresh_results(pane: &mut crate::pane::Pane, results: &mut Results, matches: Vec<Match>, from: Pos, quiet: bool) {
+    *results = Results { matches, current: None };
+    if quiet {
+        return;
+    }
+    results.start_at(from);
+    if let Some(m) = results.current.and_then(|i| results.matches.get(i)).copied() {
+        reveal(pane, &m);
+    }
+}
+
 pub(super) fn show_line(pane: &mut crate::pane::Pane, line: i32) {
     let grid = pane.screen.term().grid();
     let (lines, offset, history) = (grid.screen_lines() as i32, grid.display_offset() as i32, grid.history_size() as i32);
@@ -474,11 +490,7 @@ impl App {
             Ok(matches) if fresh => {
                 f.error = None;
                 let from = f.results.current.and_then(|i| f.results.matches.get(i)).map_or_else(|| view_bottom(&p.screen), |m| m.start);
-                f.results = Results { matches, current: None };
-                f.results.start_at(from);
-                if let Some(m) = f.results.current.and_then(|i| f.results.matches.get(i)).filter(|_| !quiet) {
-                    reveal(p, &m.clone());
-                }
+                fresh_results(p, &mut f.results, matches, from, quiet);
             }
             Ok(matches) => {
                 f.error = None;
@@ -1072,6 +1084,57 @@ mod tests {
         // The person's own typing is not quiet.
         d.key(BarKey::Text("x".into()), t);
         assert!(!d.quiet);
+    }
+
+    /// A pane whose text has "abc" three times, with the second one selected.
+    fn selected_pane() -> (crate::pane::Pane, Vec<Match>) {
+        let mut p = crate::pane::Pane::recording(1, 20, 5);
+        p.screen.feed(b"abc abc\r\nabc");
+        let (a, b) = (Point::new(Line(0), Column(4)), Point::new(Line(0), Column(6)));
+        let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
+        sel.update(b, Side::Right);
+        p.set_selection(Some(sel), crate::seltext::Mode::Character);
+        let matches = find::find_all(&p.screen, "abc").unwrap();
+        assert_eq!(matches.len(), 3);
+        (p, matches)
+    }
+
+    fn selection_start(p: &crate::pane::Pane) -> Pos {
+        p.screen.subs()[0].start
+    }
+
+    /// B5: a search the shared query or auto search caused fills the results and highlights but
+    /// leaves the selection that triggered it, and no match is current; the person's own search
+    /// selects the nearest match.
+    #[test]
+    fn auto_search_keeps_the_selection() {
+        let (mut p, matches) = selected_pane();
+        let before = selection_start(&p);
+        let mut results = Results::default();
+        let bottom = view_bottom(&p.screen);
+        fresh_results(&mut p, &mut results, matches.clone(), bottom, true);
+        assert_eq!(selection_start(&p), before, "the selection stays");
+        assert_eq!(results.matches.len(), 3);
+        assert_eq!(results.current, None);
+        assert_eq!(results.label(true), "3");
+        fresh_results(&mut p, &mut results, matches, bottom, false);
+        assert_eq!(results.current, Some(2));
+        assert_eq!(selection_start(&p), Pos { row: 1, col: 0 }, "a loud search selects the match");
+    }
+
+    #[test]
+    fn loaded_query_does_not_move_the_selection() {
+        let (mut p, matches) = selected_pane();
+        let before = selection_start(&p);
+        let t = Instant::now();
+        let mut bar = typed("zzz", t);
+        assert!(board_load("abc", true, &mut bar, t));
+        let quiet = std::mem::take(&mut bar.quiet);
+        assert!(quiet, "a loaded query searches quietly");
+        let bottom = view_bottom(&p.screen);
+        fresh_results(&mut p, &mut bar.results, matches, bottom, quiet);
+        assert_eq!(selection_start(&p), before);
+        assert_eq!(bar.results.current, None);
     }
 
     #[test]
