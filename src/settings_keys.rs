@@ -2303,7 +2303,6 @@ mod tests {
         let fraction = "Fraction of character\u{2019}s width on its right side that can be used to select the character to its right.";
         let swap = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Tandem's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app.";
         let sync = "Synchronize search queries across windows and applications.\nNormally, when you enter a search query in a Find field all find fields in all applications get updated to hold the same value. This is utter nonsense, and can be disabled by setting this preference to No.";
-        let slash = "Only consider a two+ part domain-name to be a URL if it also contains a slash.\nThis setting is used when guessing if a string is a URL for semantic history. When enabled, `example.com` would not be considered a URL but `example.com/` would be.";
         let bg = "Exclude the default background color when text is copied with color and font style?\nWhen off, the default background color will be left unset. Non-default background colors will remain.";
         let empty = "Disallow copying empty string to pasteboard.\nIf enabled, selecting an empty string (or all whitespace if trimming is enabled) will not erase the contents of the pasteboard.";
         let nobg = "Exclude all background colors when text is copied with color and font style?\nThis includes both the default background color and non-default background colors.";
@@ -2320,7 +2319,6 @@ mod tests {
             ("SynchronizeQueryWithFindPasteboard", "General", Kind::Bool, b(true), sync),
             ("SmartSelectionRadius", "General", Kind::Int, Value::Integer(2), "Maximum number of lines before and after the click location to include in smart selection."),
             ("AlphaForDeselectedCommandShade", "Drawing", Kind::Float, f(0.25), "Alpha value for shade that covers areas outside the currently selected command."),
-            ("RequireSlashInURLGuess", "Semantic History", Kind::Bool, b(true), slash),
             ("TrimWhitespaceOnCopy", "Pasteboard", Kind::Bool, b(true), "Trim whitespace when copying to pasteboard."),
             ("CopyWithStylesByDefault", "Pasteboard", Kind::Bool, b(false), "Copy to pasteboard on selection includes color and font style."),
             ("CopyBackgroundColor", "Pasteboard", Kind::Bool, b(true), bg),
@@ -2329,7 +2327,8 @@ mod tests {
             ("ExcludeBackgroundColorsFromCopiedStyle", "Pasteboard", Kind::Bool, b(false), nobg),
             ("AutoSearch", "Experimental Features", Kind::Bool, b(false), "Automatically search for selected text after making a selection?"),
         ];
-        assert_eq!(rows.len(), 18);
+        // RequireSlashInURLGuess sits in 13r's Semantic History table since the merge (S1, S8).
+        assert_eq!(rows.len(), 17);
         let pane = advanced_pane::rows();
         for (key, section, kind, default, help) in rows {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
@@ -3806,6 +3805,8 @@ mod tests {
             ("ShowYellowMarkForJobStoppedBySignal", "Semantic History", D::B(true), "Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal.".into()),
             ("ConservativeURLGuessing", "Semantic History", D::B(false), "URLs must contain a scheme?\nEnable this to reduce the number of false positives that semantic history thinks are a URL".into()),
             ("TrailingPunctuationMarks", "Semantic History", D::S("!?\u{2026})].\"';:,"), "Characters to ignore at the end of a URL".into()),
+            // 13s's row (Task 7, 02:839), in this section since the merge (S1).
+            ("RequireSlashInURLGuess", "Semantic History", D::B(true), "Only consider a two+ part domain-name to be a URL if it also contains a slash.\nThis setting is used when guessing if a string is a URL for semantic history. When enabled, `example.com` would not be considered a URL but `example.com/` would be.".into()),
             ("DefaultURLScheme", "Semantic History", D::S("https"), "Default URL scheme.\nThis is applied to hostnames that are not a single word.".into()),
             ("UrlHandlerCommand", "Semantic History", D::S(""), "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Tandem would otherwise hand to the system. Tandem splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u{201c}explorer.exe \\(url)\u{201d} to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Tandem-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected.".into()),
             ("RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow", "Semantic History", D::B(true), "Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands?\nDue to a long-standing bug this did not used to be respected. Soft boundaries were always respected for deciding what text was clicked on, but the prefix and suffix did not. If you have a semantic history command that depends on the bug, you can switch this off to get the pre-3.1.2 behavior.".into()),
@@ -3813,7 +3814,7 @@ mod tests {
             ("PrioritizeSmartSelectionActions", "Semantic History", D::B(false), "Check smart selection actions before existing files on Win-click?".into()),
             ("DisableSmartSelectionActionsOnClick", "Semantic History", D::B(false), "Disable performing the first matching Smart Selection\u{2019}s Action on Win-click?".into()),
         ];
-        assert_eq!(table.len(), 20);
+        assert_eq!(table.len(), 21);
         let advanced = rows();
         for (key, section, default, help) in &table {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} has no row"));
@@ -3833,6 +3834,18 @@ mod tests {
         let nav = schema::find("Prompt Path Click Opens Navigator").unwrap();
         assert_eq!(nav.label, "Click on a path in a shell prompt to open Navigator");
         assert_eq!(nav.help, "Whether clicking path in prompt opens file navigator");
+    }
+
+    /// Merge seam (S1, S8): the slash rule is a row of 13r's Semantic History block in the
+    /// schema, not 13s's own block, and appears once.
+    #[test]
+    fn the_slash_row_joins_the_semantic_history_block() {
+        let schema = include_str!("../schema/global.toml");
+        assert_eq!(schema.matches("key = \"RequireSlashInURLGuess\"").count(), 1);
+        let ours = schema.find("# Selection, copy and find (13s)").unwrap();
+        let theirs = schema.find("# Semantic history (13r)").unwrap();
+        let at = schema.find("key = \"RequireSlashInURLGuess\"").unwrap();
+        assert!(ours < theirs && at > theirs, "the row sits after 13r's heading");
     }
 
     /// 13q Task 1 (`AS:661-682`, `AS:733`, `AS:769`, `AS:853-896`): the session-end Advanced
