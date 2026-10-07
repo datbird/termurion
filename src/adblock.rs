@@ -679,7 +679,9 @@ mod tests {
 
     #[test]
     fn a_hostile_list_is_bounded() {
-        // Every rule shares one literal: the per-request budget ends the scan.
+        // Every rule shares one literal. This measures raw matching speed (this module's `blocks` has a
+        // 5 s budget so the meaning tests are steady); the 2 ms per-request budget is held by
+        // `a_dfa_hostile_list_stays_in_budget`.
         let mut json = String::from("[");
         for i in 0..30_000 {
             if i > 0 {
