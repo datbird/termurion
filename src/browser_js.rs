@@ -283,7 +283,11 @@ pub fn always_on_scripts(secret: &str, dom_secret: &str, client_ok: bool, debug:
     let console = load("console-log.js", &[("LOG_ERRORS", log_errors)]);
     let mut v = vec![script("tandem-cloak", load("tandem-cloak.js", &[]), World::Page), script("console-log", console.clone(), World::Page)];
     if client_ok {
-        v.push(script("console-log", console, World::Client));
+        // The isolated world's console copy carries graph discovery's debug lines: debug builds only
+        // (the app counts console lines and never reads them, so a release build gains nothing).
+        if debug {
+            v.push(script("console-log", console, World::Client));
+        }
         v.push(crate::browser_frames::user_script());
         v.push(script("monitor-selection", load("monitor-selection.js", &[("SECRET", secret)]), World::Client));
         v.push(script("selection-gesture", load("selection-gesture.js", &[("SECRET", secret)]), World::Client));
@@ -831,7 +835,6 @@ mod tests {
             vec![
                 ("tandem-cloak", World::Page, st, false),
                 ("console-log", World::Page, st, false),
-                ("console-log", World::Client, st, false),
                 ("GraphDiscovery", World::Client, st, false),
                 ("monitor-selection", World::Client, st, false),
                 ("selection-gesture", World::Client, st, false),
@@ -852,8 +855,11 @@ mod tests {
         for s in &list {
             assert!(!s.code.contains("{{"), "{} has an unfilled key", s.id);
         }
-        // The console wrapper's log-errors part is in debug builds only.
+        // The console wrapper's log-errors part, and its isolated-world copy (graph discovery's debug
+        // lines), are in debug builds only (Task 2 review I2).
         let dbg = always_on_scripts("S", "D", true, true);
+        assert!(dbg.iter().any(|s| s.id == "console-log" && s.world == World::Client));
+        assert!(!list.iter().any(|s| s.id == "console-log" && s.world == World::Client));
         assert!(dbg.iter().any(|s| s.id == "console-log" && s.code.contains("[Injected JS Error]")));
         assert!(!list.iter().any(|s| s.code.contains("[Injected JS Error]")));
         // Without the isolated world no Client script is offered, never moved to the page world.

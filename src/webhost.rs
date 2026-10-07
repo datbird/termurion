@@ -296,6 +296,18 @@ impl Event {
         }
     }
 
+    /// A console line (`iTerm2ConsoleLog`) from the page world (`Message`, `FrameMessage`) or the
+    /// isolated world (a binding call, whose payload is a JSON string inside the event). Only a
+    /// shape check: a message that merely looks like one is held to the stricter console budget.
+    pub fn is_console(&self) -> bool {
+        let handler = crate::browser_js::CONSOLE_HANDLER;
+        match self {
+            Event::Message { json, .. } | Event::FrameMessage { json, .. } => json.get(..json.len().min(48)).is_some_and(|head| head.contains(&format!("\"h\":\"{handler}\""))),
+            Event::DevTools { name, json, .. } if name == BINDING_EVENT => json.contains(&format!("{{\\\"h\\\":\\\"{handler}\\\"")),
+            _ => false,
+        }
+    }
+
     /// An event the queue may drop when a page floods it. Lifecycle, navigation results, focus,
     /// script results and requests (each holds a COM deferral) are never dropped.
     pub fn droppable(&self) -> bool {
@@ -582,6 +594,9 @@ pub type Sink = std::sync::mpsc::Sender<Posted>;
 pub const MAX_MESSAGE: usize = 64 * 1024;
 /// Messages of one view that may sit in the queue.
 pub const MAX_QUEUED_MESSAGES: usize = 50;
+/// Console lines (either world) of one view that may sit in the queue: their own budget, so heavy
+/// logging never takes room from the isolated world's real messages (Task 2 review I2).
+pub const MAX_QUEUED_CONSOLE: usize = 20;
 /// A title, in characters.
 pub const MAX_TITLE: usize = 1024;
 /// A URL, in bytes.
@@ -665,6 +680,7 @@ pub struct ViewGate {
     events: AtomicUsize,
     bytes: AtomicUsize,
     messages: AtomicUsize,
+    console: AtomicUsize,
     new_windows: AtomicUsize,
     dropped: AtomicUsize,
 }
@@ -676,6 +692,7 @@ pub struct Charge {
     gate: Arc<ViewGate>,
     bytes: usize,
     message: bool,
+    console: bool,
     new_window: bool,
 }
 
@@ -685,6 +702,9 @@ impl Drop for Charge {
         self.gate.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
         if self.message {
             self.gate.messages.fetch_sub(1, Ordering::AcqRel);
+        }
+        if self.console {
+            self.gate.console.fetch_sub(1, Ordering::AcqRel);
         }
         if self.new_window {
             self.gate.new_windows.fetch_sub(1, Ordering::AcqRel);
@@ -702,12 +722,15 @@ impl ViewGate {
     /// admitted. The Charge returned is released on drop.
     pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
         let weight = event.weight();
-        let message = matches!(event, Event::Message { .. } | Event::FrameMessage { .. }) || matches!(event, Event::DevTools { name, .. } if name == BINDING_EVENT);
+        let console = event.is_console();
+        let message = !console && (matches!(event, Event::Message { .. } | Event::FrameMessage { .. }) || matches!(event, Event::DevTools { name, .. } if name == BINDING_EVENT));
         let new_window = matches!(event, Event::NewWindow { .. });
         if event.droppable() {
             let over = self.events.load(Ordering::Acquire) >= MAX_QUEUED_EVENTS
                 || self.bytes.load(Ordering::Acquire) + weight > MAX_QUEUED_BYTES
                 || (message && self.messages.load(Ordering::Acquire) >= MAX_QUEUED_MESSAGES)
+                || (console && self.console.load(Ordering::Acquire) >= MAX_QUEUED_CONSOLE)
+                || (console && weight > MAX_MESSAGE + MAX_URL)
                 || (message && weight > MAX_MESSAGE + MAX_URL)
                 || (new_window && self.new_windows.load(Ordering::Acquire) >= MAX_PENDING_NEW_WINDOWS);
             if over {
@@ -720,10 +743,13 @@ impl ViewGate {
         if message {
             self.messages.fetch_add(1, Ordering::AcqRel);
         }
+        if console {
+            self.console.fetch_add(1, Ordering::AcqRel);
+        }
         if new_window {
             self.new_windows.fetch_add(1, Ordering::AcqRel);
         }
-        Ok(Charge { gate: self.clone(), bytes: weight, message, new_window })
+        Ok(Charge { gate: self.clone(), bytes: weight, message, console, new_window })
     }
 
     /// New-window requests queued now.
@@ -1538,6 +1564,39 @@ mod tests {
         assert!(gate.admit(&ev("Runtime.bindingCalled", &"x".repeat(MAX_MESSAGE + MAX_URL + 1))).is_err());
         assert_eq!(devtools_json_cap(), MAX_MESSAGE + MAX_URL);
         drop(held);
+    }
+
+    /// Task 2 review I2: console lines (either world) have their own small queue, so a page that logs
+    /// heavily never makes the host drop the isolated world's real messages.
+    #[test]
+    fn console_lines_do_not_starve_real_messages() {
+        let console_page = || Event::Message { view: 1, json: r#"{"h":"iTerm2ConsoleLog","b":{"msg":"x","level":"log"}}"#.into(), source: String::new() };
+        let console_client = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"tandemBinding","payload":"{\"h\":\"iTerm2ConsoleLog\",\"b\":{\"msg\":\"x\",\"level\":\"debug\"}}","executionContextId":3}"#.into() };
+        let register = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"tandemBinding","payload":"{\"h\":\"iTerm2GraphDiscovery\",\"b\":{\"type\":\"REGISTER_FRAME\"}}","executionContextId":3}"#.into() };
+        let page_message = || Event::Message { view: 1, json: r#"{"h":"x","b":1}"#.into(), source: String::new() };
+        assert!(console_page().is_console() && console_client().is_console());
+        assert!(!register().is_console() && !page_message().is_console());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        let mut admitted = 0;
+        for i in 0..200 {
+            let ev = if i % 2 == 0 { console_page() } else { console_client() };
+            if let Ok(c) = gate.admit(&ev) {
+                admitted += 1;
+                held.push(c);
+            }
+        }
+        assert_eq!(admitted, MAX_QUEUED_CONSOLE, "console lines stop at their own cap");
+        assert!(gate.admit(&register()).is_ok(), "a frame registration is still admitted after 200 console lines");
+        assert!(gate.admit(&page_message()).is_ok());
+        // The ordinary message cap is untouched by the console lines.
+        let mut real = Vec::new();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            real.push(gate.admit(&register()).expect("room"));
+        }
+        assert!(gate.admit(&register()).is_err());
+        drop((held, real));
+        assert!(gate.admit(&console_page()).is_ok(), "room comes back");
     }
 
     /// 13x2 Task 3 (B12): a menu request is never dropped (it holds a deferral), a pick is not
