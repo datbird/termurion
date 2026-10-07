@@ -918,7 +918,7 @@ mod tests {
     }
 
     impl Transport for Slow {
-        fn start(&self, request: HttpRequest, _: Options, _: Notify) -> Box<dyn Call> {
+        fn start_bounded(&self, request: HttpRequest, _: Options, _: crate::ai_transport::Bounds, _: Notify) -> Box<dyn Call> {
             use std::sync::atomic::Ordering::SeqCst;
             let body = if request.url.ends_with("/api/tags") {
                 serde_json::json!({ "models": (0..self.models).map(|i| serde_json::json!({ "name": format!("m{i}") })).collect::<Vec<_>>() }).to_string()

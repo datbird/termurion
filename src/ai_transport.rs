@@ -97,8 +97,30 @@ pub trait Call: Send {
 }
 
 pub trait Transport: Send + Sync {
-    /// Starts a request; `notify` is called whenever an event is ready.
-    fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call>;
+    /// Starts a request with the largest body and no total deadline; `notify` is called whenever
+    /// an event is ready.
+    fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call> {
+        self.start_bounded(request, options, Bounds::default(), notify)
+    }
+
+    /// Starts a request that keeps at most `bounds.limit` bytes (the read that would pass it ends
+    /// the call with `TOO_LARGE`) and ends at `bounds.total` however the bytes arrive.
+    fn start_bounded(&self, request: HttpRequest, options: Options, bounds: Bounds, notify: Notify) -> Box<dyn Call>;
+}
+
+/// What one call may take beyond the idle time: the body it keeps (`limit`, at most `MAX_BODY`)
+/// and an overall deadline (`total`), which an idle timeout alone cannot give (a server that sends
+/// a byte every few seconds keeps a call alive for ever).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bounds {
+    pub limit: usize,
+    pub total: Option<Duration>,
+}
+
+impl Default for Bounds {
+    fn default() -> Bounds {
+        Bounds { limit: MAX_BODY, total: None }
+    }
 }
 
 /// Where a request connects. `Debug` hides the query, where Gemini's key rides.
@@ -244,8 +266,7 @@ impl Delivery {
         Delivery { stream, status, carry: Utf8Carry::new(), body: Vec::new(), limit: MAX_BODY }
     }
 
-    /// The same with a smaller limit, for tests.
-    #[cfg(test)]
+    /// The same with a smaller limit: a call's `Bounds::limit`, and the tests'.
     pub fn limited(status: u32, stream: bool, limit: usize) -> Delivery {
         Delivery { limit, ..Delivery::new(status, stream) }
     }
@@ -358,18 +379,24 @@ pub struct Recorded {
     replies: std::sync::Mutex<std::collections::VecDeque<Reply>>,
     requests: std::sync::Mutex<Vec<HttpRequest>>,
     options: std::sync::Mutex<Vec<Options>>,
+    bounds: std::sync::Mutex<Vec<Bounds>>,
     cancels: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
 impl Recorded {
     pub fn new(replies: Vec<Reply>) -> Recorded {
-        Recorded { replies: std::sync::Mutex::new(replies.into()), requests: std::sync::Mutex::new(Vec::new()), options: std::sync::Mutex::new(Vec::new()), cancels: Arc::default() }
+        Recorded { replies: std::sync::Mutex::new(replies.into()), requests: std::sync::Mutex::new(Vec::new()), options: std::sync::Mutex::new(Vec::new()), bounds: std::sync::Mutex::new(Vec::new()), cancels: Arc::default() }
     }
 
     /// How many of its calls were cancelled.
     pub fn cancels(&self) -> usize {
         self.cancels.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The bounds each call was started with, in order.
+    pub fn bounds(&self) -> Vec<Bounds> {
+        self.bounds.lock().unwrap().clone()
     }
 
     /// The requests sent so far, in order.
@@ -407,17 +434,18 @@ impl Call for RecordedCall {
 
 #[cfg(test)]
 impl Transport for Recorded {
-    fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call> {
+    fn start_bounded(&self, request: HttpRequest, options: Options, bounds: Bounds, notify: Notify) -> Box<dyn Call> {
         let events = if parse_url(&request.url).is_err() {
             invalid_url_events()
         } else {
             let reply = self.replies.lock().unwrap().pop_front().expect("Recorded has a reply for every request");
-            let mut events = events_for(reply.status, &reply.chunks, request.stream, reply.failure.as_deref());
+            let mut events = events_through(Delivery::limited(reply.status, request.stream, bounds.limit), &reply.chunks, reply.failure.as_deref());
             if let Some(HttpEvent::Done { body, .. }) = events.last_mut() {
                 body.push_str(&String::from_utf8_lossy(&reply.late));
             }
             self.requests.lock().unwrap().push(request);
             self.options.lock().unwrap().push(options);
+            self.bounds.lock().unwrap().push(bounds);
             events
         };
         notify();
@@ -629,5 +657,21 @@ mod tests {
         assert_eq!(status_error(401), "HTTP request failed with status 401.");
         assert_eq!(transport_error("The request timed out."), "HTTP request failed with The request timed out.");
         assert_eq!(INVALID_URL, "Invalid URL");
+    }
+
+    /// A call's body limit is the transport's, while it streams, not a check after delivery.
+    #[test]
+    fn a_body_limit_ends_the_call() {
+        let t = Recorded::new(vec![Reply::ok(&[b"abcd", b"efgh", b"ijkl"])]);
+        let req = HttpRequest { method: "GET", url: "https://a.test/x".into(), headers: vec![], body: vec![], stream: false };
+        let mut call = t.start_bounded(req, Options { idle: Duration::ZERO, proxy: Proxy::Off }, Bounds { limit: 8, total: None }, Arc::new(|| {}));
+        let mut last = None;
+        while let Some(e) = call.try_event() {
+            last = Some(e);
+        }
+        let Some(HttpEvent::Done { body, error }) = last else { panic!("no Done") };
+        assert_eq!(body, "abcdefgh", "nothing past the limit is kept");
+        assert_eq!(error.as_deref(), Some(transport_error(TOO_LARGE).as_str()));
+        assert_eq!(Bounds::default(), Bounds { limit: MAX_BODY, total: None });
     }
 }

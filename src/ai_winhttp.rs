@@ -7,7 +7,7 @@
 //! idle timeout between bytes. A redirect is followed only to the host the consent gate checked.
 //! Ports `AITerm/JSFetch.swift` (`JF:35-173`).
 
-use crate::ai_transport::{invalid_url_events, parse_url, Call, Delivery, HttpEvent, HttpRequest, Notify, Options, Proxy, Target, Transport, EVENT_QUEUE};
+use crate::ai_transport::{invalid_url_events, parse_url, Bounds, Call, Delivery, HttpEvent, HttpRequest, Notify, Options, Proxy, Target, Transport, EVENT_QUEUE};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
@@ -128,8 +128,8 @@ impl Drop for WinCall {
 }
 
 impl Transport for WinHttp {
-    fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call> {
-        start_call(request, options, notify, Shared { slot: new_slot(), #[cfg(test)] hook: None })
+    fn start_bounded(&self, request: HttpRequest, options: Options, bounds: Bounds, notify: Notify) -> Box<dyn Call> {
+        start_call(request, options, bounds, notify, Shared { slot: new_slot(), #[cfg(test)] hook: None })
     }
 }
 
@@ -137,7 +137,7 @@ fn new_slot() -> Mutex<Slot> {
     Mutex::new(Slot { request: None, cancelled: false, timed_out: false })
 }
 
-fn start_call(request: HttpRequest, options: Options, notify: Notify, shared: Shared) -> Box<dyn Call> {
+fn start_call(request: HttpRequest, options: Options, bounds: Bounds, notify: Notify, shared: Shared) -> Box<dyn Call> {
     let shared = Arc::new(shared);
     // Bounded: a reader that falls behind makes the worker wait instead of queueing the stream.
     let (tx, rx) = sync_channel(EVENT_QUEUE);
@@ -151,7 +151,7 @@ fn start_call(request: HttpRequest, options: Options, notify: Notify, shared: Sh
         }
         Ok(target) => {
             let (failed, notify_failed) = (tx.clone(), notify.clone());
-            let worker = Worker { shared: shared.clone(), tx, notify, idle: options.idle, step: std::cell::Cell::new(0) };
+            let worker = Worker { shared: shared.clone(), tx, notify, idle: options.idle, limit: bounds.limit, deadline: bounds.total.map(|t| Instant::now() + t), step: std::cell::Cell::new(0) };
             match std::thread::Builder::new().name("ai-http".into()).spawn(move || worker.run(&request, &target, &options)) {
                 Ok(thread) => Some(thread),
                 // The system refused a thread: the call fails instead of the app.
@@ -261,6 +261,9 @@ struct Worker {
     tx: SyncSender<HttpEvent>,
     notify: Notify,
     idle: Duration,
+    /// The most body bytes kept (`Bounds::limit`) and when the whole call ends (`Bounds::total`).
+    limit: usize,
+    deadline: Option<Instant>,
     #[cfg_attr(not(test), allow(dead_code))]
     step: std::cell::Cell<usize>,
 }
@@ -287,7 +290,7 @@ impl Worker {
     }
 
     fn run(self, request: &HttpRequest, target: &Target, options: &Options) {
-        let mut delivery = Delivery::new(0, request.stream);
+        let mut delivery = Delivery::limited(0, request.stream, self.limit);
         let result = self.exchange(request, target, options, &mut delivery);
         let slot = self.shared.lock();
         if slot.cancelled {
@@ -331,7 +334,25 @@ impl Worker {
     /// The next notification `want` accepts; the idle time bounds each wait (`JF:131-140`).
     fn wait(&self, hop: &mut Hop, want: impl Fn(&Note) -> Option<u32>) -> Result<u32, Fail> {
         loop {
-            let note = if self.idle.is_zero() { hop.notes.recv().map_err(|_| RecvTimeoutError::Disconnected) } else { hop.notes.recv_timeout(self.idle) };
+            // The overall deadline first: a note that is always ready (a byte every few seconds)
+            // must not keep the call alive past it.
+            let left = self.deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if left.is_some_and(|l| l.is_zero()) {
+                let mut s = self.shared.lock();
+                s.timed_out = true;
+                s.close();
+                return Err(Fail::Code(ERROR_WINHTTP_TIMEOUT));
+            }
+            let wait_for = match (self.idle.is_zero(), left) {
+                (true, None) => None,
+                (true, Some(l)) => Some(l),
+                (false, None) => Some(self.idle),
+                (false, Some(l)) => Some(self.idle.min(l)),
+            };
+            let note = match wait_for {
+                None => hop.notes.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(t) => hop.notes.recv_timeout(t),
+            };
             match note {
                 Err(RecvTimeoutError::Timeout) => {
                     let mut s = self.shared.lock();
@@ -494,7 +515,7 @@ impl Worker {
                 return Ok(HopEnd::Redirect(status, location));
             }
         }
-        *delivery = Delivery::new(status, stream);
+        *delivery = Delivery::limited(status, stream, self.limit);
         let buf = hop.ctx.buf.get();
         loop {
             self.call(|h| unsafe { WinHttpQueryDataAvailable(h, std::ptr::null_mut()) })?;
@@ -1000,7 +1021,7 @@ mod tests {
     fn winhttp_cancel_at_every_step() {
         let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = steps.clone();
-        let mut call = start_call(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), no_notify(), hooked(move |n, _| {
+        let mut call = start_call(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), Bounds::default(), no_notify(), hooked(move |n, _| {
             counted.fetch_max(n + 1, Ordering::SeqCst);
         }));
         assert_eq!(collect(&mut call, Duration::from_secs(10)), whole_three());
@@ -1028,7 +1049,7 @@ mod tests {
                         cancel();
                     }
                 };
-                let mut call = start_call(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), no_notify(), hooked(hook));
+                let mut call = start_call(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), Bounds::default(), no_notify(), hooked(hook));
                 let start = Instant::now();
                 while !cancelled.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(10) {
                     std::thread::sleep(Duration::from_millis(1));
@@ -1153,5 +1174,45 @@ mod tests {
         let other = error_text(ERROR_WINHTTP_INVALID_SERVER_RESPONSE);
         assert!(!other.is_empty() && !other.ends_with('\n'), "{other}");
         assert_eq!(error_text(0x7fff_0001), "WinHTTP error 2147418113");
+    }
+
+    /// An overall deadline ends a server that sends a byte now and then, which the idle timeout
+    /// alone never would; the body limit of the call's bounds ends an over-long answer.
+    #[test]
+    fn winhttp_bounds_end_a_slow_drip_and_a_long_body() {
+        let base = serve(|mut s| {
+            read_request(&mut s);
+            s.write_all(STREAM_HEAD).unwrap();
+            for _ in 0..40 {
+                if send_chunk(&mut s, "data: x\n\n").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        let start = Instant::now();
+        let bounds = crate::ai_transport::Bounds { limit: 1 << 20, total: Some(Duration::from_millis(1200)) };
+        let mut call = WinHttp.start_bounded(post(format!("{base}/x"), true), off(Duration::from_secs(5)), bounds, no_notify());
+        let events = collect(&mut call, Duration::from_secs(20));
+        assert!(start.elapsed() < Duration::from_millis(3500), "{:?}", start.elapsed());
+        let Some(HttpEvent::Done { error, .. }) = events.last() else { panic!("{events:?}") };
+        assert_eq!(error.as_deref(), Some("HTTP request failed with The request timed out."));
+
+        let base = serve(|mut s| {
+            read_request(&mut s);
+            s.write_all(STREAM_HEAD).unwrap();
+            for _ in 0..20 {
+                if send_chunk(&mut s, &"a".repeat(1024)).is_err() {
+                    return;
+                }
+            }
+            end_chunks(&mut s);
+        });
+        let bounds = crate::ai_transport::Bounds { limit: 4096, total: None };
+        let mut call = WinHttp.start_bounded(post(format!("{base}/x"), false), off(Duration::from_secs(5)), bounds, no_notify());
+        let events = collect(&mut call, Duration::from_secs(20));
+        let Some(HttpEvent::Done { body, error }) = events.last() else { panic!("{events:?}") };
+        assert_eq!(error.as_deref(), Some(transport_error(crate::ai_transport::TOO_LARGE).as_str()));
+        assert!(body.len() <= 4096, "{}", body.len());
     }
 }

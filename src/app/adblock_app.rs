@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use super::*;
 use crate::adblock::{self, Rules};
-use crate::ai_transport::{Call, HttpEvent, HttpRequest, Options, Proxy};
+use crate::ai_transport::{Bounds, Call, HttpEvent, HttpRequest, Options, Proxy};
 use crate::localfs::{self, LocalPath};
 use crate::webhost::{Answer, Store};
 use crate::webhost_win;
@@ -22,6 +22,8 @@ const FILE: &str = "adblock-compiled.json";
 const CHECK_EVERY: Duration = Duration::from_secs(3600);
 /// How long a browser environment that failed after a proxy change is tried again: the old
 /// browser process may still hold the folder for a moment.
+/// The longest one download may take in all.
+const LIST_DEADLINE: Duration = Duration::from_secs(300);
 const REBUILD_WINDOW: Duration = Duration::from_secs(20);
 const REBUILD_RETRY: Duration = Duration::from_millis(400);
 
@@ -210,7 +212,10 @@ impl App {
         let req = HttpRequest { method: "GET", url: url.to_string(), headers: Vec::new(), body: Vec::new(), stream: false };
         // The system proxy, not the browser's (Decision): the list is Tandem's own request.
         let options = Options { idle: Duration::from_secs(30), proxy: Proxy::System };
-        self.adblock.call = Some(self.ai_transport.start(req, options, self.notify.clone()));
+        // The 8 MiB cap is the transport's while the body streams in, and a total time bounds a
+        // server that drips (P14); a stuck update ends and a later check starts another.
+        let bounds = Bounds { limit: adblock::MAX_LIST_BYTES, total: Some(LIST_DEADLINE) };
+        self.adblock.call = Some(self.ai_transport.start_bounded(req, options, bounds, self.notify.clone()));
     }
 
     fn adblock_poll(&mut self) {
@@ -384,7 +389,9 @@ mod tests {
         assert!(!answer.contains("thread") && !answer.contains("recv") && !answer.contains("localfs"));
         // The list address is judged (https only) before any request.
         let dl = &live[live.find("fn adblock_download").unwrap()..live.find("fn adblock_poll").unwrap()];
-        assert!(dl.find("list_url_ok").unwrap() < dl.find("self.ai_transport.start").unwrap());
+        assert!(dl.find("list_url_ok").unwrap() < dl.find("self.ai_transport.start_bounded(").unwrap());
+        // The transport enforces the 8 MiB cap while streaming and a total time bounds a slow drip.
+        assert!(dl.contains("limit: adblock::MAX_LIST_BYTES") && dl.contains("total: Some(LIST_DEADLINE)"), "{dl}");
     }
 
     /// A request for Tandem's own scheme keeps its answer first; everything else is the blocker's.
