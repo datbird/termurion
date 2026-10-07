@@ -82,6 +82,7 @@ pub mod workgroup_edit;
 pub mod workgroup_git;
 pub mod workgroup_peers;
 pub mod workgroup_editor_ui;
+pub mod workgroup_restore;
 pub mod workgroup_run;
 pub mod workgroup_toolbar;
 pub mod netpath;

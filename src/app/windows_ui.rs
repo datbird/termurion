@@ -1639,7 +1639,7 @@ impl App {
             return;
         }
         // A window of loaded recordings only has nothing to duplicate.
-        let Some(snap) = self.snapshot_window(super::arrange_ui::Contents::None) else { return };
+        let Some(snap) = self.snapshot_window_copy() else { return };
         self.pending_windows.push(NewWindow::Arrangement(snap, None));
         self.redraw();
     }

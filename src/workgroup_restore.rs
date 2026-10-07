@@ -1,0 +1,623 @@
+//! Restoring workgroups (milestone 13y1, Task 9): the pure side. The descriptor a shown member
+//! saves in its session value, read back bounded and without panics, whether a restored session
+//! must not relaunch its program, the instance id a restored instance takes and what an adoption
+//! rebuilds from the model. The app side is `app/workgroup_restore_app.rs`.
+//!
+//! Restoration is data, not execution: nothing here starts a program, and the descriptor is the
+//! file's word, so every id, count and size in it is judged before it is used (P9).
+//!
+//! Citations: `WR` `iTermWorkgroupRestoration.swift`, `WRC` `WorkgroupRestorationCoordinator.swift`,
+//! `WC` `iTermWorkgroupController.swift` under `~/gitrepos/iterm2-ref/sources/Workgroups`; `PS`
+//! `PTYSession.m`.
+
+use crate::arrangement::{Table, Value};
+use crate::workgroup::{Mode, Source, Workgroup};
+
+pub const WORKGROUP_ID: &str = "workgroupID";
+pub const INSTANCE_ID: &str = "instanceID";
+pub const GIT_BASE: &str = "gitBase";
+pub const LEADER_ID: &str = "leaderID";
+pub const ANCHOR_ID: &str = "anchorID";
+pub const MEMBERS: &str = "members";
+pub const MEMBER_GUIDS: &str = "memberGUIDs";
+pub const NON_PEER_CHILDREN: &str = "nonPeerChildren";
+pub const ANCHOR_PENDING: &str = "anchorPending";
+pub const CONFIG_ID: &str = "configID";
+pub const DISPLAY_NAME: &str = "displayName";
+pub const FRAME: &str = "frame";
+pub const ARRANGEMENT: &str = "arrangement";
+pub const GUID: &str = "guid";
+pub const PENDING: &str = "pending";
+/// Not iTerm2's: the digest of the commands the person answered for at entry (`run::Approved`), so a
+/// restored import runs its commands only while they are still those (the trust ruling).
+pub const APPROVAL: &str = "approvalDigest";
+
+/// One buried member's saved state: its own session value and whether it still sat on its pre-launch
+/// overlay (never started: restored fresh, not adopted, `WR:44-50`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Member {
+    pub config_id: String,
+    pub display_name: String,
+    pub frame: String,
+    pub arrangement: Value,
+    pub pending: bool,
+}
+
+/// A split or tab child, found again by its session's GUID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Child {
+    pub config_id: String,
+    pub guid: String,
+}
+
+/// What the visible member of a peer group saves (`WR:encodeState`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Descriptor {
+    pub workgroup_id: String,
+    /// Empty when the file held none or one Tandem would not have minted.
+    pub instance_id: String,
+    pub git_base: String,
+    pub leader_id: String,
+    pub anchor_id: String,
+    pub members: Vec<Member>,
+    pub member_guids: Vec<String>,
+    pub non_peer_children: Vec<Child>,
+    pub anchor_pending: bool,
+    pub approval: Option<String>,
+}
+
+/// Strings of an arrangement at most (one whole saved session with its history, the restoration
+/// cap's order of size), and nodes and depth: a file cannot make a restore walk without end.
+const MAX_ARRANGEMENT_BYTES: usize = 128 << 20;
+const MAX_ARRANGEMENT_NODES: usize = 2_000_000;
+const MAX_DEPTH: usize = 32;
+/// A GUID or frame text at most.
+const MAX_TEXT: usize = 128;
+const MAX_NAME: usize = 128;
+
+/// The text bytes of `v` when it is an arrangement Tandem could have saved: a table, within the depth,
+/// node and byte limits (an iterative walk, so a hostile depth cannot overflow the stack).
+fn arrangement_size(v: &Value) -> Option<usize> {
+    if !v.is_table() {
+        return None;
+    }
+    let (mut nodes, mut bytes) = (0usize, 0usize);
+    let mut stack: Vec<(&Value, usize)> = vec![(v, 1)];
+    while let Some((v, depth)) = stack.pop() {
+        nodes += 1;
+        if depth > MAX_DEPTH || nodes > MAX_ARRANGEMENT_NODES {
+            return None;
+        }
+        match v {
+            Value::String(s) => bytes = bytes.saturating_add(s.len()),
+            Value::Table(t) => {
+                for (k, x) in t {
+                    bytes = bytes.saturating_add(k.len());
+                    stack.push((x, depth + 1));
+                }
+            }
+            Value::Array(a) => stack.extend(a.iter().map(|x| (x, depth + 1))),
+            _ => {}
+        }
+        if bytes > MAX_ARRANGEMENT_BYTES {
+            return None;
+        }
+    }
+    Some(bytes)
+}
+
+/// A GUID Tandem could have minted or iTerm2 wrote: letters, digits, dashes and underscores.
+fn guid_ok(s: &str) -> bool {
+    (1..=MAX_TEXT).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+fn text_of<'a>(t: &'a Table, key: &str) -> Option<&'a str> {
+    t.get(key).and_then(Value::as_str)
+}
+
+fn id_of(t: &Table, key: &str) -> Option<String> {
+    text_of(t, key).filter(|s| crate::workgroup::id_ok(s)).map(str::to_string)
+}
+
+/// A SHA-256 digest in hex, the form `run::Approved::digest` writes.
+fn digest_ok(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+impl Descriptor {
+    /// The value under the session's "Workgroup" key (`WR:encodeState`). `nonPeerChildren` is written
+    /// only when there are some.
+    pub fn to_value(&self) -> Value {
+        let mut t = Table::new();
+        t.insert(WORKGROUP_ID.into(), Value::String(self.workgroup_id.clone()));
+        t.insert(INSTANCE_ID.into(), Value::String(self.instance_id.clone()));
+        t.insert(GIT_BASE.into(), Value::String(self.git_base.clone()));
+        t.insert(LEADER_ID.into(), Value::String(self.leader_id.clone()));
+        t.insert(ANCHOR_ID.into(), Value::String(self.anchor_id.clone()));
+        let members = self
+            .members
+            .iter()
+            .map(|m| {
+                let mut e = Table::new();
+                e.insert(CONFIG_ID.into(), Value::String(m.config_id.clone()));
+                e.insert(DISPLAY_NAME.into(), Value::String(m.display_name.clone()));
+                e.insert(FRAME.into(), Value::String(m.frame.clone()));
+                e.insert(ARRANGEMENT.into(), m.arrangement.clone());
+                e.insert(PENDING.into(), Value::Boolean(m.pending));
+                Value::Table(e)
+            })
+            .collect();
+        t.insert(MEMBERS.into(), Value::Array(members));
+        t.insert(MEMBER_GUIDS.into(), Value::Array(self.member_guids.iter().cloned().map(Value::String).collect()));
+        t.insert(ANCHOR_PENDING.into(), Value::Boolean(self.anchor_pending));
+        if !self.non_peer_children.is_empty() {
+            let kids = self
+                .non_peer_children
+                .iter()
+                .map(|c| {
+                    let mut e = Table::new();
+                    e.insert(CONFIG_ID.into(), Value::String(c.config_id.clone()));
+                    e.insert(GUID.into(), Value::String(c.guid.clone()));
+                    Value::Table(e)
+                })
+                .collect();
+            t.insert(NON_PEER_CHILDREN.into(), Value::Array(kids));
+        }
+        if let Some(a) = &self.approval {
+            t.insert(APPROVAL.into(), Value::String(a.clone()));
+        }
+        Value::Table(t)
+    }
+
+    /// Reads a saved descriptor. None without a workgroup, leader and anchor id (`WRC:reconstruct`'s
+    /// first guard). Every other field is judged and a bad one is dropped alone: an instance id Tandem
+    /// would not mint reads as none, a base that is not usable as HEAD, a member or child that does
+    /// not fit is skipped, counts are capped at `MAX_SESSIONS`.
+    pub fn from_value(v: &Value) -> Option<Descriptor> {
+        let t = v.as_table()?;
+        let max = crate::workgroup::MAX_SESSIONS;
+        let workgroup_id = id_of(t, WORKGROUP_ID)?;
+        let leader_id = id_of(t, LEADER_ID)?;
+        let anchor_id = id_of(t, ANCHOR_ID)?;
+        let instance_id = text_of(t, INSTANCE_ID).filter(|s| crate::workgroup_run::valid_instance_id(s)).unwrap_or_default().to_string();
+        let git_base = text_of(t, GIT_BASE).filter(|b| crate::workgroup_git::base_ok(b)).unwrap_or(crate::workgroup_git::DEFAULT_BASE).to_string();
+        let mut total = 0usize;
+        let mut members = Vec::new();
+        for m in t.get(MEMBERS).and_then(Value::as_array).into_iter().flatten() {
+            if members.len() >= max {
+                break;
+            }
+            let Some(m) = m.as_table() else { continue };
+            let (Some(config_id), Some(arrangement)) = (id_of(m, CONFIG_ID), m.get(ARRANGEMENT)) else { continue };
+            let Some(size) = arrangement_size(arrangement) else { continue };
+            total = total.saturating_add(size);
+            if total > MAX_ARRANGEMENT_BYTES {
+                break;
+            }
+            let display_name = text_of(m, DISPLAY_NAME).map(|n| crate::inert_files::display_text(n, MAX_NAME, false)).unwrap_or_default();
+            let frame = text_of(m, FRAME).filter(|f| f.len() <= MAX_TEXT).unwrap_or_default().to_string();
+            let pending = m.get(PENDING).and_then(Value::as_bool).unwrap_or(false);
+            members.push(Member { config_id, display_name, frame, arrangement: arrangement.clone(), pending });
+        }
+        let member_guids = t.get(MEMBER_GUIDS).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter(|g| guid_ok(g)).take(2 * max).map(str::to_string).collect();
+        let non_peer_children = t
+            .get(NON_PEER_CHILDREN)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                let c = c.as_table()?;
+                Some(Child { config_id: id_of(c, CONFIG_ID)?, guid: text_of(c, GUID).filter(|g| guid_ok(g))?.to_string() })
+            })
+            .take(max)
+            .collect();
+        Some(Descriptor {
+            workgroup_id,
+            instance_id,
+            git_base,
+            leader_id,
+            anchor_id,
+            members,
+            member_guids,
+            non_peer_children,
+            anchor_pending: t.get(ANCHOR_PENDING).and_then(Value::as_bool).unwrap_or(false),
+            approval: text_of(t, APPROVAL).filter(|a| digest_ok(a)).map(str::to_string),
+        })
+    }
+}
+
+/// The saved sessions embedded in a session table's descriptor, in `members` order (raw: not yet judged
+/// by `Descriptor::from_value`), at most `MAX_SESSIONS`. The restore's host plan claims the shells
+/// they kept, so none comes back as an orphan tab.
+pub fn embedded(session: &Table) -> Vec<&Table> {
+    let members = session.get(crate::arrangement::WORKGROUP_KEY).and_then(|d| d.get(MEMBERS)).and_then(Value::as_array);
+    members.into_iter().flatten().take(crate::workgroup::MAX_SESSIONS).filter_map(|m| m.get(ARRANGEMENT)).filter_map(Value::as_table).collect()
+}
+
+/// `embedded`, writable: each member's session table, disjoint.
+pub fn embedded_mut(session: &mut Table) -> Vec<&mut Table> {
+    let members = session.get_mut(crate::arrangement::WORKGROUP_KEY).and_then(|d| d.get_mut(MEMBERS)).and_then(Value::as_array_mut);
+    members.into_iter().flatten().take(crate::workgroup::MAX_SESSIONS).filter_map(|m| m.get_mut(ARRANGEMENT)).filter_map(Value::as_table_mut).collect()
+}
+
+/// The modes whose restored session must not start a replacement program (`WR:modeInhibitsRelaunch`,
+/// one source of truth for the anchor and the buried peers).
+pub fn mode_inhibits(mode: Mode) -> bool {
+    matches!(mode, Mode::CodeReview | Mode::Diff)
+}
+
+/// Whether restoring the anchor starts no program of its own (`WR:shouldInhibitRelaunch`, `PS:2361-2390`).
+/// A Code Review or Diff session with no program to take back is restored as an idle session: its last
+/// output stays and nothing runs until the person starts it. A shell would be a stray one. When the
+/// overlay was showing (`anchorPending`) there was no program at all, and the overlay comes back instead
+/// (iTerm2 relaunches its shell under the overlay; Tandem has no shell to put under it). `had_program`
+/// is a program that came back from the session host: nothing to inhibit then.
+pub fn inhibit_relaunch(d: &Descriptor, anchor_mode: Mode, had_program: bool) -> bool {
+    let program = had_program && !d.anchor_pending;
+    !program && mode_inhibits(anchor_mode)
+}
+
+/// The instance id a restored instance takes (`WC:adopt`): the saved one, unless it is taken or not
+/// one Tandem mints (the file's word), then a fresh one.
+pub fn resolve_instance_id(saved: &str, taken: &dyn Fn(&str) -> bool) -> String {
+    if crate::workgroup_run::valid_instance_id(saved) && !taken(saved) {
+        return saved.to_string();
+    }
+    loop {
+        let id = crate::workgroup_run::mint_instance_id();
+        if !taken(&id) {
+            return id;
+        }
+    }
+}
+
+/// Why a descriptor adopts nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The workgroup was deleted since the save: the sessions stay plain sessions.
+    Gone,
+    /// The descriptor does not fit the workgroup it names (another leader, an unknown or repeated member).
+    Mismatch,
+    /// The leader is neither the shown member nor restored: it cannot be rebuilt (`WRC`: corrupt descriptor).
+    NoLeader,
+}
+
+/// What an adoption rebuilds from a descriptor and the model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Adoption {
+    /// The workgroup as the model has it now, not as it was saved.
+    pub workgroup: Workgroup,
+    /// The member shown in the leader's place (the anchor).
+    pub active: String,
+    pub leader: String,
+    pub git_base: String,
+    /// The root, then its peers, in the order entering spawns them.
+    pub peers: Vec<String>,
+    /// Every peer but the shown one: kept alive in no layout, the leader among them when it is not shown.
+    pub buried: Vec<String>,
+    /// Buried members rebuilt from their saved sessions.
+    pub restored: Vec<String>,
+    /// Buried members that come back fresh: the pending ones, which wait or ask again.
+    pub fresh: Vec<String>,
+    /// The splits and tabs found again by GUID.
+    pub children: Vec<Child>,
+}
+
+/// The peers of `w` in entering order: the root, then its peers.
+fn peer_order(w: &Workgroup) -> Vec<String> {
+    let Some(root) = w.root() else { return Vec::new() };
+    let mut out = vec![root.unique_identifier.clone()];
+    out.extend(w.children(&root.unique_identifier).into_iter().filter(|c| matches!(c.kind, crate::workgroup::Kind::Peer)).map(|c| c.unique_identifier.clone()));
+    out
+}
+
+/// What adopting `d` rebuilds, judged against the workgroup the model has now (`WRC:reconstruct`).
+pub fn adoption(d: &Descriptor, lookup: &dyn Fn(&str) -> Option<Workgroup>) -> Result<Adoption, Refusal> {
+    let workgroup = lookup(&d.workgroup_id).ok_or(Refusal::Gone)?;
+    let peers = peer_order(&workgroup);
+    let root = peers.first().ok_or(Refusal::Mismatch)?;
+    // The leader is the root; the anchor and every embedded member a peer of it, each once.
+    if &d.leader_id != root || !peers.contains(&d.anchor_id) {
+        return Err(Refusal::Mismatch);
+    }
+    let mut seen = vec![d.anchor_id.as_str()];
+    for m in &d.members {
+        if !peers.contains(&m.config_id) || seen.contains(&m.config_id.as_str()) {
+            return Err(Refusal::Mismatch);
+        }
+        seen.push(&m.config_id);
+    }
+    if d.anchor_id != d.leader_id && !d.members.iter().any(|m| m.config_id == d.leader_id && !m.pending) {
+        return Err(Refusal::NoLeader);
+    }
+    let buried: Vec<String> = peers.iter().filter(|p| **p != d.anchor_id).cloned().collect();
+    let restored = d.members.iter().filter(|m| !m.pending).map(|m| m.config_id.clone()).collect();
+    // A peer with no saved session that is a Diff or Code Review member comes back waiting; a regular
+    // one that was never started stays unstarted (nothing runs at a restore).
+    let fresh = buried
+        .iter()
+        .filter(|p| !d.members.iter().any(|m| &m.config_id == *p && !m.pending))
+        .filter(|p| workgroup.session(p).is_some_and(|s| mode_inhibits(s.mode)))
+        .cloned()
+        .collect();
+    let children = d
+        .non_peer_children
+        .iter()
+        .filter(|c| workgroup.session(&c.config_id).is_some_and(|s| matches!(s.kind, crate::workgroup::Kind::Split(_) | crate::workgroup::Kind::Tab)))
+        .cloned()
+        .collect();
+    Ok(Adoption { active: d.anchor_id.clone(), leader: d.leader_id.clone(), git_base: d.git_base.clone(), peers, buried, restored, fresh, children, workgroup })
+}
+
+/// Whether adopting asks the person again: the person's own workgroup never; any import runs its
+/// commands only while the digest the person answered for at entry (kept in the descriptor) is still the
+/// digest of the commands it would run now (the trust ruling, `run::Approved`).
+pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup) -> bool {
+    !source.is_person() && d.approval.as_deref() != Some(crate::workgroup_run::Approved::of(w).digest())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(name: &str) -> Value {
+        let mut t = Table::new();
+        t.insert("Name".into(), Value::String(name.into()));
+        Value::Table(t)
+    }
+
+    fn descriptor() -> Descriptor {
+        Descriptor {
+            workgroup_id: "builtin.claudeCode".into(),
+            instance_id: "wg-0F1C2A3B-0000-4000-8000-000000000001".into(),
+            git_base: "main".into(),
+            leader_id: "MAIN".into(),
+            anchor_id: "DIFF".into(),
+            members: vec![
+                Member { config_id: "MAIN".into(), display_name: "Chat".into(), frame: "{{0, 0}, {800, 600}}".into(), arrangement: session("chat"), pending: false },
+                Member { config_id: "REVIEW".into(), display_name: "Code Review".into(), frame: "{{0, 0}, {800, 600}}".into(), arrangement: session("review"), pending: true },
+            ],
+            member_guids: vec!["6F1C2A3B-0000-4000-8000-0000000000A1".into(), "6F1C2A3B-0000-4000-8000-0000000000A2".into()],
+            non_peer_children: vec![Child { config_id: "SPLIT".into(), guid: "6F1C2A3B-0000-4000-8000-0000000000B1".into() }],
+            anchor_pending: true,
+            approval: Some("ab".repeat(32)),
+        }
+    }
+
+    /// Review Focus 8: the descriptor has iTerm2's keys, round-trips, and inhibits what iTerm2 inhibits.
+    #[test]
+    fn descriptor_follows_iterm2() {
+        let d = descriptor();
+        let v = d.to_value();
+        let t = v.as_table().expect("a table");
+        for key in [WORKGROUP_ID, INSTANCE_ID, GIT_BASE, LEADER_ID, ANCHOR_ID, MEMBERS, MEMBER_GUIDS, NON_PEER_CHILDREN, ANCHOR_PENDING] {
+            assert!(t.contains_key(key), "{key}");
+        }
+        assert_eq!(t[WORKGROUP_ID].as_str(), Some("builtin.claudeCode"));
+        assert_eq!(t[GIT_BASE].as_str(), Some("main"));
+        assert_eq!(t[ANCHOR_PENDING].as_bool(), Some(true));
+        let members = t[MEMBERS].as_array().unwrap();
+        assert_eq!(members.len(), 2);
+        for k in [CONFIG_ID, DISPLAY_NAME, FRAME, ARRANGEMENT, PENDING] {
+            assert!(members[0].as_table().unwrap().contains_key(k), "{k}");
+        }
+        let child = &t[NON_PEER_CHILDREN].as_array().unwrap()[0];
+        assert_eq!(child.get(CONFIG_ID).and_then(Value::as_str), Some("SPLIT"));
+        assert!(child.get(GUID).is_some());
+        assert_eq!(Descriptor::from_value(&v), Some(d.clone()));
+        // No children: the key is absent (iTerm2 writes it only when there are some).
+        let mut none = d.clone();
+        none.non_peer_children.clear();
+        assert!(!none.to_value().as_table().unwrap().contains_key(NON_PEER_CHILDREN));
+        // Without the workgroup id there is nothing to restore.
+        let mut broken = v.clone();
+        broken.as_table_mut().unwrap().remove(WORKGROUP_ID);
+        assert_eq!(Descriptor::from_value(&broken), None);
+        // A saved Code Review anchor on its overlay, and a Diff anchor that was waiting, do not relaunch;
+        // a Regular one does; one whose program came back from the host has nothing to inhibit.
+        assert!(inhibit_relaunch(&d, Mode::CodeReview, false));
+        assert!(inhibit_relaunch(&d, Mode::Diff, false));
+        assert!(!inhibit_relaunch(&d, Mode::Regular, false));
+        let mut live = d.clone();
+        live.anchor_pending = false;
+        assert!(inhibit_relaunch(&live, Mode::Diff, false), "a live program that is gone leaves its last output, never a stray shell");
+        assert!(!inhibit_relaunch(&live, Mode::Diff, true), "a program that came back is not relaunched either way");
+    }
+
+    /// The file is another party's word: ids, counts and sizes are judged, and nothing panics.
+    #[test]
+    fn descriptor_is_read_bounded() {
+        let good = descriptor().to_value();
+        let with = |f: &dyn Fn(&mut Table)| {
+            let mut v = good.clone();
+            f(v.as_table_mut().unwrap());
+            Descriptor::from_value(&v)
+        };
+        // Not a table, wrong types, empty and hostile ids.
+        for v in [Value::Boolean(true), Value::String("x".into()), Value::Array(Vec::new()), Value::Table(Table::new())] {
+            assert_eq!(Descriptor::from_value(&v), None);
+        }
+        assert_eq!(with(&|t| { t.insert(WORKGROUP_ID.into(), Value::Integer(3)); }), None);
+        assert_eq!(with(&|t| { t.insert(LEADER_ID.into(), Value::String("a b".into())); }), None);
+        assert_eq!(with(&|t| { t.insert(ANCHOR_ID.into(), Value::String("x".repeat(129))); }), None);
+        // An instance id Tandem would not have minted is dropped (a fresh one is minted at adoption).
+        let d = with(&|t| { t.insert(INSTANCE_ID.into(), Value::String("wg-../..".into())); }).unwrap();
+        assert_eq!(d.instance_id, "");
+        // A base that is an option or holds a control reads as HEAD.
+        assert_eq!(with(&|t| { t.insert(GIT_BASE.into(), Value::String("--output=x".into())); }).unwrap().git_base, "HEAD");
+        assert_eq!(with(&|t| { t.remove(GIT_BASE); }).unwrap().git_base, "HEAD");
+        // A malformed approval digest is none.
+        assert_eq!(with(&|t| { t.insert(APPROVAL.into(), Value::String("not hex".into())); }).unwrap().approval, None);
+        // Too many members: the excess is dropped, not the descriptor; a member with a bad id or no arrangement is skipped.
+        let many = with(&|t| {
+            let m: Vec<Value> = (0..200)
+                .map(|i| {
+                    let mut m = Table::new();
+                    m.insert(CONFIG_ID.into(), Value::String(format!("M{i}")));
+                    m.insert(ARRANGEMENT.into(), session("x"));
+                    Value::Table(m)
+                })
+                .collect();
+            t.insert(MEMBERS.into(), Value::Array(m));
+        })
+        .unwrap();
+        assert_eq!(many.members.len(), crate::workgroup::MAX_SESSIONS);
+        let skipped = with(&|t| {
+            let mut bad_id = Table::new();
+            bad_id.insert(CONFIG_ID.into(), Value::String("no good".into()));
+            bad_id.insert(ARRANGEMENT.into(), session("x"));
+            let mut no_arrangement = Table::new();
+            no_arrangement.insert(CONFIG_ID.into(), Value::String("OK".into()));
+            t.insert(MEMBERS.into(), Value::Array(vec![Value::Table(bad_id), Value::Table(no_arrangement), Value::Integer(1)]));
+        })
+        .unwrap();
+        assert!(skipped.members.is_empty());
+        // An arrangement nested past the depth limit is skipped whole.
+        let mut deep = session("deep");
+        for _ in 0..200 {
+            let mut t = Table::new();
+            t.insert("x".into(), deep);
+            deep = Value::Table(t);
+        }
+        let deep_member = with(&|t| {
+            let mut m = Table::new();
+            m.insert(CONFIG_ID.into(), Value::String("DEEP".into()));
+            m.insert(ARRANGEMENT.into(), deep.clone());
+            t.insert(MEMBERS.into(), Value::Array(vec![Value::Table(m)]));
+        })
+        .unwrap();
+        assert!(deep_member.members.is_empty());
+        // Children and guids are bounded and judged too.
+        let kids = with(&|t| {
+            let kids: Vec<Value> = (0..100)
+                .map(|i| {
+                    let mut k = Table::new();
+                    k.insert(CONFIG_ID.into(), Value::String(format!("K{i}")));
+                    k.insert(GUID.into(), Value::String(if i == 0 { "bad guid\n".into() } else { format!("G{i}") }));
+                    Value::Table(k)
+                })
+                .collect();
+            t.insert(NON_PEER_CHILDREN.into(), Value::Array(kids));
+            t.insert(MEMBER_GUIDS.into(), Value::Array((0..500).map(|i| Value::String(format!("G{i}"))).collect()));
+        })
+        .unwrap();
+        assert_eq!(kids.non_peer_children.len(), crate::workgroup::MAX_SESSIONS);
+        assert!(kids.non_peer_children.iter().all(|c| c.guid != "bad guid\n"));
+        assert!(kids.member_guids.len() <= 2 * crate::workgroup::MAX_SESSIONS);
+    }
+
+    /// `WC:adopt`: the saved id, a fresh one when it is taken or not one Tandem makes.
+    #[test]
+    fn instance_ids_follow_iterm2() {
+        let saved = "wg-0F1C2A3B-0000-4000-8000-000000000001";
+        assert_eq!(resolve_instance_id(saved, &|_| false), saved);
+        let fresh = resolve_instance_id(saved, &|id| id == saved);
+        assert!(fresh.starts_with(crate::workgroup_run::INSTANCE_PREFIX) && fresh != saved && crate::workgroup_run::valid_instance_id(&fresh), "{fresh}");
+        let other = resolve_instance_id("not-an-id", &|_| false);
+        assert!(crate::workgroup_run::valid_instance_id(&other) && other != "not-an-id");
+        assert!(crate::workgroup_run::valid_instance_id(&resolve_instance_id("", &|_| false)));
+    }
+
+    fn model() -> Workgroup {
+        let mut w = crate::workgroup::presets::coding_agent_plus_diff_plus_code_review(Some(("builtin.claudeCode", "MAIN", "DIFF", "REVIEW")), Some("Claude Code"));
+        w.unique_identifier = "builtin.claudeCode".into();
+        w
+    }
+
+    /// `WRC:reconstruct`: the config comes from the model; the anchor stays shown and the leader goes buried.
+    #[test]
+    fn adopt_follows_iterm2() {
+        let d = descriptor();
+        let a = adoption(&d, &|id| (id == "builtin.claudeCode").then(model)).expect("adopts");
+        assert_eq!((a.active.as_str(), a.leader.as_str(), a.git_base.as_str()), ("DIFF", "MAIN", "main"));
+        assert_eq!(a.peers, ["MAIN", "DIFF", "REVIEW"]);
+        assert_eq!(a.buried, ["MAIN", "REVIEW"], "every peer but the shown one is buried, the leader among them");
+        assert_eq!(a.workgroup, model());
+        // Embedded members: the leader from its saved arrangement; the pending review comes back fresh.
+        assert_eq!(a.restored, ["MAIN"]);
+        assert_eq!(a.fresh, ["REVIEW"]);
+        // A workgroup deleted since the save adopts nothing.
+        assert_eq!(adoption(&d, &|_| None).err(), Some(Refusal::Gone));
+        // A descriptor that does not fit the workgroup it names adopts nothing.
+        let mut other_leader = d.clone();
+        other_leader.leader_id = "DIFF".into();
+        assert_eq!(adoption(&other_leader, &|_| Some(model())).err(), Some(Refusal::Mismatch));
+        let mut unknown_anchor = d.clone();
+        unknown_anchor.anchor_id = "NOPE".into();
+        assert_eq!(adoption(&unknown_anchor, &|_| Some(model())).err(), Some(Refusal::Mismatch));
+        let mut twice = d.clone();
+        twice.members.push(d.members[0].clone());
+        assert_eq!(adoption(&twice, &|_| Some(model())).err(), Some(Refusal::Mismatch));
+        let mut anchor_embedded = d.clone();
+        anchor_embedded.members[1].config_id = "DIFF".into();
+        assert_eq!(adoption(&anchor_embedded, &|_| Some(model())).err(), Some(Refusal::Mismatch));
+        // A leader that is neither the anchor nor restored cannot be rebuilt (WRC: corrupt descriptor).
+        let mut no_leader = d.clone();
+        no_leader.members.remove(0);
+        assert_eq!(adoption(&no_leader, &|_| Some(model())).err(), Some(Refusal::NoLeader));
+        // Children are kept only for a split or tab of the model.
+        let mut kids = d.clone();
+        kids.non_peer_children = vec![Child { config_id: "DIFF".into(), guid: "G".into() }, Child { config_id: "GONE".into(), guid: "H".into() }];
+        assert!(adoption(&kids, &|_| Some(model())).unwrap().children.is_empty());
+    }
+
+    /// The trust ruling: only the person's own workgroup restores without the stored approval.
+    #[test]
+    fn restored_imports_need_their_stored_approval() {
+        let w = model();
+        let digest = crate::workgroup_run::Approved::of(&w).digest().to_string();
+        let mut d = descriptor();
+        d.approval = Some(digest.clone());
+        assert!(!needs_question(Source::Person, &d, &w));
+        assert!(!needs_question(Source::Import, &d, &w), "the answer the person gave is still the one on file");
+        d.approval = None;
+        assert!(needs_question(Source::Import, &d, &w));
+        assert!(needs_question(Source::DynamicProfile, &d, &w));
+        d.approval = Some("0".repeat(64));
+        assert!(needs_question(Source::RemotePrefs, &d, &w), "a command changed since");
+        let mut changed = w.clone();
+        changed.sessions[1].command.push_str(" --x");
+        d.approval = Some(digest);
+        assert!(needs_question(Source::Import, &d, &changed));
+        d.approval = None;
+        assert!(needs_question(Source::Stored, &d, &w), "an unknown mark fails closed");
+    }
+
+    /// The embedded members' shells are claimed by the restore's host plan, each by its own table.
+    #[test]
+    fn embedded_members_are_reachable_for_the_host_plan() {
+        let mut anchor = Table::new();
+        anchor.insert("Name".into(), Value::String("anchor".into()));
+        anchor.insert(crate::arrangement::WORKGROUP_KEY.into(), descriptor().to_value());
+        assert_eq!(embedded(&anchor).len(), 2);
+        assert_eq!(embedded(&anchor)[0].get("Name").and_then(Value::as_str), Some("chat"));
+        for (i, m) in embedded_mut(&mut anchor).into_iter().enumerate() {
+            m.insert("Tandem Attach".into(), Value::Integer(i as i64));
+        }
+        let d = Descriptor::from_value(anchor.get(crate::arrangement::WORKGROUP_KEY).unwrap()).unwrap();
+        assert_eq!(d.members[1].arrangement.get("Tandem Attach").and_then(Value::as_integer), Some(1));
+        // A session with no descriptor, or a broken one, has none.
+        assert!(embedded(&Table::new()).is_empty());
+        let mut broken = Table::new();
+        broken.insert(crate::arrangement::WORKGROUP_KEY.into(), Value::Boolean(true));
+        assert!(embedded(&broken).is_empty() && embedded_mut(&mut broken).is_empty());
+    }
+
+    /// The anchor's session value carries the descriptor and the app wires it, saving and restoring.
+    #[test]
+    fn the_app_wires_restoration_as_data() {
+        let arrange = include_str!("app/arrange_ui.rs");
+        let production = arrange.split("#[cfg(test)]").next().unwrap();
+        assert!(production.contains("arrangement::WORKGROUP_KEY"), "the descriptor goes under iTerm2's key");
+        assert!(production.contains("snapshot_window_copy"), "a duplicate carries none (P9)");
+        let app = include_str!("app/workgroup_restore_app.rs");
+        let prod = app.split("#[cfg(test)]").next().unwrap();
+        for banned in ["bury_pane", "self.buried", "Burial", "disinter", "enter_workgroup_now", "start_command_override"] {
+            assert!(!prod.contains(banned), "{banned}");
+        }
+        assert!(prod.contains("needs_question("), "an import asks again unless its approval stands");
+        assert!(prod.contains("crate::workgroup::restored_toggles("), "toggles come back only on adopted members");
+        assert!(include_str!("app/restore_ui.rs").contains("workgroup_restore::embedded"), "embedded members take the host-key plan");
+        assert!(include_str!("app/workgroup_app.rs").contains("self.is_restoring_session(pane)"), "a trigger checks the restoring flag when it fires");
+    }
+}

@@ -220,6 +220,7 @@ mod ssh_panel_app;
 mod ssh_url_app;
 mod workgroup_app;
 mod workgroup_git_app;
+mod workgroup_restore_app;
 mod code_review_app;
 mod workgroup_toolbar_ui;
 

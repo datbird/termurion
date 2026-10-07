@@ -80,6 +80,8 @@ pub enum Mechanism {
     BrowserTrigger,
     Menu,
     Onboarding,
+    /// A saved window brought the instance back (Task 9).
+    Restore,
 }
 
 impl Mechanism {
@@ -89,6 +91,7 @@ impl Mechanism {
             Mechanism::BrowserTrigger => format!("A browser trigger in session {session} entered this workgroup."),
             Mechanism::Menu => format!("The user entered this workgroup from the Workgroups menu in session {session}."),
             Mechanism::Onboarding => format!("The user entered this workgroup by accepting the Claude Code onboarding prompt in session {session}."),
+            Mechanism::Restore => RESTORED_PROVENANCE.to_string(),
         }
     }
 
@@ -96,6 +99,9 @@ impl Mechanism {
         matches!(self, Mechanism::Trigger | Mechanism::BrowserTrigger)
     }
 }
+
+/// The provenance of an instance a saved window brought back (`WC:adopt`).
+pub const RESTORED_PROVENANCE: &str = "Restored from a saved window arrangement at launch.";
 
 /// One session to start, in the order iTerm2 starts them (`WI:811-900`, `WSS:60-140`).
 #[derive(Clone, Debug, PartialEq)]
@@ -195,6 +201,8 @@ pub fn needs_ask(source: Source, how: Mechanism, members: usize) -> bool {
 
 /// The entry question's buttons, left to right: Return presses the first, so the default is Cancel.
 pub const ASK_LABELS: [&str; 2] = [crate::api_auth::CANCEL, "Enter"];
+/// The restore question's buttons: the same places, so Return still cancels.
+pub const RESTORE_LABELS: [&str; 2] = [crate::api_auth::CANCEL, "Restore"];
 /// The button that enters (by an explicit click or its access key only).
 pub const ASK_ENTER: usize = 1;
 
@@ -280,10 +288,12 @@ fn digest_of(list: &[(String, String)]) -> String {
 /// Whole commands only: None when the text would pass `ASK_ROOM` (the question cannot show it all,
 /// so it is not offered; Trust it in Settings after reading it there).
 pub fn ask_text(w: &Workgroup, how: Mechanism) -> Option<(String, String)> {
-    let heading = format!("Enter the workgroup \u{201c}{}\u{201d}?", display_text(wg::display_name(w), 128, false));
+    let verb = if how == Mechanism::Restore { "Restore" } else { "Enter" };
+    let heading = format!("{verb} the workgroup \u{201c}{}\u{201d}?", display_text(wg::display_name(w), 128, false));
     let mut body = String::new();
     body.push_str(match how {
         Mechanism::Trigger | Mechanism::BrowserTrigger => "A trigger wants to enter this workgroup.",
+        Mechanism::Restore => "A saved window brought this workgroup back, but you have not answered for its commands (it came from an import or another settings source, or a command changed).",
         _ => "Entering starts a session for each member.",
     });
     body.push_str(&format!(" It has {} members. These commands will run:\n", w.sessions.len()));

@@ -521,7 +521,7 @@ pub fn decode(json: &str) -> Result<Vec<Workgroup>, String> {
 
 // --- Bounds ---
 
-fn id_ok(id: &str) -> bool {
+pub fn id_ok(id: &str) -> bool {
     (1..=MAX_ID).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 

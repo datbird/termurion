@@ -101,7 +101,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Keep It: a closed window never removes a workgroup the person edited.
         Then::ClaudeEditedWorkgroup => Answer::Button(0),
         // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
-        Then::EnterWorkgroup { .. } | Then::UsageReport { .. } => Answer::Button(0),
+        Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. } | Then::UsageReport { .. } => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -316,6 +316,9 @@ pub(super) enum Then {
     /// (13y1): Enter (0) enters the very workgroup the question showed, Cancel nothing. A trigger
     /// raises it, so then it is capped.
     EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism, approved: crate::workgroup_run::Approved },
+    /// A restored workgroup that is not the person's own, or whose commands changed since they were
+    /// answered for (Task 9): `token` names the waiting restore.
+    RestoreWorkgroup { token: u64, workgroup: Box<crate::workgroup::Workgroup>, approved: crate::workgroup_run::Approved },
     /// The AI Usage item's report alert (13y1 Task 5): Cancel (0, the default), Report Bug (1) copies
     /// the report and opens the issue form.
     UsageReport { title: String, text: String },
@@ -409,6 +412,8 @@ impl App {
             // The finished download keeps both files.
             Then::SshKeepOrReplace { .. } => self.scripts_answered(then, 0),
             Then::Paste(pane) => self.paste_answered(pane, None),
+            // The question could not open: a restored workgroup is not rebuilt unasked.
+            Then::RestoreWorkgroup { token, workgroup, approved } => self.restore_answered(token, *workgroup, approved, false),
             Then::DynamicProfilesError(_) => self.dynamic_errors_pending = 0,
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
@@ -472,7 +477,7 @@ impl App {
         match super::warnings_app::open_warning(event_loop, (instance, adapter, device, queue), &ask.spec, ask.remembered.as_deref(), underline) {
             Ok(mut w) => {
                 // The entry question's Enter waits until the whole body has been shown (13y1 review).
-                if matches!(ask.then, Then::EnterWorkgroup { .. }) {
+                if matches!(ask.then, Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. }) {
                     w.require_read(crate::workgroup_run::ASK_ENTER);
                 }
                 self.scripts_alert = Some((w, ask));
@@ -713,8 +718,12 @@ impl App {
             Then::EnterWorkgroup { workgroup, pane, how, approved } => {
                 if index == crate::workgroup_run::ASK_ENTER {
                     self.enter_workgroup_now(*workgroup, pane, how, approved);
+                } else if matches!(how, crate::workgroup_run::Mechanism::Trigger | crate::workgroup_run::Mechanism::BrowserTrigger) {
+                    // Cancel: this trigger does not ask again in this session (not every 5 s).
+                    self.workgroups.restoring.decline(pane, &workgroup.unique_identifier);
                 }
             }
+            Then::RestoreWorkgroup { token, workgroup, approved } => self.restore_answered(token, *workgroup, approved, index == crate::workgroup_run::ASK_ENTER),
         }
     }
 }

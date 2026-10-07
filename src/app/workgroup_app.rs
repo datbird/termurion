@@ -44,7 +44,6 @@ pub(super) struct Instance {
     /// Splits and tabs, in the order they started.
     pub non_peers: Vec<(String, PaneId)>,
     /// The workgroup-wide base ref (Task 6) and who started the entry (the orchestration snapshot, Task 10).
-    #[allow(dead_code)]
     pub git_base: String,
     #[allow(dead_code)]
     pub provenance: String,
@@ -113,6 +112,8 @@ pub(super) struct Instances {
     pub(super) base_edit: Option<super::workgroup_git_app::BaseEdit>,
     /// The Code Review prompt manager and name sheet (egui windows) and the open Prompts pulldown.
     pub(super) review: super::code_review_app::ReviewWindows,
+    /// The anchors a restore brought back, until each is adopted (Task 9).
+    pub(super) restoring: super::workgroup_restore_app::Restoring,
 }
 
 impl Instances {
@@ -138,6 +139,22 @@ impl Instances {
 
     pub fn values(&self) -> impl Iterator<Item = &Instance> {
         self.map.values()
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.map.contains_key(id)
+    }
+
+    /// Registers an instance a restore rebuilt (its id was resolved against the live ones).
+    pub fn add(&mut self, inst: Instance) {
+        self.map.insert(inst.id.clone(), inst);
+    }
+
+    /// Queues a pane the next tick closes.
+    pub fn close_later(&mut self, pane: PaneId) {
+        if !self.to_close.contains(&pane) {
+            self.to_close.push(pane);
+        }
     }
 }
 
@@ -184,7 +201,7 @@ impl App {
         };
         let source = self.workgroup_model.source_of(id);
         let facts = self.workgroup_facts(pane);
-        let d = run::disposition(Some(&w), facts.as_ref().map(|(i, g, l)| (i.as_str(), g.as_str(), *l)), false);
+        let d = run::disposition(Some(&w), facts.as_ref().map(|(i, g, l)| (i.as_str(), g.as_str(), *l)), self.is_restoring_anchor(pane));
         match d {
             run::Disposition::AlreadyEntered => return true,
             run::Disposition::Refused(r) => {
@@ -491,6 +508,19 @@ impl App {
         Made::Pane(id)
     }
 
+    /// Starts a Diff or Code Review peer that was waiting when the window was saved, as entering starts
+    /// it: idle, with no program, under its overlay or waiting for changes (`WRC`: a pending peer is
+    /// spawned fresh). Any other member is never started by a restore.
+    pub(super) fn spawn_restored_peer(&mut self, w: &Workgroup, cfg: &SessionConfig, instance_id: &str, leader: PaneId, approved: &run::Approved) -> Option<PaneId> {
+        if !matches!(cfg.mode, Mode::Diff | Mode::CodeReview) {
+            return None;
+        }
+        match self.spawn_member(w, cfg, instance_id, leader, Place::Peer, 0, 0, approved) {
+            Made::Pane(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// The command line a member's `template` starts with `git_base` for `\(gitBase)`: None is the
     /// profile's own shell. An error is the banner text and nothing starts (B4: values are arguments).
     pub(super) fn plan_command(&self, template: &str, git_base: &str) -> Result<Option<String>, String> {
@@ -552,6 +582,7 @@ impl App {
     /// close. A leader that ends takes the rest with it; any other member ends and the leader
     /// stays as a plain session.
     pub(super) fn workgroup_member_ended(&mut self, pane: PaneId) {
+        self.workgroups.restoring.forget_pane(pane);
         if let Some(id) = self.panes.get(&pane).and_then(|p| p.workgroup.clone()) {
             self.teardown_workgroup(&id, Some(pane));
         }
@@ -639,11 +670,17 @@ impl App {
             }
             match work {
                 TriggerWork::Enter(param) => {
-                    if self.workgroup_of(pane).is_some() {
+                    // A replayed start in a session a restore is rebuilding must not start a second
+                    // workgroup: the flag is read when the trigger fires (`PS:25381-25390`).
+                    if self.workgroup_of(pane).is_some() || self.is_restoring_session(pane) {
                         continue;
                     }
                     let list: Vec<(String, String)> = self.workgroup_model.workgroups.iter().map(|w| (w.unique_identifier.clone(), w.name.clone())).collect();
                     let Some(id) = crate::triggers::effective_workgroup(&param, &list) else { continue };
+                    // A question the person cancelled is not asked again for this session (not every 5 s).
+                    if self.workgroups.restoring.declined(pane, &id) {
+                        continue;
+                    }
                     // A question for this very entry is already up or waiting: the person has not answered, so no second one.
                     let pending = scripts_alerts::waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, |t| {
                         matches!(t, scripts_alerts::Then::EnterWorkgroup { workgroup, pane: p, .. } if *p == pane && workgroup.unique_identifier == id)
@@ -667,7 +704,8 @@ impl App {
     pub(super) fn tick_workgroups(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
         self.run_workgroup_triggers();
         self.usage_tick();
-        let due = self.workgroup_git_tick();
+        let restore_due = self.adopt_workgroups();
+        let due = [self.workgroup_git_tick(), restore_due].into_iter().flatten().min();
         if self.workgroups.to_close.is_empty() {
             return due;
         }
