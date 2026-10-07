@@ -494,7 +494,7 @@ impl App {
         let started = consumed && self.panes.get(&pane).is_some_and(|p| p.shell_pid().is_some());
         if started {
             let main = self.workgroups.get(&instance).map(|i| i.leader);
-            let agent = main.and_then(|m| self.foreground_job(m)).and_then(|(name, pid)| cr::agent_of(Some((&name, pid))));
+            let agent = main.and_then(|m| cr::agent_of(self.foreground(m).as_ref()));
             if let Some(inst) = self.workgroups.get_mut(&instance) {
                 inst.review.last_prompt.insert(config.clone(), prompt.to_string());
                 inst.review.overlays.remove(&config);
@@ -691,17 +691,19 @@ impl App {
         }
     }
 
-    /// The main session's foreground job (name, process id), as the job watcher reports it (a framing
-    /// session's remote job included).
-    fn foreground_job(&self, pane: PaneId) -> Option<(String, u32)> {
-        self.panes.get(&pane).and_then(|p| p.own().shell.job.as_ref().map(|j| (j.name.clone(), j.pid)))
+    /// The main session's foreground job, as the job watcher reports it (a framing session's remote job
+    /// included), with the command shell integration says is running there (text and mark).
+    fn foreground(&self, pane: PaneId) -> Option<cr::Foreground> {
+        let s = self.panes.get(&pane)?.own();
+        let j = s.shell.job.as_ref()?;
+        let running = s.command_running().then(|| s.last_command_mark().map(|m| (m.command.clone(), m.id))).flatten();
+        Some(cr::Foreground { name: j.name.clone(), cmdline: j.cmdline.clone(), pid: j.pid, running })
     }
 
     /// What an auto-send of `bytes` (0 for its Return) into `main` for `instance` is judged on (B6): the
     /// pane's state, and whether the coding agent the review was started for is still in front of it.
     pub(super) fn review_send_target(&self, instance: &str, main: PaneId, bytes: usize) -> cr::SendTarget {
-        let job = self.foreground_job(main);
-        let job = job.as_ref().map(|(n, pid)| (n.as_str(), *pid));
+        let job = self.foreground(main);
         let started_for = self.workgroups.get(instance).and_then(|i| i.review.agent.as_ref());
         cr::SendTarget {
             alive: self.panes.get(&main).is_some_and(|p| p.exited.is_none() && p.replay.is_none()),
@@ -709,8 +711,8 @@ impl App {
             bracketed: self.paste_bracketed_pub(main),
             bytes,
             is_main: self.panes.get(&main).is_some_and(|p| p.workgroup.as_deref() == Some(instance)),
-            shell: crate::session_state::is_shell(job.map(|j| j.0)),
-            agent: cr::agent_present(started_for, job),
+            shell: crate::session_state::is_shell(job.as_ref().map(|j| j.name.as_str())),
+            agent: cr::agent_present(started_for, job.as_ref()),
         }
     }
 

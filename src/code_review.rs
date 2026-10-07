@@ -351,25 +351,97 @@ pub fn submit_delay(setting: f64) -> Duration {
     Duration::from_secs_f64(setting.min(MAX_SUBMIT_DELAY))
 }
 
-/// The coding agent a review was started for: the main session's foreground job at that moment (the job
-/// watcher's name for it, and its process id). A shell or an unknown job is no agent.
+/// The coding agent a review was started for, as the main session's foreground showed it then: the
+/// agent's name, the process id of the foreground job, and (for an agent behind a transport) the shell
+/// integration mark of the command that runs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Agent {
     pub name: String,
     pub pid: u32,
+    pub mark: Option<u32>,
 }
 
-/// The agent a foreground job `(name, pid)` is, or None for a shell (bash, zsh, fish, pwsh, cmd, ...) or
-/// no job.
-pub fn agent_of(job: Option<(&str, u32)>) -> Option<Agent> {
-    let (name, pid) = job?;
-    let name = crate::session_state::normalize_job(name);
-    (!name.is_empty() && !crate::session_state::is_shell(Some(&name))).then_some(Agent { name, pid })
+/// The main session's foreground job, as the job watcher reports it (a framing session's remote job
+/// included), and the command shell integration says is running in it (its text and mark), if any.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Foreground {
+    pub name: String,
+    pub cmdline: String,
+    pub pid: u32,
+    pub running: Option<(String, u32)>,
 }
 
-/// Whether the main session's foreground job now is the agent the review was started for: the same
-/// program in the same process. None started for (the main session was at a shell prompt then) is never.
-pub fn agent_present(started_for: Option<&Agent>, now: Option<(&str, u32)>) -> bool {
+/// The coding agents an auto-send goes to, by program name.
+pub const AGENTS: &[&str] = &["claude", "codex", "aider", "gemini", "opencode", "goose", "cursor-agent", "copilot", "qwen", "amp", "crush"];
+
+/// The package names the agents ship as, and the agent each is.
+const AGENT_PACKAGES: &[(&str, &str)] = &[("claude-code", "claude"), ("gemini-cli", "gemini"), ("aider-chat", "aider"), ("qwen-code", "qwen")];
+
+/// The runtimes an agent runs in: the script (or `-m` module) on the command line names the agent.
+const RUNTIMES: &[&str] = &["node", "bun", "deno", "npx", "pnpm", "python", "python3", "pythonw", "py", "uv", "uvx", "pipx"];
+
+/// The programs that carry a session to another computer or system: the job watcher sees only them, never
+/// the program running on the other side.
+pub const TRANSPORTS: &[&str] = &["wsl", "wslhost", "ssh", "mosh", "mosh-client", "plink", "telnet", "et", "docker", "podman", "kubectl"];
+
+/// The agent a foreground job is, or None for a shell, a transport whose remote program is not known to be
+/// an agent, any other program, or no job.
+pub fn agent_of(job: Option<&Foreground>) -> Option<Agent> {
+    let job = job?;
+    if TRANSPORTS.contains(&crate::session_state::normalize_job(&job.name).as_str()) {
+        // Only shell integration knows what runs on the other side: the command it says is running.
+        let (text, mark) = job.running.as_ref()?;
+        let program = crate::semantic::split_command_line(text).into_iter().next()?;
+        return agent_named(&program, text).map(|name| Agent { name, pid: job.pid, mark: Some(*mark) });
+    }
+    agent_named(&job.name, &job.cmdline).map(|name| Agent { name, pid: job.pid, mark: None })
+}
+
+/// The coding agent a program is: its image name, or for a runtime (node, python, npx, ...) the script or
+/// `-m` module its command line runs (the file's name, or the package it sits in under node_modules).
+fn agent_named(program: &str, cmdline: &str) -> Option<String> {
+    let name = crate::session_state::normalize_job(program);
+    if AGENTS.contains(&name.as_str()) {
+        return Some(name);
+    }
+    if !RUNTIMES.contains(&name.as_str()) {
+        return None;
+    }
+    let words = crate::semantic::split_command_line(cmdline);
+    let mut rest = words.iter().skip(1);
+    while let Some(w) = rest.next() {
+        if w == "-m" {
+            return rest.next().and_then(|m| agent_package(m.split('.').next().unwrap_or("")));
+        }
+        if w.starts_with('-') {
+            continue;
+        }
+        // The first word that is not an option is the script: its own name, else its package.
+        let parts: Vec<&str> = w.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+        let file = parts.last().map(|f| f.rsplit_once('.').map_or(*f, |(stem, _)| stem)).unwrap_or("");
+        let package = match parts.iter().position(|p| p.eq_ignore_ascii_case("node_modules")) {
+            Some(at) => parts.get(at + 1).and_then(|p| if p.starts_with('@') { parts.get(at + 2) } else { Some(p) }).copied(),
+            None if w.starts_with('@') => parts.get(1).copied(),
+            None => None,
+        };
+        return agent_package(file).or_else(|| package.and_then(agent_package));
+    }
+    None
+}
+
+/// The agent a script or package name is, in any case.
+fn agent_package(name: &str) -> Option<String> {
+    let low = name.to_ascii_lowercase();
+    if AGENTS.contains(&low.as_str()) {
+        return Some(low);
+    }
+    AGENT_PACKAGES.iter().find(|(p, _)| *p == low).map(|(_, a)| a.to_string())
+}
+
+/// Whether the main session's foreground job now is the agent the review was started for: the same agent
+/// in the same process (and, behind a transport, the same command). None started for (the main session was
+/// not running a known coding agent then) is never.
+pub fn agent_present(started_for: Option<&Agent>, now: Option<&Foreground>) -> bool {
     started_for.is_some_and(|a| agent_of(now).as_ref() == Some(a))
 }
 
@@ -403,7 +475,7 @@ pub fn send_refusal(t: &SendTarget) -> Option<&'static str> {
         return Some("The main session is at a shell prompt (its coding agent is not running), so the review was not sent.");
     }
     if !t.agent {
-        return Some("The main session is no longer running the coding agent the review was started for, so the review was not sent.");
+        return Some("The main session is not running the coding agent the review was started for (a coding agent Tandem knows by name, such as claude, codex, aider or gemini; behind wsl or ssh only shell integration can tell), so the review was not sent.");
     }
     if !t.bracketed {
         return Some("The main session has not asked for bracketed paste (a program that reads pasted text is not running there), so the review was not sent.");
@@ -599,23 +671,36 @@ mod tests {
         assert!(src.contains("password_input"), "the app reads the pane's password state");
     }
 
+    fn fg(name: &str, cmdline: &str, pid: u32, running: Option<(&str, u32)>) -> Foreground {
+        Foreground { name: name.into(), cmdline: cmdline.into(), pid, running: running.map(|(t, m)| (t.to_string(), m)) }
+    }
+
+    fn job(name: &str, pid: u32) -> Foreground {
+        fg(name, name, pid, None)
+    }
+
     /// 13y1 Task 7 item 4: an auto-send needs the coding agent the review was started for in front of the
     /// main session: the same program, the same process. A shell prompt (bash 5.1+, zsh and fish turn
     /// bracketed paste on there too) is refused with its own banner, as is any other program or a new run.
     #[test]
     fn auto_send_never_into_a_shell_prompt() {
         let ok = SendTarget { alive: true, password: false, bracketed: true, bytes: 100, is_main: true, shell: false, agent: true };
-        let claude = agent_of(Some(("claude.exe", 40))).expect("an agent");
-        assert_eq!(claude, Agent { name: "claude".into(), pid: 40 });
+        let claude = agent_of(Some(&job("claude.exe", 40))).expect("an agent");
+        assert_eq!(claude, Agent { name: "claude".into(), pid: 40, mark: None });
         for shell in ["bash", "-zsh", "fish", "pwsh.exe", "cmd.exe", "powershell", "/usr/bin/bash"] {
-            assert_eq!(agent_of(Some((shell, 41))), None, "{shell}");
-            assert!(!agent_present(Some(&claude), Some((shell, 41))), "{shell}: the agent has exited to its shell");
+            assert_eq!(agent_of(Some(&job(shell, 41))), None, "{shell}");
+            assert!(!agent_present(Some(&claude), Some(&job(shell, 41))), "{shell}: the agent has exited to its shell");
         }
-        assert!(agent_present(Some(&claude), Some(("Claude", 40))));
-        assert!(!agent_present(Some(&claude), Some(("claude", 41))), "a new run is not the agent the review was for");
-        assert!(!agent_present(Some(&claude), Some(("vim", 40))));
+        // Round 4: a WSL or ssh session whose agent exited to bash still shows the transport as its job.
+        for transport in ["wsl", "wsl.exe", "ssh.exe", "wslhost"] {
+            assert_eq!(agent_of(Some(&job(transport, 50))), None, "{transport} at a remote prompt");
+            assert!(!agent_present(Some(&claude), Some(&job(transport, 40))), "{transport}");
+        }
+        assert!(agent_present(Some(&claude), Some(&job("Claude", 40))));
+        assert!(!agent_present(Some(&claude), Some(&job("claude", 41))), "a new run is not the agent the review was for");
+        assert!(!agent_present(Some(&claude), Some(&job("vim", 40))));
         assert!(!agent_present(Some(&claude), None), "no job known");
-        assert!(!agent_present(None, Some(("claude", 40))), "a review started while the main session was at a shell sends nothing");
+        assert!(!agent_present(None, Some(&job("claude", 40))), "a review started while the main session was at a shell sends nothing");
         let at_shell = send_refusal(&SendTarget { shell: true, agent: false, ..ok });
         assert!(at_shell.is_some_and(|r| r.contains("shell prompt")), "{at_shell:?}");
         let gone = send_refusal(&SendTarget { agent: false, ..ok });
@@ -629,6 +714,64 @@ mod tests {
         let paste = include_str!("app/paste_ui.rs");
         let tick = &paste[paste.find("fn paste_after_tick").unwrap()..paste.find("pub(super) fn paste_tick").unwrap()];
         assert!(tick.find("cr::send_refusal(&self.review_send_target(").expect("re-checked before the Return") < tick.find("self.user_write(").unwrap());
+    }
+
+    /// 13y1 Task 7 item 4 round 2: the agent is a known coding agent by the foreground job's image name or
+    /// command line, never "any program that is not a shell". Behind a transport (wsl, ssh) the job watcher
+    /// sees only the transport, so the agent is known only from shell integration's running command, and a
+    /// WSL session at its bash prompt is refused.
+    #[test]
+    fn auto_send_needs_a_known_coding_agent() {
+        let ok = SendTarget { alive: true, password: false, bracketed: true, bytes: 100, is_main: true, shell: false, agent: true };
+        // By image name, and by the script a runtime runs.
+        for (j, want) in [
+            (job("claude.exe", 1), "claude"),
+            (job("codex", 1), "codex"),
+            (job("aider.exe", 1), "aider"),
+            (job("gemini", 1), "gemini"),
+            (fg("node.exe", r#""C:\Program Files\nodejs\node.exe" C:\Users\a\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js --resume"#, 1, None), "claude"),
+            (fg("node", "node /usr/lib/node_modules/@google/gemini-cli/dist/index.js", 1, None), "gemini"),
+            (fg("node", "node --no-warnings /x/node_modules/@openai/codex/bin/codex.js", 1, None), "codex"),
+            (fg("npx.exe", "npx @anthropic-ai/claude-code", 1, None), "claude"),
+            (fg("python.exe", "python -m aider --model x", 1, None), "aider"),
+        ] {
+            assert_eq!(agent_of(Some(&j)).map(|a| a.name), Some(want.to_string()), "{j:?}");
+        }
+        // Any other program, a runtime running something else, a REPL with bracketed paste on.
+        for j in [
+            job("vim", 1),
+            job("python3.13", 1),
+            fg("python.exe", "python", 1, None),
+            fg("node", "node server.js", 1, None),
+            fg("node", r"node C:\work\claude\server.js", 1, None),
+            fg("python", "python -m http.server", 1, None),
+            job("less", 1),
+        ] {
+            assert_eq!(agent_of(Some(&j)), None, "{j:?}");
+        }
+        // A WSL main session at a bash prompt: the job is wsl, shell integration says nothing runs.
+        let wsl_prompt = fg("wsl.exe", "wsl.exe -d Ubuntu", 70, None);
+        assert_eq!(agent_of(Some(&wsl_prompt)), None, "wsl at bash");
+        let agent = agent_present(agent_of(Some(&wsl_prompt)).as_ref(), Some(&wsl_prompt));
+        assert!(send_refusal(&SendTarget { agent, shell: crate::session_state::is_shell(Some("wsl")), ..ok }).is_some(), "refused with a banner");
+        // Shell integration says the remote command is the agent: then it is, for that command only.
+        let wsl_claude = fg("wsl.exe", "wsl.exe -d Ubuntu", 70, Some(("claude --resume", 12)));
+        let started = agent_of(Some(&wsl_claude)).expect("the remote agent is known");
+        assert_eq!(started, Agent { name: "claude".into(), pid: 70, mark: Some(12) });
+        assert!(agent_present(Some(&started), Some(&wsl_claude)));
+        assert!(!agent_present(Some(&started), Some(&wsl_prompt)), "the agent exited to bash");
+        assert!(!agent_present(Some(&started), Some(&fg("wsl.exe", "wsl.exe", 70, Some(("claude", 13))))), "a new run");
+        assert!(!agent_present(Some(&started), Some(&fg("wsl.exe", "wsl.exe", 70, Some(("vim notes", 14))))));
+        assert_eq!(agent_of(Some(&fg("ssh.exe", "ssh host", 80, Some(("top", 3))))), None, "ssh running another program");
+        assert_eq!(agent_of(Some(&fg("ssh.exe", "ssh host", 80, Some(("codex", 3))))).map(|a| a.name), Some("codex".into()));
+        // A local job is what runs, whatever an earlier mark says.
+        assert_eq!(agent_of(Some(&fg("vim", "vim", 5, Some(("claude", 3))))), None);
+        // The app passes the job's command line and shell integration's running command.
+        let app = include_str!("app/code_review_app.rs");
+        let live = app.split("\n#[cfg(test)]").next().unwrap();
+        let fgf = &live[live.find("fn foreground(").expect("one foreground reader")..];
+        let fgf = &fgf[..fgf.find("\n    }\n").unwrap()];
+        assert!(fgf.contains("j.cmdline.clone()") && fgf.contains("command_running()") && fgf.contains("last_command_mark()"), "{fgf}");
     }
 
     /// 13y1 Task 7 item 5 (P10): the bounds apply at every read, so a value written by any path (remote
