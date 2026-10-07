@@ -484,10 +484,21 @@ impl App {
         }
         inst.torn_down = true;
         // A peer shown in the leader's place goes back out first, so the leader is left in its pane
-        // (`WI:666-790`); a leader that is itself ending is not put back.
-        if skip != Some(inst.leader) && self.panes.contains_key(&inst.leader) {
-            if let Some(shown) = inst.shown_pane().filter(|s| *s != inst.leader && self.panes.contains_key(s)) {
-                self.swap_slot(shown, inst.leader);
+        // (`WI:666-790`); a leader that is itself ending is not put back, and when the closing member
+        // is the shown one its slot is closing too, so the leader goes with the group.
+        let shown = inst.shown_pane().filter(|s| self.panes.contains_key(s));
+        let mut leader_closes = false;
+        if self.panes.contains_key(&inst.leader) {
+            match run::leader_fate(skip, inst.leader, shown) {
+                run::LeaderFate::SwapBack => {
+                    if let Some(shown) = shown {
+                        self.swap_slot(shown, inst.leader);
+                    }
+                    // A swap that failed leaves the leader in no layout: it is never left hidden.
+                    leader_closes = !self.tabs.iter().any(|t| t.layout.panes().contains(&inst.leader));
+                }
+                run::LeaderFate::Close => leader_closes = true,
+                run::LeaderFate::Stay => {}
             }
         }
         let non_peers: Vec<String> = inst.non_peers.iter().map(|(c, _)| c.clone()).collect();
@@ -500,7 +511,7 @@ impl App {
             }
         }
         for p in ending {
-            if p != inst.leader && Some(p) != skip && !self.workgroups.to_close.contains(&p) {
+            if (p != inst.leader || leader_closes) && Some(p) != skip && !self.workgroups.to_close.contains(&p) {
                 self.workgroups.to_close.push(p);
             }
         }

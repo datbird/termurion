@@ -144,6 +144,30 @@ pub fn teardown_order(non_peers: &[String]) -> Vec<String> {
     non_peers.to_vec()
 }
 
+/// What a teardown does with the leader (`WI:666-790`, `restoreMainLeaderToPaneIfNeeded`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaderFate {
+    /// Put back in the slot the shown peer holds, then left running.
+    SwapBack,
+    /// Closed with the rest: its slot is the closing member's own, or nowhere to put it.
+    Close,
+    /// Left as it is (it is the one ending, or nothing was shown in its place).
+    Stay,
+}
+
+/// The leader's fate when the teardown was started by `ending` (None: Exit Workgroup), with `shown`
+/// the member in the leader's slot. A closing member that is the shown one is the pane whose own tab
+/// or window is closing, so the leader is never revealed into it (iTerm2's guard
+/// `activeSession !== terminating`); it goes with the group instead of being stranded hidden.
+pub fn leader_fate(ending: Option<crate::layout::PaneId>, leader: crate::layout::PaneId, shown: Option<crate::layout::PaneId>) -> LeaderFate {
+    match (ending, shown) {
+        (Some(e), _) if e == leader => LeaderFate::Stay,
+        (Some(e), Some(s)) if e == s && s != leader => LeaderFate::Close,
+        (_, Some(s)) if s != leader => LeaderFate::SwapBack,
+        _ => LeaderFate::Stay,
+    }
+}
+
 /// The close confirmation's extra line (`WI:171-195`): each group is (workgroup name, live members
 /// that would close beyond those already closing).
 pub fn close_warning(groups: &[(String, usize)]) -> Option<String> {
@@ -326,6 +350,22 @@ pub fn menu_entries(list: &[Workgroup], current: Option<(&str, &str, bool)>, has
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn leader_fate_follows_iterm2() {
+        use super::{leader_fate, LeaderFate::*};
+        assert_eq!(leader_fate(None, 1, Some(2)), SwapBack, "Exit Workgroup puts the leader back");
+        assert_eq!(leader_fate(Some(3), 1, Some(2)), SwapBack, "another member ending");
+        assert_eq!(leader_fate(Some(2), 1, Some(2)), Close, "the shown peer closing takes the leader with it");
+        assert_eq!(leader_fate(Some(1), 1, Some(2)), Stay, "the leader is the one ending");
+        assert_eq!(leader_fate(None, 1, Some(1)), Stay);
+        assert_eq!(leader_fate(Some(2), 1, None), Stay);
+        // The one teardown asks the rule and never strands a leader that is in no layout.
+        let app = include_str!("app/workgroup_app.rs");
+        assert!(app.contains("run::leader_fate(skip, inst.leader, shown)"));
+        assert!(app.contains("run::LeaderFate::Close"));
+        assert!(app.contains("never left hidden"), "a swap that failed still closes the leader");
+    }
+
     use super::*;
     use crate::workgroup::{self as wg, Kind, Mode, Orientation, Side, SplitSettings, Workgroup};
 

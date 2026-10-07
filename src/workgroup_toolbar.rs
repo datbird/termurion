@@ -360,10 +360,6 @@ mod tests {
         s
     }
 
-    fn spacer() -> ToolbarItem {
-        ToolbarItem::Spacer { min_width: 8.0, max_width: 100.0 }
-    }
-
     /// Review Focus 4: the strip's items, the name injected, the layout across the width.
     #[test]
     fn toolbar_items_follow_iterm2() {
