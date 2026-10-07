@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FocusChangedEventHandler, HistoryChangedEventHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
 };
@@ -437,6 +437,9 @@ pub struct ViewSetup {
     pub allowed_schemes: Option<Vec<String>>,
     /// `IsWebMessageEnabled`: true only for popover HTML, tool views and `iterm2-about:` pages (preflight P5).
     pub web_message: bool,
+    /// The page's favicon is posted as `Event::Favicon` (browser panes): WebView2's own fetch,
+    /// bounded and judged by `webhost::favicon_ok` before it is queued.
+    pub favicon: bool,
 }
 
 #[derive(Clone)]
@@ -1053,7 +1056,61 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
         Ok(())
     })));
     unsafe { view.add_NewWindowRequested(&window, token) }?;
+
+    // The favicon (final review I6): WebView2 fetches it with the page (Tandem fetches nothing);
+    // GetFavicon hands it over as PNG, read with the 256 KiB bound and posted only when it decodes
+    // within 256 by 256 (B5: the cap is the host's, not the consumer's). A newer runtime only.
+    let setup_favicon = inner.borrow().setup.favicon;
+    if setup_favicon {
+        if let Ok(v15) = view.cast::<ICoreWebView2_15>() {
+            let weak = Rc::downgrade(inner);
+            let changed = FaviconChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
+                let (Some(inner), Some(v)) = (weak.upgrade(), sender) else { return Ok(()) };
+                let Ok(v15) = v.cast::<ICoreWebView2_15>() else { return Ok(()) };
+                let weak = Rc::downgrade(&inner);
+                let done = GetFaviconCompletedHandler::create(Box::new(move |hr, stream| guard(|| {
+                    let (Some(inner), Some(stream)) = (weak.upgrade(), stream) else { return Ok(()) };
+                    if hr.is_err() {
+                        return Ok(());
+                    }
+                    let Some(bytes) = read_stream(&stream, webhost::MAX_FAVICON) else { return Ok(()) };
+                    if !webhost::favicon_ok(&bytes) {
+                        return Ok(());
+                    }
+                    let i = inner.borrow();
+                    i.poster.post(Event::Favicon(i.id, bytes));
+                    Ok(())
+                })));
+                let _ = unsafe { v15.GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, &done) };
+                Ok(())
+            })));
+            unsafe { v15.add_FaviconChanged(&changed, token) }?;
+        }
+    }
     Ok(())
+}
+
+/// A COM stream's bytes from its start; None past `max` bytes or on a read error.
+fn read_stream(s: &windows::Win32::System::Com::IStream, max: usize) -> Option<Vec<u8>> {
+    use windows::Win32::System::Com::STREAM_SEEK_SET;
+    unsafe { s.Seek(0, STREAM_SEEK_SET, None) }.ok()?;
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let mut read = 0u32;
+        // SAFETY: the buffer outlives the call and `read` says how much of it was filled.
+        let hr = unsafe { s.Read(buf.as_mut_ptr() as *mut c_void, buf.len() as u32, Some(&mut read as *mut u32)) };
+        if hr.is_err() {
+            return None;
+        }
+        if read == 0 {
+            return Some(out);
+        }
+        out.extend_from_slice(&buf[..read as usize]);
+        if out.len() > max {
+            return None;
+        }
+    }
 }
 
 fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
@@ -1280,6 +1337,33 @@ mod tests {
         // The one NavigationStarting and one WebMessageReceived handler.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
         assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 1);
+    }
+
+    /// Final review I6: the favicon is WebView2's own (FaviconChanged, then GetFavicon as PNG; Tandem
+    /// fetches nothing), read with the 256 KiB bound and posted only when `favicon_ok` passes (B5
+    /// caps in the host). Only views that ask for it (browser panes) register the handler.
+    #[test]
+    fn the_favicon_comes_from_the_view_and_is_bounded_before_posting() {
+        let src = include_str!("webhost_win.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let events = &live[live.find("fn register_page_events").unwrap()..live.find("fn register_policy").unwrap()];
+        let at = events.find("add_FaviconChanged(").expect("the handler is registered");
+        assert!(events[..at].contains("if setup_favicon {"), "only for views that show a favicon");
+        let get = events.find("GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG").expect("the view's own favicon, as PNG");
+        let read = events.find("read_stream(&stream, webhost::MAX_FAVICON)").expect("read with the bound");
+        let ok = events.find("webhost::favicon_ok(&bytes)").expect("judged in the host");
+        let post = events.find("Event::Favicon(").unwrap();
+        // The completion handler (read, judge, post) is made before the call that runs it.
+        assert!(read < ok && ok < post && post < get);
+        assert!(!live.contains("ai_transport") && !live.contains("WinHttp"), "no Tandem network fetch");
+        let browser = include_str!("app/browser_app.rs");
+        assert!(browser.contains("        favicon: true,"), "browser panes ask for it");
+        assert!(!include_str!("app/tool_web_ui.rs").contains("favicon: true"));
+        // Shown in the toolbar and, for a profile whose icon is Automatic, in the tab (`PS:6665`).
+        let tabs = include_str!("app/tab_groups_ui.rs");
+        let icon = &tabs[tabs.find("pub(super) fn tab_icon_for").unwrap()..];
+        assert!(icon[..icon.find("let key = IconKey").unwrap()].contains("return self.browser_tab_icon(pane);"));
+        assert!(browser.contains("pub(super) fn browser_tab_icon(&self, pane: PaneId) -> Option<scene::TabImage>"));
     }
 
     /// Final review round 1, item 1 (class fix): every COM callback body runs inside `guard`, so a

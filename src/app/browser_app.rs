@@ -118,6 +118,7 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
         // The Instant Replay sensitive mark runs in every frame of every browser page (final review I1).
         scripts: vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()],
         resource_filters: filters,
+        favicon: true,
         ..Default::default()
     }
 }
@@ -526,6 +527,13 @@ impl App {
         bv.parent = 0;
         bv.replay.shown = false;
         self.redraw();
+    }
+
+    /// A browser pane's tab icon when its profile's icon is Automatic (`PS:6665-6666`): the page's
+    /// favicon, or none until one loads.
+    pub(super) fn browser_tab_icon(&self, pane: PaneId) -> Option<scene::TabImage> {
+        let (key, pixels, size) = self.browser_views.get(&pane)?.bar.favicon.clone()?;
+        Some(scene::TabImage::Picture { key, pixels, size })
     }
 
     /// The session name after a title or a finished navigation (`BST:24-43`).

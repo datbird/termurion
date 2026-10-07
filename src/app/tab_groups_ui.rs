@@ -881,6 +881,15 @@ impl App {
         use crate::tab_icons::{ancestor_chain, candidates, fallback_name};
         let p = self.panes.get(&pane)?;
         let profile = self.store.get(&p.profile)?;
+        // A browser pane's automatic icon is its favicon (final review I6, `PS:6665-6666`).
+        if p.browser_io().is_some() {
+            if profile.int("Icon") == crate::tab_icons::AUTOMATIC {
+                return self.browser_tab_icon(pane);
+            }
+            if profile.int("Icon") != crate::tab_icons::CUSTOM {
+                return None;
+            }
+        }
         let (chain, fallback) = match p.tmux_io() {
             Some(io) => {
                 let job = io.info.borrow().job.clone();
