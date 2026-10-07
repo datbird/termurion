@@ -355,7 +355,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Smart Selection rule list | Smart Selection Rules | Ordered regex rules that classify what a double or triple click selects, each with a precision level and actions. | have | Rules are ICU regular expressions; Tandem reads them with fancy-regex after mapping [:letter:] and [:number:]. A rule that still does not compile is skipped, and the editor says so. |
+| Smart Selection rule list | Smart Selection Rules | Ordered regex rules that classify what a double or triple click selects, each with a precision level and actions. | have | Rules are ICU regular expressions; Tandem reads them with fancy-regex after mapping [:letter:] and [:number:]. A rule that still does not compile is skipped, and the editor says so. Milestone 13x2: pages too (rules run on the page text around the click, in Tandem's isolated world; partial in a page until the desktop probe passes). |
 | Built-in rules | n/a | Ships default regexes for a whitespace-bounded word, C++ namespace::identifier, file paths, quoted strings, dotted Java/Python paths, mailto/http/https/ssh/telnet URLs, Obj-C selectors, and email addresses. | have |  |
 | Open File | n/a (action) | Opens the selected text as a file path with its default or resolved application. | have |  |
 | Open URL | n/a (action) | Opens the selected text as a URL in the browser. | have |  |
