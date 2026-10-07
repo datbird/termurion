@@ -616,7 +616,7 @@ impl App {
                 for item in &cfg.toolbar_items {
                     if let ToolbarItem::Usage { command, interval_seconds, .. } = item {
                         // A custom command runs only when it is on the list the person answered for.
-                        if !command.trim().is_empty() && !inst.approved.contains(command.trim()) {
+                        if !command.trim().is_empty() && !inst.approved.allows(command.trim()) {
                             continue;
                         }
                         let key = usage_key(command, *interval_seconds);

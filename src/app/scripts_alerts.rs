@@ -311,7 +311,7 @@ pub(super) enum Then {
     /// "Enter the workgroup ...?" for an imported workgroup, a trigger, or more than eight members
     /// (13y1): Enter (0) enters the very workgroup the question showed, Cancel nothing. A trigger
     /// raises it, so then it is capped.
-    EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism },
+    EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism, approved: crate::workgroup_run::Approved },
     /// The AI Usage item's report alert (13y1 Task 5): Cancel (0, the default), Report Bug (1) copies
     /// the report and opens the issue form.
     UsageReport { title: String, text: String },
@@ -706,9 +706,9 @@ impl App {
                     self.usage_report_answered(&title, &text);
                 }
             }
-            Then::EnterWorkgroup { workgroup, pane, how } => {
+            Then::EnterWorkgroup { workgroup, pane, how, approved } => {
                 if index == crate::workgroup_run::ASK_ENTER {
-                    self.enter_workgroup_now(*workgroup, pane, how);
+                    self.enter_workgroup_now(*workgroup, pane, how, approved);
                 }
             }
         }
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn the_entry_question_defaults_to_cancel() {
         use crate::workgroup_run::{ASK_ENTER, ASK_LABELS};
-        let then = || Then::EnterWorkgroup { workgroup: Box::new(crate::workgroup::Workgroup::new_empty("x")), pane: 1, how: crate::workgroup_run::Mechanism::Trigger };
+        let then = || Then::EnterWorkgroup { workgroup: Box::new(crate::workgroup::Workgroup::new_empty("x")), pane: 1, how: crate::workgroup_run::Mechanism::Trigger, approved: Default::default() };
         let a = ask("H", "T", &ASK_LABELS, None, crate::warnings::Kind::Persistent, then());
         assert_eq!(a.spec.labels[0], crate::api_auth::CANCEL, "Return presses the first button");
         assert_eq!(a.spec.cancel, Some(0), "Escape presses it too");

@@ -43,7 +43,7 @@ pub(super) struct Instance {
     /// AI Usage items' reports and runs, by item key (Task 5); dropped with the instance.
     pub usage: HashMap<String, super::workgroup_toolbar_ui::UsageSlot>,
     /// Every command the person answered for or owns (`run::approved`): the only commands a runner starts.
-    pub approved: std::collections::HashSet<String>,
+    pub approved: run::Approved,
     /// The git poller, the changed-file lists and the Diff members' deferred launches (Task 6); None
     /// when no member is in Diff mode and no item needs git (`WI:930-960`).
     pub git: Option<super::workgroup_git_app::GitSide>,
@@ -187,12 +187,14 @@ impl App {
                 self.banners.set("workgroup", "This workgroup's commands are too long to show in full, so it is not started. Read them in Settings > Arrangements > Workgroups and trust it there.");
                 return false;
             };
-            let then = scripts_alerts::Then::EnterWorkgroup { workgroup: Box::new(w), pane, how };
+            let approved = run::Approved::of(&w);
+            let then = scripts_alerts::Then::EnterWorkgroup { workgroup: Box::new(w), pane, how, approved };
             let ask = scripts_alerts::ask(&heading, &body, &run::ASK_LABELS, None, crate::warnings::Kind::Persistent, then);
             self.ask_scripts(ask);
             return false;
         }
-        self.enter_workgroup_now(w, pane, how)
+        let approved = run::Approved::of(&w);
+        self.enter_workgroup_now(w, pane, how, approved)
     }
 
     /// Why this session cannot enter a workgroup now (P6, P3).
@@ -223,7 +225,11 @@ impl App {
 
     /// Enters `w` on `pane` without asking: the menu's own entry, or an answered question. The
     /// question showed this very workgroup, so it is carried, not looked up again.
-    pub(super) fn enter_workgroup_now(&mut self, w: Workgroup, pane: PaneId, how: Mechanism) -> bool {
+    pub(super) fn enter_workgroup_now(&mut self, w: Workgroup, pane: PaneId, how: Mechanism, approved: run::Approved) -> bool {
+        if !approved.matches(&w) {
+            self.banners.set("workgroup", "That workgroup changed after it was shown, so it was not started.");
+            return false;
+        }
         let facts = self.workgroup_facts(pane);
         let d = run::disposition(Some(&w), facts.as_ref().map(|(i, g, l)| (i.as_str(), g.as_str(), *l)), false);
         let exit_first = match d {
@@ -258,7 +264,7 @@ impl App {
             group_before: None,
             torn_down: false,
             usage: HashMap::new(),
-            approved: run::approved(&w),
+            approved,
             git: super::workgroup_git_app::GitSide::for_workgroup(&w),
         };
         // config id -> the pane that hosts its children
@@ -285,7 +291,7 @@ impl App {
                 inst.peers.push((config.clone(), None));
                 continue;
             }
-            match self.spawn_member(&w, &cfg, &instance_id, pane, place, entry_tab, spawned_tabs.len()) {
+            match self.spawn_member(&w, &cfg, &instance_id, pane, place, entry_tab, spawned_tabs.len(), &inst.approved) {
                 Made::Pane(id) => {
                     match step {
                         SpawnStep::Peer { .. } => inst.peers.push((config.clone(), Some(id))),
@@ -370,7 +376,11 @@ impl App {
     /// Starts one member beside `leader`. A peer joins no layout; a split goes beside its parent at
     /// its fraction; a tab goes after the entry tab (and the tabs this entry already added).
     #[allow(clippy::too_many_arguments)]
-    fn spawn_member(&mut self, w: &Workgroup, cfg: &SessionConfig, instance_id: &str, leader: PaneId, place: Place, entry_tab: usize, added_tabs: usize) -> Made {
+    fn spawn_member(&mut self, w: &Workgroup, cfg: &SessionConfig, instance_id: &str, leader: PaneId, place: Place, entry_tab: usize, added_tabs: usize, approved: &run::Approved) -> Made {
+        if !approved.allows(&cfg.command) {
+            self.banners.set("workgroup", "A member's command was not in the list that was shown, so it did not start.");
+            return Made::Skipped;
+        }
         if !run::valid_instance_id(instance_id) {
             return Made::Failed;
         }
@@ -481,6 +491,11 @@ impl App {
         }) else {
             return MemberLaunch::NotMember;
         };
+        // The command comes from the approval stored with the answer (the one list the person saw).
+        if !self.workgroups.get(&instance).is_some_and(|i| i.approved.allows(&template)) {
+            self.banners.set("workgroup", "That command was not in the list the workgroup was entered with, so it did not start.");
+            return MemberLaunch::Refused;
+        }
         let line = if diff { self.diff_launch_line(&instance, &config) } else { self.plan_command(&template, &base).map(|c| (c, Vec::new())) };
         match line {
             Ok((command, mut env)) => {
@@ -862,7 +877,7 @@ mod tests {
         assert!(include_str!("menu.rs").contains("\"exitWorkgroup:\" =>"));
         assert!(include_str!("menu.rs").contains("self.workgroup_picked(id)"));
         assert!(include_str!("close_ui.rs").contains("self.workgroup_close_warning("));
-        assert!(include_str!("scripts_alerts.rs").contains("Then::EnterWorkgroup { workgroup, pane, how } =>"));
+        assert!(include_str!("scripts_alerts.rs").contains("Then::EnterWorkgroup { workgroup, pane, how, approved } =>"));
     }
 
     /// The peer swap: only `Layout::replace`, never a close or a reopen of layout space, never the

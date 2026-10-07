@@ -250,7 +250,7 @@ impl App {
             Some(f) => (cfg.per_file_command.clone(), Some(f)),
             None => (cfg.command.clone(), None),
         };
-        if !inst.approved.contains(&template) {
+        if !inst.approved.allows(&template) {
             return Err("That command was not in the list the workgroup was entered with.".into());
         }
         let base = inst.git_base.clone();
@@ -712,7 +712,7 @@ mod tests {
         let vet = line.find("gs::vet_repo(").expect("vetted");
         let guarded = line.find("gs::launch(").expect("launched through the one builder");
         assert!(vet < guarded, "the vet comes first");
-        assert!(line.contains("inst.approved.contains(&template)"), "the command comes from the approved list");
+        assert!(line.contains("inst.approved.allows(&template)"), "the command comes from the approved list");
         let any = &live[live.find("pub(super) fn run_anyway_refusal").unwrap()..live.find("pub(super) fn diff_run_anyway").unwrap()];
         assert!(any.contains("gs::vet_repo("));
         let run = &live[live.find("pub(super) fn diff_run_anyway").unwrap()..live.find("pub(super) fn diff_cancel_reload").unwrap()];
