@@ -102,7 +102,7 @@ pub fn is_navigation(key: &ChordKey) -> bool {
 /// While a text field has the page's focus, a binding that sends text (and Ignore and Bypass,
 /// `PS:5003-5010`) or a navigation key is not remapped (`IA:527-537`): the page gets the key.
 pub fn editing_blocks(b: &Binding, key: &ChordKey, editing: bool) -> bool {
-    editing && (crate::composer::sends_text(b.action) || b.action == 13 || b.action == 74 || is_navigation(key))
+    editing && (crate::composer::binding_sends_text(b) || b.action == 13 || b.action == 74 || is_navigation(key))
 }
 
 /// `sendText`'s escaping (`WVA:42-46`): backslash, quote, newline, return; nothing else.
@@ -146,10 +146,32 @@ pub fn chord_of(vk: u32, mods: u8) -> Option<Chord> {
     Some(Chord { key, cmd: mods & WIN != 0, alt: mods & ALT != 0, shift: mods & SHIFT != 0, ctrl: mods & CTRL != 0 })
 }
 
+/// The text a key types in the person's keyboard layout under its modifiers (`winkeys::text_for`):
+/// Shift+1 is "!" on a US layout and Ctrl+C is U+0003, as an NSEvent's `characters`. None off
+/// Windows, for a key that types nothing, and for a dead key.
+pub fn layout_text(vk: u32, mods: u8) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let vk = u16::try_from(vk).ok()?;
+        crate::winkeys::text_for(vk, 0, crate::mouse::Mods { shift: mods & SHIFT != 0, alt: mods & ALT != 0, ctrl: mods & CTRL != 0, cmd: false })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (vk, mods);
+        None
+    }
+}
+
 /// The character a key types, which Copy or Send and Paste or Send send when they do not copy or
-/// paste (`BAP:171`, the event's characters).
-pub fn own_char(c: &Chord) -> Option<String> {
+/// paste (`BAP:171`, the event's characters): the layout's text when the key types one
+/// (`layout_text`), else the chord's own character, a Ctrl letter (and `[`, `\`, `]`) as its
+/// control character (deferred minor 207).
+pub fn own_char(c: &Chord, layout: Option<&str>) -> Option<String> {
+    if let Some(t) = layout.filter(|t| !t.is_empty()) {
+        return Some(t.to_string());
+    }
     match c.key {
+        ChordKey::Char(ch) if c.ctrl && (ch.is_ascii_alphabetic() || matches!(ch, '[' | '\\' | ']')) => Some(char::from(ch.to_ascii_uppercase() as u8 & 0x1f).to_string()),
         ChordKey::Char(ch) => Some(if c.shift { ch.to_ascii_uppercase() } else { ch }.to_string()),
         ChordKey::Space => Some(" ".into()),
         ChordKey::Enter => Some("\r".into()),
@@ -609,6 +631,13 @@ mod tests {
         assert!(!editing_blocks(&b(0, ""), &ctrl_j, true), "next tab still runs");
         assert!(editing_blocks(&b(0, ""), &ChordKey::Left, true), "a navigation key goes to the page");
         assert!(editing_blocks(&b(13, ""), &ctrl_j, true) && editing_blocks(&b(74, ""), &ctrl_j, true));
+        // Deferred minor 206: a Sequence sends text when any of its steps does (iTerm2's sendsText
+        // recurses into KEY_ACTION_SEQUENCE).
+        let seq = |steps: &[crate::keyaction::Binding]| b(66, &crate::keyaction::sequence_text(steps));
+        assert!(editing_blocks(&seq(&[b(0, ""), b(12, "x")]), &ctrl_j, true), "a sequence with send text goes to the page");
+        assert!(!editing_blocks(&seq(&[b(0, ""), b(1, "")]), &ctrl_j, true), "a sequence of tab moves still runs");
+        assert!(!editing_blocks(&seq(&[b(12, "x")]), &ctrl_j, false));
+        assert!(!editing_blocks(&b(66, "not json"), &ctrl_j, true));
         for a in [12, 0, 13, 74] {
             assert!(!editing_blocks(&b(a, ""), &ChordKey::Left, false) && !editing_blocks(&b(a, ""), &ctrl_j, false));
         }
@@ -733,12 +762,21 @@ mod tests {
         assert_eq!(plan(&KeyAct::ToggleSetting("j".into()), "", &none), vec![Do::Toggle("j".into())]);
         assert_eq!(plan(&KeyAct::Snippet("k".into()), "", &none), vec![Do::Snippet("k".into())]);
         assert_eq!(plan(&KeyAct::PasteSpecial { config: "c".into(), from_selection: true }, "", &none), vec![Do::PasteSpecial { config: "c".into(), from_selection: true }]);
-        // The character a key sends: the chord's own letter, upper case with Shift.
-        assert_eq!(own_char(&Chord { key: ChordKey::Char('c'), cmd: false, alt: false, shift: false, ctrl: true }), Some("c".into()));
-        assert_eq!(own_char(&Chord { key: ChordKey::Char('c'), cmd: false, alt: false, shift: true, ctrl: false }), Some("C".into()));
-        assert_eq!(own_char(&Chord { key: ChordKey::Left, cmd: false, alt: false, shift: false, ctrl: false }), None);
-        assert_eq!(own_char(&Chord { key: ChordKey::Space, cmd: false, alt: false, shift: false, ctrl: false }), Some(" ".into()));
-        assert_eq!(own_char(&Chord { key: ChordKey::Enter, cmd: false, alt: false, shift: false, ctrl: false }), Some("\r".into()));
+        // The character a key sends is the event's characters (`BAP:171`): with no layout text, the
+        // chord's own letter, upper case with Shift, and a Ctrl letter its control character
+        // (deferred minor 207: Copy or Send on Ctrl+C sends U+0003, as iTerm2).
+        let ch = |key, shift, ctrl| Chord { key, cmd: false, alt: false, shift, ctrl };
+        assert_eq!(own_char(&ch(ChordKey::Char('c'), false, true), None), Some("\u{3}".into()));
+        assert_eq!(own_char(&ch(ChordKey::Char('v'), false, true), None), Some("\u{16}".into()));
+        assert_eq!(own_char(&ch(ChordKey::Char('['), false, true), None), Some("\u{1b}".into()));
+        assert_eq!(own_char(&ch(ChordKey::Char('c'), true, false), None), Some("C".into()));
+        assert_eq!(own_char(&ch(ChordKey::Left, false, false), None), None);
+        assert_eq!(own_char(&ch(ChordKey::Space, false, false), None), Some(" ".into()));
+        assert_eq!(own_char(&ch(ChordKey::Enter, false, false), None), Some("\r".into()));
+        // The layout's text wins when the key types one: Shift+1 is "!" on a US layout, not "1".
+        assert_eq!(own_char(&ch(ChordKey::Char('1'), true, false), Some("!")), Some("!".into()));
+        assert_eq!(own_char(&ch(ChordKey::Char('c'), false, true), Some("\u{3}")), Some("\u{3}".into()));
+        assert_eq!(own_char(&ch(ChordKey::Char('1'), true, false), Some("")), Some("1".into()), "an empty layout text is no text");
     }
 
     #[test]

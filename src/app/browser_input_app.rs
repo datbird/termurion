@@ -125,7 +125,9 @@ impl App {
             Owner::Page | Owner::Address => {}
             Owner::Binding | Owner::Number | Owner::Leader => {
                 let route = state.route(&chord);
-                self.in_pane_window(pane, |a| a.browser_run_route(pane, route, &chord, event_loop));
+                // What the key types in the person's layout (Copy or Send's character, `BAP:171`).
+                let typed = browser_keys::layout_text(vk, mods);
+                self.in_pane_window(pane, |a| a.browser_run_route(pane, route, &chord, typed.as_deref(), event_loop));
             }
         }
     }
@@ -142,7 +144,7 @@ impl App {
     }
 
     /// `route_press` for a browser pane's key (the Terminal route is the page's, never here).
-    fn browser_run_route(&mut self, pane: PaneId, route: Route, chord: &crate::menus::Chord, event_loop: &ActiveEventLoop) {
+    fn browser_run_route(&mut self, pane: PaneId, route: Route, chord: &crate::menus::Chord, typed: Option<&str>, event_loop: &ActiveEventLoop) {
         let was_leader = std::mem::replace(&mut self.leader_on, false);
         match route {
             Route::LeaderOn => {
@@ -161,7 +163,7 @@ impl App {
                     self.select_tab(i);
                 }
             }
-            Route::Binding(b) => self.browser_binding(pane, &b, chord, event_loop),
+            Route::Binding(b) => self.browser_binding(pane, &b, chord, typed, event_loop),
             Route::Terminal => {}
         }
         if was_leader {
@@ -170,7 +172,7 @@ impl App {
     }
 
     /// One binding in a browser pane (`iTermBrowserKeyBindingActionPerformer.perform`).
-    fn browser_binding(&mut self, pane: PaneId, b: &crate::keyaction::Binding, chord: &crate::menus::Chord, event_loop: &ActiveEventLoop) {
+    fn browser_binding(&mut self, pane: PaneId, b: &crate::keyaction::Binding, chord: &crate::menus::Chord, typed: Option<&str>, event_loop: &ActiveEventLoop) {
         let act = browser_keys::classify(b);
         // Set Profile only to a browser profile; anything else does nothing (`BAP:42-48`).
         if let KeyAct::SetProfile(guid) = &act {
@@ -179,7 +181,7 @@ impl App {
             }
             return;
         }
-        let own = browser_keys::own_char(chord).unwrap_or_default();
+        let own = browser_keys::own_char(chord, typed).unwrap_or_default();
         if act == KeyAct::CopyOrSend {
             // The page answers whether anything is selected (iTerm2's `actionPerformingHasSelection`).
             let script = crate::browser_js::resource("has-selection.js").unwrap_or_default();

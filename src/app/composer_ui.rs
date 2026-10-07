@@ -1327,7 +1327,7 @@ impl App {
     }
 
     /// The profile maps this key to an action the composer lets run (`PS:24389-24407`): not
-    /// one that sends text (`composer::sends_text`), not on a navigation key, not a remapping
+    /// one that sends text (`composer::binding_sends_text`, a Sequence by its steps), not on a navigation key, not a remapping
     /// marker. Only the profile's own map counts (iTerm2 reads `KEY_KEYBOARD_MAP` alone).
     fn composer_profile_binding(&self, pane: PaneId, ev: &KeyEvent) -> bool {
         if is_navigation(&ev.logical_key) {
@@ -1337,7 +1337,7 @@ impl App {
         let Some(map) = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).and_then(|p| p.get("Keyboard Map")).and_then(|v| v.as_table().cloned()) else { return false };
         let agnostic = self.globals.bool("LanguageAgnosticKeyBindings");
         let Some(b) = stroke.find(&map, agnostic).and_then(|k| map.get(k)).and_then(crate::keyaction::Binding::from_value) else { return false };
-        !matches!(b.action, 22 | 24) && !composer::sends_text(b.action)
+        !matches!(b.action, 22 | 24) && !composer::binding_sends_text(&b)
     }
 
     /// One composer action at the focused dropdown: Shift moves extend through `TextEdit`,
