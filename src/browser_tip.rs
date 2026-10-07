@@ -99,6 +99,24 @@ pub fn tip_text(url: &str, cells: usize) -> String {
     crate::browser::fit_address(&crate::browser::display_url(url), cells)
 }
 
+/// The address cut to what FITS `room` (points) by its measured width: `fit_address` keeps the end of
+/// the host, and this narrows its character count until `measure` says the text is no wider than the
+/// room (review I1: a page picks wide glyphs, so a per-character guess let the window clip the right
+/// side, where the host end is). Always returns something, even with almost no room.
+pub fn fit_measured(shown: &str, room: f32, measure: &dyn Fn(&str) -> f32) -> String {
+    let mut cells = shown.chars().count();
+    loop {
+        let text = crate::browser::fit_address(shown, cells);
+        let width = measure(&text);
+        if width <= room || cells <= 1 {
+            return text;
+        }
+        // Scale by the overshoot, and always step down at least one.
+        let scaled = (cells as f32 * (room / width)).floor() as usize;
+        cells = scaled.min(cells - 1).max(1);
+    }
+}
+
 /// The web view's top and height once a bar covers the top of the pane down to `bar_bottom`: it
 /// gives way only for what the bar covers (P21).
 pub fn below_bar(rest_y: f32, rest_h: f32, bar_bottom: f32) -> (f32, f32) {
@@ -145,6 +163,8 @@ enum Spot {
 pub struct TipWindow {
     host: EguiHost,
     text: String,
+    /// Whether `text` is a link's address, fitted to the measured width at every paint.
+    link: bool,
     point: f32,
     spot: Spot,
     /// The text's measured size in points, and whether the window must be placed again.
@@ -168,7 +188,7 @@ impl TipWindow {
             use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT};
             unsafe { SetWindowLongPtrW(h as _, GWL_EXSTYLE, GetWindowLongPtrW(h as _, GWL_EXSTYLE) | (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW) as isize) };
         }
-        let w = TipWindow { host, text: text.to_string(), point: TIP_POINT, spot: Spot::Link { pane: at, anchor: at }, fit: None, dirty: true, shown: false, owner: None, until: None };
+        let w = TipWindow { host, text: text.to_string(), link: true, point: TIP_POINT, spot: Spot::Link { pane: at, anchor: at }, fit: None, dirty: true, shown: false, owner: None, until: None };
         w.host.request_redraw();
         Ok(w)
     }
@@ -183,6 +203,7 @@ impl TipWindow {
             Spot::Link { pane, .. } => pane,
             Spot::Point(_) => at,
         };
+        self.link = true;
         self.change(text, TIP_POINT, Spot::Link { pane, anchor: at }, None);
     }
 
@@ -199,6 +220,7 @@ impl TipWindow {
 
     /// A toast: `text` centered above the screen point `at` for `secs`.
     pub fn toast(&mut self, text: &str, at: (f64, f64), secs: f64) {
+        self.link = false;
         self.change(text, TOAST_POINT, Spot::Point(at), Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.clamp(0.0, 30.0))));
     }
 
@@ -232,6 +254,11 @@ impl TipWindow {
 
     fn redraw(&mut self) {
         let (text, point) = (self.text.clone(), self.point);
+        // The room the text has inside the pane, in points (the window is never wider).
+        let room = match self.spot {
+            Spot::Link { pane, .. } if self.link => Some((pane.2 / self.host.window.scale_factor().max(0.1) - 2.0 * INSET - 2.0 * PADDING.0).max(1.0) as f32),
+            _ => None,
+        };
         let mut size = (0.0f32, 0.0f32);
         self.host.paint(|ui| {
             let color = ui.visuals().text_color();
@@ -240,7 +267,12 @@ impl TipWindow {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, 0.0, fill);
             ui.painter().rect_stroke(rect, 0.0, line, egui::StrokeKind::Inside);
-            let galley = ui.painter().layout_no_wrap(text.clone(), egui::FontId::proportional(point), color);
+            let font = egui::FontId::proportional(point);
+            let shown = match room {
+                Some(room) => fit_measured(&text, room, &|t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), color).size().x),
+                None => text.clone(),
+            };
+            let galley = ui.painter().layout_no_wrap(shown, font, color);
             size = (galley.size().x, galley.size().y);
             ui.painter().galley(egui::pos2(PADDING.0 as f32, PADDING.1 as f32), galley, color);
         });
@@ -380,5 +412,30 @@ mod tests {
         assert_eq!(announce_plan(true, true), Announce::Refuse);
         assert_eq!(announce_plan(false, true), Announce::EndStale, "an entry whose bar left by another road ends first");
         assert_eq!(announce_plan(false, false), Announce::Queue);
+    }
+
+    /// Review I1: the tip fits its text to the MEASURED width, so the end of the host is never clipped
+    /// (a page chooses wide glyphs; a per-character guess let the window clip the right side).
+    #[test]
+    fn the_host_end_survives_wide_letters() {
+        // 'W' and fullwidth W are wide, everything else is narrow, the ellipsis is narrow.
+        let measure = |t: &str| t.chars().map(|c| if c == 'W' || c == '\u{ff37}' { 22.0 } else { 7.0 }).sum::<f32>();
+        let urls = [
+            "https://accounts.google.com.WWWWWWWWWWWWWWWWWWWWWWWWW.evil.test/",
+            "https://accounts.google.com@WWWWWWWWWWWWWWWWWWWWWWWWW.evil.test/path?q=1",
+            "https://\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}\u{ff37}@evil.test/p",
+        ];
+        for url in urls {
+            let shown = crate::browser::display_url(url);
+            for room in [90.0f32, 140.0, 220.0, 400.0] {
+                let t = fit_measured(&shown, room, &measure);
+                assert!(measure(&t) <= room, "{room}: {t} is {}", measure(&t));
+                assert!(t.contains("evil.test") || t.ends_with("evil.test") || (room < 140.0 && "evil.test".ends_with(t.trim_start_matches('\u{2026}').trim_end_matches('/'))), "{room}: the registrable host is shown: {t}");
+            }
+            // Room for all of it: nothing is cut.
+            assert_eq!(fit_measured(&shown, 100_000.0, &measure), shown);
+        }
+        // Never an empty tip, and never a loop without end, however little room there is.
+        assert!(!fit_measured("https://evil.test/", 1.0, &measure).is_empty());
     }
 }

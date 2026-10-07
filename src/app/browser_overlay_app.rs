@@ -83,9 +83,8 @@ impl App {
             return;
         }
         let pane_rect = (vx, vy, f64::from(view.w), f64::from(view.h));
-        // About what fits: a proportional character is about 7 points wide.
-        let cells = (((pane_rect.2 / scale) - 2.0 * (browser_tip::INSET + browser_tip::PADDING.0)) / 7.0).floor().max(8.0) as usize;
-        let text = browser_tip::tip_text(&url, cells);
+        // The window fits this to its measured width when it paints (the end of the host stays).
+        let text = crate::browser::display_url(&url);
         if text.is_empty() {
             self.browser_tip_close(pane);
             return;
@@ -261,7 +260,7 @@ mod tests {
     fn overlays_are_tandems_own() {
         let p = prod();
         let hover = &p[p.find("fn browser_hover_now").unwrap()..p.find("fn browser_tip_open").unwrap()];
-        assert!(hover.contains("pointer_now()") && hover.contains("pointer_in(") && hover.contains("tip_text(&url"));
+        assert!(hover.contains("pointer_now()") && hover.contains("pointer_in(") && hover.contains("display_url(&url)") && include_str!("../browser_tip.rs").contains("fit_measured(&text, room"));
         assert!(hover.contains("from_js("), "page pixels become window pixels");
         assert!(!p.contains(".focus()") && !p.contains("frame.overlay") && !p.contains("execute_script("), "no focus, no scene overlay, no page-world script");
         let clear = &p[p.find("pub(super) fn browser_tip_clear(").unwrap()..p.find("pub(super) fn browser_tip_clear_all").unwrap()];
