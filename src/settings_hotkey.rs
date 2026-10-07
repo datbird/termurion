@@ -211,7 +211,7 @@ fn assign(model: &mut Model, slot: HotkeySlot, s: Option<Shortcut>) {
                 *a = s;
             }
         }
-        HotkeySlot::App | HotkeySlot::OpenQuickly | HotkeySlot::Session => {}
+        HotkeySlot::App | HotkeySlot::OpenQuickly | HotkeySlot::Session | HotkeySlot::Workgroup => {}
     }
 }
 

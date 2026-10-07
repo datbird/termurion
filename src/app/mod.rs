@@ -4423,6 +4423,8 @@ impl App {
     /// settle, or the next pass), so a script's request that changed them is answered first.
     pub(super) fn globals_changed(&mut self, api_now: bool) {
         self.save_globals();
+        // The workgroups editor wrote "Workgroups" and its marks: the running model follows.
+        self.workgroup_model = crate::workgroup::Model::load(&self.globals).0;
         // Job updates wait on a job's exit, or only poll (Advanced > Experimental Features).
         self.jobs.set_fast_updates(self.globals.bool("FastForegroundJobUpdates"));
         self.jobs.set_ancestry_diagnostics(self.globals.bool("LogForegroundJobAncestryDiagnostics"));

@@ -243,6 +243,8 @@ pub enum HotkeySlot {
     OpenQuickly,
     /// The Session Hotkey row of Edit Session.
     Session,
+    /// A shortcut of the Workgroups editor (peer and toolbar shortcuts).
+    Workgroup,
 }
 
 /// The binding editors' state, kept by the settings window.

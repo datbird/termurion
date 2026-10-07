@@ -243,7 +243,7 @@ pub fn display_name(w: &Workgroup) -> &str {
     }
 }
 
-fn new_id() -> String {
+pub fn new_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
 }
 
