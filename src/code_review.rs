@@ -78,10 +78,12 @@ pub fn saved_prompt_names(prompts: &[SavedPrompt]) -> String {
 }
 
 /// The stored list and whether it was seeded. The whole `[SavedPrompt]` decodes or none does; anything
-/// else seeds one prompt named "Default" with `legacy` (the "AI Prompt for Code Review" global).
+/// else seeds one prompt named "Default" with `legacy` (the "AI Prompt for Code Review" global). A decoded
+/// list is `bounded` here, the one read every reader takes (P10): whatever wrote the value (remote prefs,
+/// the Stored tab), the orchestration prompt, the pulldown and the manager see it bounded.
 pub fn load_prompts(json: Option<&str>, legacy: &str) -> (Vec<SavedPrompt>, bool) {
     if let Some(list) = json.and_then(|j| serde_json::from_str::<Vec<SavedPrompt>>(j).ok()) {
-        return (list, false);
+        return (bounded(list), false);
     }
     (vec![SavedPrompt { uuid: fresh_uuid(), name: DEFAULT_NAME.to_string(), text: legacy.to_string() }], true)
 }
@@ -109,15 +111,25 @@ pub fn encode_prompts(prompts: &[SavedPrompt]) -> String {
     serde_json::to_string(prompts).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// P10: the list as the write point keeps it: at most 64 prompts, a name through `display_text` (128
-/// characters), a text of at most 64 KiB with no NUL, a uuid of the right shape and unique.
+/// P10: the list as the write point and every read keep it: at most 64 prompts, a name through
+/// `display_text` (128 characters), a text of at most 64 KiB with no NUL, a uuid of the right shape and
+/// unique. A uuid that is not is replaced by one made from its place in the list, so every read of the same
+/// value gives the same uuids (a fresh one only if that one is taken).
 pub fn bounded(prompts: Vec<SavedPrompt>) -> Vec<SavedPrompt> {
     let mut seen: Vec<String> = Vec::new();
-    prompts
-        .into_iter()
-        .take(MAX_PROMPTS)
-        .map(|p| {
-            let uuid = if uuid_ok(&p.uuid) && !seen.contains(&p.uuid) { p.uuid } else { fresh_uuid() };
+    let kept: Vec<SavedPrompt> = prompts.into_iter().take(MAX_PROMPTS).collect();
+    let valid: Vec<String> = kept.iter().filter(|p| uuid_ok(&p.uuid)).map(|p| p.uuid.clone()).collect();
+    kept.into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let placed = format!("00000000-0000-4000-8000-{i:012X}");
+            let uuid = if uuid_ok(&p.uuid) && !seen.contains(&p.uuid) {
+                p.uuid
+            } else if !seen.contains(&placed) && !valid.contains(&placed) {
+                placed
+            } else {
+                fresh_uuid()
+            };
             seen.push(uuid.clone());
             let name = crate::inert_files::display_text(&p.name, MAX_NAME, false);
             SavedPrompt { uuid, name, text: cut_bytes(&p.text.replace('\0', ""), MAX_TEXT) }
@@ -619,6 +631,33 @@ mod tests {
         assert!(tick.find("cr::send_refusal(&self.review_send_target(").expect("re-checked before the Return") < tick.find("self.user_write(").unwrap());
     }
 
+    /// 13y1 Task 7 item 5 (P10): the bounds apply at every read, so a value written by any path (remote
+    /// prefs, the Stored tab) reaches the orchestration prompt, the pulldown and the manager bounded; a
+    /// read is stable (a replaced uuid is the same each time).
+    #[test]
+    fn saved_prompts_are_bounded_at_every_read() {
+        let mut g = crate::globals::Globals::empty(&std::env::temp_dir().join("tandem-cr-bounds-never-saved.toml"));
+        let many: Vec<SavedPrompt> = (0..200)
+            .map(|i| SavedPrompt {
+                uuid: if i == 1 { "bad".into() } else { format!("{i:08X}-0000-0000-0000-000000000000") },
+                name: format!("n{i}\u{202e}\x1b[31m{}", "x".repeat(300)),
+                text: "t".repeat(if i == 0 { 1_000_000 } else { 1 }),
+            })
+            .collect();
+        g.set(KEY, toml::Value::String(encode_prompts(&many)));
+        let read = prompts_of(&g);
+        assert_eq!(read.len(), MAX_PROMPTS);
+        for p in &read {
+            assert!(p.text.len() <= MAX_TEXT && p.name.chars().count() <= MAX_NAME && uuid_ok(&p.uuid), "{:?}", p.name);
+            assert!(!p.name.contains('\u{202e}') && !p.name.contains('\x1b'), "{:?}", p.name);
+        }
+        assert_eq!(prompts_of(&g), read, "a read is stable");
+        let vars = crate::orch::prompt_vars(&read, None);
+        assert!(vars[0].1.len() <= MAX_TEXT && !vars[1].1.contains('\u{202e}'));
+        let (decoded, seeded) = load_prompts(Some(&encode_prompts(&many)), "");
+        assert_eq!((decoded.len(), seeded), (MAX_PROMPTS, false), "the decode is the bound");
+    }
+
     /// B6: what is pasted passes the paste path's own transforms: controls and ESC removed, newlines
     /// as CR, and the one bracket the pane asked for.
     #[test]
@@ -641,8 +680,9 @@ mod tests {
     /// `CRS:64-92`, `CRS:131-137`, `ChatAgent.swift:989-999`.
     #[test]
     fn saved_prompts_follow_iterm2() {
-        let (list, seeded) = load_prompts(Some(r#"[{"uuid":"U","name":"N","text":"T"}]"#), "legacy");
-        assert_eq!((list, seeded), (vec![SavedPrompt { uuid: "U".into(), name: "N".into(), text: "T".into() }], false));
+        const U: &str = "123E4567-E89B-12D3-A456-426614174000";
+        let (list, seeded) = load_prompts(Some(&format!(r#"[{{"uuid":"{U}","name":"N","text":"T"}}]"#)), "legacy");
+        assert_eq!((list, seeded), (vec![SavedPrompt { uuid: U.into(), name: "N".into(), text: "T".into() }], false));
         // A value using `body` fails the whole decode, as iTerm2's JSONDecoder does.
         let (list, seeded) = load_prompts(Some(r#"[{"uuid":"U","name":"N","text":"T"},{"uuid":"V","name":"M","body":"B"}]"#), "legacy");
         assert!(seeded);
@@ -666,7 +706,9 @@ mod tests {
         assert_eq!(saved_prompt_names(&[]), "(none saved)");
         assert_eq!(saved_prompt_names(&two), "  - A\n  - B");
         let json = encode_prompts(&two);
-        assert_eq!(load_prompts(Some(&json), "").0, two, "what is written is what is read");
+        let kept = vec![SavedPrompt { uuid: U.into(), name: "A".into(), text: "ta".into() }];
+        assert_eq!(load_prompts(Some(&encode_prompts(&kept)), "").0, kept, "what is written is what is read");
+        assert_eq!(load_prompts(Some(&json), "").0.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), ["ta", "tb"], "a uuid of the wrong shape is replaced at the read");
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value[0], serde_json::json!({"uuid": "A", "name": "A", "text": "ta"}));
     }
