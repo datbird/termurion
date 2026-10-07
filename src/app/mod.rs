@@ -1663,6 +1663,9 @@ pub struct App {
     /// The window whose keyboard focus sits in one of its own web views (13x Task 1a): the parent saw
     /// `Focused(false)` but is still the foreground window. App-wide, never per window.
     web_focus_held: Option<WindowId>,
+    /// The last web view that reported gaining the keyboard (any kind), until it reports losing it.
+    /// App-wide, never per window.
+    web_focus_view: Option<crate::webhost::ViewId>,
     /// The tool views of every window, by view id, with whether the view failed (13x Task 2).
     /// App-wide: an event names a view, not a window.
     tool_view_ids: HashMap<crate::webhost::ViewId, bool>,
@@ -2632,6 +2635,7 @@ pub fn run() {
         web_envs,
         web_events,
         web_focus_held: None,
+        web_focus_view: None,
         tool_view_ids: HashMap::new(),
         tool_restarts: HashMap::new(),
         browser_views: HashMap::new(),

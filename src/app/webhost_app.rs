@@ -315,6 +315,21 @@ impl App {
         }
     }
 
+    /// A web view (`view`, a child of `parent`) was closed, remade or lost (final review I7, one helper
+    /// for every drop site): when its window's page held the keyboard and no other view of that
+    /// window is known to have it, the hold ends, the 13u hook is told (Tandem's Win chords and
+    /// remaps act again in that window, never on the shell) and the window takes the keyboard back.
+    pub(super) fn web_view_dropped(&mut self, view: ViewId, parent: isize) {
+        let held = self.web_focus_held.and_then(|w| self.window_hwnd(w));
+        if !webhost::drop_returns_focus(held, parent, self.web_focus_view, view) {
+            return;
+        }
+        self.web_focus_held = None;
+        self.web_focus_view = None;
+        self.sync_web_keyboard();
+        webhost_win::focus_window(parent);
+    }
+
     /// Tells the 13u keyboard hook which window's web view holds the keyboard, so it passes keys on
     /// instead of running Tandem's Win-chord commands on the terminal (security: Win+V must paste
     /// into the page, not the shell).
@@ -338,6 +353,12 @@ impl App {
 
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.
     fn web_route(&mut self, event: &Event, event_loop: &ActiveEventLoop) {
+        // Which view has the keyboard, whatever its kind (for `web_view_dropped`).
+        match event {
+            Event::Focus(v, true) => self.web_focus_view = Some(*v),
+            Event::Focus(v, false) if self.web_focus_view == Some(*v) => self.web_focus_view = None,
+            _ => {}
+        }
         let lifecycle = matches!(event, Event::Created(_) | Event::Failed(..) | Event::ProcessFailed { .. } | Event::Focus(..));
         if self.tool_view_event(event) && !lifecycle {
             return;
@@ -467,6 +488,31 @@ mod tests {
         assert!(include_str!("../svg_raster_win.rs").contains("Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log"));
     }
 
+    /// Final review I7 (class): every place a browser or tool view is dropped or remade runs the one
+    /// helper that ends the window's "page has the keyboard" state when that view held it.
+    #[test]
+    fn every_view_drop_site_returns_the_keyboard() {
+        let body_of = |src: &'static str, name: &str| -> &'static str {
+            let at = src.find(name).unwrap_or_else(|| panic!("{name}"));
+            let rest = &src[at..];
+            &rest[..rest.find("\n    }\n").unwrap()]
+        };
+        let b = include_str!("browser_app.rs");
+        for f in ["fn browser_view_drop(", "pub(super) fn close_browser_view(", "fn browser_view_failed("] {
+            assert!(body_of(b, f).contains("self.web_view_dropped("), "{f}");
+        }
+        assert!(body_of(include_str!("adblock_app.rs"), "fn browser_views_reset(").contains("self.web_view_dropped("));
+        assert!(body_of(include_str!("tool_web_ui.rs"), "fn close_tool_view(").contains("self.web_view_dropped("));
+        let me = include_str!("webhost_app.rs");
+        let helper = body_of(me, "pub(super) fn web_view_dropped(");
+        assert!(helper.contains("webhost::drop_returns_focus(") && helper.contains("self.sync_web_keyboard();") && helper.contains("webhost_win::focus_window(parent);"));
+        // The view that has the keyboard is known (any kind), and a browser view's loss is rechecked
+        // like any other's (final review Minor 6).
+        let route = body_of(me, "fn web_route(");
+        assert!(route.contains("self.web_focus_view = Some(*v)"), "{route}");
+        assert!(b.contains("Event::Focus(_, false) => self.web_focus_recheck(),"));
+    }
+
     #[test]
     fn the_runtime_cache_is_thirty_seconds() {
         assert_eq!(RUNTIME_TTL, Duration::from_secs(30));
@@ -476,7 +522,7 @@ mod tests {
     #[test]
     fn web_state_is_not_swapped_per_window() {
         let swap = include_str!("windows_ui.rs");
-        for name in ["web_envs", "web_events", "web_focus_held"] {
+        for name in ["web_envs", "web_events", "web_focus_held", "web_focus_view"] {
             assert!(!swap.contains(name), "{name} must not be per window");
         }
     }

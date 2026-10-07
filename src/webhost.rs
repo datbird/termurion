@@ -332,6 +332,14 @@ pub fn pane_step(kind: i32, budget: &mut Restarts, now: Instant) -> PaneStep {
     }
 }
 
+/// Whether dropping `view` (a child of `parent`) hands the keyboard back to `parent` (final review
+/// I7): the window whose handle is `held` holds the keyboard in a page (the 13u hook passes its Win
+/// chords) and no other view of it is known to have the keyboard (`focus_view`, the last view that
+/// reported gaining it).
+pub fn drop_returns_focus(held: Option<isize>, parent: isize, focus_view: Option<ViewId>, view: ViewId) -> bool {
+    parent != 0 && held == Some(parent) && focus_view.is_none_or(|v| v == view)
+}
+
 /// What becomes of a view whose parent window closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParentFate {
@@ -928,6 +936,19 @@ impl LocalDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review I7: a view that goes away while its window's page holds the keyboard hands the
+    /// keyboard back to that window, unless another view of it is known to hold it.
+    #[test]
+    fn a_dropped_view_returns_the_keyboard() {
+        const W: isize = 0x10;
+        assert!(drop_returns_focus(Some(W), W, Some(7), 7), "the view that had it");
+        assert!(drop_returns_focus(Some(W), W, None, 7), "no view is known to have it");
+        assert!(!drop_returns_focus(Some(W), W, Some(8), 7), "another view of the window has it");
+        assert!(!drop_returns_focus(Some(0x20), W, Some(7), 7), "the hold is another window's");
+        assert!(!drop_returns_focus(None, W, Some(7), 7), "no hold");
+        assert!(!drop_returns_focus(Some(W), 0, None, 7), "a view with no parent");
+    }
 
     /// Final review I5: a process failure acts on its kind. The browser process takes the
     /// environment with it; a page's renderer is remade or reloaded; a frame's renderer and the GPU

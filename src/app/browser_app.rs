@@ -319,17 +319,25 @@ impl App {
     /// Pane `pane`'s view closes and is made again from the pane's URL when the pane is shown.
     fn browser_view_drop(&mut self, pane: PaneId) {
         let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
-        if let Some(bv) = self.browser_views.get_mut(&pane) {
-            bv.view = None;
-            bv.replay.shown = false;
-            bv.pending_url = url;
-            bv.parent = 0;
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+        bv.replay.shown = false;
+        bv.pending_url = url;
+        bv.parent = 0;
+        if had {
+            self.web_view_dropped(id, parent);
         }
     }
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
-        self.browser_views.remove(&pane);
+        if let Some(bv) = self.browser_views.remove(&pane) {
+            let (had, id, parent) = (bv.view.is_some(), bv.id, bv.parent);
+            drop(bv);
+            if had {
+                self.web_view_dropped(id, parent);
+            }
+        }
         self.focus_seen.forget(pane);
     }
 
@@ -438,6 +446,9 @@ impl App {
                     io.can_forward = *forward;
                 }
             }
+            // The page let go of the keyboard: another window may now be in front of a window that
+            // held it (final review Minor 6: as for every other kind of view).
+            Event::Focus(_, false) => self.web_focus_recheck(),
             // The page has the keyboard: its pane is the active one (iTerm2's session change).
             Event::Focus(_, true) => {
                 // The keyboard is in the page now: the address field lets go.
@@ -513,19 +524,20 @@ impl App {
                 }
                 return;
             }
-            webhost::PaneStep::Remake => {
-                bv.view = None;
-                bv.pending_url = url;
-            }
+            webhost::PaneStep::Remake => {}
             webhost::PaneStep::GiveUp => {
-                bv.view = None;
-                bv.pending_url = url;
                 bv.stopped = true;
                 self.banners.set("window", "A browser pane's web view stopped working. Press Reload to try again.");
             }
         }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+        bv.pending_url = url;
         bv.parent = 0;
         bv.replay.shown = false;
+        if had {
+            self.web_view_dropped(id, parent);
+        }
         self.redraw();
     }
 

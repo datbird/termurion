@@ -220,11 +220,16 @@ impl App {
 
     /// Closes this window's view of the tool `name`.
     fn close_tool_view(&mut self, name: &str) {
-        if let Some(l) = self.tool_loaded.remove(name) {
+        let loaded = self.tool_loaded.remove(name);
+        if let Some(l) = &loaded {
             self.tool_view_ids.remove(&l.id);
         }
         if let Some(v) = self.tool_views.remove(name) {
             v.close();
+        }
+        // Final review I7: a tool page that had the keyboard hands it back to its window.
+        if let Some(l) = loaded {
+            self.web_view_dropped(l.id, l.parent);
         }
     }
 
