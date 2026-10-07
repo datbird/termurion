@@ -110,6 +110,18 @@ pub const ALLOWED: &[&str] = &[
     "Input.dispatchMouseEvent",
 ];
 
+/// A script registration that answers when it is too late (review I3, fail closed): after the setup
+/// ended, or in a view whose world is Unavailable, the identifier it answers must be removed at once;
+/// otherwise a Client script would stay registered where isolation was never checked. During a
+/// running setup the identifier is kept for the setup to manage.
+pub fn late_removal(setup_over: bool, state: &ClientWorld, method: &str, result: &Result<Value, String>) -> Option<String> {
+    if method != "Page.addScriptToEvaluateOnNewDocument" || !(setup_over || matches!(state, ClientWorld::Unavailable(_))) {
+        return None;
+    }
+    let id = result.as_ref().ok()?.get("identifier")?.as_str()?;
+    (id.len() <= 128).then(|| id.to_string())
+}
+
 /// Clears the back-forward list but the current entry.
 pub const RESET_HISTORY: &str = "Page.resetNavigationHistory";
 
@@ -850,5 +862,22 @@ mod tests {
         h.arm();
         assert!(h.loaded() && !h.loaded());
         assert!(method_allowed(RESET_HISTORY) && RESET_HISTORY == "Page.resetNavigationHistory");
+    }
+
+    /// Review I3 (fail closed): a script registration that answers after the setup ended, or in a view
+    /// whose world is Unavailable, is taken off again at once; one that answers during a running
+    /// setup is kept for the setup to manage.
+    #[test]
+    fn late_scripts_are_removed() {
+        let ok = |id: &str| Ok(json!({"identifier": id}));
+        let add = "Page.addScriptToEvaluateOnNewDocument";
+        assert_eq!(late_removal(true, &ClientWorld::Unavailable("timeout".into()), add, &ok("7")), Some("7".to_string()), "fail, then a late identifier");
+        assert_eq!(late_removal(true, &ClientWorld::Ready, add, &ok("8")), Some("8".to_string()), "any answer after the end is late");
+        assert_eq!(late_removal(false, &ClientWorld::Setting, add, &ok("9")), None, "during the setup the identifier is kept");
+        assert_eq!(late_removal(false, &ClientWorld::Unavailable("x".into()), add, &ok("10")), Some("10".to_string()), "an Unavailable view keeps no script");
+        assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), "Runtime.addBinding", &ok("11")), None);
+        assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), add, &Err("boom".into())), None);
+        assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), add, &Ok(json!({}))), None);
+        assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), add, &Ok(json!({"identifier": "x".repeat(200)}))), None, "an identifier is bounded");
     }
 }

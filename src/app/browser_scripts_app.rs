@@ -70,11 +70,37 @@ pub(super) struct WorldState {
     pub(super) drop_logged: Option<Instant>,
     /// The check's about:blank is cleared from the back list after the first load (review I1).
     pub(super) history: browser_world::HistoryReset,
+    /// Tokens of the setup's own DevTools calls: they outlive the navigation that starts the page
+    /// load (review I3), so a late identifier is still seen and removed.
+    pub(super) setup_calls: HashSet<u64>,
+    /// The view's controller has been created (a restart's setup starts its timer at once).
+    pub(super) controller_up: bool,
     /// When a console line was last counted in the log.
     pub(super) console_logged: Option<Instant>,
 }
 
 impl WorldState {
+    /// The call that ends with a main-frame navigation: the page's calls are over, the setup's own
+    /// stay.
+    pub(super) fn take_navigated(&mut self, pending: &mut HashMap<u64, JsDone>) -> Vec<JsDone> {
+        let keep = &self.setup_calls;
+        let gone: Vec<u64> = pending.keys().copied().filter(|t| !keep.contains(t)).collect();
+        gone.into_iter().filter_map(|t| pending.remove(&t)).collect()
+    }
+
+    /// The controller exists: the setup's time starts now (once).
+    pub(super) fn controller_ready(&mut self, now: Instant) {
+        self.controller_up = true;
+        if self.setup.is_some() && self.setup_started.is_none() {
+            self.setup_started = Some(now);
+        }
+    }
+
+    /// The setup has run for more than its time since the controller came up.
+    pub(super) fn timed_out(&self, now: Instant) -> bool {
+        self.setup.is_some() && self.setup_started.is_some_and(|t| now.saturating_duration_since(t) > SETUP_TIMEOUT)
+    }
+
     /// A navigation that arrives while the world is being set up (review I2): kept, the latest
     /// winning, and run when the setup is over. False when no setup runs: the caller navigates.
     pub(super) fn defer_load(&mut self, url: &str) -> bool {
@@ -175,7 +201,8 @@ impl App {
             view.devtools_subscribe(name);
         }
         bv.world.setup = Some(Setup::new(&client));
-        bv.world.setup_started = Some(Instant::now());
+        // The time starts when the controller exists: now for a restart, at `Created` for a new view.
+        bv.world.setup_started = bv.world.controller_up.then(Instant::now);
         bv.world.load_after = load;
         bv.world.client_sources = client;
         self.browser_world_pump(pane);
@@ -200,7 +227,10 @@ impl App {
                 return;
             }
             if let Some((method, params)) = setup.next_call() {
-                self.devtools_send(pane, None, method, &params, Box::new(move |app, pane, r| app.browser_world_answered(pane, method, r)));
+                let token = self.devtools_send(pane, None, method, &params, Box::new(move |app, pane, r| app.browser_world_answered(pane, method, r)));
+                if let (Some(t), Some(bv)) = (token, self.browser_views.get_mut(&pane)) {
+                    bv.world.setup_calls.insert(t);
+                }
                 return;
             }
             // Nothing to send while a call or a check is in flight (or after the end, which the next
@@ -246,6 +276,11 @@ impl App {
     /// An answer to a setup call.
     fn browser_world_answered(&mut self, pane: PaneId, method: &'static str, r: Result<Value, String>) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        // Fail closed: a script registered after the setup ended, or in a view with no world, comes off.
+        if let Some(id) = browser_world::late_removal(bv.world.setup.is_none(), &bv.client_world, method, &r) {
+            self.devtools_send(pane, None, "Page.removeScriptToEvaluateOnNewDocument", &json!({"identifier": id}), Box::new(|_, _, _| {}));
+            return;
+        }
         if let Ok(v) = &r {
             match method {
                 "Page.addScriptToEvaluateOnNewDocument" => {
@@ -358,7 +393,7 @@ impl App {
                 bv.client_world = ClientWorld::Unavailable("lost after a process failure".into());
             }
         }
-        let late = self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some() && b.world.setup_started.is_some_and(|t| t.elapsed() > SETUP_TIMEOUT));
+        let late = self.browser_views.get(&pane).is_some_and(|b| b.world.timed_out(Instant::now()));
         if late {
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 if let Some(setup) = bv.world.setup.as_mut() {
@@ -373,7 +408,7 @@ impl App {
 
     /// The one DevTools sender of the app: `done` gets the answer (the result object) or the error.
     /// A method outside `browser_world::ALLOWED` is refused here and in the host.
-    fn devtools_send(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, done: JsDone) {
+    fn devtools_send(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, done: JsDone) -> Option<u64> {
         let why = match self.browser_views.get_mut(&pane) {
             Some(bv) if bv.view.is_some() && browser_world::method_allowed(method) => {
                 let token = bv.next_token;
@@ -385,12 +420,13 @@ impl App {
                         Some(s) => v.devtools_call_for_session(s, method, &params.to_string(), token),
                     }
                 }
-                return;
+                return Some(token);
             }
             Some(bv) if bv.view.is_some() => "that DevTools method is not allowed",
             _ => "no view",
         };
         done(self, pane, Err(why.into()));
+        None
     }
 
     /// A DevTools call for a later plan: the method must be in `browser_world::ALLOWED`.
@@ -575,6 +611,7 @@ impl App {
     pub(super) fn browser_script_done(&mut self, pane: PaneId, token: u64, json: &Result<String, String>) -> bool {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return false };
         let page = bv.eval_waiting.remove(&token);
+        bv.world.setup_calls.remove(&token);
         let Some(done) = bv.pending_js.remove(&token) else { return page };
         let result = match json {
             Err(e) => Err(e.clone()),
@@ -647,7 +684,9 @@ impl App {
                     // The setup's own calls and checks are not a page's: they are kept.
                     Some(bv) if bv.world.setup.is_none() => {
                         bv.eval_waiting.clear();
-                        bv.pending_js.drain().map(|(_, d)| d).collect()
+                        // The setup's own calls that are still out (a timed-out setup) stay: their
+                        // late answers are removed by `late_removal`.
+                        bv.world.take_navigated(&mut bv.pending_js)
                     }
                     _ => Vec::new(),
                 };
@@ -884,5 +923,35 @@ mod tests {
         let btn = &btn[..btn.find("Button::Menu =>").unwrap()];
         assert!(btn.contains("world.setup.is_some()"), "back, forward and reload wait for the world too");
         assert!(p.contains("pub(super) fn defer_load"));
+    }
+
+    /// Review I3: the setup's own calls survive the navigation that starts the page load, and the
+    /// timer starts when the controller exists.
+    #[test]
+    fn setup_calls_survive_navigation_and_the_timer_waits_for_the_controller() {
+        let mut w = WorldState::default();
+        let mut pending: HashMap<u64, JsDone> = HashMap::new();
+        for t in [1u64, 2, 3] {
+            pending.insert(t, Box::new(|_, _, _| {}));
+        }
+        w.setup_calls.insert(2);
+        let dropped = w.take_navigated(&mut pending);
+        assert_eq!(dropped.len(), 2, "the page's calls end with the navigation");
+        assert!(pending.contains_key(&2) && pending.len() == 1, "the setup's call is kept");
+        assert!(!w.timed_out(Instant::now() + Duration::from_secs(60)), "no setup: nothing to time out");
+        w.setup = Some(Setup::new(&[]));
+        assert!(!w.timed_out(Instant::now() + Duration::from_secs(60)), "the timer has not started: the controller does not exist yet");
+        let t0 = Instant::now();
+        w.controller_ready(t0);
+        w.controller_ready(t0 + Duration::from_secs(4));
+        assert!(!w.timed_out(t0 + Duration::from_secs(4)));
+        assert!(w.timed_out(t0 + SETUP_TIMEOUT + Duration::from_millis(1)), "from the first Created, not the second");
+        let p = prod();
+        let ans = &p[p.find("fn browser_world_answered").unwrap()..p.find("fn browser_world_finish").unwrap()];
+        assert!(ans.contains("late_removal("), "a late answer is checked first");
+        let app = include_str!("browser_app.rs");
+        let app = &app[..app.find("#[cfg(test)]").unwrap()];
+        assert!(app[app.find("Event::Created(_) =>").unwrap()..].contains("controller_ready("));
+        assert!(!p[p.find("fn browser_world_start").unwrap()..p.find("fn browser_world_pump").unwrap()].contains("setup_started = Some") && p.contains("controller_up.then(Instant::now)"));
     }
 }

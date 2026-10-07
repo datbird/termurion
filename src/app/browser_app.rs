@@ -538,6 +538,7 @@ impl App {
             // A good start resets the remake budget (final review I5).
             Event::Created(_) => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    bv.world.controller_ready(Instant::now());
                     bv.restarts.succeeded();
                 }
             }
