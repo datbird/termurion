@@ -382,6 +382,152 @@ pub fn frame_ids(json: &str) -> Option<(String, Vec<String>)> {
     Some((main, all))
 }
 
+/// What the host does with one DevTools event (`EventFilter::offer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    /// Queue it as it is (a binding call: the queue's own caps apply).
+    Post,
+    /// Held in the filter; post one wake so the app takes what is held.
+    Wake,
+    /// Held in the filter; a wake is already queued.
+    Hold,
+    /// The app would ignore it: never queued (counted as dropped).
+    Drop,
+}
+
+/// The most lifecycle events the host holds for the app at once (a page's Created and attached
+/// targets past it are dropped: inert, as past `MAX_CONTEXTS`).
+pub const MAX_HELD: usize = 1024;
+/// Tandem contexts the host remembers having passed (so their Destroyed is passed too).
+const MAX_PASSED: usize = 2 * MAX_CONTEXTS;
+/// Past this, even a Destroyed, Cleared or detach is dropped (each is bounded by what was passed;
+/// this is the last bound of the queue).
+const MAX_HELD_HARD: usize = 4 * MAX_HELD;
+
+const CREATED: &str = "Runtime.executionContextCreated";
+const DESTROYED: &str = "Runtime.executionContextDestroyed";
+const CLEARED: &str = "Runtime.executionContextsCleared";
+const NAVIGATED: &str = "Page.frameNavigated";
+const ATTACHED: &str = "Target.attachedToTarget";
+const DETACHED: &str = "Target.detachedFromTarget";
+
+#[derive(Debug)]
+struct Held {
+    session: Option<String>,
+    name: &'static str,
+    json: String,
+    /// A held Created's unique context id (its Destroyed cancels it).
+    unique: Option<String>,
+}
+
+/// The host's filter of a view's DevTools events (final review I4, the class "caps on every
+/// page-driven event"): with `Runtime.enable` on, a page that makes and removes frames or workers in
+/// a loop raises lifecycle events at will. The host keeps only what the app acts on (the
+/// `Contexts` rules, applied before the queue): a Created of a Tandem-world context, the Destroyed
+/// of one it passed, Cleared, the main frame's navigation, attach and detach; every other event is
+/// dropped. What it keeps is held here, not queued: one wake is queued at a time and the app takes
+/// everything held when it drains it. A Created and its Destroyed that meet here cancel, a newer
+/// main-frame navigation replaces the held one, and a Cleared replaces the session's held contexts.
+/// A binding call is posted as it is (the queue's message caps apply to it).
+#[derive(Default, Debug)]
+pub struct EventFilter {
+    held: std::collections::VecDeque<Held>,
+    /// Tandem contexts passed to the app and not yet told gone: (session, unique id) to numeric id.
+    passed: HashMap<(Option<String>, String), i64>,
+    /// A wake is queued and not yet taken.
+    woken: bool,
+}
+
+impl EventFilter {
+    pub fn offer(&mut self, session: Option<&str>, name: &str, json: &str) -> Offer {
+        if name == crate::webhost::BINDING_EVENT {
+            return Offer::Post;
+        }
+        let Some(name) = EVENTS.iter().copied().find(|e| *e == name) else { return Offer::Drop };
+        if self.held.len() >= MAX_HELD_HARD {
+            return Offer::Drop;
+        }
+        let s = session.map(str::to_string);
+        let v: Value = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(_) if name == CLEARED => Value::Null,
+            Err(_) => return Offer::Drop,
+        };
+        let mut unique = None;
+        match name {
+            CREATED => {
+                let c = &v["context"];
+                if c.get("name").and_then(Value::as_str) != Some(WORLD_NAME) || c.pointer("/auxData/type").and_then(Value::as_str) != Some("isolated") {
+                    return Offer::Drop;
+                }
+                let (Some(id), Some(_), Some(u)) = (c.get("id").and_then(Value::as_i64), c.pointer("/auxData/frameId").and_then(Value::as_str), c.get("uniqueId").and_then(Value::as_str)) else { return Offer::Drop };
+                if self.passed.len() >= MAX_PASSED || self.held.len() >= MAX_HELD {
+                    return Offer::Drop;
+                }
+                self.passed.insert((s.clone(), u.to_string()), id);
+                unique = Some(u.to_string());
+            }
+            DESTROYED => {
+                let key = match v.get("executionContextUniqueId").and_then(Value::as_str) {
+                    Some(u) => Some((s.clone(), u.to_string())).filter(|k| self.passed.contains_key(k)),
+                    None => {
+                        let id = v.get("executionContextId").and_then(Value::as_i64);
+                        self.passed.iter().find(|(k, n)| k.0 == s && Some(**n) == id).map(|(k, _)| k.clone())
+                    }
+                };
+                // A context the app was never told of: nothing to say.
+                let Some(key) = key else { return Offer::Drop };
+                self.passed.remove(&key);
+                // Its Created is still held: the app never needs to see either.
+                if let Some(at) = self.held.iter().position(|h| h.name == CREATED && h.session == s && h.unique.as_deref() == Some(key.1.as_str())) {
+                    self.held.remove(at);
+                    return Offer::Hold;
+                }
+            }
+            CLEARED => {
+                self.passed.retain(|k, _| k.0 != s);
+                self.held.retain(|h| !(h.session == s && matches!(h.name, CREATED | DESTROYED | CLEARED)));
+            }
+            NAVIGATED => {
+                // Only the view's own main frame matters (`Contexts::navigated`); the newest wins.
+                if session.is_some() || v.pointer("/frame/parentId").is_some() || v.pointer("/frame/id").and_then(Value::as_str).is_none() {
+                    return Offer::Drop;
+                }
+                self.held.retain(|h| h.name != NAVIGATED);
+            }
+            ATTACHED => {
+                if self.held.len() >= MAX_HELD {
+                    return Offer::Drop;
+                }
+            }
+            DETACHED => {
+                if let Some(child) = v.get("sessionId").and_then(Value::as_str) {
+                    self.passed.retain(|k, _| k.0.as_deref() != Some(child));
+                }
+            }
+            // The binding is posted above; nothing else is subscribed.
+            _ => return Offer::Drop,
+        }
+        self.held.push_back(Held { session: s, name, json: json.to_string(), unique });
+        if self.woken {
+            Offer::Hold
+        } else {
+            self.woken = true;
+            Offer::Wake
+        }
+    }
+
+    /// Everything held, oldest first, as (session, event name, JSON); the next kept event wakes again.
+    pub fn take(&mut self) -> Vec<(Option<String>, String, String)> {
+        self.woken = false;
+        self.held.drain(..).map(|h| (h.session, h.name.to_string(), h.json)).collect()
+    }
+
+    pub fn held(&self) -> usize {
+        self.held.len()
+    }
+}
+
 /// A view's Tandem world is usable only when it is Ready and the main frame's context is known.
 pub fn world_usable(state: &ClientWorld, contexts: &Contexts) -> bool {
     *state == ClientWorld::Ready && contexts.context_for(None).is_some()
@@ -422,21 +568,25 @@ impl Contexts {
 
     /// Records a context only when it is an isolated world named `WORLD_NAME`: a page cannot make one
     /// (its own contexts are "default").
-    pub fn created(&mut self, session: Option<&str>, json: &str) {
-        let Ok(v) = serde_json::from_str::<Value>(json) else { return };
-        let Some(c) = v.get("context") else { return };
+    /// True only when this call recorded a context the table did not hold (final review I4: the
+    /// pointer table is pushed into a context the table accepted, once).
+    pub fn created(&mut self, session: Option<&str>, json: &str) -> bool {
+        let Ok(v) = serde_json::from_str::<Value>(json) else { return false };
+        let Some(c) = v.get("context") else { return false };
         if c.get("name").and_then(Value::as_str) != Some(WORLD_NAME) || c.pointer("/auxData/type").and_then(Value::as_str) != Some("isolated") {
-            return;
+            return false;
         }
         // No unique id, no entry: nothing is ever evaluated by the reusable numeric id.
-        let (Some(id), Some(frame), Some(unique)) = (c.get("id").and_then(Value::as_i64), c.pointer("/auxData/frameId").and_then(Value::as_str), c.get("uniqueId").and_then(Value::as_str)) else { return };
+        let (Some(id), Some(frame), Some(unique)) = (c.get("id").and_then(Value::as_i64), c.pointer("/auxData/frameId").and_then(Value::as_str), c.get("uniqueId").and_then(Value::as_str)) else { return false };
         let origin = c.get("origin").and_then(Value::as_str).unwrap_or_default().chars().take(crate::webhost::MAX_URL).collect();
         let key = (session.map(str::to_string), id);
-        if !self.table.contains_key(&key) && self.table.len() >= MAX_CONTEXTS {
-            return;
+        let known = self.table.contains_key(&key);
+        if !known && self.table.len() >= MAX_CONTEXTS {
+            return false;
         }
         self.seq += 1;
         self.table.insert(key, Ctx { frame: frame.to_string(), origin, unique: unique.chars().take(128).collect(), seq: self.seq });
+        !known
     }
 
     pub fn destroyed(&mut self, session: Option<&str>, json: &str) {
@@ -677,6 +827,95 @@ mod tests {
         d.set_main_frame("M");
         d.created(None, &json!({"context": {"id": 1, "origin": "o", "name": "tandem-client", "auxData": {"frameId": "M", "type": "isolated"}}}).to_string());
         assert!(d.is_empty());
+    }
+
+    /// Final review I4: a page that makes and removes frames without end never grows the UI queue.
+    /// The host drops what the app ignores (a page's own contexts, a subframe's navigation, a
+    /// Destroyed of a context it never passed, any other event name), holds the lifecycle it keeps
+    /// with one wake queued at a time, and a Created and its Destroyed that meet in the filter cancel.
+    #[test]
+    fn a_flood_of_page_contexts_never_reaches_the_queue() {
+        let mut f = EventFilter::default();
+        let mut queued = 0usize;
+        let mut count = |o: Offer| if matches!(o, Offer::Post | Offer::Wake) { queued += 1 };
+        for i in 0..10_000i64 {
+            count(f.offer(None, "Runtime.executionContextCreated", &created(i, "", "default", &format!("F{i}"), "https://evil.invalid")));
+            count(f.offer(None, "Runtime.executionContextCreated", &created(i + 20_000, "worker-ish", "isolated", &format!("F{i}"), "https://evil.invalid")));
+            count(f.offer(None, "Runtime.executionContextDestroyed", &json!({"executionContextId": i, "executionContextUniqueId": format!("u{i}")}).to_string()));
+            count(f.offer(None, "Page.frameNavigated", &json!({"frame": {"id": format!("F{i}"), "parentId": "M", "url": "https://evil.invalid/"}}).to_string()));
+            count(f.offer(Some("S"), "Page.frameNavigated", &json!({"frame": {"id": "C"}}).to_string()));
+            count(f.offer(None, "Network.requestWillBeSent", "{}"));
+        }
+        assert_eq!(queued, 0, "nothing the app ignores is queued");
+        assert_eq!(f.held(), 0);
+        // 10,000 Tandem contexts made and gone between two drains: one wake, nothing left held.
+        let mut wakes = 0;
+        for i in 0..10_000i64 {
+            let c = created(i, "tandem-client", "isolated", &format!("F{i}"), "https://evil.invalid");
+            match f.offer(None, "Runtime.executionContextCreated", &c) {
+                Offer::Wake => wakes += 1,
+                Offer::Hold => {}
+                o => panic!("{o:?}"),
+            }
+            assert_ne!(f.offer(None, "Runtime.executionContextDestroyed", &json!({"executionContextId": i, "executionContextUniqueId": format!("u{i}")}).to_string()), Offer::Post);
+        }
+        assert_eq!(wakes, 1, "one wake at a time");
+        assert!(f.held() <= 1, "a Created and its Destroyed cancel: {}", f.held());
+        f.take();
+        // 10,000 live Tandem contexts: the filter holds at most its bound; the main frame's
+        // navigation is kept (the latest only); a binding call is posted as it is.
+        for i in 0..10_000i64 {
+            f.offer(None, "Runtime.executionContextCreated", &created(i, "tandem-client", "isolated", &format!("F{i}"), "https://evil.invalid"));
+            f.offer(None, "Page.frameNavigated", &json!({"frame": {"id": "M"}}).to_string());
+        }
+        let held = f.take();
+        assert!(held.len() <= MAX_HELD, "{}", held.len());
+        assert_eq!(held.iter().filter(|(_, n, _)| n == "Page.frameNavigated").count(), 1);
+        assert_eq!(f.offer(None, crate::webhost::BINDING_EVENT, "{}"), Offer::Post);
+        // Lifecycle the app needs: Cleared, attach and detach, and the Destroyed of a passed context.
+        assert_eq!(f.offer(None, "Runtime.executionContextsCleared", "{}"), Offer::Wake);
+        assert_eq!(f.offer(None, "Target.attachedToTarget", r#"{"sessionId":"S"}"#), Offer::Hold);
+        assert_eq!(f.offer(None, "Target.detachedFromTarget", r#"{"sessionId":"S"}"#), Offer::Hold);
+        assert_eq!(f.take().len(), 3);
+        f.offer(None, "Runtime.executionContextCreated", &created(7, "tandem-client", "isolated", "M", "https://a.invalid"));
+        f.take();
+        assert_eq!(f.offer(None, "Runtime.executionContextDestroyed", r#"{"executionContextId":7,"executionContextUniqueId":"u7"}"#), Offer::Wake, "a context the app knows is told gone");
+        assert_eq!(f.take().len(), 1);
+        assert_eq!(f.offer(None, "Runtime.executionContextDestroyed", r#"{"executionContextId":7,"executionContextUniqueId":"u7"}"#), Offer::Drop, "once");
+    }
+
+    /// Final review I4, the wiring: the host's one DevTools receiver asks the filter before it queues
+    /// anything, the app takes what is held before it routes a binding call, and the pointer table is
+    /// pushed only when the table recorded the context.
+    #[test]
+    fn the_host_filters_devtools_events() {
+        let host = include_str!("webhost_win.rs");
+        let sub = &host[host.find("pub fn devtools_subscribe").unwrap()..host.find("pub fn watch_frames").unwrap()];
+        assert!(sub.contains("devtools_filter.offer(") && sub.contains("Offer::Drop => i.poster.gate.note_dropped()"), "dropped before the queue");
+        assert_eq!(sub.matches("i.poster.post(").count(), 2, "a binding call or one wake, nothing else");
+        let app = include_str!("app/browser_scripts_app.rs");
+        let app = &app[..app.find("#[cfg(test)]").unwrap()];
+        let ev = &app[app.find("Event::DevTools { session, name, json, .. } => {").unwrap()..];
+        assert!(ev[..ev.find("true").unwrap()].contains("self.browser_devtools_held(pane);"), "the held lifecycle comes first");
+        assert!(app.contains("Event::DevToolsHeld { .. } => {"));
+        let created = &app[app.find("\"Runtime.executionContextCreated\" => {").unwrap()..app.find("\"Runtime.executionContextDestroyed\"").unwrap()];
+        assert!(created.contains("let recorded = bv.contexts.created(") && created.contains("if recorded {"), "a refused or known context gets no evaluate");
+    }
+
+    /// Final review I4: the table says whether it recorded a context, so the pointer table is pushed
+    /// only into a context it accepted, and once per context.
+    #[test]
+    fn created_says_whether_it_recorded() {
+        let mut c = Contexts::default();
+        assert!(c.created(None, &created(1, "tandem-client", "isolated", "M", "https://a.invalid")));
+        assert!(!c.created(None, &created(1, "tandem-client", "isolated", "M", "https://a.invalid")), "once per context");
+        assert!(!c.created(None, &created(2, "", "default", "M", "https://a.invalid")), "a page's own context");
+        assert!(!c.created(None, "not json"));
+        let mut accepted = 1;
+        for i in 10..10_010i64 {
+            accepted += usize::from(c.created(None, &created(i, "tandem-client", "isolated", &format!("F{i}"), "https://a.invalid")));
+        }
+        assert_eq!(accepted, MAX_CONTEXTS, "a refused context is never reported recorded");
     }
 
     #[test]

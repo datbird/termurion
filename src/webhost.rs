@@ -279,6 +279,9 @@ pub enum Event {
     /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
     /// `browser_world::Contexts` decides what a context is.
     DevTools { view: ViewId, session: Option<String>, name: String, json: String },
+    /// The view's `browser_world::EventFilter` holds lifecycle events: the app takes them with
+    /// `WebView::take_devtools_held` (one is queued at a time; final review I4).
+    DevToolsHeld { view: ViewId },
     /// An iframe of the page appeared (the page world's view of it: WebView2's frame id, the
     /// `name` attribute, bounded). Posted only for a view that asked (`WebView::watch_frames`).
     FrameCreated { view: ViewId, frame: u64, name: String },
@@ -312,6 +315,7 @@ impl Event {
             | Event::Refused { view, .. }
             | Event::ProcessFailed { view, .. }
             | Event::DevTools { view, .. }
+            | Event::DevToolsHeld { view }
             | Event::FrameCreated { view, .. }
             | Event::FrameGone { view, .. }
             | Event::FrameMessage { view, .. }
@@ -338,7 +342,9 @@ impl Event {
     pub fn droppable(&self) -> bool {
         // Only a binding call (a page can make them at will) is droppable. A context or target
         // lifecycle event never is: a lost Destroyed would leave a stale context in the table, and an
-        // attached child waits until it is resumed (B12, fix round 1).
+        // attached child waits until it is resumed (B12, fix round 1). The host drops the ones the
+        // app ignores before they are queued and holds the rest behind one `DevToolsHeld` wake
+        // (`browser_world::EventFilter`, final review I4), which is never dropped either.
         if let Event::DevTools { name, .. } = self {
             return name == BINDING_EVENT;
         }

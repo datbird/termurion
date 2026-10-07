@@ -461,15 +461,26 @@ impl App {
         self.devtools_send(pane, None, method, &params, done);
     }
 
+    /// The lifecycle events the view's host filter held (final review I4), in order.
+    fn browser_devtools_held(&mut self, pane: PaneId) {
+        let held = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()).map(|v| v.take_devtools_held()).unwrap_or_default();
+        for (session, name, json) in held {
+            self.browser_devtools_event(pane, session.as_deref(), &name, &json);
+        }
+    }
+
     /// One DevTools event of a view (`browser_world::EVENTS`).
     fn browser_devtools_event(&mut self, pane: PaneId, session: Option<&str>, name: &str, json: &str) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         match name {
             "Runtime.executionContextCreated" => {
-                bv.contexts.created(session, json);
+                // The pointer table goes only into a context the table accepted, once (final review I4).
+                let recorded = bv.contexts.created(session, json);
                 bv.frames = bv.contexts.frames();
                 self.browser_world_pump(pane);
-                self.browser_pointer_push_new(pane, session, json);
+                if recorded {
+                    self.browser_pointer_push_new(pane, session, json);
+                }
             }
             "Runtime.executionContextDestroyed" => {
                 bv.contexts.destroyed(session, json);
@@ -681,7 +692,13 @@ impl App {
                 true
             }
             Event::DevTools { session, name, json, .. } => {
+                // The lifecycle the host held first, so a context is known before its call.
+                self.browser_devtools_held(pane);
                 self.browser_devtools_event(pane, session.as_deref(), name, json);
+                true
+            }
+            Event::DevToolsHeld { .. } => {
+                self.browser_devtools_held(pane);
                 true
             }
             Event::FrameCreated { frame, .. } => {

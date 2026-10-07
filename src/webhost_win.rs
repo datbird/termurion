@@ -509,6 +509,9 @@ struct Inner {
     visible: Option<bool>,
     /// One DevTools event receiver per event name (`devtools_subscribe`), with its handler's token.
     devtools: HashMap<String, (ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+    /// What the app is told of the DevTools events (final review I4): only what it acts on, the
+    /// lifecycle held behind one wake.
+    devtools_filter: browser_world::EventFilter,
     /// The page world's iframes while `watch_frames` is on (at most `MAX_FRAMES`), by WebView2's
     /// frame id; the COM pointer lives only here and goes on `Destroyed`.
     frames: HashMap<u64, ICoreWebView2Frame2>,
@@ -558,6 +561,7 @@ impl WebView {
             last_bounds: None,
             visible: None,
             devtools: HashMap::new(),
+            devtools_filter: Default::default(),
             frames: HashMap::new(),
             frame_watch: None,
             menus: HashMap::new(),
@@ -754,8 +758,16 @@ impl WebView {
         });
     }
 
+    /// The lifecycle events the view's filter holds, oldest first (after an `Event::DevToolsHeld`,
+    /// and before a binding call is routed, so a context is known before its first call).
+    pub fn take_devtools_held(&self) -> Vec<(Option<String>, String, String)> {
+        self.inner.borrow_mut().devtools_filter.take()
+    }
+
     /// Posts `Event::DevTools` for every `event` the page's target (and its attached children)
-    /// raises. One receiver per event name per view; it is dropped with the view.
+    /// raises that the app acts on (`browser_world::EventFilter`: a binding call as it is, the
+    /// lifecycle behind one `Event::DevToolsHeld`). One receiver per event name per view; it is
+    /// dropped with the view.
     pub fn devtools_subscribe(&self, event: &str) {
         if self.inner.borrow().devtools.contains_key(event) {
             return;
@@ -776,8 +788,15 @@ impl WebView {
                 }
                 // An empty session id means the view's own target.
                 let session = args.cast::<ICoreWebView2DevToolsProtocolEventReceivedEventArgs2>().ok().and_then(|a| pwstr_out(|p| unsafe { a.SessionId(p) })).filter(|s| !s.is_empty());
+                // Only what the app acts on reaches the queue; the lifecycle waits behind one wake.
+                let offer = inner.borrow_mut().devtools_filter.offer(session.as_deref(), &ev_name, &json);
                 let i = inner.borrow();
-                i.poster.post(Event::DevTools { view: i.id, session, name: ev_name.clone(), json });
+                match offer {
+                    browser_world::Offer::Post => i.poster.post(Event::DevTools { view: i.id, session, name: ev_name.clone(), json }),
+                    browser_world::Offer::Wake => i.poster.post(Event::DevToolsHeld { view: i.id }),
+                    browser_world::Offer::Hold => {}
+                    browser_world::Offer::Drop => i.poster.gate.note_dropped(),
+                }
                 Ok(())
             })));
             let mut token = 0i64;
@@ -2504,15 +2523,27 @@ mod probe {
                         self.answers.insert(token, json);
                     }
                 }
-                Event::DevTools { session, name, json, .. } => self.devtools(session, &name, &json),
+                Event::DevTools { session, name, json, .. } => {
+                    self.devtools_held();
+                    self.devtools(session, &name, &json);
+                }
+                Event::DevToolsHeld { .. } => self.devtools_held(),
                 _ => {}
+            }
+        }
+
+        fn devtools_held(&mut self) {
+            for (session, name, json) in self.view().take_devtools_held() {
+                self.devtools(session, &name, &json);
             }
         }
 
         fn devtools(&mut self, session: Option<String>, name: &str, json: &str) {
             let s = session.as_deref();
             match name {
-                "Runtime.executionContextCreated" => self.contexts.created(s, json),
+                "Runtime.executionContextCreated" => {
+                    self.contexts.created(s, json);
+                }
                 "Runtime.executionContextDestroyed" => self.contexts.destroyed(s, json),
                 "Runtime.executionContextsCleared" => self.contexts.cleared(s),
                 "Page.frameNavigated" => self.contexts.navigated(s, json),
