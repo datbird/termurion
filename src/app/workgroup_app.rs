@@ -693,7 +693,9 @@ impl App {
 
     /// The pane whose `ClipState` is the group's clippings now: the member shown in the slot.
     pub(super) fn clip_home(&self, pane: PaneId) -> PaneId {
-        self.workgroup_of(pane).and_then(|i| i.shown_pane()).filter(|p| self.panes.contains_key(p)).unwrap_or(pane)
+        let inst = self.workgroup_of(pane);
+        let shown = inst.and_then(|i| i.shown_pane()).filter(|p| self.panes.contains_key(p));
+        peers::clip_home(inst.is_some_and(|i| i.config_of(pane).is_some()), shown, pane)
     }
 
     /// What the keyboard hook must take for peers: whether any group has more than one peer, and the

@@ -103,12 +103,29 @@ pub fn menu_enabled(peer_count: usize) -> bool {
     peer_count > 1
 }
 
+/// The pane whose clippings `pane` uses: a member of a peer group shares the shown member's, any other
+/// member (a split, a tab) its own.
+pub fn clip_home(peer_member: bool, shown: Option<crate::layout::PaneId>, pane: crate::layout::PaneId) -> crate::layout::PaneId {
+    if peer_member { shown.unwrap_or(pane) } else { pane }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::menus::{Chord, ChordKey};
     use crate::workgroup::claude_code::{config, DIFF, MAIN, REVIEW};
     use crate::workgroup::Shortcut;
+
+    /// Clippings are the peer group's (`PSPP:30-55`): a split or tab member has its own.
+    #[test]
+    fn clippings_are_shared_within_a_peer_group_only() {
+        assert_eq!(clip_home(true, Some(7), 3), 7, "a peer-group member uses the shown member's");
+        assert_eq!(clip_home(false, Some(7), 3), 3, "a split or tab member keeps its own");
+        assert_eq!(clip_home(true, None, 3), 3);
+        let app = include_str!("app/workgroup_app.rs");
+        let f = &app[app.find("fn clip_home").unwrap()..];
+        assert!(f[..f.find("\n    }\n").unwrap()].contains("config_of(pane).is_some()"), "keyed by the peer group");
+    }
 
     fn ids() -> Vec<String> {
         members(&config()).into_iter().map(|m| m.0).collect()
