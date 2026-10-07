@@ -224,22 +224,29 @@ pub fn ask_text(w: &Workgroup, how: Mechanism) -> Option<(String, String)> {
 /// The most characters the question's body holds, every command whole.
 pub const ASK_ROOM: usize = 6000;
 
-/// `text` with every run of four or more blanks written as "[N spaces]", so padding cannot push
-/// part of a command out of sight.
+/// `text` with every run of four or more blanks written as "[N spaces]" and every space that is not
+/// a plain U+0020 (NBSP, the en and em spaces, the narrow and ideographic ones, a tab) written as
+/// its own "[U+XXXX]", so padding of any kind cannot push part of a command out of sight.
 fn visible_runs(text: &str) -> String {
     let mut out = String::new();
-    let mut run = 0usize;
-    let flush = |out: &mut String, run: &mut usize| {
-        match *run {
-            0 => {}
-            1..=3 => out.push_str(&" ".repeat(*run)),
-            n => out.push_str(&format!(" [{n} spaces] ")),
+    let mut run: Vec<char> = Vec::new();
+    let flush = |out: &mut String, run: &mut Vec<char>| {
+        if run.len() >= 4 {
+            out.push_str(&format!(" [{} spaces] ", run.len()));
+        } else {
+            for &c in run.iter() {
+                if c == ' ' {
+                    out.push(' ');
+                } else {
+                    out.push_str(&format!("[U+{:04X}]", c as u32));
+                }
+            }
         }
-        *run = 0;
+        run.clear();
     };
     for c in text.chars() {
-        if c == ' ' || c == '\t' {
-            run += 1;
+        if c.is_whitespace() {
+            run.push(c);
         } else {
             flush(&mut out, &mut run);
             out.push(c);
@@ -572,6 +579,23 @@ mod tests {
             s.command = "x".repeat(4000);
         }
         assert!(ask_text(&big, Mechanism::Trigger).is_none());
+    }
+
+    /// Padding made of any Unicode space (NBSP, the en/em spaces, the narrow and ideographic ones) or a
+    /// tab cannot push text out of sight: each is shown as a marker, a long run as a count.
+    #[test]
+    fn padding_of_any_space_is_visible() {
+        for pad in ['\u{a0}', '\u{2000}', '\u{2003}', '\u{200a}', '\u{202f}', '\u{205f}', '\u{3000}', '\u{1680}', '\t'] {
+            let text = format!("echo hi{}& calc.exe TAIL", pad.to_string().repeat(3900));
+            let shown = visible_runs(&text);
+            assert!(shown.contains("[3900 spaces]") && shown.contains("& calc.exe TAIL"), "{pad:?}: {}", &shown[..40.min(shown.len())]);
+            assert!(!shown.contains(pad), "{pad:?} is not left raw");
+        }
+        // A short run is marked with the character's own code, a plain space stays a space.
+        assert_eq!(visible_runs("a\u{a0}b"), "a[U+00A0]b");
+        assert_eq!(visible_runs("a b"), "a b");
+        assert_eq!(visible_runs("a\tb"), "a[U+0009]b");
+        assert_eq!(visible_runs("a \u{3000} b"), "a [U+3000] b");
     }
 
     #[test]

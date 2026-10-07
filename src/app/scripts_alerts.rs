@@ -466,7 +466,13 @@ impl App {
         let Some(ask) = self.scripts_alerts.pop_front() else { return };
         let underline = self.globals.bool("AlertsIndicateShortcuts");
         match super::warnings_app::open_warning(event_loop, (instance, adapter, device, queue), &ask.spec, ask.remembered.as_deref(), underline) {
-            Ok(w) => self.scripts_alert = Some((w, ask)),
+            Ok(mut w) => {
+                // The entry question's Enter waits until the whole body has been shown (13y1 review).
+                if matches!(ask.then, Then::EnterWorkgroup { .. }) {
+                    w.require_read(crate::workgroup_run::ASK_ENTER);
+                }
+                self.scripts_alert = Some((w, ask));
+            }
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
                 self.scripts_dropped(ask.then);
@@ -725,6 +731,7 @@ mod tests {
         assert_eq!(a.spec.labels[ASK_ENTER], "Enter");
         assert_eq!(on_close(&then(), 7), Answer::Button(0), "a closed window cancels");
         assert!(include_str!("scripts_alerts.rs").contains("if index == crate::workgroup_run::ASK_ENTER {"));
+        assert!(include_str!("scripts_alerts.rs").contains("w.require_read(crate::workgroup_run::ASK_ENTER);"), "Enter waits for the whole body");
     }
 
     #[test]

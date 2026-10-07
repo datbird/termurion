@@ -281,6 +281,25 @@ fn underlined(ui: &egui::Ui, label: &str, at: usize) -> egui::text::LayoutJob {
     job
 }
 
+/// Whether the person has seen to the end of a scrolled body: it fits, or the offset plus the view
+/// reaches the content (a pixel of slack).
+pub fn scrolled_to_end(offset: f32, view: f32, content: f32) -> bool {
+    content <= view + 1.0 || offset + view + 1.0 >= content
+}
+
+/// Whether button `index` may be pressed: a gated button (the entry question's Enter) waits until the
+/// body has been read; every other button is always open.
+pub fn gate_open(gated: Option<usize>, read: bool, index: usize) -> bool {
+    gated != Some(index) || read
+}
+
+/// A question window's height in logical points for `text`: its lines (wrapped near 60 characters),
+/// at least the old 130 and at most 560 so a small screen still holds the buttons.
+pub fn window_height(text: &str) -> f64 {
+    let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(60).max(1)).sum();
+    (110.0 + lines as f64 * 16.0).clamp(130.0, 560.0)
+}
+
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
 /// (`iTermWarning.m:400-406,517-520`: "Suppress this message permanently", remembered only on
 /// OK). Enter is OK and Escape Cancel.
@@ -308,6 +327,9 @@ pub struct ConfirmWindow {
     /// The label of the button a close (X, Alt+F4) and Escape answer, when the caller names one
     /// (`escape_index`); None keeps `action_keys`' Cancel.
     close: Option<String>,
+    /// The action that waits until the body has been scrolled to its end, and whether it has been.
+    gated: Option<usize>,
+    read: bool,
 }
 
 impl ConfirmWindow {
@@ -324,8 +346,8 @@ impl ConfirmWindow {
         heading: &str,
         text: &str,
     ) -> Result<ConfirmWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None })
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, gated: None, read: false })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -417,6 +439,12 @@ impl ConfirmWindow {
         self.close = label.map(str::to_string);
     }
 
+    /// Action `index` (and its access key) is offered only after the body has been shown whole: it
+    /// fits the window, or the person scrolled to its end.
+    pub fn require_read(&mut self, index: usize) {
+        self.gated = Some(index);
+    }
+
     pub fn id(&self) -> WindowId {
         self.host.id()
     }
@@ -433,9 +461,21 @@ impl ConfirmWindow {
         let mut result = ConfirmResult::Open;
         let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
         let (shortcuts, underline, forget, close) = (&self.shortcuts, self.underline, self.forget, &self.close);
+        let (gated, read) = (self.gated, &mut self.read);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
-                ui.label(text.as_str());
+                // The body scrolls inside the window and the buttons stay below it, so no text or
+                // button is ever cut off.
+                let reserve = 48.0 + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
+                let out = egui::ScrollArea::vertical().max_height((ui.available_height() - reserve).max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.label(text.as_str());
+                });
+                if gated.is_some() && scrolled_to_end(out.state.offset.y, out.inner_rect.height(), out.content_size.y) {
+                    *read = true;
+                }
+                if gated.is_some() && !*read {
+                    ui.label("Scroll to the end of the text to enable the button.");
+                }
                 ui.add_space(6.0);
                 if checkbox {
                     ui.checkbox(suppress, checkbox_label);
@@ -448,9 +488,10 @@ impl ConfirmWindow {
                         let enter_index = action_keys(&labels).0;
                         let escape_index = escape_index(&labels, close.as_deref());
                         for (index, label) in button_labels(&labels, forget).iter().enumerate() {
+                            let open = gate_open(gated, *read, index);
                             let clicked = match shortcuts.get(index).copied().flatten() {
-                                Some((at, _)) if underline => ui.button(underlined(ui, label, at)).clicked(),
-                                _ => ui.button(label.as_str()).clicked(),
+                                Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))).clicked(),
+                                _ => ui.add_enabled(open, egui::Button::new(label.as_str())).clicked(),
                             };
                             if clicked {
                                 result = ConfirmResult::Action { index, suppress: *suppress };
@@ -470,9 +511,10 @@ impl ConfirmWindow {
                                 _ => None,
                             })
                         });
+                        let pressed = pressed.filter(|i| gate_open(gated, *read, *i));
                         if let Some(index) = pressed {
                             result = ConfirmResult::Action { index, suppress: *suppress };
-                        } else if enter {
+                        } else if enter && gate_open(gated, *read, enter_index) {
                             result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
                         } else if let (true, Some(index)) = (escape, escape_index) {
                             result = ConfirmResult::Action { index, suppress: *suppress };
@@ -509,6 +551,29 @@ impl ConfirmWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A long body scrolls, the buttons never leave the window, and a gated button (the entry
+    /// question's Enter) is offered only once the person has seen to the end of the text.
+    #[test]
+    fn a_long_question_scrolls_and_gates_its_button() {
+        assert!(scrolled_to_end(0.0, 200.0, 150.0), "text that fits has been seen");
+        assert!(!scrolled_to_end(0.0, 200.0, 900.0));
+        assert!(!scrolled_to_end(600.0, 200.0, 900.0));
+        assert!(scrolled_to_end(700.0, 200.0, 900.0));
+        assert!(scrolled_to_end(699.5, 200.0, 900.0), "a pixel of slack");
+        assert!(gate_open(None, false, 1), "no gate: open");
+        assert!(gate_open(Some(1), true, 1));
+        assert!(!gate_open(Some(1), false, 1), "the gated button waits");
+        assert!(gate_open(Some(1), false, 0), "the other buttons never wait");
+        assert!(window_height("short") <= window_height(&"a long line of command text ".repeat(100)));
+        assert_eq!(window_height("short"), 130.0);
+        assert_eq!(window_height(&"x\n".repeat(5000)), 560.0, "capped at what a small screen holds");
+        let src = include_str!("prompt_ui.rs");
+        let f = &src[src.find("pub fn redraw(&mut self) -> ConfirmResult").unwrap()..];
+        assert!(f.contains("egui::ScrollArea::vertical()"), "the body scrolls");
+        assert!(f.contains("gate_open(gated"), "the gated button and its access key ask the gate");
+        assert!(f.contains("scrolled_to_end("));
+    }
 
     #[test]
     fn ok_label_follows_the_caller() {
