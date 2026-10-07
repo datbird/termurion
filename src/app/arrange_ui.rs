@@ -689,9 +689,9 @@ impl App {
                     }
                     self.restore_clippings(id, &session);
                     if let Some(p) = self.panes.get_mut(&id) {
+                        // P9: only a member adopted into a restored instance takes the saved toggles.
                         let on = |k: &str| session.get(k).and_then(Value::as_bool).unwrap_or(false);
-                        p.auto_send_clippings = on(crate::workgroup::AUTO_SEND_KEY);
-                        p.auto_request_review = on(crate::workgroup::AUTO_REQUEST_KEY);
+                        (p.auto_send_clippings, p.auto_request_review) = crate::workgroup::restored_toggles(on, p.workgroup.is_some());
                     }
                     self.restore_inline(id, &session);
                     let notice = if launched { notice } else { FolderNotice::Nothing };

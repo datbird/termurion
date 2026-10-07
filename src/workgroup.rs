@@ -136,6 +136,16 @@ pub enum Side {
 pub const AUTO_SEND_KEY: &str = "Auto Send Clippings When Idle";
 pub const AUTO_REQUEST_KEY: &str = "Auto Request Review When Idle";
 
+/// The two toggles a restored session takes from its saved keys (`PS:7445-7462`): (auto send, auto
+/// request), read by `on`. P9: only a member adopted into a restored instance takes them; any other
+/// restored session starts with both off (restoration is data, not behavior).
+pub fn restored_toggles(on: impl Fn(&str) -> bool, adopted: bool) -> (bool, bool) {
+    if !adopted {
+        return (false, false);
+    }
+    (on(AUTO_SEND_KEY), on(AUTO_REQUEST_KEY))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Regular,
@@ -1075,6 +1085,20 @@ mod tests {
     use super::*;
     use crate::globals::Globals;
     use serde_json::{json, Value};
+
+    /// 13y1 Task 7 item 6 (P9): the saved toggles come back only on an adopted member; a restored session
+    /// that is not one (every restored session until adoption exists) starts with both off, so a pane that
+    /// later leads a workgroup never inherits Auto Request unasked.
+    #[test]
+    fn restored_toggles_need_an_adopted_member() {
+        assert_eq!(restored_toggles(|_| true, false), (false, false));
+        assert_eq!(restored_toggles(|_| true, true), (true, true));
+        assert_eq!(restored_toggles(|k| k == AUTO_SEND_KEY, true), (true, false));
+        assert_eq!(restored_toggles(|k| k == AUTO_REQUEST_KEY, true), (false, true));
+        let arrange = include_str!("app/arrange_ui.rs");
+        assert!(arrange.contains("crate::workgroup::restored_toggles(on, p.workgroup.is_some())"), "the restore asks whether the pane is an adopted member");
+        assert!(!arrange.contains("p.auto_send_clippings = on("), "no direct restore of a toggle");
+    }
 
     const BACK: &str = "0xf702-0x340000-0x7b";
     const FORWARD: &str = "0xf703-0x340000-0x7c";
