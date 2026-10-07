@@ -38,9 +38,9 @@
             body.sessionSecret = SECRET;
             window.webkit.messageHandlers.tandemPointer.postMessage(body);
         }
-        // iTerm2's button numbers: 0 left, 1 right, 2 middle.
+        // iTerm2's button numbers: 0 left, 1 right, 2 middle, 3 and up as the page counts them.
         function buttonOf(js) {
-            return js === 0 ? 0 : (js === 1 ? 2 : (js === 2 ? 1 : -1));
+            return js === 0 ? 0 : (js === 1 ? 2 : (js === 2 ? 1 : (js >= 3 && js <= 31 ? js : -1)));
         }
         // 1 Shift, 2 Ctrl, 4 Alt, 8 Win.
         function modsOf(e) {
@@ -109,7 +109,7 @@
                 post({ type: "up", button: e.button, clicks: last[e.button], mods: mods, x: p.x, y: p.y });
                 return;
             }
-            // A single click with only Win held: the first action of the best rule that has one.
+            // A single click with only Win held: the best match, and its rule's first action if it has one.
             // The click goes on to the page (`BWV:531-546`).
             if (b === 0 && clicksOf(e) === 1 && mods === 8) {
                 const p = point(e);

@@ -94,6 +94,12 @@ fn units_before(text: &str, bytes: usize) -> usize {
     text[..bytes.min(text.len())].encode_utf16().count()
 }
 
+/// What a Win-click runs: the first action of the matched rule, when that rule has one
+/// (`iTermBrowserWebView+Actions.swift:231`, `BWV:528-546`).
+pub fn win_click_action(rules: &[Rule], m: &WebMatch) -> Option<smartsel::RuleAction> {
+    rules.get(m.rule)?.actions.first().cloned()
+}
+
 /// The best Smart Selection match around a click in the page (`WVA:306-377`): `before` and `after`
 /// are the page text on each side of the click. A rule's match must cover the click (units on both
 /// sides); the best score wins per matched text, and the best of those overall. Counts are UTF-16
@@ -205,6 +211,25 @@ mod tests {
         let m = all_matches(&[rule("(", 1.0), rule("b", 1.0)], "abc");
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].rule, 1);
+    }
+
+    /// iTerm2's Cmd-click (`iTermBrowserWebView+Actions.swift:231`) matches with `requireAction: false`:
+    /// the best overall rule is selected, and an action runs only if THAT rule has one.
+    #[test]
+    fn a_win_click_acts_only_on_the_best_rule() {
+        use crate::smartsel::RuleAction;
+        let action = RuleAction { action: "a".into(), title: "t".into(), parameter: "p".into() };
+        let mut with = rule(r"[a-z]+", 1.0);
+        with.actions.push(action.clone());
+        let best_without = rule(r"[a-z0-9]+@[a-z]+", 1000.0);
+        let rules = vec![with.clone(), best_without];
+        // Best overall has no action: it is selected, nothing runs (the lower rule's action stays unrun).
+        let m = first_match("bob@ex", "ample", &rules, false).unwrap();
+        assert_eq!(m.rule, 1);
+        assert_eq!(win_click_action(&rules, &m), None);
+        // Best overall has one: its first action runs.
+        let m = first_match("bob@ex", "ample", &[with.clone()], false).unwrap();
+        assert_eq!(win_click_action(&[with], &m), Some(action));
     }
 
     /// P20: the rules and the text are bounded.

@@ -397,11 +397,13 @@ impl App {
                     }
                 }));
             }
-            // Win-click: the best rule that has an action; the selection is not copied (`WVA:254`).
+            // Win-click: the best overall match is selected (iTerm2 matches with requireAction false,
+            // `iTermBrowserWebView+Actions.swift:231`) and runs its rule's first action if it has one;
+            // the selection is not copied (`WVA:254`).
             Press::SmartAction { x, y } => {
-                self.browser_smart_select(pane, (x, y), true, Box::new(|a, p, m| {
+                self.browser_smart_select(pane, (x, y), false, Box::new(|a, p, m| {
                     let Some(m) = m else { return };
-                    let action = a.browser_rules(p).get(m.rule).and_then(|r| r.actions.first().cloned());
+                    let action = crate::browser_smart::win_click_action(&a.browser_rules(p), &m);
                     if let Some(action) = action {
                         a.browser_next.push(PageNext::Smart(p, action, m.captures));
                     }
@@ -725,7 +727,7 @@ mod tests {
         assert!(ptr.contains("Up::Perform(b)") && ptr.contains("self.globals.bool(\"FocusOnRightOrMiddleClick\")"));
         assert!(ptr.contains("globals.bool(\"CopySelection\")"), "Smart Selection copies only when that preference is on");
         let smart_action = &ptr[ptr.find("Press::SmartAction").unwrap()..ptr.find("Press::Focus").unwrap()];
-        assert!(smart_action.contains("true, Box::new") && !smart_action.contains("browser_copy_selection"), "the Win-click needs an action and copies nothing");
+        assert!(smart_action.contains("false, Box::new") && smart_action.contains("win_click_action(") && !smart_action.contains("browser_copy_selection"), "the Win-click selects the best match (requireAction false in iTerm2's matcher) and copies nothing");
         let perf = &p[at("fn browser_pointer_perform")..at("fn browser_context_menu_at")];
         assert!(perf.contains("PageNext::Session(pane, b.clone())"), "the session's actions run through run_pointer_action");
         assert!(perf.contains("PageOpen::Tab") && perf.contains("PageOpen::Here") && perf.contains("PageOpen::QuickLook(at)"));

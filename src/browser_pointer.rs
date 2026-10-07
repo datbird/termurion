@@ -23,6 +23,8 @@ pub fn button_of_js(js_button: i64) -> u8 {
         0 => 0,
         1 => 2,
         2 => 1,
+        // Back, Forward and beyond keep their numbers (iTerm2's otherMouseDown buttons 3+).
+        3..=31 => js_button as u8,
         _ => 255,
     }
 }
@@ -92,7 +94,7 @@ pub fn gate_keys(map: &toml::Table, prefs: &Prefs) -> Vec<String> {
     let mut keys = Vec::new();
     for (k, v) in map {
         let Some((button, clicks, mods)) = pointer::parse_key(k) else { continue };
-        if !matches!(button, 1 | 2) || !(1..=4).contains(&clicks) {
+        if !(1..=31).contains(&button) || !(1..=4).contains(&clicks) {
             continue;
         }
         if pointer::on_down(button, clicks, mods, false, false, map, prefs) != Down::Bound {
@@ -270,7 +272,11 @@ mod tests {
         assert_eq!(button_of_js(0), 0);
         assert_eq!(button_of_js(1), 2);
         assert_eq!(button_of_js(2), 1);
-        assert_eq!(button_of_js(3), 255);
+        // The mouse's Back and Forward buttons and beyond keep their numbers (iTerm2's otherMouseDown, `BWV:476-487`).
+        assert_eq!(button_of_js(3), 3);
+        assert_eq!(button_of_js(4), 4);
+        assert_eq!(button_of_js(31), 31);
+        assert_eq!(button_of_js(32), 255);
         assert_eq!(button_of_js(-1), 255);
     }
 
@@ -297,6 +303,13 @@ mod tests {
         let k = gate_keys(&menu, &P);
         assert!(!k.contains(&pointer::key(1, 1, NONE)), "the page's own right click is Task 3's menu");
         assert!(k.contains(&pointer::key(0, 1, ctrl)), "ctrl-click still stands for it");
+        // A binding on button 4 (the mouse's Back button) is taken from the page like the middle button's.
+        let back = map(&[("Button,3,1,,", "kNextTabPointerAction"), ("Button,4,2,c,", "kNextTabPointerAction")]);
+        assert_eq!(gate_keys(&back, &P), { let mut v = vec![pointer::key(3, 1, NONE), pointer::key(4, 2, Mods { cmd: true, ..NONE })]; v.sort(); v });
+        let b3 = press_of(&json!({"type": "down", "button": 3, "clicks": 1, "mods": 0, "x": 1.0, "y": 2.0}));
+        assert_eq!(b3, Some(Press::Down { button: 3, clicks: 1, mods: NONE, x: 1.0, y: 2.0 }));
+        let gate = include_str!("../resources/browser/pointer-gate.js");
+        assert!(gate.contains("js >= 3 && js <= 31 ? js : -1"), "the script's buttonOf carries buttons 3 and up");
         // Gestures and junk keys are not clicks.
         assert!(gate_keys(&map(&[("Gesture,ThreeFingerSwipeUp,,", "kNextWindowPointerAction"), ("nonsense", "kNextTabPointerAction")]), &P).is_empty());
         // The press message, with Task 6's mods bits (1 Shift, 2 Ctrl, 4 Alt, 8 Win) and the page's own button
@@ -312,7 +325,7 @@ mod tests {
         for bad in [
             json!({"type": "nope"}),
             json!({"type": "down", "button": 1, "clicks": 1, "mods": 0, "x": 1.0}),
-            json!({"type": "down", "button": 7, "clicks": 1, "mods": 0, "x": 1.0, "y": 1.0}),
+            json!({"type": "down", "button": 40, "clicks": 1, "mods": 0, "x": 1.0, "y": 1.0}),
             json!({"type": "down", "button": 1, "clicks": 0, "mods": 0, "x": 1.0, "y": 1.0}),
             json!({"type": "down", "button": 1, "clicks": 9, "mods": 0, "x": 1.0, "y": 1.0}),
             json!({"type": "down", "button": 1, "clicks": 1, "mods": 99, "x": 1.0, "y": 1.0}),
