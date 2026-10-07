@@ -51,6 +51,9 @@ pub(super) struct WorldState {
     pub(super) setup_started: Option<Instant>,
     /// The URL to load once the setup is over (Ready or not).
     pub(super) load_after: Option<String>,
+    /// A URL whose load waits for the launch's window restoration to end (iTerm2 waits for
+    /// `iTermSessionRestorationDidCompleteNotification`, `BVC:871-910`).
+    pub(super) restore_load: Option<String>,
     /// The check that waits for the navigation to about:blank, and that navigation's id.
     pub(super) reload_wait: bool,
     pub(super) reload_nav: Option<u64>,
@@ -324,12 +327,20 @@ impl App {
     /// The setup is over: the world is Ready or Unavailable (then no Client script stays registered),
     /// and the pending URL loads.
     fn browser_world_finish(&mut self, pane: PaneId) {
+        let restoring = self.browser_restoring();
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let Some(setup) = bv.world.setup.take() else { return };
         bv.client_world = setup.state().clone();
         bv.world.reload_wait = false;
         bv.world.world_check = None;
         let load = bv.world.load_after.take();
+        // While the launch restores windows the page waits: it is loaded when the restoration ends.
+        let load = if restoring {
+            bv.world.restore_load = load;
+            None
+        } else {
+            load
+        };
         let ids = if matches!(bv.client_world, ClientWorld::Unavailable(_)) { std::mem::take(&mut bv.world_scripts) } else { Vec::new() };
         let unavailable = matches!(bv.client_world, ClientWorld::Unavailable(_));
         if unavailable {
@@ -343,6 +354,9 @@ impl App {
         if let Some(url) = load {
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.world.history.arm();
+            }
+            if let Some(bv) = self.browser_views.get_mut(&pane) {
+                bv.bar.nav_state.will_load(&url);
             }
             if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                 v.navigate_tandem(&url);

@@ -33,6 +33,11 @@ pub struct BrowserIo {
     pub zoom: f64,
     /// The last navigation failed (what shows is an error page).
     pub failed: bool,
+    /// The page's background color, as reported once a load completed (the minimal tab style's tint,
+    /// `PS:5838-5850`); RGB only, never page text.
+    pub page_color: Option<(u8, u8, u8)>,
+    /// The link target of an arrangement (`PS:334`), kept and written back unchanged: bounded and clean.
+    pub target: Option<String>,
 }
 
 /// What starting a pane with a profile makes.
@@ -241,8 +246,10 @@ pub const GLYPH_GLOBE: char = '\u{E774}';
 
 /// `BrowserTransitionType` (`BrowserHistory.swift:10-18`): how a visit began.
 pub const TRANSITION_TYPED: i64 = 0;
+pub const TRANSITION_LINK: i64 = 1;
 pub const TRANSITION_RELOAD: i64 = 2;
 pub const TRANSITION_BACK_FORWARD: i64 = 3;
+pub const TRANSITION_REDIRECT: i64 = 4;
 pub const TRANSITION_OTHER: i64 = 6;
 pub const GLYPH_LOCK: char = '\u{E72E}';
 pub const GLYPH_WARNING: char = '\u{E7BA}';

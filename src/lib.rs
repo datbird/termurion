@@ -78,6 +78,7 @@ pub mod browser_pointer;
 pub mod browser_frames;
 pub mod browser_db;
 pub mod browser_pages;
+pub mod browser_restore;
 pub mod adblock;
 #[cfg(windows)]
 pub mod svg_raster_win;

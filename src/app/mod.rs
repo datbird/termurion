@@ -164,6 +164,7 @@ mod browser_smart_app;
 mod browser_overlay_app;
 mod browser_input_app;
 mod browser_frames_app;
+mod browser_restore_app;
 mod web_popover_app;
 mod web_replay_app;
 mod toolbelt_tools_ui;
@@ -1698,6 +1699,9 @@ pub struct App {
     focus_seen: crate::browser::FocusSeen<WindowId>,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
     browser_url_override: Option<String>,
+    /// The launch is applying the saved windows: a browser pane makes its view but loads its page
+    /// only when this ends (`browser_restoration_done`). Not per window: no `swap_live` entry.
+    restoring_windows: bool,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -2665,6 +2669,7 @@ pub fn run() {
         adblock: adblock_app::Adblock::default(),
         focus_seen: Default::default(),
         browser_url_override: None,
+        restoring_windows: false,
     };
     // Debug logging at launch starts before the first window (`AD:1356-1358`).
     app.start_debug_logging_automatically();
@@ -6851,6 +6856,8 @@ impl ApplicationHandler<UserEvent> for App {
         // The saved state's windows are the launch's own restoration (`launch` true); a default
         // arrangement is an arrangement like any other.
         let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w, true)).or(default_arrangement.map(|(n, w)| (n, w, false))) };
+        // The launch's own restoration (saved windows, hotkey windows) holds browser loads back.
+        self.restoring_windows = matches!(&startup_arrangement, Some((_, _, true))) || !hotkey_saved.is_empty();
         let mut arranged = false;
         match startup_arrangement {
             Some((name, mut windows, launch)) => {
@@ -6934,6 +6941,11 @@ impl ApplicationHandler<UserEvent> for App {
         // After the first window and the launch's own requests: the second launch's question.
         self.update_start();
         self.tips_launch();
+        // Nothing queued: the restoration ended with the first window.
+        if self.restoring_windows && self.pending_windows.is_empty() {
+            self.restoring_windows = false;
+            self.browser_restoration_done();
+        }
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -6975,6 +6987,11 @@ impl ApplicationHandler<UserEvent> for App {
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();
+        }
+        // After the last saved window: the restored pages load.
+        if self.restoring_windows {
+            self.restoring_windows = false;
+            self.browser_restoration_done();
         }
         self.api_tmux_tabs_opened();
         self.tmux_auto_bury();

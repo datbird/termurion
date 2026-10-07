@@ -104,6 +104,9 @@ pub(super) struct BarState {
     pub(super) nav: browser::NavList,
     /// How the next history row's visit began (`BrowserTransitionType`); None is "other".
     pub(super) transition: Option<i64>,
+    /// How navigations began, for `transition` (`BrowserNavigationState`), and the page color's rate limit.
+    pub(super) nav_state: crate::browser_restore::NavState,
+    pub(super) color: crate::browser_restore::ColorLimit,
     /// The favicon decoded: a key for the texture, RGBA and its size.
     favicon: Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u32))>,
 }
@@ -189,7 +192,9 @@ impl App {
     /// Starts browser pane `id` at `rect` for profile `p`. False (with a banner) when there is no
     /// WebView2 Runtime: the pane is not made.
     pub(super) fn start_browser_pane(&mut self, id: PaneId, rect: Rect, p: &Profile) -> bool {
-        let restored = self.browser_url_override.take();
+        // A restored (or opened) URL is judged by the one navigation gate again at load time: a stored
+        // file: or javascript: URL never loads, the pane starts at the profile's Initial URL.
+        let restored = self.browser_url_override.take().and_then(|u| crate::browser_restore::load_gate(&u));
         let url = match browser::start_plan(&p.string("Custom Command"), self.globals.bool("BrowserProfiles"), &p.string("Initial URL"), restored.as_deref()) {
             Start::Browser(u) => u,
             Start::Terminal => return false,
@@ -232,6 +237,7 @@ impl App {
         let in_front = crate::webhost_win::foreground_root() == Some(hwnd);
         let panes: Vec<PaneId> = self.browser_views.keys().copied().collect();
         for pane in panes {
+            self.browser_color_tick(pane);
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
             match rect {
                 Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front),
@@ -517,6 +523,7 @@ impl App {
                     }
                     self.browser_record_visit(pane);
                     self.adblock_inject(pane);
+                    self.browser_color_read(pane);
                 }
                 self.browser_name(pane);
             }
@@ -587,6 +594,11 @@ impl App {
             // The page's right-click menu and a pick from it (Task 3).
             Event::ContextMenu { token, target, .. } => self.browser_context_menu(pane, *token, target.clone()),
             Event::ContextMenuPicked { token, id, .. } => self.browser_ctx_event(pane, *token, *id, event_loop),
+            // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
+            Event::Starting { url, kind, user, redirect, .. } => {
+                self.browser_nav_starting(pane, url, *kind, *user, *redirect);
+                self.browser_script_event(pane, e);
+            }
             // Everything a page's script says, the world's events and the calls' answers: the router.
             _ => {
                 self.browser_script_event(pane, e);
@@ -1144,6 +1156,9 @@ impl App {
     pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
+            bv.bar.nav_state.will_load(url);
+            // A person's own load ends the wait of a restored page.
+            bv.world.restore_load = None;
             // While the world is being set up nothing loads (review I2): the URL waits.
             if bv.view.is_some() && bv.world.defer_load(url) {
                 return;
