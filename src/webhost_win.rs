@@ -492,8 +492,6 @@ struct Inner {
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
-    /// `navigate_to_string` is Tandem's own load: the next `data:` navigation is its.
-    tandem_data: bool,
     new_windows: webhost::NewWindowLimiter,
     pending: HashMap<u64, Pending>,
     next_token: u64,
@@ -531,7 +529,6 @@ impl WebView {
             queued: Vec::new(),
             nav_uris: VecDeque::new(),
             tandem_uri: None,
-            tandem_data: false,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
             next_token: 1,
@@ -615,15 +612,6 @@ impl WebView {
     pub fn navigate_tandem(&self, url: &str) {
         self.inner.borrow_mut().tandem_uri = Some((url.to_string(), Instant::now()));
         self.navigate(url);
-    }
-
-    /// Loads `html` (at most 2 MB; the caller checks). Tandem's own load: the next `data:` navigation is its.
-    pub fn navigate_to_string(&self, html: &str) {
-        self.inner.borrow_mut().tandem_data = true;
-        let w = wide(html);
-        self.with(move |c| {
-            let _ = unsafe { c.view.NavigateToString(PCWSTR(w.as_ptr())) };
-        });
     }
 
     /// Sets the physical rectangle (left, top, right, bottom) in the parent's client coordinates;
@@ -934,10 +922,6 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
                     i.tandem_uri = None;
                     by_tandem = true;
                 }
-            }
-            if i.tandem_data && uri.to_ascii_lowercase().starts_with("data:") {
-                i.tandem_data = false;
-                by_tandem = true;
             }
             (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone() }, by_tandem)
         };
@@ -1339,6 +1323,15 @@ mod tests {
         assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 1);
     }
 
+    /// Final review Minor 3: no `NavigateToString` and no "the next data: navigation is Tandem's"
+    /// flag remain (program content is served by `LocalDoc`; the flag had no expiry).
+    #[test]
+    fn no_string_navigation_remains() {
+        let src = include_str!("webhost_win.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(!live.contains("NavigateToString") && !live.contains("tandem_data") && !live.contains("fn navigate_to_string"));
+    }
+
     /// Final review I6: the favicon is WebView2's own (FaviconChanged, then GetFavicon as PNG; Tandem
     /// fetches nothing), read with the 256 KiB bound and posted only when `favicon_ok` passes (B5
     /// caps in the host). Only views that ask for it (browser panes) register the handler.
@@ -1576,10 +1569,13 @@ mod tests {
             pump_until(&rx, 1, |_| false);
         }
         let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
-        let setup = ViewSetup { guard_local_schemes: true, web_message: true, ..Default::default() };
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["https://tandem.test/*".into()], ..Default::default() };
         let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
-        view.navigate_to_string("<title>t</title><body>x</body>");
+        // Tandem's own page, served from memory (no NavigateToString: final review Minor 3).
+        view.navigate_tandem("https://tandem.test/t");
+        let Some(Event::Request { token, .. }) = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 1, .. })) else { panic!("a request for the page") };
+        view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<title>t</title><body>x</body>".to_vec(), headers: vec![] });
         let title = pump_until(&rx, 10, |e| matches!(e, Event::Title(1, t) if t == "t"));
         assert!(title.is_some(), "Title");
         view.execute_script("1+1", 7);

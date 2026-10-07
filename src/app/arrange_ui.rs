@@ -166,7 +166,7 @@ impl App {
         // A browser pane keeps its URL, sanitized and bounded, and nothing of the page: no cookies,
         // no content. A Dev Null pane keeps none (it keeps no history).
         if let (Some(io), Some(t)) = (p.browser_io().filter(|io| !io.dev_null), v.as_table_mut()) {
-            if let Some(url) = crate::browser::saved_url(&io.url) {
+            if let Some(url) = crate::browser::arrangement_url(&io.url) {
                 t.insert(crate::browser::URL_KEY.into(), Value::String(url));
             }
         }

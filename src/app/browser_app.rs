@@ -1007,7 +1007,7 @@ impl App {
     }
 
     /// Runs an external protocol a person asked for, through `guard_open` only.
-    fn run_external(&mut self, url: &str, user: bool) {
+    pub(super) fn run_external(&mut self, url: &str, user: bool) {
         match super::web_popover_app::external_uri_run(url, user) {
             super::web_popover_app::ExternalRun::Open(t) => {
                 if let Err(e) = super::semantic_ui::shell_open(&t, false) {
@@ -1424,7 +1424,7 @@ impl App {
 
 /// A browser's saved URL of an arrangement's session table, judged again on load.
 pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
-    browser::saved_url(session.get(browser::URL_KEY)?.as_str()?)
+    browser::arrangement_url(session.get(browser::URL_KEY)?.as_str()?)
 }
 
 #[cfg(test)]

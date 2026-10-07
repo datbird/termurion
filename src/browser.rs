@@ -175,6 +175,17 @@ pub fn saved_url(url: &str) -> Option<String> {
     }
 }
 
+/// The URL an arrangement or restoration file keeps (final review Minor 8): `saved_url` with the
+/// fragment dropped (an OAuth `#access_token=` lives there) and, of `about:` pages, only
+/// `about:blank`. Used on save and again on load.
+pub fn arrangement_url(url: &str) -> Option<String> {
+    let url = url.split('#').next().unwrap_or_default();
+    let kept = saved_url(url)?;
+    if crate::webhost::scheme_of(&kept) == "about" && !kept.eq_ignore_ascii_case("about:blank") {
+        return None;
+    }
+    Some(kept)
+}
 
 // --- The toolbar and the URL bar (Task 6) ---
 
@@ -1394,6 +1405,25 @@ mod tests {
         assert_eq!(saved_url(&format!("https://a.test/{}", "x".repeat(MAX_URL))), None);
         assert_eq!(saved_url(""), None);
         assert_eq!(saved_url("about:blank").as_deref(), Some("about:blank"));
+    }
+
+    /// Final review Minor 8: the URL written to an arrangement or restoration file drops the
+    /// fragment (an OAuth `#access_token=` lives there) and keeps `about:` only as `about:blank`
+    /// (another party's arrangement names no other `about:` page); loading judges it the same way.
+    #[test]
+    fn an_arrangement_url_keeps_no_fragment() {
+        assert_eq!(arrangement_url("https://a.test/cb?code=1#access_token=x").as_deref(), Some("https://a.test/cb?code=1"));
+        assert_eq!(arrangement_url("https://u:p@a.test/x#").as_deref(), Some("https://a.test/x"));
+        assert_eq!(arrangement_url("iterm2-about:history").as_deref(), Some("iterm2-about:history"));
+        assert_eq!(arrangement_url("about:blank").as_deref(), Some("about:blank"));
+        assert_eq!(arrangement_url("ABOUT:BLANK").as_deref(), Some("ABOUT:BLANK"));
+        assert_eq!(arrangement_url("about:srcdoc"), None);
+        assert_eq!(arrangement_url("about:blank#x").as_deref(), Some("about:blank"));
+        assert_eq!(arrangement_url("javascript:alert(1)"), None);
+        let a = include_str!("app/arrange_ui.rs");
+        assert!(a.contains("crate::browser::arrangement_url(&io.url)") && !a.contains("crate::browser::saved_url(&io.url)"));
+        let b = include_str!("app/browser_app.rs");
+        assert!(b.contains("browser::arrangement_url(session.get(browser::URL_KEY)?.as_str()?)"));
     }
 
     /// The 13w merge (Important 2 ruling): every text a page or program supplies that the browser

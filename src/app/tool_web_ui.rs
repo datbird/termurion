@@ -297,6 +297,9 @@ impl App {
             Event::Failed(..) => {
                 self.tool_view_ids.insert(view, true);
             }
+            // B4: an external protocol or a refused click opens only through the one guard, else the
+            // notice (final review Minor 12).
+            Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
             // Only a failure the runtime does not recover by itself marks the view for a remake.
             Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log => {
                 self.tool_view_ids.insert(view, true);
@@ -310,6 +313,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review Minor 12 (B4): a tool page's external protocol or refused click is not dropped
+    /// silently: it goes through the one external handler (guard_open, else the notice "Tandem
+    /// does not open <scheme>: links.").
+    #[test]
+    fn a_tool_page_external_link_gets_the_notice() {
+        let src = include_str!("tool_web_ui.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let ev = &prod[prod.find("pub(super) fn tool_view_event").unwrap()..];
+        assert!(ev.contains("Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),"));
+    }
     use crate::layout::Rect;
     use std::collections::HashMap;
 

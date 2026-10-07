@@ -842,10 +842,15 @@ mod tests {
         assert_eq!(r.len(), 24);
         assert!(r.always_prebuilt(), "built on the worker, not on first use");
         let url = format!("https://x.test/{}", "a".repeat(1 << 20));
-        let before = over_budget_count();
+        // The real budget bounds the time, however fast the machine.
         let start = std::time::Instant::now();
         assert!(!blocks_within(&r, &url, Resource::Image, TOP, MATCH_BUDGET), "over budget means allowed (fail open for ads only)");
         assert!(start.elapsed() < Duration::from_millis(250), "{:?}", start.elapsed());
+        // A spent budget (none at all) always cuts the answer short, allows the request and is
+        // counted (final review Minor 16: not dependent on the machine being slow; other tests can
+        // only raise the process-wide counter, never lower it).
+        let before = over_budget_count();
+        assert!(!blocks_within(&r, &url, Resource::Image, TOP, Duration::ZERO), "over budget means allowed");
         assert!(over_budget_count() > before, "an answer cut short is counted");
     }
 }

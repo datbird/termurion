@@ -771,7 +771,7 @@ pub struct NavInfo<'a> {
     pub source: Option<&'a str>,
     pub user: bool,
     pub redirect: bool,
-    /// Tandem's own load (`navigate_tandem`, `navigate_to_string`).
+    /// Tandem's own load (`navigate_tandem`).
     pub by_tandem: bool,
 }
 
