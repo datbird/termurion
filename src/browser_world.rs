@@ -24,8 +24,8 @@ pub const EVENTS: &[&str] = &[
     "Target.detachedFromTarget",
     "Page.frameNavigated",
 ];
-/// Contexts kept at once (a page that makes frames without end cannot grow the table).
-pub const MAX_CONTEXTS: usize = 256;
+/// Contexts kept at once (a page that makes frames without end cannot grow the table); ruling P12.
+pub const MAX_CONTEXTS: usize = 512;
 /// Frame ids interned for a view's life.
 pub const MAX_FRAME_KEYS: usize = 1024;
 
@@ -104,7 +104,8 @@ pub const ALLOWED: &[&str] = &[
     // Review I1 (reviewer: the controller): clears the back list after the isolation check's
     // about:blank, so Back on a new pane never reaches it. Keeps only the current entry.
     "Page.resetNavigationHistory",
-    "Emulation.setFocusEmulationEnabled",
+    // Emulation.setFocusEmulationEnabled is NOT here until the console test shows an unfocused
+    // target dropping Input.* (Task 8 ruling; final review minor 9).
     "Input.insertText",
     "Input.dispatchKeyEvent",
     "Input.dispatchMouseEvent",
@@ -1075,10 +1076,14 @@ mod tests {
     /// origin flag exists anywhere in the program.
     #[test]
     fn devtools_methods_are_a_closed_set() {
-        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Page.resetNavigationHistory", "Emulation.setFocusEmulationEnabled", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent"] {
+        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Page.resetNavigationHistory", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent"] {
             assert!(method_allowed(m), "{m}");
         }
-        assert_eq!(ALLOWED.len(), 16);
+        assert_eq!(ALLOWED.len(), 15);
+        // Final review minor 9 (least privilege): not until the console test shows a need.
+        assert!(!method_allowed("Emulation.setFocusEmulationEnabled"));
+        // Final review minor 8: the table bound ruling P12 states.
+        assert_eq!(MAX_CONTEXTS, 512);
         for m in ["Page.navigate", "Network.getCookies", "Runtime.callFunctionOn", "Browser.close", "Storage.getCookies", "Target.createTarget", "Fetch.enable", "Page.enable ", "page.enable", ""] {
             assert!(!method_allowed(m), "{m}");
         }

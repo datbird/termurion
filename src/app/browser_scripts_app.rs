@@ -346,6 +346,10 @@ impl App {
         let unavailable = matches!(bv.client_world, ClientWorld::Unavailable(_));
         if unavailable {
             bv.world.client_sources.clear();
+            // A script whose isolation was never proven may have seen the secrets (a late
+            // registration on the timeout path): they are worthless from now on (final review minor 10).
+            bv.secret = browser_js::new_secret();
+            bv.dom_secret = browser_js::new_secret();
             // The reason is a fixed text of ours, never a page's; one line.
             crate::rlog!("browser view {} has no isolated world", bv.id);
         }
@@ -1044,6 +1048,17 @@ mod tests {
         assert!(show.find("browser_reset_world(").unwrap() < show.find("WebView::create(").unwrap(), "a new view starts with a new world");
         assert!(show.find("browser_world_start(").unwrap() > show.find("WebView::create(").unwrap());
         assert!(!show.contains("navigate_tandem"), "the pending URL loads when the world's setup is over");
+    }
+
+    /// Final review minor 10: a view whose world ends Unavailable gets new secrets, so a value that
+    /// may have reached a script whose isolation was never proven (deferred minor 193) is worthless.
+    #[test]
+    fn an_unavailable_world_rotates_its_secrets() {
+        let p = prod();
+        let f = &p[p.find("fn browser_world_finish").unwrap()..p.find("pub(super) fn browser_world_navigated").unwrap()];
+        let un = &f[f.find("if unavailable {").unwrap()..];
+        let un = &un[..un.find("\n        }\n").unwrap()];
+        assert!(un.contains("bv.secret = browser_js::new_secret();") && un.contains("bv.dom_secret = browser_js::new_secret();"), "{un}");
     }
 
     /// Review I1, the wiring: a load that follows a check arms the reset and the first real

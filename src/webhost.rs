@@ -348,7 +348,9 @@ impl Event {
         if let Event::DevTools { name, .. } = self {
             return name == BINDING_EVENT;
         }
-        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
+        // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
+        // lose the press to both (final review minor 6). Only a person's key makes one.
+        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { taken: false, .. } | Event::History { .. } | Event::Loading(..))
     }
 
     /// The bytes an event holds that a page chose.
@@ -1571,6 +1573,16 @@ mod tests {
         assert!(!Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.droppable());
         assert!(!Event::ScriptDone { view: 1, token: 1, json: Ok("2".into()) }.droppable());
         assert!(Event::Message { view: 1, json: String::new(), source: String::new() }.droppable());
+        // Final review minor 6: a key Tandem took (`SetHandled(true)`: the page never sees it) is
+        // never dropped, or the press would be lost to both; a key the page kept may be.
+        assert!(!Event::Key { view: 1, vk: 0x4a, mods: 3, taken: true }.droppable());
+        assert!(Event::Key { view: 1, vk: 0x4a, mods: 0, taken: false }.droppable());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..(MAX_QUEUED_EVENTS + 10) {
+            held.push(gate.admit(&Event::Key { view: 1, vk: 0x4a, mods: 3, taken: true }).expect("a taken key is never refused"));
+        }
+        drop(held);
     }
 
     /// Fix round 1, item 1 (B12): only a binding call is droppable (and counts as a message); every
