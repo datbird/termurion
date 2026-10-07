@@ -72,6 +72,7 @@ pub mod browser_js;
 pub mod browser_ctx;
 pub mod ctx_help;
 pub mod browser_smart;
+pub mod browser_tip;
 pub mod browser_frames;
 pub mod browser_db;
 pub mod browser_pages;

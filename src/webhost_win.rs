@@ -2761,6 +2761,33 @@ mod probe {
         p.finish();
     }
 
+    /// Task 5: a pointer move over a link raises the hover script's `iTermHoverLink` message in
+    /// the Tandem world, routed as Client with the link's URL; both hosts are under `.invalid` so no
+    /// preconnect can leave the machine. Needs the console session (skipped elsewhere, never a pass).
+    #[test]
+    #[ignore]
+    fn hover_reaches_the_router() {
+        let secret = hex32();
+        let url = "https://hover.invalid/x";
+        let page_html = format!("<!doctype html><html><body style=\"margin:0\"><a href=\"{url}\" style=\"display:block;width:200px;height:50px\">link</a><a href=\"#a\">frag</a></body></html>");
+        let Some(mut p) = Probe::start(&[(PAGE, page_html)], vec![wrapped(&HOVER.replace("{{SECRET}}", &secret))]) else { return };
+        p.load(PAGE);
+        p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": "mouseMoved", "x": 20, "y": 20})).expect("the move");
+        assert!(p.wait(10, |p| !p.clients("iTermHoverLink").is_empty()), "the move over the link reaches the router");
+        let (_, body) = p.clients("iTermHoverLink").into_iter().next().unwrap();
+        let hover = crate::browser_tip::hover_of(&body).expect("a hover message");
+        match hover {
+            crate::browser_tip::Hover::Show { url: u, rect } => {
+                assert_eq!(u, url);
+                assert!(rect.2 >= 100.0 && rect.3 >= 20.0, "the link's rectangle: {rect:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(body.get("sessionSecret").and_then(Value::as_str), Some(secret.as_str()));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
     /// Review Focus 1 (I3, I8, M11): a copied script's `window.webkit` post reaches the router as the
     /// Tandem world's, a page's own post as the page's, in every frame; a page that replaces
     /// `window.chrome.webview.postMessage` sees nothing of the world's traffic; `window.webkit` is

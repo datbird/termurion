@@ -705,6 +705,8 @@ impl App {
                 for d in dones {
                     d(self, pane, Err("navigated".into()));
                 }
+                // The link under the pointer belongs to the page that is going.
+                self.browser_tip_clear(pane);
                 false
             }
             Event::ScriptDone { token, json, .. } if self.browser_owns_token(pane, *token) => self.browser_script_done(pane, *token, json),
@@ -749,6 +751,7 @@ impl App {
             return;
         }
         let mut copy = None;
+        let mut hover = None;
         match what {
             browser_js::AlwaysOn::Console { level, size } => {
                 // iTerm2 logs the text (`BM:1066-1087`); a page's words are never logged here (B6): a
@@ -761,6 +764,7 @@ impl App {
             browser_js::AlwaysOn::Gesture(true) => bv.selection_gate.down(Instant::now()),
             browser_js::AlwaysOn::Gesture(false) => copy = bv.selection_gate.up(Instant::now(), copy_on),
             browser_js::AlwaysOn::Editing(e) => bv.editing = e,
+            browser_js::AlwaysOn::Hover(h) => hover = Some(h),
             browser_js::AlwaysOn::Selection(text) => {
                 bv.selection = Some(browser_js::store_selection(&text));
                 copy = bv.selection_gate.accept(&text, Instant::now(), copy_on);
@@ -769,6 +773,9 @@ impl App {
         if let Some(text) = copy {
             self.set_clipboard_text(text.clone());
             self.remember_paste(&text);
+        }
+        if let Some(h) = hover {
+            self.browser_hover(pane, h);
         }
     }
 

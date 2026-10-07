@@ -247,7 +247,7 @@ fn system_fonts() -> &'static Vec<(&'static str, Vec<u8>)> {
     })
 }
 
-fn install_fonts(ctx: &egui::Context) {
+pub(crate) fn install_fonts(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
     let base = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
     let mut have = |face: &str| -> Option<String> {

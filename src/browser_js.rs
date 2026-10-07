@@ -292,6 +292,8 @@ pub fn always_on_scripts(secret: &str, dom_secret: &str, client_ok: bool, debug:
         v.push(script("monitor-selection", load("monitor-selection.js", &[("SECRET", secret)]), World::Client));
         v.push(script("selection-gesture", load("selection-gesture.js", &[("SECRET", secret)]), World::Client));
         v.push(script("editing-detector", load("editing-detector.js", &[("SECRET", dom_secret)]), World::Client));
+        // The hovered link (`BM:331-339`): the main frame only, in the isolated world.
+        v.push(UserScript { main_frame_only: true, ..script("hover-link-detector", load("hover-link-detector.js", &[("SECRET", secret)]), World::Client) });
     }
     v.push(local_page_script());
     v
@@ -316,6 +318,8 @@ pub enum AlwaysOn {
     /// A trusted press (true) or release (false).
     Gesture(bool),
     Editing(bool),
+    /// The link under the pointer, or none (`HLH`).
+    Hover(crate::browser_tip::Hover),
 }
 
 /// What an always-on handler's message means. The console log comes from either world and needs no
@@ -339,6 +343,7 @@ pub fn always_on(r: &Routed, secret: &str, dom_secret: &str) -> Option<AlwaysOn>
         SELECTION_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Selection(r.body.get("selection")?.as_str()?.to_string())),
         SELECTION_GESTURE_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Gesture(r.body.get("phase").and_then(Value::as_str) == Some("down"))),
         EDITING_HANDLER if secret_ok(&r.body, dom_secret) => Some(AlwaysOn::Editing(r.body.get("editable")?.as_bool()?)),
+        crate::browser_tip::HOVER_HANDLER if secret_ok(&r.body, secret) => crate::browser_tip::hover_of(&r.body).map(AlwaysOn::Hover),
         _ => None,
     }
 }
@@ -839,6 +844,7 @@ mod tests {
                 ("monitor-selection", World::Client, st, false),
                 ("selection-gesture", World::Client, st, false),
                 ("editing-detector", World::Client, st, false),
+                ("hover-link-detector", World::Client, st, true),
                 ("local-page-bridge", World::Page, st, true),
             ]
         );
@@ -900,6 +906,11 @@ mod tests {
         assert_eq!(always_on(&gest(World::Client, "x"), "S", "D"), None);
         // The console log comes from both worlds, with no secret; it is only counted.
         let con = |world| routed(CONSOLE_HANDLER, world, json!({"msg": "hello", "level": "warn"}));
+        // The hovered link: the isolated world's alone, with the view's secret (HLH:34-41).
+        let hov = |world, secret: &str| routed(crate::browser_tip::HOVER_HANDLER, world, json!({"type": "hover", "url": "https://a", "x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0, "sessionSecret": secret}));
+        assert_eq!(always_on(&hov(World::Client, "S"), "S", "D"), Some(AlwaysOn::Hover(crate::browser_tip::Hover::Show { url: "https://a".into(), rect: (1.0, 2.0, 3.0, 4.0) })));
+        assert_eq!(always_on(&hov(World::Page, "S"), "S", "D"), None, "a page cannot show a link");
+        assert_eq!(always_on(&hov(World::Client, "D"), "S", "D"), None, "the editing detector's value is not the view's");
         assert_eq!(always_on(&con(World::Page), "S", "D"), Some(AlwaysOn::Console { level: "warn", size: 5 }));
         assert_eq!(always_on(&con(World::Client), "S", "D"), Some(AlwaysOn::Console { level: "warn", size: 5 }));
         assert_eq!(always_on(&routed(CONSOLE_HANDLER, World::Page, json!({"msg": "x", "level": "weird"})), "S", "D"), Some(AlwaysOn::Console { level: "log", size: 1 }));

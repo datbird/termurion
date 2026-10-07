@@ -67,6 +67,8 @@ pub(super) struct BrowserView {
     pub(super) graph: crate::browser_frames::Frames,
     /// The page menu last shown: its token, the context and the items (`browser_ctx_app`).
     pub(super) menu: Option<(u64, crate::browser_ctx::Ctx, Vec<Option<crate::browser_ctx::Item>>)>,
+    /// The announcements waiting for an answer, by bar identifier: the buttons and what answers (13x2 Task 5).
+    pub(super) bars: HashMap<String, (Vec<String>, super::browser_overlay_app::BarDone)>,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -197,7 +199,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new() });
         true
     }
 
@@ -210,7 +212,7 @@ impl App {
         }
         let Some(hwnd) = self.hwnd() else { return };
         let shown: Vec<(PaneId, Rect)> = match self.tabs.get(self.active) {
-            Some(tab) => self.visible(tab).into_iter().map(|(id, r)| (id, self.pane_chrome(tab, id, r).rest)).collect(),
+            Some(tab) => self.visible(tab).into_iter().map(|(id, r)| (id, self.browser_web_rect(tab, id, r))).collect(),
             None => Vec::new(),
         };
         let mine: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
@@ -223,6 +225,8 @@ impl App {
             match rect {
                 Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front),
                 None => {
+                    // Its link tip goes with it (hidden, another tab, buried, zoomed away).
+                    self.browser_tip_clear(pane);
                     // Not shown: hidden when it is this window's pane (another tab, buried, zoomed
                     // away) or sits in this window's handle with no pane (an Undo Close stash).
                     if let Some(bv) = self.browser_views.get(&pane) {
@@ -378,6 +382,7 @@ impl App {
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
+        self.browser_bars_end(pane);
         self.browser_reset_world(pane);
         if let Some(bv) = self.browser_views.remove(&pane) {
             let (had, id, parent) = (bv.view.is_some(), bv.id, bv.parent);
@@ -421,6 +426,10 @@ impl App {
     /// One event of pane `pane`'s view. What a page says is bounded and cleaned before it is kept
     /// (the host already capped its size); nothing here runs a page's text.
     pub(super) fn browser_event(&mut self, pane: PaneId, e: &Event, event_loop: &ActiveEventLoop) {
+        // The page lost the keyboard: its link tip goes (and the page is told).
+        if matches!(e, Event::Focus(_, false)) {
+            self.browser_tip_clear(pane);
+        }
         match e {
             // The world's own about:blank navigation (the isolation check) is not the page.
             Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}
