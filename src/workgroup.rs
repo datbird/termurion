@@ -511,10 +511,11 @@ fn id_ok(id: &str) -> bool {
     (1..=MAX_ID).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// A command a person typed: no control character (a newline types a second command), no NUL,
-/// bounded.
+/// A command a person typed: no control character (a newline types a second command), no NUL, no
+/// format character (a bidi override or a zero-width one can make one command read as another
+/// where it is trusted: `inert_files::is_hidden`'s set, never needed in a command), bounded.
 fn command_ok(s: &str, max: usize) -> bool {
-    s.chars().count() <= max && !s.chars().any(char::is_control)
+    s.chars().count() <= max && !s.chars().any(crate::inert_files::is_hidden)
 }
 
 fn shortcut_ok(s: Option<Shortcut>) -> Option<Shortcut> {
@@ -1709,5 +1710,22 @@ mod tests {
         forged.insert(id.clone(), Source::Person);
         m.set_all_marked(vec![w.clone(), mine], &forged);
         assert_eq!(m.source_of(&id), Source::Import);
+    }
+
+    #[test]
+    fn a_command_with_a_format_character_is_refused() {
+        // A bidi override (or a zero-width character) can make one command read as another where
+        // the person decides to trust it: never stored, never run.
+        for c in ['\u{202e}', '\u{202a}', '\u{2066}', '\u{2069}', '\u{200b}', '\u{061c}', '\u{180e}', '\u{feff}', '\u{200f}'] {
+            let mut w = Workgroup::new_empty("w");
+            w.sessions[0].command = format!("ec{c}ho hi");
+            assert!(check(&w).is_err(), "{c:?}");
+            let mut w = Workgroup::new_empty("w");
+            w.sessions[0].per_file_command = format!("a{c}b");
+            assert!(check(&w).is_err(), "{c:?}");
+        }
+        let mut w = Workgroup::new_empty("w");
+        w.sessions[0].command = "echo h\u{e9}llo \u{4e16}".into();
+        assert!(check(&w).is_ok(), "ordinary non-ASCII text stays");
     }
 }
