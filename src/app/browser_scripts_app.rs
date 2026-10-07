@@ -740,6 +740,7 @@ impl App {
     /// decision (world, secret, shape) is `browser_js::always_on`; this applies it.
     fn browser_always_on(&mut self, pane: PaneId, r: &Routed) {
         let open = self.client_open(pane);
+        let copy_on = self.globals.bool("CopySelection");
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let Some(what) = browser_js::always_on(r, &bv.secret, &bv.dom_secret) else { return };
         // The console line is a count only and carries no secret; every other handler is the isolated
@@ -747,6 +748,7 @@ impl App {
         if !open && !matches!(what, browser_js::AlwaysOn::Console { .. }) {
             return;
         }
+        let mut copy = None;
         match what {
             browser_js::AlwaysOn::Console { level, size } => {
                 // iTerm2 logs the text (`BM:1066-1087`); a page's words are never logged here (B6): a
@@ -756,17 +758,17 @@ impl App {
                     crate::rlog!("browser console: {} bytes, level {}", size, level);
                 }
             }
-            browser_js::AlwaysOn::Gesture => bv.selection_gate.gesture(Instant::now()),
+            browser_js::AlwaysOn::Gesture(true) => bv.selection_gate.down(Instant::now()),
+            browser_js::AlwaysOn::Gesture(false) => copy = bv.selection_gate.up(Instant::now(), copy_on),
             browser_js::AlwaysOn::Editing(e) => bv.editing = e,
             browser_js::AlwaysOn::Selection(text) => {
                 bv.selection = Some(browser_js::store_selection(&text));
-                let copy_on = self.globals.bool("CopySelection");
-                let copy = self.browser_views.get_mut(&pane).and_then(|b| b.selection_gate.accept(&text, Instant::now(), copy_on));
-                if let Some(text) = copy {
-                    self.set_clipboard_text(text.clone());
-                    self.remember_paste(&text);
-                }
+                copy = bv.selection_gate.accept(&text, Instant::now(), copy_on);
             }
+        }
+        if let Some(text) = copy {
+            self.set_clipboard_text(text.clone());
+            self.remember_paste(&text);
         }
     }
 

@@ -309,7 +309,8 @@ pub enum AlwaysOn {
     /// A console line: only its level and size are kept, never its text.
     Console { level: &'static str, size: usize },
     Selection(String),
-    Gesture,
+    /// A trusted press (true) or release (false).
+    Gesture(bool),
     Editing(bool),
 }
 
@@ -332,7 +333,7 @@ pub fn always_on(r: &Routed, secret: &str, dom_secret: &str) -> Option<AlwaysOn>
     }
     match r.handler.as_str() {
         SELECTION_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Selection(r.body.get("selection")?.as_str()?.to_string())),
-        SELECTION_GESTURE_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Gesture),
+        SELECTION_GESTURE_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Gesture(r.body.get("phase").and_then(Value::as_str) == Some("down"))),
         EDITING_HANDLER if secret_ok(&r.body, dom_secret) => Some(AlwaysOn::Editing(r.body.get("editable")?.as_bool()?)),
         _ => None,
     }
@@ -350,31 +351,71 @@ pub fn store_selection(text: &str) -> String {
     text[..end].to_string()
 }
 
-/// When a page selection may be copied (B10): only after a trusted gesture within a second, once per
-/// distinct text, never empty, never above `MAX_SELECTION`, and only with copy on selection on.
+/// How long a press (a mouse button or a key) is taken to still be down.
+const MAX_PRESS: std::time::Duration = std::time::Duration::from_secs(30);
+/// How soon after a trusted release a selection change still counts as the person's (a double click).
+const AFTER_RELEASE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// When a page selection may be copied (B10): only for a selection the PERSON made, never empty,
+/// never above `MAX_SELECTION`, once per distinct text, and only with copy on selection on. A trusted
+/// press (mouse down, key down) starts a selection: the changes while it is down are held and the
+/// trusted release copies the latest, so a drag or Shift+arrows copies once, as iTerm2 does for every
+/// change. A change within a second after a trusted release (a double click) copies at once. A
+/// selection no trusted press or release stands behind (a script's) is never copied.
 #[derive(Default, Debug)]
 pub struct SelectionGate {
-    last_gesture: Option<std::time::Instant>,
+    pressed: Option<std::time::Instant>,
+    last_up: Option<std::time::Instant>,
+    held: Option<String>,
     last_copied: Option<String>,
 }
 
 impl SelectionGate {
-    pub fn gesture(&mut self, now: std::time::Instant) {
-        self.last_gesture = Some(now);
+    /// A trusted press began.
+    pub fn down(&mut self, now: std::time::Instant) {
+        self.pressed = Some(now);
+        self.held = None;
     }
 
-    /// The text to copy, if any.
+    /// A trusted release: the text held during the press, if it is to be copied.
+    pub fn up(&mut self, now: std::time::Instant, copy_on: bool) -> Option<String> {
+        let was_down = self.pressed.take().is_some_and(|p| now.saturating_duration_since(p) < MAX_PRESS);
+        self.last_up = Some(now);
+        let held = self.held.take();
+        if !was_down || !copy_on {
+            return None;
+        }
+        held.and_then(|t| self.take_copy(t))
+    }
+
+    /// The selection changed to `text`: the text to copy now, if any.
     pub fn accept(&mut self, text: &str, now: std::time::Instant, copy_on: bool) -> Option<String> {
         if text.is_empty() {
             self.last_copied = None;
+            self.held = None;
             return None;
         }
-        let recent = self.last_gesture.is_some_and(|g| now.saturating_duration_since(g) < std::time::Duration::from_secs(1));
-        if !copy_on || !recent || text.len() > MAX_SELECTION || self.last_copied.as_deref() == Some(text) {
+        if text.len() > MAX_SELECTION {
+            self.held = None;
             return None;
         }
-        self.last_copied = Some(text.to_string());
-        Some(text.to_string())
+        if self.pressed.is_some_and(|p| now.saturating_duration_since(p) < MAX_PRESS) {
+            self.held = Some(text.to_string());
+            return None;
+        }
+        let recent = self.last_up.is_some_and(|u| now.saturating_duration_since(u) < AFTER_RELEASE);
+        if !copy_on || !recent {
+            return None;
+        }
+        self.take_copy(text.to_string())
+    }
+
+    fn take_copy(&mut self, text: String) -> Option<String> {
+        if self.last_copied.as_deref() == Some(text.as_str()) {
+            return None;
+        }
+        self.last_copied = Some(text.clone());
+        Some(text)
     }
 
     pub fn reset(&mut self) {
@@ -848,7 +889,7 @@ mod tests {
         assert_eq!(always_on(&edit(World::Client, json!("yes"), "D"), "S", "D"), None);
         assert_eq!(always_on(&edit(World::Page, json!(true), "D"), "S", "D"), None);
         let gest = |world, secret: &str| routed(SELECTION_GESTURE_HANDLER, world, json!({"t": "gesture", "sessionSecret": secret}));
-        assert_eq!(always_on(&gest(World::Client, "S"), "S", "D"), Some(AlwaysOn::Gesture));
+        assert_eq!(always_on(&gest(World::Client, "S"), "S", "D"), Some(AlwaysOn::Gesture(false)));
         assert_eq!(always_on(&gest(World::Page, "S"), "S", "D"), None);
         assert_eq!(always_on(&gest(World::Client, "x"), "S", "D"), None);
         // The console log comes from both worlds, with no secret; it is only counted.
@@ -864,22 +905,74 @@ mod tests {
     #[test]
     fn selection_copy_needs_a_recent_trusted_gesture() {
         use std::time::{Duration, Instant};
+        let ms = Duration::from_millis;
         let t0 = Instant::now();
         let mut g = SelectionGate::default();
+        // A page-made selection: no press, no release, no copy (and a release alone copies nothing).
         assert_eq!(g.accept("abc", t0, true), None, "no gesture, no copy");
-        g.gesture(t0);
-        assert_eq!(g.accept("abc", t0 + Duration::from_millis(300), true), Some("abc".to_string()));
-        assert_eq!(g.accept("abc", t0 + Duration::from_millis(400), true), None, "the same text is not copied again");
-        assert_eq!(g.accept("abd", t0 + Duration::from_millis(500), true), Some("abd".to_string()));
-        assert_eq!(g.accept("abe", t0 + Duration::from_millis(1100), true), None, "a second after the gesture is too late");
-        g.gesture(t0 + Duration::from_secs(5));
-        assert_eq!(g.accept("abe", t0 + Duration::from_millis(5100), false), None, "CopySelection off copies nothing (I6)");
-        assert_eq!(g.accept("", t0 + Duration::from_millis(5200), true), None, "an empty selection copies nothing");
-        assert_eq!(g.accept("abd", t0 + Duration::from_millis(5300), true), Some("abd".to_string()), "after a deselect the same text copies again");
-        g.gesture(t0 + Duration::from_secs(9));
+        assert_eq!(g.up(t0 + ms(50), true), None, "a selection no press led to is not copied by a release");
+        // A mouse drag or Shift+arrows: the selection changes while the press is down, the release copies the last one, once.
+        let t = t0 + Duration::from_secs(10);
+        g.down(t);
+        assert_eq!(g.accept("a", t + ms(100), true), None, "held until the release");
+        assert_eq!(g.accept("ab", t + ms(200), true), None);
+        assert_eq!(g.up(t + ms(300), true), Some("ab".to_string()), "the release copies the latest selection");
+        assert_eq!(g.up(t + ms(310), true), None, "once");
+        // A double click: the word is selected after the release's gesture, within a second.
+        assert_eq!(g.accept("word", t + ms(400), true), Some("word".to_string()));
+        assert_eq!(g.accept("word", t + ms(450), true), None, "the same text is not copied again");
+        assert_eq!(g.accept("more", t + ms(1400), true), None, "a second after the release is too late");
+        // CopySelection off copies nothing and drops what was held.
+        let t = t0 + Duration::from_secs(20);
+        g.down(t);
+        g.accept("held", t + ms(10), true);
+        assert_eq!(g.up(t + ms(20), false), None, "CopySelection off copies nothing (I6)");
+        assert_eq!(g.up(t + ms(30), true), None, "and nothing stays held");
+        // A press that never ended does not make a selection a person's for ever.
+        let t = t0 + Duration::from_secs(30);
+        g.down(t);
+        assert_eq!(g.accept("late", t + Duration::from_secs(31), true), None);
+        assert_eq!(g.up(t + Duration::from_secs(32), true), None);
+        // An empty selection copies nothing and lets the same text copy again.
+        let t = t0 + Duration::from_secs(100);
+        g.down(t);
+        g.accept("abd", t + ms(10), true);
+        assert_eq!(g.up(t + ms(20), true), Some("abd".to_string()));
+        assert_eq!(g.accept("", t + ms(30), true), None);
+        g.down(t + ms(40));
+        g.accept("abd", t + ms(50), true);
+        assert_eq!(g.up(t + ms(60), true), Some("abd".to_string()), "after a deselect the same text copies again");
+        // Never copied above the bound; stored bounded.
+        g.down(t + ms(100));
         let big = "x".repeat(MAX_SELECTION + 1);
-        assert_eq!(g.accept(&big, t0 + Duration::from_secs(9), true), None, "never copied above the bound");
+        g.accept(&big, t + ms(110), true);
+        assert_eq!(g.up(t + ms(120), true), None, "never copied above the bound");
         assert!(store_selection(&big).len() <= MAX_SELECTION, "stored bounded");
         assert_eq!(store_selection("abc"), "abc");
+        // A reset (a navigation) forgets a press.
+        g.down(t + ms(200));
+        g.reset();
+        g.accept("z", t + ms(210), true);
+        assert_eq!(g.up(t + ms(220), true), None);
+    }
+
+    /// The gesture message says which half it is: a press or a release; none is a release.
+    #[test]
+    fn gestures_say_press_or_release() {
+        let gest = |phase: Option<&str>| {
+            let mut b = json!({"t": "gesture", "sessionSecret": "S"});
+            if let Some(p) = phase {
+                b["phase"] = json!(p);
+            }
+            routed(SELECTION_GESTURE_HANDLER, World::Client, b)
+        };
+        assert_eq!(always_on(&gest(Some("down")), "S", "D"), Some(AlwaysOn::Gesture(true)));
+        assert_eq!(always_on(&gest(Some("up")), "S", "D"), Some(AlwaysOn::Gesture(false)));
+        assert_eq!(always_on(&gest(None), "S", "D"), Some(AlwaysOn::Gesture(false)));
+        let text = resource("selection-gesture.js").unwrap();
+        for ev in ["pointerdown", "mousedown", "keydown", "pointerup", "mouseup", "keyup"] {
+            assert!(text.contains(&format!("\"{ev}\"")), "{ev}");
+        }
+        assert!(text.contains("e.repeat"), "a held key's repeats are not presses");
     }
 }

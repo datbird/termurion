@@ -78,7 +78,7 @@ mod tests {
         // Selection: stored, copied only through the gate, with the global, to the clipboard and paste history.
         assert!(a.contains("bv.selection = Some(") && a.contains("selection_gate.accept(") && a.contains("globals.bool(\"CopySelection\")"));
         assert!(a.contains("set_clipboard_text(") && a.contains("remember_paste("));
-        assert!(a.contains("selection_gate.gesture("));
+        assert!(a.contains("selection_gate.down(") && a.contains("selection_gate.up("));
         assert!(a.contains("bv.editing = e"));
         // The console arm counts and never logs the text.
         assert!(a.contains("crate::rlog!(\"browser console: {} bytes, level {}\", size, level)"));
