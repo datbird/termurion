@@ -1666,6 +1666,8 @@ pub struct App {
     /// The tool views of every window, by view id, with whether the view failed (13x Task 2).
     /// App-wide: an event names a view, not a window.
     tool_view_ids: HashMap<crate::webhost::ViewId, bool>,
+    /// Each dynamic tool's remake budget after a failed view (app-wide, by tool name; final review I5).
+    tool_restarts: HashMap<String, crate::webhost::Restarts>,
     /// The web view of every browser pane (13x Task 5). App-wide: keyed by pane, and a view is
     /// re-parented when its pane changes windows.
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
@@ -2631,6 +2633,7 @@ pub fn run() {
         web_events,
         web_focus_held: None,
         tool_view_ids: HashMap::new(),
+        tool_restarts: HashMap::new(),
         browser_views: HashMap::new(),
         adblock: adblock_app::Adblock::default(),
         focus_seen: Default::default(),

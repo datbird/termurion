@@ -23,8 +23,10 @@ pub(super) struct BrowserView {
     pub(super) pending_url: Option<String>,
     /// The window handle the view is a child of.
     pub(super) parent: isize,
-    /// The view was recreated once after a failure (a second failure is reported, not retried).
-    pub(super) retried: bool,
+    /// The remake budget after failures (`webhost::Restarts`; a good start resets it).
+    pub(super) restarts: webhost::Restarts,
+    /// Over the budget: no view is made until the person presses Reload or navigates.
+    pub(super) stopped: bool,
     /// The page finished loading (`BST`'s `navigationSettled`).
     pub(super) settled: bool,
     /// The last title the page sent for this load (kept for the history row; bounded by the host).
@@ -161,7 +163,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, retried: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new() });
         true
     }
 
@@ -220,14 +222,17 @@ impl App {
     /// Makes (when the environment is ready), places and shows pane `pane`'s view.
     fn show_browser_view(&mut self, pane: PaneId, rect: Rect, hwnd: isize, focus_now: bool) {
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()).cloned() else { return };
-        let missing = self.browser_views.get(&pane).is_some_and(|b| b.view.is_none());
+        let missing = self.browser_views.get(&pane).is_some_and(|b| b.view.is_none() && !b.stopped);
         if missing {
-            let (id, url) = {
-                let bv = &self.browser_views[&pane];
-                (bv.id, bv.pending_url.clone().unwrap_or_else(|| io.url.clone()))
-            };
+            let url = self.browser_views[&pane].pending_url.clone().unwrap_or_else(|| io.url.clone());
             let sink = self.web_envs.sink();
             let adblock = self.adblock_on();
+            if self.web_env(browser::store_of(io.dev_null)).is_none() {
+                return;
+            }
+            // A fresh id per view made (final review Minor 5): an event of the view this one
+            // replaces, still queued, names an id no pane owns and is dropped, never applied here.
+            let id = self.next_view_id();
             let Some(env) = self.web_env(browser::store_of(io.dev_null)) else { return };
             let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock), sink);
             view.navigate_tandem(&url);
@@ -237,6 +242,7 @@ impl App {
             }
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.view = Some(view);
+                bv.id = id;
                 bv.pending_url = None;
                 bv.parent = hwnd;
                 bv.settled = false;
@@ -414,8 +420,12 @@ impl App {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.settled = true;
                 }
-                // A page that really loaded is one history row (an error page is not).
+                // A page that really loaded is one history row (an error page is not), and a good
+                // start for the remake budget.
                 if *ok {
+                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                        bv.restarts.succeeded();
+                    }
                     self.browser_record_visit(pane);
                     self.adblock_inject(pane);
                 }
@@ -457,21 +467,22 @@ impl App {
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, .. } => self.browser_page_key(pane, *vk, *mods, event_loop),
+            // A good start resets the remake budget (final review I5).
+            Event::Created(_) => {
+                if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    bv.restarts.succeeded();
+                }
+            }
+            // The view could not be made: remade from the URL within the budget.
             Event::Failed(view, _) => {
                 // The reason is COM's text: only that it happened and which view (13w B8).
                 crate::rlog!("webhost: a browser pane's view {} failed", *view);
-                let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
-                if let Some(bv) = self.browser_views.get_mut(&pane) {
-                    bv.view = None;
-                    if bv.retried {
-                        bv.pending_url = None;
-                        self.banners.set("window", "A browser pane's web view stopped working.");
-                    } else {
-                        bv.retried = true;
-                        bv.pending_url = url;
-                    }
-                }
-                self.redraw();
+                self.browser_view_failed(pane, webhost::PROCESS_RENDER_EXITED);
+            }
+            // A process failed: the kind says what to do (final review I5).
+            Event::ProcessFailed { view, kind } => {
+                crate::rlog!("webhost: a browser pane's view {} process failed, kind {}", *view, *kind);
+                self.browser_view_failed(pane, *kind);
             }
             // A local page's message and the request for a local page (Task 7): the one route judges
             // the source and the closed set; everything else a page posts is dropped there.
@@ -480,6 +491,41 @@ impl App {
             Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url),
             _ => {}
         }
+    }
+
+    /// Pane `pane`'s view reported a failure of `kind` (`webhost::pane_step`): a browser process exit
+    /// drops its environment (made again on the next request); the view reloads, is made again from
+    /// the pane's URL, or, over the budget, is given up until the person presses Reload or navigates.
+    fn browser_view_failed(&mut self, pane: PaneId, kind: i32) {
+        let now = Instant::now();
+        let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
+        if webhost::failure_action(kind) == webhost::FailAction::Environment {
+            self.web_envs.env_lost(browser::store_of(dev_null), now);
+        }
+        let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        match webhost::pane_step(kind, &mut bv.restarts, now) {
+            webhost::PaneStep::Nothing => return,
+            webhost::PaneStep::Reload => {
+                if let Some(v) = &bv.view {
+                    v.reload();
+                }
+                return;
+            }
+            webhost::PaneStep::Remake => {
+                bv.view = None;
+                bv.pending_url = url;
+            }
+            webhost::PaneStep::GiveUp => {
+                bv.view = None;
+                bv.pending_url = url;
+                bv.stopped = true;
+                self.banners.set("window", "A browser pane's web view stopped working. Press Reload to try again.");
+            }
+        }
+        bv.parent = 0;
+        bv.replay.shown = false;
+        self.redraw();
     }
 
     /// The session name after a title or a finished navigation (`BST:24-43`).
@@ -747,6 +793,12 @@ impl App {
             Button::Reload => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.transition = Some(browser::TRANSITION_RELOAD);
+                    // A view given up after failures is made again (final review I5).
+                    if bv.stopped {
+                        bv.stopped = false;
+                        bv.restarts = webhost::Restarts::default();
+                        self.redraw();
+                    }
                 }
                 if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                     v.reload();
@@ -976,7 +1028,11 @@ impl App {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
             match &bv.view {
                 Some(v) => v.navigate_tandem(url),
-                None => bv.pending_url = Some(url.to_string()),
+                None => {
+                    bv.pending_url = Some(url.to_string());
+                    bv.stopped = false;
+                    bv.restarts = webhost::Restarts::default();
+                }
             }
         }
     }

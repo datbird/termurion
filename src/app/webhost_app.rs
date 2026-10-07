@@ -54,13 +54,15 @@ pub(super) struct Envs {
     /// This run's Dev Null folder name (made on first use).
     dev_null: Option<PathBuf>,
     swept: bool,
+    /// When each store's environment was last dropped after its browser process exited.
+    lost_at: HashMap<Store, Instant>,
 }
 
 impl Envs {
     /// The state and the receiving end of everything views post.
     pub(super) fn new() -> (Envs, Receiver<Posted>) {
         let (tx, rx) = channel();
-        (Envs { tx, slots: HashMap::new(), runtime: RefCell::new(None), fixed: RefCell::new(None), refusal: RefCell::new(None), next_view: 1, seen: (String::new(), String::new()), proxy_seen: None, adblock_seen: None, rebuild_until: None, retry_at: None, dev_null: None, swept: false }, rx)
+        (Envs { tx, slots: HashMap::new(), runtime: RefCell::new(None), fixed: RefCell::new(None), refusal: RefCell::new(None), next_view: 1, seen: (String::new(), String::new()), proxy_seen: None, adblock_seen: None, rebuild_until: None, retry_at: None, dev_null: None, swept: false, lost_at: HashMap::new() }, rx)
     }
 
     /// The state at launch: `proxy` and `ad` are what the browser environments and views will be
@@ -77,6 +79,18 @@ impl Envs {
     pub(super) fn drop_browser_stores(&mut self) {
         self.slots.remove(&Store::Browser);
         self.slots.remove(&Store::BrowserDevNull);
+    }
+
+    /// A browser process of `store` exited (final review I5): its environment is dead, so the slot
+    /// goes and the next request makes a new one. Every view of the store reports the same exit;
+    /// within 2 s of a drop the later reports keep the new slot. True when the slot was dropped.
+    pub(super) fn env_lost(&mut self, store: Store, now: Instant) -> bool {
+        if self.lost_at.get(&store).is_some_and(|t| now.saturating_duration_since(*t) < Duration::from_secs(2)) {
+            return false;
+        }
+        self.lost_at.insert(store, now);
+        self.slots.remove(&store);
+        true
     }
 
     /// What a view posts through.
@@ -324,13 +338,14 @@ impl App {
 
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.
     fn web_route(&mut self, event: &Event, event_loop: &ActiveEventLoop) {
-        if self.tool_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+        let lifecycle = matches!(event, Event::Created(_) | Event::Failed(..) | Event::ProcessFailed { .. } | Event::Focus(..));
+        if self.tool_view_event(event) && !lifecycle {
             return;
         }
-        if self.icon_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+        if self.icon_view_event(event) && !lifecycle {
             return;
         }
-        if self.web_popover_view_event(event) && !matches!(event, Event::Created(_) | Event::Failed(..) | Event::Focus(..)) {
+        if self.web_popover_view_event(event) && !lifecycle {
             return;
         }
         if self.browser_view_event(event, event_loop) {
@@ -340,6 +355,8 @@ impl App {
             Event::Created(v) => crate::dlog!("webhost: view {} created", *v),
             // A view's process failed: which view, never the reason's text (13w B8).
             Event::Failed(v, _) => crate::rlog!("webhost: view {} failed", *v),
+            // Which view and the kind only (a number), never a reason's text (13w B8).
+            Event::ProcessFailed { view, kind } => crate::rlog!("webhost: view {} process failed, kind {}", *view, *kind),
             // A view lost focus: another window may now be in front of a window that held it.
             Event::Focus(_, false) => self.web_focus_recheck(),
             _ => {}
@@ -420,6 +437,34 @@ mod tests {
             assert!(me.contains(fact), "{fact}");
         }
         assert!(include_str!("browser_app.rs").contains("crate::rlog!(\"browser pane {} started: profile {} dev null {}\", id, crate::dlog::name(&name), dev_null);"));
+    }
+
+    /// Final review I5: a browser process exit drops its store's environment (made again on the
+    /// next request), once per crash: the other views' reports of the same exit keep the new one.
+    #[test]
+    fn a_lost_browser_process_drops_its_environment_once() {
+        let (mut envs, _rx) = Envs::new();
+        let t0 = Instant::now();
+        envs.slots.insert(Store::Browser, Rc::new(Slot::default()));
+        envs.slots.insert(Store::Default, Rc::new(Slot::default()));
+        assert!(envs.env_lost(Store::Browser, t0));
+        assert!(!envs.slots.contains_key(&Store::Browser));
+        assert!(envs.slots.contains_key(&Store::Default), "only that store");
+        envs.slots.insert(Store::Browser, Rc::new(Slot::default()));
+        assert!(!envs.env_lost(Store::Browser, t0 + Duration::from_secs(1)), "the same crash, told by another view");
+        assert!(envs.slots.contains_key(&Store::Browser));
+        assert!(envs.env_lost(Store::Browser, t0 + Duration::from_secs(5)), "a later crash");
+        // The app side: every view kind acts on the kind, and the browser pane counts good starts.
+        let b = include_str!("browser_app.rs");
+        let prod = &b[..b.find("#[cfg(test)]").unwrap()];
+        assert!(prod.contains("webhost::pane_step(kind, &mut bv.restarts, now)") && prod.contains("self.browser_view_failed(pane, *kind);"));
+        assert!(prod.contains("Event::Created(_) => {") && prod.contains("bv.restarts.succeeded();"));
+        assert!(prod.contains("self.web_envs.env_lost(browser::store_of(dev_null), now)"));
+        let t = include_str!("tool_web_ui.rs");
+        assert!(t.contains("Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log"));
+        let p = include_str!("web_popover_app.rs");
+        assert!(p.contains("Event::ProcessFailed { kind, .. } if crate::webhost::failure_action(*kind) != crate::webhost::FailAction::Log"));
+        assert!(include_str!("../svg_raster_win.rs").contains("Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log"));
     }
 
     #[test]

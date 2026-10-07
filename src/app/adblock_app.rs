@@ -322,7 +322,8 @@ impl App {
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.view = None;
                 bv.pending_url = url;
-                bv.retried = false;
+                bv.restarts = crate::webhost::Restarts::default();
+                bv.stopped = false;
                 bv.settled = false;
             }
         }

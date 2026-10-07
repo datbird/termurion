@@ -162,6 +162,15 @@ impl App {
         if wanted.is_empty() && self.tool_views.is_empty() {
             return;
         }
+        // A view whose process failed closes here and the plan makes it again, at most
+        // `RESTARTS_PER_MINUTE` times a minute per tool (final review I5).
+        let now = Instant::now();
+        let failed: Vec<String> = self.tool_loaded.iter().filter(|(_, l)| self.tool_view_ids.get(&l.id).copied().unwrap_or(false)).map(|(n, _)| n.clone()).collect();
+        for name in failed {
+            if self.tool_restarts.entry(name.clone()).or_default().allow_rate(now) {
+                self.close_tool_view(&name);
+            }
+        }
         let have: HashMap<String, String> = self.tool_loaded.iter().map(|(n, l)| (n.clone(), l.url.clone())).collect();
         let runtime_ok = !wanted.is_empty() && self.web_runtime() != Runtime::Missing;
         let hwnd = self.hwnd();
@@ -281,6 +290,10 @@ impl App {
                 }
             }
             Event::Failed(..) => {
+                self.tool_view_ids.insert(view, true);
+            }
+            // Only a failure the runtime does not recover by itself marks the view for a remake.
+            Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log => {
                 self.tool_view_ids.insert(view, true);
             }
             _ => {}

@@ -4,6 +4,7 @@
 //! Nothing here touches COM (`webhost_win`) or the App (`app::webhost_app`). Web content is
 //! untrusted: every size, rate and shape a page controls is bounded here, before it is queued.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -162,7 +163,11 @@ pub fn user_agent(setting: &str, engine_default: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Created(ViewId),
+    /// The view could not be made or set up (never a page's text).
     Failed(ViewId, String),
+    /// One of the view's processes failed: `kind` is `COREWEBVIEW2_PROCESS_FAILED_KIND`, and
+    /// `failure_action` says what it means.
+    ProcessFailed { view: ViewId, kind: i32 },
     /// A finished navigation: `url` is the URI of the matching NavigationStarting (iTerm2's
     /// `lastRequestedURL`), `nav` its `NavigationId`.
     Navigated { view: ViewId, ok: bool, status: i32, url: String, nav: u64 },
@@ -199,7 +204,8 @@ impl Event {
             | Event::History { view, .. }
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
-            | Event::Refused { view, .. } => *view,
+            | Event::Refused { view, .. }
+            | Event::ProcessFailed { view, .. } => *view,
         }
     }
 
@@ -220,6 +226,109 @@ impl Event {
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             _ => 0,
         }
+    }
+}
+
+/// `COREWEBVIEW2_PROCESS_FAILED_KIND` values (the WebView2 headers).
+pub const PROCESS_BROWSER_EXITED: i32 = 0;
+pub const PROCESS_RENDER_EXITED: i32 = 1;
+pub const PROCESS_RENDER_UNRESPONSIVE: i32 = 2;
+pub const PROCESS_FRAME_RENDER_EXITED: i32 = 3;
+pub const PROCESS_UTILITY_EXITED: i32 = 4;
+pub const PROCESS_GPU_EXITED: i32 = 6;
+
+/// What a process failure means for the view that reports it (final review I5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailAction {
+    /// The browser process exited: every view of its environment is dead, and so is the
+    /// environment; it is made again, then the view.
+    Environment,
+    /// The page's renderer exited: the view is made again.
+    Recreate,
+    /// The page hangs, a frame's renderer exited (any third-party frame can cause it) or the GPU
+    /// process exited (a driver reset): the view reloads; nothing else is touched.
+    Reload,
+    /// A utility, sandbox helper, plugin or unknown process: the runtime recovers it; logged only.
+    Log,
+}
+
+/// The action for a `COREWEBVIEW2_PROCESS_FAILED_KIND`.
+pub fn failure_action(kind: i32) -> FailAction {
+    match kind {
+        PROCESS_BROWSER_EXITED => FailAction::Environment,
+        PROCESS_RENDER_EXITED => FailAction::Recreate,
+        PROCESS_RENDER_UNRESPONSIVE | PROCESS_FRAME_RENDER_EXITED | PROCESS_GPU_EXITED => FailAction::Reload,
+        _ => FailAction::Log,
+    }
+}
+
+/// Remakes (or reloads) in a row with no good start between them before a view is given up.
+pub const RESTARTS_IN_A_ROW: u32 = 2;
+/// Remakes (or reloads) in any minute before a view is given up (a page that crashes on load).
+pub const RESTARTS_PER_MINUTE: usize = 5;
+
+/// A view's restart budget: `RESTARTS_IN_A_ROW` without a good start, and `RESTARTS_PER_MINUTE`.
+/// A good start (`succeeded`: the view was made, or a page loaded) resets the count in a row, so
+/// unrelated failures far apart are each recovered.
+#[derive(Clone, Debug, Default)]
+pub struct Restarts {
+    in_a_row: u32,
+    recent: VecDeque<Instant>,
+}
+
+impl Restarts {
+    /// A restart at `now`: true when the budget allows it (and it is counted).
+    pub fn allow(&mut self, now: Instant) -> bool {
+        if self.in_a_row >= RESTARTS_IN_A_ROW || !self.rate_ok(now) {
+            return false;
+        }
+        self.in_a_row += 1;
+        self.recent.push_back(now);
+        true
+    }
+
+    /// The per-minute bound alone (a view whose good start the app does not see).
+    pub fn allow_rate(&mut self, now: Instant) -> bool {
+        if !self.rate_ok(now) {
+            return false;
+        }
+        self.recent.push_back(now);
+        true
+    }
+
+    fn rate_ok(&mut self, now: Instant) -> bool {
+        while self.recent.front().is_some_and(|t| now.saturating_duration_since(*t) >= Duration::from_secs(60)) {
+            self.recent.pop_front();
+        }
+        self.recent.len() < RESTARTS_PER_MINUTE
+    }
+
+    /// The view started (or a page loaded) after a restart.
+    pub fn succeeded(&mut self) {
+        self.in_a_row = 0;
+    }
+}
+
+/// What a browser pane does after its view reported a process failure of `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneStep {
+    Nothing,
+    Reload,
+    /// The view is made again from the pane's URL (after its environment, for a browser process exit).
+    Remake,
+    /// Over the budget: the pane shows no view and says so, until the person presses Reload or
+    /// navigates.
+    GiveUp,
+}
+
+/// The step for a failure of `kind` under `budget` (counted when it acts).
+pub fn pane_step(kind: i32, budget: &mut Restarts, now: Instant) -> PaneStep {
+    match failure_action(kind) {
+        FailAction::Log => PaneStep::Nothing,
+        FailAction::Reload if budget.allow(now) => PaneStep::Reload,
+        FailAction::Reload => PaneStep::Nothing,
+        FailAction::Recreate | FailAction::Environment if budget.allow(now) => PaneStep::Remake,
+        FailAction::Recreate | FailAction::Environment => PaneStep::GiveUp,
     }
 }
 
@@ -819,6 +928,75 @@ impl LocalDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review I5: a process failure acts on its kind. The browser process takes the
+    /// environment with it; a page's renderer is remade or reloaded; a frame's renderer and the GPU
+    /// process reload that view only; the rest (utility, sandbox helper, plugins, unknown) recover on
+    /// their own and are only logged.
+    #[test]
+    fn process_failures_act_on_the_kind() {
+        assert_eq!(failure_action(PROCESS_BROWSER_EXITED), FailAction::Environment);
+        assert_eq!(failure_action(PROCESS_RENDER_EXITED), FailAction::Recreate);
+        for k in [PROCESS_RENDER_UNRESPONSIVE, PROCESS_FRAME_RENDER_EXITED, PROCESS_GPU_EXITED] {
+            assert_eq!(failure_action(k), FailAction::Reload, "{k}");
+        }
+        for k in [4, 5, 7, 8, 9, -1, 42] {
+            assert_eq!(failure_action(k), FailAction::Log, "{k}");
+        }
+        let e = Event::ProcessFailed { view: 7, kind: 3 };
+        assert_eq!(e.view(), 7);
+        assert!(!e.droppable(), "a failure is never dropped by a flood");
+    }
+
+    /// Final review I5: failures injected in order. The counter resets after a good start, so two
+    /// unrelated failures never leave a pane blank; failures in a row, or a crash loop, end in a
+    /// give-up the person can undo with Reload.
+    #[test]
+    fn injected_failures_never_blank_a_pane_for_good() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        // Two unrelated renderer exits, a good start between them: both remade.
+        let mut b = Restarts::default();
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(0)), PaneStep::Remake);
+        b.succeeded();
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(600)), PaneStep::Remake);
+        // A GPU reset and a frame's crash: the view is reloaded, never remade or given up.
+        let mut b = Restarts::default();
+        assert_eq!(pane_step(PROCESS_GPU_EXITED, &mut b, s(0)), PaneStep::Reload);
+        b.succeeded();
+        assert_eq!(pane_step(PROCESS_FRAME_RENDER_EXITED, &mut b, s(5)), PaneStep::Reload);
+        b.succeeded();
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(10)), PaneStep::Remake);
+        // Logged kinds touch nothing and use no budget.
+        let mut b = Restarts::default();
+        for _ in 0..10 {
+            assert_eq!(pane_step(PROCESS_UTILITY_EXITED, &mut b, s(0)), PaneStep::Nothing);
+        }
+        assert_eq!(pane_step(PROCESS_BROWSER_EXITED, &mut b, s(0)), PaneStep::Remake);
+        // In a row with no good start: the third is given up; a reload that is not allowed is nothing.
+        let mut b = Restarts::default();
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(0)), PaneStep::Remake);
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(1)), PaneStep::Remake);
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(2)), PaneStep::GiveUp);
+        assert_eq!(pane_step(PROCESS_GPU_EXITED, &mut b, s(3)), PaneStep::Nothing);
+        // A crash loop (each remake starts, then dies): five a minute, then given up; a minute later
+        // it may try again.
+        let mut b = Restarts::default();
+        for n in 0..RESTARTS_PER_MINUTE as u64 {
+            assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(n)), PaneStep::Remake, "{n}");
+            b.succeeded();
+        }
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(10)), PaneStep::GiveUp);
+        b.succeeded();
+        assert_eq!(pane_step(PROCESS_RENDER_EXITED, &mut b, s(61)), PaneStep::Remake);
+        // The rate alone (tool views): no counter in a row, only five a minute.
+        let mut b = Restarts::default();
+        for n in 0..5 {
+            assert!(b.allow_rate(s(n)));
+        }
+        assert!(!b.allow_rate(s(6)));
+        assert!(b.allow_rate(s(70)));
+    }
 
     /// Final review I4 (class): a closing window's views are chosen by their parent handle, not by
     /// the tabs the window holds; a view whose pane now shows in another window moves there, any

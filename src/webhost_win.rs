@@ -1066,7 +1066,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
     })));
     unsafe { view.add_PermissionRequested(&denied, token) }?;
 
-    // A failed process is reported; the app recreates the view (once).
+    // A failed process is reported with its kind; the app acts on the kind (`webhost::failure_action`).
     let weak = Rc::downgrade(inner);
     let failed = ProcessFailedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let Some(inner) = weak.upgrade() else { return Ok(()) };
@@ -1075,7 +1075,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
             let _ = unsafe { a.ProcessFailedKind(&mut kind) };
         }
         let i = inner.borrow();
-        i.poster.post(Event::Failed(i.id, format!("the web view's process failed ({})", kind.0)));
+        i.poster.post(Event::ProcessFailed { view: i.id, kind: kind.0 });
         Ok(())
     })));
     unsafe { view.add_ProcessFailed(&failed, token) }?;

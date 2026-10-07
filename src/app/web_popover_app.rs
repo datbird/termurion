@@ -216,6 +216,13 @@ impl App {
         true
     }
 
+    /// The popover's view failed: it closes with a notice.
+    fn web_popover_failed(&mut self) {
+        crate::rlog!("webhost: a popover's web view failed");
+        self.banners.set("window", "The popover's web view could not be shown.");
+        self.web_popover = None;
+    }
+
     /// A popover view's event. True when the view is the popover's (the event is consumed).
     pub(super) fn web_popover_view_event(&mut self, event: &Event) -> bool {
         let view = event.view();
@@ -236,11 +243,9 @@ impl App {
                 crate::dlog!("webhost: popover callback failed (error length {})", n);
             }
             Event::Key { vk: 0x1B, .. } => self.web_popover = None,
-            Event::Failed(..) => {
-                crate::rlog!("webhost: a popover's web view failed");
-                self.banners.set("window", "The popover's web view could not be shown.");
-                self.web_popover = None;
-            }
+            Event::Failed(..) => self.web_popover_failed(),
+            // A process the runtime recovers on its own (a utility process) leaves the popover open.
+            Event::ProcessFailed { kind, .. } if crate::webhost::failure_action(*kind) != crate::webhost::FailAction::Log => self.web_popover_failed(),
             Event::Focus(_, false) => {
                 if p.lost_foreground() {
                     self.web_popover = None;

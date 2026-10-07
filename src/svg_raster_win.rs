@@ -18,7 +18,7 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetLayeredWindowAttributes, ShowWindow, LWA_ALPHA, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP};
 
 use crate::svg_icon;
-use crate::webhost::{Event, LocalDoc, Sink, ViewId};
+use crate::webhost::{self, Event, LocalDoc, Sink, ViewId};
 use crate::webhost_win::{Env, ViewSetup, WebView};
 
 /// The script token of the one capture.
@@ -136,6 +136,8 @@ impl Rasterizer {
                 return self.end(capture_result(json));
             }
             Event::Failed(..) => return self.end(Err(())),
+            // A process the runtime recovers on its own (a utility process) does not end the render.
+            Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log => return self.end(Err(())),
             Event::Navigated { ok: false, .. } => return self.end(Err(())),
             _ => {}
         }
