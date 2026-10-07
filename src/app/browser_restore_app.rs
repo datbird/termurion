@@ -12,8 +12,10 @@ impl App {
         self.restoring_windows
     }
 
-    /// The restoration is over: every browser pane's deferred page loads, judged by the one
-    /// navigation gate again (an arrangement file is another party's).
+    /// The restoration is over: every browser pane's deferred page loads as it would have when its
+    /// setup ended (final review I2). What waits is the pane's own load: the profile's Initial URL
+    /// (which keeps `file:` and `about:` pages) or an arrangement's URL that `load_gate` already
+    /// judged at `start_browser_pane`.
     pub(super) fn browser_restoration_done(&mut self) {
         let panes: Vec<PaneId> = self.browser_views.keys().copied().collect();
         for pane in panes {
@@ -22,12 +24,25 @@ impl App {
             if bv.view.is_none() || bv.world.setup.is_some() {
                 continue;
             }
-            let Some(url) = bv.world.restore_load.take().and_then(|u| browser_restore::load_gate(&u)) else { continue };
-            bv.world.history.arm();
-            bv.bar.nav_state.will_load(&url);
-            if let Some(v) = &bv.view {
-                v.navigate_tandem(&url);
-            }
+            let Some(url) = bv.world.restore_load.take() else { continue };
+            self.browser_load_own(pane, &url);
+        }
+    }
+
+    /// Loads the pane's own URL (Tandem's load, never a page's): the one 13x verdict judges it here
+    /// as the guarded NavigationStarting will, so a refused one says so instead of leaving a blank
+    /// pane.
+    pub(super) fn browser_load_own(&mut self, pane: PaneId, url: &str) {
+        let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
+        let Some(url) = browser_restore::own_load(url, &|t| crate::webhost::file_url_local(t, &judge)) else {
+            self.banners.set("action", "Tandem will not open that file location.");
+            return;
+        };
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        bv.world.history.arm();
+        bv.bar.nav_state.will_load(&url);
+        if let Some(v) = &bv.view {
+            v.navigate_tandem(&url);
         }
     }
 
@@ -161,8 +176,11 @@ mod tests {
         let drain = &m[m.find("for w in std::mem::take(&mut self.pending_windows)").unwrap()..];
         assert!(drain[..drain.find("self.api_tmux_tabs_opened()").unwrap()].contains("browser_restoration_done"), "after the last saved window");
         let me = prod(include_str!("browser_restore_app.rs"));
-        let done = &me[me.find("fn browser_restoration_done").unwrap()..];
-        assert!(done.contains("navigate_tandem") && done.contains("load_gate("), "the deferred load is judged again");
+        let done = &me[me.find("fn browser_restoration_done").unwrap()..me.find("pub(super) fn browser_load_own").unwrap()];
+        assert!(done.contains("self.browser_load_own(pane, &url)") && !done.contains("load_gate("), "the deferred load loads as the setup's end would (final review I2)");
+        let own = &me[me.find("pub(super) fn browser_load_own").unwrap()..me.find("pub(super) fn browser_nav_starting").unwrap()];
+        assert!(own.contains("browser_restore::own_load(") && own.contains("self.banners.set(") && own.contains("navigate_tandem"), "a refused own load shows a banner, never a blank");
+        assert!(finish.contains("self.browser_load_own(pane, &url)") && !finish.contains("navigate_tandem"), "one road for the pane's own load");
         assert!(me.contains("fn browser_restoring(&self) -> bool"));
     }
 

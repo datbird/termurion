@@ -149,6 +149,17 @@ pub fn load_gate(url: &str) -> Option<String> {
     }
 }
 
+/// Whether a pane's own load (the profile's Initial URL, a restored page already judged by
+/// `load_gate` at start, or the person's own) goes: the verdict the guarded NavigationStarting gives
+/// a load Tandem started (`webhost::nav_verdict` with `by_tandem`), so a deferred load after a
+/// relaunch loads exactly what the same pane loads outside one (final review I2). `file_ok` is the
+/// one path judge for a `file:` URL. None: refused (the caller says so, never a silent blank).
+pub fn own_load(url: &str, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
+    let info = crate::webhost::NavInfo { target: url, source: None, user: false, redirect: false, by_tandem: true };
+    let policy = crate::webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+    crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +197,20 @@ mod tests {
                     assert_ne!(n.starting("https://q/", kind, user, redirect), 5);
                 }
             }
+        }
+    }
+
+    /// Final review I2: a parked load of the pane's own (the profile's Initial URL) loads as it does
+    /// outside a relaunch: Tandem's own load through the one 13x verdict (a local `file:` and any
+    /// `about:` page go; a network `file:` path never does).
+    #[test]
+    fn a_deferred_profile_url_loads_as_outside_a_relaunch() {
+        let local = |u: &str| u.starts_with("file:///C:/");
+        for url in ["file:///C:/notes/start.html", "about:version", "about:blank", "https://a.test/", "iterm2-about:welcome"] {
+            assert_eq!(own_load(url, &local).as_deref(), Some(url), "{url}");
+        }
+        for bad in ["file://evil/s/x", "file:////evil/s/x", "file:///D:/remote.html"] {
+            assert_eq!(own_load(bad, &local), None, "{bad}");
         }
     }
 

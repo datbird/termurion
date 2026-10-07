@@ -353,15 +353,7 @@ impl App {
             self.devtools_send(pane, None, "Page.removeScriptToEvaluateOnNewDocument", &json!({"identifier": id}), Box::new(|_, _, _| {}));
         }
         if let Some(url) = load {
-            if let Some(bv) = self.browser_views.get_mut(&pane) {
-                bv.world.history.arm();
-            }
-            if let Some(bv) = self.browser_views.get_mut(&pane) {
-                bv.bar.nav_state.will_load(&url);
-            }
-            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                v.navigate_tandem(&url);
-            }
+            self.browser_load_own(pane, &url);
         }
     }
 
@@ -1043,7 +1035,10 @@ mod tests {
     fn the_history_reset_is_wired() {
         let p = prod();
         let f = &p[p.find("fn browser_world_finish").unwrap()..p.find("pub(super) fn browser_world_navigated").unwrap()];
-        assert!(f.contains("world.history.arm()"));
+        assert!(f.contains("self.browser_load_own(pane, &url)"));
+        let restore = include_str!("browser_restore_app.rs");
+        let own = &restore[restore.find("pub(super) fn browser_load_own").unwrap()..restore.find("pub(super) fn browser_nav_starting").unwrap()];
+        assert!(own.contains("world.history.arm()"));
         let app = include_str!("browser_app.rs");
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
         let nav = &app[app.find("Event::Navigated { ok, .. } => {").unwrap()..app.find("Event::History { back, forward, .. } =>").unwrap()];
