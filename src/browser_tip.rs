@@ -459,11 +459,11 @@ mod tests {
         assert_eq!(tip_text("https://a.test/x", 40), "https://a.test/x");
         // A look-alike host shows as the host it is; hidden characters never show.
         assert_eq!(tip_text("https://\u{430}pple.com/\u{202e}x", 60), "https://xn--pple-43d.com/x");
-        // The host that does not fit keeps its suffix and the START of the registrable label (cut from
-        // the right, so no other brand's name forms; Task 6 round 2 new breakage).
+        // The host that does not fit is shown whole: a label is never cut, so no other brand's name
+        // forms (final review I3).
         let host = format!("https://{}evil.test/", "a".repeat(100));
         let t = tip_text(&host, 30);
-        assert!(t.ends_with("\u{2026}.test") && t.starts_with('a') && t.chars().count() <= 30, "{t}");
+        assert_eq!(t, format!("{}evil.test", "a".repeat(100)));
     }
 
     #[test]

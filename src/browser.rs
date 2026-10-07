@@ -693,9 +693,11 @@ fn cut_end(text: &str, max: usize) -> String {
 /// the address field, the link tip, the suggestion rows and the Open Quickly rows. The registrable
 /// host (public suffix and one label, `registrable_labels`) always stays whole and visible: the path
 /// is cut first (from the right), then the user information is shortened to a marked prefix, then
-/// subdomain labels go from the LEFT behind an ellipsis, and last (narrower than the registrable host
-/// itself) the host is cut from its left. A URL after a lead-in text and before a closing quote (the
-/// "Navigate to" row) is fitted in what those leave. Not a URL: cut from the right.
+/// subdomain labels go from the LEFT behind an ellipsis, then the scheme, user information and path
+/// give way to the host, and last (narrower than the registrable host itself) the registrable host is
+/// returned WHOLE, wider than `cells`: a label is never cut (final review I3). A URL after a lead-in
+/// text and before a closing quote (the "Navigate to" row) is fitted in what those leave. Not a URL:
+/// cut from the right.
 pub fn fit_address(shown: &str, cells: usize) -> String {
     if shown.chars().count() <= cells {
         return shown.to_string();
@@ -741,24 +743,23 @@ pub fn fit_address(shown: &str, cells: usize) -> String {
             }
         }
     }
-    // Narrower than the registrable host itself: the attacker's label is cut from its RIGHT (its start
-    // and the public suffix stay), so a cut can never form another brand's domain.
-    let reg = &labels[labels.len().saturating_sub(floor)..];
-    if reg.len() >= 2 && !host.starts_with('[') {
-        let suffix = format!(".{}", reg[1..].join("."));
-        let room = cells.saturating_sub(suffix.chars().count());
-        if room >= 1 {
-            let label: Vec<char> = reg[0].chars().collect();
-            if label.len() <= room {
-                return format!("{}{suffix}", reg[0]);
+    // The host does not fit even with one label beside the scheme: the scheme, user information and
+    // path go (the leading ellipsis stands for them), never a character of a label (final review I3).
+    for with_port in [true, false] {
+        for keep in (floor..=labels.len()).rev() {
+            let head = format!("\u{2026}{}{}", labels[labels.len() - keep..].join("."), if with_port { port } else { "" });
+            if head.chars().count() <= cells {
+                return head;
             }
-            return format!("{}\u{2026}{suffix}", label[..room - 1].iter().collect::<String>());
         }
     }
-    let at = if userinfo.is_some() { "@" } else { "" };
-    let host: Vec<char> = format!("{at}{hostport}").chars().collect();
-    let room = cells.saturating_sub(1);
-    ['\u{2026}'].iter().chain(host[host.len().saturating_sub(room)..].iter()).take(cells).collect()
+    // Narrower than the registrable host itself: it is shown WHOLE, wider than the cells (the host
+    // never loses characters, so a cut can never form another brand's domain).
+    let reg = labels[labels.len().saturating_sub(floor)..].join(".");
+    if reg.is_empty() {
+        return cut(shown, cells);
+    }
+    reg
 }
 
 /// How many trailing labels of a host are never cut: the public suffix and one label (the attacker's
@@ -1723,10 +1724,10 @@ mod tests {
         }
         assert_eq!(fit_address(url, 30), "https://acco\u{2026}@evil.test/path/\u{2026}", "path first, then userinfo");
         assert_eq!(fit_address("https://a.test/x", 40), "https://a.test/x", "what fits is untouched");
-        // A long host: whole subdomain labels go from the left, then the attacker's label from the right.
+        // A long host: whole subdomain labels go from the left, then the scheme and path give way.
         let long = "https://very.long.subdomain.chain.example-bank.test:8443/x";
         let fit = fit_address(long, 24);
-        assert_eq!(fit, "example-bank.test", "narrower than the registrable host: its own label is cut from the right, never the start");
+        assert_eq!(fit, "\u{2026}example-bank.test:8443", "the scheme and path go before any label does");
         // Something that is not an authority URL is cut from the right.
         assert_eq!(fit_address("about:blank", 6), "about\u{2026}");
     }
@@ -1768,13 +1769,11 @@ mod tests {
         for (host, suffix) in cases {
             let attacker = host[..host.len() - suffix.len() - 1].rsplit('.').next().unwrap();
             let url = format!("https://deep.sub.{host}/path/x");
-            for cells in (suffix.len() + 2)..=70 {
+            let reg = format!("{attacker}.{suffix}");
+            for cells in 1..=70 {
                 let fit = fit_address(&url, cells);
-                assert!(fit.chars().count() <= cells, "{host} {cells}: {fit}");
-                assert!(fit.contains(suffix), "{host} {cells}: the suffix stays: {fit}");
-                if cells > 8 + 1 + attacker.len() + 1 + suffix.len() {
-                    assert!(fit.contains(&format!("{attacker}.{suffix}")), "{host} {cells}: the attacker's label stays whole: {fit}");
-                }
+                assert!(fit.chars().count() <= cells.max(reg.len()), "{host} {cells}: {fit}");
+                assert!(fit.contains(&reg), "{host} {cells}: the attacker's label and the suffix stay whole (final review I3): {fit}");
             }
         }
         // A trailing dot is not a label: the attacker's label is still never cut.
@@ -1782,11 +1781,11 @@ mod tests {
             let fit = fit_address("https://accounts.google.com.evil.test./x", cells);
             assert!(fit.contains("evil.test."), "{cells}: {fit}");
         }
-        // Last resort: the registrable label is cut from its RIGHT, so no other brand's name forms.
-        assert_eq!(fit_address("https://notpaypal.com/", 11), "notpay\u{2026}.com");
-        assert_eq!(fit_address("https://notpaypal.co.uk/", 12), "notpa\u{2026}.co.uk");
+        // Last resort: the registrable host whole, never a label cut (final review I3).
+        assert_eq!(fit_address("https://notpaypal.com/", 11), "notpaypal.com");
+        assert_eq!(fit_address("https://notpaypal.co.uk/", 12), "notpaypal.co.uk");
         let tiny = fit_address("https://a.b.evil.test/", 6);
-        assert_eq!(tiny, "\u{2026}.test");
+        assert_eq!(tiny, "evil.test");
         // An IDN homograph shows its punycode, never a look-alike.
         let shown = display_url("https://p\u{0430}ypal.com/");
         assert!(shown.contains("xn--") && !fit_address(&shown, 14).contains('\u{0430}'), "{shown}");
@@ -1798,6 +1797,50 @@ mod tests {
         for (_, suffix) in cases {
             assert!(PUBLIC_SUFFIXES.iter().any(|e| *e == suffix) || suffix_labels(&suffix.split('.').collect::<Vec<_>>()) == suffix.split('.').count(), "{suffix}");
         }
+    }
+
+    /// Final review I3 (URL spoofing, round 3): the host never loses characters. When it does not fit,
+    /// whole labels go from the LEFT behind a leading ellipsis; when even the registrable host does not
+    /// fit, the scheme and path go and the registrable host is shown WHOLE (wider than the cells if it
+    /// must be). A label is never cut, so `paypal-verify.com` can never read `paypal\u{2026}.com`.
+    /// The same holds in the address field, the suggestion rows (also behind a lead-in) and the tip.
+    #[test]
+    fn the_host_never_loses_characters() {
+        let cases = [
+            ("https://paypal-verify.com/login?next=1", "paypal-verify.com"),
+            ("https://notpaypal.com/", "notpaypal.com"),
+            ("https://a.b.notpaypal.co.uk/x", "notpaypal.co.uk"),
+            ("https://my-very-long-project-name-for-a-demo.github.io/index.html", "my-very-long-project-name-for-a-demo.github.io"),
+            ("https://deep.sub.evil.github.io/p", "evil.github.io"),
+            ("https://user:pw@login.paypal-verify.com:8443/x", "paypal-verify.com"),
+        ];
+        for (url, reg) in cases {
+            let shown = display_url(url);
+            for cells in 1..=shown.chars().count() + 2 {
+                for (surface, fit) in [
+                    ("field", fit_address(&shown, cells)),
+                    ("tip", crate::browser_tip::tip_text(url, cells)),
+                    ("row", fit_address(&format!("Navigate to \u{201c}{shown}\u{201d}"), cells + 14)),
+                ] {
+                    assert!(fit.contains(reg), "{surface} {url} {cells}: the registrable host is whole: {fit}");
+                    assert!(!fit.contains("\u{2026}."), "{surface} {url} {cells}: no label is cut from its right: {fit}");
+                    let at = fit.find(reg).unwrap();
+                    let before = fit[..at].chars().last();
+                    assert!(matches!(before, None | Some('\u{2026}' | '.' | '/' | '@' | '\u{201c}')), "{surface} {url} {cells}: the label in front of it is whole: {fit}");
+                    if surface == "field" && cells >= reg.chars().count() {
+                        assert!(fit.chars().count() <= cells, "{url} {cells}: what can fit, fits: {fit}");
+                    }
+                }
+            }
+        }
+        assert_eq!(fit_address("https://paypal-verify.com/", 11), "paypal-verify.com", "never paypal\u{2026}.com");
+        assert_eq!(fit_address("https://notpaypal.com/", 11), "notpaypal.com");
+        assert_eq!(fit_address("https://evil.github.io/", 9), "evil.github.io", "the suffix keeps its labels too");
+        assert_eq!(fit_address("https://a.b.paypal-verify.com/x", 18), "\u{2026}paypal-verify.com", "the scheme goes before a label does");
+        assert_eq!(fit_address("https://a.b.paypal-verify.com/x", 20), "\u{2026}b.paypal-verify.com");
+        let measure = |t: &str| t.chars().count() as f32 * 7.0;
+        let t = crate::browser_tip::fit_measured(&display_url("https://login.paypal-verify.com/x"), 70.0, &measure);
+        assert!(t.contains("paypal-verify.com") && !t.contains("\u{2026}."), "{t}");
     }
 
     /// Round 2, class fix: ONE shortener for every URL display. The registrable host (public suffix and
@@ -1819,9 +1862,9 @@ mod tests {
         assert_eq!(fit_address("https://a.b.c.evil.test/", 19), "https://\u{2026}evil.test/");
         // A two-letter country suffix with a short second level is one suffix (co.uk).
         assert!(fit_address("https://login.paypal.co.uk/x", 20).contains("paypal.co.uk"));
-        // Narrower than the registrable host: its end, never its start.
+        // Narrower than the registrable host: the registrable host whole (final review I3).
         let tiny = fit_address("https://a.b.evil.test/", 6);
-        assert!(tiny.ends_with("l.test") || tiny.ends_with(".test"), "{tiny}");
+        assert_eq!(tiny, "evil.test");
         // A lead-in and a closing quote (the Navigate row) leave the URL what they leave of the room.
         let row = format!("Navigate to \u{201c}{}\u{201d}", display_url(&url));
         for cells in [30usize, 40, 60, 90] {
