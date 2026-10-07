@@ -414,10 +414,17 @@ pub fn wants_open_search(query: &str) -> bool {
     !t.is_empty() && !t.starts_with("https://")
 }
 
-/// Whether typed text may go to the suggestion service: only text that is not a URL by the one
-/// parser the Enter path uses (`normalize_url`), so a `localhost:3000/x?token=y` never leaves.
+/// Whether typed text may go to the suggestion service. Text the Enter path would navigate to
+/// (`normalize_url`) stays home when it has a scheme, a dot, a port, a path, a query, a fragment,
+/// `@`, an IP literal or `localhost`, so `localhost:3000/x?token=y` never leaves. A single bare
+/// word ("rust") is a search for iTerm2 (`BOS:30-38` skips only empty and `https://`), so it is sent.
 pub fn suggest_allowed(query: &str) -> bool {
-    wants_open_search(query) && query.trim().chars().count() <= 200 && normalize_url(query).is_none()
+    let t = query.trim();
+    if !wants_open_search(query) || t.chars().count() > 200 {
+        return false;
+    }
+    let urlish = t.contains(['.', ':', '/', '?', '@', '#']) || t.to_ascii_lowercase().starts_with("localhost");
+    !(urlish && normalize_url(query).is_some())
 }
 
 /// Whether a message's source is one of Tandem's own `iterm2-about:` pages: the scheme, compared
@@ -1305,8 +1312,11 @@ mod tests {
             assert!(normalize_url(url).is_some(), "{url} navigates on Enter");
             assert!(!suggest_allowed(url), "{url} must not be sent");
         }
-        for q in ["rust lang", "how to cook", "what is 1.5 times 2"] {
-            assert!(suggest_allowed(q), "{q} is a search");
+        for q in ["rust lang", "how to cook", "what is 1.5 times 2", "rust", "wikipedia", "r", "ru", "intranet"] {
+            assert!(suggest_allowed(q), "{q} is a search (iTerm2 sends single words, BOS:30-38)");
+        }
+        for q in ["localhost", "LocalHost", "a.b", "10.0.0.1", "intranet:80", "h.test/p?x=1"] {
+            assert!(!suggest_allowed(q), "{q} carries a dot, port, path, query, fragment, @, an IP or localhost");
         }
         assert!(!suggest_allowed(&"x".repeat(201)) && !suggest_allowed("  "));
     }
