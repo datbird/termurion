@@ -618,7 +618,7 @@ impl App {
                 let link = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None, selection: None });
+                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None, selection: None, search: None });
             } else if fold.is_some() {
                 pending = Some(CtxPending { fold, ..CtxPending::for_pane(id, Vec::new()) });
             }
@@ -653,6 +653,8 @@ impl App {
                 extra.push((label.into(), item));
             }
             pend.selection = short;
+            // Search takes the whole selection, short or not (`CMH:1179-1186`), bounded and cleaned.
+            pend.search = self.selected_text(id).as_deref().and_then(crate::browser::search_query);
             if let Some(url) = quick {
                 pend.quick_look = Some((url, self.pointer_screen()));
             }
@@ -731,7 +733,7 @@ impl App {
             }
         } else if item == "searchweb" {
             // The search engine's page, built from the template and the escaped selection (`CMH:1179-1186`).
-            if let Some(text) = pend.selection {
+            if let Some(text) = pend.search {
                 let url = crate::browser::search_url(&crate::browser::search_template(&self.globals.string("SearchCommand")), &text);
                 self.execute(pend.pane, semantic::guard_open(&url, has_code()), None, false);
             }
@@ -943,12 +945,14 @@ pub(super) struct CtxPending {
     quick_look: Option<(String, (f64, f64))>,
     /// The short selection the menu was made for (the URL and search items act on it).
     selection: Option<String>,
+    /// The whole selection as a search text (`browser::search_query`): Search the Web for Selection acts on it.
+    search: Option<String>,
 }
 
 impl CtxPending {
     /// A pending menu for `pane` with no link, fold or Smart Selection action.
     fn for_pane(pane: PaneId, providers: Vec<(String, String)>) -> Self {
-        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None, selection: None }
+        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None, selection: None, search: None }
     }
 }
 

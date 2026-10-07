@@ -1141,6 +1141,20 @@ pub fn upsell_spec() -> crate::warnings::Spec {
     }
 }
 
+/// The longest search text (characters): the whole selection up to here goes to the search engine.
+pub const MAX_SEARCH: usize = 512;
+
+/// The text Search the Web for Selection sends (`CMH:1179-1186` searches the whole selection): white
+/// space and control characters become one space, the ends are trimmed and it is cut to `MAX_SEARCH`.
+/// None when nothing is left.
+pub fn search_query(selection: &str) -> Option<String> {
+    let cleaned: String = selection.chars().filter_map(|c| if c.is_whitespace() || c.is_control() { Some(' ') } else { (!crate::inert_files::is_hidden(c)).then_some(c) }).collect();
+    let words: Vec<&str> = cleaned.split(|c: char| c.is_whitespace() || c.is_control()).filter(|w| !w.is_empty()).collect();
+    let text: String = words.join(" ").chars().take(MAX_SEARCH).collect();
+    let text = text.trim_end().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 /// The selection items of the pane menu (`CMH:549-560`): Search is added unconditionally.
 pub fn web_context_items(short: Option<&str>, locally_openable: bool, quick_look: bool) -> Vec<&'static str> {
     let mut v = Vec::new();
@@ -1722,6 +1736,27 @@ mod tests {
         let f = open_link_spec(true);
         assert_eq!((f.id.as_deref(), f.text.as_str()), (Some("NoSyncOpenLinksInAppForFileURL"), OPEN_FILE_TEXT));
         assert_eq!(f.labels, vec!["Use Default App", "Open in Tandem", "Cancel"]);
+    }
+
+    #[test]
+    fn search_reads_the_whole_selection() {
+        // A long selection, a multi-line one and one with controls all search; none is dropped.
+        let long = "word ".repeat(100);
+        let q = search_query(&long).unwrap();
+        assert_eq!(q.chars().count(), long.trim_end().chars().count());
+        assert_eq!(search_query("  two\nlines\there \u{7}x  ").as_deref(), Some("two lines here x"));
+        let huge = "a".repeat(MAX_SEARCH * 3);
+        assert_eq!(search_query(&huge).unwrap().chars().count(), MAX_SEARCH);
+        assert_eq!(search_query(" \n\t "), None);
+        assert_eq!(search_query(""), None);
+        // The URL is escaped: nothing in the text breaks out of the query.
+        let url = search_url("https://x.test/?q=%@", &search_query("a&b=c d#e").unwrap());
+        assert!(url.starts_with("https://x.test/?q=") && !url.contains(' ') && !url.contains('#'), "{url}");
+        // The menu keeps the whole selection for the item, apart from the short one.
+        let src = include_str!("app/semantic_ui.rs");
+        let arm = &src[src.find("item == \"searchweb\"").unwrap()..];
+        let arm = &arm[..arm.find("item == \"copylink\"").unwrap()];
+        assert!(arm.contains("pend.search") && !arm.contains("pend.selection"), "{arm}");
     }
 
     #[test]
