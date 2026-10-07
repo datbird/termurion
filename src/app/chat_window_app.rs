@@ -1701,6 +1701,9 @@ impl App {
             return false;
         }
         let Some(chat) = self.icon_jobs.iter().find(|(_, j)| j.rast.as_ref().is_some_and(|r| r.id() == view)).map(|(c, _)| c.clone()) else { return false };
+        if let crate::webhost::Event::ProcessFailed { kind, .. } = event {
+            self.web_view_lost(crate::webhost::Store::Default, *kind);
+        }
         let answer = self.icon_jobs.get_mut(&chat).and_then(|j| j.rast.as_mut()).and_then(|r| r.on_event(event));
         self.icon_answered(&chat, answer);
         true

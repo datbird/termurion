@@ -250,6 +250,17 @@ impl App {
         self.web_envs.slots.get(&store).and_then(|s| s.env.get())
     }
 
+    /// A view of `store` reported a process failure of `kind` (the one call every view kind makes,
+    /// final review residual): a browser process exit drops the store's dead environment, made
+    /// again on the next `web_env`. True when `kind` was a browser process exit.
+    pub(super) fn web_view_lost(&mut self, store: Store, kind: i32) -> bool {
+        if webhost::failure_action(kind) != webhost::FailAction::Environment {
+            return false;
+        }
+        self.web_envs.env_lost(store, Instant::now());
+        true
+    }
+
     /// A fresh view id.
     pub(super) fn next_view_id(&mut self) -> ViewId {
         let id = self.web_envs.next_view;
@@ -480,12 +491,52 @@ mod tests {
         let prod = &b[..b.find("#[cfg(test)]").unwrap()];
         assert!(prod.contains("webhost::pane_step(kind, &mut bv.restarts, now)") && prod.contains("self.browser_view_failed(pane, *kind);"));
         assert!(prod.contains("Event::Created(_) => {") && prod.contains("bv.restarts.succeeded();"));
-        assert!(prod.contains("self.web_envs.env_lost(browser::store_of(dev_null), now)"));
+        assert!(prod.contains("self.web_view_lost(browser::store_of(dev_null), kind)"));
         let t = include_str!("tool_web_ui.rs");
-        assert!(t.contains("Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log"));
+        assert!(t.contains("Event::ProcessFailed { kind, .. } => self.tool_view_failed(view, *kind)"));
         let p = include_str!("web_popover_app.rs");
         assert!(p.contains("Event::ProcessFailed { kind, .. } if crate::webhost::failure_action(*kind) != crate::webhost::FailAction::Log"));
         assert!(include_str!("../svg_raster_win.rs").contains("Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log"));
+    }
+
+    /// Final review residual (class): ONE environment registry. Every view kind gets its
+    /// environment from `web_env` (no other production `Env::create`), and every consumer of a
+    /// process failure tells the registry (`web_view_lost`), so a browser process exit drops the
+    /// dead environment whichever store it was.
+    #[test]
+    fn every_view_kind_gets_its_environment_from_the_registry() {
+        let prod = |src: &'static str| &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        let apps: [(&str, &str); 4] = [
+            ("tool_web_ui.rs", include_str!("tool_web_ui.rs")),
+            ("browser_app.rs", include_str!("browser_app.rs")),
+            ("web_popover_app.rs", include_str!("web_popover_app.rs")),
+            ("chat_window_app.rs", include_str!("chat_window_app.rs")),
+        ];
+        for (name, src) in apps {
+            let p = prod(src);
+            assert!(p.contains("self.web_env("), "{name} gets its environment from the registry");
+            assert!(!p.contains("Env::create("), "{name} makes no environment of its own");
+            // Every consumer of a process failure tells the registry.
+            assert!(p.contains("self.web_view_lost("), "{name} reports a lost browser process to the registry");
+        }
+        for (name, src) in [("web_popover.rs", include_str!("../web_popover.rs")), ("svg_raster_win.rs", include_str!("../svg_raster_win.rs")), ("webhost_win.rs", include_str!("../webhost_win.rs")), ("adblock_app.rs", include_str!("adblock_app.rs"))] {
+            assert!(!prod(src).contains("Env::create("), "{name}: only the registry makes an environment in production");
+        }
+        // The registry's helper acts on the kind and only then drops the store's slot.
+        let me = prod(include_str!("webhost_app.rs"));
+        assert!(me.contains("pub(super) fn web_view_lost(&mut self, store: Store, kind: i32)"));
+        assert!(me.contains("self.web_envs.env_lost(store, Instant::now())"));
+        // Tool views follow the browser pane's retry rule: by kind, reset after a good start,
+        // bounded (no endless per-minute retry).
+        let t = prod(include_str!("tool_web_ui.rs"));
+        assert!(t.contains("webhost::pane_step(kind,"), "tool views choose their step by kind");
+        assert!(!t.contains("allow_rate("), "no per-minute-only retry");
+        assert!(t.contains(".succeeded()"), "a good start resets the count");
+        // Only the registry's own store set decides a drop: every store, not only the browser's.
+        let (mut envs, _rx) = Envs::new();
+        envs.slots.insert(Store::Default, Rc::new(Slot::default()));
+        assert!(envs.env_lost(Store::Default, Instant::now()));
+        assert!(!envs.slots.contains_key(&Store::Default));
     }
 
     /// Final review I7 (class): every place a browser or tool view is dropped or remade runs the one

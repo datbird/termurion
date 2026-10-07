@@ -245,7 +245,10 @@ impl App {
             Event::Key { vk: 0x1B, .. } => self.web_popover = None,
             Event::Failed(..) => self.web_popover_failed(),
             // A process the runtime recovers on its own (a utility process) leaves the popover open.
-            Event::ProcessFailed { kind, .. } if crate::webhost::failure_action(*kind) != crate::webhost::FailAction::Log => self.web_popover_failed(),
+            Event::ProcessFailed { kind, .. } if crate::webhost::failure_action(*kind) != crate::webhost::FailAction::Log => {
+                self.web_view_lost(Store::Default, *kind);
+                self.web_popover_failed();
+            }
             Event::Focus(_, false) => {
                 if p.lost_foreground() {
                     self.web_popover = None;

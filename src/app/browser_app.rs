@@ -299,8 +299,15 @@ impl App {
     /// can close; hidden until that window places them.
     pub(super) fn browser_views_follow(&mut self, panes: &[PaneId], to: WindowId) {
         let Some(h) = self.window_hwnd(to) else { return };
+        // A moved view that holds the keyboard takes the hold to its new window (N3).
+        let held = self.web_focus_held.and_then(|w| self.window_hwnd(w));
         for pane in panes {
+            let keyboard = self.browser_views.get(pane).is_some_and(|bv| bv.view.is_some() && Some(bv.id) == self.web_focus_view && held == Some(bv.parent));
             self.browser_view_to(*pane, h);
+            if keyboard {
+                self.web_focus_held = Some(to);
+                self.sync_web_keyboard();
+            }
         }
     }
 
@@ -511,9 +518,7 @@ impl App {
     fn browser_view_failed(&mut self, pane: PaneId, kind: i32) {
         let now = Instant::now();
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        if webhost::failure_action(kind) == webhost::FailAction::Environment {
-            self.web_envs.env_lost(browser::store_of(dev_null), now);
-        }
+        self.web_view_lost(browser::store_of(dev_null), kind);
         let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         match webhost::pane_step(kind, &mut bv.restarts, now) {

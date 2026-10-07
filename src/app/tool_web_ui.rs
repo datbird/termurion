@@ -162,21 +162,21 @@ impl App {
         if wanted.is_empty() && self.tool_views.is_empty() {
             return;
         }
-        // A view whose process failed closes here and the plan makes it again, at most
-        // `RESTARTS_PER_MINUTE` times a minute per tool (final review I5).
-        let now = Instant::now();
+        // A view marked failed (its budget was spent when the failure arrived, `tool_view_failed`)
+        // closes here and the plan makes it again.
         let failed: Vec<String> = self.tool_loaded.iter().filter(|(_, l)| self.tool_view_ids.get(&l.id).copied().unwrap_or(false)).map(|(n, _)| n.clone()).collect();
         for name in failed {
-            if self.tool_restarts.entry(name.clone()).or_default().allow_rate(now) {
-                self.close_tool_view(&name);
-            }
+            self.close_tool_view(&name);
         }
         let have: HashMap<String, String> = self.tool_loaded.iter().map(|(n, l)| (n.clone(), l.url.clone())).collect();
         let runtime_ok = !wanted.is_empty() && self.web_runtime() != Runtime::Missing;
         let hwnd = self.hwnd();
         for op in plan(&wanted, &have, runtime_ok) {
             match op {
-                Op::Close(name) => self.close_tool_view(&name),
+                Op::Close(name) => {
+                    self.tool_restarts.remove(&name);
+                    self.close_tool_view(&name);
+                }
                 Op::Hide(name) => {
                     if let Some(v) = self.tool_views.get(&name) {
                         v.set_visible(false);
@@ -259,6 +259,8 @@ impl App {
             if !self.enter(id) {
                 continue;
             }
+            // Registering the tool again is a fresh start for its restart budget.
+            self.tool_restarts.remove(&name);
             let Some(l) = self.tool_loaded.get(&name) else { continue };
             let failed = self.tool_view_ids.get(&l.id).copied().unwrap_or(false);
             match reregister_op(failed, &l.url.clone()) {
@@ -278,6 +280,31 @@ impl App {
         }
     }
 
+    /// The tool whose view in this window has id `view`.
+    fn tool_name_of(&self, view: ViewId) -> Option<String> {
+        self.tool_loaded.iter().find(|(_, l)| l.id == view).map(|(n, _)| n.clone())
+    }
+
+    /// Tool view `view` reported a failure of `kind`: the same rule as a browser pane
+    /// (`webhost::pane_step`): by kind, bounded in a row and per minute, reset by a good start. A
+    /// view over its budget stays as it is until its tool is registered again.
+    fn tool_view_failed(&mut self, view: ViewId, kind: i32) {
+        self.web_view_lost(Store::Default, kind);
+        let Some(name) = self.tool_name_of(view) else { return };
+        match webhost::pane_step(kind, self.tool_restarts.entry(name.clone()).or_default(), Instant::now()) {
+            webhost::PaneStep::Nothing => {}
+            webhost::PaneStep::Reload => {
+                if let Some(v) = self.tool_views.get(&name) {
+                    v.reload();
+                }
+            }
+            webhost::PaneStep::Remake => {
+                self.tool_view_ids.insert(view, true);
+            }
+            webhost::PaneStep::GiveUp => crate::rlog!("webhost: tool view {} gave up after repeated failures", view),
+        }
+    }
+
     /// A tool view's event. True when the view is a tool's (the event is consumed). A page's
     /// console and error text is counted and dropped, never logged (B8); every other message shape
     /// is dropped (P17).
@@ -294,16 +321,19 @@ impl App {
                     crate::dlog!("webhost: tool view {} console from {}: length {}", view, from, n);
                 }
             }
-            Event::Failed(..) => {
-                self.tool_view_ids.insert(view, true);
+            Event::Failed(..) => self.tool_view_failed(view, webhost::PROCESS_RENDER_EXITED),
+            // A good start (the view was made, or a page loaded) resets the tool's restart count.
+            Event::Created(_) | Event::Navigated { ok: true, .. } => {
+                if let Some(name) = self.tool_name_of(view) {
+                    self.tool_restarts.entry(name).or_default().succeeded();
+                }
             }
             // B4: an external protocol or a refused click opens only through the one guard, else the
             // notice (final review Minor 12).
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
-            // Only a failure the runtime does not recover by itself marks the view for a remake.
-            Event::ProcessFailed { kind, .. } if webhost::failure_action(*kind) != webhost::FailAction::Log => {
-                self.tool_view_ids.insert(view, true);
-            }
+            // The kind decides: a utility exit is logged only, a hang reloads, a renderer or
+            // browser exit remakes the view (a browser exit first drops the environment).
+            Event::ProcessFailed { kind, .. } => self.tool_view_failed(view, *kind),
             _ => {}
         }
         true

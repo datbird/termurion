@@ -252,7 +252,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/restore_ui.rs", 2),
     ("app/session_end_ui.rs", 1),
     ("app/tmux_ui.rs", 2),
-    ("app/tool_web_ui.rs", 1),
+    ("app/tool_web_ui.rs", 2),
     ("app/triggers_ui.rs", 1),
     ("app/web_popover_app.rs", 4),
     ("app/webhost_app.rs", 7),
