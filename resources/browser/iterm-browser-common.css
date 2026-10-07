@@ -226,9 +226,8 @@ body {
     font-size: 14px;
     color: var(--accent-color);
     cursor: pointer;
-    text-overflow: ellipsis;
-    overflow: hidden;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
     transition: all 0.2s ease;
 }
 

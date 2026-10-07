@@ -946,23 +946,19 @@ fn add_menu_items(items: &mut Vec<Item>, query: &str, s: &Sources) {
     }
 }
 
+/// A URL title as it fits the row's title width (`room` points, measured by `measure`): the one
+/// shortener through `browser_tip::fit_measured`, so the row's own tail truncation never cuts it
+/// (final residual 1). Highlights are dropped when the text changed.
+pub fn url_title_fit(title: &str, bold: &[usize], room: f32, measure: &dyn Fn(&str) -> f32) -> (String, Vec<usize>) {
+    let fit = crate::browser_tip::fit_measured(title, room, measure);
+    if fit == title { (fit, bold.to_vec()) } else { (fit, Vec::new()) }
+}
+
 /// Bookmarks, then visited sites, then a typed https URL (`addBookmarkToItems:`, `addURLToItems:`,
 /// `OQM:532-615`): only with the browser allowed, never for a query starting with a slash, a URL
 /// at most once. The words shown are cleaned of what a page chose (P11: hidden characters gone,
-/// a look-alike host in punycode); the item keeps the stored URL and activation judges it again.
-/// The most of a URL an Open Quickly title shows (cells): the row is one line cut at its tail, which
-/// would cut the host's end, so the URL is fitted first (the one shortener, round 2).
-const URL_TITLE_CELLS: usize = 64;
-
-/// A title that is the URL document: fitted to `URL_TITLE_CELLS`, highlights dropped when it changed.
-fn fit_url_title(docs: &[String], name: String, bold: Vec<usize>) -> (String, Vec<usize>) {
-    if docs.first() != Some(&name) {
-        return (name, bold);
-    }
-    let fit = crate::browser::fit_address(&name, URL_TITLE_CELLS);
-    if fit == name { (name, bold) } else { (fit, Vec::new()) }
-}
-
+/// a look-alike host in punycode); the item keeps the stored URL and activation judges it again. A URL title
+/// is the whole display URL; the palette fits it to the row (`url_title_fit`).
 fn add_browser_items(items: &mut Vec<Item>, query: &str, s: &Sources, sup: &Supports) {
     let Some(browser) = &s.browser else { return };
     if query.starts_with('/') {
@@ -981,7 +977,6 @@ fn add_browser_items(items: &mut Vec<Item>, query: &str, s: &Sources, sup: &Supp
                     continue;
                 }
                 let (name, title_bold) = title_from(&docs, result);
-                let (name, title_bold) = fit_url_title(&docs, name, title_bold);
                 let kind = if visited { ItemKind::Visited(url.clone()) } else { ItemKind::Bookmark(url.clone()) };
                 items.push(Item { kind, score, title: untitled_if_empty(name), title_bold, detail: detail.to_string(), detail_bold: Vec::new() });
                 seen.insert(url.clone());
@@ -993,7 +988,6 @@ fn add_browser_items(items: &mut Vec<Item>, query: &str, s: &Sources, sup: &Supp
         let (score, result) = score_feature(query, &docs, URL_MULT, 2.0 * URL_MULT);
         if score > 0.0 {
             let (name, title_bold) = title_from(&docs, result);
-            let (name, title_bold) = fit_url_title(&docs, name, title_bold);
             items.push(Item { kind: ItemKind::Url(query.to_string()), score, title: untitled_if_empty(name), title_bold, detail: OPEN_URL.to_string(), detail_bold: Vec::new() });
         }
     }
@@ -1116,12 +1110,17 @@ mod tests {
         let s = Sources { browser: Some(BrowserSources { bookmarks: vec![(String::new(), url.clone())], visited: vec![] }), ..Default::default() };
         let r = items("evil", &s);
         let i = r.iter().find(|i| matches!(i.kind, ItemKind::Bookmark(_))).expect("matched");
-        assert!(i.title.contains("evil.test") && i.title.chars().count() <= URL_TITLE_CELLS, "{:?}", i.title);
+        assert_eq!(i.title, crate::browser::display_url(&url), "the whole display URL; the palette fits it to the row");
         assert!(i.title_bold.iter().all(|b| *b < i.title.chars().count()), "no highlight past the cut");
         assert_eq!(i.kind, ItemKind::Bookmark(url.clone()), "the item keeps the stored URL");
         let typed = items(&url, &Sources { browser: Some(BrowserSources { bookmarks: vec![], visited: vec![] }), ..Default::default() });
         let u = typed.iter().find(|i| matches!(i.kind, ItemKind::Url(_))).expect("the typed URL");
-        assert!(u.title.contains("evil.test") && u.title.chars().count() <= URL_TITLE_CELLS, "{:?}", u.title);
+        assert_eq!(u.title, crate::browser::display_url(&url));
+        // The row fits it to its measured width: the registrable host stays, highlights go when cut.
+        let measure = |t: &str| t.chars().count() as f32 * 7.0;
+        let (fit, bold) = url_title_fit(&i.title, &i.title_bold, 30.0 * 7.0, &measure);
+        assert!(fit.contains("evil.test") && fit.chars().count() <= 30 && bold.is_empty(), "{fit}");
+        assert_eq!(url_title_fit(&i.title, &i.title_bold, 1000.0 * 7.0, &measure), (i.title.clone(), i.title_bold.clone()));
     }
 
     #[test]

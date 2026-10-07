@@ -170,7 +170,7 @@ function createHistoryEntryElement(entry, date) {
                 <span class="entry-title">${escapeHtml(title)}</span>
             </div>
             <div class="entry-url" data-url="${escapeAttr(url)}" title="Click to navigate to this URL">
-                ${escapeHtml(url)}
+                ${escapeHtml(entry.displayUrl)}
             </div>
         </div>
         <div class="entry-actions">

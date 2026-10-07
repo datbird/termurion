@@ -99,22 +99,30 @@ pub fn tip_text(url: &str, cells: usize) -> String {
     crate::browser::fit_address(&crate::browser::display_url(url), cells)
 }
 
-/// The address cut to what FITS `room` (points) by its measured width: `fit_address` keeps the end of
-/// the host, and this narrows its character count until `measure` says the text is no wider than the
-/// room (review I1: a page picks wide glyphs, so a per-character guess let the window clip the right
-/// side, where the host end is). Always returns something, even with almost no room.
+/// The address cut to what FITS `room` (points) by its measured width: `fit_address` keeps whole
+/// labels ending at the registrable host (or no host at all), and this searches for the most cells
+/// whose fit `measure` says is no wider than the room (review I1: a page picks wide glyphs, so a
+/// per-character guess let the window clip the right side, where the host end is). At one cell the
+/// text is the bare ellipsis, which holds no host character. Always returns something.
 pub fn fit_measured(shown: &str, room: f32, measure: &dyn Fn(&str) -> f32) -> String {
-    let mut cells = shown.chars().count();
-    loop {
-        let text = crate::browser::fit_address(shown, cells);
-        let width = measure(&text);
-        if width <= room || cells <= 1 {
-            return text;
-        }
-        // Scale by the overshoot, and always step down at least one.
-        let scaled = (cells as f32 * (room / width)).floor() as usize;
-        cells = scaled.min(cells - 1).max(1);
+    let all = crate::browser::text_cells(shown);
+    if measure(shown) <= room {
+        return shown.to_string();
     }
+    // Binary search: `best` is the widest fit seen that measures within the room.
+    let (mut lo, mut hi) = (1usize, all);
+    let mut best = crate::browser::fit_address(shown, 1);
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let text = crate::browser::fit_address(shown, mid);
+        if measure(&text) <= room {
+            best = text;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best
 }
 
 /// What a hover message asks of the tip window.
@@ -459,11 +467,10 @@ mod tests {
         assert_eq!(tip_text("https://a.test/x", 40), "https://a.test/x");
         // A look-alike host shows as the host it is; hidden characters never show.
         assert_eq!(tip_text("https://\u{430}pple.com/\u{202e}x", 60), "https://xn--pple-43d.com/x");
-        // The host that does not fit is shown whole: a label is never cut, so no other brand's name
-        // forms (final review I3).
+        // A registrable host that does not fit shows no host character at all: no part of a host,
+        // which could form another brand's name (final residual 1).
         let host = format!("https://{}evil.test/", "a".repeat(100));
-        let t = tip_text(&host, 30);
-        assert_eq!(t, format!("{}evil.test", "a".repeat(100)));
+        assert_eq!(tip_text(&host, 30), "\u{2026}");
     }
 
     #[test]

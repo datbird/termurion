@@ -39,6 +39,8 @@ pub const MAX_STRING: usize = 8192;
 pub const CONTEXT_DOCUMENT: i32 = 1;
 const MAX_OFFSET: i64 = 100_000;
 const MAX_PAGE: i64 = 100;
+/// The cells a local page's URL line gets from the one shortener (the page wraps it, never clips).
+const PAGE_URL_CELLS: usize = 160;
 const SCHEME_PREFIX: &str = "iterm2-about:";
 
 /// What a message asks the app to do.
@@ -177,6 +179,12 @@ pub fn route(db: &Db, json: &str, source: &str) -> Vec<Reply> {
     out.unwrap_or_default()
 }
 
+/// A URL as a local page draws it: the one display and the one shortener at PAGE_URL_CELLS (the
+/// page's CSS wraps the line, so nothing clips it; final residual 1).
+fn page_url(url: &str) -> String {
+    browser::fit_address(&browser::display_url(url), PAGE_URL_CELLS)
+}
+
 fn history(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
     match body.get("action")?.as_str()? {
         "loadEntries" => {
@@ -187,7 +195,7 @@ fn history(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>>
             // One more than asked, to know whether there is more (`BHVH:99-111`).
             let rows = if query.trim().is_empty() { db.recent_history(offset, limit + 1) } else { db.search_history(&query, offset, limit + 1) };
             let more = rows.len() > limit;
-            let entries: Vec<Value> = rows.into_iter().take(limit).map(|r| json!({"id": r.id, "url": r.url, "title": r.title.unwrap_or_default(), "visitDate": r.visit_date, "transitionType": r.transition})).collect();
+            let entries: Vec<Value> = rows.into_iter().take(limit).map(|r| json!({"id": r.id, "displayUrl": page_url(&r.url), "url": r.url, "title": r.title.unwrap_or_default(), "visitDate": r.visit_date, "transitionType": r.transition})).collect();
             Some(script(page, &call("onHistoryEntriesLoaded", &json!({"entries": entries, "hasMore": more}))))
         }
         "deleteEntry" => {
@@ -236,7 +244,7 @@ fn bookmarks(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply
                 db.search_bookmarks(&query, offset, limit + 1)
             };
             let more = rows.len() > limit;
-            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| json!({"url": url, "title": title.unwrap_or_default(), "dateAdded": added})).collect();
+            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| json!({"displayUrl": page_url(&url), "url": url, "title": title.unwrap_or_default(), "dateAdded": added})).collect();
             Some(script(page, &call("onBookmarksLoaded", &json!({"bookmarks": list, "hasMore": more}))))
         }
         "loadTags" => {
@@ -271,7 +279,7 @@ fn welcome(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>>
                 .top_sites(5)
                 .into_iter()
                 .filter(|s| navigable(&s.url))
-                .map(|s| json!({"url": s.url, "title": s.title.filter(|t| !t.is_empty()).unwrap_or_else(|| s.hostname.clone()), "hostname": s.hostname, "visitCount": s.visits}))
+                .map(|s| json!({"displayHost": browser::display_host(&s.url), "url": s.url, "title": s.title.filter(|t| !t.is_empty()).unwrap_or_default(), "hostname": s.hostname, "visitCount": s.visits}))
                 .collect();
             Some(script(page, &call("handleTopSitesResponse", &Value::Array(sites))))
         }
@@ -452,6 +460,38 @@ mod tests {
         assert!(h.contains("data-url=\"${escapeAttr(url)}\"") && h.contains("data-id=\"${escapeAttr(entry.id)}\"") && h.contains("addEventListener('click'"));
         let b = pages[1].1;
         assert_eq!(b.matches("data-url=\"${escapeAttr(url)}\"").count(), 2);
+    }
+
+    /// Final residual 1 (the URL display class): the history, bookmarks and welcome pages draw a URL
+    /// or a host from the one display (`displayUrl`: display_url through fit_address at PAGE_URL_CELLS;
+    /// `displayHost`: the display host), and their CSS wraps it: no line of theirs clips a URL's end.
+    #[test]
+    fn local_pages_never_clip_a_url() {
+        let db = Db::open_in_memory();
+        let url = format!("https://accounts.google.com.paypal.com.co/{}", "p".repeat(400));
+        db.record_visit(&url, None, None, None, 0, 100);
+        db.add_bookmark(&url, None, 300);
+        let want = browser::fit_address(&browser::display_url(&url), PAGE_URL_CELLS);
+        assert!(want.contains("paypal.com.co/") && want.chars().count() <= PAGE_URL_CELLS, "{want}");
+        let want = serde_json::to_string(&want).unwrap();
+        let h = route(&db, &msg("iterm2-about:history", serde_json::json!({"action": "loadEntries", "offset": 0, "limit": 50, "searchQuery": ""})), "iterm2-about:history");
+        assert!(scripts(&h)[0].contains(&format!("\"displayUrl\":{want}")), "history: {}", scripts(&h)[0]);
+        for q in ["", "paypal"] {
+            let b = route(&db, &msg("iterm2-about:bookmarks", serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": q})), "iterm2-about:bookmarks");
+            assert!(scripts(&b)[0].contains(&format!("\"displayUrl\":{want}")), "bookmarks {q:?}: {}", scripts(&b)[0]);
+        }
+        let w = route(&db, &msg("iterm2-about:welcome", serde_json::json!({"action": "loadTopSites", "sessionSecret": ""})), "iterm2-about:welcome");
+        assert!(scripts(&w)[0].contains("\"displayHost\":\"accounts.google.com.paypal.com.co\""), "welcome: {}", scripts(&w)[0]);
+        // The pages draw those, and wrap them.
+        assert!(include_str!("../resources/browser/history-page.js").contains("${escapeHtml(entry.displayUrl)}"));
+        assert!(include_str!("../resources/browser/bookmarks-page.js").contains("${escapeHtml(bookmark.displayUrl)}"));
+        let welcome = include_str!("../resources/browser/welcome-page.js");
+        assert!(welcome.contains("${escapeHtml(site.displayHost)}") && !welcome.contains("escapeHtml(site.hostname)") && !welcome.contains("getInitial(site.title || site.hostname)"));
+        let rule = |css: &str, sel: &str| css[css.find(&format!("{sel} {{")).unwrap()..].split('}').next().unwrap().to_string();
+        for (css, sel) in [(COMMON_CSS, ".entry-url"), (include_str!("../resources/browser/welcome-page.html"), ".site-url"), (include_str!("../resources/browser/welcome-page.html"), ".site-title.host")] {
+            let r = rule(css, sel);
+            assert!(!r.contains("nowrap") && !r.contains("ellipsis") && r.contains("overflow-wrap: anywhere"), "{sel}: {r}");
+        }
     }
 
     #[test]

@@ -55,7 +55,12 @@ fn row_of(item: &Item, sources: &Sources) -> PaletteRow {
         ItemKind::ColorPreset(n) => sources.color_presets.iter().find(|(p, _, _)| p == n).map(|(_, fg, bg)| ([fg.r, fg.g, fg.b], [bg.r, bg.g, bg.b])),
         _ => None,
     };
-    PaletteRow { icon: icon(&item.kind), swatch, title: item.title.clone(), title_bold: item.title_bold.clone(), detail: item.detail.clone(), detail_bold: item.detail_bold.clone() }
+    // A title that is the item's display URL is fitted by the palette to the row's width.
+    let title_url = match &item.kind {
+        ItemKind::Bookmark(u) | ItemKind::Visited(u) | ItemKind::Url(u) => item.title == crate::browser::display_url(u),
+        _ => false,
+    };
+    PaletteRow { icon: icon(&item.kind), swatch, title: item.title.clone(), title_bold: item.title_bold.clone(), title_url, detail: item.detail.clone(), detail_bold: item.detail_bold.clone() }
 }
 
 /// The last `HISTORY_LIMIT` distinct non-empty values, oldest first.

@@ -116,6 +116,9 @@ pub(super) struct BarState {
 /// The id prefixes of the toolbar's menus.
 const MENU_ID: &str = "browser-menu:";
 const HISTORY_ID: &str = "browser-hist:";
+/// The cells a Back or Forward menu line gives a URL (a native menu widens to its longest line, so
+/// this is the width the line is drawn at; the one shortener fits the URL to it).
+const HISTORY_MENU_CELLS: usize = 80;
 
 /// A color between two (`t` of the way to `b`).
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
@@ -765,7 +768,7 @@ impl App {
         let pad = 2.0 * scale;
         let text_y = g.text.y + (g.text.h - ch) / 2.0;
         let keys = bv.bar.keys;
-        let shown = if keys { bv.bar.edit.text.clone() } else { browser::fit_address(&browser::display_url(&io.url), ((g.text.w - 2.0 * pad) / cw).floor().max(1.0) as usize) };
+        let shown = if keys { bv.bar.edit.text.clone() } else { browser::fit_address(&browser::display_url(&io.url), ((g.text.w - 2.0 * pad) / cw).floor().max(0.0) as usize) };
         let caret_x = if keys { text_w(&shown[..bv.bar.edit.caret.min(shown.len())], cw) } else { 0.0 };
         let scroll = (caret_x + cw - (g.text.w - 2.0 * pad)).max(0.0);
         let x0 = g.text.x + pad - scroll;
@@ -792,9 +795,10 @@ impl App {
                 let y = r.y + (r.h - ch) / 2.0;
                 let main = Rect { w: r.w * 0.62, ..*r };
                 let detail = Rect { x: r.x + r.w * 0.64, w: r.w * 0.35, ..*r };
-                // A URL in a row keeps its host whatever the row's width (the one shortener).
-                let text = browser::fit_address(&s.text, ((main.w - 6.0 * scale) / cw).floor().max(1.0) as usize);
-                let detail_text = browser::fit_address(&s.detail, (detail.w / cw).floor().max(1.0) as usize);
+                // A URL in a row keeps its host whatever the row's width (the one shortener, given the
+        // cells the row draws in, so the row's clip never cuts what it returns).
+                let text = browser::fit_address(&s.text, ((main.w - 6.0 * scale) / cw).floor().max(0.0) as usize);
+                let detail_text = browser::fit_address(&s.detail, (detail.w / cw).floor().max(0.0) as usize);
                 frame.rows.push(row(r.x + 6.0 * scale, y, vec![span(text, fg, false)], main));
                 frame.rows.push(row(detail.x, y, vec![span(detail_text, dim, false)], detail));
             }
@@ -983,7 +987,7 @@ impl App {
             return;
         }
         let pairs: Vec<(String, String)> = items.iter().map(|(t, u, _)| (t.clone(), u.clone())).collect();
-        let labels = browser::history_menu(&pairs);
+        let labels = browser::history_menu(&pairs, HISTORY_MENU_CELLS);
         let menu = muda::Menu::new();
         for ((_, _, steps), label) in items.iter().zip(labels) {
             let _ = menu.append(&muda::MenuItem::with_id(format!("{HISTORY_ID}{pane}:{steps}"), label.replace('&', "&&"), true, None));
