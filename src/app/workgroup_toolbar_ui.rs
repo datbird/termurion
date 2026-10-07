@@ -437,6 +437,10 @@ impl App {
             for cfg in &inst.workgroup.sessions {
                 for item in &cfg.toolbar_items {
                     if let ToolbarItem::Usage { command, interval_seconds, .. } = item {
+                        // A custom command runs only when it is on the list the person answered for.
+                        if !command.trim().is_empty() && !inst.approved.contains(command.trim()) {
+                            continue;
+                        }
                         let key = usage_key(command, *interval_seconds);
                         let due = inst.usage.get(&key).is_none_or(|s| s.rx.is_none() && s.started.is_none_or(|t| now.duration_since(t) >= Duration::from_secs_f64(interval_seconds.max(wt::MIN_INTERVAL).min(86_400.0))));
                         if due && !starts.iter().any(|(i, k, _)| *i == inst.id && *k == key) {

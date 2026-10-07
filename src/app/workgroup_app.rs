@@ -42,6 +42,8 @@ pub(super) struct Instance {
     pub torn_down: bool,
     /// AI Usage items' reports and runs, by item key (Task 5); dropped with the instance.
     pub usage: HashMap<String, super::workgroup_toolbar_ui::UsageSlot>,
+    /// Every command the person answered for or owns (`run::approved`): the only commands a runner starts.
+    pub approved: std::collections::HashSet<String>,
 }
 
 impl Instance {
@@ -238,6 +240,7 @@ impl App {
             group_before: None,
             torn_down: false,
             usage: HashMap::new(),
+            approved: run::approved(&w),
         };
         // config id -> the pane that hosts its children
         let mut hosts: HashMap<String, PaneId> = HashMap::from([(root.unique_identifier.clone(), pane)]);
