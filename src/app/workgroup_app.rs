@@ -111,6 +111,13 @@ impl Instances {
     }
 }
 
+/// What restarting a member starts.
+pub(super) enum MemberLaunch {
+    NotMember,
+    Refused,
+    Run { command: Option<String>, env: String },
+}
+
 /// What starting one member did.
 enum Made {
     Pane(PaneId),
@@ -358,28 +365,11 @@ impl App {
                 }
             }
         }
-        let plan = match run::command_plan(&cfg.command, "HEAD") {
-            Ok(p) => p,
+        let command = match self.plan_command(&cfg.command, "HEAD") {
+            Ok(c) => c,
             Err(why) => {
                 self.banners.set("workgroup", why);
                 return Made::Skipped;
-            }
-        };
-        let command = match plan {
-            Plan::Profile => None,
-            Plan::Line(l) => Some(l),
-            Plan::Argv(argv) => {
-                let Some(program) = crate::semantic::resolve_on_path(std::path::Path::new(&argv[0]), std::env::var_os("PATH").as_deref()) else {
-                    self.banners.set("workgroup", "A member's program was not found, so it did not start.");
-                    return Made::Skipped;
-                };
-                match run::argv_line(&program, &argv[1..]) {
-                    Ok(l) => Some(l),
-                    Err(why) => {
-                        self.banners.set("workgroup", why);
-                        return Made::Skipped;
-                    }
-                }
             }
         };
         let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&leader)) else { return Made::Failed };
@@ -439,6 +429,39 @@ impl App {
             }
         }
         Made::Pane(id)
+    }
+
+    /// The command line a member's `template` starts with `git_base` for `\(gitBase)`: None is the
+    /// profile's own shell. An error is the banner text and nothing starts (B4: values are arguments).
+    pub(super) fn plan_command(&self, template: &str, git_base: &str) -> Result<Option<String>, String> {
+        match run::command_plan(template, git_base)? {
+            Plan::Profile => Ok(None),
+            Plan::Line(l) => Ok(Some(l)),
+            Plan::Argv(argv) => {
+                let program = crate::semantic::resolve_on_path(std::path::Path::new(&argv[0]), std::env::var_os("PATH").as_deref()).ok_or("A member's program was not found, so it did not start.")?;
+                run::argv_line(&program, &argv[1..]).map(Some)
+            }
+        }
+    }
+
+    /// What a restart of `pane` starts when it is a workgroup member: its own command through
+    /// `plan_command` (a Diff member through the Diff launcher), with the instance id for its
+    /// environment. The one place a restart takes a member's command from.
+    pub(super) fn workgroup_launch(&mut self, pane: PaneId) -> MemberLaunch {
+        let Some((instance, _config, base, template)) = self.workgroup_of(pane).and_then(|i| {
+            let config = i.config_of(pane).map(str::to_string).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.clone()))?;
+            let cfg = i.workgroup.session(&config)?;
+            Some((i.id.clone(), config, i.git_base.clone(), cfg.command.clone()))
+        }) else {
+            return MemberLaunch::NotMember;
+        };
+        match self.plan_command(&template, &base) {
+            Ok(command) => MemberLaunch::Run { command, env: format!("ITERM_WORKGROUP_ID={instance}") },
+            Err(why) => {
+                self.banners.set("workgroup", why);
+                MemberLaunch::Refused
+            }
+        }
     }
 
     fn is_bonjour_profile(&self, p: &Profile) -> bool {

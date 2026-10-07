@@ -3697,7 +3697,7 @@ impl App {
         if self.panes.get(&id).is_some_and(|p| p.exited.is_some() && !p.live_survivors().is_empty()) {
             return;
         }
-        self.restart_confirmed(id);
+        self.restart_launching(id);
     }
 
     /// A restart asked for by `via` (13q B7): what it does first follows `restart_step`. A running
@@ -3732,6 +3732,23 @@ impl App {
     }
 
     /// The restart itself, after whatever question it needed was answered.
+    fn restart_launching(&mut self, id: PaneId) {
+        // A workgroup member restarts with its own command and its instance's environment.
+        let launch = self.workgroup_launch(id);
+        if matches!(launch, workgroup_app::MemberLaunch::Refused) {
+            return;
+        }
+        if let workgroup_app::MemberLaunch::Run { command, env } = &launch {
+            self.start_command_override = command.clone();
+            self.start_extra_env = vec![env.clone()];
+        }
+        self.restart_confirmed(id);
+        if matches!(launch, workgroup_app::MemberLaunch::Run { .. }) {
+            self.start_command_override = None;
+            self.start_extra_env.clear();
+        }
+    }
+
     fn restart_confirmed(&mut self, id: PaneId) {
         if !self.restartable(id) {
             return;
@@ -3840,7 +3857,7 @@ impl App {
         let Some(now) = self.panes.get(&id).map(|p| p.restart_subject()) else { return };
         self.enter_pane_window(id);
         match crate::session_end::answer_step(asked, &now) {
-            crate::session_end::AnswerStep::Restart => self.restart_confirmed(id),
+            crate::session_end::AnswerStep::Restart => self.restart_launching(id),
             crate::session_end::AnswerStep::AskAgain => {
                 self.restart_via(id, crate::session_end::Via::Menu);
             }

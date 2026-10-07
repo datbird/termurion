@@ -544,6 +544,18 @@ fn run_usage(command: &str, cancel: &AtomicBool) -> UsageReport {
 
 #[cfg(test)]
 mod tests {
+
+    /// A restart of a member starts its own command with its instance's environment, never the profile's
+    /// shell (`WPP:789-791`): `restart_confirmed` takes both from `workgroup_launch`.
+    #[test]
+    fn a_member_restarts_with_its_own_command() {
+        let m = include_str!("mod.rs");
+        let f = &m[m.find("    fn restart_launching(&mut self").unwrap()..m.find("    fn restart_confirmed(&mut self").unwrap()];
+        assert!(f.contains("self.workgroup_launch(id)") && f.contains("self.start_command_override = command.clone();") && f.contains("self.start_extra_env = vec![env.clone()];"), "{f}");
+        let w = include_str!("workgroup_app.rs");
+        let launch = &w[w.find("pub(super) fn workgroup_launch").unwrap()..];
+        assert!(launch.contains("self.plan_command(") && launch.contains("ITERM_WORKGROUP_ID={instance}"));
+    }
     const THIS: &str = include_str!("workgroup_toolbar_ui.rs");
     const MOD: &str = include_str!("mod.rs");
 
