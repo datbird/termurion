@@ -368,7 +368,14 @@ pub fn replay_calls(e: &BroadcastEvent) -> Vec<(&'static str, serde_json::Value)
             let event = |kind: &str| {
                 json!({ "type": kind, "key": key, "code": code, "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code, "modifiers": devtools_modifiers(*mods) })
             };
-            vec![("Input.dispatchKeyEvent", event("rawKeyDown")), ("Input.dispatchKeyEvent", event("keyUp"))]
+            // Enter is a keyDown with text "\r" (Blink makes the char that submits a form or breaks a
+            // line); the other editing keys are raw keys, as before.
+            let mut down = event(if *key == "Enter" { "keyDown" } else { "rawKeyDown" });
+            if *key == "Enter" {
+                down["text"] = json!("\r");
+                down["unmodifiedText"] = json!("\r");
+            }
+            vec![("Input.dispatchKeyEvent", down), ("Input.dispatchKeyEvent", event("keyUp"))]
         }
     }
 }
@@ -700,8 +707,15 @@ mod tests {
         let calls = replay_calls(&enter);
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].0, "Input.dispatchKeyEvent");
-        assert_eq!(calls[0].1["type"], "rawKeyDown");
+        // Review I2 (iTerm2's `insertNewline:` submits forms): Enter is a keyDown with text "\r", never a
+        // raw key (Blink drives implicit submission and the line break from the char it makes).
+        assert_eq!(calls[0].1["type"], "keyDown");
+        assert_eq!(calls[0].1["text"], "\r");
+        assert_eq!(calls[0].1["unmodifiedText"], "\r");
         assert_eq!(calls[0].1["windowsVirtualKeyCode"], 13);
+        let tab = BroadcastEvent::Key { key: "Tab".into(), code: "Tab".into(), key_code: 9, mods: 0 };
+        assert_eq!(replay_calls(&tab)[0].1["type"], "rawKeyDown", "the other keys stay raw keys");
+        assert!(replay_calls(&tab)[0].1.get("text").is_none());
         assert_eq!(calls[0].1["key"], "Enter");
         assert_eq!(calls[0].1["code"], "Enter");
         assert_eq!(calls[0].1["modifiers"], 0);
@@ -780,7 +794,8 @@ mod tests {
         }
         assert_eq!(listeners, 2, "beforeinput and keydown");
         assert!(js.contains("tandemSecretField(t, SENSITIVE)") && js.contains("composedPath"));
-        for t in ["insertText", "insertLineBreak", "insertFromPaste"] {
+        assert!(!js.contains("insertLineBreak"), "Enter travels as its key only: a line break in a textarea is made by the replayed Enter, never a second time by an insert");
+        for t in ["insertText", "insertFromPaste"] {
             assert!(js.contains(t), "{t}");
         }
         for k in ["Backspace", "Delete", "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"] {

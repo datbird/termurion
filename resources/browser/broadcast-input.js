@@ -55,8 +55,6 @@
             let text = null;
             if (e.inputType === 'insertText') {
                 text = e.data;
-            } else if (e.inputType === 'insertLineBreak') {
-                text = '\n';
             } else if (e.inputType === 'insertFromPaste') {
                 text = e.data || (e.dataTransfer ? e.dataTransfer.getData('text/plain') : null);
             }
