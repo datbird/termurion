@@ -219,6 +219,7 @@ mod ssh_files_app;
 mod ssh_panel_app;
 mod ssh_url_app;
 mod workgroup_app;
+mod workgroup_toolbar_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -5247,6 +5248,7 @@ impl App {
         snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
         snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
         (snapshot.peer_digits, snapshot.peer_keys) = self.peer_route_keys();
+        snapshot.peer_keys.extend(self.toolbar_route_keys());
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
@@ -5477,6 +5479,12 @@ impl App {
                     self.relayout();
                     return;
                 }
+                if let Some(pane) = self.focused_id().filter(|p| self.workgroup_toolbar_member(*p)) {
+                    if self.workgroup_toolbar_shortcut(pane, &press.stroke) {
+                        self.relayout();
+                        return;
+                    }
+                }
                 if let Some(c) = chord {
                     // A menu chord, then a profile's Ctrl+Win shortcut (`keyroute::terminal_chord`);
                     // neither sends bytes to the session, so neither clears a selection (S10).
@@ -5645,6 +5653,15 @@ impl App {
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
             }
             return;
+        }
+        // A workgroup member's session toolbar, before a browser pane's (they never overlap).
+        if let Some(pane) = self.workgroup_toolbar_at(x, y) {
+            if button == MouseButton::Left && self.workgroup_toolbar_press(pane, x, y, event_loop) {
+                return;
+            }
+            if button != MouseButton::Left {
+                return;
+            }
         }
         // A browser pane's toolbar, and the suggestions list under its address field.
         if let Some(pane) = self.browser_bar_at(x, y) {
@@ -6471,6 +6488,7 @@ impl App {
         }
         self.draw_toolbelt(&mut frame, cell);
         self.draw_title_bars(&mut frame, cell);
+        self.draw_workgroup_toolbars(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));

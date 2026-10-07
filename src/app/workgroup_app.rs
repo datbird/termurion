@@ -40,6 +40,8 @@ pub(super) struct Instance {
     /// The entry tab's group before the workgroup's: Some(None) was no group.
     pub group_before: Option<Option<crate::tab_groups::TabGroup>>,
     pub torn_down: bool,
+    /// AI Usage items' reports and runs, by item key (Task 5); dropped with the instance.
+    pub usage: HashMap<String, super::workgroup_toolbar_ui::UsageSlot>,
 }
 
 impl Instance {
@@ -86,8 +88,20 @@ impl Instances {
         self.map.get(id)
     }
 
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Instance> {
+        self.map.get_mut(id)
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Instance> {
+        self.map.values_mut()
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 
     pub fn values(&self) -> impl Iterator<Item = &Instance> {
@@ -223,6 +237,7 @@ impl App {
             leader_title: None,
             group_before: None,
             torn_down: false,
+            usage: HashMap::new(),
         };
         // config id -> the pane that hosts its children
         let mut hosts: HashMap<String, PaneId> = HashMap::from([(root.unique_identifier.clone(), pane)]);
@@ -510,6 +525,7 @@ impl App {
 
     /// Ends the members a teardown queued (once the closing pane's own close has finished).
     pub(super) fn tick_workgroups(&mut self, event_loop: &ActiveEventLoop) {
+        self.usage_tick();
         if self.workgroups.to_close.is_empty() {
             return;
         }

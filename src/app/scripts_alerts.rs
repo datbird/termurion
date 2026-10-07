@@ -99,7 +99,7 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
         // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
-        Then::EnterWorkgroup { .. } => Answer::Button(0),
+        Then::EnterWorkgroup { .. } | Then::UsageReport { .. } => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -312,6 +312,9 @@ pub(super) enum Then {
     /// (13y1): Enter (0) enters the very workgroup the question showed, Cancel nothing. A trigger
     /// raises it, so then it is capped.
     EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism },
+    /// The AI Usage item's report alert (13y1 Task 5): Cancel (0, the default), Report Bug (1) copies
+    /// the report and opens the issue form.
+    UsageReport { title: String, text: String },
 }
 
 impl Then {
@@ -690,6 +693,11 @@ impl App {
             Then::TriggerImportMarked(imported) => {
                 if index == 0 {
                     self.trigger_import_queue(imported);
+                }
+            }
+            Then::UsageReport { title, text } => {
+                if index == 1 {
+                    self.usage_report_answered(&title, &text);
                 }
             }
             Then::EnterWorkgroup { workgroup, pane, how } => {
