@@ -883,15 +883,25 @@ mod tests {
         assert!(nw.contains("nav_gate_tab(url)"), "a page's window.open passes the tab gate");
     }
 
-    /// Task 2 review I3 (a class): every Client-world handler asks the one gate (`client_open`) before
-    /// it acts, and a Client script is never given to an auto-attached frame of a view that is not
-    /// Ready. A function of the browser files that takes a routed message is listed here or is the
-    /// router (a new handler fails this test until it asks the gate).
-    #[test]
-    fn every_client_handler_asks_the_one_gate() {
-        let files = [("browser_scripts_app.rs", include_str!("browser_scripts_app.rs")), ("browser_frames_app.rs", include_str!("browser_frames_app.rs")), ("browser_db_app.rs", include_str!("browser_db_app.rs"))];
+    /// Every source file of the app folder, with its test module cut off.
+    fn app_sources() -> Vec<(String, String)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
+        let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+            .map(|e| (format!("app/{}", e.file_name().to_string_lossy()), std::fs::read_to_string(e.path()).unwrap()))
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
+    /// router or is a listed Client handler that asks `client_open` before it acts.
+    fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
         let known = ["browser_graph_message", "browser_always_on"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
+        let mut out = Vec::new();
         for (file, src) in files {
             let prod = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
             let mut at = 0;
@@ -900,18 +910,49 @@ mod tests {
                 at = start + 3;
                 let sig_end = prod[start..].find('{').map_or(prod.len(), |e| start + e);
                 let sig = &prod[start..sig_end];
-                if !sig.contains("Routed") {
+                // The type `Routed` as a word in the parameters (a function that only returns another
+                // module's `Routed`, as frames_ui's does, takes no message).
+                let params = sig.split("->").next().unwrap_or(sig);
+                let routed = params.match_indices("Routed").any(|(i, m)| {
+                    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    !word(params[..i].chars().next_back()) && !word(params[i + m.len()..].chars().next())
+                });
+                if !routed {
                     continue;
                 }
                 let name: String = sig[3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                 if routers.contains(&name.as_str()) {
                     continue;
                 }
-                assert!(known.contains(&name.as_str()), "{file}: {name} takes a routed message but is not a listed Client handler");
+                if !known.contains(&name.as_str()) {
+                    out.push(format!("{file}: {name} takes a routed message but is not a listed Client handler"));
+                    continue;
+                }
                 let body_end = prod[sig_end..].find("\n    }\n").map_or(prod.len(), |e| sig_end + e);
-                assert!(prod[sig_end..body_end].contains("self.client_open("), "{name} acts without the one gate");
+                if !prod[sig_end..body_end].contains("self.client_open(") {
+                    out.push(format!("{file}: {name} acts without the one gate"));
+                }
             }
         }
+        out
+    }
+
+    /// Task 2 review I3 (a class): every Client-world handler asks the one gate (`client_open`) before
+    /// it acts, and a Client script is never given to an auto-attached frame of a view that is not
+    /// Ready. A function of the browser files that takes a routed message is listed here or is the
+    /// router (a new handler fails this test until it asks the gate).
+    #[test]
+    fn every_client_handler_asks_the_one_gate() {
+        let violations = client_handler_violations(&app_sources());
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+        // The scan sees a handler in a file no one listed: a planted one is reported, and a gated one passes.
+        let mut files = app_sources();
+        files.push(("app/browser_planted_app.rs".into(), "impl App {\n    pub(super) fn hover_tip(&mut self, pane: PaneId, r: &Routed) {\n        let _ = pane;\n    }\n}\n".into()));
+        let v = client_handler_violations(&files);
+        assert!(v.iter().any(|w| w.contains("browser_planted_app.rs") && w.contains("hover_tip")), "{v:?}");
+        let mut files = app_sources();
+        files.push(("app/browser_planted_app.rs".into(), "impl App {\n    pub(super) fn hover_tip(&mut self, pane: PaneId, r: &Routed) {\n        if !self.client_open(pane) { return; }\n    }\n}\n".into()));
+        assert!(client_handler_violations(&files).iter().any(|w| w.contains("not a listed Client handler")), "an unlisted name still fails until it is listed");
         let p = prod();
         let attached = &p[p.find("fn browser_attached").unwrap()..p.find("fn browser_session_pump").unwrap()];
         assert!(attached.contains("self.client_open(pane)"), "an iframe of a view that is not Ready gets no secret-bearing script");
