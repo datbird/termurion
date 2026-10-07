@@ -144,6 +144,12 @@ pub fn teardown_order(non_peers: &[String]) -> Vec<String> {
     non_peers.to_vec()
 }
 
+/// Why a workgroup member cannot be buried (None for any other session). One predicate for every
+/// bury entry: the menu, the API, it2 and the keyboard all reach `bury_pane`.
+pub fn bury_refusal(is_member: bool) -> Option<&'static str> {
+    is_member.then_some("A session in a workgroup cannot be buried. Exit the workgroup first (Shell > Workgroups > Exit Workgroup).")
+}
+
 /// What a teardown does with the leader (`WI:666-790`, `restoreMainLeaderToPaneIfNeeded`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaderFate {
@@ -350,6 +356,30 @@ pub fn menu_entries(list: &[Workgroup], current: Option<(&str, &str, bool)>, has
 
 #[cfg(test)]
 mod tests {
+    /// No path can bury a workgroup member: a buried member is a pane in `App.buried` that the group
+    /// still owns (B2), and a buried shown peer takes the group's slot out of every layout.
+    #[test]
+    fn no_member_can_be_buried() {
+        use super::bury_refusal;
+        assert_eq!(bury_refusal(false), None);
+        assert!(bury_refusal(true).is_some_and(|t| t.contains("workgroup")));
+        let bury = include_str!("app/bury_ui.rs");
+        let f = &bury[bury.find("pub(super) fn bury_pane").unwrap()..];
+        let head = &f[..f.find("enter_pane_window").unwrap()];
+        assert!(head.contains("crate::workgroup_run::bury_refusal(self.workgroup_of(id).is_some())"), "the one predicate is the first thing every bury entry meets");
+        // Every entry point reaches bury_pane (the menu, the API, it2, the keyboard and the auto-bury).
+        for (file, src) in [("menu.rs", include_str!("app/menu.rs")), ("api_requests.rs", include_str!("app/api_requests.rs"))] {
+            assert!(src.contains("self.bury_pane("), "{file} buries through bury_pane");
+        }
+        let mut direct = Vec::new();
+        for (file, src) in [("menu.rs", include_str!("app/menu.rs")), ("api_requests.rs", include_str!("app/api_requests.rs")), ("git_ui.rs", include_str!("app/git_ui.rs")), ("bury_ui.rs", include_str!("app/bury_ui.rs"))] {
+            if src.contains("Burial::bury(") || src.contains(".buried.bury(") {
+                direct.push(file);
+            }
+        }
+        assert_eq!(direct, ["bury_ui.rs"], "only bury_pane inserts into the buried store");
+    }
+
     #[test]
     fn leader_fate_follows_iterm2() {
         use super::{leader_fate, LeaderFate::*};
