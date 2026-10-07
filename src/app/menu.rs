@@ -53,6 +53,26 @@ pub(super) fn menu_text(item: &Item) -> String {
 /// menus (`AD:394`), so a change needs a restart.
 static SPLIT_HINTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
+/// Shell > Workgroups: the submenu as the menu file builds it (the separator and Exit Workgroup),
+/// and what is listed above them now.
+pub(super) struct WorkgroupsMenu {
+    pub sub: Submenu,
+    pub separator: Option<PredefinedMenuItem>,
+    pub sep_shown: bool,
+    pub exit: Option<MenuItem>,
+    /// (menu id, label, enabled, checked) of the listed workgroups.
+    pub shown: Vec<(String, String, bool, bool)>,
+}
+
+impl WorkgroupsMenu {
+    fn new(sub: Submenu) -> WorkgroupsMenu {
+        let items = sub.items();
+        let separator = items.iter().find_map(|i| if let muda::MenuItemKind::Predefined(p) = i { Some(p.clone()) } else { None });
+        let exit = items.iter().find_map(|i| i.as_menuitem().cloned());
+        WorkgroupsMenu { sub, separator, sep_shown: true, exit, shown: Vec::new() }
+    }
+}
+
 pub(super) struct MenuBar {
     /// The window's menu bar (hidden in full screen, `App::sync_menu_hidden`).
     pub(super) menu: Menu,
@@ -78,6 +98,8 @@ pub(super) struct MenuBar {
     /// Session > Buried Sessions and what it lists: (menu id, label); an empty id is a line.
     pub(super) buried: Option<Submenu>,
     pub(super) buried_items: Vec<(String, String)>,
+    /// Shell > Workgroups (13y1): its entries, the separator and Exit Workgroup.
+    pub(super) workgroups: Option<WorkgroupsMenu>,
     /// Edit > Snippets and Edit > Actions, and what they list.
     pub(super) snippets: Option<Submenu>,
     pub(super) snippet_items: Option<Vec<crate::snippets::MenuEntry>>,
@@ -274,7 +296,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string).to_vec()).cloned().map(WorkgroupsMenu::new), snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -600,6 +622,7 @@ impl App {
         self.refresh_scripts_menu();
         self.refresh_arrangement_menus();
         self.refresh_buried_menu();
+        self.refresh_workgroups_menu();
         self.refresh_archives_menu();
         self.refresh_snippet_menus();
         self.sync_toolbelt_checks();
@@ -649,7 +672,7 @@ impl App {
         if self.tab_menu_picked(id, event_loop) {
             return;
         }
-        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) {
+        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) || self.workgroup_picked(id) {
             return;
         }
         if self.arrangement_picked(id) || self.window_list_picked(id) || self.archive_picked(id) {
@@ -857,6 +880,11 @@ impl App {
             "bury:" => {
                 if let Some(id) = self.focused_id().filter(|id| !self.bury_refused(*id)) {
                     self.bury_pane(id);
+                }
+            }
+            "exitWorkgroup:" => {
+                if let Some(id) = self.focused_id() {
+                    self.exit_workgroup(id);
                 }
             }
             "openDashboard:" => self.open_tmux_dashboard(event_loop),

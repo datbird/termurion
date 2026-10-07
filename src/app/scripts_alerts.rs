@@ -98,6 +98,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeRepair => Answer::Button(1),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
+        // Cancel: a closed window never starts a workgroup's commands.
+        Then::EnterWorkgroup { .. } => Answer::Button(1),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -306,6 +308,10 @@ pub(super) enum Then {
     /// "WebView2 Runtime Required" (`GW:136-160`): Download (0) opens Microsoft's page, Use System
     /// Browser (1) opens the link, Cancel nothing. Not capped.
     BrowserUpsell { url: String },
+    /// "Enter the workgroup ...?" for an imported workgroup, a trigger, or more than eight members
+    /// (13y1): Enter (0) enters the very workgroup the question showed, Cancel nothing. A trigger
+    /// raises it, so then it is capped.
+    EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism },
 }
 
 impl Then {
@@ -333,6 +339,7 @@ impl Then {
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
         matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_))
+            || matches!(self, Then::EnterWorkgroup { how: crate::workgroup_run::Mechanism::Trigger | crate::workgroup_run::Mechanism::BrowserTrigger, .. })
     }
 }
 
@@ -683,6 +690,11 @@ impl App {
             Then::TriggerImportMarked(imported) => {
                 if index == 0 {
                     self.trigger_import_queue(imported);
+                }
+            }
+            Then::EnterWorkgroup { workgroup, pane, how } => {
+                if index == 0 {
+                    self.enter_workgroup_now(*workgroup, pane, how);
                 }
             }
         }

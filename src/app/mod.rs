@@ -218,6 +218,7 @@ mod ssh_framer_app;
 mod ssh_files_app;
 mod ssh_panel_app;
 mod ssh_url_app;
+mod workgroup_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -415,8 +416,14 @@ pub struct App {
     globals: Globals,
     /// The workgroups (13y1): the definitions, their latches and where each came from. Read by the
     /// editor, the menu and the entry code of the later tasks.
-    #[allow(dead_code)]
     workgroup_model: crate::workgroup::Model,
+    /// The live workgroup instances, app-wide (13y1): every member pane keeps `Pane.workgroup`.
+    /// Not per window.
+    workgroups: workgroup_app::Instances,
+    /// `NAME=value` variables the next pane gets after the REPL's (`ITERM_WORKGROUP_ID`). Set by
+    /// one workgroup spawn, read once by `session_env` and emptied; a launch override it is not
+    /// (the REPL's `start_env_override` suppresses Initial Text and injection, this does not).
+    start_extra_env: Vec<String>,
     /// The Leader was pressed; the next key carries the Leader flag.
     leader_on: bool,
     mru: Mru,
@@ -2043,6 +2050,8 @@ pub fn run() {
         exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
         globals,
         workgroup_model,
+        workgroups: Default::default(),
+        start_extra_env: Vec::new(),
         leader_on: false,
         mru: Mru::default(),
         next_tab_id: 1,
@@ -3851,8 +3860,9 @@ impl App {
         let (tab, pane) = crate::session_env::numbers(&counts, holding, self.start_tab);
         // The REPL's variables (`start_env_override`) carry its own cookie, which then is the
         // pane's (it leaves the jar with the pane); no Session cookie is minted beside it.
-        let extra = self.start_env_override.clone().unwrap_or_default();
+        let mut extra = self.start_env_override.clone().unwrap_or_default();
         let given = extra.iter().find_map(|e| e.strip_prefix("ITERM2_COOKIE=")).map(str::to_string);
+        extra.extend(std::mem::take(&mut self.start_extra_env));
         let cookie = given.or_else(|| {
             (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
                 .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session))
@@ -4799,6 +4809,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // Any member of a workgroup ending takes the instance down (`WI:257-296`).
+        self.workgroup_member_ended(id);
         // The pane's own window is current for all that follows: an archive of a pane closed in
         // a background window is built from that window's frame, style and title.
         self.enter_pane_window(id);
@@ -7134,6 +7146,7 @@ impl ApplicationHandler<UserEvent> for App {
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
+        self.tick_workgroups(event_loop);
         let restart_due = self.tick_restarts();
         self.tick_progress();
         let progress_due = self.progress_wake();

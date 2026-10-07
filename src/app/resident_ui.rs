@@ -441,7 +441,7 @@ mod tests {
     /// already awake, or is an entry point of the previous test.
     #[test]
     fn tab_making_sites_are_all_classified() {
-        let known: [(&str, usize); 13] = [
+        let known: [(&str, usize); 14] = [
             ("api_requests.rs", 3),
             ("arrange_ui.rs", 2),
             ("bury_ui.rs", 2),
@@ -454,6 +454,8 @@ mod tests {
             ("tmux_tabs_ui.rs", 1),
             ("undo_ui.rs", 2),
             ("windows_ui.rs", 7),
+            // A workgroup entry starts from a session in a tab of an awake window.
+            ("workgroup_app.rs", 1),
             ("resident_ui.rs", 0),
         ];
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
