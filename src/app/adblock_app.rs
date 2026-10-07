@@ -87,6 +87,11 @@ fn load_list(dir: &LocalPath) -> Option<String> {
     (st.is_file && !st.is_reparse && st.len <= adblock::MAX_LIST_BYTES as u64).then(|| localfs::read_to_string(&p).ok()).flatten()
 }
 
+/// The one composition of the proxy argument, from the three globals (also the launch seed).
+pub(super) fn proxy_args_of(g: &crate::globals::Globals) -> String {
+    crate::adblock::proxy_args(g.bool("BrowserProxyEnabled"), &g.string("BrowserProxyHost"), g.int("BrowserProxyPort"))
+}
+
 impl App {
     pub(super) fn adblock_on(&self) -> bool {
         self.globals.bool("WebKitAdblockEnabled")
@@ -95,8 +100,7 @@ impl App {
     /// The one place the proxy argument is made: only from the three globals, only through
     /// `adblock::proxy_args` (P15).
     pub(super) fn browser_proxy_args(&self) -> String {
-        let g = &self.globals;
-        crate::adblock::proxy_args(g.bool("BrowserProxyEnabled"), &g.string("BrowserProxyHost"), g.int("BrowserProxyPort"))
+        proxy_args_of(&self.globals)
     }
 
     /// `host:port` while the proxy is on (the toolbar indicator and its notice).
@@ -348,6 +352,20 @@ mod tests {
         std::fs::write(d.path().join(FILE), vec![b' '; adblock::MAX_LIST_BYTES + 1]).unwrap();
         assert!(load_list(&d).is_none());
         let _ = std::fs::remove_dir_all(d.path());
+    }
+
+    /// What the browser is made with is what changes are measured against: a proxy or ad blocking
+    /// turned on for the first time after launch is a change (the views and environments were made
+    /// from the launch settings), so it resets the views and shows the notice.
+    #[test]
+    fn the_first_change_after_launch_counts() {
+        let (envs, _) = webhost_app::Envs::seeded("--proxy-server=http://a:1".to_string(), true);
+        assert_eq!(envs.proxy_seen.as_deref(), Some("--proxy-server=http://a:1"));
+        assert_eq!(envs.adblock_seen, Some(true));
+        let (off, _) = webhost_app::Envs::seeded(String::new(), false);
+        assert_eq!((off.proxy_seen.as_deref(), off.adblock_seen), (Some(""), Some(false)), "off at launch is a value too");
+        let m = include_str!("mod.rs");
+        assert!(m.contains("webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool(\"WebKitAdblockEnabled\"))"));
     }
 
     /// Off means off: the tick clears everything and starts nothing; the download needs a browser

@@ -1990,7 +1990,7 @@ pub fn run() {
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
-    let (web_envs, web_events) = webhost_app::Envs::new();
+    let (web_envs, web_events) = webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool("WebKitAdblockEnabled"));
     let mut app = App {
         host,
         hotkey: None,

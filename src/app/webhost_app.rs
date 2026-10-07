@@ -44,7 +44,7 @@ pub(super) struct Envs {
     next_view: ViewId,
     seen: (String, String),
     /// The proxy argument the browser environments were last made with, and whether ad blocking was on:
-    /// None until the first look (a proxy set at launch is not a change).
+    /// Seeded at launch by `Envs::seeded` from the settings.
     pub(super) proxy_seen: Option<String>,
     pub(super) adblock_seen: Option<bool>,
     /// Until when a failed browser environment is tried again (the old browser process may still
@@ -61,6 +61,16 @@ impl Envs {
     pub(super) fn new() -> (Envs, Receiver<Posted>) {
         let (tx, rx) = channel();
         (Envs { tx, slots: HashMap::new(), runtime: RefCell::new(None), fixed: RefCell::new(None), refusal: RefCell::new(None), next_view: 1, seen: (String::new(), String::new()), proxy_seen: None, adblock_seen: None, rebuild_until: None, retry_at: None, dev_null: None, swept: false }, rx)
+    }
+
+    /// The state at launch: `proxy` and `ad` are what the browser environments and views will be
+    /// made with, so the first change after launch is a change (no silent direct traffic while the
+    /// toolbar says the proxy is on).
+    pub(super) fn seeded(proxy: String, ad: bool) -> (Envs, Receiver<Posted>) {
+        let (mut envs, rx) = Envs::new();
+        envs.proxy_seen = Some(proxy);
+        envs.adblock_seen = Some(ad);
+        (envs, rx)
     }
 
     /// The browser stores' environments go (a proxy change); they are made again on the next request.
