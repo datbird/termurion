@@ -459,6 +459,11 @@ fn registrable(host: &str) -> String {
 
 /// Whether the request `url` for `resource` made by the page `top_url` is blocked.
 pub fn blocks(rules: &Rules, url: &str, resource: Resource, top_url: &str) -> bool {
+    blocks_within(rules, url, resource, top_url, MATCH_BUDGET)
+}
+
+/// `blocks` with its own time budget (the tests of what a list means give a loaded machine room).
+fn blocks_within(rules: &Rules, url: &str, resource: Resource, top_url: &str, budget: Duration) -> bool {
     let Some(host) = web_host(url) else { return false };
     let start = Instant::now();
     let top = if resource == Resource::Document || top_url.is_empty() { url } else { top_url };
@@ -476,7 +481,7 @@ pub fn blocks(rules: &Rules, url: &str, resource: Resource, top_url: &str) -> bo
     let mut blocked = false;
     for i in candidates {
         // The budget is checked before every candidate; out of it the request goes on (ads only).
-        if start.elapsed() > MATCH_BUDGET {
+        if start.elapsed() > budget {
             OVER_BUDGET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return false;
         }
@@ -576,6 +581,11 @@ pub fn proxy_args_ok(args: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a list means, judged with room for a loaded machine; the budget has its own test.
+    fn blocks(rules: &Rules, url: &str, resource: Resource, top_url: &str) -> bool {
+        blocks_within(rules, url, resource, top_url, Duration::from_secs(5))
+    }
 
     const TOP: &str = "https://site.test/";
 
@@ -832,7 +842,7 @@ mod tests {
         let url = format!("https://x.test/{}", "a".repeat(1 << 20));
         let before = over_budget_count();
         let start = std::time::Instant::now();
-        assert!(!blocks(&r, &url, Resource::Image, TOP), "over budget means allowed (fail open for ads only)");
+        assert!(!blocks_within(&r, &url, Resource::Image, TOP, MATCH_BUDGET), "over budget means allowed (fail open for ads only)");
         assert!(start.elapsed() < Duration::from_millis(250), "{:?}", start.elapsed());
         assert!(over_budget_count() > before, "an answer cut short is counted");
     }
