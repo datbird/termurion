@@ -459,9 +459,11 @@ mod tests {
         assert_eq!(tip_text("https://a.test/x", 40), "https://a.test/x");
         // A look-alike host shows as the host it is; hidden characters never show.
         assert_eq!(tip_text("https://\u{430}pple.com/\u{202e}x", 60), "https://xn--pple-43d.com/x");
-        // The host that does not fit keeps its end.
+        // The host that does not fit keeps its suffix and the START of the registrable label (cut from
+        // the right, so no other brand's name forms; Task 6 round 2 new breakage).
         let host = format!("https://{}evil.test/", "a".repeat(100));
-        assert!(tip_text(&host, 30).ends_with("evil.test/") || tip_text(&host, 30).ends_with("evil.test"), "{}", tip_text(&host, 30));
+        let t = tip_text(&host, 30);
+        assert!(t.ends_with("\u{2026}.test") && t.starts_with('a') && t.chars().count() <= 30, "{t}");
     }
 
     #[test]
@@ -503,7 +505,7 @@ mod tests {
             for room in [90.0f32, 140.0, 220.0, 400.0] {
                 let t = fit_measured(&shown, room, &measure);
                 assert!(measure(&t) <= room, "{room}: {t} is {}", measure(&t));
-                assert!(t.contains("evil.test") || t.ends_with("evil.test") || (room < 140.0 && "evil.test".ends_with(t.trim_start_matches('\u{2026}').trim_end_matches('/'))), "{room}: the registrable host is shown: {t}");
+                assert!(t.contains("evil.test") || t.ends_with("evil.test") || (room < 140.0 && t.ends_with(".test")), "{room}: the registrable host is shown: {t}");
             }
             // Room for all of it: nothing is cut.
             assert_eq!(fit_measured(&shown, 100_000.0, &measure), shown);

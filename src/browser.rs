@@ -741,23 +741,122 @@ pub fn fit_address(shown: &str, cells: usize) -> String {
             }
         }
     }
-    // Narrower than the registrable host itself: its end.
+    // Narrower than the registrable host itself: the attacker's label is cut from its RIGHT (its start
+    // and the public suffix stay), so a cut can never form another brand's domain.
+    let reg = &labels[labels.len().saturating_sub(floor)..];
+    if reg.len() >= 2 && !host.starts_with('[') {
+        let suffix = format!(".{}", reg[1..].join("."));
+        let room = cells.saturating_sub(suffix.chars().count());
+        if room >= 1 {
+            let label: Vec<char> = reg[0].chars().collect();
+            if label.len() <= room {
+                return format!("{}{suffix}", reg[0]);
+            }
+            return format!("{}\u{2026}{suffix}", label[..room - 1].iter().collect::<String>());
+        }
+    }
     let at = if userinfo.is_some() { "@" } else { "" };
     let host: Vec<char> = format!("{at}{hostport}").chars().collect();
     let room = cells.saturating_sub(1);
     ['\u{2026}'].iter().chain(host[host.len().saturating_sub(room)..].iter()).take(cells).collect()
 }
 
-/// How many trailing labels of a host are never cut: the registrable part (public suffix and one
-/// label; a two-letter country code behind a short second level, `co.uk`, is one suffix). A numeric
-/// or bracketed host is whole.
+/// How many trailing labels of a host are never cut: the public suffix and one label (the attacker's
+/// own). The multi-label suffixes are the embedded `PUBLIC_SUFFIXES` (longest match wins); a host the
+/// table does not know falls back to the shape rule (a two-letter country code behind a short second
+/// level, `co.uk`, is one suffix). One trailing dot is not a label. A numeric or bracketed host is whole.
 fn registrable_labels(host: &str, labels: &[&str]) -> usize {
     let n = labels.len();
-    if host.starts_with('[') || n < 3 || labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit())) {
+    if host.starts_with('[') || labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit())) {
         return n;
     }
-    if labels[n - 1].chars().count() == 2 && labels[n - 2].chars().count() <= 3 { 3 } else { 2 }
+    let dot = usize::from(labels.last() == Some(&""));
+    let core = &labels[..n - dot];
+    let m = core.len();
+    let known = suffix_labels(core);
+    if known > 0 {
+        return (known + 1).min(m) + dot;
+    }
+    if m < 3 {
+        return n;
+    }
+    (if core[m - 1].chars().count() == 2 && core[m - 2].chars().count() <= 3 { 3 } else { 2 }) + dot
 }
+
+/// How many trailing labels of `labels` the longest matching `PUBLIC_SUFFIXES` entry covers (0: none).
+/// A `*` label matches any one label, a label ending in `*` is a prefix.
+fn suffix_labels(labels: &[&str]) -> usize {
+    let mut best = 0;
+    for entry in PUBLIC_SUFFIXES {
+        let parts: Vec<&str> = entry.split('.').collect();
+        if parts.len() > labels.len() || parts.len() <= best {
+            continue;
+        }
+        let tail = &labels[labels.len() - parts.len()..];
+        let hit = parts.iter().zip(tail).all(|(p, l)| match p.strip_suffix('*') {
+            Some(prefix) => l.len() >= prefix.len() && l.is_char_boundary(prefix.len()) && l[..prefix.len()].eq_ignore_ascii_case(prefix),
+            None => p.eq_ignore_ascii_case(l),
+        });
+        if hit {
+            best = parts.len();
+        }
+    }
+    best
+}
+
+/// The multi-label public suffixes the shortener keeps whole, so the attacker's label in front of one
+/// is never cut away: free-hosting suffixes (the private section of the Public Suffix List, the
+/// high-volume ones), country second levels and the gTLD-based ones. A bounded table, display only
+/// (no security decision reads it); refresh it from publicsuffix.org/list when it ages. `*` is any one
+/// label, a label ending in `*` is a prefix.
+pub const PUBLIC_SUFFIXES: &[&str] = &[
+    // Free hosting and platform suffixes.
+    "github.io", "githubusercontent.com", "gitlab.io", "googleusercontent.com", "blogspot.com", "blogspot.co.uk", "appspot.com",
+    "web.app", "firebaseapp.com", "cloudfront.net", "s3.amazonaws.com", "s3.*.amazonaws.com", "s3-*.amazonaws.com",
+    "s3.dualstack.*.amazonaws.com", "s3-website.*.amazonaws.com", "s3-website-*.amazonaws.com", "execute-api.*.amazonaws.com",
+    "elasticbeanstalk.com", "elb.amazonaws.com", "compute.amazonaws.com", "blob.core.windows.net", "azurewebsites.net",
+    "cloudapp.net", "cloudapp.azure.com", "azurestaticapps.net", "azureedge.net", "trafficmanager.net", "file.core.windows.net",
+    "queue.core.windows.net", "table.core.windows.net", "web.core.windows.net", "herokuapp.com", "herokussl.com", "netlify.app",
+    "netlify.com", "vercel.app", "now.sh", "pages.dev", "workers.dev", "r2.dev", "fly.dev", "onrender.com", "ngrok.io",
+    "ngrok-free.app", "ngrok.app", "ngrok.dev", "glitch.me", "repl.co", "replit.app", "replit.dev", "translate.goog",
+    "wordpress.com", "weebly.com", "wixsite.com", "squarespace.com", "myshopify.com", "webflow.io", "framer.app", "framer.website",
+    "carrd.co", "000webhostapp.com", "infinityfreeapp.com", "rf.gd", "epizy.com", "pythonanywhere.com", "surge.sh", "render.com",
+    "railway.app", "up.railway.app", "deno.dev", "web.val.run", "stackblitz.com", "codesandbox.io", "csb.app", "gitpod.io",
+    "bitbucket.io", "readthedocs.io", "notion.site", "super.site", "typedream.app", "bubbleapps.io", "mystrikingly.com",
+    "webnode.page", "sites.google.com", "page.link", "withgoogle.com", "run.app", "cloudfunctions.net", "ondigitalocean.app",
+    "digitaloceanspaces.com", "backblazeb2.com", "dweb.link", "ipfs.io", "on.fleek.co", "4everland.app", "oraclecloud.com",
+    "oraclecloudapps.com", "linodeobjects.com", "scw.cloud", "fastly-edge.com", "fastlylb.net", "global.ssl.fastly.net", "edgekey.net",
+    "akamaized.net", "akamaihd.net", "b-cdn.net", "kinsta.cloud", "wpengine.com", "wpenginepowered.com", "myfritz.net",
+    "duckdns.org", "no-ip.org", "no-ip.com", "ddns.net", "dyndns.org", "dyndns.biz", "hopto.org", "zapto.org", "servebeer.com",
+    "serveftp.com", "servegame.com", "freeddns.org", "chickenkiller.com", "mooo.com", "afraid.org", "dynu.net", "myddns.rocks",
+    "zendesk.com", "freshdesk.com", "atlassian.net", "jfrog.io", "jotform.com", "typeform.com", "wufoo.com",
+    "forms.gle", "my.canva.site", "canva.site", "lovable.app", "bolt.host", "dev.tunnels.ms", "devtunnels.ms", "loca.lt",
+    "trycloudflare.com", "cfargotunnel.com", "vercel.dev", "nextjs.app", "hf.space", "streamlit.app", "gradio.live",
+    // gTLD-based country and region names.
+    "uk.com", "us.com", "eu.com", "de.com", "gb.com", "gb.net", "uk.net", "se.net", "co.com", "ru.com", "za.com", "ar.com",
+    "br.com", "cn.com", "jpn.com", "kr.com", "no.com", "qc.com", "sa.com", "se.com", "uy.com", "hu.com", "jp.net", "in.net",
+    // Country second levels the shape rule misreads or misses.
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk", "nhs.uk", "police.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au", "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "ad.jp", "ed.jp",
+    "gr.jp", "lg.jp", "co.nz", "org.nz", "net.nz", "govt.nz", "ac.nz", "school.nz", "geek.nz", "com.br", "net.br", "org.br", "gov.br",
+    "edu.br", "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn", "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in",
+    "ac.in", "edu.in", "gov.in", "res.in", "co.za", "org.za", "net.za", "gov.za", "ac.za", "web.za", "com.mx", "org.mx", "gob.mx",
+    "edu.mx", "net.mx", "com.ar", "org.ar", "gob.ar", "net.ar", "edu.ar", "com.tr", "org.tr", "net.tr", "gov.tr", "edu.tr", "av.tr",
+    "co.kr", "or.kr", "ne.kr", "go.kr", "ac.kr", "re.kr", "com.sg", "org.sg", "edu.sg", "gov.sg", "net.sg", "com.hk", "org.hk",
+    "edu.hk", "gov.hk", "net.hk", "idv.hk", "com.tw", "org.tw", "edu.tw", "gov.tw", "net.tw", "idv.tw", "co.il", "org.il", "ac.il",
+    "gov.il", "net.il", "muni.il", "co.id", "or.id", "ac.id", "go.id", "web.id", "my.id", "biz.id", "com.my", "org.my", "edu.my",
+    "gov.my", "net.my", "com.ua", "org.ua", "net.ua", "gov.ua", "edu.ua", "in.ua", "kiev.ua", "com.pl", "org.pl", "net.pl", "edu.pl",
+    "gov.pl", "info.pl", "biz.pl", "waw.pl", "com.ru", "org.ru", "net.ru", "msk.ru", "spb.ru", "com.ph", "org.ph", "net.ph", "gov.ph",
+    "edu.ph", "com.vn", "net.vn", "org.vn", "gov.vn", "edu.vn", "co.th", "or.th", "ac.th", "go.th", "in.th", "net.th", "com.pk",
+    "org.pk", "net.pk", "gov.pk", "edu.pk", "com.bd", "org.bd", "net.bd", "gov.bd", "edu.bd", "com.ng", "org.ng", "gov.ng", "edu.ng",
+    "co.ke", "or.ke", "go.ke", "ac.ke", "com.eg", "org.eg", "gov.eg", "edu.eg", "com.sa", "org.sa", "gov.sa", "edu.sa", "com.co",
+    "org.co", "net.co", "gov.co", "edu.co", "com.pe", "org.pe", "gob.pe", "edu.pe", "com.ve", "org.ve", "gob.ve", "com.ec", "org.ec",
+    "gob.ec", "edu.ec", "com.uy", "org.uy", "gub.uy", "edu.uy", "com.gt", "com.do", "com.pa", "com.cy", "org.cy", "com.mt", "com.gr",
+    "gr.com", "co.at", "or.at", "ac.at", "gv.at", "co.hu", "org.hu", "co.rs", "org.rs", "ac.rs", "co.ro", "com.ro", "org.ro",
+    "k12.*.us", "lib.*.us", "cc.*.us", "pvt.k12.*.us", "co.us", "com.de", "co.de", "ac.ae", "co.ae", "net.ae", "org.ae", "gov.ae",
+    "co.ve", "co.cr", "co.ug", "co.tz", "co.zw", "co.zm", "com.lk", "com.np", "com.kh", "com.mm", "com.bn", "com.bo", "com.py",
+    "com.cu", "com.ni", "com.hn", "com.sv", "com.lb", "com.jo", "com.kw", "com.qa", "com.om", "com.bh", "com.ye", "com.iq",
+];
 
 /// A URL inside a longer display text: what comes before its scheme, the URL, and a closing quote.
 /// None when the text is only the URL.
@@ -1624,12 +1723,81 @@ mod tests {
         }
         assert_eq!(fit_address(url, 30), "https://acco\u{2026}@evil.test/path/\u{2026}", "path first, then userinfo");
         assert_eq!(fit_address("https://a.test/x", 40), "https://a.test/x", "what fits is untouched");
-        // A long host is cut from the left: the registrable end stays.
+        // A long host: whole subdomain labels go from the left, then the attacker's label from the right.
         let long = "https://very.long.subdomain.chain.example-bank.test:8443/x";
         let fit = fit_address(long, 24);
-        assert!(fit.starts_with('\u{2026}') && fit.contains("bank.test") && fit.chars().count() <= 24, "{fit}");
+        assert_eq!(fit, "example-bank.test", "narrower than the registrable host: its own label is cut from the right, never the start");
         // Something that is not an authority URL is cut from the right.
         assert_eq!(fit_address("about:blank", 6), "about\u{2026}");
+    }
+
+    /// Task 7 re-review item 3 and Task 6 round 2 new breakage: the registrable host is the PUBLIC
+    /// suffix (a bounded embedded table of the multi-label ones, hosting suffixes included) and one
+    /// label, a trailing dot is not a label, and the last-resort cut never splits the attacker's label
+    /// from the left.
+    #[test]
+    fn the_suffix_table_keeps_the_attackers_label() {
+        let cases = [
+            ("evil.github.io", "github.io"),
+            ("acct.blob.core.windows.net", "blob.core.windows.net"),
+            ("x.s3.amazonaws.com", "s3.amazonaws.com"),
+            ("bucket.s3.us-west-2.amazonaws.com", "s3.us-west-2.amazonaws.com"),
+            ("bucket.s3-us-west-2.amazonaws.com", "s3-us-west-2.amazonaws.com"),
+            ("evil.co.uk", "co.uk"),
+            ("evil.com.au", "com.au"),
+            ("evil.co.jp", "co.jp"),
+            ("evil.blogspot.com", "blogspot.com"),
+            ("evil.web.app", "web.app"),
+            ("evil.firebaseapp.com", "firebaseapp.com"),
+            ("evil.pages.dev", "pages.dev"),
+            ("evil.workers.dev", "workers.dev"),
+            ("evil.herokuapp.com", "herokuapp.com"),
+            ("evil.vercel.app", "vercel.app"),
+            ("evil.netlify.app", "netlify.app"),
+            ("evil.appspot.com", "appspot.com"),
+            ("evil.googleusercontent.com", "googleusercontent.com"),
+            ("evil.githubusercontent.com", "githubusercontent.com"),
+            ("evil.azurewebsites.net", "azurewebsites.net"),
+            ("evil.cloudfront.net", "cloudfront.net"),
+            ("evil.fly.dev", "fly.dev"),
+            ("evil.onrender.com", "onrender.com"),
+            ("evil.ngrok.io", "ngrok.io"),
+            ("evil.ngrok-free.app", "ngrok-free.app"),
+            ("evil.uk.com", "uk.com"),
+        ];
+        for (host, suffix) in cases {
+            let attacker = host[..host.len() - suffix.len() - 1].rsplit('.').next().unwrap();
+            let url = format!("https://deep.sub.{host}/path/x");
+            for cells in (suffix.len() + 2)..=70 {
+                let fit = fit_address(&url, cells);
+                assert!(fit.chars().count() <= cells, "{host} {cells}: {fit}");
+                assert!(fit.contains(suffix), "{host} {cells}: the suffix stays: {fit}");
+                if cells > 8 + 1 + attacker.len() + 1 + suffix.len() {
+                    assert!(fit.contains(&format!("{attacker}.{suffix}")), "{host} {cells}: the attacker's label stays whole: {fit}");
+                }
+            }
+        }
+        // A trailing dot is not a label: the attacker's label is still never cut.
+        for cells in 19..50 {
+            let fit = fit_address("https://accounts.google.com.evil.test./x", cells);
+            assert!(fit.contains("evil.test."), "{cells}: {fit}");
+        }
+        // Last resort: the registrable label is cut from its RIGHT, so no other brand's name forms.
+        assert_eq!(fit_address("https://notpaypal.com/", 11), "notpay\u{2026}.com");
+        assert_eq!(fit_address("https://notpaypal.co.uk/", 12), "notpa\u{2026}.co.uk");
+        let tiny = fit_address("https://a.b.evil.test/", 6);
+        assert_eq!(tiny, "\u{2026}.test");
+        // An IDN homograph shows its punycode, never a look-alike.
+        let shown = display_url("https://p\u{0430}ypal.com/");
+        assert!(shown.contains("xn--") && !fit_address(&shown, 14).contains('\u{0430}'), "{shown}");
+        // The table is bounded, clean, and holds every row the review named.
+        assert!(PUBLIC_SUFFIXES.len() <= 500);
+        for e in PUBLIC_SUFFIXES {
+            assert!(!e.is_empty() && e.is_ascii() && e.to_ascii_lowercase() == *e && !e.starts_with('.') && !e.ends_with('.') && e.contains('.'), "{e}");
+        }
+        for (_, suffix) in cases {
+            assert!(PUBLIC_SUFFIXES.iter().any(|e| *e == suffix) || suffix_labels(&suffix.split('.').collect::<Vec<_>>()) == suffix.split('.').count(), "{suffix}");
+        }
     }
 
     /// Round 2, class fix: ONE shortener for every URL display. The registrable host (public suffix and
