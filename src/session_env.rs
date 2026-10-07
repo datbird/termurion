@@ -120,6 +120,10 @@ pub fn overlay(vars: Vec<String>, extra: &[String]) -> Vec<String> {
     let name = |e: &str| e.split_once('=').map_or(e.to_uppercase(), |(n, _)| n.to_uppercase());
     let mut out = vars;
     for e in extra {
+        if let Some(gone) = e.strip_prefix('-').filter(|n| !n.is_empty() && !n.contains('=')) {
+            out.retain(|v| name(v) != gone.to_uppercase());
+            continue;
+        }
         match out.iter_mut().find(|v| name(v) == name(e)) {
             Some(v) => *v = e.clone(),
             None => out.push(e.clone()),
@@ -137,6 +141,10 @@ pub fn merge(base: Vec<(String, String)>, extra: &[String]) -> Vec<(String, Stri
     let mut out = base;
     out.retain(|(n, _)| !NEVER_INHERITED.iter().any(|x| n.eq_ignore_ascii_case(x)));
     for e in extra.iter().filter(|e| !e.contains('\0')) {
+        if let Some(gone) = e.strip_prefix('-').filter(|n| !n.is_empty() && !n.contains('=')) {
+            out.retain(|(n, _)| n.to_uppercase() != gone.to_uppercase());
+            continue;
+        }
         // The name ends at the first `=` after its first character: a drive's current folder
         // is kept as `=C:=C:\x`.
         let Some(at) = e.char_indices().skip(1).find(|(_, c)| *c == '=').map(|(i, _)| i) else { continue };
@@ -280,6 +288,15 @@ pub fn block(pairs: &[(String, String)]) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry `-NAME` removes the variable (a launch that must not inherit GIT_EXTERNAL_DIFF).
+    #[test]
+    fn a_dash_entry_removes_a_variable() {
+        let out = overlay(vec!["A=1".into(), "git_external_diff=calc".into(), "B=2".into()], &["-GIT_EXTERNAL_DIFF".into(), "C=3".into()]);
+        assert_eq!(out, ["A=1", "B=2", "C=3"]);
+        let m = merge(vec![("A".into(), "1".into()), ("Git_External_Diff".into(), "calc".into())], &["-GIT_EXTERNAL_DIFF".into(), "B=2".into()]);
+        assert_eq!(m, [("A".to_string(), "1".to_string()), ("B".to_string(), "2".to_string())]);
+    }
 
     #[test]
     fn termid_follows_iterm2() {

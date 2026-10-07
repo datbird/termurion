@@ -3741,7 +3741,7 @@ impl App {
         }
         if let workgroup_app::MemberLaunch::Run { command, env } = &launch {
             self.start_command_override = command.clone();
-            self.start_extra_env = vec![env.clone()];
+            self.start_extra_env = env.clone();
         }
         self.restart_confirmed(id);
         if matches!(launch, workgroup_app::MemberLaunch::Run { .. }) {

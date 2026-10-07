@@ -241,7 +241,7 @@ impl App {
     /// as arguments (B4). `git` runs through `guarded_args` after `vet_repo` passed for the leader's
     /// folder, in the working tree's top (porcelain paths are relative to it); another program runs as
     /// written with the same values as arguments. An error is the banner text and nothing starts.
-    pub(super) fn diff_launch_line(&mut self, instance: &str, config: &str) -> Result<Option<String>, String> {
+    pub(super) fn diff_launch_line(&mut self, instance: &str, config: &str) -> Result<(Option<String>, Vec<String>), String> {
         let Some(inst) = self.workgroups.get(instance) else { return Err("That workgroup has ended.".into()) };
         let Some(cfg) = inst.workgroup.session(config) else { return Err("That member no longer exists.".into()) };
         let picked = inst.git.as_ref().and_then(|g| g.selectors.get(config)).and_then(|s| s.picked()).map(str::to_string);
@@ -262,21 +262,26 @@ impl App {
         .map_err(|r| r.text().to_string())?;
         let dir = self.workgroup_dir(leader).ok_or("This session is not in a folder on this computer, so git will not run.")?;
         let vet = gs::vet_repo(std::path::Path::new(&dir)).ok_or("git will not run in this folder (it is not a local repository, or its configuration is not safe to read).")?;
+        // Whatever program runs, git runs under it: the repository's own config is judged first.
+        if let Some(why) = vet.launch_refusal() {
+            return Err(why);
+        }
         let program = tokens[0].clone();
         let stem = std::path::Path::new(&program).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
-        let line = if stem.as_deref() == Some("git") {
+        let (line, env) = if stem.as_deref() == Some("git") {
             let git = self.git_for_launch().ok_or("git was not found, so the diff did not start.")?;
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
-            crate::workgroup_run::argv_line(&git, &gs::guarded_args(&vet, &rest))?
+            // The one builder: the repository's own config is judged first, then the overrides and the environment.
+            gs::launch(&git, &vet, &rest)?
         } else {
             let found = crate::semantic::resolve_on_path(std::path::Path::new(&program), std::env::var_os("PATH").as_deref()).ok_or("The diff program was not found, so it did not start.")?;
-            crate::workgroup_run::argv_line(&found, &tokens[1..])?
+            (crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new())
         };
         // The porcelain paths are relative to the working tree's top: that is where it runs.
         if let (Some(root), Some(p)) = (vet.root, pane.and_then(|p| self.panes.get_mut(&p))) {
             p.start_dir = Some(root);
         }
-        Ok(Some(line))
+        Ok((Some(line), env))
     }
 
     /// A pick in a changed-file selector (`diffDidSelect`, `diffDidSelectAllFiles`): the member restarts
@@ -705,7 +710,7 @@ mod tests {
         let live = THIS.split("\n#[cfg(test)]").next().unwrap();
         let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
         let vet = line.find("gs::vet_repo(").expect("vetted");
-        let guarded = line.find("gs::guarded_args(&vet").expect("guarded");
+        let guarded = line.find("gs::launch(").expect("launched through the one builder");
         assert!(vet < guarded, "the vet comes first");
         assert!(line.contains("inst.approved.contains(&template)"), "the command comes from the approved list");
         let any = &live[live.find("pub(super) fn run_anyway_refusal").unwrap()..live.find("pub(super) fn diff_run_anyway").unwrap()];
@@ -738,6 +743,30 @@ mod tests {
             s.toolbar_items.retain(|i| !i.needs_git_poller());
         }
         assert!(GitSide::for_workgroup(&plain).is_none());
+    }
+
+    /// Class rule: ONE function builds every git invocation of workgroup code. No workgroup source builds
+    /// a guarded line or runs git itself; the launch takes the vet's verdict and the launch environment.
+    #[test]
+    fn git_is_built_in_one_place() {
+        let sources = [
+            include_str!("workgroup_git_app.rs"),
+            include_str!("workgroup_app.rs"),
+            include_str!("workgroup_toolbar_ui.rs"),
+            include_str!("../workgroup_git.rs"),
+            include_str!("../workgroup_run.rs"),
+            include_str!("../workgroup_toolbar.rs"),
+            include_str!("../workgroup_peers.rs"),
+        ];
+        for src in sources {
+            let live = src.split("\n#[cfg(test)]").next().unwrap();
+            for banned in ["guarded_args(", "HARDENED", "Command::new(git", "Command::new(\"git"] {
+                assert!(!live.contains(banned), "{banned}");
+            }
+        }
+        let live = THIS.split("\n#[cfg(test)]").next().unwrap();
+        let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
+        assert!(line.contains("gs::launch(") && line.contains("launch_refusal()"), "the one builder, after the verdict");
     }
 
     /// The panel's Cancel exists only on the queued-reload variant; every part sits inside the panel.

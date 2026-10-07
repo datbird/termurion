@@ -126,7 +126,7 @@ impl Instances {
 pub(super) enum MemberLaunch {
     NotMember,
     Refused,
-    Run { command: Option<String>, env: String },
+    Run { command: Option<String>, env: Vec<String> },
 }
 
 /// What starting one member did.
@@ -481,9 +481,12 @@ impl App {
         }) else {
             return MemberLaunch::NotMember;
         };
-        let line = if diff { self.diff_launch_line(&instance, &config) } else { self.plan_command(&template, &base) };
+        let line = if diff { self.diff_launch_line(&instance, &config) } else { self.plan_command(&template, &base).map(|c| (c, Vec::new())) };
         match line {
-            Ok(command) => MemberLaunch::Run { command, env: format!("ITERM_WORKGROUP_ID={instance}") },
+            Ok((command, mut env)) => {
+                env.insert(0, format!("ITERM_WORKGROUP_ID={instance}"));
+                MemberLaunch::Run { command, env }
+            }
             Err(why) => {
                 self.banners.set("workgroup", why);
                 MemberLaunch::Refused

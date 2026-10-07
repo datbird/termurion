@@ -441,6 +441,59 @@ pub fn guarded_args(vet: &Vetted, args: &[&str]) -> Vec<String> {
     HARDENED.iter().map(|a| a.to_string()).chain(vet.args.iter().cloned()).chain(args.iter().map(|a| a.to_string())).collect()
 }
 
+/// What a git started in a pane adds to `HARDENED`: no pager (a repository's `core.pager` and `pager.*`
+/// run programs), no external diff, no hooks, no credential helper, no ssh program, no transport but
+/// the repository's own files.
+const LAUNCH_ARGS: &[&str] = &[
+    "--no-pager",
+    "-c",
+    "core.hooksPath=NUL",
+    "-c",
+    "core.pager=cat",
+    "-c",
+    "diff.external=",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "core.sshCommand=false",
+];
+
+/// THE git argument vector for a git started in a pane (every workgroup launch of git takes it):
+/// `guarded_args` plus `LAUNCH_ARGS`, and `--no-ext-diff --no-textconv` right after a `diff`
+/// subcommand. The subcommand and its arguments are the person's own template.
+pub fn launch_args(vet: &Vetted, args: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = HARDENED.iter().map(|a| a.to_string()).chain(LAUNCH_ARGS.iter().map(|a| a.to_string())).chain(vet.args.iter().cloned()).collect();
+    for (i, a) in args.iter().enumerate() {
+        out.push(a.to_string());
+        if i == 0 && *a == "diff" {
+            out.push("--no-ext-diff".into());
+            out.push("--no-textconv".into());
+        }
+    }
+    out
+}
+
+/// The environment of a git started in a pane, as the session's `NAME=value` entries; a `-NAME` entry
+/// removes the variable (`session_env::overlay`).
+pub fn launch_env() -> Vec<String> {
+    let mut out: Vec<String> = GIT_ENV.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    out.extend(["GIT_CONFIG_NOSYSTEM=1", "GIT_PAGER=cat", "PAGER=cat"].map(String::from));
+    out.extend(GIT_ENV_REMOVED.iter().chain(["GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS"].iter()).map(|n| format!("-{n}")));
+    out
+}
+
+/// A launch of git in a pane: its command line and environment, or why it must not run. The ONE place a
+/// workgroup git line is made: the verdict of the repository's own config comes first.
+pub fn launch(git: &Path, vet: &Vetted, args: &[&str]) -> Result<(String, Vec<String>), String> {
+    if let Some(why) = vet.launch_refusal() {
+        return Err(why);
+    }
+    let line = crate::workgroup_run::argv_line(git, &launch_args(vet, args))?;
+    Ok((line, launch_env()))
+}
+
 /// The branch, counts and entries (`GCL:590-630` with the CLI). Every git line starts
 /// with `--no-optional-locks` and the same `-c` hardening: no fsmonitor hook, no implicit
 /// bare repository (a folder of repository files git would find on its own), paths printed
@@ -615,6 +668,25 @@ pub struct Vetted {
     /// The nearest folder with a `.git` in it: the working tree's top, which porcelain paths are
     /// relative to.
     pub root: Option<PathBuf>,
+    /// The config keys (names only, never values) that run a program: a pager, an external diff or
+    /// textconv, a tool, an alias, a credential helper, ssh. They change nothing for the poller, whose
+    /// lines never reach them, but a git started in a pane does (`launch_refusal`).
+    pub programs: Vec<String>,
+}
+
+impl Vetted {
+    /// Why a git started in a pane must not run here: the repository's own config names programs
+    /// (it is untrusted: the coding agent being reviewed writes it), or it is a partial clone whose
+    /// lazy fetch would reach ssh or a credential helper. None when it may.
+    pub fn launch_refusal(&self) -> Option<String> {
+        if let Some(first) = self.programs.first() {
+            let shown: Vec<String> = self.programs.iter().take(3).map(|k| crate::inert_files::display_text(k, 64, false)).collect();
+            let more = if self.programs.len() > 3 { format!(" and {} more", self.programs.len() - 3) } else { String::new() };
+            let _ = first;
+            return Some(format!("This repository's own git configuration runs programs ({}{more}), so Tandem will not start git in it. Remove those settings from its .git/config to use it here.", shown.join(", ")));
+        }
+        self.partial_clone.then(|| "This repository is a partial clone, so git may fetch from a remote while it runs; Tandem will not start git in it.".to_string())
+    }
 }
 
 /// The checks before any git run, in `dir` and every repository git could find above it
@@ -627,7 +699,8 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
     let dir = LocalPath::judge(dir)?;
     let mut filters = BTreeSet::new();
     let mut partial_clone = false;
-    let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone };
+    let mut programs: Vec<String> = Vec::new();
+    let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone, programs: &mut programs };
     let mut root = None;
     let mut at = Some(dir);
     while let Some(a) = at {
@@ -650,13 +723,16 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
         }
         at = a.parent();
     }
-    Some(Vetted { args: filter_args(&filters), partial_clone, root })
+    programs.sort();
+    programs.dedup();
+    Some(Vetted { args: filter_args(&filters), partial_clone, root, programs })
 }
 
 /// What `vet_config` collects.
 struct Vet<'a> {
     filters: &'a mut BTreeSet<String>,
     partial_clone: &'a mut bool,
+    programs: &'a mut Vec<String>,
 }
 
 /// A `.git` file's `gitdir:` (a worktree or submodule), when it is relative or local.
@@ -758,6 +834,7 @@ fn vet_config(file: &LocalPath, root: &Path, v: &mut Vet, depth: usize) -> Optio
             return None;
         }
         let sub = e.sub.as_deref().unwrap_or("");
+        note_program(&e.section, e.sub.as_deref(), &e.key, v.programs);
         match (e.section.as_str(), e.key.as_str()) {
             ("filter", _) => {
                 if sub.is_empty() || sub.contains(['=', '\n', '\r', '\0']) {
@@ -781,6 +858,30 @@ fn vet_config(file: &LocalPath, root: &Path, v: &mut Vet, depth: usize) -> Optio
         }
     }
     Some(())
+}
+
+/// Records the key when it names a program git would run in a pane (not by the poller's lines).
+/// Section and key are lowercased by the parser. Filter drivers are not listed: `-c` switches
+/// them off for every line.
+fn note_program(section: &str, sub: Option<&str>, key: &str, out: &mut Vec<String>) {
+    let runs = match section {
+        "core" => matches!(key, "pager" | "sshcommand" | "fsmonitor" | "editor" | "askpass"),
+        "pager" | "alias" | "difftool" | "mergetool" | "credential" | "uploadpack" | "receive" | "web" | "browser" | "man" | "gpg" | "gui" => true,
+        "sequence" => key == "editor",
+        "diff" => matches!(key, "external" | "tool" | "guitool") || (sub.is_some() && matches!(key, "command" | "textconv")),
+        "merge" => sub.is_some() && key == "driver" || key == "tool",
+        "http" => matches!(key, "proxy" | "sslcommand"),
+        _ => false,
+    };
+    if runs {
+        let name = match sub {
+            Some(s) => format!("{section}.{s}.{key}"),
+            None => format!("{section}.{key}"),
+        };
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
 }
 
 /// `-c` overrides that switch off the named filter drivers (an empty command runs nothing;
@@ -1808,7 +1909,7 @@ mod tests {
         for base in [STATUS_ARGS, GIT_DIR_ARGS, BRANCHES_ARGS, LOG_ARGS] {
             assert_eq!(&base[..HARDENED.len()], HARDENED);
         }
-        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None };
+        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None, programs: vec![] };
         let line = guarded_args(&vet, &["status", "--porcelain"]);
         assert_eq!(&line[..HARDENED.len()], HARDENED);
         assert_eq!(&line[HARDENED.len()..], ["-c", "filter.x.clean=", "status", "--porcelain"]);
@@ -1873,6 +1974,80 @@ mod tests {
         for p in [d, d2, merging] {
             fs::remove_dir_all(p).unwrap();
         }
+    }
+
+    /// Task 6 round 1, item 1 (class: a repository's own config is untrusted): a repo that sets any key
+    /// that runs a program is refused for a launch, whatever the key.
+    #[test]
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
+    fn launch_refuses_a_repo_that_configures_programs() {
+        let cases = [
+            ("pager", "[core]\n\tpager = calc.exe\n"),
+            ("pagerdiff", "[pager]\n\tdiff = calc\n"),
+            ("ext", "[diff]\n\texternal = calc\n"),
+            ("drivercmd", "[diff \"x\"]\n\tcommand = calc\n"),
+            ("textconv", "[diff \"x\"]\n\ttextconv = calc\n"),
+            ("difftool", "[difftool \"t\"]\n\tcmd = calc\n"),
+            ("difftool-name", "[diff]\n\ttool = t\n"),
+            ("mergetool", "[mergetool \"t\"]\n\tcmd = calc\n"),
+            ("alias", "[alias]\n\tdiff = !calc\n"),
+            ("ssh", "[core]\n\tsshCommand = calc\n"),
+            ("cred", "[credential]\n\thelper = calc\n"),
+            ("credurl", "[credential \"https://x\"]\n\thelper = calc\n"),
+            ("fsm", "[core]\n\tfsmonitor = calc\n"),
+            ("editor", "[core]\n\teditor = calc\n"),
+            ("seqeditor", "[sequence]\n\teditor = calc\n"),
+            ("upload", "[uploadpack]\n\tpackObjectsHook = calc\n"),
+            ("promisor", "[remote \"o\"]\n\tpromisor = true\n"),
+            ("partial", "[extensions]\n\tpartialClone = o\n"),
+            ("include", "[include]\n\tpath = more.cfg\n"),
+        ];
+        for (name, text) in cases {
+            let d = temp_repo(&format!("launch-{name}"));
+            fs::write(d.join(".git").join("config"), text).unwrap();
+            fs::write(d.join(".git").join("more.cfg"), "[core]\n\tpager = calc\n").unwrap();
+            let v = vet_repo(&d).unwrap_or_else(|| panic!("{name}: still vetted for the poller"));
+            assert!(v.launch_refusal().is_some(), "{name}: a launch must be refused");
+            fs::remove_dir_all(&d).unwrap();
+        }
+        let d = temp_repo("launch-plain");
+        fs::write(d.join(".git").join("config"), "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.com/r.git\n[filter \"lfs\"]\n\tclean = git-lfs clean\n[user]\n\tname = a\n").unwrap();
+        let v = vet_repo(&d).unwrap();
+        assert_eq!(v.launch_refusal(), None, "a plain config launches (filters are switched off by -c)");
+        assert!(v.args.iter().any(|a| a == "filter.lfs.clean="));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The pty launch's argv and environment carry the overrides, and are built in one place.
+    #[test]
+    fn launch_line_carries_the_overrides() {
+        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None, programs: vec![] };
+        let diff = launch_args(&vet, &["diff", "HEAD", "--", "f"]);
+        assert_eq!(&diff[..HARDENED.len()], HARDENED);
+        for want in ["--no-pager", "core.hooksPath=NUL", "core.pager=cat", "diff.external=", "credential.helper=", "protocol.allow=never", "core.sshCommand=false", "filter.x.clean="] {
+            assert!(diff.iter().any(|a| a == want), "{want} in {diff:?}");
+        }
+        let at = diff.iter().position(|a| a == "diff").unwrap();
+        assert_eq!(&diff[at..], ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", "f"], "the diff options come right after the subcommand");
+        let tool = launch_args(&vet, &["difftool", "-y", "-x", "vimdiff"]);
+        assert!(!tool.iter().any(|a| a == "--no-ext-diff"), "difftool is the person's own tool");
+        let env = launch_env();
+        for want in ["GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PAGER=cat", "PAGER=cat"] {
+            assert!(env.iter().any(|e| e == want), "{want}");
+        }
+        for gone in ["-GIT_EXTERNAL_DIFF", "-GIT_ASKPASS", "-SSH_ASKPASS", "-GIT_DIR"] {
+            assert!(env.iter().any(|e| e == gone), "{gone}");
+        }
+    }
+
+    #[test]
+    fn programs_in_a_config_are_listed_without_values() {
+        let mut programs = Vec::new();
+        let text = "[core]\n\tpager = secret-value\n[alias]\n\tx = !y\n";
+        for e in config_entries(text).unwrap() {
+            note_program(&e.section, e.sub.as_deref(), &e.key, &mut programs);
+        }
+        assert_eq!(programs, ["core.pager", "alias.x"]);
     }
 
     #[test]
