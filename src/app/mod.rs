@@ -8256,7 +8256,8 @@ mod tests {
         let src = include_str!("mod.rs");
         let body = &src[src.find("    fn session_env(").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
-        let take = body.find("let launch = std::mem::take(&mut self.start_extra_env);").expect("the launch is taken once");
+        // Split so this test does not count as a second take (`workgroup_env_keeps_session_guards`).
+        let take = body.find(concat!("let launch = std::mem::take(&mut self.", "start_extra_env);")).expect("the launch is taken once");
         let last = body.find("(crate::session_env::launch_last(env, &launch), cookie)").expect("the launch goes last");
         assert!(take < last && body.find("env.extend(term)").unwrap() < last, "after TERM");
         assert!(body.trim_end().ends_with("(crate::session_env::launch_last(env, &launch), cookie)"), "nothing follows it");
