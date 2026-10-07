@@ -689,6 +689,27 @@ impl Vetted {
     }
 }
 
+/// What the worker found for a folder: the vet verdict and the git it would run. A launch in a pane takes
+/// only this (the UI thread never vets or searches).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Launch {
+    pub vet: Option<Vetted>,
+    pub git: Option<PathBuf>,
+}
+
+/// Why a git started in a pane must not run for this verdict (Run Anyway and every launch): None when it may.
+pub fn launch_verdict(l: Option<&Launch>) -> Option<String> {
+    let Some(l) = l else { return Some("Tandem has not finished checking this folder yet.".into()) };
+    let Some(vet) = &l.vet else { return Some("git will not run in this folder (its configuration is not safe to read).".into()) };
+    if vet.root.is_none() {
+        return Some("This folder is not in a git repository, so git will not run.".into());
+    }
+    if l.git.is_none() {
+        return Some("git was not found, so the diff did not start.".into());
+    }
+    vet.launch_refusal()
+}
+
 /// The checks before any git run, in `dir` and every repository git could find above it
 /// (see the module comment). `None` refuses: git does not run and the component is empty,
 /// as for a folder outside any repository.
@@ -2015,6 +2036,30 @@ mod tests {
         let v = vet_repo(&d).unwrap();
         assert_eq!(v.launch_refusal(), None, "a plain config launches (filters are switched off by -c)");
         assert!(v.args.iter().any(|a| a == "filter.lfs.clean="));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Task 6 round 1, items 2 and 3: a launch (and Run Anyway) needs the worker's verdict for the folder:
+    /// a vetted repository with a working tree top, a git, and a config that runs nothing.
+    #[test]
+    fn run_anyway_needs_a_vetted_repository() {
+        let ok = Launch { vet: Some(Vetted { root: Some(PathBuf::from(r"C:\r")), ..Default::default() }), git: Some(PathBuf::from(r"C:\g\git.exe")) };
+        assert_eq!(launch_verdict(Some(&ok)), None);
+        assert!(launch_verdict(None).is_some_and(|t| t.contains("not finished")), "no answer yet: git does not run");
+        assert!(launch_verdict(Some(&Launch { vet: None, ..ok.clone() })).is_some_and(|t| t.contains("not safe")));
+        assert!(launch_verdict(Some(&Launch { vet: Some(Vetted::default()), ..ok.clone() })).is_some_and(|t| t.contains("not in a git repository")), "no working tree top");
+        assert!(launch_verdict(Some(&Launch { git: None, ..ok.clone() })).is_some_and(|t| t.contains("git was not found")));
+        let bad = Launch { vet: Some(Vetted { root: Some(PathBuf::from(r"C:\r")), programs: vec!["core.pager".into()], ..Default::default() }), ..ok };
+        assert!(launch_verdict(Some(&bad)).is_some_and(|t| t.contains("core.pager")));
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
+    fn a_folder_outside_any_repository_has_no_root() {
+        let d = temp("no-repo");
+        let v = vet_repo(&d).expect("outside a repository is not unsafe");
+        assert_eq!(v.root, None);
+        assert!(launch_verdict(Some(&Launch { vet: Some(v), git: Some(PathBuf::from("git")) })).is_some());
         fs::remove_dir_all(&d).unwrap();
     }
 

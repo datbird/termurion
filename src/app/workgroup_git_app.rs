@@ -33,6 +33,9 @@ pub(super) struct GitSide {
     pub pending: BTreeMap<String, Pending>,
     /// An answer for the current directory and base has come in since the base last changed.
     pub fresh: bool,
+    /// The worker's verdict for the directory it polled (the vet and the git): the only thing a launch
+    /// takes, so the UI thread never vets or searches. Forgotten when the directory changes.
+    pub launch: Option<(String, gs::Launch)>,
 }
 
 impl GitSide {
@@ -44,7 +47,7 @@ impl GitSide {
             let mut poller = GitPoller::new(wgit::CADENCE.as_secs_f64(), Instant::now());
             poller.set_enabled(true);
             let selectors = w.sessions.iter().filter(|s| s.toolbar_items.contains(&ToolbarItem::ChangedFileSelector)).map(|s| (s.unique_identifier.clone(), Selector::default())).collect();
-            GitSide { poller, selectors, pending: BTreeMap::new(), fresh: false }
+            GitSide { poller, selectors, pending: BTreeMap::new(), fresh: false, launch: None }
         })
     }
 
@@ -56,6 +59,11 @@ impl GitSide {
     /// The statuses the poller last reported.
     pub fn statuses(&self) -> &[gs::FileStatus] {
         self.poller.state.as_ref().and_then(|s| s.file_statuses.as_deref()).unwrap_or(&[])
+    }
+
+    /// The verdict for `dir` (None until the worker has answered for that very folder).
+    pub fn launch_for(&self, dir: &str) -> Option<&gs::Launch> {
+        self.launch.as_ref().filter(|(d, _)| d == dir).map(|(_, l)| l)
     }
 
     /// `diffLaunchReady`: git reports a change `git difftool` can show.
@@ -115,17 +123,6 @@ impl App {
         Some(id)
     }
 
-    /// The git that a Diff launch runs: the configured one, found without a PATH search of the
-    /// current folder, never a link to a network path.
-    fn git_for_launch(&self) -> Option<std::path::PathBuf> {
-        let named = gs::git_program_named(&self.git_search_path())?;
-        if named == std::path::Path::new("git") {
-            gs::find_git(&std::env::var("PATH").unwrap_or_default(), &crate::localfs::is_file)
-        } else {
-            gs::program_links_local(&named).then_some(named)
-        }
-    }
-
     /// The directory the poller watches: the leader's current folder (Windows form), local only.
     fn workgroup_dir(&self, leader: PaneId) -> Option<String> {
         let shell = &self.panes.get(&leader)?.own().shell;
@@ -175,12 +172,15 @@ impl App {
 
     /// A worker answer: the instance whose directory and base made `key` takes it, its selectors are
     /// refreshed and a launch that waited for it may fire. True when something changed.
-    pub(super) fn workgroup_git_answer(&mut self, key: &str, path: &str, fetched: Fetched) -> bool {
+    pub(super) fn workgroup_git_answer(&mut self, key: &str, path: &str, fetched: Fetched, launch: Option<gs::Launch>) -> bool {
         let mut changed = false;
         let ids: Vec<String> = self.workgroups.values().filter(|i| i.git.as_ref().is_some_and(|g| g.poller.directory.as_deref() == Some(path)) && gs::cache_key(path, Self::base_of(i).as_deref(), true) == key).map(|i| i.id.clone()).collect();
         for id in ids {
             let Some(git) = self.workgroups.get_mut(&id).and_then(|i| i.git.as_mut()) else { continue };
             let before = (git.poller.state.clone(), git.fresh);
+            if let Some(l) = launch.clone() {
+                git.launch = Some((path.to_string(), l));
+            }
             if git.poller.did_poll(path, fetched.clone()) {
                 git.fresh = true;
                 let list: Vec<gs::FileStatus> = git.statuses().to_vec();
@@ -261,15 +261,17 @@ impl App {
         }
         .map_err(|r| r.text().to_string())?;
         let dir = self.workgroup_dir(leader).ok_or("This session is not in a folder on this computer, so git will not run.")?;
-        let vet = gs::vet_repo(std::path::Path::new(&dir)).ok_or("git will not run in this folder (it is not a local repository, or its configuration is not safe to read).")?;
-        // Whatever program runs, git runs under it: the repository's own config is judged first.
-        if let Some(why) = vet.launch_refusal() {
+        // The worker's verdict for this very folder: a launch never vets or searches on the UI thread.
+        let launch = self.workgroups.get(instance).and_then(|i| i.git.as_ref()).and_then(|g| g.launch_for(&dir)).cloned();
+        if let Some(why) = gs::launch_verdict(launch.as_ref()) {
             return Err(why);
         }
+        let launch = launch.ok_or("Tandem has not finished checking this folder yet.")?;
+        let (vet, git) = (launch.vet.ok_or("git will not run in this folder.")?, launch.git.ok_or("git was not found.")?);
+        let Some(root) = vet.root.clone() else { return Err("This folder is not in a git repository, so git will not run.".into()) };
         let program = tokens[0].clone();
         let stem = std::path::Path::new(&program).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
         let (line, env) = if stem.as_deref() == Some("git") {
-            let git = self.git_for_launch().ok_or("git was not found, so the diff did not start.")?;
             let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
             // The one builder: the repository's own config is judged first, then the overrides and the environment.
             gs::launch(&git, &vet, &rest)?
@@ -278,7 +280,7 @@ impl App {
             (crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new())
         };
         // The porcelain paths are relative to the working tree's top: that is where it runs.
-        if let (Some(root), Some(p)) = (vet.root, pane.and_then(|p| self.panes.get_mut(&p))) {
+        if let Some(p) = pane.and_then(|p| self.panes.get_mut(&p)) {
             p.start_dir = Some(root);
         }
         Ok((Some(line), env))
@@ -396,12 +398,13 @@ impl App {
         self.workgroups.get(&instance)?.git.as_ref()?.pending.get(&config).map(|p| p.queued)
     }
 
-    /// Why Run Anyway cannot run: the folder fails the same vetting the poller needs.
-    pub(super) fn run_anyway_refusal(&self, pane: PaneId) -> Option<&'static str> {
+    /// Why Run Anyway cannot run: the worker's verdict for the leader's folder is not a vetted repository
+    /// with a git (no vetting or searching here: this is read on every frame).
+    pub(super) fn run_anyway_refusal(&self, pane: PaneId) -> Option<String> {
         let (instance, _) = self.member_config(pane)?;
-        let leader = self.workgroups.get(&instance)?.leader;
-        let dir = self.workgroup_dir(leader);
-        dir.is_none_or(|d| gs::vet_repo(std::path::Path::new(&d)).is_none()).then_some("git will not run in this folder, so the command cannot start.")
+        let inst = self.workgroups.get(&instance)?;
+        let Some(dir) = self.workgroup_dir(inst.leader) else { return Some("git will not run in this folder, so the command cannot start.".into()) };
+        gs::launch_verdict(inst.git.as_ref().and_then(|g| g.launch_for(&dir)))
     }
 
     /// Run Anyway: the deferred launch starts at once, after the same vetting.
@@ -704,17 +707,15 @@ mod tests {
         assert!(live.contains("restart_launching(pane)"));
     }
 
-    /// Git runs through `guarded_args` after `vet_repo` passed, and Run Anyway needs the same vet.
+    /// Git runs through the one builder after the worker's verdict, and Run Anyway needs the same verdict.
     #[test]
     fn diff_runs_only_in_a_vetted_repo() {
         let live = THIS.split("\n#[cfg(test)]").next().unwrap();
         let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
-        let vet = line.find("gs::vet_repo(").expect("vetted");
-        let guarded = line.find("gs::launch(").expect("launched through the one builder");
-        assert!(vet < guarded, "the vet comes first");
+        let verdict = line.find("gs::launch_verdict(").expect("verdict");
+        let built = line.find("gs::launch(").expect("launched through the one builder");
+        assert!(verdict < built, "the verdict comes first");
         assert!(line.contains("inst.approved.allows(&template)"), "the command comes from the approved list");
-        let any = &live[live.find("pub(super) fn run_anyway_refusal").unwrap()..live.find("pub(super) fn diff_run_anyway").unwrap()];
-        assert!(any.contains("gs::vet_repo("));
         let run = &live[live.find("pub(super) fn diff_run_anyway").unwrap()..live.find("pub(super) fn diff_cancel_reload").unwrap()];
         assert!(run.find("run_anyway_refusal").unwrap() < run.find("launch_diff").unwrap());
     }
@@ -766,7 +767,23 @@ mod tests {
         }
         let live = THIS.split("\n#[cfg(test)]").next().unwrap();
         let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
-        assert!(line.contains("gs::launch(") && line.contains("launch_refusal()"), "the one builder, after the verdict");
+        assert!(line.contains("gs::launch(") && line.contains("launch_verdict("), "the one builder, after the verdict");
+    }
+
+    /// Items 2 and 3: the UI thread never vets a repository or looks for git; both come with the poller's
+    /// worker answer, and Run Anyway and every launch need that verdict.
+    #[test]
+    fn the_ui_never_vets_a_repository() {
+        let live = THIS.split("\n#[cfg(test)]").next().unwrap();
+        for banned in ["vet_repo(", "find_git(", "git_program_named(", "git_for_launch"] {
+            assert!(!live.contains(banned), "{banned} on the UI thread");
+        }
+        let any = &live[live.find("pub(super) fn run_anyway_refusal").unwrap()..live.find("pub(super) fn diff_run_anyway").unwrap()];
+        assert!(any.contains("gs::launch_verdict("));
+        let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
+        assert!(line.contains("gs::launch_verdict(") && line.contains("let Some(root) = vet.root.clone()"), "a launch runs only in the vetted top");
+        let ui = include_str!("git_ui.rs");
+        assert!(ui.contains("Output::Workgroup(") && ui.contains("gs::vet_repo(Path::new(path))"), "the worker makes the verdict");
     }
 
     /// The panel's Cancel exists only on the queued-reload variant; every part sits inside the panel.

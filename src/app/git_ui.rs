@@ -149,7 +149,7 @@ pub(super) enum GitReply {
     /// A poll of `path`.
     State { path: String, fetched: Fetched },
     /// A workgroup poll (`key` is its `cache_key`; `path` the directory polled).
-    Workgroup { key: String, path: String, fetched: Fetched },
+    Workgroup { key: String, path: String, fetched: Fetched, launch: Option<gs::Launch> },
     /// The recent branches a pane's menu asked for.
     Branches { pane: PaneId, path: String, branches: Vec<String> },
     /// The Log command's output for a pane.
@@ -169,6 +169,8 @@ enum Job {
 /// What a thread got for its job.
 enum Output {
     State(Fetched),
+    /// A workgroup poll with the verdict a launch needs, made on this thread.
+    Workgroup(Fetched, gs::Launch),
     Branches(Vec<String>),
     Log(String),
 }
@@ -288,7 +290,7 @@ impl GitWorker {
         let now = Instant::now();
         let key = gs::cache_key(&path, base.as_deref(), true);
         match self.cache.lookup(&key, now) {
-            Lookup::Cached(state) => self.ready.push(GitReply::Workgroup { key, path, fetched: Fetched { state, timed_out: false } }),
+            Lookup::Cached(state) => self.ready.push(GitReply::Workgroup { key, path, fetched: Fetched { state, timed_out: false }, launch: None }),
             Lookup::Joined => {}
             Lookup::Start => self.start(Job::Workgroup { path, base }, search, timeout, now),
         }
@@ -350,7 +352,11 @@ impl GitWorker {
             let git = gs::git_program(&search);
             let output = match (&job, git) {
                 (Job::State(path), Some(git)) => Output::State(gs::fetch_state(&*runner, &git, Path::new(path), left)),
-                (Job::Workgroup { path, base }, Some(git)) => Output::State(gs::fetch_state_with(&*runner, &git, Path::new(path), left, base.as_deref(), true)),
+                (Job::Workgroup { path, base }, Some(git)) => {
+                    let fetched = gs::fetch_state_with(&*runner, &git, Path::new(path), left, base.as_deref(), true);
+                    let launch = gs::Launch { vet: gs::vet_repo(Path::new(path)), git: Some(git) };
+                    Output::Workgroup(fetched, launch)
+                }
                 (Job::Branches(_, path), Some(git)) => Output::Branches(gs::recent_branches(&*runner, &git, Path::new(path), left)),
                 (Job::Log(_, path), Some(git)) => Output::Log(gs::git_log(&*runner, &git, Path::new(path), left)),
                 // No git to run (a network or linked `gitSearchPath`): no state.
@@ -377,7 +383,11 @@ impl GitWorker {
             (Job::State(path), Output::State(fetched)) => GitReply::State { path: path.clone(), fetched: self.cache.finish(path, fetched, finished) },
             (Job::Workgroup { path, base }, Output::State(fetched)) => {
                 let key = gs::cache_key(path, base.as_deref(), true);
-                GitReply::Workgroup { fetched: self.cache.finish(&key, fetched, finished), key, path: path.clone() }
+                GitReply::Workgroup { fetched: self.cache.finish(&key, fetched, finished), key, path: path.clone(), launch: None }
+            }
+            (Job::Workgroup { path, base }, Output::Workgroup(fetched, launch)) => {
+                let key = gs::cache_key(path, base.as_deref(), true);
+                GitReply::Workgroup { fetched: self.cache.finish(&key, fetched, finished), key, path: path.clone(), launch: Some(launch) }
             }
             (Job::Branches(pane, path), Output::Branches(branches)) => GitReply::Branches { pane: *pane, path: path.clone(), branches },
             (Job::Log(pane, _), Output::Log(text)) => GitReply::Log { pane: *pane, text },
@@ -572,8 +582,8 @@ impl App {
                         }
                     }
                 }
-                GitReply::Workgroup { key, path, fetched } => {
-                    if self.workgroup_git_answer(&key, &path, fetched) {
+                GitReply::Workgroup { key, path, fetched, launch } => {
+                    if self.workgroup_git_answer(&key, &path, fetched, launch) {
                         changed = true;
                     }
                 }
