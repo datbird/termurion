@@ -180,8 +180,9 @@ fn decimal_text(negative: bool, whole: &str, frac: &str, exp: i64) -> Option<Str
     let lead = (all.len() - trimmed.len()) as i64;
     let mut digits = trimmed.to_string();
     digits.truncate(38);
-    let point = whole.len() as i64 + exp - lead;
-    let mantissa_exp = point - digits.len() as i64;
+    // Saturating: an exponent near the i64 limits is out of range below, never an overflow.
+    let point = (whole.len() as i64).saturating_add(exp).saturating_sub(lead);
+    let mantissa_exp = point.saturating_sub(digits.len() as i64);
     if !(-128..=127).contains(&mantissa_exp) {
         return None;
     }
@@ -481,6 +482,9 @@ pub fn friendly(bytes: &[u8]) -> String {
 
 /// `NSS:1640-1665`: line breaks shown as the return arrow, cut to `max` characters with an ellipsis.
 pub fn ellipsize(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
     let flat: Vec<char> = text.chars().map(|c| if c == '\r' || c == '\n' { '\u{21a9}' } else { c }).collect();
     let blank = |c: &char| matches!(*c, ' ' | '\t' | '\u{a0}') || (c.is_whitespace() && !matches!(*c, '\r' | '\n'));
     let trim = |v: &[char]| -> String {
@@ -606,6 +610,18 @@ pub fn menu_helpers(unstripped: &str) -> Vec<Helper> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 4 review minors 1 and 2: a huge exponent and a zero width never panic (debug builds check
+    /// arithmetic), they are just not a number / an empty text.
+    #[test]
+    fn huge_inputs_never_panic() {
+        assert_eq!(scientific("1e9223372036854775807"), None);
+        assert_eq!(scientific("1.5e-9223372036854775807"), None);
+        assert_eq!(scientific("0.0001e9223372036854775807"), None);
+        assert_eq!(ellipsize("abc", 0), "");
+        assert_eq!(ellipsize("", 0), "");
+        assert_eq!(ellipsize("  abc def", 1), "\u{2026}");
+    }
+
     use super::*;
 
     fn help(h: Option<Helper>) -> (String, Option<Copy>) {
