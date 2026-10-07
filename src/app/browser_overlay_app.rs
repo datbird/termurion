@@ -58,7 +58,13 @@ impl App {
     /// (the window needs the event loop; the newest one wins, which also bounds a page's flood).
     pub(super) fn browser_hover(&mut self, pane: PaneId, hover: Hover) {
         match hover {
-            Hover::Clear => self.browser_tip_next = Some(TipAsk::Clear(pane)),
+            // A page's Clear never replaces what is Tandem's own: a waiting toast, or another pane's ask.
+            Hover::Clear => {
+                let others = matches!(&self.browser_tip_next, Some(TipAsk::Toast(..))) || matches!(&self.browser_tip_next, Some(TipAsk::Hover(p, _) | TipAsk::Clear(p)) if *p != pane);
+                if !others {
+                    self.browser_tip_next = Some(TipAsk::Clear(pane));
+                }
+            }
             show => self.browser_tip_next = Some(TipAsk::Hover(pane, show)),
         }
     }
@@ -223,7 +229,12 @@ impl App {
         match self.browser_tip_next.take() {
             Some(TipAsk::Hover(pane, hover)) => self.browser_hover_now(pane, hover, event_loop),
             Some(TipAsk::Toast(pane, text, secs)) => self.browser_toast_now(pane, &text, secs, event_loop),
-            Some(TipAsk::Clear(pane)) => self.browser_tip_close(pane),
+            // A toast that has not run out is not a page's to end.
+            Some(TipAsk::Clear(pane)) => {
+                if !self.browser_tip.as_ref().is_some_and(|t| t.is_toast() && !t.expired(Instant::now())) {
+                    self.browser_tip_close(pane);
+                }
+            }
             None => {}
         }
         if self.browser_tip.as_ref().is_some_and(|t| t.expired(Instant::now())) {
@@ -366,7 +377,7 @@ mod tests {
     #[test]
     fn the_tip_window_is_made_once() {
         let p = prod();
-        assert!(p.contains("Hover::Clear => self.browser_tip_next = Some(TipAsk::Clear(pane))"));
+        assert!(p.contains("self.browser_tip_next = Some(TipAsk::Clear(pane))"));
         let close = &p[p.find("pub(super) fn browser_tip_close").unwrap()..p.find("fn browser_tip_cancel").unwrap()];
         assert!(close.contains("t.hide()") && !close.contains("browser_tip = None"), "a clear hides, never drops");
         assert!(p.contains("fn browser_tip_cancel") && p.contains("self.browser_tip_life.show(Instant::now())"));
@@ -382,5 +393,16 @@ mod tests {
         let p = prod();
         let f = &p[p.find("pub(super) fn browser_strip").unwrap()..p.find("fn browser_shown_rect").unwrap()];
         assert!(f.contains("self.gutter_split(id, strip).0"), "{f}");
+    }
+
+    /// Task 5 re-review minor: a page's Clear never cancels what is Tandem's own (a waiting toast, another
+    /// pane's ask) and never hides a toast that has not run out.
+    #[test]
+    fn a_page_clear_never_cancels_a_toast() {
+        let p = prod();
+        let hover = &p[p.find("pub(super) fn browser_hover(").unwrap()..p.find("fn browser_hover_now").unwrap()];
+        assert!(hover.contains("TipAsk::Toast(..)") && hover.contains("*p != pane"), "{hover}");
+        let tick = &p[p.find("pub(super) fn browser_tip_tick").unwrap()..p.find("// --- Announcement bars ---").unwrap()];
+        assert!(tick.contains("Some(TipAsk::Clear(pane))") && tick.contains("is_toast() && !t.expired(Instant::now())"), "{tick}");
     }
 }

@@ -223,6 +223,8 @@ pub struct TipWindow {
     fit: Option<(f32, f32)>,
     dirty: bool,
     shown: bool,
+    /// `put` sized the window: it is shown from the paint that follows (never at its old size).
+    show_next: bool,
     /// The pane whose hover or toast this is.
     pub owner: Option<u64>,
     /// When a toast ends.
@@ -240,7 +242,7 @@ impl TipWindow {
             use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT};
             unsafe { SetWindowLongPtrW(h as _, GWL_EXSTYLE, GetWindowLongPtrW(h as _, GWL_EXSTYLE) | (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW) as isize) };
         }
-        let w = TipWindow { host, text: text.to_string(), link: true, point: TIP_POINT, spot: Spot::Link { pane: at, anchor: at }, fit: None, dirty: true, shown: false, owner: None, until: None };
+        let w = TipWindow { host, text: text.to_string(), link: true, point: TIP_POINT, spot: Spot::Link { pane: at, anchor: at }, fit: None, dirty: true, shown: false, show_next: false, owner: None, until: None };
         w.host.request_redraw();
         Ok(w)
     }
@@ -283,6 +285,7 @@ impl TipWindow {
             unsafe { ShowWindow(hwnd as _, SW_HIDE) };
         }
         self.shown = false;
+        self.show_next = false;
         self.owner = None;
         self.until = None;
         // The next text is always a change, so the window is placed and shown again.
@@ -349,6 +352,14 @@ impl TipWindow {
         if self.dirty && self.fit.is_some() {
             self.dirty = false;
             self.put();
+        } else if self.show_next && !self.dirty {
+            // This paint was made at the size `put` gave: now the window may show.
+            if let Some(hwnd) = self.host.hwnd() {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
+                unsafe { ShowWindow(hwnd as _, SW_SHOWNOACTIVATE) };
+            }
+            self.shown = true;
+            self.show_next = false;
         }
     }
 
@@ -372,11 +383,7 @@ impl TipWindow {
         let _ = self.host.window.request_inner_size(winit::dpi::PhysicalSize::new((w * scale).ceil().max(1.0) as u32, (h * scale).ceil().max(1.0) as u32));
         self.host.window.set_outer_position(winit::dpi::PhysicalPosition::new((x * scale).round() as i32, (y * scale).round() as i32));
         if !self.shown {
-            if let Some(hwnd) = self.host.hwnd() {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
-                unsafe { ShowWindow(hwnd as _, SW_SHOWNOACTIVATE) };
-            }
-            self.shown = true;
+            self.show_next = true;
         }
         self.host.request_redraw();
     }
@@ -541,5 +548,19 @@ mod tests {
         assert_eq!(life.show(t0 + Duration::from_millis(300)), Step::Create);
         assert_eq!(life.hide(), Step::Hide);
         assert_eq!(life.show(t0 + Duration::from_millis(301)), Step::Reuse);
+    }
+
+    /// Task 5 re-review minor: a reused window is shown only from a paint at its new size, never
+    /// from `put` (which would show the new text at the old size for a frame).
+    #[test]
+    fn the_window_is_shown_after_the_resize_paint() {
+        let src = include_str!("browser_tip.rs");
+        let live = &src[..src.find("#[cfg(test)]").unwrap()];
+        let put = &live[live.find("fn put(&mut self)").unwrap()..live.find("/// The pointer in screen pixels").unwrap()];
+        assert!(put.contains("self.show_next = true") && !put.contains("ShowWindow"), "put only asks for the show");
+        let redraw = &live[live.find("fn redraw(&mut self)").unwrap()..live.find("/// Sizes and places").unwrap()];
+        assert!(redraw.contains("self.show_next && !self.dirty") && redraw.contains("SW_SHOWNOACTIVATE"), "the paint after the resize shows it");
+        let hide = &live[live.find("pub fn hide(&mut self) {").unwrap()..live.find("pub fn is_toast").unwrap()];
+        assert!(hide.contains("self.show_next = false"));
     }
 }
