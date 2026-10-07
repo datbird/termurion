@@ -101,11 +101,36 @@ pub const ALLOWED: &[&str] = &[
     "Runtime.runIfWaitingForDebugger",
     // B11: a target that is not a frame is let go once it is resumed.
     "Target.detachFromTarget",
+    // Review I1 (reviewer: the controller): clears the back list after the isolation check's
+    // about:blank, so Back on a new pane never reaches it. Keeps only the current entry.
+    "Page.resetNavigationHistory",
     "Emulation.setFocusEmulationEnabled",
     "Input.insertText",
     "Input.dispatchKeyEvent",
     "Input.dispatchMouseEvent",
 ];
+
+/// Clears the back-forward list but the current entry.
+pub const RESET_HISTORY: &str = "Page.resetNavigationHistory";
+
+/// The isolation check navigates to about:blank before the first real load; that entry is cleared
+/// once the load that follows has committed (also after a restart's setup).
+#[derive(Default, Debug)]
+pub struct HistoryReset {
+    armed: bool,
+}
+
+impl HistoryReset {
+    /// A load follows a check.
+    pub fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    /// A page loaded: true once per arming, when the list is to be cleared now.
+    pub fn loaded(&mut self) -> bool {
+        std::mem::take(&mut self.armed)
+    }
+}
 
 pub fn method_allowed(method: &str) -> bool {
     ALLOWED.contains(&method)
@@ -768,10 +793,10 @@ mod tests {
     /// origin flag exists anywhere in the program.
     #[test]
     fn devtools_methods_are_a_closed_set() {
-        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Emulation.setFocusEmulationEnabled", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent"] {
+        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Page.resetNavigationHistory", "Emulation.setFocusEmulationEnabled", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent"] {
             assert!(method_allowed(m), "{m}");
         }
-        assert_eq!(ALLOWED.len(), 15);
+        assert_eq!(ALLOWED.len(), 16);
         for m in ["Page.navigate", "Network.getCookies", "Runtime.callFunctionOn", "Browser.close", "Storage.getCookies", "Target.createTarget", "Fetch.enable", "Page.enable ", "page.enable", ""] {
             assert!(!method_allowed(m), "{m}");
         }
@@ -810,5 +835,20 @@ mod tests {
         assert!(world_usable(&ClientWorld::Ready, &c));
         assert!(!world_usable(&ClientWorld::Setting, &c));
         assert!(!world_usable(&ClientWorld::Unavailable("x".into()), &c));
+    }
+
+    /// Review I1: the isolation check's about:blank is not a history entry the person can go back to:
+    /// after the first load that follows a check the back list is cleared, once.
+    #[test]
+    fn the_check_leaves_no_history_entry() {
+        let mut h = HistoryReset::default();
+        assert!(!h.loaded(), "nothing is cleared before a check ran");
+        h.arm();
+        assert!(h.loaded(), "the first load after the check clears the list");
+        assert!(!h.loaded(), "only once");
+        h.arm();
+        h.arm();
+        assert!(h.loaded() && !h.loaded());
+        assert!(method_allowed(RESET_HISTORY) && RESET_HISTORY == "Page.resetNavigationHistory");
     }
 }

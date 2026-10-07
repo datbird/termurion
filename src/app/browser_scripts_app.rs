@@ -68,6 +68,8 @@ pub(super) struct WorldState {
     pub(super) sessions: HashMap<String, SessionSetup>,
     /// When a dropped message was last logged.
     pub(super) drop_logged: Option<Instant>,
+    /// The check's about:blank is cleared from the back list after the first load (review I1).
+    pub(super) history: browser_world::HistoryReset,
     /// When a console line was last counted in the log.
     pub(super) console_logged: Option<Instant>,
 }
@@ -272,6 +274,9 @@ impl App {
             self.devtools_send(pane, None, "Page.removeScriptToEvaluateOnNewDocument", &json!({"identifier": id}), Box::new(|_, _, _| {}));
         }
         if let Some(url) = load {
+            if let Some(bv) = self.browser_views.get_mut(&pane) {
+                bv.world.history.arm();
+            }
             if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                 v.navigate_tandem(&url);
             }
@@ -832,5 +837,18 @@ mod tests {
         assert!(show.find("browser_reset_world(").unwrap() < show.find("WebView::create(").unwrap(), "a new view starts with a new world");
         assert!(show.find("browser_world_start(").unwrap() > show.find("WebView::create(").unwrap());
         assert!(!show.contains("navigate_tandem"), "the pending URL loads when the world's setup is over");
+    }
+
+    /// Review I1, the wiring: a load that follows a check arms the reset and the first real
+    /// `Navigated` sends it.
+    #[test]
+    fn the_history_reset_is_wired() {
+        let p = prod();
+        let f = &p[p.find("fn browser_world_finish").unwrap()..p.find("pub(super) fn browser_world_navigated").unwrap()];
+        assert!(f.contains("world.history.arm()"));
+        let app = include_str!("browser_app.rs");
+        let app = &app[..app.find("#[cfg(test)]").unwrap()];
+        let nav = &app[app.find("Event::Navigated { ok, .. } => {").unwrap()..app.find("Event::History { back, forward, .. } =>").unwrap()];
+        assert!(nav.contains("world.history.loaded()") && nav.contains("browser_world::RESET_HISTORY"));
     }
 }

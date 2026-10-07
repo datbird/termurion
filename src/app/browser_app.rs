@@ -484,6 +484,10 @@ impl App {
                     if let Some(bv) = self.browser_views.get_mut(&pane) {
                         bv.restarts.succeeded();
                     }
+                    // The check's about:blank is not a page to go back to (review I1).
+                    if self.browser_views.get_mut(&pane).is_some_and(|b| b.world.history.loaded()) {
+                        self.browser_devtools(pane, crate::browser_world::RESET_HISTORY, serde_json::json!({}), Box::new(|_, _, _| {}));
+                    }
                     self.browser_record_visit(pane);
                     self.adblock_inject(pane);
                 }
