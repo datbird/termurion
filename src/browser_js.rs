@@ -19,11 +19,19 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "bookmarks-page.html" => include_str!("../resources/browser/bookmarks-page.html"),
         "bookmarks-page.js" => include_str!("../resources/browser/bookmarks-page.js"),
         "challenge-frame-detection.js" => include_str!("../resources/browser/challenge-frame-detection.js"),
+        "check-iframe-origins.js" => include_str!("../resources/browser/check-iframe-origins.js"),
+        "console-log.js" => include_str!("../resources/browser/console-log.js"),
+        "editing-detector.js" => include_str!("../resources/browser/editing-detector.js"),
+        "graph-discovery-api.js" => include_str!("../resources/browser/graph-discovery-api.js"),
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "history-page.html" => include_str!("../resources/browser/history-page.html"),
         "history-page.js" => include_str!("../resources/browser/history-page.js"),
         "hover-link-detector.js" => include_str!("../resources/browser/hover-link-detector.js"),
         "iterm-browser-common.css" => include_str!("../resources/browser/iterm-browser-common.css"),
+        "log-errors.js" => include_str!("../resources/browser/log-errors.js"),
+        "monitor-selection.js" => include_str!("../resources/browser/monitor-selection.js"),
+        "selection-gesture.js" => include_str!("../resources/browser/selection-gesture.js"),
+        "tandem-cloak.js" => include_str!("../resources/browser/tandem-cloak.js"),
         "welcome-page.html" => include_str!("../resources/browser/welcome-page.html"),
         "welcome-page.js" => include_str!("../resources/browser/welcome-page.js"),
         _ => return None,
@@ -248,6 +256,130 @@ pub fn route(json: &str, world: World, frame: Option<u64>, source: &str) -> Opti
 /// A local page's message: the Page world, the main frame, and an `iterm2-about:` source.
 pub fn local_page_ok(r: &Routed) -> bool {
     r.world == World::Page && r.frame.is_none() && crate::browser::local_source_ok(&r.source)
+}
+
+// --- The always-on scripts (13x2 Task 2) ---
+
+pub const CONSOLE_HANDLER: &str = "iTerm2ConsoleLog";
+pub const EDITING_HANDLER: &str = "iTerm2EditingDetector";
+pub const SELECTION_HANDLER: &str = "iTermSelectionMonitor";
+/// Tandem's own: the person used the pointer or keyboard (`selection-gesture.js`).
+pub const SELECTION_GESTURE_HANDLER: &str = "TandemSelectionGesture";
+/// The longest selection Tandem stores or copies (B10).
+pub const MAX_SELECTION: usize = 1024 * 1024;
+
+fn script(id: &'static str, code: String, world: World) -> UserScript {
+    UserScript { id, code, inject: Inject::DocumentStart, main_frame_only: false, world }
+}
+
+/// The scripts every browser view carries, in iTerm2's order (`BM:215-372`): Tandem's cloak first of
+/// the page world, the console wrapper in both worlds, then the isolated world's graph discovery,
+/// selection monitor (with Tandem's gesture script) and editing detector, then the local pages'
+/// bridge. `secret` is the view's, `dom_secret` the editing detector's separate one (B9). With
+/// `client_ok` false (no isolated world) no Client script is offered: never moved to the page world.
+pub fn always_on_scripts(secret: &str, dom_secret: &str, client_ok: bool, debug: bool) -> Vec<UserScript> {
+    let load = |name: &str, subs: &[(&str, &str)]| fill_template(resource(name).unwrap_or_default(), subs);
+    let log_errors = if debug { resource("log-errors.js").unwrap_or_default() } else { "" };
+    let console = load("console-log.js", &[("LOG_ERRORS", log_errors)]);
+    let mut v = vec![script("tandem-cloak", load("tandem-cloak.js", &[]), World::Page), script("console-log", console.clone(), World::Page)];
+    if client_ok {
+        v.push(script("console-log", console, World::Client));
+        v.push(crate::browser_frames::user_script());
+        v.push(script("monitor-selection", load("monitor-selection.js", &[("SECRET", secret)]), World::Client));
+        v.push(script("selection-gesture", load("selection-gesture.js", &[("SECRET", secret)]), World::Client));
+        v.push(script("editing-detector", load("editing-detector.js", &[("SECRET", dom_secret)]), World::Client));
+    }
+    v.push(local_page_script());
+    v
+}
+
+/// `BM:1066-1087`: the level and the message of a console line.
+pub fn console_line(body: &Value) -> Option<(String, String)> {
+    Some((body.get("level")?.as_str()?.to_string(), body.get("msg")?.as_str()?.to_string()))
+}
+
+/// iTerm2's own check in every handler: the body's `sessionSecret` is the view's. An empty secret is
+/// never a match.
+pub fn secret_ok(body: &Value, secret: &str) -> bool {
+    !secret.is_empty() && body.get("sessionSecret").and_then(Value::as_str) == Some(secret)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlwaysOn {
+    /// A console line: only its level and size are kept, never its text.
+    Console { level: &'static str, size: usize },
+    Selection(String),
+    Gesture,
+    Editing(bool),
+}
+
+/// What an always-on handler's message means. The console log comes from either world and needs no
+/// secret; every other handler is the isolated world's alone and checks its secret (`SEM:24-32`,
+/// `EDH:28-36`): the editing detector's is `dom_secret`.
+pub fn always_on(r: &Routed, secret: &str, dom_secret: &str) -> Option<AlwaysOn> {
+    if r.handler == CONSOLE_HANDLER {
+        let (level, msg) = console_line(&r.body)?;
+        let level = match level.as_str() {
+            "debug" => "debug",
+            "warn" => "warn",
+            "error" => "error",
+            _ => "log",
+        };
+        return Some(AlwaysOn::Console { level, size: msg.len() });
+    }
+    if r.world != World::Client {
+        return None;
+    }
+    match r.handler.as_str() {
+        SELECTION_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Selection(r.body.get("selection")?.as_str()?.to_string())),
+        SELECTION_GESTURE_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Gesture),
+        EDITING_HANDLER if secret_ok(&r.body, dom_secret) => Some(AlwaysOn::Editing(r.body.get("editable")?.as_bool()?)),
+        _ => None,
+    }
+}
+
+/// The selection as stored: at most `MAX_SELECTION` bytes, cut at a character boundary.
+pub fn store_selection(text: &str) -> String {
+    if text.len() <= MAX_SELECTION {
+        return text.to_string();
+    }
+    let mut end = MAX_SELECTION;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// When a page selection may be copied (B10): only after a trusted gesture within a second, once per
+/// distinct text, never empty, never above `MAX_SELECTION`, and only with copy on selection on.
+#[derive(Default, Debug)]
+pub struct SelectionGate {
+    last_gesture: Option<std::time::Instant>,
+    last_copied: Option<String>,
+}
+
+impl SelectionGate {
+    pub fn gesture(&mut self, now: std::time::Instant) {
+        self.last_gesture = Some(now);
+    }
+
+    /// The text to copy, if any.
+    pub fn accept(&mut self, text: &str, now: std::time::Instant, copy_on: bool) -> Option<String> {
+        if text.is_empty() {
+            self.last_copied = None;
+            return None;
+        }
+        let recent = self.last_gesture.is_some_and(|g| now.saturating_duration_since(g) < std::time::Duration::from_secs(1));
+        if !copy_on || !recent || text.len() > MAX_SELECTION || self.last_copied.as_deref() == Some(text) {
+            return None;
+        }
+        self.last_copied = Some(text.to_string());
+        Some(text.to_string())
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 // --- Calls ---
@@ -635,5 +767,119 @@ mod tests {
             assert_eq!(resource(&name), Some(std::fs::read_to_string(e.path()).unwrap().as_str()), "{name} is in the table");
         }
         assert!(resource("nope.js").is_none() && resource("../Cargo.toml").is_none());
+    }
+
+    fn routed(handler: &str, world: World, body: serde_json::Value) -> Routed {
+        Routed { handler: handler.into(), world, frame: None, source: "https://a.test/".into(), body }
+    }
+
+    #[test]
+    fn always_on_scripts_follow_iterm2() {
+        assert_eq!(console_line(&json!({"msg": "hi", "level": "log"})), Some(("log".to_string(), "hi".to_string())));
+        assert_eq!(console_line(&json!({"msg": 5, "level": "log"})), None);
+        assert_eq!(console_line(&json!({"msg": "hi"})), None);
+        assert_eq!(console_line(&json!("hi")), None);
+        assert!(secret_ok(&json!({"sessionSecret": "S"}), "S"));
+        assert!(!secret_ok(&json!({"sessionSecret": "T"}), "S"));
+        assert!(!secret_ok(&json!({}), "S") && !secret_ok(&json!({"sessionSecret": ""}), ""), "no secret is never a match");
+        let list = always_on_scripts("SECRET1", "DOM1", true, false);
+        let ids: Vec<(&str, World, Inject, bool)> = list.iter().map(|s| (s.id, s.world, s.inject, s.main_frame_only)).collect();
+        let st = Inject::DocumentStart;
+        assert_eq!(
+            ids,
+            vec![
+                ("tandem-cloak", World::Page, st, false),
+                ("console-log", World::Page, st, false),
+                ("console-log", World::Client, st, false),
+                ("GraphDiscovery", World::Client, st, false),
+                ("monitor-selection", World::Client, st, false),
+                ("selection-gesture", World::Client, st, false),
+                ("editing-detector", World::Client, st, false),
+                ("local-page-bridge", World::Page, st, true),
+            ]
+        );
+        // The cloak is the first of the page world's scripts.
+        assert_eq!(list.iter().find(|s| s.world == World::Page).unwrap().id, "tandem-cloak");
+        // Secrets: the view's in the selection scripts, the separate DOM one in the editing detector,
+        // neither in a page script, and no template key is left over.
+        let code = |id: &str| list.iter().find(|s| s.id == id).unwrap().code.clone();
+        assert!(code("monitor-selection").contains("SECRET1") && code("selection-gesture").contains("SECRET1"));
+        assert!(code("editing-detector").contains("DOM1") && !code("editing-detector").contains("SECRET1"));
+        for s in list.iter().filter(|s| s.world == World::Page) {
+            assert!(!s.code.contains("SECRET1") && !s.code.contains("DOM1"), "{} holds no secret", s.id);
+        }
+        for s in &list {
+            assert!(!s.code.contains("{{"), "{} has an unfilled key", s.id);
+        }
+        // The console wrapper's log-errors part is in debug builds only.
+        let dbg = always_on_scripts("S", "D", true, true);
+        assert!(dbg.iter().any(|s| s.id == "console-log" && s.code.contains("[Injected JS Error]")));
+        assert!(!list.iter().any(|s| s.code.contains("[Injected JS Error]")));
+        // Without the isolated world no Client script is offered, never moved to the page world.
+        let none = always_on_scripts("S", "D", false, false);
+        assert!(none.iter().all(|s| s.world == World::Page));
+        assert_eq!(none.iter().map(|s| s.id).collect::<Vec<_>>(), vec!["tandem-cloak", "console-log", "local-page-bridge"]);
+        // The cloak removes only the page-world channel, only in a challenge frame.
+        let cloak = code("tandem-cloak");
+        assert!(cloak.contains("delete window.chrome.webview") && cloak.contains("hcaptcha") && !cloak.contains("webkit"));
+        // Every listener of a Tandem script checks isTrusted first (P26).
+        for name in ["selection-gesture.js", "tandem-cloak.js"] {
+            let text = resource(name).unwrap();
+            assert!(text.contains("Tandem's own script"), "{name} says it is Tandem's");
+            let mut at = 0;
+            while let Some(i) = text[at..].find("addEventListener(") {
+                let tail = &text[at + i..];
+                assert!(tail[..tail.len().min(160)].contains("if (!e.isTrusted)"), "{name}: a listener without the isTrusted check");
+                at += i + 1;
+            }
+        }
+    }
+
+    #[test]
+    fn always_on_handlers_follow_iterm2() {
+        let sel = |world, secret: &str| routed(SELECTION_HANDLER, world, json!({"selection": "abc", "sessionSecret": secret}));
+        assert_eq!(always_on(&sel(World::Client, "S"), "S", "D"), Some(AlwaysOn::Selection("abc".into())));
+        assert_eq!(always_on(&sel(World::Page, "S"), "S", "D"), None, "a page cannot report a selection (SEM:24-32)");
+        assert_eq!(always_on(&sel(World::Client, "T"), "S", "D"), None);
+        let edit = |world, v: serde_json::Value, secret: &str| routed(EDITING_HANDLER, world, json!({"editable": v, "sessionSecret": secret}));
+        assert_eq!(always_on(&edit(World::Client, json!(true), "D"), "S", "D"), Some(AlwaysOn::Editing(true)));
+        assert_eq!(always_on(&edit(World::Client, json!(false), "D"), "S", "D"), Some(AlwaysOn::Editing(false)));
+        assert_eq!(always_on(&edit(World::Client, json!(true), "S"), "S", "D"), None, "the view secret is not the detector's");
+        assert_eq!(always_on(&edit(World::Client, json!("yes"), "D"), "S", "D"), None);
+        assert_eq!(always_on(&edit(World::Page, json!(true), "D"), "S", "D"), None);
+        let gest = |world, secret: &str| routed(SELECTION_GESTURE_HANDLER, world, json!({"t": "gesture", "sessionSecret": secret}));
+        assert_eq!(always_on(&gest(World::Client, "S"), "S", "D"), Some(AlwaysOn::Gesture));
+        assert_eq!(always_on(&gest(World::Page, "S"), "S", "D"), None);
+        assert_eq!(always_on(&gest(World::Client, "x"), "S", "D"), None);
+        // The console log comes from both worlds, with no secret; it is only counted.
+        let con = |world| routed(CONSOLE_HANDLER, world, json!({"msg": "hello", "level": "warn"}));
+        assert_eq!(always_on(&con(World::Page), "S", "D"), Some(AlwaysOn::Console { level: "warn", size: 5 }));
+        assert_eq!(always_on(&con(World::Client), "S", "D"), Some(AlwaysOn::Console { level: "warn", size: 5 }));
+        assert_eq!(always_on(&routed(CONSOLE_HANDLER, World::Page, json!({"msg": "x", "level": "weird"})), "S", "D"), Some(AlwaysOn::Console { level: "log", size: 1 }));
+        assert_eq!(always_on(&routed("other", World::Client, json!({})), "S", "D"), None);
+    }
+
+    /// B10: the clipboard and paste history are written only for a selection that follows a trusted
+    /// gesture within a second, once per distinct text, bounded, and only with CopySelection on.
+    #[test]
+    fn selection_copy_needs_a_recent_trusted_gesture() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut g = SelectionGate::default();
+        assert_eq!(g.accept("abc", t0, true), None, "no gesture, no copy");
+        g.gesture(t0);
+        assert_eq!(g.accept("abc", t0 + Duration::from_millis(300), true), Some("abc".to_string()));
+        assert_eq!(g.accept("abc", t0 + Duration::from_millis(400), true), None, "the same text is not copied again");
+        assert_eq!(g.accept("abd", t0 + Duration::from_millis(500), true), Some("abd".to_string()));
+        assert_eq!(g.accept("abe", t0 + Duration::from_millis(1100), true), None, "a second after the gesture is too late");
+        g.gesture(t0 + Duration::from_secs(5));
+        assert_eq!(g.accept("abe", t0 + Duration::from_millis(5100), false), None, "CopySelection off copies nothing (I6)");
+        assert_eq!(g.accept("", t0 + Duration::from_millis(5200), true), None, "an empty selection copies nothing");
+        assert_eq!(g.accept("abd", t0 + Duration::from_millis(5300), true), Some("abd".to_string()), "after a deselect the same text copies again");
+        g.gesture(t0 + Duration::from_secs(9));
+        let big = "x".repeat(MAX_SELECTION + 1);
+        assert_eq!(g.accept(&big, t0 + Duration::from_secs(9), true), None, "never copied above the bound");
+        assert!(store_selection(&big).len() <= MAX_SELECTION, "stored bounded");
+        assert_eq!(store_selection("abc"), "abc");
     }
 }

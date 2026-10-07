@@ -57,6 +57,14 @@ pub(super) struct BrowserView {
     pub(super) next_token: u64,
     /// The world's setup, checks, sessions (`browser_scripts_app::WorldState`).
     pub(super) world: super::browser_scripts_app::WorldState,
+    /// A text field has the focus in the page (iTerm2's `isEditingText`, `BWV:73`).
+    pub(super) editing: bool,
+    /// The page's selection (iTerm2's `currentSelection`, `BWV:75-84`).
+    pub(super) selection: Option<String>,
+    /// When that selection may be copied (B10).
+    pub(super) selection_gate: crate::browser_js::SelectionGate,
+    /// The frame graph (`browser_frames_app`).
+    pub(super) graph: crate::browser_frames::Frames,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -186,7 +194,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default() });
         true
     }
 

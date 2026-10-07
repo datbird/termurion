@@ -68,6 +68,8 @@ pub(super) struct WorldState {
     pub(super) sessions: HashMap<String, SessionSetup>,
     /// When a dropped message was last logged.
     pub(super) drop_logged: Option<Instant>,
+    /// When a console line was last counted in the log.
+    pub(super) console_logged: Option<Instant>,
 }
 
 /// The kind of a failed script call, the only thing about it that is logged (never its text).
@@ -105,8 +107,13 @@ impl App {
     // --- Scripts ---
 
     /// The scripts a browser view carries, one line per feature (each later plan appends its own).
-    pub(super) fn browser_user_scripts(&self, _pane: PaneId) -> Vec<UserScript> {
-        vec![browser_js::local_page_script()]
+    pub(super) fn browser_user_scripts(&self, pane: PaneId) -> Vec<UserScript> {
+        let bv = self.browser_views.get(&pane);
+        let (secret, dom) = bv.map_or(("", ""), |b| (b.secret.as_str(), b.dom_secret.as_str()));
+        // Offered while the world is being set up (that is when they are registered) or ready, never
+        // once it is Unavailable; messages are acted on only when it is Ready.
+        let client_ok = bv.is_none_or(|b| !matches!(b.client_world, ClientWorld::Unavailable(_)));
+        browser_js::always_on_scripts(secret, dom, client_ok, cfg!(debug_assertions))
     }
 
     /// The per-view secret (filled only into Client scripts and world-side expressions).
@@ -385,11 +392,11 @@ impl App {
             }
             "Runtime.executionContextDestroyed" => {
                 bv.contexts.destroyed(session, json);
-                bv.frames = bv.contexts.frames();
+                Self::browser_frames_changed(bv);
             }
             "Runtime.executionContextsCleared" => {
                 bv.contexts.cleared(session);
-                bv.frames = bv.contexts.frames();
+                Self::browser_frames_changed(bv);
             }
             "Page.frameNavigated" => bv.contexts.navigated(session, json),
             "Target.attachedToTarget" => self.browser_attached(pane, session, json),
@@ -398,7 +405,7 @@ impl App {
                     bv.contexts.detached(&s);
                     bv.world.live_sessions.remove(&s);
                     bv.world.sessions.remove(&s);
-                    bv.frames = bv.contexts.frames();
+                    Self::browser_frames_changed(bv);
                 }
             }
             "Runtime.bindingCalled" => {
@@ -412,6 +419,15 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The frames with a Tandem world changed: the graph forgets the ones that lost it.
+    fn browser_frames_changed(bv: &mut super::browser_app::BrowserView) {
+        let now = bv.contexts.frames();
+        for lost in bv.frames.iter().filter(|f| !now.contains(f)) {
+            bv.graph.gone(*lost);
+        }
+        bv.frames = now;
     }
 
     /// `Target.attachedToTarget` (B11): an iframe within the cap gets the world; everything else is
@@ -603,6 +619,13 @@ impl App {
             }
             // A main-frame navigation began: every call still waiting is over (iTerm2's `willNavigate`).
             Event::Starting { redirect: false, .. } => {
+                if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    // iTerm2's `willNavigate` and the editing reset (`GDH:16-18`, `BM:1258`).
+                    bv.editing = false;
+                    bv.selection = None;
+                    bv.selection_gate.reset();
+                    bv.graph.will_navigate();
+                }
                 let dones: Vec<JsDone> = match self.browser_views.get_mut(&pane) {
                     // The setup's own calls and checks are not a page's: they are kept.
                     Some(bv) if bv.world.setup.is_none() => {
@@ -631,6 +654,8 @@ impl App {
                 let json = json!({"handler": r.handler, "body": r.body}).to_string();
                 self.local_page_message(pane, &r.source, &json);
             }
+            h if h == crate::browser_frames::HANDLER => self.browser_graph_message(pane, &r),
+            _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     if bv.world.drop_logged.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
@@ -638,6 +663,34 @@ impl App {
                         let world: &'static str = if r.world == World::Client { "client" } else { "page" };
                         crate::rlog!("browser message dropped: {} world", world);
                     }
+                }
+            }
+        }
+    }
+
+    /// The console log, the selection monitor, the gesture script and the editing detector. The
+    /// decision (world, secret, shape) is `browser_js::always_on`; this applies it.
+    fn browser_always_on(&mut self, pane: PaneId, r: &Routed) {
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let Some(what) = browser_js::always_on(r, &bv.secret, &bv.dom_secret) else { return };
+        match what {
+            browser_js::AlwaysOn::Console { level, size } => {
+                // iTerm2 logs the text (`BM:1066-1087`); a page's words are never logged here (B6): a
+                // byte count and the level, at most once a second, the debug level in debug builds only.
+                if (level != "debug" || cfg!(debug_assertions)) && bv.world.console_logged.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                    bv.world.console_logged = Some(Instant::now());
+                    crate::rlog!("browser console: {} bytes, level {}", size, level);
+                }
+            }
+            browser_js::AlwaysOn::Gesture => bv.selection_gate.gesture(Instant::now()),
+            browser_js::AlwaysOn::Editing(e) => bv.editing = e,
+            browser_js::AlwaysOn::Selection(text) => {
+                bv.selection = Some(browser_js::store_selection(&text));
+                let copy_on = self.globals.bool("CopySelection");
+                let copy = self.browser_views.get_mut(&pane).and_then(|b| b.selection_gate.accept(&text, Instant::now(), copy_on));
+                if let Some(text) = copy {
+                    self.set_clipboard_text(text.clone());
+                    self.remember_paste(&text);
                 }
             }
         }
@@ -735,7 +788,7 @@ mod tests {
         assert!(b.contains("local_page_ok(&r)") && b.contains("json!({\"handler\": r.handler, \"body\": r.body})"));
         assert!(!b.contains("serde_json::from_str"), "the router never re-reads a page's JSON");
         // The binding is accepted only through the context table.
-        let d = &p[p.find("\"Runtime.bindingCalled\" =>").unwrap()..p.find("_ => {}\n        }\n    }\n\n    /// `Target.attachedToTarget`").unwrap()];
+        let d = &p[p.find("\"Runtime.bindingCalled\" =>").unwrap()..p.find("_ => {}\n        }\n    }\n\n    /// The frames with a Tandem world changed").unwrap()];
         assert!(d.contains("contexts.binding_called(session, json)"));
     }
 
