@@ -141,6 +141,23 @@ fn recorder(ui: &mut egui::Ui, keys: &mut KeysState, st: &mut EditorState, targe
     cleared
 }
 
+/// The key the recorder delivered and the row it was recorded for. The key is read before the
+/// row is forgotten: `deliver` ends the recording in the same step, so a check of "still
+/// recording" first would throw every recorded key away.
+fn recorded_key(keys: &mut KeysState, st: &mut EditorState) -> Option<(Rec, crate::keystroke::Keystroke)> {
+    let got = match keys.hotkey_recorded.clone() {
+        Some((HotkeySlot::Workgroup, k)) => {
+            keys.hotkey_recorded = None;
+            st.rec.take().map(|r| (r, k))
+        }
+        _ => None,
+    };
+    if keys.hotkey_recording != Some(HotkeySlot::Workgroup) {
+        st.rec = None;
+    }
+    got
+}
+
 /// The editor. `profiles` are (guid, name). True when "Workgroups" changed.
 pub fn page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String)], keys: &mut KeysState, st: &mut EditorState) -> bool {
     let key = key_of(g);
@@ -152,12 +169,8 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String)], k
     let mut cmd: Option<Cmd> = None;
 
     // The recorder delivered a key.
-    if !(keys.hotkey_recording == Some(HotkeySlot::Workgroup)) {
-        st.rec = None;
-    }
-    if let Some((HotkeySlot::Workgroup, k)) = keys.hotkey_recorded.clone() {
-        keys.hotkey_recorded = None;
-        if let (Some(rec), Some(w), Some(sid)) = (st.rec.take(), st.selected.as_deref().and_then(|id| model.get(id)), st.session.clone()) {
+    if let Some((rec, k)) = recorded_key(keys, st) {
+        if let (Some(w), Some(sid)) = (st.selected.as_deref().and_then(|id| model.get(id)), st.session.clone()) {
             let new = Some(Shortcut { serialized: k.serialized() });
             cmd = Some(shortcut_cmd(w, &sid, rec, new, st.item));
         }
@@ -821,5 +834,28 @@ mod tests {
         // Only Trust makes it the person's.
         assert!(apply(Some(Cmd::Trust(id.clone())), &mut model, &mut g, &mut st));
         assert_eq!(model.source_of(&id), wg::Source::Person);
+    }
+
+    #[test]
+    fn a_recorded_shortcut_is_kept() {
+        let mut keys = KeysState::default();
+        let mut st = EditorState::default();
+        // The person clicked a recorder: the row is remembered and the page records.
+        keys.hotkey_recording = Some(HotkeySlot::Workgroup);
+        st.rec = Some(Rec::Peer);
+        // Nothing delivered yet: the row stays while it records.
+        assert!(recorded_key(&mut keys, &mut st).is_none());
+        assert!(st.rec.is_some());
+        // A key arrives: `deliver` ends the recording in the same step.
+        keys.deliver(crate::keystroke::parse("0x72-0x100000-0xf").unwrap());
+        assert_eq!(keys.hotkey_recording, None);
+        let (rec, k) = recorded_key(&mut keys, &mut st).expect("the recorded key reaches the row");
+        assert!(matches!(rec, Rec::Peer));
+        assert_eq!(k.serialized(), "0x72-0x100000-0xf");
+        assert!(keys.hotkey_recorded.is_none() && st.rec.is_none());
+        // A key recorded for another slot is left alone.
+        keys.hotkey_recorded = Some((HotkeySlot::Session, crate::keystroke::parse("0x72-0x100000-0xf").unwrap()));
+        assert!(recorded_key(&mut keys, &mut st).is_none());
+        assert!(keys.hotkey_recorded.is_some());
     }
 }
