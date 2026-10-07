@@ -496,6 +496,21 @@ impl EchoGuard {
     }
 }
 
+/// Whether a replay runs its next call: only while calls are left and the target is still in the
+/// sender's broadcast set (deferred minor 221). A replay that stops because its target left forgets
+/// the echo it noted (final residual 2), as a refused guard or a failed step does; one that ran all
+/// its calls keeps the note, since its echo comes.
+pub fn replay_continues(guard: &mut EchoGuard, e: &BroadcastEvent, calls_left: bool, still_target: bool) -> bool {
+    if !calls_left {
+        return false;
+    }
+    if !still_target {
+        guard.forget(e);
+        return false;
+    }
+    true
+}
+
 /// The count of replays in flight to a view goes up before the first call.
 pub fn receiving_raise(n: u32) -> u32 {
     n.saturating_add(1)
@@ -1006,5 +1021,29 @@ mod tests {
         g.note(&a, t0);
         g.forget(&a);
         assert_eq!(g.len(), 1);
+    }
+
+    /// Final residual 2 (deferred minor 221): a replay stopped because its target left the
+    /// broadcast set forgets the echo it noted, so the person's identical key in that pane after it
+    /// rejoins is not dropped; a replay that ran all its calls keeps the note for its echo.
+    #[test]
+    fn a_replay_whose_target_left_forgets_its_echo() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let a = BroadcastEvent::Insert("a".into());
+        let mut g = EchoGuard::default();
+        g.note(&a, t0);
+        assert!(replay_continues(&mut g, &a, true, true), "still a target, calls left: the next call runs");
+        assert_eq!(g.len(), 1, "the echo is still expected");
+        assert!(!replay_continues(&mut g, &a, true, false), "the target left: the replay stops");
+        assert!(g.is_empty(), "and forgets the echo no input will make");
+        // The pane rejoins within ECHO_TTL: the person's own 'a' there is sent, not taken for an echo.
+        assert!(broadcast_verdict(&mut g, &a, t0 + Duration::from_millis(600), true, 0, Some(Duration::from_millis(550))));
+        // A replay that ran every call made its input: the note stays for the echo.
+        g.note(&a, t0);
+        assert!(!replay_continues(&mut g, &a, false, true));
+        assert!(!replay_continues(&mut g, &a, false, false), "done, even if the target left after the last call");
+        assert_eq!(g.len(), 1);
+        assert!(!broadcast_verdict(&mut g, &a, t0 + Duration::from_millis(600), true, 0, Some(Duration::from_millis(550))), "its echo is dropped once");
     }
 }

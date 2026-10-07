@@ -661,9 +661,11 @@ impl App {
     }
 
     /// The next call of a replay. A target that left `sender`'s broadcast set (or broadcast is off)
-    /// gets no more of it (deferred minor 221).
+    /// gets no more of it (deferred minor 221) and forgets the echo it noted (final residual 2).
     fn browser_replay_step(&mut self, sender: PaneId, pane: PaneId, e: browser_keys::BroadcastEvent, mut calls: Vec<(&'static str, serde_json::Value)>) {
-        if calls.is_empty() || !self.browser_broadcast_targets(sender).contains(&pane) {
+        let still = self.browser_broadcast_targets(sender).contains(&pane);
+        let go = self.browser_views.get_mut(&pane).is_some_and(|bv| browser_keys::replay_continues(&mut bv.echo, &e, !calls.is_empty(), still));
+        if !go {
             return self.browser_replay_done(pane);
         }
         let (method, params) = calls.remove(0);
@@ -842,5 +844,6 @@ mod tests {
         assert!(replay.matches("a.browser_replay_forget(").count() >= 2, "a refused guard and a failed step forget the note");
         let step = &p[p.find("fn browser_replay_step").unwrap()..p.find("fn browser_replay_done").unwrap()];
         assert!(step.contains("self.browser_broadcast_targets(sender).contains(&pane)"), "membership is checked again before every call (221)");
+        assert!(step.contains("browser_keys::replay_continues(&mut bv.echo, &e, !calls.is_empty(), still)") && step.find("replay_continues").unwrap() < step.find("calls.remove(0)").unwrap(), "a target that left forgets its echo (final residual 2)");
     }
 }
