@@ -540,6 +540,22 @@ impl Contexts {
 
 #[cfg(test)]
 mod tests {
+
+    /// Task 3 review minor 3: the desktop probe script refuses to start when its run folder already
+    /// exists, and only ever removes (or names as a process root) a folder it created itself.
+    #[test]
+    fn probe_script_never_removes_a_folder_it_did_not_create() {
+        let ps = include_str!("../scripts/probe-desktop.ps1");
+        let guard = ps.find("if (Test-Path $dir)").expect("a refusal when the folder exists");
+        let tryat = ps.find("\ntry {").unwrap();
+        assert!(guard < tryat, "the refusal comes before anything that cleans up");
+        assert!(ps[guard..tryat].contains("exit 1"), "and it stops the script");
+        let created = ps.find("$dirCreated = $true").unwrap();
+        assert!(created > ps.find("New-Item -ItemType Directory").unwrap(), "set only once New-Item succeeded");
+        assert!(ps.contains("if ($dirCreated -and (Test-Path $dir)) { Remove-Item"), "the folder is removed only when this run made it");
+        assert_eq!(ps.matches("$names = @($task)").count(), 2, "both scans name the folder only when it is this run's");
+        assert!(!ps.contains("$names = @($dir, $task)"));
+    }
     /// Task 2 review I3 (fail closed): a Client handler acts only on a Ready world.
     #[test]
     fn client_handlers_need_a_ready_world() {

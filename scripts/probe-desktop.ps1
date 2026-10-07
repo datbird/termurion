@@ -21,6 +21,12 @@ $stamp = Get-Date -Format 'yyyyMMddHHmmss'
 $task = "tandem-probe-$stamp"
 $dir = "C:\Users\datbi\tandem-probe-$stamp"
 $taskCreated = $false
+$dirCreated = $false
+# A run folder that already exists was not made by this run: never use it, never remove it.
+if (Test-Path $dir) {
+    Write-Output "REFUSED: $dir already exists and was not made by this run. Nothing was started or removed."
+    exit 1
+}
 # Temp user-data folders that existed before this run are never touched; the ones that appear
 # during it (the test names them tandem-probe-<pid>-<hex>) are this run's.
 $before = @(Get-ChildItem -Path $env:TEMP -Filter 'tandem-probe-*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
@@ -33,7 +39,7 @@ function Get-RunProcesses {
     # Roots: processes whose command line names this run's task, folder or temp user-data folder.
     # Then the descendants of a root: a child counts only when it was created AFTER its parent (a
     # reused PID cannot make an unrelated orphan a descendant).
-    $names = @($dir, $task) + (Get-RunFolders)
+    $names = @($task) + @(if ($dirCreated) { $dir }) + (Get-RunFolders)
     $all = @(Get-CimInstance Win32_Process)
     $set = @{}
     foreach ($p in $all) {
@@ -54,7 +60,7 @@ function Get-RunProcesses {
 
 # Roots only, by command line (never by parent): what is left after the collected set was stopped.
 function Get-RunStragglers {
-    $names = @($dir, $task) + (Get-RunFolders)
+    $names = @($task) + @(if ($dirCreated) { $dir }) + (Get-RunFolders)
     $out = @()
     foreach ($p in (Get-CimInstance Win32_Process)) {
         $line = $p.CommandLine
@@ -80,6 +86,7 @@ function Stop-Collected($procs) {
 
 try {
     New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null
+    $dirCreated = $true
     $filterText = ($Filters -join ' ')
     $lines = @(
         "Set-Location '$Repo'",
@@ -129,7 +136,7 @@ finally {
     # The test's own user-data folders live under %TEMP% and hold the probe prefix.
     $folderNames = @(Get-RunFolders)
     foreach ($f in $folderNames) { Remove-Item -Recurse -Force $f -ErrorAction SilentlyContinue }
-    if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+    if ($dirCreated -and (Test-Path $dir)) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
 
     schtasks /Query /TN $task 2>&1 | Out-Null
     $taskGone = ($LASTEXITCODE -ne 0)
@@ -140,7 +147,7 @@ finally {
         if (-not (@($still | Where-Object { $_.ProcessId -eq $seen }).Count)) { $still += $p }
     }
     $folders = @()
-    if (Test-Path $dir) { $folders += $dir }
+    if ($dirCreated -and (Test-Path $dir)) { $folders += $dir }
     $folders += @($folderNames | Where-Object { Test-Path $_ })
     $folders += (Get-RunFolders)
 
