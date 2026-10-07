@@ -99,11 +99,71 @@ pub struct Setup {
     in_flight: Option<&'static str>,
     state: ClientWorld,
     main: Option<String>,
+    /// The isolation checks still to run (empty for `unchecked`), and the one in flight.
+    checks: std::collections::VecDeque<Check>,
+    check_in_flight: Option<Check>,
+}
+
+/// The marker a Client source sets in the world the scripts really run in: seeing it only there
+/// proves `worldName` was honored.
+pub const CANARY: &str = "globalThis.__tandemCanary = 1;";
+/// The expression both worlds answer: the binding's type and the marker's.
+pub const CHECK_EXPRESSION: &str = "typeof __tandemClient + '|' + typeof __tandemCanary";
+
+/// One isolation check, run once every setup call has answered. The app runs it and answers with
+/// `Setup::checked`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Check {
+    /// Navigate the view to `about:blank` (a new document, so the new-document scripts have run) and
+    /// answer when it finished.
+    Reload,
+    /// Evaluate in the PAGE world (`ExecuteScript`): the answer is the JSON text of the value.
+    Page(&'static str),
+    /// Evaluate in the main frame's Tandem world: the answer is the JSON text of the value.
+    World(&'static str),
 }
 
 impl Setup {
+    /// The setup with the isolation checks: a canary source goes first, and the view is Ready only
+    /// when the checks prove the page world holds neither the binding nor the canary.
     pub fn new(client_sources: &[String]) -> Setup {
-        Setup { queue: setup_calls(client_sources).into(), in_flight: None, state: ClientWorld::Setting, main: None }
+        let mut sources = vec![CANARY.to_string()];
+        sources.extend(client_sources.iter().cloned());
+        let mut s = Setup::unchecked(&sources);
+        s.checks = [Check::Reload, Check::Page(CHECK_EXPRESSION), Check::World(CHECK_EXPRESSION)].into();
+        s
+    }
+
+    /// The calls alone, with no isolation check (the probe's own harness proves isolation itself).
+    pub fn unchecked(client_sources: &[String]) -> Setup {
+        Setup { queue: setup_calls(client_sources).into(), in_flight: None, state: ClientWorld::Setting, main: None, checks: Default::default(), check_in_flight: None }
+    }
+
+    /// The next isolation check, once every call has answered; None while one is in flight, while
+    /// calls remain, when done, or after a failure.
+    pub fn next_check(&mut self) -> Option<Check> {
+        if self.check_in_flight.is_some() || self.in_flight.is_some() || !self.queue.is_empty() || self.state != ClientWorld::Setting {
+            return None;
+        }
+        let c = self.checks.pop_front()?;
+        self.check_in_flight = Some(c.clone());
+        Some(c)
+    }
+
+    /// The answer to the check in flight (see `Check`): anything but the exact expected text fails closed.
+    pub fn checked(&mut self, r: Result<String, String>) {
+        let Some(check) = self.check_in_flight.take() else { return };
+        let text = |r: Result<String, String>| -> Option<String> { serde_json::from_str::<Value>(&r.ok()?).ok()?.as_str().map(str::to_string) };
+        let ok = match check {
+            Check::Reload => r.is_ok(),
+            Check::Page(_) => text(r).as_deref() == Some("undefined|undefined"),
+            Check::World(_) => text(r).as_deref() == Some("function|number"),
+        };
+        if !ok {
+            self.state = ClientWorld::Unavailable(format!("the isolation check failed ({})", match check { Check::Reload => "reload", Check::Page(_) => "page world", Check::World(_) => "tandem world" }));
+        } else if self.checks.is_empty() {
+            self.state = ClientWorld::Ready;
+        }
     }
 
     pub fn state(&self) -> &ClientWorld {
@@ -144,7 +204,7 @@ impl Setup {
                 }
             }
         }
-        if self.state == ClientWorld::Setting && self.queue.is_empty() {
+        if self.state == ClientWorld::Setting && self.queue.is_empty() && self.checks.is_empty() {
             self.state = ClientWorld::Ready;
         }
     }
@@ -459,37 +519,87 @@ mod tests {
         assert_eq!(c.frame_key(None, "G-new-one-too-many"), None);
     }
 
-    /// The run-time check: the setup runs call by call; a failed answer makes the world unavailable
-    /// and no Client script is injected.
+    /// Drives a setup to its end: every call answers `{}` (the tree for `getFrameTree`), then the checks.
+    fn drive(s: &mut Setup, page: Result<&str, &str>, world: Result<&str, &str>) -> Vec<String> {
+        let tree = r#"{"frameTree":{"frame":{"id":"M"},"childFrames":[{"frame":{"id":"K"}}]}}"#;
+        let mut sent = Vec::new();
+        while let Some((m, _)) = s.next_call() {
+            sent.push(m.to_string());
+            assert!(s.next_call().is_none(), "one call at a time");
+            s.answered(Ok(if m == "Page.getFrameTree" { tree.to_string() } else { "{}".to_string() }));
+        }
+        let owned = |r: Result<&str, &str>| r.map(str::to_string).map_err(str::to_string);
+        while let Some(check) = s.next_check() {
+            assert!(s.next_check().is_none(), "one check at a time");
+            sent.push(format!("{check:?}"));
+            match check {
+                Check::Reload => s.checked(Ok(String::new())),
+                Check::Page(_) => s.checked(owned(page)),
+                Check::World(_) => s.checked(owned(world)),
+            }
+        }
+        sent
+    }
+
+    /// The run-time check, one call at a time: the setup calls, then a world in every frame of the
+    /// tree, then the isolation checks. A failed answer makes the world unavailable.
     #[test]
     fn setup_decides_per_view() {
         let mut s = Setup::new(&["A".into()]);
         assert_eq!(*s.state(), ClientWorld::Setting);
-        let mut sent = Vec::new();
-        let tree = r#"{"frameTree":{"frame":{"id":"M"},"childFrames":[{"frame":{"id":"K"}}]}}"#;
-        while let Some((m, _)) = s.next_call() {
-            sent.push(m);
-            assert!(s.next_call().is_none(), "one call at a time");
-            s.answered(Ok(if m == "Page.getFrameTree" { tree.to_string() } else { "{}".to_string() }));
-        }
+        let sent = drive(&mut s, Ok("\"undefined|undefined\""), Ok("\"function|number\""));
         assert_eq!(*s.state(), ClientWorld::Ready);
         assert_eq!(s.main_frame(), Some("M"));
-        assert_eq!(&sent[..7], &["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Target.setAutoAttach", "Page.getFrameTree", "Page.createIsolatedWorld"]);
-        assert_eq!(sent.len(), 8, "one world per frame of the tree after the setup: {sent:?}");
+        assert_eq!(&sent[..8], &["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.addScriptToEvaluateOnNewDocument", "Target.setAutoAttach", "Page.getFrameTree", "Page.createIsolatedWorld"]);
+        assert_eq!(&sent[9..], &["Reload", "Page(\"typeof __tandemClient + '|' + typeof __tandemCanary\")", "World(\"typeof __tandemClient + '|' + typeof __tandemCanary\")"], "{sent:?}");
+        assert_eq!(sent.len(), 12, "{sent:?}");
 
         let mut f = Setup::new(&["A".into()]);
         let _ = f.next_call();
         f.answered(Err("no".into()));
         assert!(matches!(f.state(), ClientWorld::Unavailable(_)));
-        assert!(f.next_call().is_none(), "nothing more is sent after a failure");
+        assert!(f.next_call().is_none() && f.next_check().is_none(), "nothing more is sent after a failure");
         let mut g = Setup::new(&[]);
-        for _ in 0..4 {
-            let _ = g.next_call();
-            g.answered(Ok("{}".into()));
+        while let Some((m, _)) = g.next_call() {
+            g.answered(Ok(if m == "Page.getFrameTree" { "not a tree".into() } else { "{}".into() }));
         }
-        let _ = g.next_call();
-        g.answered(Ok("not a tree".into()));
         assert!(matches!(g.state(), ClientWorld::Unavailable(_)), "a frame tree that does not parse is a failure");
+    }
+
+    /// Fix round 1, item 2: answers alone prove nothing (CDP ignores parameters it does not know), so
+    /// the view is Ready only when the page world has neither the binding nor the world's marker and
+    /// the isolated world has both. Any doubt is Unavailable.
+    #[test]
+    fn setup_fails_closed_when_the_world_is_not_isolated() {
+        let case = |page: Result<&str, &str>, world: Result<&str, &str>| {
+            let mut s = Setup::new(&[]);
+            drive(&mut s, page, world);
+            s.state().clone()
+        };
+        let (p, w) = ("\"undefined|undefined\"", "\"function|number\"");
+        assert_eq!(case(Ok(p), Ok(w)), ClientWorld::Ready);
+        for (name, page, world) in [
+            ("the binding exists in the page world", Ok("\"function|undefined\""), Ok(w)),
+            ("the marker exists in the page world", Ok("\"undefined|number\""), Ok(w)),
+            ("the binding is missing in the world", Ok(p), Ok("\"undefined|number\"")),
+            ("the marker is missing in the world", Ok(p), Ok("\"function|undefined\"")),
+            ("the page check failed", Err("boom"), Ok(w)),
+            ("the world check failed", Ok(p), Err("boom")),
+            ("the page answer is not a string", Ok("5"), Ok(w)),
+            ("the world answer is not JSON", Ok(p), Ok("nope")),
+        ] {
+            assert!(matches!(case(page, world), ClientWorld::Unavailable(_)), "{name}");
+        }
+        // The probe's own harness runs the calls without the checks.
+        let mut u = Setup::unchecked(&[]);
+        let mut n = 0;
+        while let Some((m, _)) = u.next_call() {
+            n += 1;
+            u.answered(Ok(if m == "Page.getFrameTree" { r#"{"frameTree":{"frame":{"id":"M"}}}"#.into() } else { "{}".into() }));
+        }
+        assert!(n > 0);
+        assert_eq!(*u.state(), ClientWorld::Ready);
+        assert!(u.next_check().is_none());
     }
 
     #[test]

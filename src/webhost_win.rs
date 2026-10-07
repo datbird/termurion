@@ -1903,7 +1903,7 @@ mod probe {
                 pages: pages.iter().map(|(u, b)| (u.to_string(), b.clone())).collect(),
                 not_served: Vec::new(),
                 contexts: Contexts::default(),
-                setup: Setup::new(&sources),
+                setup: Setup::unchecked(&sources),
                 sources,
                 next_token: 1,
                 setup_token: None,
