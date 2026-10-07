@@ -1007,16 +1007,39 @@ impl Model {
         self.edited();
     }
 
-    /// Replaces the whole list (the editor's undo). A workgroup keeps the source its id had, so an
-    /// edit or an undo never approves an import; an id that was not there is the person's.
-    pub fn set_all(&mut self, list: Vec<Workgroup>) {
+    /// Where each workgroup came from now: an undo snapshot carries it.
+    pub fn marks(&self) -> BTreeMap<String, Source> {
+        self.sources.clone()
+    }
+
+    /// Replaces the whole list (the editor's edits, undo and redo). Fail closed: a workgroup the
+    /// model holds keeps its mark (or the snapshot's, when that is the stricter); one it does not
+    /// hold takes the snapshot's mark, and with none it is Imported. Only `trust` makes a
+    /// workgroup the person's, and only `add` and the editor's own adds (which put the person's
+    /// mark in the snapshot) make a new one theirs.
+    pub fn set_all_marked(&mut self, list: Vec<Workgroup>, marks: &BTreeMap<String, Source>) {
         let sources: BTreeMap<String, Source> = list
             .iter()
-            .map(|w| (w.unique_identifier.clone(), self.sources.get(&w.unique_identifier).copied().unwrap_or(Source::Person)))
+            .map(|w| {
+                let id = &w.unique_identifier;
+                let source = match (self.sources.get(id).copied(), marks.get(id).copied()) {
+                    (Some(c), _) if !c.is_person() => c,
+                    (_, Some(m)) if !m.is_person() => m,
+                    (Some(c), _) => c,
+                    (None, Some(m)) => m,
+                    (None, None) => Source::Import,
+                };
+                (id.clone(), source)
+            })
             .collect();
         self.sources = sources;
         self.workgroups = list;
         self.edited();
+    }
+
+    /// `set_all_marked` with no snapshot.
+    pub fn set_all(&mut self, list: Vec<Workgroup>) {
+        self.set_all_marked(list, &BTreeMap::new());
     }
 
     pub fn set_all_from(&mut self, list: Vec<Workgroup>, source: Source) {
@@ -1656,5 +1679,35 @@ mod tests {
         let mut g = globals();
         g.set("Workgroups", toml::Value::String(big_text(2 * MAX_BYTES)));
         assert_eq!(g.string("Workgroups"), "");
+    }
+
+    #[test]
+    fn set_all_fails_closed_on_an_unknown_id() {
+        let mut m = Model::default();
+        let w = Workgroup::new_empty("theirs");
+        let id = w.unique_identifier.clone();
+        m.add_from(w.clone(), Source::Import);
+        // Removed, then put back by an undo: the mark returns with the snapshot, never the person's.
+        let marks = m.marks();
+        m.set_all(Vec::new());
+        m.set_all_marked(vec![w.clone()], &marks);
+        assert_eq!(m.source_of(&id), Source::Import);
+        // With no snapshot at all, an id the model does not know is Imported (fail closed).
+        m.set_all(Vec::new());
+        m.set_all(vec![w.clone()]);
+        assert_eq!(m.source_of(&id), Source::Import);
+        // The person's own returns as the person's through its snapshot.
+        let mine = Workgroup::new_empty("mine");
+        m.add(mine.clone());
+        let marks = m.marks();
+        m.set_all(Vec::new());
+        m.set_all_marked(vec![mine.clone()], &marks);
+        assert_eq!(m.source_of(&mine.unique_identifier), Source::Person);
+        // A snapshot never makes a currently imported workgroup the person's.
+        m.set_all_marked(vec![w.clone()], &BTreeMap::from([(id.clone(), Source::Import)]));
+        let mut forged = marks.clone();
+        forged.insert(id.clone(), Source::Person);
+        m.set_all_marked(vec![w.clone(), mine], &forged);
+        assert_eq!(m.source_of(&id), Source::Import);
     }
 }

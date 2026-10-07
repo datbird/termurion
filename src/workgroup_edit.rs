@@ -382,16 +382,21 @@ pub const MAX_UNDO: usize = 50;
 
 /// Undo and redo for the editor: each entry is the list as it was before an action, with the
 /// action's name (`WEV:280-300`).
-#[derive(Default)]
-pub struct Undo {
-    pub stack: Vec<(Vec<Workgroup>, &'static str)>,
-    pub redo: Vec<(Vec<Workgroup>, &'static str)>,
+pub struct Undo<T = Vec<Workgroup>> {
+    pub stack: Vec<(T, &'static str)>,
+    pub redo: Vec<(T, &'static str)>,
     /// The action of the last coalescing push, while nothing else happened since.
     run: Option<&'static str>,
 }
 
-impl Undo {
-    pub fn push(&mut self, before: Vec<Workgroup>, action: &'static str) {
+impl<T> Default for Undo<T> {
+    fn default() -> Self {
+        Undo { stack: Vec::new(), redo: Vec::new(), run: None }
+    }
+}
+
+impl<T> Undo<T> {
+    pub fn push(&mut self, before: T, action: &'static str) {
         self.run = None;
         self.redo.clear();
         self.stack.push((before, action));
@@ -401,7 +406,7 @@ impl Undo {
     }
 
     /// Typing: a run of the same action is one undo step.
-    pub fn push_coalesced(&mut self, before: Vec<Workgroup>, action: &'static str) {
+    pub fn push_coalesced(&mut self, before: T, action: &'static str) {
         if self.run == Some(action) && self.stack.last().is_some_and(|(_, a)| *a == action) {
             return;
         }
@@ -422,14 +427,14 @@ impl Undo {
         self.redo.last().map(|(_, a)| *a)
     }
 
-    pub fn undo(&mut self, now: Vec<Workgroup>) -> Option<Vec<Workgroup>> {
+    pub fn undo(&mut self, now: T) -> Option<T> {
         let (before, action) = self.stack.pop()?;
         self.run = None;
         self.redo.push((now, action));
         Some(before)
     }
 
-    pub fn redo(&mut self, now: Vec<Workgroup>) -> Option<Vec<Workgroup>> {
+    pub fn redo(&mut self, now: T) -> Option<T> {
         let (after, action) = self.redo.pop()?;
         self.run = None;
         self.stack.push((now, action));

@@ -21,13 +21,21 @@ enum Rec {
     ItemReload,
 }
 
+/// What an undo step keeps: the list and where each workgroup came from, so a workgroup that
+/// comes back (delete then Undo, Undo then Redo after a reload) keeps its mark.
+#[derive(Clone, Debug, PartialEq)]
+struct Snapshot {
+    list: Vec<Workgroup>,
+    marks: std::collections::BTreeMap<String, wg::Source>,
+}
+
 /// The editor's state between frames.
 #[derive(Default)]
 pub struct EditorState {
     selected: Option<String>,
     session: Option<String>,
     item: Option<usize>,
-    undo: ed::Undo,
+    undo: ed::Undo<Snapshot>,
     model: Option<Model>,
     /// What the model was loaded from (the list and the Imported marks).
     cache: (String, String),
@@ -621,12 +629,15 @@ fn toolbar_items(ui: &mut egui::Ui, w: &Workgroup, s: &SessionConfig, keys: &mut
 fn apply(cmd: Option<Cmd>, model: &mut Model, g: &mut Globals, st: &mut EditorState) -> bool {
     let Some(cmd) = cmd else { return false };
     let before = model.workgroups.clone();
+    let snapshot = Snapshot { list: before.clone(), marks: model.marks() };
+    let mut marks = snapshot.marks.clone();
     let mut list = before.clone();
     let (action, coalesce): (&'static str, bool) = match cmd {
         Cmd::AddWorkgroup => {
             let w = Workgroup::new_empty(ed::UNTITLED_WORKGROUP);
             st.selected = Some(w.unique_identifier.clone());
             st.session = None;
+            marks.insert(w.unique_identifier.clone(), wg::Source::Person);
             list.push(w);
             (ed::CHANGE_WORKGROUPS, false)
         }
@@ -634,6 +645,7 @@ fn apply(cmd: Option<Cmd>, model: &mut Model, g: &mut Globals, st: &mut EditorSt
             let Some(w) = wg::presets::build(&id) else { return false };
             st.selected = Some(w.unique_identifier.clone());
             st.session = None;
+            marks.insert(w.unique_identifier.clone(), wg::Source::Person);
             list.push(w);
             (ed::CHANGE_WORKGROUPS, false)
         }
@@ -661,17 +673,15 @@ fn apply(cmd: Option<Cmd>, model: &mut Model, g: &mut Globals, st: &mut EditorSt
             return true;
         }
         Cmd::Undo => {
-            let Some(back) = st.undo.undo(before) else { return false };
-            list = back;
-            model.set_all(list);
+            let Some(back) = st.undo.undo(snapshot) else { return false };
+            model.set_all_marked(back.list, &back.marks);
             model.save(g);
             st.notice = None;
             return true;
         }
         Cmd::Redo => {
-            let Some(fwd) = st.undo.redo(before) else { return false };
-            list = fwd;
-            model.set_all(list);
+            let Some(fwd) = st.undo.redo(snapshot) else { return false };
+            model.set_all_marked(fwd.list, &fwd.marks);
             model.save(g);
             st.notice = None;
             return true;
@@ -690,11 +700,11 @@ fn apply(cmd: Option<Cmd>, model: &mut Model, g: &mut Globals, st: &mut EditorSt
     }
     st.notice = None;
     if coalesce {
-        st.undo.push_coalesced(before, action);
+        st.undo.push_coalesced(snapshot, action);
     } else {
-        st.undo.push(before, action);
+        st.undo.push(snapshot, action);
     }
-    model.set_all(list);
+    model.set_all_marked(list, &marks);
     model.save(g);
     true
 }
@@ -777,5 +787,39 @@ mod tests {
         assert_eq!(st.session.as_deref(), Some(model.workgroups[0].sessions[1].unique_identifier.as_str()));
         assert_eq!(model.workgroups[0].sessions[1].display_name, "Fox");
         assert_eq!(st.undo.undo_name(), Some("Add Session"));
+    }
+
+    #[test]
+    fn undo_and_redo_never_launder_an_import() {
+        let mut g = globals();
+        let mut st = EditorState::default();
+        let mut model = Model::default();
+        let w = Workgroup::new_empty("theirs");
+        let id = w.unique_identifier.clone();
+        model.add_from(w, wg::Source::Import);
+        model.save(&mut g);
+        // Delete, then Undo.
+        assert!(apply(Some(Cmd::RemoveWorkgroup(id.clone())), &mut model, &mut g, &mut st));
+        assert!(apply(Some(Cmd::Undo), &mut model, &mut g, &mut st));
+        assert_eq!(model.source_of(&id), wg::Source::Import);
+        assert_eq!(Model::load(&g).0.source_of(&id), wg::Source::Import, "stored marked");
+        // Delete, Undo, Undo again past it, then Redo, across a reload of the model.
+        assert!(apply(Some(Cmd::RemoveWorkgroup(id.clone())), &mut model, &mut g, &mut st));
+        assert!(apply(Some(Cmd::Undo), &mut model, &mut g, &mut st));
+        assert!(apply(Some(Cmd::Redo), &mut model, &mut g, &mut st));
+        assert!(model.get(&id).is_none());
+        model = Model::load(&g).0;
+        assert!(apply(Some(Cmd::Undo), &mut model, &mut g, &mut st));
+        assert_eq!(model.source_of(&id), wg::Source::Import, "a reloaded model: the snapshot carries the mark");
+        assert_eq!(Model::load(&g).0.source_of(&id), wg::Source::Import);
+        // The person's own workgroup, added and undone and redone, stays the person's.
+        assert!(apply(Some(Cmd::AddWorkgroup), &mut model, &mut g, &mut st));
+        let mine = model.workgroups.last().unwrap().unique_identifier.clone();
+        assert!(apply(Some(Cmd::Undo), &mut model, &mut g, &mut st));
+        assert!(apply(Some(Cmd::Redo), &mut model, &mut g, &mut st));
+        assert_eq!(model.source_of(&mine), wg::Source::Person);
+        // Only Trust makes it the person's.
+        assert!(apply(Some(Cmd::Trust(id.clone())), &mut model, &mut g, &mut st));
+        assert_eq!(model.source_of(&id), wg::Source::Person);
     }
 }
