@@ -287,13 +287,14 @@ pub fn copy_title_text(title: &str, url: &str) -> Option<String> {
 }
 
 /// A label a page's text made, safe to show (P15): hidden characters out (`display_text`), cut to
-/// `MAX_LABEL`; one that comes out empty shows its first character's code point. Empty stays empty.
+/// `MAX_LABEL`, "&" doubled so no page text sets an access key; one that comes out empty shows its first character's code point. Empty stays empty.
 fn safe_label(raw: &str) -> String {
     let clean = crate::inert_files::display_text(raw, MAX_LABEL, false);
     if clean.trim().is_empty() {
         return raw.chars().next().map(|c| format!("U+{:04X}", c as u32)).unwrap_or_default();
     }
-    clean
+    // WebView2's menus read "&" as the access-key marker: "&&" shows one.
+    clean.replace('&', "&&")
 }
 
 /// A color helper's swatch (`CMU:343-350`): 24 by 24 pixels of the color with a 1-pixel border, light
@@ -474,6 +475,19 @@ mod tests {
             assert!(!l.is_empty());
         }
         assert!(matches!(e[2], MenuEntry::Custom { id: 3, .. }));
+    }
+
+    /// Task 3 review minor 1: WebView2's menus read "&" as the access-key marker, so a label a page
+    /// chose shows its ampersands as "&&" and no page can give its item an access key.
+    #[test]
+    fn page_labels_escape_the_access_key_marker() {
+        use Item::*;
+        let c = Ctx { helpers: vec!["a&b".into(), "&&x&".into(), "\u{200b}&".into()], smart_actions: vec!["R&D".into()], helper_data: vec![crate::ctx_help::Helper { title: String::new(), copy: Some(crate::ctx_help::Copy::Text("t".into())), color: None }; 3], ..Ctx::default() };
+        let e = entries(&[Some(Helper(0)), Some(Helper(1)), Some(Helper(2)), Some(SmartAction(0))], &c, None);
+        let labels: Vec<String> = e.iter().filter_map(|m| if let MenuEntry::Custom { label, .. } = m { Some(label.clone()) } else { None }).collect();
+        assert_eq!(labels, vec!["a&&b".to_string(), "&&&&x&&".into(), "&&".into(), "R&&D".into()]);
+        // The fixed items have none.
+        assert!(!entries(&[Some(SplitVertically)], &Ctx::default(), None).iter().any(|m| matches!(m, MenuEntry::Custom { label, .. } if label.contains('&'))));
     }
 
     fn act(action: &str, parameter: &str) -> crate::smartsel::RuleAction {
