@@ -1971,7 +1971,7 @@ pub fn run() {
         }
     }
     // The workgroups, with their one-time migrations; written back only when something changed.
-    let (workgroup_model, workgroups_changed) = crate::workgroup::Model::load(&globals);
+    let (mut workgroup_model, workgroups_changed) = crate::workgroup::Model::load(&globals);
     if workgroups_changed {
         workgroup_model.save(&mut globals);
         if let Err(e) = globals.save() {

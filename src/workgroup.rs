@@ -623,6 +623,16 @@ pub fn bound_json(raw: &str) -> String {
     }
 }
 
+/// Does this workgroup pass every limit the write point applies (the editor calls it so its field
+/// limits are the stored ones)? The error names the first thing wrong.
+pub fn check(w: &Workgroup) -> Result<(), String> {
+    match sanitize(vec![w.clone()]).as_slice() {
+        [clean] if clean == w => Ok(()),
+        [_] => Err("a value is over its limit".into()),
+        _ => Err("the workgroup breaks a limit (sessions, tree, id or a control character in a command)".into()),
+    }
+}
+
 /// The stored Imported mark list, bounded at the write point: a JSON array of well-formed ids, at
 /// most `MAX_WORKGROUPS` of them. Anything else is the empty string.
 pub fn bound_imported(raw: &str) -> String {
@@ -887,6 +897,9 @@ impl Model {
         let marks = read_marks(g);
         m.sources = m.workgroups.iter().map(|w| (w.unique_identifier.clone(), if marks.contains(&w.unique_identifier) { Source::Import } else { Source::Person })).collect();
         let data = migrate_data(&mut m.workgroups, &mut m.latches);
+        if data {
+            m.workgroups = sanitize(std::mem::take(&mut m.workgroups));
+        }
         m.dirty = data;
         let changed = data || m.latches != before;
         (m, changed)
@@ -911,23 +924,35 @@ impl Model {
         self.read_list(g);
         self.sources = self.workgroups.iter().map(|w| (w.unique_identifier.clone(), source)).collect();
         self.dirty = migrate_data(&mut self.workgroups, &mut self.latches);
+        if self.dirty {
+            self.workgroups = sanitize(std::mem::take(&mut self.workgroups));
+        }
     }
 
     /// Writes the latches, and the list when it changed. Never overwrites a value that failed to
     /// decode until an edit replaces it.
-    pub fn save(&self, g: &mut Globals) {
+    pub fn save(&mut self, g: &mut Globals) {
         self.latches.write(g);
+        if self.dirty && !self.kept_undecodable {
+            g.set(KEY, toml::Value::String(encode(&self.workgroups)));
+            // Memory is what the write point stored (it may trim, or refuse a value over a MiB).
+            let stored = g.string(KEY);
+            self.workgroups = if stored.is_empty() { Vec::new() } else { decode(&stored).unwrap_or_default() };
+            let kept: HashSet<&str> = self.workgroups.iter().map(|w| w.unique_identifier.as_str()).collect();
+            self.sources.retain(|id, _| kept.contains(id.as_str()));
+        }
         let marks: Vec<&str> = self.workgroups.iter().filter(|w| !self.source_of(&w.unique_identifier).is_person()).map(|w| w.unique_identifier.as_str()).collect();
         let marks = if marks.is_empty() { String::new() } else { serde_json::to_string(&marks).unwrap_or_default() };
         if g.string(KEY_IMPORTED) != marks {
             g.set(KEY_IMPORTED, toml::Value::String(marks));
         }
-        if self.dirty && !self.kept_undecodable {
-            g.set(KEY, toml::Value::String(encode(&self.workgroups)));
-        }
     }
 
     fn edited(&mut self) {
+        // The model never holds what the write point would drop or trim.
+        self.workgroups = sanitize(std::mem::take(&mut self.workgroups));
+        let kept: HashSet<&str> = self.workgroups.iter().map(|w| w.unique_identifier.as_str()).collect();
+        self.sources.retain(|id, _| kept.contains(id.as_str()));
         self.dirty = true;
         self.kept_undecodable = false;
     }
@@ -1281,7 +1306,7 @@ mod tests {
         let mut old = claude_code::config();
         old.sessions[1].mode = Mode::Regular;
         g2.set("Workgroups", toml::Value::String(encode(&[old])));
-        let (m3, changed) = Model::load(&g2);
+        let (mut m3, changed) = Model::load(&g2);
         assert!(changed);
         assert_eq!(m3.get("builtin.claudeCode").unwrap().sessions[1].mode, Mode::Diff);
         m3.save(&mut g2);
@@ -1436,6 +1461,46 @@ mod tests {
         for id in ["mine", "theirs", "new"] {
             assert_eq!(back.source_of(id), Source::Import, "{id}");
         }
+    }
+
+    #[test]
+    fn the_model_never_holds_what_the_write_point_would_drop() {
+        let mut bad = simple("bad");
+        bad.sessions[0].command = "echo\tx".into();
+        let mut many = simple("many");
+        for i in 0..MAX_SESSIONS {
+            many.sessions.push(session(&format!("s{i}"), Some("root"), Kind::Peer));
+        }
+        let mut m = Model::default();
+        m.add(bad.clone());
+        m.add(many.clone());
+        m.add(simple("good"));
+        assert_eq!(m.workgroups.iter().map(|w| w.unique_identifier.as_str()).collect::<Vec<_>>(), ["good"]);
+        assert!(check(&bad).is_err() && check(&many).is_err() && check(&simple("fine")).is_ok());
+        // replace and set_all are held to the same limits.
+        m.replace("good", bad.clone());
+        m.set_all(vec![many, simple("good")]);
+        assert_eq!(m.workgroups.len(), 1);
+        // After a save the memory is what the write point stored, even when it trims.
+        let mut g = globals();
+        let mut long = simple("long");
+        long.name = "x".repeat(300);
+        m.add(long);
+        m.save(&mut g);
+        assert_eq!(m.workgroups, decode(&g.string(KEY)).unwrap());
+        // A value too big for the one write point is not kept in memory either.
+        let mut huge = Model::default();
+        for i in 0..MAX_WORKGROUPS {
+            let mut w = simple(&format!("w{i}"));
+            for j in 0..MAX_SESSIONS - 1 {
+                let mut s = session(&format!("s{j}"), Some("root"), Kind::Peer);
+                s.command = "c".repeat(MAX_COMMAND);
+                w.sessions.push(s);
+            }
+            huge.add(w);
+        }
+        huge.save(&mut g);
+        assert!(g.string(KEY).is_empty() && huge.workgroups.is_empty());
     }
 
     fn big_text(n: usize) -> String {
