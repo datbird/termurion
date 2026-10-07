@@ -163,6 +163,11 @@ pub fn needs_ask(source: Source, how: Mechanism, members: usize) -> bool {
     !source.is_person() || how.from_trigger() || members > ASK_ABOVE
 }
 
+/// The entry question's buttons, left to right: Return presses the first, so the default is Cancel.
+pub const ASK_LABELS: [&str; 2] = [crate::api_auth::CANCEL, "Enter"];
+/// The button that enters (by an explicit click or its access key only).
+pub const ASK_ENTER: usize = 1;
+
 /// The question's heading and body: who is asking, and every command exactly as it would run, made
 /// inert (no bidi override can disguise one).
 pub fn ask_text(w: &Workgroup, how: Mechanism) -> (String, String) {

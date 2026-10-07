@@ -151,7 +151,7 @@ impl App {
         if run::needs_ask(source, how, w.sessions.len()) {
             let (heading, body) = run::ask_text(&w, how);
             let then = scripts_alerts::Then::EnterWorkgroup { workgroup: Box::new(w), pane, how };
-            let ask = scripts_alerts::ask(&heading, &body, &["Enter", crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, then);
+            let ask = scripts_alerts::ask(&heading, &body, &run::ASK_LABELS, None, crate::warnings::Kind::Persistent, then);
             self.ask_scripts(ask);
             return false;
         }

@@ -98,8 +98,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeRepair => Answer::Button(1),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
-        // Cancel: a closed window never starts a workgroup's commands.
-        Then::EnterWorkgroup { .. } => Answer::Button(1),
+        // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
+        Then::EnterWorkgroup { .. } => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -693,7 +693,7 @@ impl App {
                 }
             }
             Then::EnterWorkgroup { workgroup, pane, how } => {
-                if index == 0 {
+                if index == crate::workgroup_run::ASK_ENTER {
                     self.enter_workgroup_now(*workgroup, pane, how);
                 }
             }
@@ -704,6 +704,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entry question's default (Return) is Cancel; Return, Escape and a closed window all cancel,
+    /// and only the second button, by click or access key, enters.
+    #[test]
+    fn the_entry_question_defaults_to_cancel() {
+        use crate::workgroup_run::{ASK_ENTER, ASK_LABELS};
+        let then = || Then::EnterWorkgroup { workgroup: Box::new(crate::workgroup::Workgroup::new_empty("x")), pane: 1, how: crate::workgroup_run::Mechanism::Trigger };
+        let a = ask("H", "T", &ASK_LABELS, None, crate::warnings::Kind::Persistent, then());
+        assert_eq!(a.spec.labels[0], crate::api_auth::CANCEL, "Return presses the first button");
+        assert_eq!(a.spec.cancel, Some(0), "Escape presses it too");
+        assert_eq!(a.spec.labels[ASK_ENTER], "Enter");
+        assert_eq!(on_close(&then(), 7), Answer::Button(0), "a closed window cancels");
+        assert!(include_str!("scripts_alerts.rs").contains("if index == crate::workgroup_run::ASK_ENTER {"));
+    }
 
     #[test]
     fn asks_follow_iterm2() {
