@@ -414,6 +414,14 @@ pub fn broadcast_accepts(sends: bool, receiving: u32, quiet_for: Option<std::tim
     sends && receiving == 0 && quiet_for.is_none_or(|d| d >= HOLD_OFF)
 }
 
+/// Whether a pane's broadcast message is acted on: not the echo of an input it was sent, and
+/// `broadcast_accepts`. The echo is consumed FIRST (final review minor 5): an echo that arrives in the
+/// hold-off is used up there, so the person's own identical input right after is never dropped.
+pub fn broadcast_verdict(guard: &mut EchoGuard, e: &BroadcastEvent, now: std::time::Instant, sends: bool, receiving: u32, quiet_for: Option<std::time::Duration>) -> bool {
+    let echo = guard.is_echo(e, now);
+    !echo && broadcast_accepts(sends, receiving, quiet_for)
+}
+
 /// How long a replayed input waits for its echo before it is forgotten.
 pub const ECHO_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 /// At most this many replayed inputs are remembered per pane.
@@ -446,6 +454,14 @@ impl EchoGuard {
                 true
             }
             None => false,
+        }
+    }
+
+    /// `e` was noted but no input was made (the target's guard refused, or a step failed): no echo
+    /// will come, so the note goes (the newest one for `e`).
+    pub fn forget(&mut self, e: &BroadcastEvent) {
+        if let Some(i) = self.sent.iter().rposition(|(s, _)| s == e) {
+            self.sent.remove(i);
         }
     }
 
@@ -927,5 +943,30 @@ mod tests {
         let mut pane_b = EchoGuard::default();
         pane_b.note(&a, t0);
         assert!(pane_b.is_echo(&a, t0 + Duration::from_millis(5)), "B's report of the replayed input is dropped, so A never gets it back");
+    }
+
+    /// Final review minor 5: an echo that arrives inside the hold-off is consumed there, so the
+    /// person's next identical key in that pane is not dropped; and a noted input that was never made
+    /// (the target's guard refused, a step failed) is forgotten.
+    #[test]
+    fn the_hold_off_never_drops_a_persons_key() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let a = BroadcastEvent::Insert("a".into());
+        let mut g = EchoGuard::default();
+        g.note(&a, t0);
+        assert!(!broadcast_verdict(&mut g, &a, t0 + Duration::from_millis(60), true, 0, Some(Duration::from_millis(50))), "the echo, inside the hold-off");
+        assert!(g.is_empty(), "consumed there");
+        assert!(broadcast_verdict(&mut g, &a, t0 + Duration::from_millis(600), true, 0, Some(Duration::from_millis(550))), "the person's own 'a' a moment later is sent");
+        // A replay the guard refused (or that failed) made no input: no echo comes, nothing is dropped.
+        g.note(&a, t0);
+        g.forget(&a);
+        assert!(g.is_empty());
+        assert!(broadcast_verdict(&mut g, &a, t0 + Duration::from_millis(600), true, 0, Some(Duration::from_millis(550))));
+        // forget takes one note only.
+        g.note(&a, t0);
+        g.note(&a, t0);
+        g.forget(&a);
+        assert_eq!(g.len(), 1);
     }
 }

@@ -605,10 +605,8 @@ impl App {
         let since = bv.receiving_since.map(|t| t.elapsed());
         let stale = since.is_none_or(|d| d.as_secs() >= browser_keys::RECEIVING_STALE_SECS);
         let receiving = if stale { 0 } else { bv.receiving_broadcast };
-        if !browser_keys::broadcast_accepts(sends, receiving, since) {
-            return false;
-        }
-        !bv.echo.is_echo(e, Instant::now())
+        // The echo is consumed before the hold-off verdict (final review minor 5).
+        browser_keys::broadcast_verdict(&mut bv.echo, e, Instant::now(), sends, receiving, since)
     }
 
     /// The panes that get `sender`'s browser input: the other browser panes of its broadcast domain
@@ -629,14 +627,15 @@ impl App {
             if let Some(bv) = self.browser_views.get_mut(&target) {
                 bv.echo.note(&e, Instant::now());
             }
-            self.browser_replay(target, calls.clone());
+            self.browser_replay(sender, target, e.clone(), calls.clone());
         }
     }
 
     /// One event's replay on one target: the count goes up first, then the target asks whether its
     /// focused field holds a secret (then nothing is typed there), then the calls run in order; the
-    /// count goes down when the last one answers, or when any step fails.
-    fn browser_replay(&mut self, target: PaneId, calls: Vec<(&'static str, serde_json::Value)>) {
+    /// count goes down when the last one answers, or when any step fails. A replay that types nothing
+    /// (the guard refused, a step failed) forgets the echo it noted (final review minor 5).
+    fn browser_replay(&mut self, sender: PaneId, target: PaneId, e: browser_keys::BroadcastEvent, calls: Vec<(&'static str, serde_json::Value)>) {
         let Some(bv) = self.browser_views.get_mut(&target) else { return };
         let stale = bv.receiving_since.is_none_or(|t| t.elapsed().as_secs() >= browser_keys::RECEIVING_STALE_SECS);
         if stale {
@@ -650,20 +649,42 @@ impl App {
             serde_json::Value::Null,
             Box::new(move |a, p, r| {
                 if matches!(r, Ok(serde_json::Value::Bool(false))) {
-                    a.browser_replay_step(p, calls);
+                    a.browser_replay_step(sender, p, e, calls);
                 } else {
+                    a.browser_replay_forget(p, &e);
                     a.browser_replay_done(p);
                 }
             }),
         );
     }
 
-    fn browser_replay_step(&mut self, pane: PaneId, mut calls: Vec<(&'static str, serde_json::Value)>) {
-        if calls.is_empty() {
+    /// The next call of a replay. A target that left `sender`'s broadcast set (or broadcast is off)
+    /// gets no more of it (deferred minor 221).
+    fn browser_replay_step(&mut self, sender: PaneId, pane: PaneId, e: browser_keys::BroadcastEvent, mut calls: Vec<(&'static str, serde_json::Value)>) {
+        if calls.is_empty() || !self.browser_broadcast_targets(sender).contains(&pane) {
             return self.browser_replay_done(pane);
         }
         let (method, params) = calls.remove(0);
-        self.browser_devtools(pane, method, params, Box::new(move |a, p, r| if r.is_ok() { a.browser_replay_step(p, calls) } else { a.browser_replay_done(p) }));
+        self.browser_devtools(
+            pane,
+            method,
+            params,
+            Box::new(move |a, p, r| {
+                if r.is_ok() {
+                    a.browser_replay_step(sender, p, e, calls)
+                } else {
+                    a.browser_replay_forget(p, &e);
+                    a.browser_replay_done(p)
+                }
+            }),
+        );
+    }
+
+    /// The replay of `e` typed nothing in `pane`: no echo will come.
+    fn browser_replay_forget(&mut self, pane: PaneId, e: &browser_keys::BroadcastEvent) {
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.echo.forget(e);
+        }
     }
 
     fn browser_replay_done(&mut self, pane: PaneId) {
@@ -798,12 +819,26 @@ mod tests {
         assert!(b.contains("broadcast_view_in(true)") && b.contains("self.broadcast.sends(&view, sender)") && b.contains("self.broadcast.targets(&view, sender)"));
         assert!(b.contains("browser_keys::guard_body()") && b.contains("Ok(serde_json::Value::Bool(false))"), "only a plain false lets a replay go");
         assert!(b.contains("receiving_raise") && b.contains("receiving_lower"));
-        assert!(b.contains("echo.note(") && b.contains("echo.is_echo(") && b.contains("browser_keys::broadcast_accepts(sends, receiving, since)"), "no ordering is relied on: hold-off and echo guard (review I1)");
+        assert!(b.contains("echo.note(") && b.contains("browser_keys::broadcast_verdict(&mut bv.echo, e, Instant::now(), sends, receiving, since)"), "no ordering is relied on: hold-off and echo guard (review I1)");
         let scripts = include_str!("browser_scripts_app.rs");
         let router = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];
         assert!(router.contains("if self.browser_broadcast_accepts(pane, &e)"), "the router drops a broadcast message unless the pane sends");
         assert!(router.contains("if !open &&"), "and only the proven isolated world speaks");
         let js = include_str!("../browser_js.rs");
         assert!(js.contains("BROADCAST_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none()"), "the view's secret, main frame");
+    }
+
+    /// Final review minor 5 and deferred minor 221: the echo is consumed before the hold-off verdict,
+    /// a noted input that was never made is forgotten, and a queued replay stops when its target
+    /// left the sender's broadcast set (or broadcast was turned off).
+    #[test]
+    fn replays_forget_what_they_never_typed() {
+        let p = prod();
+        let accepts = &p[p.find("pub(super) fn browser_broadcast_accepts").unwrap()..p.find("pub(super) fn browser_broadcast_targets").unwrap()];
+        assert!(accepts.contains("browser_keys::broadcast_verdict(&mut bv.echo, e,") && !accepts.contains("browser_keys::broadcast_accepts("), "one verdict, echo first");
+        let replay = &p[p.find("fn browser_replay(").unwrap()..p.find("fn browser_replay_done").unwrap()];
+        assert!(replay.matches("a.browser_replay_forget(").count() >= 2, "a refused guard and a failed step forget the note");
+        let step = &p[p.find("fn browser_replay_step").unwrap()..p.find("fn browser_replay_done").unwrap()];
+        assert!(step.contains("self.browser_broadcast_targets(sender).contains(&pane)"), "membership is checked again before every call (221)");
     }
 }
