@@ -40,7 +40,9 @@ impl App {
     /// returns what is left below it, so `pane_chrome` must never be run on that).
     pub(super) fn browser_strip(&self, tab: &Tab, id: PaneId) -> Option<Rect> {
         let (_, full) = crate::layout::visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id)?;
-        self.pane_chrome(tab, id, full).browser_bar
+        let strip = self.pane_chrome(tab, id, full).browser_bar?;
+        // As wide as the web view: never over the Clippings or inline-chat panel beside it.
+        Some(self.gutter_split(id, strip).0)
     }
 
     /// The rectangle of pane `pane`'s shown web view in this window's pixels; None when it is not shown.
@@ -372,5 +374,14 @@ mod tests {
         let open = &p[p.find("fn browser_tip_open").unwrap()..p.find("pub(super) fn browser_toast(").unwrap()];
         assert!(!open.contains("browser_tip = None"), "opening never drops a tip first");
         assert!(include_str!("mod.rs").contains("self.browser_tip_drop(id)"), "the pane going drops it");
+    }
+
+    /// Review minor: the toolbar strip is as wide as the web view, so it never runs over the
+    /// Clippings or inline-chat panel beside a browser pane.
+    #[test]
+    fn the_strip_stops_at_the_panels() {
+        let p = prod();
+        let f = &p[p.find("pub(super) fn browser_strip").unwrap()..p.find("fn browser_shown_rect").unwrap()];
+        assert!(f.contains("self.gutter_split(id, strip).0"), "{f}");
     }
 }
