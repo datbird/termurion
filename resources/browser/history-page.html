@@ -76,7 +76,7 @@
                 <p>View and manage your browsing history</p>
             </div>
             <div class="header-actions">
-                <button class="button small danger" onclick="clearAllHistory()">Clear All History</button>
+                <button class="button small danger" id="clearAllHistoryButton">Clear All History</button>
             </div>
         </div>
         
@@ -88,7 +88,7 @@
                        class="search-input" 
                        placeholder="Search your browsing history…" 
                        autocomplete="off">
-                <button class="clear-button" onclick="clearSearch()" title="Clear search">×</button>
+                <button class="clear-button" id="clearSearchButton" title="Clear search">×</button>
             </div>
         </div>
         
@@ -102,13 +102,13 @@
         </div>
         
         <div class="load-more-container">
-            <button id="loadMoreButton" class="load-more-button" onclick="loadMore()" style="display: none;">
+            <button id="loadMoreButton" class="load-more-button" style="display: none;">
                 Load More
             </button>
         </div>
     </div>
     
-    <script>
+    <script nonce="{{NONCE}}">
         {{HISTORY_SCRIPT}}
     </script>
 </body>

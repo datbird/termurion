@@ -104,13 +104,6 @@ impl App {
         }
     }
 
-    /// The page of an `iterm2-about:` URL with its slots filled and its MIME type (None for an
-    /// unknown name). The pane is the asker; the page holds nothing of it.
-    #[allow(dead_code)]
-    pub(super) fn local_page(&mut self, _pane: PaneId, url: &str) -> Option<(String, &'static str)> {
-        browser_pages::page_name(url).and_then(browser_pages::document)
-    }
-
     /// A request for an `iterm2-about:` URL: the page under the policy, or a 404 (P8).
     pub(super) fn browser_local_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
         // Tandem's own scheme keeps its answer; every other request is the ad blocker's to judge.

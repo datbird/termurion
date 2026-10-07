@@ -348,3 +348,15 @@ function debounce(func, wait) {
         timeout = setTimeout(later, wait);
     };
 }
+
+// The buttons' handlers are listeners (the page's CSP allows script only with its nonce, so no
+// inline onclick attribute can run).
+(function () {
+    function on(id, handler) {
+        var el = document.getElementById(id);
+        if (el) { el.addEventListener('click', function () { handler(); }); }
+    }
+    on('clearAllHistoryButton', function () { window.clearAllHistory(); });
+    on('clearSearchButton', function () { clearSearch(); });
+    on('loadMoreButton', function () { loadMore(); });
+})();

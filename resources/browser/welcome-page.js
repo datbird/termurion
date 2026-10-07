@@ -56,7 +56,7 @@
         
         card.innerHTML = `
             <div class="site-favicon">
-                <img src="${escapeAttr(faviconUrl)}" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <img src="${escapeAttr(faviconUrl)}" alt="">
                 <div class="site-favicon-fallback" style="display:none;">${escapeHtml(getInitial(site.title || site.hostname))}</div>
             </div>
             <div class="site-info">
@@ -66,6 +66,18 @@
             </div>
         `;
         
+        // A favicon that fails to load shows the initial instead (a listener, not an inline handler:
+        // the page's CSP allows script only with its nonce).
+        const favicon = card.querySelector('.site-favicon img');
+        if (favicon) {
+            favicon.addEventListener('error', function() {
+                favicon.style.display = 'none';
+                if (favicon.nextElementSibling) {
+                    favicon.nextElementSibling.style.display = 'flex';
+                }
+            });
+        }
+
         // Handle navigation through message to Swift
         card.addEventListener('click', function(e) {
             e.preventDefault();
@@ -114,4 +126,10 @@
     window.refreshTopSites = function() {
         loadTopSites();
     };
+    document.addEventListener('DOMContentLoaded', function() {
+        const refresh = document.getElementById('refreshTopSitesButton');
+        if (refresh) {
+            refresh.addEventListener('click', function() { window.refreshTopSites(); });
+        }
+    });
 })();

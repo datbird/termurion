@@ -12,10 +12,18 @@ use crate::browser_db::Db;
 use crate::webhost::{scheme_of, Answer};
 use serde_json::{json, Map, Value};
 
-/// The policy every local page response carries (B3b): no remote script, frame, fetch or form.
-/// The pages' own inline script and style stay (`'unsafe-inline'`); images may come from the web
-/// (favicons) and `data:`.
-pub const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: http: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
+/// The policy every local page response carries (B3b, tightened by the Task 7 review ruling): no
+/// remote script, frame, fetch or form. Script runs only with this response's nonce (no
+/// `'unsafe-inline'`, no `'unsafe-eval'`), so a missed escape in a page cannot run script with the
+/// bridge; inline STYLE stays; images may come from the web (favicons) and `data:`.
+pub fn csp(nonce: &str) -> String {
+    format!("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data: http: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
+}
+
+/// A fresh nonce for one response: 128 random bits, hex.
+fn new_nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
 
 /// Makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call it) post
 /// `{handler, body}` to the host, on `iterm2-about:` pages only. It holds no secret: the host
@@ -59,9 +67,9 @@ pub fn page_name(url: &str) -> Option<&str> {
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
 /// does (`iTermBrowserTemplateLoader`). Served from the binary, never from disk.
-pub fn document(name: &str) -> Option<(String, &'static str)> {
+pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
     const HTML: &str = "text/html; charset=utf-8";
-    let page = |html: &str, slot: &str, script: &str| html.replace("{{COMMON_CSS}}", COMMON_CSS).replace(slot, script);
+    let page = |html: &str, slot: &str, script: &str| html.replace("{{NONCE}}", nonce).replace("{{COMMON_CSS}}", COMMON_CSS).replace(slot, script);
     Some(match name {
         "welcome" => {
             // iTerm2 puts a per-run secret into this script; here the host decides by the source.
@@ -75,9 +83,9 @@ pub fn document(name: &str) -> Option<(String, &'static str)> {
     })
 }
 
-fn response_headers() -> Vec<(String, String)> {
+fn response_headers(nonce: &str) -> Vec<(String, String)> {
     vec![
-        ("Content-Security-Policy".to_string(), CSP.to_string()),
+        ("Content-Security-Policy".to_string(), csp(nonce)),
         ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
         ("Cache-Control".to_string(), "no-store".to_string()),
     ]
@@ -89,10 +97,11 @@ fn response_headers() -> Vec<(String, String)> {
 /// `frame-ancestors 'none'` refuses a frame) or a request made by a local page is answered.
 pub fn answer(url: &str, context: i32, top_url: &str) -> Answer {
     let local_top = scheme_of(top_url) == "iterm2-about";
-    let served = page_name(url).filter(|_| context == CONTEXT_DOCUMENT || local_top).and_then(document);
+    let nonce = new_nonce();
+    let served = page_name(url).filter(|_| context == CONTEXT_DOCUMENT || local_top).and_then(|n| document(n, &nonce));
     match served {
-        Some((body, mime)) => Answer::Respond { status: 200, mime: mime.to_string(), body: body.into_bytes(), headers: response_headers() },
-        None => Answer::Respond { status: 404, mime: "text/plain; charset=utf-8".to_string(), body: b"Not found".to_vec(), headers: response_headers() },
+        Some((body, mime)) => Answer::Respond { status: 200, mime: mime.to_string(), body: body.into_bytes(), headers: response_headers(&nonce) },
+        None => Answer::Respond { status: 404, mime: "text/plain; charset=utf-8".to_string(), body: b"Not found".to_vec(), headers: response_headers(&nonce) },
     }
 }
 
@@ -326,26 +335,27 @@ mod tests {
             assert_eq!(page_name(bad), None, "{bad:?}");
         }
         for name in ["welcome", "history", "bookmarks"] {
-            let (html, mime) = document(name).unwrap();
+            let (html, mime) = document(name, "n0nce").unwrap();
             assert_eq!(mime, "text/html; charset=utf-8");
             assert!(!html.contains("{{"), "{name}: every slot is filled");
-            assert!(html.contains("<script>") && html.contains("</html>"));
+            assert!(html.contains("<script nonce=\"n0nce\">") && html.contains("</html>"));
         }
-        assert_eq!(document("iterm-browser-common.css").unwrap().1, "text/css; charset=utf-8");
-        assert!(document("settings").is_none() && document("../x").is_none());
-        let welcome = document("welcome").unwrap().0;
+        assert_eq!(document("iterm-browser-common.css", "n").unwrap().1, "text/css; charset=utf-8");
+        assert!(document("settings", "n").is_none() && document("../x", "n").is_none());
+        let welcome = document("welcome", "n").unwrap().0;
         assert!(welcome.contains("Welcome to Tandem Browser") && !welcome.contains("iTerm2 Browser"));
         assert!(!welcome.contains("sessionSecret = '{{") && welcome.contains("const sessionSecret = '';"), "no secret is served");
     }
 
     #[test]
     fn local_page_headers_carry_csp() {
-        let want = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: http: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'";
-        assert_eq!(CSP, want);
+        let want_for = |n: &str| format!("default-src 'none'; script-src 'nonce-{n}'; style-src 'unsafe-inline'; img-src data: http: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'");
+        assert_eq!(csp("abc"), want_for("abc"));
         for url in ["iterm2-about:history", "iterm2-about:welcome", "iterm2-about:bookmarks", "iterm2-about:nope", "iterm2-about:../x"] {
             let Answer::Respond { status, mime, headers, body } = answer(url, CONTEXT_DOCUMENT, "") else { panic!("{url}: a response") };
             let h = |n: &str| headers.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str());
-            assert_eq!(h("Content-Security-Policy"), Some(want), "{url}");
+            let got = h("Content-Security-Policy").unwrap_or_default();
+            assert_eq!(got, want_for(got.split("'nonce-").nth(1).and_then(|r| r.split('\'').next()).unwrap_or("")), "{url}");
             assert_eq!(h("X-Content-Type-Options"), Some("nosniff"));
             assert_eq!(h("Cache-Control"), Some("no-store"));
             assert_eq!(status == 200, url != "iterm2-about:nope" && url != "iterm2-about:../x", "{url}");
@@ -354,6 +364,36 @@ mod tests {
                 assert!(mime.starts_with("text/plain") && !body.is_empty());
             }
         }
+    }
+
+    /// Review ruling (Task 7 round 1, item 1): a per-response nonce, no `'unsafe-inline'` for
+    /// script, and no inline handler attribute in any page, so a missed escape cannot run script.
+    #[test]
+    fn local_pages_use_a_nonce_and_no_inline_handlers() {
+        let nonce_of = |csp: &str| -> String {
+            let script = csp.split(';').map(str::trim).find(|d| d.starts_with("script-src")).expect("a script-src").to_string();
+            assert!(!script.contains("unsafe-inline") && !script.contains("unsafe-eval") && !script.contains('*'), "{script}");
+            script.split("'nonce-").nth(1).expect("a nonce source").split('\'').next().unwrap().to_string()
+        };
+        let handler = regex::Regex::new(r#"(?i)\bon[a-z]+\s*=\s*["']"#).unwrap();
+        let mut seen = Vec::new();
+        for url in ["iterm2-about:history", "iterm2-about:welcome", "iterm2-about:bookmarks", "iterm2-about:history"] {
+            let Answer::Respond { headers, body, .. } = answer(url, CONTEXT_DOCUMENT, "") else { panic!("{url}") };
+            let csp = headers.iter().find(|(k, _)| k == "Content-Security-Policy").map(|(_, v)| v.clone()).unwrap();
+            let nonce = nonce_of(&csp);
+            assert!(nonce.len() >= 16 && nonce.bytes().all(|b| b.is_ascii_alphanumeric()), "{nonce}");
+            let html = String::from_utf8(body).unwrap();
+            assert!(html.contains(&format!("<script nonce=\"{nonce}\">")), "{url}: the page's script carries this response's nonce");
+            assert_eq!(html.matches("<script").count(), html.matches("<script nonce=").count(), "{url}: every script has the nonce");
+            assert!(!handler.is_match(&html), "{url}: no inline handler attribute: {:?}", handler.find(&html).map(|m| m.as_str()));
+            assert!(!html.contains("javascript:"), "{url}");
+            seen.push(nonce);
+        }
+        assert_ne!(seen[0], seen[3], "a new nonce for every response");
+        // The 404 is under the same policy and holds no script.
+        let Answer::Respond { headers, .. } = answer("iterm2-about:nope", CONTEXT_DOCUMENT, "") else { panic!() };
+        let csp404 = headers.iter().find(|(k, _)| k == "Content-Security-Policy").map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(nonce_of(&csp404).len(), 32);
     }
 
     #[test]
