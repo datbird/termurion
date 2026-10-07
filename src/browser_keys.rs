@@ -181,10 +181,13 @@ impl Owner {
     }
 }
 
-/// The one order: a bar's button, then the address accelerators, then what the key maps say.
+/// The one order: a bar's button, then a binding the person made (it beats the default address
+/// accelerators, as a mapping beats a menu key in iTerm2, `IA:527-548`), then the address
+/// accelerators, then the rest of what the key maps say.
 pub fn key_owner(bar: Option<usize>, address: bool, mapped: Owner) -> Owner {
     match bar {
         Some(i) => Owner::Bar(i),
+        None if mapped == Owner::Binding => Owner::Binding,
         None if address => Owner::Address,
         None => mapped,
     }
@@ -237,6 +240,8 @@ impl GateState {
             _ => None,
         });
         let mapped = match self.route(&chord) {
+            // Bypass is not actionable (`KBA:617-622`): its key goes on to the page.
+            Route::Binding(b) if b.action == 74 => Owner::Page,
             Route::Binding(b) if editing_blocks(&b, &chord.key, self.editing) => Owner::Page,
             Route::Binding(_) => Owner::Binding,
             Route::SelectWindow(_) | Route::SelectPane(_) | Route::SelectTab(_) => Owner::Number,
@@ -429,10 +434,22 @@ mod tests {
         assert_eq!(g.owner(0x5A, ALT), Owner::Page);
     }
 
+    /// Review I2 and m2 (`KBA:617-622`, `IA:527-548`): a Bypass binding is not actionable, so its key
+    /// goes on to the page; a person's own binding on an address key runs.
+    #[test]
+    fn a_bypass_binding_is_the_pages_and_a_persons_binding_beats_the_address_keys() {
+        let g = GateState { profile_map: table(&[("0x6a-0x40000", 74), ("0x6c-0x40000", 0)]), ..GateState::default() };
+        assert_eq!(g.owner(0x4A, CTRL), Owner::Page, "Bypass passes the key on");
+        assert_eq!(g.owner(0x4C, CTRL), Owner::Binding, "Ctrl+L is the person's binding here");
+        assert_eq!(g.owner(0x44, ALT), Owner::Address, "unbound address keys stay Tandem's");
+        assert_eq!(g.owner(0x75, 0), Owner::Address);
+    }
+
     #[test]
     fn the_owner_order_is_one_function() {
         assert_eq!(key_owner(Some(2), true, Owner::Binding), Owner::Bar(2));
-        assert_eq!(key_owner(None, true, Owner::Binding), Owner::Address);
+        assert_eq!(key_owner(None, true, Owner::Binding), Owner::Binding, "a person's own binding beats the default address keys");
+        assert_eq!(key_owner(None, true, Owner::Page), Owner::Address);
         assert_eq!(key_owner(None, false, Owner::Binding), Owner::Binding);
         assert!(Owner::Binding.taken() && Owner::Bar(0).taken() && Owner::Address.taken() && Owner::Number.taken() && Owner::Leader.taken());
         assert!(!Owner::Page.taken());
