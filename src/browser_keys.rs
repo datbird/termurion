@@ -299,6 +299,150 @@ pub fn plan(act: &KeyAct, own: &str, f: &Facts) -> Vec<Do> {
     }
 }
 
+// --- Broadcast between browser panes (Task 8) ---
+
+/// The handler of Tandem's broadcast script (`broadcast-input.js`, Client world).
+pub const BROADCAST_HANDLER: &str = "tandemBroadcastInput";
+
+/// The longest text one broadcast event carries (a page's own paste limit).
+pub const MAX_BROADCAST_TEXT: usize = 1_048_576;
+
+/// What iTerm2 sends between browser sessions: `insert(text:)` and `doCommandBySelector`
+/// (`BWV:1033-1047`); here an inserted text, or one of the editing keys.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BroadcastEvent {
+    Insert(String),
+    Key { key: String, code: String, key_code: i64, mods: u8 },
+}
+
+/// The editing keys that are broadcast, with their virtual key codes (Decision: iTerm2's selectors
+/// are these editing commands; shortcut chords are not broadcast).
+const BROADCAST_KEYS: &[(&str, i64)] = &[
+    ("Backspace", 8),
+    ("Tab", 9),
+    ("Enter", 13),
+    ("Escape", 27),
+    ("PageUp", 33),
+    ("PageDown", 34),
+    ("End", 35),
+    ("Home", 36),
+    ("ArrowLeft", 37),
+    ("ArrowUp", 38),
+    ("ArrowRight", 39),
+    ("ArrowDown", 40),
+    ("Delete", 46),
+];
+
+/// A message of the broadcast script as an event, or None for any other shape. The message comes
+/// from the isolated world only, and is still held to the set the script sends.
+pub fn broadcast_of(body: &serde_json::Value) -> Option<BroadcastEvent> {
+    match body.get("t")?.as_str()? {
+        "insert" => {
+            let text = body.get("text")?.as_str()?;
+            (!text.is_empty() && text.len() <= MAX_BROADCAST_TEXT).then(|| BroadcastEvent::Insert(text.to_string()))
+        }
+        "key" => {
+            let key = body.get("key")?.as_str()?;
+            let code = body.get("code")?.as_str()?;
+            let key_code = body.get("keyCode")?.as_i64()?;
+            let mods = body.get("mods")?.as_u64().filter(|m| *m <= 15)? as u8;
+            let known = BROADCAST_KEYS.iter().any(|(k, c)| *k == key && *c == key_code);
+            let code_ok = !code.is_empty() && code.len() <= 32 && code.chars().all(|c| c.is_ascii_alphanumeric());
+            (known && code_ok).then(|| BroadcastEvent::Key { key: key.to_string(), code: code.to_string(), key_code, mods })
+        }
+        _ => None,
+    }
+}
+
+/// DevTools' `modifiers` for Tandem's key bits (Alt 1, Ctrl 2, Meta 4, Shift 8).
+fn devtools_modifiers(mods: u8) -> u8 {
+    (if mods & ALT != 0 { 1 } else { 0 }) | (if mods & CTRL != 0 { 2 } else { 0 }) | (if mods & WIN != 0 { 4 } else { 0 }) | (if mods & SHIFT != 0 { 8 } else { 0 })
+}
+
+/// The DevTools calls that replay `e` in a target page, in order.
+pub fn replay_calls(e: &BroadcastEvent) -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+    match e {
+        BroadcastEvent::Insert(text) => vec![("Input.insertText", json!({ "text": text }))],
+        BroadcastEvent::Key { key, code, key_code, mods } => {
+            let event = |kind: &str| {
+                json!({ "type": kind, "key": key, "code": code, "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code, "modifiers": devtools_modifiers(*mods) })
+            };
+            vec![("Input.dispatchKeyEvent", event("rawKeyDown")), ("Input.dispatchKeyEvent", event("keyUp"))]
+        }
+    }
+}
+
+/// What the app knows of a pane that could receive a broadcast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub browser: bool,
+    /// The pane has a WebView2 view (a buried peer has none until it is shown).
+    pub live: bool,
+    pub shown: bool,
+    pub dev_null: bool,
+}
+
+/// The panes of the sender's broadcast domain that get its browser input: browser panes other than
+/// the sender (iTerm2 does not broadcast browser input to terminals yet, `PSB:400`), with a live,
+/// shown view, in the sender's privacy class (P18: private text never lands in a persistent profile).
+pub fn broadcast_peers(domain: &[crate::layout::PaneId], sender: crate::layout::PaneId, facts: impl Fn(crate::layout::PaneId) -> Option<Peer>) -> Vec<crate::layout::PaneId> {
+    let Some(from) = facts(sender) else { return Vec::new() };
+    domain
+        .iter()
+        .copied()
+        .filter(|p| *p != sender)
+        .filter(|p| facts(*p).is_some_and(|f| f.browser && f.live && f.shown && f.dev_null == from.dev_null))
+        .collect()
+}
+
+/// Whether a broadcast message of a pane is acted on: the pane is a broadcast source now and no
+/// replay is in flight to it (`receivingBroadcast`, `BM:882-899`).
+pub fn broadcast_accepts(sends: bool, receiving: u32) -> bool {
+    sends && receiving == 0
+}
+
+/// The count of replays in flight to a view goes up before the first call.
+pub fn receiving_raise(n: u32) -> u32 {
+    n.saturating_add(1)
+}
+
+/// And down when the last call answers.
+pub fn receiving_lower(n: u32) -> u32 {
+    n.saturating_sub(1)
+}
+
+/// How long a replay may be in flight before the count is not believed (a call that never answers
+/// must not silence the pane for good).
+pub const RECEIVING_STALE_SECS: u64 = 5;
+
+/// The receiving side's own check, run in Tandem's world before anything is replayed: true when the
+/// focused field holds a secret (a password, a one-time code, a card), when the focus is in a frame
+/// (this world cannot see inside it), or when anything fails. Only a plain `false` lets a replay go.
+pub fn guard_body() -> String {
+    let sel = serde_json::to_string(&crate::web_replay::sensitive_selector()).unwrap_or_default();
+    format!(
+        "try {{ const SEL = {sel}; let a = document.activeElement; \
+for (let i = 0; i < 32 && a; i++) {{ \
+if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') {{ return true; }} \
+if (a.matches && a.matches(SEL)) {{ return true; }} \
+if (a.shadowRoot && a.shadowRoot.activeElement) {{ a = a.shadowRoot.activeElement; }} else {{ break; }} }} \
+return false; }} catch (e) {{ return true; }}"
+    )
+}
+
+/// The broadcast script as a Client-world user script (main frame; typing in a frame is not broadcast).
+pub fn user_script(secret: &str) -> crate::browser_js::UserScript {
+    let selector = serde_json::to_string(&crate::web_replay::sensitive_selector()).unwrap_or_default();
+    crate::browser_js::UserScript {
+        id: "broadcast-input",
+        code: fill_template(resource("broadcast-input.js").unwrap_or_default(), &[("SECRET", secret), ("SELECTOR", &selector)]),
+        inject: crate::browser_js::Inject::DocumentStart,
+        main_frame_only: true,
+        world: crate::browser_js::World::Client,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +623,132 @@ mod tests {
         assert_eq!(own_char(&Chord { key: ChordKey::Left, cmd: false, alt: false, shift: false, ctrl: false }), None);
         assert_eq!(own_char(&Chord { key: ChordKey::Space, cmd: false, alt: false, shift: false, ctrl: false }), Some(" ".into()));
         assert_eq!(own_char(&Chord { key: ChordKey::Enter, cmd: false, alt: false, shift: false, ctrl: false }), Some("\r".into()));
+    }
+
+    #[test]
+    fn broadcast_follows_iterm2() {
+        use serde_json::json;
+        assert_eq!(broadcast_of(&json!({"t": "insert", "text": "ab"})), Some(BroadcastEvent::Insert("ab".into())));
+        assert_eq!(
+            broadcast_of(&json!({"t": "key", "key": "Backspace", "code": "Backspace", "keyCode": 8, "mods": 0})),
+            Some(BroadcastEvent::Key { key: "Backspace".into(), code: "Backspace".into(), key_code: 8, mods: 0 })
+        );
+        // Other shapes are nothing: an unknown kind, an empty or non-string text, a key outside the
+        // editing set, a code with odd characters, a key code or mods out of range.
+        for bad in [
+            json!({}),
+            json!({"t": "other"}),
+            json!({"t": "insert"}),
+            json!({"t": "insert", "text": ""}),
+            json!({"t": "insert", "text": 5}),
+            json!({"t": "key", "key": "a", "code": "KeyA", "keyCode": 65, "mods": 0}),
+            json!({"t": "key", "key": "Enter", "code": "Ent er", "keyCode": 13, "mods": 0}),
+            json!({"t": "key", "key": "Enter", "code": "Enter", "keyCode": 999, "mods": 0}),
+            json!({"t": "key", "key": "Enter", "code": "Enter", "keyCode": 13, "mods": 16}),
+            json!({"t": "key", "key": "Enter", "code": "Enter", "keyCode": 13}),
+        ] {
+            assert_eq!(broadcast_of(&bad), None, "{bad}");
+        }
+        assert_eq!(broadcast_of(&json!({"t": "insert", "text": "x".repeat(MAX_BROADCAST_TEXT + 1)})), None, "bounded");
+        // The replay: text through Input.insertText, a key as rawKeyDown then keyUp.
+        assert_eq!(replay_calls(&BroadcastEvent::Insert("ab".into())), vec![("Input.insertText", json!({"text": "ab"}))]);
+        let enter = BroadcastEvent::Key { key: "Enter".into(), code: "Enter".into(), key_code: 13, mods: 0 };
+        let calls = replay_calls(&enter);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "Input.dispatchKeyEvent");
+        assert_eq!(calls[0].1["type"], "rawKeyDown");
+        assert_eq!(calls[0].1["windowsVirtualKeyCode"], 13);
+        assert_eq!(calls[0].1["key"], "Enter");
+        assert_eq!(calls[0].1["code"], "Enter");
+        assert_eq!(calls[0].1["modifiers"], 0);
+        assert_eq!(calls[1].1["type"], "keyUp");
+        assert_eq!(calls[1].1["windowsVirtualKeyCode"], 13);
+        // Tandem's bits (Shift 1, Ctrl 2, Alt 4, Win 8) become DevTools' (Alt 1, Ctrl 2, Meta 4, Shift 8).
+        let all = BroadcastEvent::Key { key: "Tab".into(), code: "Tab".into(), key_code: 9, mods: SHIFT | CTRL | ALT | WIN };
+        assert_eq!(replay_calls(&all)[0].1["modifiers"], 15);
+        for (mods, want) in [(SHIFT, 8), (CTRL, 2), (ALT, 1), (WIN, 4), (SHIFT | ALT, 9), (0, 0)] {
+            let e = BroadcastEvent::Key { key: "Tab".into(), code: "Tab".into(), key_code: 9, mods };
+            assert_eq!(replay_calls(&e)[1].1["modifiers"], want, "{mods}");
+        }
+        assert_eq!(BROADCAST_HANDLER, "tandemBroadcastInput");
+    }
+
+    fn peer(browser: bool, dev_null: bool) -> Option<Peer> {
+        Some(Peer { browser, live: true, shown: true, dev_null })
+    }
+
+    #[test]
+    fn broadcast_reaches_other_browsers() {
+        use crate::broadcast::{Broadcast, Mode, TabView, View};
+        use std::collections::BTreeSet;
+        // Browser A (1), browser B (2), terminal C (3) in one tab, all in one domain (All Panes).
+        let v = View { tabs: vec![TabView { broadcasting: true, panes: vec![1, 2, 3] }], current_tab: 0, current: 1, exited: BTreeSet::new() };
+        let b = Broadcast { raw: Mode::AllPanes, ..Default::default() };
+        let kinds = |p: u64| match p {
+            1 | 2 => peer(true, false),
+            3 => peer(false, false),
+            _ => None,
+        };
+        let domain = b.targets(&v, 1);
+        assert!(domain.contains(&3), "the model counts the terminal; the browser filter removes it");
+        assert_eq!(broadcast_peers(&domain, 1, kinds), vec![2], "browsers other than the sender; not the terminal (PSB:400)");
+        // Only the domain's panes: a browser outside it gets nothing.
+        let outside = View { tabs: vec![TabView { broadcasting: true, panes: vec![1, 3] }, TabView { broadcasting: false, panes: vec![2] }], current_tab: 0, current: 1, exited: BTreeSet::new() };
+        assert_eq!(broadcast_peers(&b.targets(&outside, 1), 1, kinds), Vec::<u64>::new());
+        // Broadcast off: the sender alone, so nobody.
+        assert_eq!(broadcast_peers(&Broadcast::default().targets(&v, 1), 1, kinds), Vec::<u64>::new());
+        // P18: another privacy class, a view that is not live or not shown are skipped.
+        let privacy = |p: u64| match p {
+            1 => peer(true, false),
+            2 => peer(true, true),
+            4 => Some(Peer { browser: true, live: false, shown: true, dev_null: false }),
+            5 => Some(Peer { browser: true, live: true, shown: false, dev_null: false }),
+            6 => peer(true, false),
+            _ => None,
+        };
+        assert_eq!(broadcast_peers(&[1, 2, 4, 5, 6], 1, privacy), vec![6], "Dev Null never crosses to a persistent profile (nor back), buried and hidden views are skipped");
+        let dev = |p: u64| peer(true, p == 1 || p == 2);
+        assert_eq!(broadcast_peers(&[1, 2, 3], 1, dev), vec![2], "Dev Null panes broadcast among themselves");
+        // The sender takes a message only when it sends and no replay is in flight to it.
+        assert!(broadcast_accepts(true, 0));
+        assert!(!broadcast_accepts(true, 1), "a replay in flight: its own events are dropped, nothing ping-pongs");
+        assert!(!broadcast_accepts(false, 0), "not a broadcast source");
+        // The receiving count is a counter: raised before the first call, lowered when the last answers.
+        assert_eq!(receiving_raise(0), 1);
+        assert_eq!(receiving_raise(u32::MAX), u32::MAX);
+        assert_eq!(receiving_lower(2), 1);
+        assert_eq!(receiving_lower(0), 0);
+    }
+
+    #[test]
+    fn broadcast_script_follows_the_rules() {
+        let js = resource("broadcast-input.js").unwrap();
+        assert!(js.contains("Tandem's own script"));
+        assert!(js.contains("tandemBroadcastInput") && js.contains("{{SECRET}}") && js.contains("{{SELECTOR}}"));
+        // Every listener checks isTrusted first (P26), and a field that holds a secret sends nothing (P18).
+        let mut at = 0;
+        let mut listeners = 0;
+        while let Some(i) = js[at..].find("addEventListener(") {
+            let tail = &js[at + i..];
+            assert!(tail[..tail.len().min(160)].contains("if (!e.isTrusted)"), "a listener without the isTrusted check");
+            listeners += 1;
+            at += i + 1;
+        }
+        assert_eq!(listeners, 2, "beforeinput and keydown");
+        assert!(js.contains("matches(SENSITIVE)") && js.contains("composedPath"));
+        for t in ["insertText", "insertLineBreak", "insertFromPaste"] {
+            assert!(js.contains(t), "{t}");
+        }
+        for k in ["Backspace", "Delete", "Enter", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"] {
+            assert!(js.contains(k), "{k}");
+        }
+        let made = user_script("S1");
+        assert_eq!(made.world, crate::browser_js::World::Client);
+        assert!(made.main_frame_only && made.code.contains("S1") && !made.code.contains("{{"));
+        assert!(made.code.contains("input[type=password i]"), "the selector is filled in");
+        // The receiving side asks before it types: a focused sensitive field, or a frame, gets nothing.
+        let g = guard_body();
+        assert!(g.contains("activeElement") && g.contains("shadowRoot") && g.contains("IFRAME") && g.contains("catch (e) { return true; }"));
+        assert!(g.contains("input[type=password i]") && g.is_ascii());
     }
 }

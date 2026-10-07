@@ -16,6 +16,7 @@ use crate::webhost::{MAX_MESSAGE, scheme_of};
 /// Every file of `resources/browser/` (a later plan that copies a file adds a line).
 pub fn resource(name: &str) -> Option<&'static str> {
     Some(match name {
+        "broadcast-input.js" => include_str!("../resources/browser/broadcast-input.js"),
         "bookmarks-page.html" => include_str!("../resources/browser/bookmarks-page.html"),
         "bookmarks-page.js" => include_str!("../resources/browser/bookmarks-page.js"),
         "challenge-frame-detection.js" => include_str!("../resources/browser/challenge-frame-detection.js"),
@@ -334,6 +335,8 @@ pub enum AlwaysOn {
     Hover(crate::browser_tip::Hover),
     /// A trusted press the pointer gate took (Task 7).
     Pointer(crate::browser_pointer::Press),
+    /// What the person typed, to be typed into the other browser panes of the broadcast set (Task 8).
+    Broadcast(crate::browser_keys::BroadcastEvent),
 }
 
 /// What an always-on handler's message means. The console log comes from either world and needs no
@@ -358,6 +361,7 @@ pub fn always_on(r: &Routed, secret: &str, dom_secret: &str) -> Option<AlwaysOn>
         SELECTION_GESTURE_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Gesture(r.body.get("phase").and_then(Value::as_str) == Some("down"))),
         EDITING_HANDLER if secret_ok(&r.body, dom_secret) => Some(AlwaysOn::Editing(r.body.get("editable")?.as_bool()?)),
         crate::browser_tip::HOVER_HANDLER if secret_ok(&r.body, secret) => crate::browser_tip::hover_of(&r.body).map(AlwaysOn::Hover),
+        crate::browser_keys::BROADCAST_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none() => crate::browser_keys::broadcast_of(&r.body).map(AlwaysOn::Broadcast),
         crate::browser_pointer::GATE_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none() => crate::browser_pointer::press_of(&r.body).map(AlwaysOn::Pointer),
         _ => None,
     }
@@ -891,7 +895,7 @@ mod tests {
         let cloak = code("tandem-cloak");
         assert!(cloak.contains("delete window.chrome.webview") && cloak.contains("hcaptcha") && !cloak.contains("webkit"));
         // Every listener of a Tandem script checks isTrusted first (P26).
-        for name in ["selection-gesture.js", "tandem-cloak.js", "pointer-gate.js"] {
+        for name in ["selection-gesture.js", "tandem-cloak.js", "pointer-gate.js", "broadcast-input.js"] {
             let text = resource(name).unwrap();
             assert!(text.contains("Tandem's own script"), "{name} says it is Tandem's");
             let mut at = 0;

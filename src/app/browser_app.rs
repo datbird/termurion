@@ -66,6 +66,10 @@ pub(super) struct BrowserView {
     /// button that is down (button, clicks): its release runs the binding.
     pub(super) pointer_sig: Option<(Vec<String>, bool)>,
     pub(super) pointer_down: Option<(u8, u8)>,
+    /// Replays of broadcast input in flight to this view (iTerm2's `receivingBroadcast`, `BM:882-899`),
+    /// since when; the page's own events while it is above 0 are dropped natively, so nothing ping-pongs.
+    pub(super) receiving_broadcast: u32,
+    pub(super) receiving_since: Option<Instant>,
     /// The page's selection (iTerm2's `currentSelection`, `BWV:75-84`).
     pub(super) selection: Option<String>,
     /// When that selection may be copied (B10).
@@ -206,7 +210,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), gate: Default::default(), gate_sig: None, pointer_sig: None, pointer_down: None });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), gate: Default::default(), gate_sig: None, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None });
         true
     }
 

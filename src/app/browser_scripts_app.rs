@@ -159,6 +159,9 @@ impl App {
         if client_ok {
             let (keys, four, focus) = self.browser_pointer_table();
             scripts.push(crate::browser_pointer::user_script(secret, &keys, four, focus));
+            // Tandem's broadcast script (Task 8): always installed, so turning broadcast on works at
+            // once without a reload; `browser_always_on` drops its messages unless the pane sends.
+            scripts.push(crate::browser_keys::user_script(secret));
         }
         scripts
     }
@@ -196,6 +199,8 @@ impl App {
             bv.world = WorldState::default();
             bv.pointer_sig = None;
             bv.pointer_down = None;
+            bv.receiving_broadcast = 0;
+            bv.receiving_since = None;
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
         for done in dones {
@@ -763,6 +768,7 @@ impl App {
         let mut copy = None;
         let mut hover = None;
         let mut pointer = None;
+        let mut broadcast = None;
         match what {
             browser_js::AlwaysOn::Console { level, size } => {
                 // iTerm2 logs the text (`BM:1066-1087`); a page's words are never logged here (B6): a
@@ -777,6 +783,7 @@ impl App {
             browser_js::AlwaysOn::Editing(e) => bv.editing = e,
             browser_js::AlwaysOn::Hover(h) => hover = Some(h),
             browser_js::AlwaysOn::Pointer(p) => pointer = Some(p),
+            browser_js::AlwaysOn::Broadcast(e) => broadcast = Some(e),
             browser_js::AlwaysOn::Selection(text) => {
                 bv.selection = Some(browser_js::store_selection(&text));
                 copy = bv.selection_gate.accept(&text, Instant::now(), copy_on);
@@ -791,6 +798,12 @@ impl App {
         }
         if let Some(p) = pointer {
             self.browser_pointer(pane, p);
+        }
+        // Only a pane that is a broadcast source now, with no replay in flight to it, sends.
+        if let Some(e) = broadcast {
+            if self.browser_broadcast_accepts(pane) {
+                self.browser_broadcast(pane, e);
+            }
         }
     }
 

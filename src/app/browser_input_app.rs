@@ -582,6 +582,85 @@ impl App {
     pub(super) fn browser_copy_mode_commands(&mut self, _pane: PaneId, _keys: &str) {}
 }
 
+impl App {
+    // --- Broadcast between browser panes (Task 8) ---
+
+    /// What the broadcast model and the panes say of `pane`, for `broadcast_peers`.
+    fn browser_peer(&self, pane: PaneId) -> Option<browser_keys::Peer> {
+        let io = self.panes.get(&pane)?.browser_io()?;
+        let bv = self.browser_views.get(&pane)?;
+        Some(browser_keys::Peer { browser: true, live: bv.view.is_some(), shown: bv.replay.shown, dev_null: io.dev_null })
+    }
+
+    /// Whether `sender`'s broadcast message is acted on: the pane is a broadcast source now and no
+    /// replay is in flight to it. A replay that never answered does not count after a while.
+    pub(super) fn browser_broadcast_accepts(&self, sender: PaneId) -> bool {
+        let Some(bv) = self.browser_views.get(&sender) else { return false };
+        let stale = bv.receiving_since.is_none_or(|t| t.elapsed().as_secs() >= browser_keys::RECEIVING_STALE_SECS);
+        let receiving = if stale { 0 } else { bv.receiving_broadcast };
+        let view = self.broadcast_view_in(true);
+        browser_keys::broadcast_accepts(self.is_browser_pane(sender) && self.broadcast.sends(&view, sender), receiving)
+    }
+
+    /// The panes that get `sender`'s browser input: the other browser panes of its broadcast domain
+    /// (`PSB:398-407`), live, shown and of its privacy class.
+    pub(super) fn browser_broadcast_targets(&self, sender: PaneId) -> Vec<PaneId> {
+        let view = self.broadcast_view_in(true);
+        let domain = self.broadcast.targets(&view, sender);
+        browser_keys::broadcast_peers(&domain, sender, |p| self.browser_peer(p))
+    }
+
+    /// Types what the person typed in `sender` into the other browser panes of the broadcast set
+    /// (`BM:882-899`). The replay goes to each target page's focused element through DevTools, which
+    /// is trusted in the page, so the suppression is native (`receiving_broadcast`); the target's
+    /// view is never focused and OS focus stays where the person is typing.
+    pub(super) fn browser_broadcast(&mut self, sender: PaneId, e: browser_keys::BroadcastEvent) {
+        let calls = browser_keys::replay_calls(&e);
+        for target in self.browser_broadcast_targets(sender) {
+            self.browser_replay(target, calls.clone());
+        }
+    }
+
+    /// One event's replay on one target: the count goes up first, then the target asks whether its
+    /// focused field holds a secret (then nothing is typed there), then the calls run in order; the
+    /// count goes down when the last one answers, or when any step fails.
+    fn browser_replay(&mut self, target: PaneId, calls: Vec<(&'static str, serde_json::Value)>) {
+        let Some(bv) = self.browser_views.get_mut(&target) else { return };
+        let stale = bv.receiving_since.is_none_or(|t| t.elapsed().as_secs() >= browser_keys::RECEIVING_STALE_SECS);
+        if stale {
+            bv.receiving_broadcast = 0;
+        }
+        bv.receiving_broadcast = browser_keys::receiving_raise(bv.receiving_broadcast);
+        bv.receiving_since = Some(Instant::now());
+        self.browser_js_call(
+            target,
+            &browser_keys::guard_body(),
+            serde_json::Value::Null,
+            Box::new(move |a, p, r| {
+                if matches!(r, Ok(serde_json::Value::Bool(false))) {
+                    a.browser_replay_step(p, calls);
+                } else {
+                    a.browser_replay_done(p);
+                }
+            }),
+        );
+    }
+
+    fn browser_replay_step(&mut self, pane: PaneId, mut calls: Vec<(&'static str, serde_json::Value)>) {
+        if calls.is_empty() {
+            return self.browser_replay_done(pane);
+        }
+        let (method, params) = calls.remove(0);
+        self.browser_devtools(pane, method, params, Box::new(move |a, p, r| if r.is_ok() { a.browser_replay_step(p, calls) } else { a.browser_replay_done(p) }));
+    }
+
+    fn browser_replay_done(&mut self, pane: PaneId) {
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.receiving_broadcast = browser_keys::receiving_lower(bv.receiving_broadcast);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     fn prod() -> &'static str {
@@ -688,5 +767,26 @@ mod tests {
         assert!(key.find("Owner::Bar(i)").unwrap() < key.find("self.browser_page_key(").unwrap(), "the bar first");
         assert!(key.contains("Owner::Binding"), "a binding beats the address keys");
         assert!(key.contains("self.leader_on") && key.contains("!taken"), "a kept key disarms the Leader");
+    }
+
+    /// Broadcast (Task 8): a message is acted on only when the pane sends now, the replay never
+    /// focuses a view, only the person's own events (the script's) start it, and a target's focused
+    /// secret field gets nothing.
+    #[test]
+    fn broadcast_reaches_other_browsers_only_natively() {
+        let p = prod();
+        let b = &p[p.find("// --- Broadcast between browser panes").unwrap()..];
+        for banned in [".focus(", "focus_window", "set_visible", "set_focus", "Emulation.", "execute_script"] {
+            assert!(!b.contains(banned), "replaying never moves focus: {banned}");
+        }
+        assert!(b.contains("broadcast_view_in(true)") && b.contains("self.broadcast.sends(&view, sender)") && b.contains("self.broadcast.targets(&view, sender)"));
+        assert!(b.contains("browser_keys::guard_body()") && b.contains("Ok(serde_json::Value::Bool(false))"), "only a plain false lets a replay go");
+        assert!(b.contains("receiving_raise") && b.contains("receiving_lower"));
+        let scripts = include_str!("browser_scripts_app.rs");
+        let router = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];
+        assert!(router.contains("if self.browser_broadcast_accepts(pane)"), "the router drops a broadcast message unless the pane sends");
+        assert!(router.contains("if !open &&"), "and only the proven isolated world speaks");
+        let js = include_str!("../browser_js.rs");
+        assert!(js.contains("BROADCAST_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none()"), "the view's secret, main frame");
     }
 }
