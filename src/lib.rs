@@ -68,6 +68,7 @@ pub mod webhost_win;
 pub mod svg_icon;
 pub mod browser;
 pub mod browser_world;
+pub mod browser_js;
 pub mod browser_db;
 pub mod browser_pages;
 pub mod adblock;

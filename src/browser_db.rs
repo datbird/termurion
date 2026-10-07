@@ -202,6 +202,18 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Schemas later plans add (each plan's tables, verbatim from iTerm2's `Database/*.swift`), run in
+/// order after `SCHEMA` by `open` and `open_in_memory`.
+pub const EXTRA_SCHEMAS: &[&str] = &[];
+
+fn bring_up(conn: &Connection, extra: &[&str]) -> Result<(), String> {
+    conn.execute_batch(SCHEMA).map_err(err)?;
+    for schema in extra {
+        conn.execute_batch(schema).map_err(err)?;
+    }
+    Ok(())
+}
+
 pub struct Db {
     conn: Connection,
     caps: Caps,
@@ -258,15 +270,25 @@ impl Db {
         // An imported file's triggers and views cannot call SQL functions with side effects.
         conn.pragma_update(None, "trusted_schema", false).map_err(err)?;
         conn.busy_timeout(std::time::Duration::from_millis(1000)).map_err(err)?;
-        conn.execute_batch(SCHEMA).map_err(err)?;
+        bring_up(&conn, EXTRA_SCHEMAS)?;
         Ok(Db { conn, caps: CAPS })
     }
 
     /// Dev Null Mode's database: in memory, gone with the process (iTerm2's `file::memory:`).
     pub fn open_in_memory() -> Db {
+        Db::open_in_memory_with(EXTRA_SCHEMAS)
+    }
+
+    fn open_in_memory_with(extra: &[&str]) -> Db {
         let conn = Connection::open_in_memory().expect("an in-memory database");
-        conn.execute_batch(SCHEMA).expect("the schema");
+        bring_up(&conn, extra).expect("the schema");
         Db { conn, caps: CAPS }
+    }
+
+    /// The connection, for the queries a later plan writes as `impl Db` blocks in its own file.
+    #[allow(dead_code)]
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn with_caps(mut self, caps: Caps) -> Db {
@@ -493,6 +515,17 @@ fn history_row(r: &rusqlite::Row) -> rusqlite::Result<HistoryRow> {
 
 #[cfg(test)]
 mod tests {
+    /// 13x2 Task 1: a later plan's schema runs after the base one, and `conn` reaches it.
+    #[test]
+    fn extra_schemas_run() {
+        let db = Db::open_in_memory_with(&["create table if not exists T (a text);", "insert into T values ('x');"]);
+        let mut st = db.conn().prepare("select * from T").expect("the extra table exists");
+        let n: usize = st.query_map([], |r| r.get::<_, String>(0)).unwrap().count();
+        assert_eq!(n, 1);
+        assert!(EXTRA_SCHEMAS.is_empty() || Db::open_in_memory().conn().prepare("select 1").is_ok());
+        assert!(Db::open_in_memory().conn().prepare("select * from BrowserHistory").is_ok());
+    }
+
     use super::*;
 
     fn columns(db: &Db, table: &str) -> Vec<String> {

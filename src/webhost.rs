@@ -193,6 +193,16 @@ pub enum Event {
     /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
     /// `browser_world::Contexts` decides what a context is.
     DevTools { view: ViewId, session: Option<String>, name: String, json: String },
+    /// An iframe of the page appeared (the page world's view of it: WebView2's frame id, the
+    /// `name` attribute, bounded). Posted only for a view that asked (`WebView::watch_frames`).
+    FrameCreated { view: ViewId, frame: u64, name: String },
+    FrameGone { view: ViewId, frame: u64 },
+    /// A Page-world `postMessage` from an iframe; `source` is the posting document's URL.
+    FrameMessage { view: ViewId, frame: u64, json: String, source: String },
+    /// A main-frame navigation began (and the one verdict let it go): the single page-load-start
+    /// event. `kind` is `COREWEBVIEW2_NAVIGATION_KIND`; a consumer that wants iTerm2's
+    /// `didStartProvisionalNavigation` ignores `redirect == true`, which fires once per navigation.
+    Starting { view: ViewId, url: String, kind: i32, user: bool, redirect: bool, nav: u64 },
 }
 
 impl Event {
@@ -210,7 +220,11 @@ impl Event {
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
             | Event::ProcessFailed { view, .. }
-            | Event::DevTools { view, .. } => *view,
+            | Event::DevTools { view, .. }
+            | Event::FrameCreated { view, .. }
+            | Event::FrameGone { view, .. }
+            | Event::FrameMessage { view, .. }
+            | Event::Starting { view, .. } => *view,
         }
     }
 
@@ -223,7 +237,7 @@ impl Event {
         if let Event::DevTools { name, .. } = self {
             return name == BINDING_EVENT;
         }
-        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
+        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
     }
 
     /// The bytes an event holds that a page chose.
@@ -231,7 +245,9 @@ impl Event {
         match self {
             Event::Failed(_, s) | Event::Source(_, s) | Event::Title(_, s) => s.len(),
             Event::Favicon(_, b) => b.len(),
-            Event::Message { json, source, .. } => json.len() + source.len(),
+            Event::Message { json, source, .. } | Event::FrameMessage { json, source, .. } => json.len() + source.len(),
+            Event::FrameCreated { name, .. } => name.len(),
+            Event::Starting { url, .. } => url.len(),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
@@ -617,7 +633,7 @@ impl ViewGate {
     /// admitted. The Charge returned is released on drop.
     pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
         let weight = event.weight();
-        let message = matches!(event, Event::Message { .. }) || matches!(event, Event::DevTools { name, .. } if name == BINDING_EVENT);
+        let message = matches!(event, Event::Message { .. } | Event::FrameMessage { .. }) || matches!(event, Event::DevTools { name, .. } if name == BINDING_EVENT);
         let new_window = matches!(event, Event::NewWindow { .. });
         if event.droppable() {
             let over = self.events.load(Ordering::Acquire) >= MAX_QUEUED_EVENTS
@@ -1453,6 +1469,30 @@ mod tests {
         assert!(gate.admit(&ev("Runtime.bindingCalled", &"x".repeat(MAX_MESSAGE + MAX_URL + 1))).is_err());
         assert_eq!(devtools_json_cap(), MAX_MESSAGE + MAX_URL);
         drop(held);
+    }
+
+    /// 13x2 Task 1: the new events know their view; a frame message is capped like a message, a
+    /// navigation start is never dropped.
+    #[test]
+    fn frame_and_starting_events_follow_the_caps() {
+        let msg = |json: &str| Event::FrameMessage { view: 4, frame: 9, json: json.into(), source: "https://a/".into() };
+        assert_eq!(msg("{}").view(), 4);
+        assert!(msg("{}").droppable());
+        assert_eq!(msg("ab").weight(), 2 + "https://a/".len());
+        let starting = Event::Starting { view: 5, url: "https://a/".into(), kind: 2, user: true, redirect: false, nav: 7 };
+        assert_eq!(starting.view(), 5);
+        assert!(!starting.droppable());
+        assert_eq!(starting.weight(), 10);
+        assert_eq!(Event::FrameCreated { view: 6, frame: 1, name: "n".into() }.view(), 6);
+        assert_eq!(Event::FrameGone { view: 6, frame: 1 }.view(), 6);
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            held.push(gate.admit(&msg("{}")).expect("room"));
+        }
+        assert!(gate.admit(&msg("{}")).is_err(), "frame messages share the message cap");
+        assert!(gate.admit(&Event::Message { view: 4, json: "{}".into(), source: String::new() }).is_err());
+        held.push(gate.admit(&starting).expect("a start is always admitted"));
     }
 
     /// Review Focus 11: a focus loss into this window's own child is not a window focus loss.

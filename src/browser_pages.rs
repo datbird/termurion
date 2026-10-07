@@ -25,16 +25,13 @@ fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// Makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call it) post
-/// `{handler, body}` to the host, on `iterm2-about:` pages only. It holds no secret: the host
-/// decides by the message's source, not by anything in here.
-pub const SHIM_JS: &str = "(function () {
-  if (location.protocol !== 'iterm2-about:') { return; }
-  var handlers = new Proxy({}, { get: function (_t, name) {
-    return { postMessage: function (body) { window.chrome.webview.postMessage({ handler: String(name), body: body }); } };
-  } });
-  Object.defineProperty(window, 'webkit', { value: { messageHandlers: handlers }, configurable: false });
-})();";
+/// The script that makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call
+/// it) post to the host, on `iterm2-about:` pages only: `browser_js::local_page_script` through
+/// `browser_js::wrap`, the one bridge text every script uses. It holds no secret: the host decides by
+/// the message's source (`browser_js::local_page_ok`), not by anything in here.
+pub fn shim_js() -> String {
+    crate::browser_js::wrap(&crate::browser_js::local_page_script())
+}
 
 pub const MAX_MESSAGE: usize = 64 * 1024;
 pub const MAX_STRING: usize = 8192;
@@ -66,18 +63,19 @@ pub fn page_name(url: &str) -> Option<&str> {
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
-/// does (`iTermBrowserTemplateLoader`). Served from the binary, never from disk.
+/// does (`browser_js::fill_template`, the one path). Served from the binary, never from disk.
 pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
     const HTML: &str = "text/html; charset=utf-8";
-    let page = |html: &str, slot: &str, script: &str| html.replace("{{NONCE}}", nonce).replace("{{COMMON_CSS}}", COMMON_CSS).replace(slot, script);
+    use crate::browser_js::{fill_template, resource};
+    let page = |html: &str, slot: &str, script: &str| fill_template(html, &[("NONCE", nonce), (slot, script)]);
     Some(match name {
         "welcome" => {
             // iTerm2 puts a per-run secret into this script; here the host decides by the source.
-            let script = include_str!("../resources/browser/welcome-page.js").replace("{{SECRET}}", "");
-            (page(include_str!("../resources/browser/welcome-page.html"), "{{WELCOME_SCRIPT}}", &script), HTML)
+            let script = fill_template(resource("welcome-page.js")?, &[("SECRET", "")]);
+            (page(resource("welcome-page.html")?, "WELCOME_SCRIPT", &script), HTML)
         }
-        "history" => (page(include_str!("../resources/browser/history-page.html"), "{{HISTORY_SCRIPT}}", include_str!("../resources/browser/history-page.js")), HTML),
-        "bookmarks" => (page(include_str!("../resources/browser/bookmarks-page.html"), "{{BOOKMARKS_SCRIPT}}", include_str!("../resources/browser/bookmarks-page.js")), HTML),
+        "history" => (page(resource("history-page.html")?, "HISTORY_SCRIPT", resource("history-page.js")?), HTML),
+        "bookmarks" => (page(resource("bookmarks-page.html")?, "BOOKMARKS_SCRIPT", resource("bookmarks-page.js")?), HTML),
         "iterm-browser-common.css" => (COMMON_CSS.to_string(), "text/css; charset=utf-8"),
         _ => return None,
     })
@@ -587,8 +585,14 @@ mod tests {
 
     #[test]
     fn the_shim_does_nothing_off_a_local_page_and_holds_no_secret() {
-        assert!(SHIM_JS.contains("location.protocol") && SHIM_JS.contains("'iterm2-about:'") && SHIM_JS.contains("window.chrome.webview.postMessage"));
-        assert!(SHIM_JS.contains("messageHandlers") && SHIM_JS.contains("handler"));
-        assert!(!SHIM_JS.to_ascii_lowercase().contains("secret") && !SHIM_JS.contains("uuid"));
+        let shim = shim_js();
+        assert!(shim.contains("location.protocol === 'iterm2-about:'") && shim.contains("window.chrome.webview.postMessage"));
+        assert!(shim.contains("messageHandlers") && shim.contains("{h: name, b: body}"));
+        assert!(!shim.to_ascii_lowercase().contains("secret") && !shim.contains("uuid"));
+        // The page's own text only becomes `window.webkit` behind the protocol test.
+        assert!(shim.find("location.protocol").unwrap() < shim.find("Object.defineProperty(window, 'webkit'").unwrap());
+        // One path: the document is filled by the template loader, nonce and slots included.
+        let (html, _) = document("history", "N0NCE").unwrap();
+        assert!(html.contains("nonce=\"N0NCE\"") && !html.contains("{{"), "every slot is filled");
     }
 }

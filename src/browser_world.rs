@@ -235,6 +235,15 @@ impl Setup {
         Setup { queue: setup_calls(client_sources).into(), in_flight: None, state: ClientWorld::Setting, main: None, checks: Default::default(), check_in_flight: None }
     }
 
+    /// Ends the setup as Unavailable (a deadline passed): nothing more is sent.
+    pub fn fail(&mut self, why: &str) {
+        if self.state == ClientWorld::Setting {
+            self.state = ClientWorld::Unavailable(why.to_string());
+        }
+        self.queue.clear();
+        self.checks.clear();
+    }
+
     /// The next isolation check, once every call has answered; None while one is in flight, while
     /// calls remain, when done, or after a failure.
     pub fn next_check(&mut self) -> Option<Check> {
@@ -686,6 +695,11 @@ mod tests {
         ] {
             assert!(matches!(case(page, world), ClientWorld::Unavailable(_)), "{name}");
         }
+        // A deadline ends it, and nothing more is sent.
+        let mut d = Setup::new(&[]);
+        let _ = d.next_call();
+        d.fail("late");
+        assert!(matches!(d.state(), ClientWorld::Unavailable(_)) && d.next_call().is_none() && d.next_check().is_none());
         // The probe's own harness runs the calls without the checks.
         let mut u = Setup::unchecked(&[]);
         let mut n = 0;

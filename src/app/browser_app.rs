@@ -35,6 +35,28 @@ pub(super) struct BrowserView {
     pub(super) bar: BarState,
     /// Browser Instant Replay: this pane's frames and the state of the capture round trip.
     pub(super) replay: super::web_replay_app::Recorder,
+    /// The view's own secret (13x2): filled only into Client scripts and world-side expressions; new
+    /// for every view made (`browser_reset_world`).
+    pub(super) secret: String,
+    /// A second per-view value that the page is assumed to read (a DOM message from a copied script's
+    /// child frame): never the view secret, only "this came from Tandem's detector".
+    pub(super) dom_secret: String,
+    /// Calls waiting for an answer, by token (`browser_scripts_app::JsDone`).
+    pub(super) pending_js: HashMap<u64, super::browser_scripts_app::JsDone>,
+    /// The frame keys that have a Tandem world, main frame excluded (`Contexts::frames`).
+    pub(super) frames: Vec<u64>,
+    /// WebView2's own frames, for page-world messages only.
+    pub(super) page_frames: Vec<u64>,
+    /// Tokens of page-world `execute_script` calls whose answer is the result itself.
+    pub(super) eval_waiting: std::collections::HashSet<u64>,
+    pub(super) client_world: crate::browser_world::ClientWorld,
+    pub(super) contexts: crate::browser_world::Contexts,
+    /// The `identifier`s `Page.addScriptToEvaluateOnNewDocument` answered.
+    pub(super) world_scripts: Vec<String>,
+    /// The next token of a call Tandem makes on this view.
+    pub(super) next_token: u64,
+    /// The world's setup, checks, sessions (`browser_scripts_app::WorldState`).
+    pub(super) world: super::browser_scripts_app::WorldState,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -101,7 +123,7 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 /// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
 /// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
 /// (`browser_pages::route`). No host objects.
-pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
+pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<String>) -> ViewSetup {
     // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
     // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
     let mut filters = vec!["iterm2-about:*".to_string()];
@@ -116,7 +138,7 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
         in_private: dev_null,
         web_message: true,
         // The Instant Replay sensitive mark runs in every frame of every browser page (final review I1).
-        scripts: vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()],
+        scripts: page_scripts.into_iter().chain([crate::web_replay::sensitive_script()]).collect(),
         resource_filters: filters,
         favicon: true,
         ..Default::default()
@@ -164,7 +186,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default() });
         true
     }
 
@@ -234,9 +256,11 @@ impl App {
             // A fresh id per view made (final review Minor 5): an event of the view this one
             // replaces, still queued, names an id no pane owns and is dropped, never applied here.
             let id = self.next_view_id();
+            // A view made now starts with a new world: new secrets, no contexts, no pending call.
+            self.browser_reset_world(pane);
+            let (page_scripts, _) = self.browser_wrapped_scripts(pane);
             let Some(env) = self.web_env(browser::store_of(io.dev_null)) else { return };
-            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock), sink);
-            view.navigate_tandem(&url);
+            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock, page_scripts), sink);
             view.set_zoom(if io.zoom > 0.0 { io.zoom / 100.0 } else { 1.0 });
             if focus_now {
                 view.focus();
@@ -248,7 +272,10 @@ impl App {
                 bv.parent = hwnd;
                 bv.settled = false;
             }
+            // The page loads only when the world's setup and checks are over (B4).
+            self.browser_world_start(pane, Some(url));
         }
+        self.browser_world_tick(pane);
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         if let Some(v) = &bv.view {
             if bv.parent != hwnd {
@@ -328,6 +355,8 @@ impl App {
         let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+        self.browser_reset_world(pane);
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.replay.shown = false;
         bv.pending_url = url;
         bv.parent = 0;
@@ -338,6 +367,7 @@ impl App {
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
+        self.browser_reset_world(pane);
         if let Some(bv) = self.browser_views.remove(&pane) {
             let (had, id, parent) = (bv.view.is_some(), bv.id, bv.parent);
             drop(bv);
@@ -381,6 +411,8 @@ impl App {
     /// (the host already capped its size); nothing here runs a page's text.
     pub(super) fn browser_event(&mut self, pane: PaneId, e: &Event, event_loop: &ActiveEventLoop) {
         match e {
+            // The world's own about:blank navigation (the isolation check) is not the page.
+            Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}
             Event::Source(_, url) => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.url = url.clone();
@@ -428,6 +460,8 @@ impl App {
                 }
                 self.redraw();
             }
+            // The navigation of the world's isolation check: it answers the check and is nothing else.
+            Event::Navigated { ok, nav, .. } if self.browser_world_navigated(pane, *ok, *nav) => {}
             Event::Navigated { ok, .. } => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.failed = !*ok;
@@ -473,7 +507,10 @@ impl App {
             }
             Event::NewWindow { url, .. } => {
                 // Only a person's click (the host filters) and only a page's own kind of URL (P20).
-                if let Some(url) = browser::saved_url(url) {
+                if let Some(url) = match crate::browser_js::nav_gate_tab(url) {
+                    crate::browser_js::NavGate::Navigate(u) => browser::saved_url(&u),
+                    _ => None,
+                } {
                     let guid = self.panes.get(&pane).map(|p| p.profile.clone());
                     self.browser_url_override = Some(url);
                     let opened = self.in_pane_window(pane, |a| a.new_tab(guid.as_deref()));
@@ -506,9 +543,11 @@ impl App {
             // A local page's message and the request for a local page (Task 7): the one route judges
             // the source and the closed set; everything else a page posts is dropped there.
             Event::ScriptDone { token, json, .. } if matches!(*token, crate::web_replay::PROBE_TOKEN | crate::web_replay::CAPTURE_TOKEN) => self.web_replay_script_done(pane, *token, json),
-            Event::Message { json, source, .. } => self.local_page_message(pane, source, json),
             Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url),
-            _ => {}
+            // Everything a page's script says, the world's events and the calls' answers: the router.
+            _ => {
+                self.browser_script_event(pane, e);
+            }
         }
     }
 
@@ -527,6 +566,8 @@ impl App {
                 if let Some(v) = &bv.view {
                     v.reload();
                 }
+                // Its world is checked in a few seconds (whether the DevTools state survives is not known).
+                self.browser_world_expect(pane);
                 return;
             }
             webhost::PaneStep::Remake => {}
@@ -537,6 +578,8 @@ impl App {
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+        self.browser_reset_world(pane);
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.pending_url = url;
         bv.parent = 0;
         bv.replay.shown = false;
@@ -1471,8 +1514,8 @@ mod tests {
         assert_eq!(browser::window_cells(0, 5000), (1, 1250));
         assert_eq!(browser::store_of(true), webhost::Store::BrowserDevNull);
         // The views are made in the Dev Null store InPrivate, and never with a bridge or host objects.
-        assert!(browser_setup(true, false).in_private && !browser_setup(false, false).in_private);
-        let s = browser_setup(false, false);
+        assert!(browser_setup(true, false, vec![]).in_private && !browser_setup(false, false, vec![]).in_private);
+        let s = browser_setup(false, false, vec![]);
         assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
     }
 
@@ -1518,14 +1561,18 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(!prod.contains("navigate_to_string") && !prod.contains("HostObject"));
         for dev_null in [false, true] {
-            let s = browser_setup(dev_null, false);
+            // 13x2: the Page-world scripts of `browser_user_scripts` (today the wrapped local-page
+            // bridge, which does nothing off an `iterm2-about:` page) come first, then the Instant
+            // Replay sensitive mark (final review I1), which talks only to its own top frame
+            // (window.top.postMessage), never to the host. Client scripts never go here.
+            let page = vec![crate::browser_pages::shim_js()];
+            let s = browser_setup(dev_null, false, page.clone());
             assert!(s.web_message, "the local pages post messages; the host judges each by its source");
-            // The shim and the Instant Replay sensitive mark (final review I1), which talks only to
-            // its own top frame (window.top.postMessage), never to the host.
-            assert_eq!(s.scripts, vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()], "the shim and the sensitive mark are the only injected scripts");
+            assert_eq!(s.scripts, vec![page[0].clone(), crate::web_replay::sensitive_script()], "the bridge and the sensitive mark are the only injected scripts");
+            assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__tandemClient"), "a Page script never holds the Client binding");
             assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
             assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
-            let on = browser_setup(dev_null, true);
+            let on = browser_setup(dev_null, true, vec![]);
             assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
         }
     }

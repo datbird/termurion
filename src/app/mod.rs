@@ -158,6 +158,7 @@ mod tool_web_ui;
 mod browser_app;
 mod adblock_app;
 mod browser_db_app;
+mod browser_scripts_app;
 mod web_popover_app;
 mod web_replay_app;
 mod toolbelt_tools_ui;

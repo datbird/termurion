@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
@@ -500,6 +500,11 @@ struct Inner {
     visible: Option<bool>,
     /// One DevTools event receiver per event name (`devtools_subscribe`), with its handler's token.
     devtools: HashMap<String, (ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+    /// The page world's iframes while `watch_frames` is on (at most `MAX_FRAMES`), by WebView2's
+    /// frame id; the COM pointer lives only here and goes on `Destroyed`.
+    frames: HashMap<u64, ICoreWebView2Frame2>,
+    /// The view's `FrameCreated` registration, removed in `shut`.
+    frame_watch: Option<(ICoreWebView2_4, i64)>,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
@@ -509,6 +514,8 @@ pub struct WebView {
 
 const MAX_NAV_URIS: usize = 64;
 const MAX_PENDING_REQUESTS: usize = 256;
+/// Page-world frames tracked at once (a page that makes frames without end cannot grow the table).
+const MAX_FRAMES: usize = 512;
 
 fn local_judge(p: &Path) -> bool {
     crate::localfs::LocalPath::judge(p).is_some()
@@ -538,6 +545,8 @@ impl WebView {
             last_bounds: None,
             visible: None,
             devtools: HashMap::new(),
+            frames: HashMap::new(),
+            frame_watch: None,
         }));
         let weak = Rc::downgrade(&inner);
         // Every view is known to the process teardown (`close_all`), whatever owns it.
@@ -758,6 +767,61 @@ impl WebView {
         });
     }
 
+    /// Tracks the page world's iframes: `Event::FrameCreated` and `FrameGone` for every frame (nested
+    /// ones too), `Event::FrameMessage` for what each posts, and `execute_script_in_frame` for each.
+    /// Asked for only by a consumer of the page-world frames (nothing in Task 1 needs it, P24); twice
+    /// is safe. A runtime without `ICoreWebView2_4` leaves the view with no frame events.
+    pub fn watch_frames(&self) {
+        if self.inner.borrow().frame_watch.is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(&self.inner);
+        self.with(move |c| {
+            let Some(inner) = weak.upgrade() else { return };
+            if inner.borrow().frame_watch.is_some() {
+                return;
+            }
+            let Ok(v4) = c.view.cast::<ICoreWebView2_4>() else { return };
+            let weak2 = Rc::downgrade(&inner);
+            let created = FrameCreatedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+                let (Some(inner), Some(args)) = (weak2.upgrade(), args) else { return Ok(()) };
+                if let Ok(f) = unsafe { args.Frame() } {
+                    track_frame(&inner, f);
+                }
+                Ok(())
+            })));
+            let mut token = 0i64;
+            if unsafe { v4.add_FrameCreated(&created, &mut token) }.is_ok() {
+                inner.borrow_mut().frame_watch = Some((v4, token));
+            }
+        });
+    }
+
+    /// Runs `js` in the PAGE world of one frame (`ICoreWebView2Frame2::ExecuteScript`);
+    /// `Event::ScriptDone { token, .. }` answers. Never the Tandem world.
+    pub fn execute_script_in_frame(&self, frame: u64, js: &str, token: u64) {
+        let w = wide(js);
+        let (poster, id, weak) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id, Rc::downgrade(&self.inner))
+        };
+        self.with(move |_c| {
+            let f2 = weak.upgrade().and_then(|i| i.borrow().frames.get(&frame).cloned());
+            let Some(f2) = f2 else {
+                return poster.post(Event::ScriptDone { view: id, token, json: Err("no such frame".into()) });
+            };
+            let p = poster.clone();
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |hr, json| guard(|| {
+                let json = hr.map(|_| json).map_err(|e| e.to_string());
+                p.post(Event::ScriptDone { view: id, token, json });
+                Ok(())
+            })));
+            if let Err(e) = unsafe { f2.ExecuteScript(PCWSTR(w.as_ptr()), &handler) } {
+                poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
+            }
+        });
+    }
+
     /// Posts a JSON message to the page's `window.chrome.webview` listeners.
     pub fn post_json(&self, json: &str) {
         let w = wide(json);
@@ -894,7 +958,12 @@ thread_local! {
 fn shut(inner: &Rc<RefCell<Inner>>) {
     let Ok(mut i) = inner.try_borrow_mut() else { return };
     let (pending, core, receivers) = (std::mem::take(&mut i.pending), i.core.take(), std::mem::take(&mut i.devtools));
+    let (frames, watch) = (std::mem::take(&mut i.frames), i.frame_watch.take());
     drop(i);
+    drop(frames);
+    if let Some((v4, token)) = watch {
+        let _ = unsafe { v4.remove_FrameCreated(token) };
+    }
     for (_, (receiver, token)) in receivers {
         let _ = unsafe { receiver.remove_DevToolsProtocolEventReceived(token) };
     }
@@ -1023,6 +1092,12 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
             return Ok(());
         }
         let i = inner.borrow();
+        // The single page-load-start event (ruling Q2): the kind needs a newer runtime (-1 without).
+        let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
+        if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
+            let _ = unsafe { a3.NavigationKind(&mut kind) };
+        }
+        i.poster.post(Event::Starting { view: i.id, url: webhost::cap_url(&uri).0, kind: kind.0, user, redirect, nav });
         i.poster.post(Event::Loading(i.id, true));
         Ok(())
     })));
@@ -1088,19 +1163,82 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
     Ok(())
 }
 
+/// The one reader of a posted web message (a view's or a frame's): size-capped before it is
+/// queued, its source reported (the posting document's URL, capped).
+fn message_post(inner: &Rc<RefCell<Inner>>, frame: Option<u64>, args: &ICoreWebView2WebMessageReceivedEventArgs) {
+    let Some(json) = pwstr_out(|p| unsafe { args.WebMessageAsJson(p) }) else { return };
+    if json.len() > webhost::MAX_MESSAGE {
+        inner.borrow().poster.gate.note_dropped();
+        return;
+    }
+    let source = pwstr_out(|p| unsafe { args.Source(p) }).map(|s| webhost::cap_url(&s).0).unwrap_or_default();
+    let i = inner.borrow();
+    match frame {
+        None => i.poster.post(Event::Message { view: i.id, json, source }),
+        Some(frame) => i.poster.post(Event::FrameMessage { view: i.id, frame, json, source }),
+    }
+}
+
+/// Starts tracking `frame` (and, through `ICoreWebView2Frame7`, its children): its id, its messages and
+/// its end. Bounded by `MAX_FRAMES`; the pointer is kept only until `Destroyed`.
+fn track_frame(inner: &Rc<RefCell<Inner>>, frame: ICoreWebView2Frame) {
+    let mut id = 0u32;
+    let Ok(f5) = frame.cast::<ICoreWebView2Frame5>() else { return };
+    if unsafe { f5.FrameId(&mut id) }.is_err() {
+        return;
+    }
+    let id = u64::from(id);
+    if inner.borrow().frames.len() >= MAX_FRAMES && !inner.borrow().frames.contains_key(&id) {
+        return;
+    }
+    let name = pwstr_out(|p| unsafe { frame.Name(p) }).unwrap_or_default();
+    let name: String = crate::inert_files::display_text(&name, 256, false);
+    let mut token = 0i64;
+    if let Ok(f2) = frame.cast::<ICoreWebView2Frame2>() {
+        let weak = Rc::downgrade(inner);
+        let message = FrameWebMessageReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+            let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+            message_post(&inner, Some(id), &args);
+            Ok(())
+        })));
+        let _ = unsafe { f2.add_WebMessageReceived(&message, &mut token) };
+        inner.borrow_mut().frames.insert(id, f2);
+    }
+    let weak = Rc::downgrade(inner);
+    let gone = FrameDestroyedEventHandler::create(Box::new(move |_sender, _| guard(|| {
+        let Some(inner) = weak.upgrade() else { return Ok(()) };
+        let existed = inner.borrow_mut().frames.remove(&id).is_some();
+        if existed {
+            let i = inner.borrow();
+            i.poster.post(Event::FrameGone { view: i.id, frame: id });
+        }
+        Ok(())
+    })));
+    let _ = unsafe { frame.add_Destroyed(&gone, &mut token) };
+    // Nested frames: a frame's own children are announced on the frame (`ICoreWebView2Frame7`).
+    if let Ok(f7) = frame.cast::<ICoreWebView2Frame7>() {
+        let weak = Rc::downgrade(inner);
+        let child = FrameChildFrameCreatedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+            let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+            if let Ok(f) = unsafe { args.Frame() } {
+                track_frame(&inner, f);
+            }
+            Ok(())
+        })));
+        let _ = unsafe { f7.add_FrameCreated(&child, &mut token) };
+    }
+    let i = inner.borrow();
+    i.poster.post(Event::FrameCreated { view: i.id, frame: id, name });
+}
+
 fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
-    // ONE WebMessageReceived handler. A page's message is untrusted: size-capped here, its source
+    // The view's WebMessageReceived handler (the frames' is `watch_frames`'; both read a message only
+    // through `message_post`). A page's message is untrusted: size-capped there, its source
     // reported, its shape judged by the consumer (`webhost::invoke_request`, `logger_message`).
     let weak = Rc::downgrade(inner);
     let message = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
-        let Some(json) = pwstr_out(|p| unsafe { args.WebMessageAsJson(p) }) else { return Ok(()) };
-        if json.len() > webhost::MAX_MESSAGE {
-            return Ok(());
-        }
-        let source = pwstr_out(|p| unsafe { args.Source(p) }).map(|s| webhost::cap_url(&s).0).unwrap_or_default();
-        let i = inner.borrow();
-        i.poster.post(Event::Message { view: i.id, json, source });
+        message_post(&inner, None, &args);
         Ok(())
     })));
     unsafe { view.add_WebMessageReceived(&message, token) }?;
@@ -1403,9 +1541,12 @@ mod tests {
         for banned in ["DownloadStarting", "SetCancel(true)).and", "IsDefaultDownloadDialog", "DownloadOperation"] {
             assert!(!code.contains(banned), "{banned}");
         }
-        // The one NavigationStarting and one WebMessageReceived handler.
+        // The one NavigationStarting handler, and two message constructors (the view's and the frames',
+        // 13x2 B8a) that both read a message only through `message_post`.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
-        assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 1);
+        assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 2);
+        assert_eq!(code.matches("args.WebMessageAsJson(").count(), 1, "one reader: message_post");
+        assert_eq!(code.matches("message_post(&inner").count(), 2);
     }
 
     /// Final review Minor 3: no `NavigateToString` and no "the next data: navigation is Tandem's"
@@ -1806,19 +1947,16 @@ mod probe {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// The probe's minimal stand-in for Task 1's `wrap`: the binding is captured into a closure
-    /// before anything else runs, and `window.webkit.messageHandlers.<h>.postMessage(b)` becomes
-    /// `__tandemClient(JSON.stringify({h, b}))`; both exist only in the isolated world.
+    /// A Client script as Task 1's `wrap` injects it: the binding captured in a closure before the
+    /// body, `window.webkit.messageHandlers.<h>.postMessage(b)` posting `{h, b}` through it.
+    fn wrapped(code: &str) -> String {
+        crate::browser_js::wrap(&crate::browser_js::UserScript { id: "probe", code: code.to_string(), inject: crate::browser_js::Inject::DocumentStart, main_frame_only: false, world: crate::browser_js::World::Client })
+    }
+
     fn client_sources(secret: &str, load_echo: bool) -> Vec<String> {
-        let wrap = |s: &str| {
-            format!(
-                "(function() {{ const __post = globalThis.{}; if (typeof __post !== 'function') {{ return; }} if (!window.webkit) {{ Object.defineProperty(window, 'webkit', {{ value: {{ messageHandlers: new Proxy({{}}, {{ get: (_, h) => ({{ postMessage: (b) => __post(JSON.stringify({{h: String(h), b}})) }}) }}) }} }}); }}\n{s}\n}})();",
-                browser_world::BINDING
-            )
-        };
-        let mut v = vec![wrap(&HOVER.replace("{{SECRET}}", secret)), wrap(GRAPH)];
+        let mut v = vec![wrapped(&HOVER.replace("{{SECRET}}", secret)), wrapped(GRAPH)];
         if load_echo {
-            v.push(wrap("window.webkit.messageHandlers.probeEcho.postMessage({where: location.href});"));
+            v.push(wrapped("window.webkit.messageHandlers.probeEcho.postMessage({where: location.href});"));
         }
         v
     }
@@ -1871,6 +2009,8 @@ mod probe {
         navigated: Vec<(String, bool)>,
         failed: Vec<String>,
         created: bool,
+        /// WebView2's own frame ids (`watch_frames`).
+        frames: Vec<u64>,
     }
 
     impl Probe {
@@ -1924,6 +2064,7 @@ mod probe {
                 navigated: Vec::new(),
                 failed: Vec::new(),
                 created: false,
+                frames: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -2047,6 +2188,8 @@ mod probe {
                     self.view().answer_request(token, answer);
                 }
                 Event::Message { json, source, .. } => self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json }),
+                Event::FrameCreated { frame, .. } => self.frames.push(frame),
+                Event::FrameMessage { frame, json, source, .. } => self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json }),
                 Event::ScriptDone { token, json, .. } => {
                     if self.setup_token == Some(token) {
                         self.setup_token = None;
@@ -2340,6 +2483,51 @@ mod probe {
         p.settle(500);
         let stack = p.page_eval("String(window.__stackRead === true)").unwrap_or_default();
         println!("Runtime.enable detectable: {}", if stack.contains("true") { "yes" } else { "no" });
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// Review Focus 1 (I3, I8, M11): a copied script's `window.webkit` post reaches the router as the
+    /// Tandem world's, a page's own post as the page's, in every frame; a page that replaces
+    /// `window.chrome.webview.postMessage` sees nothing of the world's traffic; `window.webkit` is
+    /// undefined for an https page; a local page's form from a web source is not a local page's; a
+    /// call into the world answers. (An `iterm2-about:` page needs the registered scheme: the
+    /// desktop run of the app covers it.)
+    #[test]
+    #[ignore]
+    fn bridge_round_trip() {
+        let nested = "&lt;iframe srcdoc=&quot;&amp;lt;p&amp;gt;nested&amp;lt;/p&amp;gt;&quot;&gt;&lt;/iframe&gt;&lt;p&gt;mid&lt;/p&gt;";
+        let page_html = format!(
+            "<!doctype html><html><head><title>rt</title></head><body><script>\n\
+             window.chrome.webview.postMessage({{h: 'x', b: 1}});\n\
+             window.chrome.webview.postMessage({{handler: 'iterm2-about:history', body: {{action: 'clearAllHistory'}}}});\n\
+             window.chrome.webview.postMessage = function () {{ window.__saw = true; }};\n\
+             setTimeout(function () {{ const f = document.createElement('iframe'); f.srcdoc = '<p>late</p>'; document.body.appendChild(f); }}, 300);\n\
+             </script><iframe srcdoc=\"{nested}\"></iframe></body></html>"
+        );
+        let url = "https://a.tandem-probe.invalid/";
+        let sources = vec![wrapped("window.addEventListener('load', function () { window.webkit.messageHandlers.x.postMessage({a: 1}); });")];
+        let Some(mut p) = Probe::start(&[(url, page_html)], sources) else { return };
+        p.view().watch_frames();
+        p.load(url);
+        // The Tandem world's message, from every frame, as the world's; the page's, as the page's.
+        assert!(p.wait(15, |p| p.clients("x").len() >= 4), "the world posted from the page and its three frames: {:?}", p.clients("x"));
+        for (_, body) in p.clients("x") {
+            assert_eq!(body, json!({"a": 1}));
+        }
+        let mut keys: Vec<Option<u64>> = p.clients("x").into_iter().map(|(f, _)| f).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 4, "one per frame, each with its own key: {keys:?}");
+        let page: Vec<crate::browser_js::Routed> = p.routed.iter().filter(|r| r.via == Via::Page && r.frame.is_none()).filter_map(|r| crate::browser_js::route(&r.body, crate::browser_js::World::Page, r.frame, &r.from)).collect();
+        assert!(page.iter().any(|r| r.handler == "x" && r.world == crate::browser_js::World::Page && r.body == json!(1)), "{page:?}");
+        let local = page.iter().find(|r| r.handler == "iterm2-about:history").expect("the local-page form arrived");
+        assert!(!crate::browser_js::local_page_ok(local), "from a web source it is not a local page's");
+        assert_eq!(p.page_eval("String(window.__saw === true)"), Ok("\"false\"".into()), "the page's replacement saw none of the world's traffic");
+        assert_eq!(p.page_eval("typeof window.webkit"), Ok("\"undefined\"".into()));
+        assert!(p.wait(10, |p| p.frames.len() >= 3), "FrameCreated for each frame, the nested one and the late one included: {:?}", p.frames);
+        let expr = crate::browser_js::call_js("return a * 2;", &json!({"a": 21})).unwrap();
+        assert_eq!(p.eval(None, &expr), Ok(json!(42)));
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
