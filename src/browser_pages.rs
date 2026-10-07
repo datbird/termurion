@@ -20,7 +20,7 @@ pub fn csp(nonce: &str) -> String {
     format!("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data: http: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
 }
 
-/// A fresh nonce for one response: 128 random bits, hex.
+/// A fresh nonce for one response: a v4 UUID's 122 random bits, hex.
 fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -375,7 +375,14 @@ mod tests {
             assert!(!script.contains("unsafe-inline") && !script.contains("unsafe-eval") && !script.contains('*'), "{script}");
             script.split("'nonce-").nth(1).expect("a nonce source").split('\'').next().unwrap().to_string()
         };
-        let handler = regex::Regex::new(r#"(?i)\bon[a-z]+\s*=\s*["']"#).unwrap();
+        let handler = regex::Regex::new(r#"(?is)<[a-z][^<>]*?\son[a-z]+\s*="#).unwrap();
+        // The detector sees every way to write a handler attribute inside a tag, quoted or not.
+        for planted in ["<a onclick=\"x()\">", "<a onclick='x()'>", "<a onclick=x()>", "<img src=y onerror=x()>", "<a\nonmouseover = x>"] {
+            assert!(handler.is_match(planted), "{planted}");
+        }
+        for fine in ["window.onload = function () {}", "<a data-url=\"x\">", "<script nonce=\"a\">"] {
+            assert!(!handler.is_match(fine), "{fine}");
+        }
         let mut seen = Vec::new();
         for url in ["iterm2-about:history", "iterm2-about:welcome", "iterm2-about:bookmarks", "iterm2-about:history"] {
             let Answer::Respond { headers, body, .. } = answer(url, CONTEXT_DOCUMENT, "") else { panic!("{url}") };
