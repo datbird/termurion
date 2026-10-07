@@ -156,6 +156,11 @@ impl App {
         browser_js::always_on_scripts(secret, dom, client_ok, cfg!(debug_assertions))
     }
 
+    /// The one gate of every Client-world handler: the view's isolated world was proven (`Ready`).
+    pub(super) fn client_open(&self, pane: PaneId) -> bool {
+        self.browser_views.get(&pane).is_some_and(|b| browser_world::client_gate(&b.client_world))
+    }
+
     /// The per-view secret (filled only into Client scripts and world-side expressions).
     pub(super) fn browser_view_secret(&self, pane: PaneId) -> Option<&str> {
         self.browser_views.get(&pane).map(|b| b.secret.as_str()).filter(|s| !s.is_empty())
@@ -314,6 +319,7 @@ impl App {
         let ids = if matches!(bv.client_world, ClientWorld::Unavailable(_)) { std::mem::take(&mut bv.world_scripts) } else { Vec::new() };
         let unavailable = matches!(bv.client_world, ClientWorld::Unavailable(_));
         if unavailable {
+            bv.world.client_sources.clear();
             // The reason is a fixed text of ours, never a page's; one line.
             crate::rlog!("browser view {} has no isolated world", bv.id);
         }
@@ -486,8 +492,14 @@ impl App {
     /// `Target.attachedToTarget` (B11): an iframe within the cap gets the world; everything else is
     /// resumed at once and let go.
     fn browser_attached(&mut self, pane: PaneId, parent: Option<&str>, json: &str) {
+        let ready = self.client_open(pane);
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
-        match browser_world::attached(json, bv.world.live_sessions.len()) {
+        let what = match browser_world::attached(json, bv.world.live_sessions.len()) {
+            // A frame of a view whose world is not Ready gets no secret-bearing script: resumed and let go.
+            Attach::Frame { session } if !ready => Attach::Resume { session },
+            other => other,
+        };
+        match what {
             Attach::Frame { session } => {
                 bv.world.live_sessions.insert(session.clone());
                 let sources = bv.world.client_sources.clone();
@@ -727,8 +739,14 @@ impl App {
     /// The console log, the selection monitor, the gesture script and the editing detector. The
     /// decision (world, secret, shape) is `browser_js::always_on`; this applies it.
     fn browser_always_on(&mut self, pane: PaneId, r: &Routed) {
+        let open = self.client_open(pane);
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let Some(what) = browser_js::always_on(r, &bv.secret, &bv.dom_secret) else { return };
+        // The console line is a count only and carries no secret; every other handler is the isolated
+        // world's and acts only when that world was proven (`client_open`).
+        if !open && !matches!(what, browser_js::AlwaysOn::Console { .. }) {
+            return;
+        }
         match what {
             browser_js::AlwaysOn::Console { level, size } => {
                 // iTerm2 logs the text (`BM:1066-1087`); a page's words are never logged here (B6): a
@@ -861,6 +879,42 @@ mod tests {
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
         let nw = &app[app.find("Event::NewWindow { url, .. } =>").unwrap()..app.find("Event::ExternalUri").unwrap()];
         assert!(nw.contains("nav_gate_tab(url)"), "a page's window.open passes the tab gate");
+    }
+
+    /// Task 2 review I3 (a class): every Client-world handler asks the one gate (`client_open`) before
+    /// it acts, and a Client script is never given to an auto-attached frame of a view that is not
+    /// Ready. A function of the browser files that takes a routed message is listed here or is the
+    /// router (a new handler fails this test until it asks the gate).
+    #[test]
+    fn every_client_handler_asks_the_one_gate() {
+        let files = [("browser_scripts_app.rs", include_str!("browser_scripts_app.rs")), ("browser_frames_app.rs", include_str!("browser_frames_app.rs")), ("browser_db_app.rs", include_str!("browser_db_app.rs"))];
+        let known = ["browser_graph_message", "browser_always_on"];
+        let routers = ["browser_message", "local_page_message", "browser_page_message"];
+        for (file, src) in files {
+            let prod = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+            let mut at = 0;
+            while let Some(i) = prod[at..].find("fn ") {
+                let start = at + i;
+                at = start + 3;
+                let sig_end = prod[start..].find('{').map_or(prod.len(), |e| start + e);
+                let sig = &prod[start..sig_end];
+                if !sig.contains("Routed") {
+                    continue;
+                }
+                let name: String = sig[3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if routers.contains(&name.as_str()) {
+                    continue;
+                }
+                assert!(known.contains(&name.as_str()), "{file}: {name} takes a routed message but is not a listed Client handler");
+                let body_end = prod[sig_end..].find("\n    }\n").map_or(prod.len(), |e| sig_end + e);
+                assert!(prod[sig_end..body_end].contains("self.client_open("), "{name} acts without the one gate");
+            }
+        }
+        let p = prod();
+        let attached = &p[p.find("fn browser_attached").unwrap()..p.find("fn browser_session_pump").unwrap()];
+        assert!(attached.contains("self.client_open(pane)"), "an iframe of a view that is not Ready gets no secret-bearing script");
+        let finish = &p[p.find("fn browser_world_finish").unwrap()..p.find("pub(super) fn browser_world_navigated").unwrap()];
+        assert!(finish.contains("client_sources.clear()"), "an Unavailable view keeps no Client source for later frames");
     }
 
     /// Every drop and remake of a view makes its world new (B4): each function that takes a view

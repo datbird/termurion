@@ -224,6 +224,13 @@ pub enum ClientWorld {
     Unavailable(String),
 }
 
+/// The one gate for every Client-world handler (the frame graph, the selection monitor, the gesture
+/// script, the editing detector, each later plan's): nothing acts while the world is being set up or
+/// is Unavailable. Only a world whose isolation was proven is trusted with a message (fail closed).
+pub fn client_gate(world: &ClientWorld) -> bool {
+    *world == ClientWorld::Ready
+}
+
 /// The run-time check, one call at a time: the setup calls, then a world in every frame of the
 /// tree. Any failed answer makes the view's world `Unavailable`.
 #[derive(Debug)]
@@ -533,6 +540,14 @@ impl Contexts {
 
 #[cfg(test)]
 mod tests {
+    /// Task 2 review I3 (fail closed): a Client handler acts only on a Ready world.
+    #[test]
+    fn client_handlers_need_a_ready_world() {
+        assert!(client_gate(&ClientWorld::Ready));
+        assert!(!client_gate(&ClientWorld::Setting));
+        assert!(!client_gate(&ClientWorld::Unavailable("x".into())));
+    }
+
     use super::*;
     use serde_json::json;
 

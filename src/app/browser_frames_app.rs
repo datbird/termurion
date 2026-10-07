@@ -6,7 +6,6 @@
 use super::*;
 use crate::browser_frames::Act;
 use crate::browser_js::{Routed, World};
-use crate::browser_world::ClientWorld;
 
 impl App {
     /// One message of `graph-discovery.js`. Anything that is not the isolated world's returns before
@@ -15,8 +14,8 @@ impl App {
         if r.world != World::Client {
             return;
         }
+        let ready = self.client_open(pane);
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
-        let ready = bv.client_world == ClientWorld::Ready;
         let acts = bv.graph.handle(r, ready, &mut crate::browser_js::new_secret);
         self.graph_run(pane, acts);
     }
@@ -54,7 +53,7 @@ mod tests {
         let p = prod(src);
         let f = &p[p.find("pub(super) fn browser_graph_message").unwrap()..p.find("pub(super) fn graph_script_done").unwrap()];
         assert!(f.find("World::Client").unwrap() < f.find(".handle(").unwrap(), "the world is checked before the message is read");
-        assert!(f.contains("return;") && f.contains("ClientWorld::Ready"));
+        assert!(f.contains("return;") && f.contains("self.client_open(pane)"));
         // The one evaluation site runs the planned acts through the Tandem world, never the page's.
         assert_eq!(p.matches("browser_eval_in_frame(").count(), 1);
         assert!(!p.contains("execute_script") && !p.contains("browser_eval(pane"));
