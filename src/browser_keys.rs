@@ -421,22 +421,66 @@ pub const RECEIVING_STALE_SECS: u64 = 5;
 /// (this world cannot see inside it), or when anything fails. Only a plain `false` lets a replay go.
 pub fn guard_body() -> String {
     let sel = serde_json::to_string(&crate::web_replay::sensitive_selector()).unwrap_or_default();
-    format!(
-        "try {{ const SEL = {sel}; let a = document.activeElement; \
-for (let i = 0; i < 32 && a; i++) {{ \
-if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') {{ return true; }} \
-if (a.matches && a.matches(SEL)) {{ return true; }} \
-if (a.shadowRoot && a.shadowRoot.activeElement) {{ a = a.shadowRoot.activeElement; }} else {{ break; }} }} \
-return false; }} catch (e) {{ return true; }}"
-    )
+    format!("try {{ const SEL = {sel}; {FIELD_CHECK_JS} return tandemSecretField(tandemDeepest(), SEL); }} catch (e) {{ return true; }}")
 }
+
+/// What the secret check knows of one element (the Rust statement of `FIELD_CHECK_JS`, for tests).
+pub struct FieldFacts<'a> {
+    pub tag: &'a str,
+    pub input_type: &'a str,
+    pub autocomplete: &'a str,
+    /// The computed `-webkit-text-security`.
+    pub text_security: &'a str,
+    /// An INPUT, a TEXTAREA or content-editable.
+    pub editable: bool,
+}
+
+/// The rule `FIELD_CHECK_JS` states: a focus that is nothing (BODY, HTML) is not secret; a frame, a
+/// password input, a masked field, a secret autocomplete token, and anything that is not itself a known
+/// editable (the host of a closed shadow root, a button) is secret (fail closed).
+pub fn field_is_secret(f: &FieldFacts) -> bool {
+    if matches!(f.tag, "BODY" | "HTML") {
+        return false;
+    }
+    if matches!(f.tag, "IFRAME" | "FRAME") || f.input_type.eq_ignore_ascii_case("password") {
+        return true;
+    }
+    if !f.text_security.is_empty() && f.text_security != "none" {
+        return true;
+    }
+    let token = |t: &str| ["current-password", "new-password", "one-time-code"].contains(&t) || t.starts_with("cc-");
+    if f.autocomplete.split_ascii_whitespace().any(|t| token(&t.to_ascii_lowercase())) {
+        return true;
+    }
+    !f.editable
+}
+
+/// The check both sides run in Tandem's isolated world (a page cannot replace its builtins): the
+/// element focused through open shadow roots, judged by `tandemSecretField` (the selector the caller
+/// holds as `SEL`, a masked computed style, the autocomplete tokens, the field type, and fail closed
+/// for anything not itself an editable).
+pub const FIELD_CHECK_JS: &str = "function tandemDeepest() { let a = document.activeElement; \
+for (let i = 0; i < 32 && a; i++) { if (a.shadowRoot && a.shadowRoot.activeElement) { a = a.shadowRoot.activeElement; } else { break; } } return a; } \
+function tandemSecretField(a, SEL) { \
+if (!a || a.nodeType !== 1) { return true; } \
+const tag = a.tagName; \
+if (tag === 'BODY' || tag === 'HTML') { return false; } \
+if (tag === 'IFRAME' || tag === 'FRAME') { return true; } \
+if (a.matches(SEL)) { return true; } \
+const cs = getComputedStyle(a); \
+const ts = cs.webkitTextSecurity || cs.getPropertyValue('-webkit-text-security'); \
+if (ts && ts !== 'none') { return true; } \
+const ac = (a.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/); \
+for (const t of ac) { if (t === 'current-password' || t === 'new-password' || t === 'one-time-code' || t.indexOf('cc-') === 0) { return true; } } \
+if (tag === 'INPUT' && String(a.type).toLowerCase() === 'password') { return true; } \
+return !(tag === 'INPUT' || tag === 'TEXTAREA' || a.isContentEditable === true); }";
 
 /// The broadcast script as a Client-world user script (main frame; typing in a frame is not broadcast).
 pub fn user_script(secret: &str) -> crate::browser_js::UserScript {
     let selector = serde_json::to_string(&crate::web_replay::sensitive_selector()).unwrap_or_default();
     crate::browser_js::UserScript {
         id: "broadcast-input",
-        code: fill_template(resource("broadcast-input.js").unwrap_or_default(), &[("SECRET", secret), ("SELECTOR", &selector)]),
+        code: fill_template(resource("broadcast-input.js").unwrap_or_default(), &[("SECRET", secret), ("SELECTOR", &selector), ("FIELD_CHECK", FIELD_CHECK_JS)]),
         inject: crate::browser_js::Inject::DocumentStart,
         main_frame_only: true,
         world: crate::browser_js::World::Client,
@@ -735,7 +779,7 @@ mod tests {
             at += i + 1;
         }
         assert_eq!(listeners, 2, "beforeinput and keydown");
-        assert!(js.contains("matches(SENSITIVE)") && js.contains("composedPath"));
+        assert!(js.contains("tandemSecretField(t, SENSITIVE)") && js.contains("composedPath"));
         for t in ["insertText", "insertLineBreak", "insertFromPaste"] {
             assert!(js.contains(t), "{t}");
         }
@@ -750,5 +794,38 @@ mod tests {
         let g = guard_body();
         assert!(g.contains("activeElement") && g.contains("shadowRoot") && g.contains("IFRAME") && g.contains("catch (e) { return true; }"));
         assert!(g.contains("input[type=password i]") && g.is_ascii());
+    }
+
+    /// Review I3 (password leak): the secret check runs in the isolated world on both sides and covers
+    /// masked text fields, every autocomplete secret token, password inputs and any focus that is not
+    /// itself a known editable (a closed shadow root's host, a frame, a button).
+    #[test]
+    fn masked_and_closed_fields_are_secret() {
+        let f = |tag, kind, ac, ts, editable| field_is_secret(&FieldFacts { tag, input_type: kind, autocomplete: ac, text_security: ts, editable });
+        assert!(f("INPUT", "password", "", "none", true), "a password input");
+        assert!(f("INPUT", "PassWord", "", "", true));
+        assert!(f("INPUT", "text", "", "disc", true), "a masked text field (PIN, bank login)");
+        assert!(f("INPUT", "text", "", "circle", true) && f("TEXTAREA", "", "", "square", true));
+        for ac in ["current-password", "new-password", "one-time-code", "cc-number", "CC-CSC", "username current-password"] {
+            assert!(f("INPUT", "text", ac, "none", true), "{ac}");
+            assert!(f("TEXTAREA", "", ac, "none", true), "{ac} on a textarea");
+        }
+        assert!(f("DIV", "", "", "none", false), "the host of a closed shadow root is not an editable: fail closed");
+        assert!(f("IFRAME", "", "", "none", false) && f("FRAME", "", "", "none", false));
+        assert!(f("BUTTON", "", "", "none", false));
+        assert!(!f("INPUT", "text", "", "none", true) && !f("TEXTAREA", "", "off", "none", true) && !f("DIV", "", "", "none", true), "a plain editable is not secret");
+        assert!(!f("BODY", "", "", "none", false) && !f("HTML", "", "", "none", false), "nothing focused");
+        // The script text states the same rule, in both places.
+        let js = FIELD_CHECK_JS;
+        for t in ["webkitTextSecurity", "current-password", "new-password", "one-time-code", "'cc-'", "isContentEditable", "'IFRAME'", "'password'", "shadowRoot"] {
+            assert!(js.contains(t), "{t}");
+        }
+        assert!(js.is_ascii());
+        let made = user_script("S1").code;
+        assert!(made.contains("webkitTextSecurity") && made.contains("tandemSecretField(") && made.contains("tandemDeepest()") && !made.contains("{{"));
+        let g = guard_body();
+        assert!(g.contains("webkitTextSecurity") && g.contains("tandemSecretField(tandemDeepest(), SEL)") && g.contains("catch (e) { return true; }"));
+        let src = resource("broadcast-input.js").unwrap();
+        assert!(src.contains("{{FIELD_CHECK}}"));
     }
 }

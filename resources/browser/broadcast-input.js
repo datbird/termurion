@@ -33,25 +33,21 @@
             body.sessionSecret = SECRET;
             window.webkit.messageHandlers.tandemBroadcastInput.postMessage(body);
         }
-        // True when the event's target (through shadow roots) or the focused field holds a secret; any
-        // failure counts as true.
+        // The check shared with the receiving side (Tandem's world; a page cannot replace its builtins).
+        {{FIELD_CHECK}}
+        // True when the event's target (through shadow roots) or the focused element holds a secret
+        // (a password, a masked field, a one-time code, a card) or is not itself a known editable (the
+        // host of a closed shadow root, a frame); any failure counts as true.
         function secret(e) {
             try {
                 const t = e.composedPath ? e.composedPath()[0] : e.target;
-                if (t && t.nodeType === 1 && t.matches(SENSITIVE)) {
+                if (t && t.nodeType === 1 && tandemSecretField(t, SENSITIVE)) {
                     return true;
                 }
-                let a = document.activeElement;
-                for (let i = 0; i < 32 && a; i++) {
-                    if (a.matches && a.matches(SENSITIVE)) {
-                        return true;
-                    }
-                    a = a.shadowRoot ? a.shadowRoot.activeElement : null;
-                }
+                return tandemSecretField(tandemDeepest(), SENSITIVE);
             } catch (x) {
                 return true;
             }
-            return false;
         }
         window.addEventListener('beforeinput', function(e) {
             if (!e.isTrusted) { return; }
