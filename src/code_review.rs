@@ -339,6 +339,28 @@ pub fn submit_delay(setting: f64) -> Duration {
     Duration::from_secs_f64(setting.min(MAX_SUBMIT_DELAY))
 }
 
+/// The coding agent a review was started for: the main session's foreground job at that moment (the job
+/// watcher's name for it, and its process id). A shell or an unknown job is no agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Agent {
+    pub name: String,
+    pub pid: u32,
+}
+
+/// The agent a foreground job `(name, pid)` is, or None for a shell (bash, zsh, fish, pwsh, cmd, ...) or
+/// no job.
+pub fn agent_of(job: Option<(&str, u32)>) -> Option<Agent> {
+    let (name, pid) = job?;
+    let name = crate::session_state::normalize_job(name);
+    (!name.is_empty() && !crate::session_state::is_shell(Some(&name))).then_some(Agent { name, pid })
+}
+
+/// Whether the main session's foreground job now is the agent the review was started for: the same
+/// program in the same process. None started for (the main session was at a shell prompt then) is never.
+pub fn agent_present(started_for: Option<&Agent>, now: Option<(&str, u32)>) -> bool {
+    started_for.is_some_and(|a| agent_of(now).as_ref() == Some(a))
+}
+
 /// What an auto-send knows about its target (B6).
 #[derive(Clone, Copy, Debug)]
 pub struct SendTarget {
@@ -348,6 +370,10 @@ pub struct SendTarget {
     pub bytes: usize,
     /// The pane still has the workgroup's main-session identity.
     pub is_main: bool,
+    /// The main session's foreground job is a shell (its prompt would run the text).
+    pub shell: bool,
+    /// The main session's foreground job is the coding agent the review was started for (`agent_present`).
+    pub agent: bool,
 }
 
 /// Why an auto-send must not go: nothing is sent and a banner says this.
@@ -360,6 +386,12 @@ pub fn send_refusal(t: &SendTarget) -> Option<&'static str> {
     }
     if t.password {
         return Some("The main session is at a password prompt, so the review was not sent.");
+    }
+    if t.shell {
+        return Some("The main session is at a shell prompt (its coding agent is not running), so the review was not sent.");
+    }
+    if !t.agent {
+        return Some("The main session is no longer running the coding agent the review was started for, so the review was not sent.");
     }
     if !t.bracketed {
         return Some("The main session has not asked for bracketed paste (a program that reads pasted text is not running there), so the review was not sent.");
@@ -538,7 +570,7 @@ mod tests {
     /// B6: the refusals of an auto-send, in the order they are told.
     #[test]
     fn auto_send_needs_bracketed_paste() {
-        let ok = SendTarget { alive: true, password: false, bracketed: true, bytes: 100, is_main: true };
+        let ok = SendTarget { alive: true, password: false, bracketed: true, bytes: 100, is_main: true, shell: false, agent: true };
         assert_eq!(send_refusal(&ok), None);
         assert!(send_refusal(&SendTarget { bracketed: false, ..ok }).is_some_and(|t| t.contains("bracketed")), "a plain shell would run each line");
         assert!(send_refusal(&SendTarget { alive: false, ..ok }).is_some());
@@ -549,10 +581,42 @@ mod tests {
 
     #[test]
     fn auto_send_never_into_a_password_prompt() {
-        let t = SendTarget { alive: true, password: true, bracketed: true, bytes: 1, is_main: true };
+        let t = SendTarget { alive: true, password: true, bracketed: true, bytes: 1, is_main: true, shell: false, agent: true };
         assert!(send_refusal(&t).is_some_and(|r| r.contains("password")));
         let src = include_str!("app/code_review_app.rs");
         assert!(src.contains("password_input"), "the app reads the pane's password state");
+    }
+
+    /// 13y1 Task 7 item 4: an auto-send needs the coding agent the review was started for in front of the
+    /// main session: the same program, the same process. A shell prompt (bash 5.1+, zsh and fish turn
+    /// bracketed paste on there too) is refused with its own banner, as is any other program or a new run.
+    #[test]
+    fn auto_send_never_into_a_shell_prompt() {
+        let ok = SendTarget { alive: true, password: false, bracketed: true, bytes: 100, is_main: true, shell: false, agent: true };
+        let claude = agent_of(Some(("claude.exe", 40))).expect("an agent");
+        assert_eq!(claude, Agent { name: "claude".into(), pid: 40 });
+        for shell in ["bash", "-zsh", "fish", "pwsh.exe", "cmd.exe", "powershell", "/usr/bin/bash"] {
+            assert_eq!(agent_of(Some((shell, 41))), None, "{shell}");
+            assert!(!agent_present(Some(&claude), Some((shell, 41))), "{shell}: the agent has exited to its shell");
+        }
+        assert!(agent_present(Some(&claude), Some(("Claude", 40))));
+        assert!(!agent_present(Some(&claude), Some(("claude", 41))), "a new run is not the agent the review was for");
+        assert!(!agent_present(Some(&claude), Some(("vim", 40))));
+        assert!(!agent_present(Some(&claude), None), "no job known");
+        assert!(!agent_present(None, Some(("claude", 40))), "a review started while the main session was at a shell sends nothing");
+        let at_shell = send_refusal(&SendTarget { shell: true, agent: false, ..ok });
+        assert!(at_shell.is_some_and(|r| r.contains("shell prompt")), "{at_shell:?}");
+        let gone = send_refusal(&SendTarget { agent: false, ..ok });
+        assert!(gone.is_some_and(|r| r.contains("coding agent")), "{gone:?}");
+        assert!(send_refusal(&SendTarget { shell: true, agent: true, ..ok }).is_some(), "a shell is never the agent");
+        // The app checks both before the paste and again before the Return.
+        let app = include_str!("app/code_review_app.rs");
+        let live = app.split("\n#[cfg(test)]").next().unwrap();
+        let target = &live[live.find("fn review_send_target(").unwrap()..];
+        assert!(target.contains("cr::agent_present(") && target.contains("crate::session_state::is_shell("), "{target}");
+        let paste = include_str!("app/paste_ui.rs");
+        let tick = &paste[paste.find("fn paste_after_tick").unwrap()..paste.find("pub(super) fn paste_tick").unwrap()];
+        assert!(tick.find("cr::send_refusal(&self.review_send_target(").expect("re-checked before the Return") < tick.find("self.user_write(").unwrap());
     }
 
     /// B6: what is pasted passes the paste path's own transforms: controls and ESC removed, newlines

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::broadcast::{self, Write};
+use crate::code_review as cr;
 use crate::paste::{self, Job, Speed, Warning};
 use crate::warnings;
 
@@ -191,9 +192,15 @@ impl App {
         for l in fire {
             // The instance must still be this pane's workgroup (a reused pane id gets nothing).
             let live = self.workgroups.get(&l.owner).is_some() && self.panes.get(&l.pane).is_some_and(|p| p.workgroup.as_deref() == Some(l.owner.as_str()) && p.exited.is_none());
-            if live {
-                self.user_write(l.pane, l.text.as_bytes(), AUTO_WRITE);
+            if !live {
+                continue;
             }
+            // The Return is judged again: the agent may have exited to its shell during the delay (B6).
+            if let Some(why) = cr::send_refusal(&self.review_send_target(&l.owner, l.pane, 0)) {
+                self.banners.set("workgroup", why);
+                continue;
+            }
+            self.user_write(l.pane, l.text.as_bytes(), AUTO_WRITE);
         }
         next
     }

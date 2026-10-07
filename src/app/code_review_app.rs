@@ -45,6 +45,9 @@ pub(super) struct ReviewSide {
     pub last_prompt: BTreeMap<String, String>,
     /// The system prompt's temp file of each member (deleted at teardown and at the member's end).
     pub files: BTreeMap<String, std::path::PathBuf>,
+    /// The coding agent in front of the main session when the last review started: an auto-send goes
+    /// only while that same agent is still there (None: it was at a shell prompt, nothing is sent).
+    pub agent: Option<cr::Agent>,
 }
 
 /// The windows the overlay's pulldown opens, and the text the name sheet will save.
@@ -490,9 +493,12 @@ impl App {
         let consumed = self.workgroups.get_mut(&instance).is_some_and(|inst| inst.review.start.remove(&config).is_none());
         let started = consumed && self.panes.get(&pane).is_some_and(|p| p.shell_pid().is_some());
         if started {
+            let main = self.workgroups.get(&instance).map(|i| i.leader);
+            let agent = main.and_then(|m| self.foreground_job(m)).and_then(|(name, pid)| cr::agent_of(Some((&name, pid))));
             if let Some(inst) = self.workgroups.get_mut(&instance) {
                 inst.review.last_prompt.insert(config.clone(), prompt.to_string());
                 inst.review.overlays.remove(&config);
+                inst.review.agent = agent;
             }
         }
         self.redraw();
@@ -685,10 +691,34 @@ impl App {
         }
     }
 
+    /// The main session's foreground job (name, process id), as the job watcher reports it (a framing
+    /// session's remote job included).
+    fn foreground_job(&self, pane: PaneId) -> Option<(String, u32)> {
+        self.panes.get(&pane).and_then(|p| p.own().shell.job.as_ref().map(|j| (j.name.clone(), j.pid)))
+    }
+
+    /// What an auto-send of `bytes` (0 for its Return) into `main` for `instance` is judged on (B6): the
+    /// pane's state, and whether the coding agent the review was started for is still in front of it.
+    pub(super) fn review_send_target(&self, instance: &str, main: PaneId, bytes: usize) -> cr::SendTarget {
+        let job = self.foreground_job(main);
+        let job = job.as_ref().map(|(n, pid)| (n.as_str(), *pid));
+        let started_for = self.workgroups.get(instance).and_then(|i| i.review.agent.as_ref());
+        cr::SendTarget {
+            alive: self.panes.get(&main).is_some_and(|p| p.exited.is_none() && p.replay.is_none()),
+            password: self.panes.get(&main).is_some_and(|p| p.password_input),
+            bracketed: self.paste_bracketed_pub(main),
+            bytes,
+            is_main: self.panes.get(&main).is_some_and(|p| p.workgroup.as_deref() == Some(instance)),
+            shell: crate::session_state::is_shell(job.map(|j| j.0)),
+            agent: cr::agent_present(started_for, job),
+        }
+    }
+
     /// The auto-send (`maybeAutoSendClippings`): the group's clippings, pasted bracketed into the main
     /// session through the paste path, a lone Return after the delay measured from the end of the paste,
     /// the clippings archived, the main session shown. Refused (and said) unless the main session asked for
-    /// bracketed paste, is alive and is not at a password prompt (B6).
+    /// bracketed paste, is alive, is not at a password prompt and still runs the coding agent the review was
+    /// started for (never a shell prompt); the Return is judged again before it is written (B6).
     fn auto_send(&mut self, instance: &str, prev: Option<&str>, now: &str, toggle: bool) {
         let Some(inst) = self.workgroups.get(instance) else { return };
         let main = inst.leader;
@@ -697,14 +727,7 @@ impl App {
         let separator = self.globals.string("clippingSeparator");
         let list: Vec<String> = self.clips.get(&home).map(|c| c.model.live.iter().map(|k| crate::clippings::format(&[k], "")).collect()).unwrap_or_default();
         let Some(text) = cr::clippings_to_send(prev, now, Mode::CodeReview, toggle, busy, &list, &separator) else { return };
-        let target = cr::SendTarget {
-            alive: self.panes.get(&main).is_some_and(|p| p.exited.is_none() && p.replay.is_none()),
-            password: self.panes.get(&main).is_some_and(|p| p.password_input),
-            bracketed: self.paste_bracketed_pub(main),
-            bytes: text.len(),
-            is_main: self.panes.get(&main).is_some_and(|p| p.workgroup.as_deref() == Some(instance)),
-        };
-        if let Some(why) = cr::send_refusal(&target) {
+        if let Some(why) = cr::send_refusal(&self.review_send_target(instance, main, text.len())) {
             self.banners.set("workgroup", why);
             return;
         }
