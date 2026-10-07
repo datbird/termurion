@@ -21,6 +21,8 @@ const BAR_CHARS: usize = 400;
 pub(super) enum TipAsk {
     Hover(PaneId, Hover),
     Toast(PaneId, String, f64),
+    /// The newest ask wins, so a Clear cancels a Show that waits.
+    Clear(PaneId),
 }
 
 impl App {
@@ -54,7 +56,7 @@ impl App {
     /// (the window needs the event loop; the newest one wins, which also bounds a page's flood).
     pub(super) fn browser_hover(&mut self, pane: PaneId, hover: Hover) {
         match hover {
-            Hover::Clear => self.browser_tip_close(pane),
+            Hover::Clear => self.browser_tip_next = Some(TipAsk::Clear(pane)),
             show => self.browser_tip_next = Some(TipAsk::Hover(pane, show)),
         }
     }
@@ -89,20 +91,37 @@ impl App {
             self.browser_tip_close(pane);
             return;
         }
-        if let Some(tip) = self.browser_tip.as_mut().filter(|t| t.owner == Some(pane) && !t.is_toast()) {
-            tip.set(&text, anchor);
-            tip.bound(pane_rect);
+        // A toast that still shows is not replaced by a hover.
+        if self.browser_tip.as_ref().is_some_and(|t| t.is_toast() && !t.expired(Instant::now())) {
             return;
         }
-        if let Some(mut tip) = self.browser_tip_open(&text, anchor, event_loop) {
-            tip.owner = Some(pane as u64);
-            tip.bound(pane_rect);
-            self.browser_tip = Some(tip);
+        // The previous owner's page forgets its link when another pane's takes the window.
+        let previous = self.browser_tip.as_ref().and_then(|t| t.owner).filter(|o| *o != pane as u64).map(|o| o as PaneId);
+        if let Some(old) = previous {
+            self.browser_tip_clear(old);
+        }
+        match self.browser_tip_life.show(Instant::now()) {
+            browser_tip::Step::Reuse => {
+                if let Some(tip) = self.browser_tip.as_mut() {
+                    tip.owner = Some(pane as u64);
+                    tip.set(&text, anchor);
+                    tip.bound(pane_rect);
+                }
+            }
+            browser_tip::Step::Create => {
+                if let Some(mut tip) = self.browser_tip_open(&text, anchor, event_loop) {
+                    tip.owner = Some(pane as u64);
+                    tip.bound(pane_rect);
+                    self.browser_tip = Some(tip);
+                } else {
+                    self.browser_tip_life.dropped();
+                }
+            }
+            _ => {}
         }
     }
 
     fn browser_tip_open(&mut self, text: &str, at: (f64, f64, f64, f64), event_loop: &ActiveEventLoop) -> Option<TipWindow> {
-        self.browser_tip = None;
         let g = self.gpu.as_ref()?;
         match TipWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, at) {
             Ok(t) => Some(t),
@@ -125,12 +144,18 @@ impl App {
         if let Some(tip) = self.browser_tip.as_mut() {
             tip.owner = Some(pane as u64);
             tip.toast(&text, at, secs);
+            self.browser_tip_life.show(Instant::now());
+            return;
+        }
+        if self.browser_tip_life.show(Instant::now()) != browser_tip::Step::Create {
             return;
         }
         if let Some(mut tip) = self.browser_tip_open(&text, (at.0, at.1, 0.0, 0.0), event_loop) {
             tip.owner = Some(pane as u64);
             tip.toast(&text, at, secs);
             self.browser_tip = Some(tip);
+        } else {
+            self.browser_tip_life.dropped();
         }
     }
 
@@ -143,8 +168,26 @@ impl App {
 
     /// Closes the tip of pane `pane` (a toast ends by its time, and goes with its pane).
     pub(super) fn browser_tip_close(&mut self, pane: PaneId) {
+        self.browser_tip_cancel(pane);
+        if let Some(t) = self.browser_tip.as_mut().filter(|t| t.owner == Some(pane as u64)) {
+            t.hide();
+            self.browser_tip_life.hide();
+        }
+    }
+
+    /// A Show that waits for pane `pane` is cancelled.
+    fn browser_tip_cancel(&mut self, pane: PaneId) {
+        if matches!(&self.browser_tip_next, Some(TipAsk::Hover(p, _)) if *p == pane) {
+            self.browser_tip_next = None;
+        }
+    }
+
+    /// Drops the window itself (the pane went, the app lost the foreground).
+    pub(super) fn browser_tip_drop(&mut self, pane: PaneId) {
+        self.browser_tip_cancel(pane);
         if self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane as u64)) {
             self.browser_tip = None;
+            self.browser_tip_life.dropped();
         }
     }
 
@@ -152,10 +195,11 @@ impl App {
     /// `mouseExited`, `BWV:858-870`, `BM:952-955`; WebView2 reports no exit). Evaluated in the main
     /// frame's Tandem world, where the secret-checking handler lives, never the page world.
     pub(super) fn browser_tip_clear(&mut self, pane: PaneId) {
+        self.browser_tip_cancel(pane);
         if !self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane as u64)) {
             return;
         }
-        self.browser_tip = None;
+        self.browser_tip_close(pane);
         if let Some(secret) = self.browser_view_secret(pane).map(str::to_string) {
             self.browser_eval_in_frame(pane, None, &browser_tip::clear_script(&secret), Box::new(|_, _, _| {}));
         }
@@ -165,8 +209,11 @@ impl App {
     pub(super) fn browser_tip_clear_all(&mut self) {
         if let Some(pane) = self.browser_tip.as_ref().and_then(|t| t.owner) {
             self.browser_tip_clear(pane as PaneId);
-            self.browser_tip = None;
+            self.browser_tip_drop(pane as PaneId);
         }
+        self.browser_tip = None;
+        self.browser_tip_next = None;
+        self.browser_tip_life.dropped();
     }
 
     /// Runs the newest hover or toast that waits, and ends a toast whose time is over. Called from
@@ -175,10 +222,14 @@ impl App {
         match self.browser_tip_next.take() {
             Some(TipAsk::Hover(pane, hover)) => self.browser_hover_now(pane, hover, event_loop),
             Some(TipAsk::Toast(pane, text, secs)) => self.browser_toast_now(pane, &text, secs, event_loop),
+            Some(TipAsk::Clear(pane)) => self.browser_tip_close(pane),
             None => {}
         }
         if self.browser_tip.as_ref().is_some_and(|t| t.expired(Instant::now())) {
-            self.browser_tip = None;
+            if let Some(t) = self.browser_tip.as_mut() {
+                t.hide();
+            }
+            self.browser_tip_life.hide();
         }
     }
 
@@ -307,5 +358,19 @@ mod tests {
         let m = include_str!("mod.rs");
         assert!(m.contains("self.browser_tip_clear_all()"), "deactivation");
         assert!(include_str!("webhost_app.rs").contains("self.browser_tip_tick(event_loop)"));
+    }
+
+    /// Review I2: a Clear is queued like a Show, a clear hides the one window instead of dropping it,
+    /// and only the pane going or the app losing the foreground drops it.
+    #[test]
+    fn the_tip_window_is_made_once() {
+        let p = prod();
+        assert!(p.contains("Hover::Clear => self.browser_tip_next = Some(TipAsk::Clear(pane))"));
+        let close = &p[p.find("pub(super) fn browser_tip_close").unwrap()..p.find("fn browser_tip_cancel").unwrap()];
+        assert!(close.contains("t.hide()") && !close.contains("browser_tip = None"), "a clear hides, never drops");
+        assert!(p.contains("fn browser_tip_cancel") && p.contains("self.browser_tip_life.show(Instant::now())"));
+        let open = &p[p.find("fn browser_tip_open").unwrap()..p.find("pub(super) fn browser_toast(").unwrap()];
+        assert!(!open.contains("browser_tip = None"), "opening never drops a tip first");
+        assert!(include_str!("mod.rs").contains("self.browser_tip_drop(id)"), "the pane going drops it");
     }
 }

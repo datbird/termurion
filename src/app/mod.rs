@@ -1613,6 +1613,8 @@ pub struct App {
     browser_tip: Option<crate::browser_tip::TipWindow>,
     /// The newest hover or toast waiting for the next `web_tick` (it needs the event loop).
     browser_tip_next: Option<browser_overlay_app::TipAsk>,
+    /// The tip window's life: made once, hidden and reused, rate-limited.
+    browser_tip_life: crate::browser_tip::Lifecycle,
     /// The browser Instant Replay playback window (one at a time, app-wide like the popovers) and the
     /// movie save in flight.
     web_replay: Option<crate::web_replay_ui::PlaybackWindow>,
@@ -2619,6 +2621,7 @@ pub fn run() {
         web_popover: None,
         browser_tip: None,
         browser_tip_next: None,
+        browser_tip_life: Default::default(),
         web_replay: None,
         web_replay_pane: None,
         web_replay_save: None,
@@ -4013,7 +4016,7 @@ impl App {
         if self.web_popover.as_ref().is_some_and(|(p, _)| *p == Some(id)) {
             self.web_popover = None;
         }
-        self.browser_tip_close(id);
+        self.browser_tip_drop(id);
         self.close_browser_view(id);
     }
 

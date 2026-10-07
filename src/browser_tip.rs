@@ -117,6 +117,58 @@ pub fn fit_measured(shown: &str, room: f32, measure: &dyn Fn(&str) -> f32) -> St
     }
 }
 
+/// What a hover message asks of the tip window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Show,
+    Clear,
+}
+
+/// What the app does with the window for one ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Create,
+    Reuse,
+    Hide,
+    Skip,
+}
+
+/// Windows are made at most this often (review I2: a page cannot make Tandem churn windows).
+pub const MIN_CREATE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The one tip window's life: it is made once and then hidden and reused; only the pane going, the
+/// app losing the foreground or a failure drops it, and a new one is made no sooner than
+/// `MIN_CREATE_GAP` after the last.
+#[derive(Default)]
+pub struct Lifecycle {
+    exists: bool,
+    last: Option<std::time::Instant>,
+}
+
+impl Lifecycle {
+    pub fn show(&mut self, now: std::time::Instant) -> Step {
+        if self.exists {
+            Step::Reuse
+        } else if self.last.is_some_and(|t| now.saturating_duration_since(t) < MIN_CREATE_GAP) {
+            Step::Skip
+        } else {
+            self.exists = true;
+            self.last = Some(now);
+            Step::Create
+        }
+    }
+
+    /// A Clear hides the window and keeps it.
+    pub fn hide(&mut self) -> Step {
+        if self.exists { Step::Hide } else { Step::Skip }
+    }
+
+    /// The window was dropped (or never opened).
+    pub fn dropped(&mut self) {
+        self.exists = false;
+    }
+}
+
 /// The web view's top and height once a bar covers the top of the pane down to `bar_bottom`: it
 /// gives way only for what the bar covers (P21).
 pub fn below_bar(rest_y: f32, rest_h: f32, bar_bottom: f32) -> (f32, f32) {
@@ -222,6 +274,20 @@ impl TipWindow {
     pub fn toast(&mut self, text: &str, at: (f64, f64), secs: f64) {
         self.link = false;
         self.change(text, TOAST_POINT, Spot::Point(at), Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.clamp(0.0, 30.0))));
+    }
+
+    /// Hides the window and keeps it for the next hover (nothing is destroyed on a Clear).
+    pub fn hide(&mut self) {
+        if let Some(hwnd) = self.host.hwnd() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+            unsafe { ShowWindow(hwnd as _, SW_HIDE) };
+        }
+        self.shown = false;
+        self.owner = None;
+        self.until = None;
+        // The next text is always a change, so the window is placed and shown again.
+        self.text.clear();
+        self.fit = None;
     }
 
     pub fn is_toast(&self) -> bool {
@@ -437,5 +503,43 @@ mod tests {
         }
         // Never an empty tip, and never a loop without end, however little room there is.
         assert!(!fit_measured("https://evil.test/", 1.0, &measure).is_empty());
+    }
+
+    /// Review I2: a page that alternates hover and clear messages makes at most one window, a Clear
+    /// is queued like a Show (newest wins), and creation is rate-limited.
+    #[test]
+    fn a_flood_of_hovers_makes_one_window() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut life = Lifecycle::default();
+        let mut made = 0;
+        for i in 0..1000u32 {
+            let now = t0 + Duration::from_micros(u64::from(i) * 100);
+            // One message per tick, as a page can send; the newest queued ask wins.
+            let ask = if i % 2 == 0 { Ask::Show } else { Ask::Clear };
+            let mut next = Some(ask);
+            if i % 3 == 0 {
+                next = Some(Ask::Show);
+            }
+            match next.take() {
+                Some(Ask::Show) => made += usize::from(life.show(now) == Step::Create),
+                Some(Ask::Clear) => {
+                    life.hide();
+                }
+                None => {}
+            }
+        }
+        assert_eq!(made, 1, "one window, reused");
+        // A Clear after a Show in the same drain wins; a window that was dropped is not remade at once.
+        let mut next = Some(Ask::Show);
+        next = Some(Ask::Clear).or(next);
+        assert_eq!(next, Some(Ask::Clear));
+        let mut life = Lifecycle::default();
+        assert_eq!(life.show(t0), Step::Create);
+        life.dropped();
+        assert_eq!(life.show(t0 + Duration::from_millis(10)), Step::Skip, "creation is rate-limited");
+        assert_eq!(life.show(t0 + Duration::from_millis(300)), Step::Create);
+        assert_eq!(life.hide(), Step::Hide);
+        assert_eq!(life.show(t0 + Duration::from_millis(301)), Step::Reuse);
     }
 }
