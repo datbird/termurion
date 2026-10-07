@@ -413,6 +413,10 @@ pub struct App {
     /// Global bindings to Do Not Remap Modifiers, for the hook.
     exempt_map: Arc<std::sync::RwLock<toml::Table>>,
     globals: Globals,
+    /// The workgroups (13y1): the definitions, their latches and where each came from. Read by the
+    /// editor, the menu and the entry code of the later tasks.
+    #[allow(dead_code)]
+    workgroup_model: crate::workgroup::Model,
     /// The Leader was pressed; the next key carries the Leader flag.
     leader_on: bool,
     mru: Mru,
@@ -1966,6 +1970,14 @@ pub fn run() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
     }
+    // The workgroups, with their one-time migrations; written back only when something changed.
+    let (workgroup_model, workgroups_changed) = crate::workgroup::Model::load(&globals);
+    if workgroups_changed {
+        workgroup_model.save(&mut globals);
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+    }
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
@@ -2030,6 +2042,7 @@ pub fn run() {
         route_snapshot: Arc::new(std::sync::RwLock::new(keyroute::Snapshot::default())),
         exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
         globals,
+        workgroup_model,
         leader_on: false,
         mru: Mru::default(),
         next_tab_id: 1,

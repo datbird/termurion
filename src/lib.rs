@@ -74,6 +74,7 @@ pub mod adblock;
 pub mod svg_raster_win;
 pub mod seltext;
 pub mod wordsel;
+pub mod workgroup;
 pub mod netpath;
 pub mod localfs;
 pub mod sh_context;

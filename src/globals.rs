@@ -170,6 +170,11 @@ impl Globals {
             Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
             None => self.custom_presets = Default::default(),
         }
+        // Whatever wrote the workgroups (an import, a remote folder), the model reads only what
+        // `workgroup::bound_json` lets through (13y1 B8).
+        if let Some(v) = self.values.remove(crate::workgroup::KEY) {
+            self.set(crate::workgroup::KEY, v);
+        }
         // One table bounds every key, the WebView2 host's included (13w B4, 13x B2).
         for (key, _) in BOUNDS {
             if let Some(v) = self.values.remove(*key) {
@@ -221,6 +226,9 @@ impl Globals {
         } else {
             value
         };
+        // The workgroups are bounded here too, whatever wrote them: the Stored tab, a script, an
+        // import and a remote-prefs snapshot all come through (13y1 B8).
+        let value = if key == crate::workgroup::KEY { Value::String(value.as_str().map(crate::workgroup::bound_json).unwrap_or_default()) } else { value };
         // The user agent is cut and the fixed-runtime hint emptied first (13x B2); then a value
         // out of its bound is the default (13w B4).
         let value = crate::webhost::bound_global(key, value);

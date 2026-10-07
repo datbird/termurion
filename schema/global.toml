@@ -5732,3 +5732,57 @@ label = "Default value for the top margin for the badge"
 type = "int"
 default = 10
 help = "Default value for the top margin for the badge\nHow much space to leave between the top edge of the badge and the top edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "Workgroups"
+tab = "Stored"
+section = "Workgroups"
+label = "Workgroups"
+type = "string"
+default = ""
+help = "The workgroups, stored as iTerm2 stores them (Settings > Arrangements > Workgroups edits them). Whatever writes this value, it is bounded: over 1 MiB it is dropped, and a workgroup that breaks a limit is removed."
+
+[[setting]]
+key = "NoSyncWorkgroupShortcutsBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The default navigation and reload shortcuts were added to existing workgroups."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeDiffModeBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The Claude Code workgroup's Diff peer was switched to Diff mode."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeReviewSystemPromptCommandBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "Code review commands were moved to the editable system prompt file."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeAutoSendClippingsBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The Claude Code review peer was given Auto-Send Clippings When Idle."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeAutoRequestReviewBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The Claude Code main session was given Auto-Request Review When Idle."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
