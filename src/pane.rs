@@ -507,6 +507,9 @@ impl Pane {
         fresh.created = old.created;
         fresh.created_at = old.created_at;
         fresh.auto_log_id = old.auto_log_id;
+        // A restarted member is still its workgroup's: the instance names this pane, and Exit Workgroup
+        // and a close must still reach it (a fresh pane would orphan the instance and its hidden peers).
+        fresh.workgroup = old.workgroup.take();
         // The shell started at the size the layout gives now; the kept screen follows it.
         fresh.resize(want.0, want.1);
         fresh
@@ -3828,7 +3831,7 @@ mod tests {
                 // 13r Task 8: a restart selects no command (the fresh pane's None).
                 selected_command: _,
                 // 13q final fix 2: the new shell's generation is set from the old pane's.
-                shell_gen: _, workgroup: _ } = p;
+                shell_gen: _, workgroup: _ } = p; // workgroup is carried from the old pane by `relaunch`
         }
         let mut old = Pane::recording(1, 10, 3);
         classify(&old);
@@ -3841,6 +3844,7 @@ mod tests {
         old.session_note = "note".into();
         old.arrangement = Some(("arr".into(), "sess".into()));
         old.created = std::time::SystemTime::UNIX_EPOCH;
+        old.workgroup = Some("wg-OLD".into());
         let old_created_at = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
         old.created_at = old_created_at;
         old.auto_log_id = 99;
@@ -3874,6 +3878,7 @@ mod tests {
         assert_eq!(new.start_dir.as_deref(), Some(std::path::Path::new("C:\\fresh")), "the fresh shell carries the folder it started in");
         assert!(!new.screen.progress.visible(), "a restart clears the dead program's progress bar (S8)");
         // From the old pane.
+        assert_eq!(new.workgroup.as_deref(), Some("wg-OLD"), "a restarted member stays in its workgroup (Exit and a close still reach it)");
         assert!(new.screen.all_text().contains("kept text"));
         assert!(new.locked);
         assert_eq!(new.activity, 7);
