@@ -73,6 +73,8 @@ impl App {
 
     /// Brings a pane to the front: its tab, the pane, the window.
     pub(super) fn reveal_pane(&mut self, pane: PaneId) {
+        // A hidden workgroup peer takes its group's slot first (`PS:reveal`).
+        self.reveal_as_peer(pane);
         self.enter_pane_window(pane);
         if let Some(w) = self.current_window() {
             self.last_window = Some(w);

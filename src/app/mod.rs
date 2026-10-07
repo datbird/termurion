@@ -5246,6 +5246,7 @@ impl App {
         snapshot.composer = self.composer_has_keys();
         snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
         snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
+        (snapshot.peer_digits, snapshot.peer_keys) = self.peer_route_keys();
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
@@ -5470,6 +5471,12 @@ impl App {
             }
             Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
             Route::Terminal => {
+                // After the global bindings (the route above): a workgroup's peer shortcuts, then the
+                // toolbar's (Task 5) and the menu's.
+                if self.peer_key(&press.stroke, chord) {
+                    self.relayout();
+                    return;
+                }
                 if let Some(c) = chord {
                     // A menu chord, then a profile's Ctrl+Win shortcut (`keyroute::terminal_chord`);
                     // neither sends bytes to the session, so neither clears a selection (S10).

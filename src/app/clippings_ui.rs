@@ -423,7 +423,8 @@ impl App {
                 AddEvent::Add(title, detail) => {
                     self.add_clip_win = None;
                     // The panel's add always passes an empty type (iTerm2's).
-                    self.clips.entry(pane).or_default().model.add(Clipping { kind: String::new(), title, detail });
+                    let home = self.clip_home(pane);
+                    self.clips.entry(home).or_default().model.add(Clipping { kind: String::new(), title, detail });
                     self.mark_state_dirty();
                     self.relayout();
                     self.sync_checks();

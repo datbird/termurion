@@ -396,7 +396,7 @@ impl App {
                 let a = ot::parse_list_workgroup_clippings(args)?;
                 let unknown = || OrchError::UnknownWorkgroup(a.workgroup_id.clone());
                 let pane = self.pane_by_reference(ot::clipping_target(&a.workgroup_id)?).ok_or_else(unknown)?;
-                let list = self.clips.get(&pane).map(|c| c.model.live.clone()).unwrap_or_default();
+                let list = self.clips.get(&self.clip_home(pane)).map(|c| c.model.live.clone()).unwrap_or_default();
                 Ok(done(ot::result_json("clippings", ot::clippings_value(&list, a.type_filter.as_deref()))))
             }
             "send_text" => {
@@ -436,7 +436,8 @@ impl App {
                 if let Some(o) = self.orch_claim(chat, call_id, &ot::session_scope(&stable), name, args, None) {
                     return Ok(o);
                 }
-                self.clips.entry(pane).or_default().model.add(crate::clippings::Clipping { kind: a.kind, title: a.title, detail: a.detail });
+                let home = self.clip_home(pane);
+                self.clips.entry(home).or_default().model.add(crate::clippings::Clipping { kind: a.kind, title: a.title, detail: a.detail });
                 self.redraw();
                 Ok(done(ot::ack_json()))
             }

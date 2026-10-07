@@ -88,7 +88,7 @@ pub const DONE: &[&str] = &[
     "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "explainOutputWithAI:", "openPasswordManager:",
     "sshDisconnect:", "downloadFiles:",
     "installClaudeCodeIntegration:", "reinstallClaudeCodeIntegration:", "uninstallClaudeCodeIntegration:",
-    "exitWorkgroup:",
+    "exitWorkgroup:", "previousWorkgroupPeer:", "nextWorkgroupPeer:",
 ];
 
 /// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).

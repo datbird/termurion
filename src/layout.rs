@@ -235,6 +235,28 @@ impl Layout {
         go(&mut self.root, target, axis, new, before, share)
     }
 
+    /// Puts `new` in the slot `old` holds, keeping the slot's place and every ratio (a workgroup
+    /// swapping the shown peer). False, and nothing changes, when `old` is not here or `new` already is.
+    pub fn replace(&mut self, old: PaneId, new: PaneId) -> bool {
+        fn find(n: &mut Node, t: PaneId) -> Option<&mut PaneId> {
+            match n {
+                Node::Leaf(id) if *id == t => Some(id),
+                Node::Leaf(_) => None,
+                Node::Split { a, b, .. } => find(a, t).or_else(|| find(b, t)),
+            }
+        }
+        if old == new || self.panes().contains(&new) {
+            return false;
+        }
+        match find(&mut self.root, old) {
+            Some(slot) => {
+                *slot = new;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Removes `target`, and its sibling takes its space. False if `target` is not
     /// here or is the last pane.
     pub fn remove(&mut self, target: PaneId) -> bool {
@@ -891,5 +913,27 @@ mod tests {
         assert_eq!(ratio(&l).1, 0.5);
         assert!(!l.split_at(9, Axis::Row, 3, true, 0.5), "a target that is not here");
         assert_eq!(l.panes(), [2, 1]);
+    }
+
+    #[test]
+    fn replace_keeps_the_slot() {
+        let tree = |l: &Layout| match l.tree() {
+            Tree::Split { axis, ratio, a, b } => (axis, ratio, *a, *b),
+            _ => panic!("not split"),
+        };
+        let mut l = Layout::new(1);
+        assert!(l.split_at(1, Axis::Row, 2, false, 0.7));
+        let before = tree(&l);
+        assert_eq!(before.2, Tree::Leaf(1));
+        assert!(l.replace(1, 5));
+        let after = tree(&l);
+        assert_eq!((after.0, after.1, after.2.clone(), after.3.clone()), (before.0, before.1, Tree::Leaf(5), Tree::Leaf(2)));
+        assert!(!l.replace(9, 6), "an absent pane");
+        assert!(!l.replace(5, 2), "a pane already present");
+        assert!(!l.replace(5, 5), "the same pane");
+        assert_eq!(tree(&l), after, "nothing changed");
+        let mut single = Layout::new(1);
+        assert!(single.replace(1, 4));
+        assert_eq!(single.panes(), [4]);
     }
 }

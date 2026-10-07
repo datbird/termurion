@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::workgroup::{Mode, SessionConfig, Workgroup};
+use crate::workgroup_peers as peers;
 use crate::workgroup_run::{self as run, Mechanism, Plan, SpawnStep};
 use std::collections::BTreeMap;
 
@@ -25,8 +26,7 @@ pub(super) struct Instance {
     /// has not started (a Diff or Code Review peer waits, Tasks 6 and 7). A peer lives in
     /// `App.panes` with `Pane.workgroup` set and in no layout; it is never in `App.buried` (B2).
     pub peers: Vec<(String, Option<PaneId>)>,
-    /// The config id of the member shown in the leader's place (Task 4 swaps it).
-    #[allow(dead_code)]
+    /// The config id of the member shown in the leader's place (`activate_peer` swaps it).
     pub active: String,
     /// Splits and tabs, in the order they started.
     pub non_peers: Vec<(String, PaneId)>,
@@ -43,6 +43,21 @@ pub(super) struct Instance {
 }
 
 impl Instance {
+    /// The pane of the member `config` (None for a peer that has not started).
+    pub fn pane_of(&self, config: &str) -> Option<PaneId> {
+        self.peers.iter().find(|(c, _)| c == config).and_then(|(_, p)| *p)
+    }
+
+    /// The config id `pane` is a peer-group member as.
+    pub fn config_of(&self, pane: PaneId) -> Option<&str> {
+        self.peers.iter().find(|(_, p)| *p == Some(pane)).map(|(c, _)| c.as_str())
+    }
+
+    /// The pane shown in the group's slot now.
+    pub fn shown_pane(&self) -> Option<PaneId> {
+        self.pane_of(&self.active)
+    }
+
     /// Every live member's pane, the leader first, each once.
     pub fn members(&self) -> Vec<PaneId> {
         let mut out = vec![self.leader];
@@ -433,8 +448,10 @@ impl App {
     /// A member's program ended: the same teardown, and a member that is not the leader goes too.
     pub(super) fn workgroup_member_exited(&mut self, pane: PaneId) {
         let leader = self.workgroup_of(pane).map(|i| i.leader);
+        // A leader hidden behind a shown peer has no slot to stay in: it ends with the rest.
+        let hidden_leader = leader == Some(pane) && self.pane_window_id(pane).is_none();
         self.workgroup_member_ended(pane);
-        if leader.is_some_and(|l| l != pane) {
+        if leader.is_some_and(|l| l != pane) || hidden_leader {
             self.workgroups.to_close.push(pane);
         }
     }
@@ -448,7 +465,13 @@ impl App {
             return;
         }
         inst.torn_down = true;
-        // (Task 4: a peer shown in the leader's place is swapped back out before the peers end.)
+        // A peer shown in the leader's place goes back out first, so the leader is left in its pane
+        // (`WI:666-790`); a leader that is itself ending is not put back.
+        if skip != Some(inst.leader) && self.panes.contains_key(&inst.leader) {
+            if let Some(shown) = inst.shown_pane().filter(|s| *s != inst.leader && self.panes.contains_key(s)) {
+                self.swap_slot(shown, inst.leader);
+            }
+        }
         let non_peers: Vec<String> = inst.non_peers.iter().map(|(c, _)| c.clone()).collect();
         let by_config: HashMap<&str, PaneId> = inst.non_peers.iter().map(|(c, p)| (c.as_str(), *p)).collect();
         let mut ending: Vec<PaneId> = inst.peers.iter().filter_map(|(_, p)| *p).collect();
@@ -510,6 +533,156 @@ impl App {
         run::close_warning(&groups)
     }
 
+    // --- Peers (Task 4): `PSPP` `PTYSessionPeerPort.swift`, `WPP` `iTermWorkgroupPeerPort.swift` ---
+
+    /// The instance `pane` is the shown member of: the only pane the peer commands act on.
+    fn peer_group_of(&self, pane: PaneId) -> Option<&Instance> {
+        self.workgroup_of(pane).filter(|i| i.shown_pane() == Some(pane))
+    }
+
+    /// Whether Previous Peer and Next Peer are enabled for `pane` (`PTYTextView.m:555-560`).
+    pub(super) fn peer_menu_enabled(&self, pane: Option<PaneId>) -> bool {
+        pane.and_then(|p| self.peer_group_of(p)).is_some_and(|i| peers::menu_enabled(i.peers.len()))
+    }
+
+    /// Puts `to` in the layout slot `from` holds (the window that shows `from` is entered for the
+    /// change and the window that was current is current again after). Focus and a zoom follow only
+    /// when `from` had them, and the group's clippings go with the slot (they are the leader's, and
+    /// whichever member is shown carries them, `PSPP:30-55`). The pty is resized by `relayout`.
+    fn swap_slot(&mut self, from: PaneId, to: PaneId) -> bool {
+        let home = self.current_window();
+        if !self.enter_pane_window(from) {
+            return false;
+        }
+        let swapped = match self.tabs.iter().position(|t| t.layout.panes().contains(&from)) {
+            Some(t) if self.tabs[t].layout.replace(from, to) => {
+                let tab = &mut self.tabs[t];
+                if tab.focused == from {
+                    tab.focused = to;
+                }
+                if tab.zoomed == Some(from) {
+                    tab.zoomed = Some(to);
+                }
+                true
+            }
+            _ => false,
+        };
+        if swapped {
+            if let Some(state) = self.clips.remove(&from) {
+                self.clips.insert(to, state);
+            } else {
+                self.clips.remove(&to);
+            }
+            self.relayout();
+        }
+        if let Some(h) = home.filter(|h| self.current_window() != Some(*h)) {
+            self.enter(h);
+        }
+        swapped
+    }
+
+    /// Whether member `config` of `inst` can be shown now: its session exists (a peer that has not
+    /// started is not yet, Tasks 6 and 7 start theirs on activation).
+    fn peer_activatable(&self, inst: &Instance, config: &str) -> bool {
+        inst.pane_of(config).is_some_and(|p| self.panes.contains_key(&p))
+    }
+
+    /// Shows member `id` of `instance` in the group's slot: the shown member goes out of the layout
+    /// alive and hidden, the target takes its place (`Layout::replace`), and the toolbar follows
+    /// with the slot. Never activates another window or changes the selected tab. False when the
+    /// member cannot be shown; the shown member stays.
+    pub(super) fn activate_peer(&mut self, instance: &str, id: &str) -> bool {
+        let Some(inst) = self.workgroups.get(instance) else { return false };
+        if inst.active == id {
+            return inst.shown_pane().is_some();
+        }
+        if !self.peer_activatable(inst, id) {
+            return false;
+        }
+        let (Some(target), Some(shown)) = (inst.pane_of(id), inst.shown_pane()) else { return false };
+        if !self.panes.contains_key(&shown) || !self.swap_slot(shown, target) {
+            return false;
+        }
+        if let Some(i) = self.workgroups.map.get_mut(instance) {
+            i.active = id.to_string();
+        }
+        self.menus_dirty = true;
+        self.redraw();
+        true
+    }
+
+    /// Previous (-1) and Next (1) Peer for the group `pane` shows (`WPP:543-575`).
+    pub(super) fn peer_offset(&mut self, pane: PaneId, offset: i32) -> bool {
+        let Some(inst) = self.peer_group_of(pane) else { return false };
+        let ids: Vec<String> = inst.peers.iter().map(|(c, _)| c.clone()).collect();
+        let (instance, active) = (inst.id.clone(), inst.active.clone());
+        let Some(target) = peers::by_offset(&ids, &active, offset, &|c| self.peer_activatable(inst, c)) else { return false };
+        self.activate_peer(&instance, &target)
+    }
+
+    /// A peer's own shortcut pressed in the group `pane` shows. True when the key is the group's
+    /// (consumed even when that member cannot be shown: it must not reach the shell, `WPP:466-480`).
+    pub(super) fn peer_shortcut(&mut self, pane: PaneId, key: &crate::keystroke::Keystroke) -> bool {
+        let Some(inst) = self.peer_group_of(pane) else { return false };
+        let hit = peers::members(&inst.workgroup).into_iter().find(|(_, _, s)| s.as_ref().is_some_and(|s| peers::shortcut_matches(s, key)));
+        let Some((config, _, _)) = hit else { return false };
+        let instance = inst.id.clone();
+        self.activate_peer(&instance, &config);
+        true
+    }
+
+    /// Alt+Shift+Win+`digit` pressed in the group `pane` shows (`WPP:461-485`). True when the digit
+    /// names a member (a member that cannot be shown consumes it).
+    pub(super) fn peer_digit(&mut self, pane: PaneId, digit: u32) -> bool {
+        let Some(inst) = self.peer_group_of(pane) else { return false };
+        let Some(at) = peers::by_digit(inst.peers.len(), digit) else { return false };
+        let (instance, config) = (inst.id.clone(), inst.peers[at].0.clone());
+        self.activate_peer(&instance, &config);
+        true
+    }
+
+    /// The keys a workgroup takes after global bindings and before the toolbar and the menu: a
+    /// peer's custom shortcut, then Alt+Shift+Win+digit (`WI:1689-1790`). True when consumed.
+    pub(super) fn peer_key(&mut self, stroke: &crate::keystroke::Keystroke, chord: Option<&crate::menus::Chord>) -> bool {
+        let Some(pane) = self.focused_id() else { return false };
+        if self.peer_group_of(pane).is_none() {
+            return false;
+        }
+        if self.peer_shortcut(pane, stroke) {
+            return true;
+        }
+        chord.and_then(peers::chord_digit).is_some_and(|d| self.peer_digit(pane, d))
+    }
+
+    /// Shows `pane` in its group's slot when it is a hidden peer, without ordering its window front
+    /// or changing the selected tab (`PS:16451-16480`).
+    pub(super) fn reveal_as_peer(&mut self, pane: PaneId) {
+        let Some((instance, config)) = self.workgroup_of(pane).filter(|i| i.shown_pane() != Some(pane)).and_then(|i| i.config_of(pane).map(|c| (i.id.clone(), c.to_string()))) else { return };
+        self.activate_peer(&instance, &config);
+    }
+
+    /// The pane whose `ClipState` is the group's clippings now: the member shown in the slot.
+    pub(super) fn clip_home(&self, pane: PaneId) -> PaneId {
+        self.workgroup_of(pane).and_then(|i| i.shown_pane()).filter(|p| self.panes.contains_key(p)).unwrap_or(pane)
+    }
+
+    /// What the keyboard hook must take for peers: whether any group has more than one peer, and the
+    /// forms of every custom shortcut that has Win in it.
+    pub(super) fn peer_route_keys(&self) -> (bool, std::collections::HashSet<String>) {
+        let mut keys = std::collections::HashSet::new();
+        let mut digits = false;
+        for inst in self.workgroups.values().filter(|i| peers::menu_enabled(i.peers.len())) {
+            digits = true;
+            for (_, _, s) in peers::members(&inst.workgroup) {
+                if let Some(k) = s.and_then(|s| crate::keystroke::parse(&s.serialized)).filter(|k| k.flags & crate::keystroke::COMMAND != 0) {
+                    keys.insert(k.legacy());
+                    keys.insert(k.modified_key());
+                }
+            }
+        }
+        (digits, keys)
+    }
+
     /// Shell > Workgroups: the workgroups above the separator, checked for the current one, and
     /// Exit Workgroup enabled in a workgroup. The separator is out while there are none.
     pub(super) fn refresh_workgroups_menu(&mut self) {
@@ -517,7 +690,11 @@ impl App {
         let facts = focused.and_then(|p| self.workgroup_facts(p));
         let entries = run::menu_entries(&self.workgroup_model.workgroups, facts.as_ref().map(|(i, g, l)| (i.as_str(), g.as_str(), *l)), focused.is_some(), false);
         let in_workgroup = facts.is_some();
+        let peers_on = self.peer_menu_enabled(focused);
         let Some(bar) = &mut self.menu_bar else { return };
+        for item in &bar.peer_items {
+            item.set_enabled(peers_on);
+        }
         let Some(menu) = &mut bar.workgroups else { return };
         if let Some(exit) = &menu.exit {
             exit.set_enabled(in_workgroup);
@@ -595,5 +772,38 @@ mod tests {
         assert!(include_str!("menu.rs").contains("self.workgroup_picked(id)"));
         assert!(include_str!("close_ui.rs").contains("self.workgroup_close_warning("));
         assert!(include_str!("scripts_alerts.rs").contains("Then::EnterWorkgroup { workgroup, pane, how } =>"));
+    }
+
+    /// The peer swap: only `Layout::replace`, never a close or a reopen of layout space, never the
+    /// buried store; the shown member's slot, focus and clippings travel; the teardown puts the leader back.
+    #[test]
+    fn peers_swap_in_place() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        assert!(production.contains("layout.replace(from, to)"));
+        assert!(production.contains("self.swap_slot(shown, inst.leader)"), "the teardown puts the leader back before the peers end");
+        assert!(production.contains("self.clips.insert(to, state)"), "the group's clippings follow the slot");
+        assert!(!production.contains("select_tab") && !production.contains("bring_forward"), "a swap never changes the selected tab or the window");
+        assert!(include_str!("alerts_ui.rs").contains("self.reveal_as_peer(pane);"), "reveal shows a hidden peer first");
+        assert!(MOD.contains("if self.peer_key(&press.stroke, chord) {"), "peer keys come after the global bindings");
+        assert!(MOD.contains("(snapshot.peer_digits, snapshot.peer_keys) = self.peer_route_keys();"), "the hook takes the peers' chords");
+    }
+
+    /// `previousWorkgroupPeer:` and `nextWorkgroupPeer:` start disabled and the menu refresh enables them.
+    #[test]
+    fn peer_menu_follows_iterm2() {
+        use crate::workgroup_peers::menu_enabled;
+        // A pane in no workgroup has no peer group, a workgroup with one peer cannot cycle, two can.
+        assert!(!menu_enabled(0) && !menu_enabled(1) && menu_enabled(2));
+        let menu = include_str!("menu.rs");
+        assert!(menu.contains("&& !matches!(item.selector.as_str(), \"previousWorkgroupPeer:\" | \"nextWorkgroupPeer:\")"), "disabled until a group is focused");
+        assert!(THIS.contains("self.peer_menu_enabled(focused)"));
+        assert!(THIS.contains("peers::menu_enabled(i.peers.len())"));
+        assert!(menu.contains("self.peer_offset(id, if item.selector == \"nextWorkgroupPeer:\" { 1 } else { -1 })"));
+        // The shortcuts stay Alt+Win+[ and ].
+        for (selector, key) in [("previousWorkgroupPeer:", "["), ("nextWorkgroupPeer:", "]")] {
+            let item = crate::menus::items().iter().find(|i| i.selector == selector).expect(selector);
+            assert_eq!((item.key.as_str(), item.mods.clone()), (key, vec!["opt".to_string(), "cmd".to_string()]));
+            assert!(!crate::commands::status(item).unavailable(), "{selector} is built");
+        }
     }
 }
