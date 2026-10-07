@@ -851,6 +851,10 @@ impl App {
 
     /// What a toolbar button does.
     fn browser_button(&mut self, pane: PaneId, b: Button, menu_at: (f32, f32)) {
+        // The world is being set up: there is no page to go back from or reload (review I2).
+        if matches!(b, Button::Back | Button::Forward | Button::Reload | Button::Stop) && self.browser_views.get(&pane).is_some_and(|bv| bv.world.setup.is_some()) {
+            return;
+        }
         match b {
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -968,8 +972,8 @@ impl App {
             "History" => Some("iterm2-about:history"),
             _ => None,
         };
-        if let (Some(url), Some(v)) = (target, self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {
-            v.navigate_tandem(url);
+        if let Some(url) = target {
+            self.browser_navigate(pane, url);
         }
         true
     }
@@ -1106,6 +1110,10 @@ impl App {
     pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
+            // While the world is being set up nothing loads (review I2): the URL waits.
+            if bv.view.is_some() && bv.world.defer_load(url) {
+                return;
+            }
             match &bv.view {
                 Some(v) => v.navigate_tandem(url),
                 None => {

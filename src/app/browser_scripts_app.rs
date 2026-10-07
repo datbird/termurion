@@ -74,6 +74,18 @@ pub(super) struct WorldState {
     pub(super) console_logged: Option<Instant>,
 }
 
+impl WorldState {
+    /// A navigation that arrives while the world is being set up (review I2): kept, the latest
+    /// winning, and run when the setup is over. False when no setup runs: the caller navigates.
+    pub(super) fn defer_load(&mut self, url: &str) -> bool {
+        if self.setup.is_none() {
+            return false;
+        }
+        self.load_after = Some(url.to_string());
+        true
+    }
+}
+
 /// The kind of a failed script call, the only thing about it that is logged (never its text).
 pub(super) fn failure_kind(err: &str) -> &'static str {
     match err {
@@ -850,5 +862,27 @@ mod tests {
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
         let nav = &app[app.find("Event::Navigated { ok, .. } => {").unwrap()..app.find("Event::History { back, forward, .. } =>").unwrap()];
         assert!(nav.contains("world.history.loaded()") && nav.contains("browser_world::RESET_HISTORY"));
+    }
+
+    /// Review I2: a navigation that arrives while the world is being set up is kept (the latest
+    /// wins) and runs when the setup is over; nothing loads before the world exists.
+    #[test]
+    fn navigation_during_setup_is_deferred() {
+        let mut w = WorldState::default();
+        assert!(!w.defer_load("https://a.test/"), "no setup: the caller navigates");
+        w.setup = Some(Setup::new(&[]));
+        w.load_after = Some("https://old.test/".into());
+        assert!(w.defer_load("https://typed.test/"));
+        assert!(w.defer_load("about:blank"), "a typed about:blank is kept too, never taken for the check");
+        assert_eq!(w.load_after.as_deref(), Some("about:blank"));
+        let p = prod();
+        let app = include_str!("browser_app.rs");
+        let app = &app[..app.find("#[cfg(test)]").unwrap()];
+        let nav = &app[app.find("fn browser_navigate").unwrap()..app.find("pub(super) fn browser_suggest").unwrap()];
+        assert!(nav.contains("defer_load(") && nav.find("defer_load(").unwrap() < nav.find("navigate_tandem").unwrap());
+        let btn = &app[app.find("fn browser_button").unwrap()..];
+        let btn = &btn[..btn.find("Button::Menu =>").unwrap()];
+        assert!(btn.contains("world.setup.is_some()"), "back, forward and reload wait for the world too");
+        assert!(p.contains("pub(super) fn defer_load"));
     }
 }
