@@ -1515,7 +1515,10 @@ mod tests {
         for dev_null in [false, true] {
             let s = browser_setup(dev_null, false);
             assert!(s.web_message, "the local pages post messages; the host judges each by its source");
-            assert_eq!(s.scripts, vec![crate::browser_pages::SHIM_JS.to_string()], "the shim is the only injected script");
+            // The shim and the Instant Replay sensitive mark (final review I1), which talks only to
+            // its own top frame (window.top.postMessage), never to the host.
+            assert_eq!(s.scripts, vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()], "the shim and the sensitive mark are the only injected scripts");
+            assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
             assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
             let on = browser_setup(dev_null, true);
             assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
