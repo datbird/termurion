@@ -1139,6 +1139,13 @@ mod tests {
     /// process start (`Command::new`, `ShellExecuteW`, `ShellExecuteExW`, `CreateProcessW`).
     const SINKS: &[&str] = &[
         "self.execute(",
+        "self.execute_with(",
+        // Every way into the browser pane or the system from a link (Task 9 review I2).
+        "self.open_link(",
+        "self.open_link_system(",
+        "self.open_url_in_browser(",
+        "self.open_link_answered(",
+        "self.upsell_answered(",
         "smart_action_run(",
         "semantic::plan(",
         "guard_open(",
@@ -1162,6 +1169,9 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("app/browser_app.rs", "open_link", "takes a Run::Open from guard_open or a web_link; its callers (execute_with, open_selection_url, open_link_split) are checked"),
+        ("app/browser_app.rs", "open_link_answered", "the answer to the ask open_link raised for a link it had settled"),
+        ("app/browser_app.rs", "upsell_answered", "the answer to the upsell open_link raised; opens the fixed plugin page or the link it settled"),
         ("app/web_popover_app.rs", "quick_look_url", "only an http or https URL with a host (web_popover::quick_look_target) is shown or opened, the one kind a remote pane's link may open (P10)"),
         ("app/web_popover_app.rs", "web_popover_event", "opens the page the popover shows, only when its scheme is http or https (quick_look_scheme_ok)"),
         ("app/web_popover_app.rs", "web_popover_view_event", "an external protocol a popover's page asked for goes through external_uri_run (guard_open), only for a person's gesture"),
@@ -1288,16 +1298,12 @@ mod tests {
         assert!(functions(src)[1].1.contains("Command::new("), "a spawn in an extern fn is its own");
     }
 
-    #[test]
-    fn every_entry_point_is_gated() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    /// What the scan says is wrong with `files` (path under src/, text): a GATED function that does not
+    /// ask the guard, and a caller of a sink that is neither GATED nor listed with a reason.
+    fn gate_violations(files: &[(String, String)]) -> (Vec<String>, Vec<(String, String)>) {
         let (mut seen, mut wrong) = (Vec::new(), Vec::new());
-        let mut files = Vec::new();
-        sources(&src, &src, &mut files);
-        files.sort();
-        for (file, path) in files {
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (name, body) in functions(&text) {
+        for (file, text) in files {
+            for (name, body) in functions(text) {
                 let gated = GATED.contains(&(file.as_str(), name.as_str()));
                 if gated {
                     if !GUARDS.iter().any(|g| body.contains(g)) {
@@ -1313,6 +1319,21 @@ mod tests {
                 }
             }
         }
+        (wrong, seen)
+    }
+
+    fn real_sources() -> Vec<(String, String)> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&src, &src, &mut files);
+        files.sort();
+        files.into_iter().map(|(file, path)| (file, std::fs::read_to_string(&path).unwrap())).collect()
+    }
+
+    #[test]
+    fn every_entry_point_is_gated() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let (mut wrong, seen) = gate_violations(&real_sources());
         for (f, n) in GATED {
             if !seen.iter().any(|(a, b)| a == f && b == n) {
                 wrong.push(format!("{f} {n} is gone: update GATED"));
@@ -1324,6 +1345,23 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// The guard is proved by planting: a function that hands pane text to any opening call, with no
+    /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
+    #[test]
+    fn a_planted_ungated_opening_call_fails_the_gate() {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)"] {
+            let mut files = real_sources();
+            files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
+            let (wrong, _) = gate_violations(&files);
+            assert!(wrong.iter().any(|w| w.starts_with("app/planted.rs evil calls")), "{call}: {wrong:?}");
+        }
+        // A GATED name that asks the guard passes.
+        let mut files = real_sources();
+        files.push(("app/semantic_ui.rs".to_string(), "fn open_text(&mut self) {\n    if self.remote_text(id) {}\n    self.open_link(t);\n}\n".to_string()));
+        let (wrong, _) = gate_violations(&files);
+        assert!(!wrong.iter().any(|w| w.contains("open_text")), "{wrong:?}");
     }
 }
 
