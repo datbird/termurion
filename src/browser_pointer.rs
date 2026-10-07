@@ -365,4 +365,17 @@ mod tests {
         // The wire: a press never reports itself as the page's.
         assert!(s.contains("sessionSecret"));
     }
+
+    /// Deferred minor 212 (final review minor 13): with Focus on Right or Middle Click on, every
+    /// non-left press focuses the pane BEFORE its binding runs (`rightMouseDown` and
+    /// `otherMouseDown` call `focusOnRightOrMiddleClickIfNeeded` first, `BWV:459-488`), bound or not.
+    #[test]
+    fn a_bound_right_or_middle_press_focuses_first() {
+        let s = gate_script();
+        let down = &s[s.find("function onDown(").unwrap()..s.find("function onUp(").unwrap()];
+        let focus = down.find("post({ type: \"focus\" })").expect("onDown posts focus");
+        let bound = down.find("if (g.keys.indexOf(keyOf(b, clicks, mods)) >= 0)").unwrap();
+        assert!(focus < bound, "focus comes before the binding");
+        assert!(down.contains("if (g.focus && b >= 1)"), "right, middle and the other buttons (otherMouseDown)");
+    }
 }

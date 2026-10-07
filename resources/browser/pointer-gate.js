@@ -76,6 +76,11 @@
             last[e.button] = clicks;
             held[e.button] = false;
             after[e.button] = 0;
+            // Focus on right or middle click comes first, bound or not (iTerm2's rightMouseDown and
+            // otherMouseDown focus before the binding, `BWV:459-488`); an unbound press stays the page's.
+            if (g.focus && b >= 1) {
+                post({ type: "focus" });
+            }
             // The fourth click is Smart Selection, kept even with double-click Smart Selection on.
             if (b === 0 && clicks === 4 && g.fourClick) {
                 swallow(e);
@@ -89,10 +94,6 @@
                 const p = point(e);
                 post({ type: "down", button: e.button, clicks: clicks, mods: mods, x: p.x, y: p.y });
                 return;
-            }
-            // Focus on right or middle click: the page still gets the press.
-            if (g.focus && (b === 1 || b === 2)) {
-                post({ type: "focus" });
             }
         }
         function onUp(e, g) {
