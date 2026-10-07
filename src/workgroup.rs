@@ -17,6 +17,9 @@ use crate::globals::Globals;
 
 /// The global that holds the list (`iTermUserDefaults.m:49`).
 pub const KEY: &str = "Workgroups";
+/// The ids of the workgroups that came from an import, a remote folder or a Dynamic Profile (a
+/// JSON array of strings): the stored Imported mark. Not an iTerm2 key.
+pub const KEY_IMPORTED: &str = "WorkgroupsImported";
 const KEY_SHORTCUTS: &str = "NoSyncWorkgroupShortcutsBackfilled";
 const KEY_DIFF_MODE: &str = "NoSyncClaudeCodeDiffModeBackfilled";
 const KEY_SYSTEM_PROMPT: &str = "NoSyncClaudeCodeReviewSystemPromptCommandBackfilled";
@@ -36,8 +39,10 @@ const MAX_ID: usize = 128;
 const MAX_SHORTCUT: usize = 64;
 const MAX_SPACER: f64 = 4096.0;
 
-/// Where a workgroup came from. Only the person's own edits are `Person`; anything read back from
-/// disk is `Stored` (its origin is not known: an import or a remote folder may have written it).
+/// Where a workgroup came from. `Person` is the person's own settings (saved by the editor or read
+/// back from disk with no mark); every import path marks its workgroups, and that mark is stored
+/// (`WorkgroupsImported`), so after a restart they read back as `Import`. `Stored` is only the
+/// answer for an id that is not in the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Person,
@@ -48,8 +53,8 @@ pub enum Source {
 }
 
 impl Source {
-    /// True only for a workgroup the person made or edited in this run: the one source whose
-    /// commands may start without asking (`m13y1` P3).
+    /// True only for the person's own workgroups: the one source whose commands may start without
+    /// asking (`m13y1` P3 and the trust ruling).
     pub fn is_person(self) -> bool {
         self == Source::Person
     }
@@ -618,6 +623,54 @@ pub fn bound_json(raw: &str) -> String {
     }
 }
 
+/// The stored Imported mark list, bounded at the write point: a JSON array of well-formed ids, at
+/// most `MAX_WORKGROUPS` of them. Anything else is the empty string.
+pub fn bound_imported(raw: &str) -> String {
+    if raw.len() > MAX_BYTES {
+        return String::new();
+    }
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(raw) else { return String::new() };
+    let ids: Vec<&str> = items.iter().filter_map(Value::as_str).filter(|id| id_ok(id)).take(MAX_WORKGROUPS).collect();
+    if ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&ids).unwrap_or_default()
+    }
+}
+
+/// After something other than the editor wrote the list (a remote-prefs snapshot, an import):
+/// every workgroup whose data is new or changed is marked Imported, whatever the incoming data
+/// says, and the old marks are put back (the writer cannot clear them). `before_*` are the
+/// stored values from before the write.
+pub fn mark_foreign_write(g: &mut Globals, before_list: &str, before_marks: &str) {
+    let old = decode(before_list).unwrap_or_default();
+    let mut marked: HashSet<String> = match serde_json::from_str::<Value>(before_marks) {
+        Ok(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        _ => HashSet::new(),
+    };
+    let new = match decode(&g.string(KEY)) {
+        Ok(list) => list,
+        Err(_) => return,
+    };
+    let mut ids = Vec::new();
+    for w in &new {
+        let same = old.iter().any(|o| o == w);
+        if marked.contains(&w.unique_identifier) || !same {
+            marked.insert(w.unique_identifier.clone());
+            ids.push(w.unique_identifier.clone());
+        }
+    }
+    let text = if ids.is_empty() { String::new() } else { serde_json::to_string(&ids).unwrap_or_default() };
+    g.set(KEY_IMPORTED, toml::Value::String(text));
+}
+
+fn read_marks(g: &Globals) -> HashSet<String> {
+    match serde_json::from_str::<Value>(&g.string(KEY_IMPORTED)) {
+        Ok(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        _ => HashSet::new(),
+    }
+}
+
 // --- Presets and the Claude Code template ---
 
 pub mod presets {
@@ -825,6 +878,8 @@ impl Model {
         let before = Latches::read(g);
         m.latches = before;
         m.read_list(g);
+        let marks = read_marks(g);
+        m.sources = m.workgroups.iter().map(|w| (w.unique_identifier.clone(), if marks.contains(&w.unique_identifier) { Source::Import } else { Source::Person })).collect();
         let data = migrate_data(&mut m.workgroups, &mut m.latches);
         m.dirty = data;
         let changed = data || m.latches != before;
@@ -856,6 +911,11 @@ impl Model {
     /// decode until an edit replaces it.
     pub fn save(&self, g: &mut Globals) {
         self.latches.write(g);
+        let marks: Vec<&str> = self.workgroups.iter().filter(|w| !self.source_of(&w.unique_identifier).is_person()).map(|w| w.unique_identifier.as_str()).collect();
+        let marks = if marks.is_empty() { String::new() } else { serde_json::to_string(&marks).unwrap_or_default() };
+        if g.string(KEY_IMPORTED) != marks {
+            g.set(KEY_IMPORTED, toml::Value::String(marks));
+        }
         if self.dirty && !self.kept_undecodable {
             g.set(KEY, toml::Value::String(encode(&self.workgroups)));
         }
@@ -890,8 +950,22 @@ impl Model {
         self.edited();
     }
 
+    /// The person's edit: the workgroup keeps its mark, so a rename or a command edit never
+    /// approves an import's commands; only `trust` does.
     pub fn replace(&mut self, id: &str, w: Workgroup) {
-        self.replace_from(id, w, Source::Person);
+        let source = match self.sources.get(id) {
+            Some(Source::Person) | None => Source::Person,
+            Some(s) => *s,
+        };
+        self.replace_from(id, w, source);
+    }
+
+    /// The explicit act: the person has read this workgroup's commands and trusts it.
+    pub fn trust(&mut self, id: &str) {
+        if self.get(id).is_some() {
+            self.sources.insert(id.to_string(), Source::Person);
+            self.dirty = true;
+        }
     }
 
     pub fn replace_from(&mut self, id: &str, w: Workgroup, source: Source) {
@@ -902,17 +976,12 @@ impl Model {
         self.edited();
     }
 
-    /// Replaces the whole list (the editor's undo). A workgroup that is unchanged keeps its source,
-    /// so an undo can never make an import the person's; a changed or new one is the person's.
+    /// Replaces the whole list (the editor's undo). A workgroup keeps the source its id had, so an
+    /// edit or an undo never approves an import; an id that was not there is the person's.
     pub fn set_all(&mut self, list: Vec<Workgroup>) {
-        let old = std::mem::take(&mut self.workgroups);
         let sources: BTreeMap<String, Source> = list
             .iter()
-            .map(|w| {
-                let same = old.iter().any(|o| o == w);
-                let source = if same { self.sources.get(&w.unique_identifier).copied().unwrap_or(Source::Stored) } else { Source::Person };
-                (w.unique_identifier.clone(), source)
-            })
+            .map(|w| (w.unique_identifier.clone(), self.sources.get(&w.unique_identifier).copied().unwrap_or(Source::Person)))
             .collect();
         self.sources = sources;
         self.workgroups = list;
@@ -1233,9 +1302,8 @@ mod tests {
         let mut g = globals();
         g.set("Workgroups", toml::Value::String(encode(&[simple("disk")])));
         let (mut m, _) = Model::load(&g);
-        // From disk the origin is unknown: not the person.
-        assert_eq!(m.source_of("disk"), Source::Stored);
-        assert!(!m.source_of("disk").is_person());
+        // From disk with no stored mark: the person's own settings (the trust ruling).
+        assert_eq!(m.source_of("disk"), Source::Person);
         m.add(simple("mine"));
         assert_eq!(m.source_of("mine"), Source::Person);
         assert!(m.source_of("mine").is_person());
@@ -1243,9 +1311,10 @@ mod tests {
         m.add_from(simple("rem"), Source::RemotePrefs);
         m.add_from(simple("dyn"), Source::DynamicProfile);
         assert_eq!((m.source_of("imp"), m.source_of("rem"), m.source_of("dyn")), (Source::Import, Source::RemotePrefs, Source::DynamicProfile));
-        // A person's edit of an imported workgroup is the person's; a replace from another source is not.
+        // A person's edit of an imported workgroup keeps its mark; a replace from another source marks it.
+        // An edit keeps the mark (only `trust` clears it).
         m.replace("imp", simple("imp"));
-        assert_eq!(m.source_of("imp"), Source::Person);
+        assert_eq!(m.source_of("imp"), Source::Import);
         m.replace_from("mine", simple("mine"), Source::RemotePrefs);
         assert_eq!(m.source_of("mine"), Source::RemotePrefs);
         // Unknown ids and a removed workgroup are never the person's.
@@ -1260,6 +1329,107 @@ mod tests {
         g3.set("Workgroups", toml::Value::String(encode(&[simple("p")])));
         m.reload_from(&g3, Source::RemotePrefs);
         assert_eq!((m.workgroups.len(), m.source_of("p")), (1, Source::RemotePrefs));
+    }
+
+    #[test]
+    fn every_import_path_stores_the_imported_mark() {
+        // Trust ruling: workgroups from the person's own settings are the person's; every import
+        // path marks its workgroups Imported and the mark is stored, so it survives a restart.
+        for source in [Source::Import, Source::RemotePrefs, Source::DynamicProfile] {
+            let paths: [(&str, Box<dyn Fn(&mut Model, &mut Globals)>); 4] = [
+                ("add_from", Box::new(move |m, _| m.add_from(simple("w"), source))),
+                ("replace_from", Box::new(move |m, _| m.replace_from("w", simple("w"), source))),
+                ("set_all_from", Box::new(move |m, _| m.set_all_from(vec![simple("w")], source))),
+                ("reload_from", Box::new(move |m, g| {
+                    g.set("Workgroups", toml::Value::String(encode(&[simple("w")])));
+                    m.reload_from(g, source)
+                })),
+            ];
+            for (name, run) in paths {
+                let mut g = globals();
+                let mut m = Model::default();
+                m.add(simple("w"));
+                run(&mut m, &mut g);
+                assert!(!m.source_of("w").is_person(), "{name} {source:?}");
+                m.save(&mut g);
+                let (back, _) = Model::load(&g);
+                assert_eq!(back.source_of("w"), Source::Import, "{name} {source:?} after a restart");
+                assert!(!back.source_of("w").is_person());
+            }
+        }
+        // The person's own workgroups come back as the person's; an edit of an import is the person's.
+        let mut g = globals();
+        let mut m = Model::default();
+        m.add(simple("mine"));
+        m.add_from(simple("theirs"), Source::Import);
+        m.save(&mut g);
+        let (mut back, _) = Model::load(&g);
+        assert_eq!((back.source_of("mine"), back.source_of("theirs")), (Source::Person, Source::Import));
+        back.trust("theirs");
+        back.save(&mut g);
+        let (again, _) = Model::load(&g);
+        assert_eq!((again.source_of("mine"), again.source_of("theirs")), (Source::Person, Source::Person));
+        // The mark list is bounded at the one write point.
+        g.set("WorkgroupsImported", toml::Value::String("not json".into()));
+        assert_eq!(g.string("WorkgroupsImported"), "");
+        g.set("WorkgroupsImported", toml::Value::String(format!("[\"ok\", \"bad id\", \"{}\"]", big_text(300))));
+        assert_eq!(g.string("WorkgroupsImported"), "[\"ok\"]");
+    }
+
+    #[test]
+    fn an_edit_keeps_the_mark_and_only_trust_clears_it() {
+        let mut g = globals();
+        let mut m = Model::default();
+        m.add_from(simple("theirs"), Source::Import);
+        m.save(&mut g);
+        let (mut m, _) = Model::load(&g);
+        // A rename, a command edit, an undo: none of them approves the commands.
+        let mut renamed = simple("theirs");
+        renamed.name = "renamed".into();
+        m.replace("theirs", renamed.clone());
+        assert_eq!(m.source_of("theirs"), Source::Import);
+        let mut cmd = renamed.clone();
+        cmd.sessions[0].command = "calc".into();
+        m.set_all(vec![cmd]);
+        assert_eq!(m.source_of("theirs"), Source::Import);
+        m.save(&mut g);
+        let (mut m, _) = Model::load(&g);
+        assert_eq!(m.source_of("theirs"), Source::Import);
+        // A workgroup the editor creates is the person's; copies of imports are new ids and so are too.
+        m.add(simple("mine"));
+        assert_eq!(m.source_of("mine"), Source::Person);
+        // The explicit act.
+        m.trust("theirs");
+        assert_eq!(m.source_of("theirs"), Source::Person);
+        m.save(&mut g);
+        let (back, _) = Model::load(&g);
+        assert_eq!(back.source_of("theirs"), Source::Person);
+        // An import over the top marks it again, whatever the incoming data says.
+        let mut m = back;
+        m.replace_from("theirs", simple("theirs"), Source::Import);
+        assert_eq!(m.source_of("theirs"), Source::Import);
+    }
+
+    #[test]
+    fn a_foreign_write_forces_the_mark() {
+        let mut g = globals();
+        let mut m = Model::default();
+        m.add(simple("mine"));
+        m.add(simple("same"));
+        m.add_from(simple("theirs"), Source::Import);
+        m.save(&mut g);
+        let before = (g.string(KEY), g.string(KEY_IMPORTED));
+        // A snapshot or plist rewrites the list, changes "mine", adds "new", and tries to clear the marks.
+        let mut changed = simple("mine");
+        changed.sessions[0].command = "calc".into();
+        g.set(KEY, toml::Value::String(encode(&[changed, simple("same"), simple("theirs"), simple("new")])));
+        g.set(KEY_IMPORTED, toml::Value::String(String::new()));
+        mark_foreign_write(&mut g, &before.0, &before.1);
+        let (back, _) = Model::load(&g);
+        assert_eq!(back.source_of("same"), Source::Person, "unchanged data stays the person's");
+        for id in ["mine", "theirs", "new"] {
+            assert_eq!(back.source_of(id), Source::Import, "{id}");
+        }
     }
 
     fn big_text(n: usize) -> String {

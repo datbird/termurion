@@ -353,6 +353,7 @@ mod tests {
             ("CloseBookmarksWindowAfterOpening", "Profiles", Kind::Bool, bool(false)),
             // 13y1: the workgroups and the latches of their one-time migrations.
             ("Workgroups", "Workgroups", Kind::String, text("")),
+            ("WorkgroupsImported", "Workgroups", Kind::String, text("")),
             ("NoSyncWorkgroupShortcutsBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeDiffModeBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeReviewSystemPromptCommandBackfilled", "Workgroups", Kind::Bool, bool(false)),

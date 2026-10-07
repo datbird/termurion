@@ -5743,6 +5743,15 @@ default = ""
 help = "The workgroups, stored as iTerm2 stores them (Settings > Arrangements > Workgroups edits them). Whatever writes this value, it is bounded: over 1 MiB it is dropped, and a workgroup that breaks a limit is removed."
 
 [[setting]]
+key = "WorkgroupsImported"
+tab = "Stored"
+section = "Workgroups"
+label = "The workgroups that came from an import, a remote folder or a Dynamic Profile."
+type = "string"
+default = ""
+help = "A list of workgroup ids Tandem keeps so it asks before running their commands after a restart. Saving a workgroup in the editor removes it from the list."
+
+[[setting]]
 key = "NoSyncWorkgroupShortcutsBackfilled"
 tab = "Stored"
 section = "Workgroups"
