@@ -219,6 +219,12 @@ impl App {
         }
     }
 
+    /// The current window (`_hwnd`) is closing: its tool views (they live in its slot) close first,
+    /// while their parent exists.
+    pub(super) fn tool_views_window_closing(&mut self, _hwnd: isize) {
+        self.close_tool_views();
+    }
+
     /// The window is closing: its views close first, while their parent exists.
     pub(super) fn close_tool_views(&mut self) {
         let names: Vec<String> = self.tool_views.keys().cloned().collect();

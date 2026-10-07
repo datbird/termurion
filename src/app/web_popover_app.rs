@@ -90,7 +90,7 @@ impl App {
     }
 
     /// The window is closing: a popover anchored on it closes with it.
-    pub(super) fn popovers_window_closing(&mut self) {
+    pub(super) fn popovers_window_closing(&mut self, _hwnd: isize) {
         if self.popover_in_current_window() {
             self.web_popover = None;
         }

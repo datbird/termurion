@@ -420,6 +420,8 @@ impl App {
         }
         let moving = self.take_tab(from);
         let gateway = self.tmux_of(moving.focused).map(|(gw, _, _)| gw);
+        // Its browser views move to `dest` before this window can close (final review I4).
+        self.browser_views_follow(&moving.layout.panes(), dest);
         if self.tabs.is_empty() {
             self.drop_current_window();
         } else {
@@ -591,6 +593,8 @@ impl App {
         }
         let Some((moving, gateways)) = self.take_group(group) else { return };
         let collapsed = moving.first().and_then(|t| t.group.as_ref()).is_some_and(|g| g.collapsed);
+        let panes: Vec<PaneId> = moving.iter().flat_map(|t| t.layout.panes()).collect();
+        self.browser_views_follow(&panes, dest);
         self.after_tabs_left();
         self.enter(dest);
         let vertical = tab_position::vertical(self.tab_position());

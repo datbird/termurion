@@ -223,6 +223,30 @@ impl Event {
     }
 }
 
+/// What becomes of a view whose parent window closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParentFate {
+    /// Its pane shows in another window now: the view moves to that handle.
+    Move(isize),
+    /// Its pane shows nowhere else (closed, stashed for Undo, buried): the view closes and is made
+    /// again from its URL when the pane shows again.
+    Close,
+}
+
+/// The views a closing window owns, chosen by their parent handle (never by the tabs the window
+/// holds: a pane that left keeps its old parent until it is shown), each with its fate. `home`
+/// answers the handle of the window that shows a pane now.
+pub fn closing_parent<K: Copy>(views: &[(K, isize)], closing: isize, home: impl Fn(K) -> Option<isize>) -> Vec<(K, ParentFate)> {
+    if closing == 0 {
+        return Vec::new();
+    }
+    views
+        .iter()
+        .filter(|(_, parent)| *parent == closing)
+        .map(|(k, _)| (*k, home(*k).filter(|h| *h != closing && *h != 0).map_or(ParentFate::Close, ParentFate::Move)))
+        .collect()
+}
+
 /// How the app answers a deferred request.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Answer {
@@ -795,6 +819,27 @@ impl LocalDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review I4 (class): a closing window's views are chosen by their parent handle, not by
+    /// the tabs the window holds; a view whose pane now shows in another window moves there, any
+    /// other closes (and is made again from its URL when its pane shows again).
+    #[test]
+    fn a_closing_window_takes_its_views_by_parent() {
+        const A: isize = 0xA0;
+        const B: isize = 0xB0;
+        let views = [(1u64, A), (2, A), (3, B), (4, A), (5, 0)];
+        let home = |p: u64| match p {
+            1 => Some(B),
+            2 => Some(A),
+            3 => Some(A),
+            _ => None,
+        };
+        let fates = closing_parent(&views, A, home);
+        assert_eq!(fates, vec![(1, ParentFate::Move(B)), (2, ParentFate::Close), (4, ParentFate::Close)]);
+        // Pane 3 shows in A's tabs but its view is a child of B: not A's to close.
+        assert!(!fates.iter().any(|(p, _)| *p == 3));
+        assert!(closing_parent(&views, 0, home).is_empty(), "no handle owns nothing");
+    }
 
     fn yes(_: &Path) -> bool {
         true

@@ -110,18 +110,18 @@ fn runtime_now(hint: &str) -> (Runtime, Option<PathBuf>, Option<String>) {
 /// One kind of hosted web view and what a window's remake or close does to it (review fix 1, a
 /// class fix). Every file that makes views with `WebView::create` is listed here (a source test
 /// pins it), so a later task's views are covered by the same two hooks: `remade` moves them to the
-/// new window handle (or closes them) before the old window is dropped; `closing` closes them
-/// while their parent still exists.
+/// new window handle (or closes them) before the old window is dropped; `closing` (given the
+/// closing window's handle) moves or closes every view that is a child of it while it still exists.
 pub(super) struct HostedView {
     pub(super) file: &'static str,
     pub(super) remade: fn(&mut App, isize),
-    pub(super) closing: fn(&mut App),
+    pub(super) closing: fn(&mut App, isize),
 }
 
 /// Every kind of hosted web view. Add a kind's entry with its first `WebView::create`.
 pub(super) const HOSTED_VIEWS: &[HostedView] = &[
-    HostedView { file: "tool_web_ui.rs", remade: App::tool_views_remade, closing: App::close_tool_views },
-    HostedView { file: "browser_app.rs", remade: App::browser_views_remade, closing: App::close_browser_views },
+    HostedView { file: "tool_web_ui.rs", remade: App::tool_views_remade, closing: App::tool_views_window_closing },
+    HostedView { file: "browser_app.rs", remade: App::browser_views_remade, closing: App::browser_window_closing },
     HostedView { file: "web_popover_app.rs", remade: App::popovers_remade, closing: App::popovers_window_closing },
 ];
 
@@ -134,10 +134,21 @@ impl App {
         }
     }
 
-    /// The current window is going: its hosted views close while their parent still exists.
-    pub(super) fn close_hosted_views(&mut self) {
+    /// The current window (handle `hwnd`) is going: every view that is its child moves to the
+    /// window that shows it now or closes, while the parent still exists.
+    pub(super) fn close_hosted_views(&mut self, hwnd: isize) {
         for h in HOSTED_VIEWS {
-            (h.closing)(self);
+            (h.closing)(self, hwnd);
+        }
+    }
+
+    /// A parked window (handle `hwnd`, its state `slot`, not current) is dropped (Merge All
+    /// Windows): the same hooks for the views that live outside the slot, and the slot's own tool
+    /// views close and are forgotten.
+    pub(super) fn window_slot_closing(&mut self, slot: &mut super::windows_ui::WinSlot, hwnd: isize) {
+        self.browser_window_closing(hwnd);
+        for id in slot.close_tool_views() {
+            self.tool_view_ids.remove(&id);
         }
     }
 
@@ -460,6 +471,45 @@ mod tests {
         let hook = body.find("self.window_remade(").expect("the remake hook is called");
         assert!(hook < body.find("drop(old_gpu)").unwrap(), "before the old surface and window go");
         assert!(hook > body.find("self.gpu.replace(").unwrap(), "after the new window is the current one");
+    }
+
+    /// Final review I4: every function that destroys a window runs the closing hook with that
+    /// window's handle before the window drops, the browser hook chooses views by parent, and every
+    /// path that moves a pane to an existing window moves its view there before the old one closes.
+    #[test]
+    fn a_closing_window_moves_or_closes_its_views_first() {
+        let body_of = |src: &'static str, name: &str| -> &'static str {
+            let at = src.find(name).unwrap_or_else(|| panic!("{name}"));
+            let rest = &src[at..];
+            &rest[..rest.find("\n    }\n").unwrap()]
+        };
+        let w = include_str!("windows_ui.rs");
+        let drop_fn = body_of(w, "fn drop_current_window");
+        assert!(drop_fn.find("self.close_hosted_views(hwnd)").unwrap() < drop_fn.find("self.windows.close_current(").unwrap());
+        let merge = body_of(w, "pub(super) fn merge_all_windows");
+        assert!(merge.find("self.window_slot_closing(&mut slot, h)").expect("the parked slot's views") < merge.find("drop(slot);").unwrap());
+        assert!(merge.find("self.tabs.append(&mut moved);").unwrap() < merge.find("self.window_slot_closing(").unwrap(), "after the panes joined this window");
+        let r = include_str!("resident_ui.rs");
+        assert!(body_of(r, "fn go_resident(").contains("self.close_hosted_views(hwnd)"));
+        // The browser hook: by parent, through the one pure choice.
+        let b = include_str!("browser_app.rs");
+        let hook = body_of(b, "pub(super) fn browser_window_closing");
+        assert!(hook.contains("webhost::closing_parent(") && !hook.contains("self.tabs"), "{hook}");
+        assert!(include_str!("webhost_app.rs").contains("HostedView { file: \"browser_app.rs\", remade: App::browser_views_remade, closing: App::browser_window_closing }"));
+        // Moves to an existing window: the view follows before the old window can drop.
+        let t = include_str!("tab_drag_ui.rs");
+        for f in ["fn drop_in_window", "fn move_group_to_window"] {
+            let body = body_of(t, f);
+            let follow = body.find("self.browser_views_follow(").unwrap_or_else(|| panic!("{f}"));
+            let drop_at = body.find("self.drop_current_window()").or_else(|| body.find("self.after_tabs_left()")).unwrap();
+            assert!(follow < drop_at, "{f}");
+        }
+        let pm = include_str!("pane_move_ui.rs");
+        let split = &pm[pm.find("pane_move::Drop::Split { axis, before } => {").unwrap()..];
+        assert!(split.find("self.browser_views_follow(").unwrap() < split.find("self.drop_current_window()").unwrap());
+        // A torn-off tab is in its new window before the old one drops (the hook moves the view).
+        let tear = body_of(t, "fn tear_off(");
+        assert!(tear.find("self.open_pending(").unwrap() < tear.find("self.drop_current_window()").unwrap());
     }
 
     #[test]

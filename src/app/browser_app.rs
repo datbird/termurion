@@ -11,7 +11,7 @@ use crate::layout::Rect;
 use crate::palette::Rgb;
 use crate::text_edit::{self, EditKey, EditOut};
 use winit::keyboard::{Key as WKey, NamedKey};
-use crate::webhost::{self, Event, Runtime, ViewId};
+use crate::webhost::{self, Event, ParentFate, Runtime, ViewId};
 use crate::webhost_win::{ViewSetup, WebView};
 
 /// The view of one browser pane.
@@ -270,17 +270,53 @@ impl App {
         }
     }
 
-    /// This window is going (or hiding): its views close while their parent exists, and are made
-    /// again from the pane's URL if the pane is shown again.
-    pub(super) fn close_browser_views(&mut self) {
-        let mine: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
-        for pane in mine {
-            let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
-            if let Some(bv) = self.browser_views.get_mut(&pane) {
-                bv.view = None;
-                bv.replay.shown = false;
-                bv.pending_url = url;
+    /// The window whose handle is `closing` is going (or hiding): the closing hook of `HOSTED_VIEWS`
+    /// (final review I4, a class fix). Every browser view that is a child of that handle, whatever
+    /// tab holds its pane now, moves to the window that shows its pane, or closes while its parent
+    /// still exists and is made again from the pane's URL when the pane is shown again (a closed
+    /// window's Undo stash, a buried pane). A view left on a destroyed parent would be a blank pane
+    /// that is never remade.
+    pub(super) fn browser_window_closing(&mut self, closing: isize) {
+        let views: Vec<(PaneId, isize)> = self.browser_views.iter().filter(|(_, b)| b.view.is_some()).map(|(p, b)| (*p, b.parent)).collect();
+        let fates = webhost::closing_parent(&views, closing, |p| self.pane_window_id(p).and_then(|w| self.window_hwnd(w)));
+        for (pane, fate) in fates {
+            match fate {
+                ParentFate::Move(h) => self.browser_view_to(pane, h),
+                ParentFate::Close => self.browser_view_drop(pane),
             }
+        }
+    }
+
+    /// Panes moving to window `to` (a tab dropped on another window's bar, a group moved there, a
+    /// pane split into another window's tab): their views follow now, before the window they leave
+    /// can close; hidden until that window places them.
+    pub(super) fn browser_views_follow(&mut self, panes: &[PaneId], to: WindowId) {
+        let Some(h) = self.window_hwnd(to) else { return };
+        for pane in panes {
+            self.browser_view_to(*pane, h);
+        }
+    }
+
+    /// Pane `pane`'s view becomes a child of `hwnd` (hidden until placed there).
+    fn browser_view_to(&mut self, pane: PaneId, hwnd: isize) {
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let Some(v) = &bv.view else { return };
+        if bv.parent != hwnd {
+            v.set_visible(false);
+            v.set_parent(hwnd);
+            bv.parent = hwnd;
+            bv.replay.shown = false;
+        }
+    }
+
+    /// Pane `pane`'s view closes and is made again from the pane's URL when the pane is shown.
+    fn browser_view_drop(&mut self, pane: PaneId) {
+        let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.view = None;
+            bv.replay.shown = false;
+            bv.pending_url = url;
+            bv.parent = 0;
         }
     }
 

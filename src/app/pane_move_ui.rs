@@ -634,6 +634,8 @@ impl App {
                     Detached::Kept => {}
                     Detached::Emptied(_, tab) => self.forget_tab(tab.id),
                 }
+                // Its browser view moves to the target's window before this one can close.
+                self.browser_views_follow(&[source], tid);
                 if self.tabs.is_empty() {
                     self.drop_current_window();
                 } else {

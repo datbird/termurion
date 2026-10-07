@@ -841,8 +841,11 @@ impl App {
     pub(super) fn drop_current_window(&mut self) -> bool {
         let Some(k) = self.windows.current() else { return false };
         self.save_window_frame();
-        // Its hosted web views close while their parent window still exists.
-        self.close_hosted_views();
+        // Its hosted web views move to the window that shows their pane, or close, while their
+        // parent window still exists.
+        if let Some(hwnd) = self.hwnd() {
+            self.close_hosted_views(hwnd);
+        }
         self.forget_window(k);
         if let Some(h) = self.hwnd() {
             crate::winkeys::remove_window(h);
@@ -1034,6 +1037,15 @@ pub(super) struct PaneWindow<'a> {
     pub(super) front: Option<&'a Tab>,
     pub(super) title: Option<&'a str>,
     pub(super) hotkey: bool,
+}
+
+impl WinSlot {
+    /// This parked window is going: its tool views close (while their parent exists); the view ids
+    /// they had, for the app-wide map.
+    pub(super) fn close_tool_views(&mut self) -> Vec<crate::webhost::ViewId> {
+        self.tool_views.clear();
+        self.tool_loaded.drain().map(|(_, l)| l.id).collect()
+    }
 }
 
 impl WinSlot {
@@ -1598,12 +1610,17 @@ impl App {
                 self.slots.give(&guid, n);
             }
             self.forget_window(other);
-            if let Some(g) = &slot.gpu {
-                if let Ok(RawWindowHandle::Win32(h)) = g.window.window_handle().map(|h| h.as_raw()) {
-                    crate::winkeys::remove_window(h.hwnd.get());
-                    #[cfg(windows)]
-                    crate::firstmouse_win::forget(h.hwnd.get());
-                }
+            let hwnd = slot.gpu.as_ref().and_then(|g| match g.window.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+                _ => None,
+            });
+            if let Some(h) = hwnd {
+                // Its browser views follow their panes into this window (final review I4) and its
+                // tool views close, before the window is destroyed with the slot.
+                self.window_slot_closing(&mut slot, h);
+                crate::winkeys::remove_window(h);
+                #[cfg(windows)]
+                crate::firstmouse_win::forget(h);
             }
             drop(slot);
         }
