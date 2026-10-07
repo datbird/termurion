@@ -108,6 +108,11 @@ pub fn win_click_action(rules: &[Rule], m: &WebMatch) -> Option<smartsel::RuleAc
 /// `MAX_RULES` (P20); a rule that does not compile, or that runs past `fancy_regex`'s backtrack limit,
 /// gives nothing.
 pub fn first_match(before: &str, after: &str, rules: &[Rule], require_action: bool) -> Option<WebMatch> {
+    first_match_until(before, after, rules, require_action, std::time::Instant::now() + SEARCH_BUDGET)
+}
+
+/// `first_match` with its search budget ending at `deadline`.
+fn first_match_until(before: &str, after: &str, rules: &[Rule], require_action: bool, deadline: std::time::Instant) -> Option<WebMatch> {
     let mut before_units: Vec<u16> = before.encode_utf16().collect();
     if before_units.len() > MAX_UNITS {
         // Keep the units next to the click; never start on the second half of a pair.
@@ -122,12 +127,16 @@ pub fn first_match(before: &str, after: &str, rules: &[Rule], require_action: bo
     let before_len = before_units.len();
     // iTerm2 restarts the search one unit after each match start; a hostile page can make that long, so
     // the whole search has a budget and gives the best match found when it runs out (P20).
-    let deadline = std::time::Instant::now() + SEARCH_BUDGET;
     // The best match for each matched text, in the order first found (a tie keeps the earlier).
     let mut best: Vec<(String, WebMatch)> = Vec::new();
     for (index, rule) in rules.iter().enumerate().take(MAX_RULES) {
         if require_action && rule.actions.is_empty() {
             continue;
+        }
+        // The budget is checked before every rule and every pass (deferred minor 210): once it is
+        // spent, nothing more runs.
+        if std::time::Instant::now() > deadline {
+            break;
         }
         let Some(re) = compiled(&rule.regex) else { continue };
         let mut start = 0;
@@ -135,7 +144,7 @@ pub fn first_match(before: &str, after: &str, rules: &[Rule], require_action: bo
         let mut passes = 0;
         while start < before_len && passes < MAX_UNITS {
             passes += 1;
-            if passes % 64 == 0 && std::time::Instant::now() > deadline {
+            if std::time::Instant::now() > deadline {
                 break;
             }
             if (0xDC00..0xE000).contains(&before_units[start]) {
@@ -188,6 +197,19 @@ mod tests {
 
     fn rule(regex: &str, precision: f64) -> Rule {
         Rule { regex: regex.into(), precision, notes: String::new(), actions: Vec::new() }
+    }
+
+    /// Deferred minor 210 (final review minor 12): the budget is checked before every rule and on
+    /// every pass, so once it is spent no further rule or pass runs.
+    #[test]
+    fn the_budget_is_checked_before_each_rule_and_pass() {
+        let rules = vec![rule(r"\w+", 1.0)];
+        assert!(first_match_until("ab", "cd", &rules, false, std::time::Instant::now() + std::time::Duration::from_secs(60)).is_some());
+        let spent = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(first_match_until("ab", "cd", &rules, false, spent), None, "a spent budget runs no rule");
+        let many: Vec<Rule> = (0..MAX_RULES).map(|_| rule(r"\w+", 1.0)).collect();
+        assert_eq!(first_match_until("ab", "cd", &many, false, spent), None);
     }
 
     /// `WVA:282-304`: one match per rule, the first in the text; UTF-16 counts; the score is the
