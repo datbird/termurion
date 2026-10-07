@@ -1178,6 +1178,7 @@ mod tests {
         ("app/browser_app.rs", "open_link", "takes a Run::Open from guard_open or a web_link; its callers (execute_with, open_selection_url, open_link_split) are checked"),
         ("app/browser_app.rs", "open_link_answered", "the answer to the ask open_link raised for a link it had settled"),
         ("app/browser_app.rs", "upsell_answered", "the answer to the upsell open_link raised; opens the fixed plugin page or the link it settled"),
+        ("app/browser_ctx_app.rs", "browser_ctx_picked", "Search with opens a URL built from the person's own selection through browser_page_open (nav_gate first); no other item opens anything"),
         ("app/browser_scripts_app.rs", "browser_page_open", "the one gate for URLs a page, page text or an arrangement supplied: nav_gate, then guard_open, never a path"),
         ("browser_js.rs", "nav_gate", "builds a NavGate and opens nothing; its caller is checked"),
         ("app/web_popover_app.rs", "quick_look_url", "only an http or https URL with a host (web_popover::quick_look_target) is shown or opened, the one kind a remote pane's link may open (P10)"),

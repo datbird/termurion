@@ -65,6 +65,8 @@ pub(super) struct BrowserView {
     pub(super) selection_gate: crate::browser_js::SelectionGate,
     /// The frame graph (`browser_frames_app`).
     pub(super) graph: crate::browser_frames::Frames,
+    /// The page menu last shown: its token, the context and the items (`browser_ctx_app`).
+    pub(super) menu: Option<(u64, crate::browser_ctx::Ctx, Vec<Option<crate::browser_ctx::Item>>)>,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -149,6 +151,7 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         scripts: page_scripts.into_iter().chain([crate::web_replay::sensitive_script()]).collect(),
         resource_filters: filters,
         favicon: true,
+        context_menu: true,
         ..Default::default()
     }
 }
@@ -194,7 +197,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None });
         true
     }
 
@@ -395,7 +398,7 @@ impl App {
     }
 
     /// Runs `f` with the window of `pane` current, then goes back.
-    fn in_pane_window(&mut self, pane: PaneId, f: impl FnOnce(&mut App)) -> bool {
+    pub(super) fn in_pane_window(&mut self, pane: PaneId, f: impl FnOnce(&mut App)) -> bool {
         let Some(target) = self.pane_window_id(pane) else { return false };
         let back = self.current_window();
         if !self.enter(target) {
@@ -557,6 +560,9 @@ impl App {
             // the source and the closed set; everything else a page posts is dropped there.
             Event::ScriptDone { token, json, .. } if matches!(*token, crate::web_replay::PROBE_TOKEN | crate::web_replay::CAPTURE_TOKEN) => self.web_replay_script_done(pane, *token, json),
             Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url),
+            // The page's right-click menu and a pick from it (Task 3).
+            Event::ContextMenu { token, target, .. } => self.browser_context_menu(pane, *token, target.clone()),
+            Event::ContextMenuPicked { token, id, .. } => self.browser_ctx_event(pane, *token, *id, event_loop),
             // Everything a page's script says, the world's events and the calls' answers: the router.
             _ => {
                 self.browser_script_event(pane, e);

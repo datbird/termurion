@@ -441,6 +441,9 @@ pub struct ViewSetup {
     /// The page's favicon is posted as `Event::Favicon` (browser panes): WebView2's own fetch,
     /// bounded and judged by `webhost::favicon_ok` before it is queued.
     pub favicon: bool,
+    /// The page's right-click menu is the app's to decorate: `ContextMenuRequested` posts
+    /// `Event::ContextMenu` and waits for `answer_context_menu` (browser panes).
+    pub context_menu: bool,
 }
 
 #[derive(Clone)]
@@ -452,6 +455,12 @@ struct Core {
 struct Pending {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2WebResourceRequestedEventArgs,
+}
+
+/// A context menu held back until the app answers (`answer_context_menu`).
+struct PendingMenu {
+    deferral: ICoreWebView2Deferral,
+    args: ICoreWebView2ContextMenuRequestedEventArgs,
 }
 
 /// What a handler posts through: the view's id, the shared sink and the view's gate.
@@ -505,6 +514,8 @@ struct Inner {
     frames: HashMap<u64, ICoreWebView2Frame2>,
     /// The view's `FrameCreated` registration, removed in `shut`.
     frame_watch: Option<(ICoreWebView2_4, i64)>,
+    /// Menus waiting for an answer, by token (at most `webhost::MAX_PENDING_MENUS`).
+    menus: HashMap<u64, PendingMenu>,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
@@ -547,6 +558,7 @@ impl WebView {
             devtools: HashMap::new(),
             frames: HashMap::new(),
             frame_watch: None,
+            menus: HashMap::new(),
         }));
         let weak = Rc::downgrade(&inner);
         // Every view is known to the process teardown (`close_all`), whatever owns it.
@@ -938,6 +950,34 @@ impl WebView {
         let _ = unsafe { p.deferral.Complete() };
     }
 
+    /// The system print dialog for the page (iTerm2's print panel).
+    pub fn print_ui(&self) {
+        self.with(|c| {
+            if let Ok(v16) = c.view.cast::<ICoreWebView2_16>() {
+                let _ = unsafe { v16.ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM) };
+            }
+        });
+    }
+
+    /// Completes the deferral taken when `Event::ContextMenu { token, .. }` was posted: WebView2's own
+    /// items minus `REMOVED_NATIVE`, the entries before `Native` in front of them and the rest behind
+    /// (no `Native` entry: all in front). An empty list shows the native menu unchanged. A chosen
+    /// custom item posts `Event::ContextMenuPicked`. Separators the removal leaves at an end or in a
+    /// pair are taken out.
+    pub fn answer_context_menu(&self, token: u64, entries: Vec<webhost::MenuEntry>) {
+        let (pending, env, poster, id) = {
+            let mut i = self.inner.borrow_mut();
+            (i.menus.remove(&token), i.env.clone(), i.poster.clone(), i.id)
+        };
+        let Some(p) = pending else { return };
+        if !entries.is_empty() {
+            let _ = decorate_menu(&p.args, &env, &poster, id, token, &entries);
+        }
+        #[cfg(test)]
+        LAST_MENU.with(|m| *m.borrow_mut() = menu_labels(&p.args));
+        let _ = unsafe { p.deferral.Complete() };
+    }
+
     /// Closes the view (the same as dropping it).
     pub fn close(self) {}
 }
@@ -959,7 +999,12 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     let Ok(mut i) = inner.try_borrow_mut() else { return };
     let (pending, core, receivers) = (std::mem::take(&mut i.pending), i.core.take(), std::mem::take(&mut i.devtools));
     let (frames, watch) = (std::mem::take(&mut i.frames), i.frame_watch.take());
+    let menus = std::mem::take(&mut i.menus);
     drop(i);
+    // A menu still waiting shows WebView2's own.
+    for (_, m) in menus {
+        let _ = unsafe { m.deferral.Complete() };
+    }
     drop(frames);
     if let Some((v4, token)) = watch {
         let _ = unsafe { v4.remove_FrameCreated(token) };
@@ -1041,10 +1086,169 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     register_page_events(inner, view, &mut token).map_err(|x| e("page events", x))?;
     register_policy(inner, view, &mut token).map_err(|x| e("policy", x))?;
     register_controller_events(inner, ctrl, &mut token).map_err(|x| e("focus", x))?;
+    if setup.context_menu {
+        register_context_menu(inner, view, &mut token).map_err(|x| e("context menu", x))?;
+    }
     if !setup.resource_filters.is_empty() {
         register_requests(inner, view, &setup.resource_filters, &mut token).map_err(|x| e("requests", x))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The last answered menu's items (kind 3 is a separator, else the label or the native name), for the ignored runtime test.
+    static LAST_MENU: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn menu_labels(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> Vec<String> {
+    let Ok(list) = (unsafe { args.MenuItems() }) else { return Vec::new() };
+    let mut n = 0u32;
+    let _ = unsafe { list.Count(&mut n) };
+    (0..n)
+        .filter_map(|i| unsafe { list.GetValueAtIndex(i) }.ok())
+        .map(|it| {
+            let (kind, name) = menu_item_info(&it);
+            if kind == COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR {
+                "---".to_string()
+            } else {
+                let label = pwstr_out(|p| unsafe { it.Label(p) }).unwrap_or_default();
+                if name.is_empty() { label } else { format!("{name}:{label}") }
+            }
+        })
+        .collect()
+}
+
+/// The kind of an item of WebView2's menu, and its `Name`.
+fn menu_item_info(item: &ICoreWebView2ContextMenuItem) -> (COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND, String) {
+    let mut kind = COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND;
+    let _ = unsafe { item.Kind(&mut kind) };
+    (kind, pwstr_out(|p| unsafe { item.Name(p) }).unwrap_or_default())
+}
+
+/// Builds one custom item (or separator) for `decorate_menu`.
+fn make_menu_item(env9: &ICoreWebView2Environment9, entry: &webhost::MenuEntry, poster: &Poster, view: ViewId, token: u64) -> Option<ICoreWebView2ContextMenuItem> {
+    use windows::Win32::System::Com::IStream;
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+    match entry {
+        webhost::MenuEntry::Separator => {
+            let empty = wide("");
+            unsafe { env9.CreateContextMenuItem(PCWSTR(empty.as_ptr()), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR) }.ok()
+        }
+        webhost::MenuEntry::Custom { id, label, enabled, icon_png } => {
+            let w = wide(label);
+            let icon = icon_png.as_ref().and_then(|b| unsafe { SHCreateMemStream(Some(b)) });
+            let item = unsafe { env9.CreateContextMenuItem(PCWSTR(w.as_ptr()), icon.as_ref(), COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND) }.ok()?;
+            if !*enabled {
+                let _ = unsafe { item.SetIsEnabled(false) };
+            }
+            let (poster, id) = (poster.clone(), *id);
+            let handler = webview2_com::CustomItemSelectedEventHandler::create(Box::new(move |_sender, _| guard(|| {
+                poster.post(Event::ContextMenuPicked { view, token, id });
+                Ok(())
+            })));
+            let mut t = 0i64;
+            let _ = unsafe { item.add_CustomItemSelected(&handler, &mut t) };
+            Some(item)
+        }
+        webhost::MenuEntry::Native => None,
+    }
+}
+
+/// Edits the menu of `args` in place (see `WebView::answer_context_menu`).
+fn decorate_menu(args: &ICoreWebView2ContextMenuRequestedEventArgs, env: &Env, poster: &Poster, view: ViewId, token: u64, entries: &[webhost::MenuEntry]) -> windows::core::Result<()> {
+    let env9 = env.env.cast::<ICoreWebView2Environment9>()?;
+    let list = unsafe { args.MenuItems() }?;
+    // WebView2's own items without the ones Tandem replaces, then without stray separators.
+    let count = |l: &ICoreWebView2ContextMenuItemCollection| {
+        let mut n = 0u32;
+        let _ = unsafe { l.Count(&mut n) };
+        n
+    };
+    let mut at = count(&list);
+    while at > 0 {
+        at -= 1;
+        if let Ok(item) = unsafe { list.GetValueAtIndex(at) } {
+            if webhost::REMOVED_NATIVE.contains(&menu_item_info(&item).1.as_str()) {
+                let _ = unsafe { list.RemoveValueAtIndex(at) };
+            }
+        }
+    }
+    let mut at = count(&list);
+    while at > 0 {
+        at -= 1;
+        let sep = |i: u32| unsafe { list.GetValueAtIndex(i) }.ok().is_some_and(|it| menu_item_info(&it).0 == COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR);
+        let n = count(&list);
+        if sep(at) && (at == 0 || at + 1 == n || sep(at - 1)) {
+            let _ = unsafe { list.RemoveValueAtIndex(at) };
+        }
+    }
+    let split = entries.iter().position(|e| matches!(e, webhost::MenuEntry::Native)).unwrap_or(entries.len());
+    let (front, back) = entries.split_at(split);
+    let mut index = 0u32;
+    for e in front {
+        if let Some(item) = make_menu_item(&env9, e, poster, view, token) {
+            unsafe { list.InsertValueAtIndex(index, &item) }?;
+            index += 1;
+        }
+    }
+    for e in back.iter().skip(1) {
+        if let Some(item) = make_menu_item(&env9, e, poster, view, token) {
+            let n = count(&list);
+            unsafe { list.InsertValueAtIndex(n, &item) }?;
+        }
+    }
+    Ok(())
+}
+
+/// The menu target of `args`, read once (`MenuTarget::capped` bounds it before it is queued).
+fn menu_target(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> Option<webhost::MenuTarget> {
+    let t = unsafe { args.ContextMenuTarget() }.ok()?;
+    let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE;
+    let _ = unsafe { t.Kind(&mut kind) };
+    let opt = |has: unsafe fn(&ICoreWebView2ContextMenuTarget, *mut BOOL) -> windows::core::Result<()>, get: &dyn Fn() -> Option<String>| {
+        let mut b = BOOL(0);
+        if unsafe { has(&t, &mut b) }.is_ok() && b.as_bool() { get() } else { None }
+    };
+    let mut at = windows::Win32::Foundation::POINT::default();
+    let _ = unsafe { args.Location(&mut at) };
+    Some(webhost::MenuTarget {
+        kind: kind.0,
+        editable: bool_out(|b| unsafe { t.IsEditable(b) }),
+        main_frame: bool_out(|b| unsafe { t.IsRequestedForMainFrame(b) }),
+        page_uri: pwstr_out(|p| unsafe { t.PageUri(p) }).unwrap_or_default(),
+        frame_uri: pwstr_out(|p| unsafe { t.FrameUri(p) }).unwrap_or_default(),
+        link: opt(ICoreWebView2ContextMenuTarget::HasLinkUri, &|| pwstr_out(|p| unsafe { t.LinkUri(p) })),
+        link_text: opt(ICoreWebView2ContextMenuTarget::HasLinkText, &|| pwstr_out(|p| unsafe { t.LinkText(p) })),
+        source: opt(ICoreWebView2ContextMenuTarget::HasSourceUri, &|| pwstr_out(|p| unsafe { t.SourceUri(p) })),
+        selection: opt(ICoreWebView2ContextMenuTarget::HasSelection, &|| pwstr_out(|p| unsafe { t.SelectionText(p) })),
+        x: at.x,
+        y: at.y,
+    })
+}
+
+/// `ContextMenuRequested` (browser panes): takes a deferral, posts the target and returns at once; the
+/// app answers through `answer_context_menu`. Over `MAX_PENDING_MENUS` waiting, WebView2's own menu shows.
+fn register_context_menu(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let v11 = view.cast::<ICoreWebView2_11>()?;
+    let weak = Rc::downgrade(inner);
+    let handler = webview2_com::ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        if inner.borrow().menus.len() >= webhost::MAX_PENDING_MENUS {
+            return Ok(());
+        }
+        let Some(target) = menu_target(&args) else { return Ok(()) };
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
+        let mut i = inner.borrow_mut();
+        let t = i.next_token;
+        i.next_token += 1;
+        i.menus.insert(t, PendingMenu { deferral, args });
+        let id = i.id;
+        i.poster.post(Event::ContextMenu { view: id, token: t, target: target.capped() });
+        Ok(())
+    })));
+    unsafe { v11.add_ContextMenuRequested(&handler, token) }
 }
 
 fn source_of(view: &ICoreWebView2) -> Option<String> {
@@ -1826,6 +2030,76 @@ mod tests {
         drop(env);
         let _ = unsafe { DestroyWindow(hwnd) };
         // Best effort: the browser process may still hold the folder for a moment.
+        if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
+            let _ = crate::localfs::remove_dir_all(&lp);
+        }
+    }
+
+    /// 13x2 Task 3: a right-click's menu gets Tandem's items in order, and `saveAs` and `print` are
+    /// gone. A right click is synthesized with DevTools input; when WebView2 raises no
+    /// `ContextMenuRequested` for synthesized input, the test prints that and passes. Run in a console
+    /// session (see the probe module); never shown.
+    #[test]
+    #[ignore]
+    fn menu_gets_our_items() {
+        if runtime_version(None).is_err() {
+            println!("WebView2 Runtime not installed; skipped");
+            return;
+        }
+        let mut session = 0u32;
+        // SAFETY: plain out parameter.
+        unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut session) };
+        if session == 0 {
+            println!("session 0 cannot host WebView2 windows; skipped");
+            return;
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+        let class = windows::core::w!("TandemMenuTest");
+        let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
+        unsafe { RegisterClassW(&wc) };
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-menu-test"), WS_OVERLAPPEDWINDOW, 0, 0, 300, 300, None, None, None, None) }.expect("a window");
+        let folder = std::env::temp_dir().join(format!("tandem-wv2-menu-{}", std::process::id()));
+        let (tx, rx) = mpsc::channel::<Posted>();
+        let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
+        let cell = env_cell.clone();
+        Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *cell.borrow_mut() = Some(r)));
+        let end = Instant::now() + Duration::from_secs(20);
+        while env_cell.borrow().is_none() && Instant::now() < end {
+            pump_until(&rx, 1, |_| false);
+        }
+        let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
+        let setup = ViewSetup { guard_local_schemes: true, context_menu: true, resource_filters: vec!["https://tandem.invalid/*".into()], ..Default::default() };
+        let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 300, 300), setup, tx.clone());
+        assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
+        view.navigate_tandem("https://tandem.invalid/m");
+        let Some(Event::Request { token, .. }) = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 1, .. })) else { panic!("a request for the page") };
+        view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<body style='margin:0'>hello</body>".to_vec(), headers: vec![] });
+        assert!(pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. })).is_some());
+        for kind in ["mousePressed", "mouseReleased"] {
+            view.devtools_call("Input.dispatchMouseEvent", &format!(r#"{{"type":"{kind}","x":20,"y":20,"button":"right","clickCount":1}}"#), 50);
+        }
+        match pump_until(&rx, 5, |e| matches!(e, Event::ContextMenu { .. })) {
+            None => println!("WebView2 raised no ContextMenuRequested for synthesized input; nothing to check"),
+            Some(Event::ContextMenu { token, .. }) => {
+                use webhost::MenuEntry::*;
+                view.answer_context_menu(token, vec![Custom { id: 1, label: "First".into(), enabled: true, icon_png: None }, Separator, Native, Separator, Custom { id: 4, label: "Last".into(), enabled: true, icon_png: None }]);
+                let labels = LAST_MENU.with(|m| m.borrow().clone());
+                println!("menu: {labels:?}");
+                assert_eq!(labels.first().map(String::as_str), Some("First"));
+                assert_eq!(labels.last().map(String::as_str), Some("Last"));
+                assert!(!labels.iter().any(|l| l.starts_with("saveAs:") || l.starts_with("print:")), "{labels:?}");
+                assert!(labels.windows(2).all(|w| w[0] != "---" || w[1] != "---"), "{labels:?}");
+            }
+            Some(other) => panic!("{other:?}"),
+        }
+        drop(view);
+        drop(env);
+        let _ = unsafe { DestroyWindow(hwnd) };
         if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
             let _ = crate::localfs::remove_dir_all(&lp);
         }

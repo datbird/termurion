@@ -159,6 +159,67 @@ pub fn user_agent(setting: &str, engine_default: &str) -> String {
     if setting.is_empty() { format!("{engine_default} Tandem") } else { setting.to_string() }
 }
 
+/// What a right-click landed on (WebView2's `ICoreWebView2ContextMenuTarget` and the location, in
+/// physical pixels of the view). Everything a page chose is capped by `MenuTarget::capped` before it
+/// is queued.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuTarget {
+    /// `COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND`: page 0, image 1, selected text 2, audio 3, video 4.
+    pub kind: i32,
+    pub editable: bool,
+    pub main_frame: bool,
+    pub page_uri: String,
+    pub frame_uri: String,
+    pub link: Option<String>,
+    pub link_text: Option<String>,
+    pub source: Option<String>,
+    pub selection: Option<String>,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// The longest selection a menu target carries, in characters (iTerm2's helpers stop at 1,000,000).
+pub const MAX_MENU_SELECTION: usize = 1_000_000;
+/// The longest link text a menu target carries, in characters.
+pub const MAX_MENU_LINK_TEXT: usize = 1024;
+/// Menus waiting for an answer in one view (a further request shows WebView2's own menu).
+pub const MAX_PENDING_MENUS: usize = 4;
+
+impl MenuTarget {
+    /// The target with every page-chosen string bounded: URLs cut by `cap_url` (a cut URL is dropped,
+    /// never used whole), the selection and the link text cut at a character boundary.
+    pub fn capped(mut self) -> MenuTarget {
+        let url = |u: &str| {
+            let (c, cut) = cap_url(u);
+            if cut { String::new() } else { c }
+        };
+        let text = |s: &str, max: usize| match s.char_indices().nth(max) {
+            Some((at, _)) => s[..at].to_string(),
+            None => s.to_string(),
+        };
+        self.page_uri = url(&self.page_uri);
+        self.frame_uri = url(&self.frame_uri);
+        self.link = self.link.map(|l| url(&l)).filter(|l| !l.is_empty());
+        self.source = self.source.map(|l| url(&l)).filter(|l| !l.is_empty());
+        self.link_text = self.link_text.map(|t| text(&t, MAX_MENU_LINK_TEXT));
+        self.selection = self.selection.map(|t| text(&t, MAX_MENU_SELECTION));
+        self
+    }
+}
+
+/// One entry of the menu the app answers a `ContextMenu` event with (`WebView::answer_context_menu`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuEntry {
+    /// A Tandem item; `icon_png` is an optional PNG (the color swatch).
+    Custom { id: u32, label: String, enabled: bool, icon_png: Option<Vec<u8>> },
+    Separator,
+    /// Where WebView2's own items go.
+    Native,
+}
+
+/// WebView2's own items Tandem replaces (their `Name`): iTerm2's menu has its own Save Page As and Print.
+pub const REMOVED_NATIVE: &[&str] = &["saveAs", "print"];
+
 /// What a view tells the app. Open for extension: every consumer's `match` ends in `_ =>`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -203,6 +264,11 @@ pub enum Event {
     /// event. `kind` is `COREWEBVIEW2_NAVIGATION_KIND`; a consumer that wants iTerm2's
     /// `didStartProvisionalNavigation` ignores `redirect == true`, which fires once per navigation.
     Starting { view: ViewId, url: String, kind: i32, user: bool, redirect: bool, nav: u64 },
+    /// A right-click on the page: the view holds the menu back (a deferral) until the app answers with
+    /// `answer_context_menu(token, ..)`. Never dropped; its strings are capped by `MenuTarget::capped`.
+    ContextMenu { view: ViewId, token: u64, target: MenuTarget },
+    /// A custom item of the answered menu was chosen: `id` is the `MenuEntry::Custom` id.
+    ContextMenuPicked { view: ViewId, token: u64, id: u32 },
 }
 
 impl Event {
@@ -224,7 +290,9 @@ impl Event {
             | Event::FrameCreated { view, .. }
             | Event::FrameGone { view, .. }
             | Event::FrameMessage { view, .. }
-            | Event::Starting { view, .. } => *view,
+            | Event::Starting { view, .. }
+            | Event::ContextMenu { view, .. }
+            | Event::ContextMenuPicked { view, .. } => *view,
         }
     }
 
@@ -248,6 +316,7 @@ impl Event {
             Event::Message { json, source, .. } | Event::FrameMessage { json, source, .. } => json.len() + source.len(),
             Event::FrameCreated { name, .. } => name.len(),
             Event::Starting { url, .. } => url.len(),
+            Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
@@ -1469,6 +1538,32 @@ mod tests {
         assert!(gate.admit(&ev("Runtime.bindingCalled", &"x".repeat(MAX_MESSAGE + MAX_URL + 1))).is_err());
         assert_eq!(devtools_json_cap(), MAX_MESSAGE + MAX_URL);
         drop(held);
+    }
+
+    /// 13x2 Task 3 (B12): a menu request is never dropped (it holds a deferral), a pick is not
+    /// either, and the target's strings are bounded before the event is queued.
+    #[test]
+    fn menu_events_follow_the_caps() {
+        let target = MenuTarget { selection: Some("a".repeat(MAX_MENU_SELECTION + 5)), link: Some(format!("https://x/{}", "y".repeat(MAX_URL))), source: Some("https://i/p.png".into()), link_text: Some("t".repeat(MAX_MENU_LINK_TEXT + 9)), page_uri: "https://p/".into(), ..MenuTarget::default() };
+        let capped = target.capped();
+        assert_eq!(capped.selection.as_ref().unwrap().chars().count(), MAX_MENU_SELECTION);
+        assert_eq!(capped.link, None, "a cut URL is dropped, never used whole");
+        assert_eq!(capped.link_text.as_ref().unwrap().chars().count(), MAX_MENU_LINK_TEXT);
+        assert_eq!(capped.source.as_deref(), Some("https://i/p.png"));
+        let ask = Event::ContextMenu { view: 3, token: 1, target: capped };
+        let pick = Event::ContextMenuPicked { view: 3, token: 1, id: 2 };
+        assert_eq!((ask.view(), pick.view()), (3, 3));
+        assert!(!ask.droppable() && !pick.droppable());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..(MAX_QUEUED_EVENTS + 2) {
+            held.push(gate.admit(&ask).expect("a menu request is admitted over any cap"));
+        }
+        drop(held);
+        // Multi-byte text is cut on a character boundary.
+        let t = MenuTarget { selection: Some("\u{e9}".repeat(MAX_MENU_SELECTION + 1)), ..MenuTarget::default() }.capped();
+        assert_eq!(t.selection.unwrap().chars().count(), MAX_MENU_SELECTION);
+        assert_eq!(REMOVED_NATIVE, &["saveAs", "print"]);
     }
 
     /// 13x2 Task 1: the new events know their view; a frame message is capped like a message, a
