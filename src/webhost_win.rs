@@ -30,6 +30,7 @@ use webview2_com::{
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
+use crate::browser_world;
 use crate::webhost::{self, Answer, EnvOptions, Event, Posted, Sink, Store, ViewGate, ViewId};
 
 /// Runs the body of a COM callback. A panic must never unwind into COM (that aborts Tandem with
@@ -692,6 +693,12 @@ impl WebView {
     }
 
     fn devtools_call_in(&self, session: Option<String>, method: &str, params_json: &str, token: u64) {
+        // The one DevTools sender: a closed set of methods (P22).
+        if !browser_world::method_allowed(method) {
+            let i = self.inner.borrow();
+            i.poster.post(Event::ScriptDone { view: i.id, token, json: Err("that DevTools method is not allowed".into()) });
+            return;
+        }
         let (wm, wp) = (wide(method), wide(params_json));
         let ws = session.as_deref().map(wide);
         let (poster, id) = {
@@ -1768,7 +1775,7 @@ mod probe {
     post({ h: 'iTermSelectionMonitor', b: { selection: 'x', sessionSecret: '{{GUESS}}' } });
     post({ handler: 'iterm2-about:history', body: { action: 'clearAllHistory' } });
     const r = {};
-    try { r.client = typeof (window.__tandemClient && window.__tandemClient('{}')); } catch (e) { r.client = 'threw'; }
+    try { r.client = typeof window.__tandemClient; } catch (e) { r.client = 'threw'; }
     try { r.webkit = typeof (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.probeEcho && window.webkit.messageHandlers.probeEcho.postMessage({})); } catch (e) { r.webkit = 'threw'; }
     window.postMessage({ namespace: 'IFRAME_GRAPH_DISCOVERY', type: 'CHILD_REPORT', requestId: 'r', payload: { graph: {} } }, '*');
     return origStringify(r);
@@ -2014,7 +2021,8 @@ mod probe {
         fn attach(&mut self, sid: &str, ty: &str) {
             self.attached.push((sid.to_string(), ty.to_string()));
             // An iframe gets the world; any other target is only resumed (it would wait for ever).
-            let q: VecDeque<_> = if ty == "iframe" { browser_world::session_calls(&self.sources).into() } else { vec![("Runtime.runIfWaitingForDebugger", json!({}))].into() };
+            let frame = matches!(browser_world::attached(&json!({"sessionId": sid, "targetInfo": {"type": ty}}).to_string(), self.sessions.len()), browser_world::Attach::Frame { .. });
+            let q: VecDeque<_> = if frame { browser_world::session_calls(&self.sources).into() } else { vec![("Runtime.runIfWaitingForDebugger", json!({}))].into() };
             self.sessions.insert(sid.to_string(), q);
             self.step_session(sid);
         }
@@ -2179,8 +2187,13 @@ mod probe {
     #[ignore]
     fn probe_page_cannot_read_the_secret() {
         let secret = hex32();
-        let Some(mut p) = Probe::start(&[(PAGE, hostile_page("<a href=\"https://x.invalid/\">link</a>", "g"))], client_sources(&secret, false)) else { return };
+        // P9: a child frame is part of the page, so the parent's page world, with its capture-phase
+        // `message` recorder, sees every DOM message the world's scripts post to a parent. The secret
+        // must be in none of them (the view secret never goes through `postMessage`).
+        let body = "<a href=\"https://x.invalid/\">link</a><iframe srcdoc=\"&lt;p&gt;child&lt;/p&gt;&lt;a href=&quot;https://y.invalid/&quot;&gt;l&lt;/a&gt;\"></iframe>";
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(body, "g"))], client_sources(&secret, false)) else { return };
         p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child frame has a world, so its reports are posted");
         assert_eq!(p.eval(None, "typeof globalThis.__tandemClient"), Ok(json!("function")), "the world is live: the binding");
         assert_eq!(p.eval(None, "typeof window.iTermHoverLinkHandler"), Ok(json!("object")), "the world is live: hover");
         assert_eq!(p.eval(None, "typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok(json!("object")), "the world is live: graph discovery");
@@ -2236,7 +2249,7 @@ mod probe {
         p.load(PAGE);
         p.eval(None, &echo(&secret)).expect("the echo");
         let forged = p.page_eval("window.__forge()").expect("the forgery ran");
-        assert!(forged.contains("undefined"), "{forged}");
+        assert!(forged.contains("\"client\":\"undefined\""), "the binding does not exist in the page world: {forged}");
         assert!(!forged.contains("threw"), "{forged}");
         p.settle(1000);
         let pages: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Page).collect();
@@ -2283,12 +2296,23 @@ mod probe {
         let nested = "&lt;iframe srcdoc=&quot;&amp;lt;p&amp;gt;nested&amp;lt;/p&amp;gt;&quot;&gt;&lt;/iframe&gt;&lt;p&gt;mid&lt;/p&gt;";
         let top_page = format!(
             "<!doctype html><html><head><title>top</title></head><body><iframe srcdoc=\"{nested}\"></iframe><iframe src=\"{child}\"></iframe><script>\n\
+             window.__worker = 'pending'; try {{ const w = new Worker(URL.createObjectURL(new Blob(['postMessage(\"ran\")'], {{ type: 'text/javascript' }}))); w.onmessage = function (m) {{ window.__worker = m.data; }}; w.onerror = function () {{ window.__worker = 'error'; }}; }} catch (x) {{ window.__worker = 'threw'; }}\n\
              const e = new Error('x'); Object.defineProperty(e, 'stack', {{ get() {{ window.__stackRead = true; return ''; }} }}); console.debug(e);\n\
              setTimeout(function () {{ const f = document.createElement('iframe'); f.srcdoc = '<p>late</p>'; document.body.appendChild(f); }}, 300);\n\
              </script></body></html>"
         );
         let Some(mut p) = Probe::start(&[(top, top_page), (child, "<!doctype html><title>child</title><p>b</p>".to_string())], client_sources(&secret, true)) else { return };
         p.load(top);
+        // B11: a worker is auto-attached and waits for a debugger; the host resumes it, so it runs.
+        let mut worker_ran = false;
+        for _ in 0..30 {
+            if p.page_eval("String(window.__worker)").is_ok_and(|v| v.contains("ran")) {
+                worker_ran = true;
+                break;
+            }
+            p.settle(500);
+        }
+        assert!(worker_ran, "a page's worker runs: {:?}", p.page_eval("String(window.__worker)"));
         let frames_ok = p.wait(15, |p| p.contexts.frames().len() == 4);
         let seen = format!("attached {:?}; frames {:?}; rejected {}", p.attached, p.contexts.frames(), p.rejected_bindings);
         assert!(frames_ok, "every frame has a Tandem world: {seen}");

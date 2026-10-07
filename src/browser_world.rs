@@ -82,6 +82,102 @@ pub fn evaluate_result(json: &str) -> Result<Value, String> {
     Ok(v.pointer("/result/value").cloned().unwrap_or(Value::Null))
 }
 
+/// Child sessions of one view that get a world; the next one is resumed and left alone.
+pub const MAX_SESSIONS: usize = 64;
+/// The call that lets an auto-attached target run (it waits for a debugger otherwise).
+pub const RESUME: &str = "Runtime.runIfWaitingForDebugger";
+
+/// Every DevTools method Tandem ever calls (P22): a new one is added here with its reviewer.
+pub const ALLOWED: &[&str] = &[
+    "Page.enable",
+    "Page.getFrameTree",
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Page.removeScriptToEvaluateOnNewDocument",
+    "Page.createIsolatedWorld",
+    "Runtime.enable",
+    "Runtime.addBinding",
+    "Runtime.evaluate",
+    "Target.setAutoAttach",
+    "Runtime.runIfWaitingForDebugger",
+    // B11: a target that is not a frame is let go once it is resumed.
+    "Target.detachFromTarget",
+    "Emulation.setFocusEmulationEnabled",
+    "Input.insertText",
+    "Input.dispatchKeyEvent",
+    "Input.dispatchMouseEvent",
+];
+
+pub fn method_allowed(method: &str) -> bool {
+    ALLOWED.contains(&method)
+}
+
+/// What an attached target gets (B11).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Attach {
+    /// An iframe within the session cap: `SessionSetup` makes its world, and resumes it last.
+    Frame { session: String },
+    /// Anything else (workers, a frame over the cap): resumed at once on its own session, then
+    /// detached with `Target.detachFromTarget` on the parent's session.
+    Resume { session: String },
+    Ignore,
+}
+
+/// The plan for one `Target.attachedToTarget` body; `live` is the child sessions the view has now.
+pub fn attached(json: &str, live: usize) -> Attach {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return Attach::Ignore };
+    let Some(session) = v.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 256) else { return Attach::Ignore };
+    let session = session.to_string();
+    if v.pointer("/targetInfo/type").and_then(Value::as_str) == Some("iframe") && live < MAX_SESSIONS {
+        Attach::Frame { session }
+    } else {
+        Attach::Resume { session }
+    }
+}
+
+/// The parameters of `Target.detachFromTarget`.
+pub fn detach_params(session: &str) -> Value {
+    json!({"sessionId": session})
+}
+
+/// One child session's calls, one at a time: after a failed call only the resume still goes (the
+/// frame then has no Tandem world, but it is never left paused).
+#[derive(Debug)]
+pub struct SessionSetup {
+    session: String,
+    queue: std::collections::VecDeque<Call>,
+    in_flight: bool,
+}
+
+impl SessionSetup {
+    pub fn new(session: &str, client_sources: &[String]) -> SessionSetup {
+        SessionSetup { session: session.to_string(), queue: session_calls(client_sources).into(), in_flight: false }
+    }
+
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    pub fn next_call(&mut self) -> Option<Call> {
+        if self.in_flight {
+            return None;
+        }
+        let c = self.queue.pop_front()?;
+        self.in_flight = true;
+        Some(c)
+    }
+
+    pub fn answered(&mut self, r: Result<String, String>) {
+        self.in_flight = false;
+        if r.is_err() {
+            self.queue.retain(|(m, _)| *m == RESUME);
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        self.queue.is_empty() && !self.in_flight
+    }
+}
+
 /// Whether a view has a Tandem world.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientWorld {
@@ -600,6 +696,95 @@ mod tests {
         assert!(n > 0);
         assert_eq!(*u.state(), ClientWorld::Ready);
         assert!(u.next_check().is_none());
+    }
+
+
+    fn attach_json(session: &str, ty: &str, waiting: bool) -> String {
+        json!({"sessionId": session, "targetInfo": {"targetId": "T", "type": ty, "url": "https://x.invalid/"}, "waitingForDebugger": waiting}).to_string()
+    }
+
+    /// B11/P11: every auto-attached target ends with exactly one `Runtime.runIfWaitingForDebugger` on
+    /// its own session, whatever its type and even when its setup fails; a target that is not an
+    /// iframe is then detached (on the parent's session); a view has at most 64 child sessions.
+    #[test]
+    fn attached_targets_are_resumed() {
+        let sources = vec!["A".to_string()];
+        for ty in ["iframe", "worker", "service_worker", "shared_worker", "page", "other"] {
+            for fail_first in [false, true] {
+                let mut sent: Vec<(String, &str)> = Vec::new();
+                match attached(&attach_json("S1", ty, true), 0) {
+                    Attach::Frame { session } => {
+                        assert_eq!(ty, "iframe");
+                        let mut s = SessionSetup::new(&session, &sources);
+                        let mut first = true;
+                        while let Some((m, _)) = s.next_call() {
+                            sent.push((session.clone(), m));
+                            s.answered(if first && fail_first { Err("boom".into()) } else { Ok("{}".into()) });
+                            first = false;
+                        }
+                    }
+                    Attach::Resume { session } => {
+                        assert_ne!(ty, "iframe");
+                        sent.push((session.clone(), RESUME));
+                        sent.push(("parent".into(), "Target.detachFromTarget"));
+                    }
+                    Attach::Ignore => panic!("{ty} is ignored"),
+                }
+                let resumes: Vec<_> = sent.iter().filter(|(_, m)| *m == RESUME).collect();
+                assert_eq!(resumes.len(), 1, "{ty} fail_first={fail_first}: {sent:?}");
+                assert_eq!(resumes[0].0, "S1");
+                if ty == "iframe" {
+                    assert_eq!(sent.last().map(|(_, m)| *m), Some(RESUME), "the resume is last: {sent:?}");
+                    assert!(!sent.iter().any(|(_, m)| *m == "Target.detachFromTarget"), "a frame keeps its session");
+                } else {
+                    assert!(sent.iter().any(|(_, m)| *m == "Target.detachFromTarget"));
+                }
+            }
+        }
+        // The 65th session is resumed and never set up, even an iframe.
+        assert_eq!(attached(&attach_json("S65", "iframe", true), MAX_SESSIONS), Attach::Resume { session: "S65".into() });
+        assert!(matches!(attached(&attach_json("S64", "iframe", true), MAX_SESSIONS - 1), Attach::Frame { .. }));
+        // No session id, no target info or a garbled body: nothing to resume.
+        assert_eq!(attached("{}", 0), Attach::Ignore);
+        assert_eq!(attached("nope", 0), Attach::Ignore);
+        assert_eq!(detach_params("S1"), json!({"sessionId": "S1"}));
+    }
+
+    /// P22: the DevTools protocol is Rust-only and a closed set of methods; no debugging port or
+    /// origin flag exists anywhere in the program.
+    #[test]
+    fn devtools_methods_are_a_closed_set() {
+        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Emulation.setFocusEmulationEnabled", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent"] {
+            assert!(method_allowed(m), "{m}");
+        }
+        assert_eq!(ALLOWED.len(), 15);
+        for m in ["Page.navigate", "Network.getCookies", "Runtime.callFunctionOn", "Browser.close", "Storage.getCookies", "Target.createTarget", "Fetch.enable", "Page.enable ", "page.enable", ""] {
+            assert!(!method_allowed(m), "{m}");
+        }
+        // Every setup and session call is allowed.
+        for (m, _) in setup_calls(&["x".into()]).into_iter().chain(session_calls(&["x".into()])) {
+            assert!(method_allowed(m), "{m}");
+        }
+        // The host refuses anything else before the call is made, and no flag opens a port.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let host = std::fs::read_to_string(root.join("webhost_win.rs")).unwrap();
+        let host = host.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(host.contains("browser_world::method_allowed(method)"), "the one DevTools sender checks the allow-list");
+        let mut dirs = vec![root];
+        let flag = ["remote", "-debugging"].concat();
+        let origin = ["remote", "-allow-origins"].concat();
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let t = std::fs::read_to_string(&p).unwrap();
+                    let live = t.split("#[cfg(test)]").next().unwrap();
+                    assert!(!live.contains(&flag) && !live.contains(&origin), "{p:?} names a debugging flag");
+                }
+            }
+        }
     }
 
     #[test]
