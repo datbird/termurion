@@ -24,6 +24,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(3600);
 /// browser process may still hold the folder for a moment.
 /// The longest one download may take in all.
 const LIST_DEADLINE: Duration = Duration::from_secs(300);
+/// The requests judged in one tick; the rest of a burst goes on unjudged.
+const MAX_JUDGED_PER_TICK: usize = 64;
 const REBUILD_WINDOW: Duration = Duration::from_secs(20);
 const REBUILD_RETRY: Duration = Duration::from_millis(400);
 
@@ -55,6 +57,8 @@ pub(super) struct Adblock {
     /// The list address last looked at (None until the first look: not a change).
     url_seen: Option<String>,
     force: bool,
+    /// Requests judged in this tick (reset by `web_tick`).
+    pub(super) judged: std::cell::Cell<usize>,
 }
 
 fn unix_now() -> i64 {
@@ -119,8 +123,15 @@ impl App {
     /// The answer for one request of a browser page: blocked when the list says so, else on its way.
     /// In memory and bounded (`adblock::blocks` stops after 2 ms), so the UI thread never waits.
     pub(super) fn adblock_answer(&self, url: &str, context: i32, top_url: &str) -> Answer {
+        let judged = self.adblock.judged.get();
+        if judged >= MAX_JUDGED_PER_TICK {
+            return Answer::Continue;
+        }
         match &self.adblock.rules {
-            Some(r) if self.adblock_on() && adblock::blocks(r, url, adblock::resource_of(context), top_url) => Answer::Block,
+            Some(r) if self.adblock_on() => {
+                self.adblock.judged.set(judged + 1);
+                if adblock::blocks(r, url, adblock::resource_of(context), top_url) { Answer::Block } else { Answer::Continue }
+            }
             _ => Answer::Continue,
         }
     }
@@ -392,6 +403,19 @@ mod tests {
         assert!(dl.find("list_url_ok").unwrap() < dl.find("self.ai_transport.start_bounded(").unwrap());
         // The transport enforces the 8 MiB cap while streaming and a total time bounds a slow drip.
         assert!(dl.contains("limit: adblock::MAX_LIST_BYTES") && dl.contains("total: Some(LIST_DEADLINE)"), "{dl}");
+    }
+
+    /// The requests judged in one tick are capped; the rest go on unjudged (an ad slips through, a
+    /// page load never waits), and the count resets every tick.
+    #[test]
+    fn requests_judged_per_tick_are_capped() {
+        let src = include_str!("adblock_app.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let answer = &live[live.find("pub(super) fn adblock_answer").unwrap()..live.find("pub(super) fn adblock_inject").unwrap()];
+        assert!(answer.contains("MAX_JUDGED_PER_TICK") && answer.contains("judged"), "{answer}");
+        let web = include_str!("webhost_app.rs");
+        let tick = &web[web.find("pub(super) fn web_tick").unwrap()..web.find("fn web_focus_recheck").unwrap()];
+        assert!(tick.contains("self.adblock.judged.set(0)"));
     }
 
     /// A request for Tandem's own scheme keeps its answer first; everything else is the blocker's.

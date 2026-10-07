@@ -33,7 +33,15 @@ const MAX_CSS: usize = 512 << 10;
 /// freeze a page load on the UI thread.
 const MATCH_BUDGET: Duration = Duration::from_millis(2);
 const CSS_BUDGET: Duration = Duration::from_millis(25);
-const MIN_JUDGED: usize = 16;
+/// The longest part of a URL that is matched (and indexed): a URL can be megabytes long.
+const MAX_HAYSTACK: usize = 4096;
+/// The rules with no literal to index by are judged for every request, so only this many are kept.
+const MAX_ALWAYS: usize = 256;
+/// Regex program size limits: the rules judged for every request are built when the list compiles
+/// (larger allowed), the rest when first needed (small: a cold build is cheap and bounded).
+const EAGER_SIZE: usize = 128 << 10;
+const LAZY_SIZE: usize = 32 << 10;
+const DFA_SIZE: usize = 256 << 10;
 const KEY_LEN: usize = 4;
 const ALL_BUT_POPUP: u16 = 0x1FF;
 
@@ -94,14 +102,39 @@ enum Filter {
     Pattern { text: String, sensitive: bool, re: OnceLock<Option<Regex>> },
 }
 
+fn build_regex(text: &str, sensitive: bool, size: usize) -> Option<Regex> {
+    RegexBuilder::new(text).case_insensitive(!sensitive).size_limit(size).dfa_size_limit(DFA_SIZE).build().ok()
+}
+
+/// `s` cut to at most `max` bytes at a character boundary.
+fn cut(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 impl Filter {
+    /// Matches the URL's first `MAX_HAYSTACK` bytes; a regex not built yet is built small.
     fn matches(&self, url: &str) -> bool {
         match self {
             Filter::Any => true,
             Filter::Pattern { text, sensitive, re } => re
-                .get_or_init(|| RegexBuilder::new(text).case_insensitive(!sensitive).size_limit(256 << 10).dfa_size_limit(1 << 20).build().ok())
+                .get_or_init(|| build_regex(text, *sensitive, LAZY_SIZE))
                 .as_ref()
-                .is_some_and(|r| r.is_match(url)),
+                .is_some_and(|r| r.is_match(cut(url, MAX_HAYSTACK))),
+        }
+    }
+
+    /// Builds the regex now (on the worker). False when it cannot be built: the rule is dropped.
+    fn prebuild(&self) -> bool {
+        match self {
+            Filter::Any => true,
+            Filter::Pattern { text, sensitive, re } => re.get_or_init(|| build_regex(text, *sensitive, EAGER_SIZE)).is_some(),
         }
     }
 }
@@ -158,8 +191,9 @@ struct Rule {
     action: Action,
 }
 
-/// A compiled list. Regexes are built on first use (a hostile list cannot make loading expensive)
-/// and a literal index narrows each request to a few candidates.
+/// A compiled list. The regexes of the rules judged for every request are built when it compiles
+/// (on the worker); the others are built small on first use, and a literal index narrows each
+/// request to a few candidates.
 #[derive(Debug)]
 pub struct Rules {
     rules: Vec<Rule>,
@@ -176,6 +210,22 @@ impl Rules {
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
     }
+}
+
+impl Rules {
+    /// Whether every rule a request is always judged against has its regex built (they are built
+    /// when the list compiles, on the worker, never on the UI thread).
+    #[cfg(test)]
+    fn always_prebuilt(&self) -> bool {
+        self.always.iter().all(|&i| matches!(&self.rules[i as usize].filter, Filter::Pattern { re, .. } if re.get().is_some()) || matches!(&self.rules[i as usize].filter, Filter::Any))
+    }
+}
+
+static OVER_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many requests were allowed unjudged because matching ran out of its budget (this run).
+pub fn over_budget_count() -> usize {
+    OVER_BUDGET.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Compiles WebKit content-blocker JSON (`ABM:96-115` validates the same shape).
@@ -221,6 +271,11 @@ pub fn compile(json: &str) -> Result<Rules, String> {
             None => always.push(i),
         }
     }
+    // What a request is always judged against, and the element hiding rules, are built here on the
+    // worker; a rule that will not build goes, and only so many always-judged rules are kept.
+    always.retain(|&i| rules[i as usize].filter.prebuild());
+    always.truncate(MAX_ALWAYS);
+    hides.retain(|&i| rules[i as usize].filter.prebuild());
     Ok(Rules { rules, index, always, hides })
 }
 
@@ -409,7 +464,7 @@ pub fn blocks(rules: &Rules, url: &str, resource: Resource, top_url: &str) -> bo
     let top = if resource == Resource::Document || top_url.is_empty() { url } else { top_url };
     let top_host = web_host(top).unwrap_or_default();
     let third = !top_host.is_empty() && registrable(&host) != registrable(&top_host);
-    let lower: Vec<u8> = url.bytes().take(4096).map(|b| b.to_ascii_lowercase()).collect();
+    let lower: Vec<u8> = url.bytes().take(MAX_HAYSTACK).map(|b| b.to_ascii_lowercase()).collect();
     let mut candidates: Vec<u32> = rules.always.clone();
     for w in lower.windows(KEY_LEN) {
         if let Some(l) = rules.index.get(&[w[0], w[1], w[2], w[3]]) {
@@ -419,10 +474,10 @@ pub fn blocks(rules: &Rules, url: &str, resource: Resource, top_url: &str) -> bo
     candidates.sort_unstable();
     candidates.dedup();
     let mut blocked = false;
-    for (n, i) in candidates.into_iter().enumerate() {
-        // The first candidates are always judged (a regex is built on first use and a cold build
-        // can outlast the budget); after that the budget ends the scan.
-        if n >= MIN_JUDGED && start.elapsed() > MATCH_BUDGET {
+    for i in candidates {
+        // The budget is checked before every candidate; out of it the request goes on (ads only).
+        if start.elapsed() > MATCH_BUDGET {
+            OVER_BUDGET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return false;
         }
         let r = &rules.rules[i as usize];
@@ -762,5 +817,23 @@ mod tests {
         g.set("AdblockListURL", toml::Value::String("https://x.test/a b".into()));
         assert!(!g.string("AdblockListURL").contains(' '));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A list that cannot be cheap per request (rules with no literal to index by, shaped to make
+    /// the regex engine slow) and a megabyte URL: the answer comes back within the budget plus one
+    /// bounded match, every always-judged regex was built when the list compiled, and the URL is
+    /// cut before any match.
+    #[test]
+    fn a_dfa_hostile_list_stays_in_budget() {
+        let json = format!("[{}]", (0..24).map(|i| block_rule(&format!(".*a{}{i}", ".".repeat(100)))).collect::<Vec<_>>().join(","));
+        let r = rules(&json);
+        assert_eq!(r.len(), 24);
+        assert!(r.always_prebuilt(), "built on the worker, not on first use");
+        let url = format!("https://x.test/{}", "a".repeat(1 << 20));
+        let before = over_budget_count();
+        let start = std::time::Instant::now();
+        assert!(!blocks(&r, &url, Resource::Image, TOP), "over budget means allowed (fail open for ads only)");
+        assert!(start.elapsed() < Duration::from_millis(250), "{:?}", start.elapsed());
+        assert!(over_budget_count() > before, "an answer cut short is counted");
     }
 }

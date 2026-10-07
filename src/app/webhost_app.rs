@@ -242,6 +242,7 @@ impl App {
         }
         self.web_focus_recheck();
         self.web_popover_tick();
+        self.adblock.judged.set(0);
         for _ in 0..DRAIN_PER_TICK {
             let Ok(posted) = self.web_events.try_recv() else { break };
             if let Some((store, result)) = &posted.env {
