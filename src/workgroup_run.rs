@@ -391,8 +391,8 @@ pub fn command_plan(template: &str, git_base: &str) -> Result<Plan, String> {
 /// The command line for a program Tandem resolved and its arguments, made with CreateProcess's
 /// rules. A batch file never gets an argument cmd.exe would read as syntax.
 pub fn argv_line(program: &std::path::Path, args: &[String]) -> Result<String, String> {
-    let ext = program.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    if matches!(ext.as_str(), "cmd" | "bat") && args.iter().any(|a| crate::semantic::batch_unsafe(a)) {
+    // Anything cmd.exe parses (cmd itself, a .cmd or .bat) must not get an argument it reads as syntax (13r).
+    if crate::semantic::is_batch(program) && args.iter().any(|a| crate::semantic::batch_unsafe(a) || a.contains('!')) {
         return Err(crate::semantic::CMD_REFUSED.to_string());
     }
     let mut line = String::new();
@@ -508,6 +508,20 @@ mod tests {
         assert!(launch[..launch.find("\n    }\n").unwrap()].contains("approved.allows("), "every restart takes its command from the approval");
         let toolbar = include_str!("app/workgroup_toolbar_ui.rs");
         assert!(toolbar.contains("inst.approved.allows("));
+    }
+
+    /// Task 6 round 1, item 4: any program that cmd.exe parses (cmd itself, a .cmd or .bat) never gets an
+    /// argument holding cmd syntax; a file named a&calc.txt cannot reach it.
+    #[test]
+    fn cmd_parsed_lines_refuse_cmd_syntax() {
+        use std::path::Path;
+        for program in [r"C:\Windows\System32\cmd.exe", r"C:\Windows\System32\CMD", r"C:\t\x.cmd", r"C:\t\x.BAT"] {
+            for bad in ["a&calc.txt", "a|b", "a>b", "a<b", "a^b", "%PATH%", "a!b", "a\u{7}b", "a\"b"] {
+                assert!(argv_line(Path::new(program), &["/c".into(), "type".into(), bad.into()]).is_err(), "{program} {bad:?}");
+            }
+            assert!(argv_line(Path::new(program), &["/c".into(), "type".into(), "plain file.txt".into()]).is_ok(), "{program}");
+        }
+        assert!(argv_line(Path::new(r"C:\Git\git.exe"), &["diff".into(), "--".into(), "a&calc.txt".into()]).is_ok(), "a program that is no cmd parser takes any name as one argument");
     }
 
     /// The functions of a source: (name, body), a function ending where the next begins.
