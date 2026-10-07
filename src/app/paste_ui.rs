@@ -3,12 +3,16 @@
 //! pane's status bar when one is shown).
 
 use super::*;
-use crate::broadcast::Write;
+use crate::broadcast::{self, Write};
 use crate::paste::{self, Job, Speed, Warning};
 use crate::warnings;
 
 /// The progress bar (its Cancel button).
 const PASTE_BAR: &str = "paste-progress";
+
+/// How an auto-send's paste and its Return are written (13y1 Task 7 B6): to the main session only, never
+/// to its broadcast domain (the refusals judged that one session).
+pub(super) const AUTO_WRITE: Write = Write::Agent;
 
 /// A literal write that waits for a pane's pastes to drain and then for a delay (13y1 Task 7).
 pub(super) struct LiteralAfter {
@@ -125,7 +129,11 @@ impl App {
         let commands = job.flags & paste::COMMANDS != 0;
         let entry = self.pastes.entry(sender).or_insert_with(|| (paste::Queue::default(), what, false));
         entry.0.push(&text, speed, commands);
-        entry.1 = what;
+        // A queue holding a local write (an auto-send) stays local until it drains: a paste joining it
+        // never sends the rest to the broadcast domain.
+        if broadcast::route(entry.1) != broadcast::Route::Local {
+            entry.1 = what;
+        }
         entry.2 |= paste::shows_progress(total, speed, commands);
         // iTerm2: pasting clears the selection (PastingClearsSelection).
         if self.globals.bool("PastingClearsSelection") {
@@ -141,7 +149,7 @@ impl App {
     /// would have asked about: a pane that did not ask for bracketed paste, a password prompt, a size.
     pub(super) fn paste_auto(&mut self, sender: PaneId, job: Job) {
         let speed = self.paste_speed(false);
-        self.paste_run(sender, job, speed, Write::Paste);
+        self.paste_run(sender, job, speed, AUTO_WRITE);
     }
 
     /// Writes `text` to `pane` as is (no bracket, no transform) `delay` after the pane's pastes in flight
@@ -184,7 +192,7 @@ impl App {
             // The instance must still be this pane's workgroup (a reused pane id gets nothing).
             let live = self.workgroups.get(&l.owner).is_some() && self.panes.get(&l.pane).is_some_and(|p| p.workgroup.as_deref() == Some(l.owner.as_str()) && p.exited.is_none());
             if live {
-                self.user_write(l.pane, l.text.as_bytes(), Write::Paste);
+                self.user_write(l.pane, l.text.as_bytes(), AUTO_WRITE);
             }
         }
         next

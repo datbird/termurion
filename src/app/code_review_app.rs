@@ -771,6 +771,30 @@ fn remove_review_file(path: &std::path::Path) {
 mod tests {
     const THIS: &str = include_str!("code_review_app.rs");
 
+    /// 13y1 Task 7 item 3 (B6): the auto-send's paste and its Return go to the main session only, never to
+    /// its broadcast domain, so the checks made on the main session are the checks on every target.
+    #[test]
+    fn auto_send_writes_only_to_the_main_session() {
+        use crate::broadcast::{self, Broadcast, Mode, Route, TabView, View};
+        use std::collections::BTreeSet;
+        let what = super::super::paste_ui::AUTO_WRITE;
+        // Broadcast input is on for the main session's tab: the person's typing reaches every pane, the
+        // auto-send's paste and Return reach the main session only.
+        let b = Broadcast { raw: Mode::AllPanes, ..Default::default() };
+        let v = View { tabs: vec![TabView { broadcasting: true, panes: vec![7, 8, 9] }], current_tab: 0, current: 7, exited: BTreeSet::new() };
+        assert_eq!(broadcast::write_targets(&b, &v, 7, crate::broadcast::Write::Paste, &BTreeSet::new()), vec![7, 8, 9], "the control: broadcasting is on");
+        assert_eq!(broadcast::write_targets(&b, &v, 7, what, &BTreeSet::new()), vec![7], "the auto-send goes to the main session alone");
+        assert_eq!(broadcast::route(what), Route::Local);
+        // Both writes of the auto-send use it, and a queue that holds one stays local until it drains.
+        let paste = include_str!("paste_ui.rs");
+        let auto = &paste[paste.find("pub(super) fn paste_auto").unwrap()..paste.find("pub(super) fn paste_literal_after").unwrap()];
+        assert!(auto.contains("AUTO_WRITE") && !auto.contains("Write::Paste"), "{auto}");
+        let tick = &paste[paste.find("fn paste_after_tick").unwrap()..paste.find("pub(super) fn paste_tick").unwrap()];
+        assert!(tick.contains("self.user_write(l.pane, l.text.as_bytes(), AUTO_WRITE)") && !tick.contains("Write::Paste"), "{tick}");
+        let run = &paste[paste.find("fn paste_run").unwrap()..paste.find("pub(super) fn paste_auto").unwrap()];
+        assert!(run.contains("if broadcast::route(entry.1) != broadcast::Route::Local {"), "a person's paste joining the queue never makes the auto-send broadcast");
+    }
+
     /// The auto-send goes only through the paste path, after the refusals, and its Return is a timer that
     /// belongs to the instance (B6).
     #[test]
