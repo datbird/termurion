@@ -43,11 +43,14 @@ impl NavState {
             match kind {
                 0 => TRANSITION_RELOAD,
                 1 => TRANSITION_BACK_FORWARD,
-                // A new document: a person's click is a link; a load Tandem started for the
-                // requested URL is typed (`BNS:73-76`); anything else is other. WebView2 does not
-                // say a navigation is a form post, so FormSubmit is never produced (Decision).
+                // A new document: a load Tandem started for the requested URL is typed (`BNS:73-76`,
+                // WebView2's canonical form of the text allowed); then a person's click is a link;
+                // anything else is other. The requested URL comes first: WebView2 reports
+                // `IsUserInitiated` for every load started through its API (final review I1), where
+                // WebKit never calls `loadURL` a link activation. WebView2 does not say a navigation
+                // is a form post, so FormSubmit is never produced (Decision).
+                _ if self.requested.as_deref().is_some_and(|r| crate::webhost::same_navigation_uri(r, url)) => TRANSITION_TYPED,
                 _ if user => TRANSITION_LINK,
-                _ if self.requested.as_deref() == Some(url) => TRANSITION_TYPED,
                 _ => TRANSITION_OTHER,
             }
         };
@@ -158,7 +161,15 @@ mod tests {
         let mut n = NavState::default();
         n.will_load("https://a/");
         assert_eq!(n.starting("https://a/", 2, false, false), TRANSITION_TYPED, "BNS:73-76");
+        // Final review I1: WebView2 reports IsUserInitiated TRUE for a load Tandem started through
+        // its API, so the requested URL is matched first (iTerm2 never calls loadURL a link), with
+        // WebView2's canonical rewrite of the typed text allowed.
+        n.will_load("https://a");
+        assert_eq!(n.starting("https://a/", 2, true, false), TRANSITION_TYPED, "Tandem's own load is typed though WebView2 says user");
+        n.will_load("https://a/");
+        assert_eq!(n.starting("https://a/", 2, true, false), TRANSITION_TYPED);
         assert_eq!(n.last, Some(TRANSITION_TYPED));
+        assert_eq!(n.starting("https://a/x", 2, true, false), TRANSITION_LINK, "a person's click elsewhere is still a link");
         assert_eq!(n.starting("https://b/", 2, true, false), TRANSITION_LINK);
         assert_eq!(n.starting("https://b/", 0, true, false), TRANSITION_RELOAD);
         assert_eq!(n.starting("https://b/", 1, false, false), TRANSITION_BACK_FORWARD);
