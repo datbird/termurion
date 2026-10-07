@@ -174,6 +174,13 @@ impl App {
             // PS:1920: every session saves its lock.
             t.insert("Locked".into(), Value::Boolean(p.locked));
             t.extend(self.clippings_table(id));
+            // The workgroup toolbar toggles, written only when on (`PS:7445-7462`).
+            if p.auto_send_clippings {
+                t.insert(crate::workgroup::AUTO_SEND_KEY.into(), Value::Boolean(true));
+            }
+            if p.auto_request_review {
+                t.insert(crate::workgroup::AUTO_REQUEST_KEY.into(), Value::Boolean(true));
+            }
             t.extend(self.inline_table(id));
             // Session restoration keeps the pane's chat reference, so a chat's link survives a
             // relaunch; a saved arrangement, a file or a duplicate never carries it.
@@ -681,6 +688,11 @@ impl App {
                         }
                     }
                     self.restore_clippings(id, &session);
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        let on = |k: &str| session.get(k).and_then(Value::as_bool).unwrap_or(false);
+                        p.auto_send_clippings = on(crate::workgroup::AUTO_SEND_KEY);
+                        p.auto_request_review = on(crate::workgroup::AUTO_REQUEST_KEY);
+                    }
                     self.restore_inline(id, &session);
                     let notice = if launched { notice } else { FolderNotice::Nothing };
                     self.arrangement_announcements(id, &session, &choice, name, notice, &folder);

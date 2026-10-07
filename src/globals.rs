@@ -61,6 +61,11 @@ enum Bound {
 
 /// The bounded keys. Later 13w tasks add their numbers here.
 const BOUNDS: &[(&str, Bound)] = &[
+    // 13y1 P17/P10: the auto-send's Return waits at most a minute; the saved review prompts are bounded text
+    // (64 prompts of 64 KiB and their names), the last selected one a uuid.
+    ("WorkgroupAutoSendSubmitDelay", Bound::Number { min: 0.0, max: 60.0 }),
+    ("CodeReviewSavedPrompts", Bound::Text { max: 4_400_000, ok: |c| c != '\0' }),
+    ("NoSyncCodeReviewLastSelectedPromptUUID", Bound::Text { max: 36, ok: |c| c.is_ascii_hexdigit() || c == '-' }),
     // B6: never below the beep floor (`bell::BELL_FLOOR`), and a flash alpha is an alpha.
     ("BellRateLimit", Bound::Number { min: 0.05, max: 60.0 }),
     ("IndicatorFlashInitialAlpha", Bound::Number { min: 0.0, max: 1.0 }),

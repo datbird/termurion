@@ -220,6 +220,7 @@ mod ssh_panel_app;
 mod ssh_url_app;
 mod workgroup_app;
 mod workgroup_git_app;
+mod code_review_app;
 mod workgroup_toolbar_ui;
 
 pub enum UserEvent {
@@ -1004,6 +1005,8 @@ pub struct App {
     /// Each pane's pastes being written (the queue, how they are written, and whether the
     /// progress bar shows), and pastes waiting on a question.
     pastes: HashMap<PaneId, (crate::paste::Queue, crate::broadcast::Write, bool)>,
+    /// Literal writes waiting for a pane's pastes to drain (13y1 Task 7: the auto-send's Return).
+    paste_after: Vec<paste_ui::LiteralAfter>,
     paste_asks: HashMap<PaneId, paste_ui::Asking>,
     /// Paste history (read on first use), its popup, Advanced Paste (the pane it pastes
     /// into; whether it came from the menu), and an "Advanced..." waiting for the loop.
@@ -2311,6 +2314,7 @@ pub fn run() {
         started: Instant::now(),
         uploads: HashMap::new(),
         pastes: HashMap::new(),
+        paste_after: Vec::new(),
         paste_asks: HashMap::new(),
         paste_history: None,
         snippets: snippets_ui::load_snippets(),
@@ -5403,6 +5407,10 @@ impl App {
         if self.base_field_key(ev) {
             return;
         }
+        // A review member's prompt field with the keyboard takes its keys, releases too.
+        if self.review_overlay_key(ev) {
+            return;
+        }
         // A browser pane's address field takes its keys, releases too; Ctrl+L and F6 focus it.
         if self.browser_key(ev) {
             return;
@@ -5679,6 +5687,9 @@ impl App {
             return;
         }
         // A Diff member's waiting panel covers its terminal: every press on it is its own.
+        if self.review_overlay_press(button, x, y) {
+            return;
+        }
         if self.diff_overlay_press(button, x, y) {
             return;
         }
@@ -6518,6 +6529,7 @@ impl App {
         self.draw_title_bars(&mut frame, cell);
         self.draw_workgroup_toolbars(&mut frame, cell);
         self.draw_diff_overlays(&mut frame, cell);
+        self.draw_review_overlays(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
@@ -7333,7 +7345,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;

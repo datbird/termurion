@@ -485,6 +485,8 @@ mod tests {
             ("workgroup_run.rs", include_str!("workgroup_run.rs")),
             ("workgroup_git.rs", include_str!("workgroup_git.rs")),
             ("workgroup_toolbar.rs", include_str!("workgroup_toolbar.rs")),
+            ("code_review_app.rs", include_str!("app/code_review_app.rs")),
+            ("code_review.rs", include_str!("code_review.rs")),
         ];
         let mut seen = 0;
         for (file, src) in sources {

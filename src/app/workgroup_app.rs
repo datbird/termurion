@@ -47,6 +47,8 @@ pub(super) struct Instance {
     /// The git poller, the changed-file lists and the Diff members' deferred launches (Task 6); None
     /// when no member is in Diff mode and no item needs git (`WI:930-960`).
     pub git: Option<super::workgroup_git_app::GitSide>,
+    /// Code Review members' overlays, one-shot prompts and temp files (Task 7).
+    pub review: super::code_review_app::ReviewSide,
 }
 
 impl Instance {
@@ -94,6 +96,8 @@ pub(super) struct Instances {
     /// The one open pulldown (changed files, recent bases) and the one base field with the keyboard.
     pub(super) menu: Option<super::workgroup_git_app::OpenMenu>,
     pub(super) base_edit: Option<super::workgroup_git_app::BaseEdit>,
+    /// The Code Review prompt manager and name sheet (egui windows) and the open Prompts pulldown.
+    pub(super) review: super::code_review_app::ReviewWindows,
 }
 
 impl Instances {
@@ -266,6 +270,7 @@ impl App {
             usage: HashMap::new(),
             approved,
             git: super::workgroup_git_app::GitSide::for_workgroup(&w),
+            review: Default::default(),
         };
         // config id -> the pane that hosts its children
         let mut hosts: HashMap<String, PaneId> = HashMap::from([(root.unique_identifier.clone(), pane)]);
@@ -286,11 +291,7 @@ impl App {
                 }
             };
             let Some(cfg) = w.session(config).cloned() else { continue };
-            // A Code Review peer waits for its prompt (Task 7); a Diff member starts idle and waits for changes.
-            if matches!(place, Place::Peer) && cfg.mode == Mode::CodeReview {
-                inst.peers.push((config.clone(), None));
-                continue;
-            }
+            // A Diff member starts idle and waits for changes; a Code Review member starts idle and waits for Start.
             match self.spawn_member(&w, &cfg, &instance_id, pane, place, entry_tab, spawned_tabs.len(), &inst.approved) {
                 Made::Pane(id) => {
                     match step {
@@ -321,6 +322,11 @@ impl App {
             for d in diffs {
                 git.wait_for_changes(&d);
             }
+        }
+        // Every Code Review member waits behind its prompt overlay until Start (`PCR`).
+        let reviews: Vec<String> = w.sessions.iter().filter(|c| c.mode == Mode::CodeReview && inst.members_of(&c.unique_identifier)).map(|c| c.unique_identifier.clone()).collect();
+        if !reviews.is_empty() {
+            self.review_entry_overlays(&mut inst, &reviews);
         }
         if failed {
             // A member that could not start abandons the entry; it is not registered (`WC:61-70`).
@@ -395,7 +401,7 @@ impl App {
             }
         }
         // A Diff member has no program until git reports changes (`WI:1316-1385`).
-        let diff = cfg.mode == Mode::Diff;
+        let diff = matches!(cfg.mode, Mode::Diff | Mode::CodeReview);
         let command = match (diff, self.plan_command(&cfg.command, "HEAD")) {
             (true, _) => None,
             (_, Ok(c)) => c,
@@ -482,12 +488,12 @@ impl App {
     /// `plan_command` (a Diff member through the Diff launcher), with the instance id for its
     /// environment. The one place a restart takes a member's command from.
     pub(super) fn workgroup_launch(&mut self, pane: PaneId) -> MemberLaunch {
-        let Some((instance, config, base, template, diff)) = self.workgroup_of(pane).and_then(|i| {
+        let Some((instance, config, base, template, diff, mode)) = self.workgroup_of(pane).and_then(|i| {
             let config = i.config_of(pane).map(str::to_string).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.clone()))?;
             let cfg = i.workgroup.session(&config)?;
             // A Diff member, or one with a changed-file selector, runs as the Diff launcher makes it.
             let diff = !cfg.command.trim().is_empty() && (cfg.mode == Mode::Diff || i.git.as_ref().is_some_and(|g| g.selectors.contains_key(&config)));
-            Some((i.id.clone(), config, i.git_base.clone(), cfg.command.clone(), diff))
+            Some((i.id.clone(), config, i.git_base.clone(), cfg.command.clone(), diff, cfg.mode))
         }) else {
             return MemberLaunch::NotMember;
         };
@@ -495,6 +501,9 @@ impl App {
         if !self.workgroups.get(&instance).is_some_and(|i| i.approved.allows(&template)) {
             self.banners.set("workgroup", "That command was not in the list the workgroup was entered with, so it did not start.");
             return MemberLaunch::Refused;
+        }
+        if mode == Mode::CodeReview {
+            return self.review_launch(&instance, &config, &template);
         }
         let line = if diff { self.diff_launch_line(&instance, &config) } else { self.plan_command(&template, &base).map(|c| (c, Vec::new())) };
         match line {
@@ -543,6 +552,8 @@ impl App {
             return;
         }
         inst.torn_down = true;
+        let mut review = std::mem::take(&mut inst.review);
+        self.code_review_teardown(id, &mut review);
         // A peer shown in the leader's place goes back out first, so the leader is left in its pane
         // (`WI:666-790`); a leader that is itself ending is not put back, and when the closing member
         // is the shown one its slot is closing too, so the leader goes with the group.

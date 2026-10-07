@@ -224,7 +224,9 @@ impl App {
                 let (Some(kind), Some(title), Some(detail)) = (str_arg(args, "type"), str_arg(args, "title"), str_arg(args, "detail")) else { return failed(bf::MISSING_ARGUMENT) };
                 let clip = crate::clippings::Clipping { kind: kind.to_string(), title: title.to_string(), detail: detail.to_string() };
                 let home = self.clip_home(pane);
-                self.clips.entry(home).or_default().model.add(clip);
+                if !self.clips.entry(home).or_default().model.add(clip) {
+                    self.banners.set("clippings", format!("This session has {} clippings; archive or remove some to add more.", crate::clippings::MAX_LIVE));
+                }
                 self.mark_state_dirty();
                 // The panel shows in the session's window.
                 if self.enter_pane_window(home) {

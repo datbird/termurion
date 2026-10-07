@@ -219,9 +219,10 @@ pub const DISPLAY_POLICY: &str = concat!(
     "- Do not repeat yourself across turns. Announce a milestone once: once you have told the user a step finished (a fix applied, a review kicked off, a review came back clean), do not announce it again when a later tool result or status_update merely re-confirms the same thing. If nothing new has happened since your last message, say nothing.",
 );
 
-/// The prompt's two variables (`ChatAgent.swift:994-1010`); no Code Review prompts exist.
-pub fn prompt_vars() -> [(&'static str, &'static str); 2] {
-    [("default_code_review_prompt", ""), ("saved_prompt_names", "(none saved)")]
+/// The prompt's two variables (`ChatAgent.swift:989-1003`): the default Code Review prompt's text and the
+/// saved prompts' names (13y1 Task 7 reads the stored prompts).
+pub fn prompt_vars(saved: &[crate::code_review::SavedPrompt], last_selected: Option<&str>) -> [(&'static str, String); 2] {
+    [("default_code_review_prompt", crate::code_review::default_prompt_text(saved, last_selected)), ("saved_prompt_names", crate::code_review::saved_prompt_names(saved))]
 }
 
 /// The evaluated template and the display policy, blank parts dropped, joined by a blank line.
@@ -366,7 +367,11 @@ pub fn system_message(g: &crate::globals::Globals) -> String {
     let key = crate::ai_prompts::Prompt::Orchestration.key();
     let stored = g.string(key);
     let template = if stored.is_empty() { crate::ai_prompts::default_text(key).unwrap_or_default().to_string() } else { stored };
-    let evaluated = crate::ai_prompts::evaluate(&template, &prompt_vars(), &|_| None).unwrap_or(template);
+    let saved = crate::code_review::prompts_of(g);
+    let last = crate::code_review::last_selected(g);
+    let vars = prompt_vars(&saved, last.as_deref());
+    let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let evaluated = crate::ai_prompts::evaluate(&template, &pairs, &|_| None).unwrap_or(template);
     system_prompt(&evaluated)
 }
 
@@ -426,7 +431,7 @@ mod tests {
         assert!(DISPLAY_POLICY.contains("the user\u{2019}s level") && DISPLAY_POLICY.contains("\u{201C}Workgroup\u{201D}"));
         assert!(!DISPLAY_POLICY.contains("iTerm2"));
         assert!(DISPLAY_POLICY.ends_with("If nothing new has happened since your last message, say nothing."));
-        assert_eq!(prompt_vars(), [("default_code_review_prompt", ""), ("saved_prompt_names", "(none saved)")]);
+        assert_eq!(prompt_vars(&[], None), [("default_code_review_prompt", String::new()), ("saved_prompt_names", "(none saved)".to_string())]);
         for (secs, text) in [(30.0, "< 1 min"), (90.0, "2 min"), (60.0, "1 min"), (3600.0, "1 hour"), (7200.0, "2 hrs"), (86400.0, "1 day"), (3.0 * 86400.0, "3 days"), (6.6 * 86400.0, "1 week"), (14.0 * 86400.0, "2 wks")] {
             assert_eq!(crate::ai_terminal::compact_age(secs), text);
         }
@@ -563,7 +568,7 @@ mod tests {
         let default = system_message(&g);
         assert!(default.ends_with(DISPLAY_POLICY) && !default.contains("\\(ai."), "the default template is evaluated");
         g.set(key, toml::Value::String("A \\(ai.saved_prompt_names) B".into()));
-        assert_eq!(system_message(&g), format!("A (none saved) B\n\n{DISPLAY_POLICY}"));
+        assert_eq!(system_message(&g), format!("A   - Default B\n\n{DISPLAY_POLICY}"));
         g.set(key, toml::Value::String("broken \\(".into()));
         assert_eq!(system_message(&g), format!("broken \\(\n\n{DISPLAY_POLICY}"), "an error leaves the template as it stands");
         assert_eq!(tools_for(false, Some((true, true))).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), [ENABLE_TOOL, "register_timer", "register_watch", "unregister_watch", "list_watches"]);

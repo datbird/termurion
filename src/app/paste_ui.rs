@@ -10,6 +10,15 @@ use crate::warnings;
 /// The progress bar (its Cancel button).
 const PASTE_BAR: &str = "paste-progress";
 
+/// A literal write that waits for a pane's pastes to drain and then for a delay (13y1 Task 7).
+pub(super) struct LiteralAfter {
+    pub pane: PaneId,
+    pub text: String,
+    pub delay: Duration,
+    pub due: Option<Instant>,
+    pub owner: String,
+}
+
 /// A paste waiting for its questions' answers.
 pub(super) struct Asking {
     job: Job,
@@ -127,8 +136,69 @@ impl App {
         self.paste_tick();
     }
 
-    /// Writes the chunks that are due. When the next is due, for the event loop.
+    /// An automatic paste (13y1 Task 7, B6): the job goes straight to the queue, never through a question
+    /// (nobody is there to answer one). The caller has already refused every case the paste's own check
+    /// would have asked about: a pane that did not ask for bracketed paste, a password prompt, a size.
+    pub(super) fn paste_auto(&mut self, sender: PaneId, job: Job) {
+        let speed = self.paste_speed(false);
+        self.paste_run(sender, job, speed, Write::Paste);
+    }
+
+    /// Writes `text` to `pane` as is (no bracket, no transform) `delay` after the pane's pastes in flight
+    /// have fully drained: the clock starts when the content finished, not when it was queued
+    /// (`pasteLiteralString(_:afterDelay:)`). `owner` is the workgroup instance it belongs to: it never
+    /// fires into a pane that is no longer that instance's, and `cancel_paste_after` drops it.
+    pub(super) fn paste_literal_after(&mut self, pane: PaneId, text: &str, delay: Duration, owner: &str) {
+        self.paste_after.push(LiteralAfter { pane, text: text.to_string(), delay, due: None, owner: owner.to_string() });
+    }
+
+    /// Drops every waiting literal write of `owner` (a teardown, a member that ended, a toggle that went off).
+    pub(super) fn cancel_paste_after(&mut self, owner: &str) {
+        self.paste_after.retain(|l| l.owner != owner);
+    }
+
+    /// Fires the literal writes whose pane has drained and whose delay passed. When the next is due.
+    fn paste_after_tick(&mut self) -> Option<Instant> {
+        if self.paste_after.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        let mut next: Option<Instant> = None;
+        let (mut keep, mut fire) = (Vec::new(), Vec::new());
+        for mut l in std::mem::take(&mut self.paste_after) {
+            if self.pastes.contains_key(&l.pane) {
+                l.due = None;
+                keep.push(l);
+                continue;
+            }
+            let due = *l.due.get_or_insert(now + l.delay);
+            if due <= now {
+                fire.push(l);
+            } else {
+                next = Some(next.map_or(due, |n: Instant| n.min(due)));
+                keep.push(l);
+            }
+        }
+        self.paste_after = keep;
+        for l in fire {
+            // The instance must still be this pane's workgroup (a reused pane id gets nothing).
+            let live = self.workgroups.get(&l.owner).is_some() && self.panes.get(&l.pane).is_some_and(|p| p.workgroup.as_deref() == Some(l.owner.as_str()) && p.exited.is_none());
+            if live {
+                self.user_write(l.pane, l.text.as_bytes(), Write::Paste);
+            }
+        }
+        next
+    }
+
+    /// The paste queues' chunks, then the literal writes behind them. When the next is due.
     pub(super) fn paste_tick(&mut self) -> Option<Instant> {
+        let queued = self.paste_queue_tick();
+        let after = self.paste_after_tick();
+        [queued, after].into_iter().flatten().min()
+    }
+
+    /// Writes the chunks that are due. When the next is due, for the event loop.
+    fn paste_queue_tick(&mut self) -> Option<Instant> {
         if self.pastes.is_empty() {
             return None;
         }

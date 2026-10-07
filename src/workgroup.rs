@@ -132,6 +132,10 @@ pub enum Side {
     TrailingOrBottom,
 }
 
+/// The session arrangement keys of the two toolbar toggles (`PTYSession.m:341-342`).
+pub const AUTO_SEND_KEY: &str = "Auto Send Clippings When Idle";
+pub const AUTO_REQUEST_KEY: &str = "Auto Request Review When Idle";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Regular,

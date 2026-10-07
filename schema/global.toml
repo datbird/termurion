@@ -1782,6 +1782,15 @@ default = "\\n--\\n"
 help = "Separator inserted between multiple clippings when sending or copying them.\nThe value should use Vim syntax, such as \\n for newline and \\e for escape."
 
 [[setting]]
+key = "WorkgroupAutoSendSubmitDelay"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Delay in seconds before the Return that submits an auto-sent code review."
+type = "float"
+default = 0.501
+help = "Delay in seconds before the Return that submits an auto-sent code review.\nWhen the code-review workgroup toolbar auto-sends review results to the main session, it pastes the results and then sends a Return to submit them. This is how long it waits, after the pasted results finish, before sending that Return. A paste-debouncing TUI (such as Claude Code) processes a paste and a Return that arrive together as one batch, so the Return can be swallowed and the review never submits; the delay makes the Return land in a later read so it submits. The default matches Claude Code\u2019s 500 ms paste-settling window. Set to 0 to send it immediately."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"
@@ -5750,6 +5759,24 @@ label = "The workgroups that came from an import, a remote folder or a Dynamic P
 type = "string"
 default = ""
 help = "A list of workgroup ids Tandem keeps so it asks before running their commands after a restart. Saving a workgroup in the editor removes it from the list."
+
+[[setting]]
+key = "CodeReviewSavedPrompts"
+tab = "Stored"
+section = "Workgroups"
+label = "Saved code review prompts."
+type = "string"
+default = ""
+help = "The saved code review prompts as JSON, written as iTerm2 writes them (an array of objects with uuid, name and text). At most 64 prompts; a name is at most 128 characters and a text at most 64 KiB. A value that does not decode is left as it is until a prompt is edited."
+
+[[setting]]
+key = "NoSyncCodeReviewLastSelectedPromptUUID"
+tab = "Stored"
+section = "Workgroups"
+label = "The code review prompt last selected."
+type = "string"
+default = ""
+help = "The uuid of the saved code review prompt chosen last; the prompt overlay opens with its text."
 
 [[setting]]
 key = "NoSyncWorkgroupGitBaseRecents"

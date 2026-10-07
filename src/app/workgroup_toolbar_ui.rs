@@ -18,6 +18,7 @@ use crate::palette::Rgb;
 use crate::{semantic, session_state};
 use crate::workgroup_git as wgit;
 use super::workgroup_git_app::Nav;
+use super::code_review_app::Toggle;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
@@ -37,6 +38,9 @@ const GLYPH_BUSY: char = '\u{E895}';
 const GLYPH_BACK: char = '\u{E72B}';
 const GLYPH_FORWARD: char = '\u{E72A}';
 const GLYPH_CHEVRON: char = '\u{E70D}';
+/// The auto-send toggle (Send) and the auto-request toggle (Review), in Segoe Fluent Icons.
+const GLYPH_SEND: char = '\u{E724}';
+const GLYPH_REVIEW: char = '\u{E7C3}';
 /// A usage row's text size against the terminal font, and a bar's height in points (`WUT`: 5).
 const USAGE_TEXT: f32 = 0.8;
 const BAR_H: f32 = 5.0;
@@ -83,6 +87,8 @@ enum View {
     Files { label: String, enabled: bool },
     /// Back, the "X/Y" label, Forward and Reload, each with its rectangle.
     Nav { back: (bool, Rect), label: Option<(String, Rect)>, forward: (bool, Rect), reload: Rect },
+    /// An auto toggle: on, and whether it can be turned on (auto-request needs one review session).
+    Toggle { which: Toggle, on: bool, enabled: bool },
     /// The base field: its text (or the edit's), and the chevron's rectangle.
     Base { text: String, editing: bool, chevron: Rect },
 }
@@ -98,6 +104,7 @@ enum Click {
     Reload,
     Usage(String),
     Files(Rect),
+    Toggle(Toggle),
     Nav(Nav),
     BaseField,
     BaseChevron(Rect),
@@ -152,7 +159,7 @@ impl App {
 
     /// The items this task draws; the rest are Tasks 6 and 7.
     fn drawn(item: &ToolbarItem) -> bool {
-        matches!(item, ToolbarItem::Name | ToolbarItem::ModeSwitcher | ToolbarItem::Reload(_) | ToolbarItem::Spacer { .. } | ToolbarItem::Usage { .. } | ToolbarItem::GitStatus | ToolbarItem::ChangedFileSelector | ToolbarItem::Navigation(_) | ToolbarItem::GitBaseSelector)
+        matches!(item, ToolbarItem::Name | ToolbarItem::ModeSwitcher | ToolbarItem::Reload(_) | ToolbarItem::Spacer { .. } | ToolbarItem::Usage { .. } | ToolbarItem::GitStatus | ToolbarItem::ChangedFileSelector | ToolbarItem::Navigation(_) | ToolbarItem::GitBaseSelector | ToolbarItem::AutoSendClippingsWhenIdle | ToolbarItem::AutoRequestReviewWhenIdle)
     }
 
     /// Whether member `config` of instance `inst` is busy (an agent working): the reported state.
@@ -235,12 +242,13 @@ impl App {
                     let lw = label.as_deref().map_or(0.0, |l| width_of(l, cw) + 8.0);
                     ((3.0 * BUTTON_W + lw, None), View::Nav { back: (back, ZERO), label: label.map(|l| (l, ZERO)), forward: (fwd, ZERO), reload: ZERO })
                 }
+                ToolbarItem::AutoSendClippingsWhenIdle => ((BUTTON_W, None), View::Toggle { which: Toggle::AutoSend, on: self.toggle_on(pane, Toggle::AutoSend), enabled: true }),
+                ToolbarItem::AutoRequestReviewWhenIdle => ((BUTTON_W, None), View::Toggle { which: Toggle::AutoRequest, on: self.toggle_on(pane, Toggle::AutoRequest), enabled: self.auto_request_enabled(pane) }),
                 ToolbarItem::GitBaseSelector => {
                     let editing = self.workgroups.base_edit.as_ref().is_some_and(|e| e.pane == pane);
                     let text = if editing { self.workgroups.base_edit.as_ref().map(|e| e.edit.text.clone()).unwrap_or_default() } else { wt::shown_text(&inst.git_base) };
                     (((width_of(&text, cw) + 48.0).clamp(80.0, 400.0), None), View::Base { text, editing, chevron: ZERO })
                 }
-                _ => continue,
             };
             widths.push(w);
             views.push(view);
@@ -358,6 +366,15 @@ impl App {
                         glyph(frame, GLYPH_FORWARD, forward.1, forward.0);
                         glyph(frame, GLYPH_RELOAD, *reload, true);
                     }
+                    View::Toggle { which, on, enabled } => {
+                        // On reads from the fill and the full color; off from the dim glyph; unavailable from the dimmest.
+                        if *on && *enabled {
+                            frame.quads.push(Quad { rect: Rect { x: r.x + s, y: r.y + s, w: (r.w - 2.0 * s).max(0.0), h: (r.h - 2.0 * s).max(0.0) }, color: scene::rgba(selected, 1.0) });
+                        }
+                        let color = if !*enabled { rgb_mix(bg, fg, 0.3) } else if *on { fg } else { dim };
+                        let glyph = if *which == Toggle::AutoSend { GLYPH_SEND } else { GLYPH_REVIEW };
+                        frame.rows.push(row(r.x + (r.w - cw) / 2.0, centered_y(r, ch), vec![span(glyph.to_string(), color, true)], r, 1.0));
+                    }
                     View::Base { text, editing, chevron } => {
                         outline(frame, r, if *editing { fg } else { line }, s);
                         let field = Rect { w: (r.w - chevron.w).max(0.0), ..r };
@@ -426,6 +443,7 @@ impl App {
                 View::Reload => Click::Reload,
                 View::Usage(key) => Click::Usage(key),
                 View::Files { enabled, .. } => if enabled { Click::Files(l.rect) } else { Click::Nothing },
+                View::Toggle { which, .. } => Click::Toggle(which),
                 View::Nav { back, forward, reload, .. } => {
                     if back.1.contains(x, y) {
                         if back.0 { Click::Nav(Nav::Back) } else { Click::Nothing }
@@ -459,6 +477,7 @@ impl App {
         let member = self.member_config(pane);
         match click {
             Click::Files(r) => self.open_file_menu(pane, at(r)),
+            Click::Toggle(which) => self.toggle_auto(pane, which),
             Click::BaseChevron(r) => self.open_recents_menu(pane, at(r)),
             Click::BaseField => {
                 if self.workgroups.base_edit.as_ref().is_none_or(|e| e.pane != pane) {
@@ -495,6 +514,10 @@ impl App {
         let mode = self.workgroup_of(pane).and_then(|i| i.config_of(pane).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.as_str())).and_then(|c| i.workgroup.session(c)).map(|s| s.mode.clone()));
         if mode == Some(Mode::Diff) {
             self.diff_reload(pane);
+            return;
+        }
+        if mode == Some(Mode::CodeReview) {
+            self.review_reload(pane);
             return;
         }
         if mode != Some(Mode::Regular) {

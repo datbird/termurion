@@ -300,6 +300,7 @@ mod tests {
             // iTerm2 defines it among the experimental ones but with SECTION_GENERAL (ASM:924).
             ("GenerativeAIAllowed", "General"),
             ("clippingSeparator", "Pasteboard"),
+            ("WorkgroupAutoSendSubmitDelay", "Pasteboard"),
             ("toolbeltFont", "Windows"),
             ("toolbeltFontSize", "Windows"),
             ("PinEditSession", "General"),
@@ -358,6 +359,8 @@ mod tests {
             ("NoSyncClaudeCodeDiffModeBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeReviewSystemPromptCommandBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncWorkgroupGitBaseRecents", "Workgroups", Kind::List, Some(toml::Value::Array(Vec::new()))),
+            ("CodeReviewSavedPrompts", "Workgroups", Kind::String, text("")),
+            ("NoSyncCodeReviewLastSelectedPromptUUID", "Workgroups", Kind::String, text("")),
             ("NoSyncClaudeCodeAutoSendClippingsBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeAutoRequestReviewBackfilled", "Workgroups", Kind::Bool, bool(false)),
         ];

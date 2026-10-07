@@ -437,19 +437,27 @@ impl App {
                     return Ok(o);
                 }
                 let home = self.clip_home(pane);
-                self.clips.entry(home).or_default().model.add(crate::clippings::Clipping { kind: a.kind, title: a.title, detail: a.detail });
+                if !self.clips.entry(home).or_default().model.add(crate::clippings::Clipping { kind: a.kind, title: a.title, detail: a.detail }) {
+                    self.banners.set("clippings", format!("This session has {} clippings; archive or remove some to add more.", crate::clippings::MAX_LIVE));
+                }
                 self.redraw();
                 Ok(done(ot::ack_json()))
             }
             "start_code_review" => {
-                // No workgroups before milestone 13: no session is the Code Review role, so the
-                // call can never act and asks nothing first.
+                // The session must be a Code Review member of a workgroup (`WorkgroupIntrospection`): the call
+                // runs a review on the workgroup's code review member. Any other session keeps the error.
                 let a = ot::parse_start_code_review(args)?;
                 let pane = self.orch_resolve(&a.guid)?;
                 if self.orch_pane_state(pane).exited {
                     return Err(OrchError::TargetGone(a.guid));
                 }
-                Err(OrchError::Unsupported(ot::not_code_review("default", &self.orch_name(pane))))
+                let instance = self.workgroup_of(pane).map(|i| i.id.clone());
+                let is_review = self.member_config(pane).is_some_and(|(i, c)| self.workgroups.get(&i).and_then(|inst| inst.workgroup.session(&c)).is_some_and(|s| s.mode == crate::workgroup::Mode::CodeReview));
+                match instance.filter(|_| is_review) {
+                    Some(i) if self.request_review(&i) => Ok(done(ot::ack_json())),
+                    Some(_) => Err(OrchError::Unsupported("The code review session could not start a review now (it needs to be live and restartable).".to_string())),
+                    None => Err(OrchError::Unsupported(ot::not_code_review("default", &self.orch_name(pane)))),
+                }
             }
             "start_session" => self.orch_start_session(chat, call_id, args),
             "register_watch" | "register_timer" | "unregister_watch" | "list_watches" => Ok(self.orch_watch_call(chat, call_id, name, args)),

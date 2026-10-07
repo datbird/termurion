@@ -214,7 +214,7 @@ impl App {
 
     /// Runs `f` with the window that shows the instance current (a hidden peer's group is where its
     /// shown member is), then puts the current window back.
-    fn in_instance_window(&mut self, instance: &str, f: impl FnOnce(&mut App)) {
+    pub(super) fn in_instance_window(&mut self, instance: &str, f: impl FnOnce(&mut App)) {
         let Some(at) = self.workgroups.get(instance).map(|i| i.shown_pane().unwrap_or(i.leader)) else { return };
         let home = self.current_window();
         if !self.enter_pane_window(at) {
