@@ -31,6 +31,8 @@ pub(super) struct BrowserView {
     pub(super) last_title: Option<String>,
     /// The toolbar's state: the address field, its suggestions, a press, the history list.
     pub(super) bar: BarState,
+    /// Browser Instant Replay: this pane's frames and the state of the capture round trip.
+    pub(super) replay: super::web_replay_app::Recorder,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -158,7 +160,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, retried: false, settled: false, last_title: None, bar: BarState::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, retried: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new() });
         true
     }
 
@@ -193,6 +195,7 @@ impl App {
                             }
                         }
                     }
+                    self.web_replay_shown(pane, false);
                 }
             }
         }
@@ -249,6 +252,7 @@ impl App {
             // page steps aside (Decision: a list over the page cannot be drawn by the scene).
             v.set_visible(!(bv.bar.keys && !bv.bar.suggestions.is_empty()));
         }
+        bv.replay.shown = true;
     }
 
     /// The window of this app's current window was made again: this window's views move to the
@@ -273,6 +277,7 @@ impl App {
             let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.view = None;
+                bv.replay.shown = false;
                 bv.pending_url = url;
             }
         }
@@ -433,6 +438,7 @@ impl App {
             }
             // A local page's message and the request for a local page (Task 7): the one route judges
             // the source and the closed set; everything else a page posts is dropped there.
+            Event::ScriptDone { token, json, .. } if matches!(*token, crate::web_replay::PROBE_TOKEN | crate::web_replay::CAPTURE_TOKEN) => self.web_replay_script_done(pane, *token, json),
             Event::Message { json, source, .. } => self.local_page_message(pane, source, json),
             Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url),
             _ => {}
@@ -826,7 +832,8 @@ impl App {
             self.browser_poll_suggest(pane);
         }
         let ad_due = self.adblock_tick();
-        [due, ad_due].into_iter().flatten().min()
+        let replay_due = self.web_replay_tick();
+        [due, ad_due, replay_due].into_iter().flatten().min()
     }
 
     /// The suggestion service's answer, when it has come: cached by query and shown if it is

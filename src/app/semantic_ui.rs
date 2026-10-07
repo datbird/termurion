@@ -1185,6 +1185,7 @@ mod tests {
         ("app/api_ui.rs", "open_info_link", "a fixed More Info page"),
         ("app/claude_code_app.rs", "cc_onboarding_event", "the fixed Learn more page (claude_code::HELP_URL)"),
         ("app/api_ui.rs", "reveal_allow_all_file", "reveals Tandem's own allow-all file"),
+        ("app/web_replay_app.rs", "web_replay_saved", "selects Tandem's own saved movie in Explorer (a path it made itself)"),
         ("app/builtin_ui.rs", "session_method", "a local script's request"),
         ("app/chat_window_app.rs", "chat_open_url", "a link in the AI chat window, not a pane"),
         ("app/chat_window_app.rs", "chat_file", "an AI chat attachment, inert types only (F19)"),

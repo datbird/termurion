@@ -25,6 +25,10 @@ impl App {
     /// frame built once at the end.
     fn ir_advance_by(&mut self, dir: i32, count: u32, event_loop: &ActiveEventLoop) {
         let Some(id) = self.focused_id().filter(|id| self.panes.contains_key(id)) else { return };
+        // A browser pane replays its captured frames in the playback window (`BVC:268-285`).
+        if self.is_browser_pane(id) {
+            return if dir < 0 { self.web_replay_start(id, event_loop) } else { find_ui::beep() };
+        }
         if self.panes.get(&id).is_some_and(|p| p.replay.is_none()) {
             if dir > 0 {
                 return find_ui::beep();
@@ -295,6 +299,9 @@ impl App {
     /// nothing is cleared (kept: the session's own recorder is not the one it asks); else
     /// the recorder starts over unless it is a loaded recording.
     pub(super) fn clear_instant_replay(&mut self) {
+        if let Some(id) = self.focused_id().filter(|id| self.is_browser_pane(*id)) {
+            return self.web_replay_clear(id);
+        }
         let Some(p) = self.focused_id().and_then(|id| self.panes.get_mut(&id)) else { return };
         let replaying = p.replay.is_some();
         if let Some(r) = p.replay.as_mut() {
@@ -481,7 +488,7 @@ impl App {
     }
 
     /// Queues a warning with OK only (`iTermWarning`, `kiTermWarningTypePersistent`).
-    fn recording_warning(&mut self, heading: &'static str, text: String) {
+    pub(super) fn recording_warning(&mut self, heading: &'static str, text: String) {
         self.recording_warnings.push((None, heading, text));
         self.redraw();
     }

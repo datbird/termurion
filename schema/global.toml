@@ -5407,6 +5407,15 @@ default = 8118
 help = "HTTP proxy port\nThe port number of the proxy server."
 
 [[setting]]
+key = "WebInstantReplayFrameRate"
+tab = "Advanced"
+section = "Web Browser"
+label = "Instant replay frame rate for web browser sessions"
+type = "float"
+default = 60.0
+help = "Instant replay frame rate for web browser sessions"
+
+[[setting]]
 key = "BrowserProfiles"
 tab = "Advanced"
 section = "Experimental Features"

@@ -300,6 +300,8 @@ pub mod git_log_ui;
 pub mod status_popover_ui;
 #[cfg(windows)]
 pub mod web_popover;
+pub mod web_replay;
+pub mod web_replay_ui;
 #[cfg(windows)]
 pub mod cmdinfo_ui;
 #[cfg(windows)]

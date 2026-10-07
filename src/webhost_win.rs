@@ -218,6 +218,15 @@ fn process_alive(pid: u32) -> bool {
 /// until the next launch's sweep.
 pub fn cleanup_files() {
     let Some(base) = local_appdata() else { return };
+    // Saved Instant Replay movies are page pictures: they do not outlive the run that made them (P16).
+    if let Some(dir) = crate::localfs::LocalPath::judge(crate::web_replay::replay_folder(&base)) {
+        if let Ok(entries) = crate::localfs::entries(&dir) {
+            for e in entries.iter().filter(|e| !e.stat.is_dir) {
+                // A link is removed as a link, never followed.
+                let _ = e.unlink();
+            }
+        }
+    }
     let tmp = webhost::tmp_folder(&base);
     let Some(dir) = crate::localfs::LocalPath::judge(&tmp) else { return };
     let Ok(entries) = crate::localfs::entries(&dir) else { return };
@@ -716,6 +725,12 @@ impl WebView {
 
     /// Captures the page as a PNG; `Event::ScriptDone { token, json: Ok(base64) }` follows (at most 16 MiB).
     pub fn capture_png(&self, token: u64) {
+        self.capture(token, false);
+    }
+
+    /// Captures the page as a JPEG (`jpeg`) or a PNG, the same way: the encoding runs in the browser
+    /// process, not on Tandem's thread, and `Event::ScriptDone` carries the base64 bytes.
+    pub fn capture(&self, token: u64, jpeg: bool) {
         let (poster, id) = {
             let i = self.inner.borrow();
             (i.poster.clone(), i.id)
@@ -753,7 +768,7 @@ impl WebView {
                 p.post(Event::ScriptDone { view: id, token, json });
                 Ok(())
             })));
-            if let Err(e) = unsafe { c.view.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, &stream, &handler) } {
+            if let Err(e) = unsafe { c.view.CapturePreview(if jpeg { COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG } else { COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG }, &stream, &handler) } {
                 poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
             }
         });
