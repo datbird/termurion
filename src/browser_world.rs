@@ -707,6 +707,26 @@ mod tests {
         assert_eq!(ps.matches("$names = @($task)").count(), 2, "both scans name the folder only when it is this run's");
         assert!(!ps.contains("$names = @($dir, $task)"));
     }
+
+    /// Final review minor 7: the probe script's default run is checklist row 5's: every ignored
+    /// runtime test of the probe module plus `menu_gets_our_items` (in `webhost_win::tests`), and the
+    /// filters go after `--` (cargo takes one test name before it).
+    #[test]
+    fn the_probe_script_runs_every_row_5_test() {
+        let ps = include_str!("../scripts/probe-desktop.ps1");
+        assert!(ps.contains("[string[]]$Filters = @('webhost_win::probe::', 'webhost_win::tests::menu_gets_our_items')"));
+        assert!(ps.contains("cargo test --lib -- $filterText --ignored --test-threads=1 --nocapture"), "several filters after --");
+        let host = include_str!("webhost_win.rs");
+        let probe = &host[host.find("\nmod probe {").unwrap()..];
+        let row5 = include_str!("../docs/acceptance/m13x2-checklist.md");
+        let row5 = &row5[row5.find("| 5 |").unwrap()..];
+        let row5 = &row5[..row5.find('\n').unwrap()];
+        for name in ["bridge_round_trip", "menu_gets_our_items", "hover_reaches_the_router", "send_text_reaches_a_field", "smart_selection_selects_in_a_page", "synthetic_click_runs_nothing", "broadcast_types_into_a_second_view", "probe_page_cannot_reach_evaluate_in_frame"] {
+            assert!(row5.contains(name), "row 5 names {name}");
+            assert!(probe.contains(&format!("fn {name}()")) || name == "menu_gets_our_items", "{name} runs under the default filter");
+        }
+        assert!(!row5.contains("are not written"), "row 5 says what exists");
+    }
     /// Task 2 review I3 (fail closed): a Client handler acts only on a Ready world.
     #[test]
     fn client_handlers_need_a_ready_world() {

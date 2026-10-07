@@ -13,7 +13,7 @@
 param(
     [string]$Repo = 'C:\Users\datbi\src\tandem-13x2',
     [int]$TimeoutMinutes = 40,
-    [string[]]$Filters = @('webhost_win::probe::')
+    [string[]]$Filters = @('webhost_win::probe::', 'webhost_win::tests::menu_gets_our_items')
 )
 
 $ErrorActionPreference = 'Continue'
@@ -90,7 +90,7 @@ try {
     $filterText = ($Filters -join ' ')
     $lines = @(
         "Set-Location '$Repo'",
-        "cargo test --lib $filterText -- --ignored --test-threads=1 --nocapture *> '$dir\out.txt'",
+        "cargo test --lib -- $filterText --ignored --test-threads=1 --nocapture *> '$dir\out.txt'",
         "'done' | Out-File '$dir\done.txt'"
     )
     Set-Content -Path "$dir\run.ps1" -Value $lines -Encoding ASCII
