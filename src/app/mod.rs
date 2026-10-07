@@ -162,6 +162,7 @@ mod browser_scripts_app;
 mod browser_ctx_app;
 mod browser_smart_app;
 mod browser_overlay_app;
+mod browser_input_app;
 mod browser_frames_app;
 mod web_popover_app;
 mod web_replay_app;
@@ -5247,6 +5248,7 @@ impl App {
         // Every focus, tab, window and profile change comes through here (B6): Edit Session
         // follows the active session.
         self.follow_edit_session();
+        self.browser_gates_refresh();
     }
 
     /// Saves a custom scripts folder typed in the open Settings window and not yet applied,

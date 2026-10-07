@@ -59,6 +59,9 @@ pub(super) struct BrowserView {
     pub(super) world: super::browser_scripts_app::WorldState,
     /// A text field has the focus in the page (iTerm2's `isEditingText`, `BWV:73`).
     pub(super) editing: bool,
+    /// The key gate the view's accelerator handler asks (`browser_input_app`), and what it was built for.
+    pub(super) gate: webhost::KeyGate,
+    pub(super) gate_sig: Option<(bool, Option<String>, bool)>,
     /// The page's selection (iTerm2's `currentSelection`, `BWV:75-84`).
     pub(super) selection: Option<String>,
     /// When that selection may be copied (B10).
@@ -199,7 +202,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), gate: Default::default(), gate_sig: None });
         true
     }
 
@@ -280,8 +283,12 @@ impl App {
             if focus_now {
                 view.focus();
             }
+            if let Some(bv) = self.browser_views.get(&pane) {
+                view.set_key_gate(bv.gate.clone());
+            }
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.view = Some(view);
+                bv.gate_sig = None;
                 bv.id = id;
                 bv.pending_url = None;
                 bv.parent = hwnd;
@@ -546,7 +553,7 @@ impl App {
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
-            Event::Key { vk, mods, .. } => self.browser_page_key(pane, *vk, *mods, event_loop),
+            Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
             // A good start resets the remake budget (final review I5).
             Event::Created(_) => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -1287,21 +1294,22 @@ impl App {
 
     /// A key the page reported (`Event::Key`): a Win chord Tandem has a command for runs, and the
     /// accelerators that focus the address field. The page keeps every other key.
-    fn browser_page_key(&mut self, pane: PaneId, vk: u32, mods: u8, event_loop: &ActiveEventLoop) {
+    pub(super) fn browser_page_key(&mut self, pane: PaneId, vk: u32, mods: u8, event_loop: &ActiveEventLoop) -> bool {
         let (shift, ctrl, alt, win) = (mods & 1 != 0, mods & 2 != 0, mods & 4 != 0, mods & 8 != 0);
         if (ctrl && !alt && !win && vk == 0x4C) || (alt && !ctrl && !win && vk == 0x44) || vk == 0x75 {
             self.focus_url_bar(pane);
-            return;
+            return true;
         }
         if !win {
-            return;
+            return false;
         }
-        let Some(key) = crate::winkeys::vk_to_key(vk as u16) else { return };
+        let Some(key) = crate::winkeys::vk_to_key(vk as u16) else { return false };
         let chord = crate::menus::Chord { key, cmd: true, alt, shift, ctrl };
         let bound = crate::keyroute::win_chord_bound(&self.route_snapshot.read().unwrap_or_else(|e| e.into_inner()), &chord);
         if bound {
             self.in_pane_window(pane, |a| a.run_chord(&chord, event_loop));
         }
+        bound
     }
 
     /// The menu commands that act on a browser pane (View > Make Text Bigger, Smaller, Normal Size,

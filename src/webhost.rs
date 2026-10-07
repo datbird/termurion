@@ -14,6 +14,29 @@ use crate::layout::Rect;
 
 pub type ViewId = u64;
 
+/// The key gate's table (13x2 Task 6): `take(vk, mods)` says whether Tandem takes a key the page
+/// raised. Read synchronously on the UI thread inside the COM handler, so it holds no App borrow; the
+/// app replaces `take` whenever the maps, the editing state or the bar change.
+pub struct KeyTable {
+    pub take: Box<dyn Fn(u32, u8) -> bool>,
+}
+
+impl Default for KeyTable {
+    fn default() -> Self {
+        KeyTable { take: Box::new(|_, _| false) }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct KeyGate(pub std::rc::Rc<std::cell::RefCell<KeyTable>>);
+
+impl KeyGate {
+    /// The answer for one key (false while the table is being replaced).
+    pub fn takes(&self, vk: u32, mods: u8) -> bool {
+        self.0.try_borrow().is_ok_and(|t| (t.take)(vk, mods))
+    }
+}
+
 /// Whether a WebView2 runtime exists: its version string, or no runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runtime {
@@ -239,7 +262,9 @@ pub enum Event {
     Message { view: ViewId, json: String, source: String },
     ScriptDone { view: ViewId, token: u64, json: Result<String, String> },
     NewWindow { view: ViewId, url: String },
-    Key { view: ViewId, vk: u32, mods: u8 },
+    /// A key the page raised; `taken` is the key gate's synchronous answer (Tandem took it and the
+    /// page never saw it).
+    Key { view: ViewId, vk: u32, mods: u8, taken: bool },
     Focus(ViewId, bool),
     History { view: ViewId, back: bool, forward: bool },
     Loading(ViewId, bool),

@@ -174,7 +174,7 @@ impl App {
         }
     }
 
-    fn toggle_setting(&mut self, json: &str) {
+    pub(super) fn toggle_setting(&mut self, json: &str) {
         let Some((key, is_profile)) = toggle_target(json) else { return };
         // A hand-edited or imported binding never flips an AI consent switch.
         if !crate::ai_settings::toggle_allowed(&key) {

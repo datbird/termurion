@@ -516,6 +516,8 @@ struct Inner {
     frame_watch: Option<(ICoreWebView2_4, i64)>,
     /// Menus waiting for an answer, by token (at most `webhost::MAX_PENDING_MENUS`).
     menus: HashMap<u64, PendingMenu>,
+    /// Asked inside `AcceleratorKeyPressed` (Task 6).
+    key_gate: webhost::KeyGate,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
@@ -559,6 +561,7 @@ impl WebView {
             frames: HashMap::new(),
             frame_watch: None,
             menus: HashMap::new(),
+            key_gate: webhost::KeyGate::default(),
         }));
         let weak = Rc::downgrade(&inner);
         // Every view is known to the process teardown (`close_all`), whatever owns it.
@@ -673,6 +676,11 @@ impl WebView {
             let _ = unsafe { c.ctrl.SetParentWindow(HWND(hwnd as *mut c_void)) };
             let _ = unsafe { c.ctrl.NotifyParentWindowPositionChanged() };
         });
+    }
+
+    /// The table the accelerator handler asks before it marks a key handled.
+    pub fn set_key_gate(&self, gate: webhost::KeyGate) {
+        self.inner.borrow_mut().key_gate = gate;
     }
 
     pub fn focus(&self) {
@@ -1595,8 +1603,18 @@ fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Co
         }
         let mut vk = 0u32;
         let _ = unsafe { args.VirtualKey(&mut vk) };
-        let i = inner.borrow();
-        i.poster.post(Event::Key { view: i.id, vk, mods: modifier_bits() });
+        let (poster, id, gate) = {
+            let i = inner.borrow();
+            (i.poster.clone(), i.id, i.key_gate.clone())
+        };
+        let mods = modifier_bits();
+        // The gate is read here, synchronously, and holds no App borrow: a key Tandem takes never
+        // reaches the page.
+        let taken = gate.takes(vk, mods);
+        if taken {
+            let _ = unsafe { args.SetHandled(true) };
+        }
+        poster.post(Event::Key { view: id, vk, mods, taken });
         Ok(())
     })));
     unsafe { ctrl.add_AcceleratorKeyPressed(&keys, token) }
@@ -2830,6 +2848,31 @@ mod probe {
         let expr = crate::browser_js::call_js("return a * 2;", &json!({"a": 21})).unwrap();
         assert_eq!(p.eval(None, &expr), Ok(json!(42)));
         assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// Task 6: `insert-text.js` types into a focused field and a `contenteditable`, answers false with
+    /// nothing focused, and the DevTools fallback then changes nothing. Needs the console session.
+    #[test]
+    #[ignore]
+    fn send_text_reaches_a_field() {
+        let page_html = "<!doctype html><html><body><textarea id=t autofocus></textarea><div id=c contenteditable=true></div></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let focused = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            p.page_eval("document.activeElement.id") == Ok("\"t\"".into())
+        });
+        assert!(focused, "the field has the focus");
+        assert_eq!(p.page_eval(&crate::browser_keys::insert_script("hi\n")), Ok("true".into()));
+        assert_eq!(p.page_eval("document.getElementById('t').value"), Ok("\"hi\\n\"".into()));
+        p.page_eval("document.getElementById('c').focus()").unwrap();
+        assert_eq!(p.page_eval(&crate::browser_keys::insert_script("yo")), Ok("true".into()));
+        assert_eq!(p.page_eval("document.getElementById('c').textContent"), Ok("\"yo\"".into()));
+        p.page_eval("document.activeElement.blur()").unwrap();
+        assert_eq!(p.page_eval(&crate::browser_keys::insert_script("no")), Ok("false".into()), "nothing focused: the script says so");
+        p.call_wait(None, "Input.insertText", &json!({"text": "no"})).expect("the fallback runs");
+        assert_eq!(p.page_eval("document.getElementById('t').value + document.getElementById('c').textContent"), Ok("\"hi\\nyo\"".into()), "the page is unchanged");
         p.finish();
     }
 }

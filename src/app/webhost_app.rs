@@ -279,6 +279,7 @@ impl App {
         self.web_focus_recheck();
         self.web_popover_tick();
         self.browser_tip_tick(event_loop);
+        self.browser_gates_sync();
         self.adblock.judged.set(0);
         for _ in 0..DRAIN_PER_TICK {
             let Ok(posted) = self.web_events.try_recv() else { break };
