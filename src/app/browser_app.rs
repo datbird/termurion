@@ -117,8 +117,6 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
     }
 }
 
-/// The text a browser profile shows when there is no WebView2 Runtime (Task 9 makes it the dialog).
-pub(super) const UPSELL_TEXT: &str = "Tandem can display web pages! But first you must install the WebView2 Runtime.";
 
 impl App {
     /// Whether a profile starts a browser pane: a Browser profile with `BrowserProfiles` on.
@@ -145,7 +143,7 @@ impl App {
             Start::Terminal => return false,
         };
         if self.web_runtime() == Runtime::Missing {
-            self.banners.set("webview2", UPSELL_TEXT);
+            self.banners.set("webview2", browser::UPSELL_TEXT);
             return false;
         }
         let dev_null = p.bool("Dev Null Mode");
@@ -1158,6 +1156,152 @@ impl App {
     }
 }
 
+impl App {
+    /// The remembered button of a warning identifier, read through 13b (`is_silenced`, then
+    /// `saved_selection`); None while it is not silenced.
+    fn saved_choice(&self, id: &str) -> Option<i64> {
+        let now = super::warnings_app::unix_now();
+        crate::warnings::is_silenced(&self.globals, id, now).then(|| crate::warnings::saved_selection(&self.globals, id) as i64)
+    }
+
+    /// (allowed, runtime) for `open_decision`: `allowed` is `BrowserProfiles` on with the runtime
+    /// found; `runtime` is false only when the browser is on and the runtime is missing.
+    fn browser_gate(&self) -> (bool, bool) {
+        let on = self.globals.bool("BrowserProfiles");
+        let found = self.web_runtime() != Runtime::Missing;
+        (on && found, found || !on)
+    }
+
+    /// Whether a link would open in Tandem or ask to (the menu's split items, Shift+Win-click).
+    pub(super) fn link_locally_openable(&self, url: &str) -> bool {
+        let (allowed, runtime) = self.browser_gate();
+        browser::conditionally_openable(url, allowed, runtime, self.saved_choice(browser::OPEN_LINKS_ID), self.saved_choice(browser::UPSELL_ID))
+    }
+
+    /// Opens a web link a person asked for (`it_openURL`): in a browser pane, after the ask, or with
+    /// the system. Only http and https reach the browser pane, and only a URL `web_link` cleaned; any
+    /// other scheme keeps the old road (`guard_open`, the 13r rules). The remembered answers are
+    /// 13b's: the ask is queued and `ask_scripts` answers a silenced one at once, so Suppressed Alerts
+    /// and "show remembered" work.
+    pub(super) fn open_link(&mut self, url: &str, style: browser::Style, background: bool, pane: Option<PaneId>) {
+        let Some(link) = browser::web_link(url) else { return self.open_link_system(url, background) };
+        let (allowed, runtime) = self.browser_gate();
+        match browser::open_decision(&link, style, true, allowed, runtime, None, None) {
+            browser::Open::Local(style) => self.open_url_in_browser(&link, style, pane),
+            browser::Open::AskOpenInApp { file } => {
+                let ask = super::scripts_alerts::Ask::new(browser::open_link_spec(file), super::scripts_alerts::Then::OpenLink { url: link, style, background, pane, file });
+                self.ask_scripts(ask);
+            }
+            browser::Open::Upsell => {
+                let ask = super::scripts_alerts::Ask::new(browser::upsell_spec(), super::scripts_alerts::Then::BrowserUpsell { url: link });
+                self.ask_scripts(ask);
+            }
+            browser::Open::System => self.open_link_system(url, background),
+            browser::Open::Nothing => {}
+        }
+    }
+
+    /// The system opens a link the old way: only what `shell_url` allows.
+    fn open_link_system(&mut self, url: &str, background: bool) {
+        if crate::semantic::shell_url(url).is_some() {
+            if let Err(e) = super::semantic_ui::shell_open(url, background) {
+                self.banners.set("action", format!("Could not open {url}: {e}"));
+            }
+        }
+    }
+
+    /// The answer of the open-links ask: Use Default Browser (0) opens with the system, Open in
+    /// Tandem (1) in a pane, Cancel nothing. A file ask is never raised (no route for `file:`).
+    pub(super) fn open_link_answered(&mut self, url: &str, style: browser::Style, background: bool, pane: Option<PaneId>, file: bool, index: usize) {
+        match index {
+            0 => self.open_link_system(url, background),
+            1 if !file => self.open_url_in_browser(url, style, pane),
+            _ => {}
+        }
+    }
+
+    /// The answer of the upsell: Download (0) opens Microsoft's WebView2 page through `guard_open`,
+    /// Use System Browser (1) opens the link, Cancel nothing.
+    pub(super) fn upsell_answered(&mut self, url: &str, index: usize) {
+        match index {
+            0 => {
+                if let crate::semantic::Run::Open(t) = crate::semantic::guard_open(browser::PLUGIN_URL, false) {
+                    if let Err(e) = super::semantic_ui::shell_open(&t, false) {
+                        self.banners.set("action", format!("Could not open {t}: {e}"));
+                    }
+                }
+            }
+            1 => self.open_link_system(url, false),
+            _ => {}
+        }
+    }
+
+    /// Shows `url` in a browser pane with the default browser profile (one is made, with Initial URL
+    /// the link, when none exists, `iTermController.m:2036-2069`): a tab, a window, or a split beside
+    /// `near`. Tandem's own UI and `open_link` call it; it takes http, https and Tandem's local pages
+    /// only.
+    pub(super) fn open_url_in_browser(&mut self, url: &str, style: browser::Style, near: Option<PaneId>) {
+        let Some(url) = browser::normalize_url(url).filter(|u| matches!(webhost::scheme_of(u).as_str(), "http" | "https" | "iterm2-about")).and_then(|u| browser::saved_url(&u)) else {
+            return;
+        };
+        let default = self.store.default_profile();
+        let found = if self.is_browser_profile(default) { Some(default.guid()) } else { self.store.profiles.iter().find(|p| self.is_browser_profile(p)).map(|p| p.guid()) };
+        let (guid, made) = match found {
+            Some(g) => (g, false),
+            None => {
+                let shared = self.store.default_profile().clone();
+                let fresh = uuid::Uuid::new_v4().to_string().to_uppercase();
+                let copy = crate::session_profile::divorce(&shared, fresh.clone());
+                let values = vec![("Custom Command".to_string(), Some(browser::BROWSER_VALUE.into())), ("Initial URL".to_string(), Some(url.clone().into()))];
+                (self.add_session_copy(copy, &shared, &values, fresh), true)
+            }
+        };
+        self.browser_url_override = Some(url);
+        match style {
+            browser::Style::Tab => self.new_tab(Some(&guid)),
+            browser::Style::Window => {
+                self.pending_windows.push(super::windows_ui::NewWindow::Profile(Some(guid.clone())));
+                self.redraw();
+            }
+            browser::Style::Vertical | browser::Style::Horizontal => {
+                if let (Some(n), Some(t)) = (near, self.tabs.get_mut(self.active)) {
+                    if t.layout.panes().contains(&n) {
+                        t.focused = n;
+                    }
+                }
+                self.split(if style == browser::Style::Vertical { Axis::Row } else { Axis::Column }, Some(&guid));
+            }
+        }
+        // A window starts later and takes the override and the copy then; the others are done:
+        // a copy no pane took (a refused split or tab) goes, and the override with it.
+        if style != browser::Style::Window {
+            if made {
+                self.forget_session_profile(&guid);
+            }
+            self.browser_url_override = None;
+        }
+        self.bring_forward();
+    }
+
+    /// Shift+Win-click on a link (`PTYTextView.m:7987-8043`): a link that opens locally goes in a
+    /// vertical split when the pane is wider than tall, else a horizontal one. False when the click
+    /// is not on such a link (the ordinary Win-click goes on).
+    pub(super) fn open_link_split(&mut self, id: PaneId, point: Point) -> bool {
+        let Some((_, target, _)) = self.target_at(id, point) else { return false };
+        let (crate::semantic::Target::Link(u) | crate::semantic::Target::Url(u)) = target else { return false };
+        if crate::ssh_files::click_route(self.remote_text(id), Some(&u)) != crate::ssh_files::ClickRoute::Local {
+            return false;
+        }
+        let crate::semantic::Run::Open(t) = crate::semantic::guard_open(&u, false) else { return false };
+        if !self.link_locally_openable(&t) {
+            return false;
+        }
+        let wide = self.pane_rect(id).is_some_and(|r| r.w > r.h);
+        self.open_link(&t, if wide { browser::Style::Vertical } else { browser::Style::Horizontal }, false, Some(id));
+        true
+    }
+}
+
 /// A browser's saved URL of an arrangement's session table, judged again on load.
 pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
     browser::saved_url(session.get(browser::URL_KEY)?.as_str()?)
@@ -1276,5 +1420,46 @@ mod tests {
         let draw = &prod[prod.find("pub(super) fn draw_browser_bar").unwrap()..prod.find("pub(super) fn browser_toolbar_press").unwrap()];
         assert!(draw.contains("browser::display_url(&io.url)") && draw.contains("browser::fit_address(") && draw.contains("browser::security(&io.url, io.failed)"), "the field shows the sanitized page URL and the mark follows the page's state");
         assert!(!draw.contains("frame.overlay"), "never text in the overlay");
+    }
+
+    /// Opening a link: the browser pane gets only a cleaned http or https URL (or Tandem's own page
+    /// from its own UI), the asks are 13b's and the old road stays for every other scheme.
+    #[test]
+    fn opening_links_follows_the_rules() {
+        let src = include_str!("browser_app.rs");
+        let p = &src[..src.find("#[cfg(test)]").unwrap()];
+        let open = &p[p.find("pub(super) fn open_link(").unwrap()..p.find("fn open_link_system").unwrap()];
+        assert!(open.contains("browser::web_link(url)") && open.contains("self.ask_scripts(ask)"), "the asks go through 13b");
+        assert!(open.contains("open_decision(&link, style, true, allowed, runtime, None, None)"), "13b's preempt answers a remembered choice, so the catalog records it");
+        assert!(!open.contains("is_silenced") && !open.contains("globals.set"), "no second warning path");
+        let into = &p[p.find("pub(super) fn open_url_in_browser(").unwrap()..p.find("pub(super) fn open_link_split").unwrap()];
+        assert!(into.contains("\"http\" | \"https\" | \"iterm2-about\""), "no file:, UNC or custom scheme reaches a pane");
+        assert!(!into.contains("shell_open") && !into.contains("guard_open"));
+        // A file ask is never answered by opening in a pane (no route for file:).
+        let ans = &p[p.find("pub(super) fn open_link_answered").unwrap()..p.find("pub(super) fn upsell_answered").unwrap()];
+        assert!(ans.contains("1 if !file => self.open_url_in_browser"));
+        // Download opens Microsoft's page through guard_open only.
+        let up = &p[p.find("pub(super) fn upsell_answered").unwrap()..p.find("pub(super) fn open_url_in_browser").unwrap()];
+        assert!(up.contains("guard_open(browser::PLUGIN_URL, false)"));
+        // The execute road: a web link opens through open_link, everything else as before.
+        let sem = include_str!("semantic_ui.rs");
+        assert!(sem.contains("self.open_link(&target, crate::browser::Style::Tab, background, Some(id));"));
+        // The two Thens are not capped (a person's own click) and a closed window cancels.
+        let alerts = include_str!("scripts_alerts.rs");
+        let capped = &alerts[alerts.find("fn capped(&self)").unwrap()..alerts.find("pub(super) fn dropped_open_files").unwrap()];
+        assert!(!capped.contains("OpenLink") && !capped.contains("BrowserUpsell"));
+        assert!(alerts.contains("Then::OpenLink { .. } | Then::BrowserUpsell { .. } => Answer::Button(2)"));
+        assert!(alerts.contains("Then::OpenLink { url, style, background, pane, file } => self.open_link_answered(") && alerts.contains("Then::BrowserUpsell { url } => self.upsell_answered(&url, index)"));
+    }
+
+    /// Shift+Win-click splits before the plain Win-click opens, and both Advanced rows exist.
+    #[test]
+    fn shift_win_click_and_the_saved_answers_are_wired() {
+        let m = include_str!("mod.rs");
+        assert!(m.find("self.open_link_split(id, point)").unwrap() < m.find("if self.open_target(id, point, false, event_loop)").unwrap());
+        for key in [browser::OPEN_LINKS_ID, browser::UPSELL_ID] {
+            let row = crate::schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Warnings"), "{key}");
+        }
     }
 }

@@ -378,6 +378,9 @@ impl App {
             Run::Open(target) => {
                 if semantic::handler_applies(&Run::Open(target.clone()), from_file) && self.url_handler(id, &target, cwd, background) {
                     // The handler took it, or said why not.
+                } else if !from_file && crate::browser::web_link(&target).is_some() {
+                    // A web link a person asked for: a browser pane, the ask, or the system (13x Task 9).
+                    self.open_link(&target, crate::browser::Style::Tab, background, Some(id));
                 } else if crate::semantic::shell_url(&target).is_some() {
                     if let Err(e) = shell_open(&target, background) {
                         self.banners.set("action", format!("Could not open {target}: {e}"));
@@ -615,7 +618,7 @@ impl App {
                 let link = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None });
+                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None, selection: None });
             } else if fold.is_some() {
                 pending = Some(CtxPending { fold, ..CtxPending::for_pane(id, Vec::new()) });
             }
@@ -633,13 +636,25 @@ impl App {
                 extra.push((label.into(), item));
             }
             let pend = pending.get_or_insert_with(|| CtxPending::for_pane(id, Vec::new()));
-            // Quick Look Link: a short selection that is an http or https URL (`CMH:557-558`).
+            // The selection items (`CMH:549-560`): Open Selection as URL, the splits, Quick Look Link
+            // (a short http or https selection) and Search the Web for Selection.
             let columns = self.panes.get(&id).map_or(0, |p| p.screen.term().columns());
-            if let Some(text) = self.selected_text(id).filter(|t| crate::web_popover::quick_look_offered(t, columns)) {
-                if let Some(url) = crate::web_popover::quick_look_target(&text) {
-                    extra.push(("Quick Look Link".into(), CtxItem::QuickLookLink));
-                    pend.quick_look = Some((url, self.pointer_screen()));
-                }
+            let short = self.selected_text(id).filter(|t| crate::web_popover::short_selection(t.chars().count(), columns));
+            let quick = short.as_deref().and_then(crate::web_popover::quick_look_target);
+            let openable = short.as_deref().is_some_and(|t| self.link_locally_openable(t));
+            for label in crate::browser::web_context_items(short.as_deref(), openable, quick.is_some()) {
+                let item = match label {
+                    "Open Selection as URL" => CtxItem::OpenSelectionAsUrl,
+                    "Open URL in Vertical Split Pane" => CtxItem::OpenUrlVertical,
+                    "Open URL in Horizontal Split Pane" => CtxItem::OpenUrlHorizontal,
+                    "Quick Look Link" => CtxItem::QuickLookLink,
+                    _ => CtxItem::SearchWeb,
+                };
+                extra.push((label.into(), item));
+            }
+            pend.selection = short;
+            if let Some(url) = quick {
+                pend.quick_look = Some((url, self.pointer_screen()));
             }
         }
         // The script providers' items (`CMH:898-914`), for that session.
@@ -705,6 +720,21 @@ impl App {
             if let Some((url, at)) = pend.quick_look {
                 self.quick_look_url(&url, at, event_loop);
             }
+        } else if let Some(style) = match item {
+            "openurl" => Some(crate::browser::Style::Tab),
+            "openurlv" => Some(crate::browser::Style::Vertical),
+            "openurlh" => Some(crate::browser::Style::Horizontal),
+            _ => None,
+        } {
+            if let Some(text) = pend.selection {
+                self.open_selection_url(pend.pane, &text, style);
+            }
+        } else if item == "searchweb" {
+            // The search engine's page, built from the template and the escaped selection (`CMH:1179-1186`).
+            if let Some(text) = pend.selection {
+                let url = crate::browser::search_url(&crate::browser::search_template(&self.globals.string("SearchCommand")), &text);
+                self.execute(pend.pane, semantic::guard_open(&url, has_code()), None, false);
+            }
         } else if item == "copylink" {
             if let (Some(link), Some(cb)) = (pend.link, &mut self.clipboard) {
                 if let Err(e) = cb.set_text(link) {
@@ -750,6 +780,26 @@ impl App {
         }
     }
 
+    /// Open Selection as URL and the split items (`CMH:1151-1167`, `findUrlInString`): the URL in the
+    /// selected text opens as a tab or beside the pane. Text a remote host wrote opens only a web or
+    /// mail link (P10), and every scheme goes through `guard_open`.
+    pub(super) fn open_selection_url(&mut self, id: PaneId, text: &str, style: crate::browser::Style) {
+        let urls = self.url_prefs(id);
+        let Some(u) = semantic::url_like_in("", text, &urls) else { return };
+        if ssh_files::click_route(self.remote_text(id), Some(&u)) != ssh_files::ClickRoute::Local {
+            return;
+        }
+        match semantic::guard_open(&u, has_code()) {
+            Run::Open(t) if style != crate::browser::Style::Tab => {
+                // The URL handler first, as a link's open does, then the pane beside this one.
+                if !self.url_handler(id, &t, None, false) && crate::browser::web_link(&t).is_some() {
+                    self.open_link(&t, style, false, Some(id));
+                }
+            }
+            run => self.execute(id, run, None, false),
+        }
+    }
+
     /// Copy Link Address, the pointer action: the link or URL at a point.
     pub(super) fn copy_link_at(&mut self, id: PaneId, point: Point) {
         let Some(c) = self.clicked(id, point) else { return };
@@ -771,6 +821,11 @@ pub(super) enum CtxItem {
     CopyLink,
     /// Quick Look Link (`CMH:557-558`): a short http or https selection, opened at the pointer.
     QuickLookLink,
+    /// Open Selection as URL, the two split items and Search the Web for Selection (`CMH:549-560`).
+    OpenSelectionAsUrl,
+    OpenUrlVertical,
+    OpenUrlHorizontal,
+    SearchWeb,
     Unfold,
     StopCoprocess,
     ToggleBroadcast,
@@ -796,6 +851,10 @@ impl CtxItem {
             CtxItem::Action(i, _) => format!("{CTX_ID}action.{i}"),
             CtxItem::CopyLink => format!("{CTX_ID}copylink"),
             CtxItem::QuickLookLink => format!("{CTX_ID}quicklook"),
+            CtxItem::OpenSelectionAsUrl => format!("{CTX_ID}openurl"),
+            CtxItem::OpenUrlVertical => format!("{CTX_ID}openurlv"),
+            CtxItem::OpenUrlHorizontal => format!("{CTX_ID}openurlh"),
+            CtxItem::SearchWeb => format!("{CTX_ID}searchweb"),
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
             CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
@@ -882,12 +941,14 @@ pub(super) struct CtxPending {
     providers: Vec<(String, String)>,
     /// Quick Look Link's URL and the pointer (screen pixels) when the menu opened.
     quick_look: Option<(String, (f64, f64))>,
+    /// The short selection the menu was made for (the URL and search items act on it).
+    selection: Option<String>,
 }
 
 impl CtxPending {
     /// A pending menu for `pane` with no link, fold or Smart Selection action.
     fn for_pane(pane: PaneId, providers: Vec<(String, String)>) -> Self {
-        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None }
+        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None, selection: None }
     }
 }
 
@@ -1058,6 +1119,8 @@ mod tests {
     /// folder `previous_dir`. Paths are under src/.
     const GATED: &[(&str, &str)] = &[
         ("app/semantic_ui.rs", "open_target"),
+        ("app/semantic_ui.rs", "open_selection_url"),
+        ("app/browser_app.rs", "open_link_split"),
         ("app/semantic_ui.rs", "show_context_menu_at"),
         ("app/semantic_ui.rs", "context_other_picked"),
         ("app/semantic_ui.rs", "open_text"),
@@ -1102,6 +1165,8 @@ mod tests {
         ("app/web_popover_app.rs", "quick_look_url", "only an http or https URL with a host (web_popover::quick_look_target) is shown or opened, the one kind a remote pane's link may open (P10)"),
         ("app/web_popover_app.rs", "web_popover_event", "opens the page the popover shows, only when its scheme is http or https (quick_look_scheme_ok)"),
         ("app/web_popover_app.rs", "web_popover_view_event", "an external protocol a popover's page asked for goes through external_uri_run (guard_open), only for a person's gesture"),
+        ("app/browser_app.rs", "open_link_system", "opens a link execute or the menu already settled (guard_open, the old road for every non-web scheme); only shell_url's kinds open"),
+        ("app/browser_app.rs", "upsell_answered", "opens the constant Microsoft WebView2 page (browser::PLUGIN_URL) through guard_open, or the link a person clicked, which open_link already cleaned"),
         ("app/browser_app.rs", "run_external", "an external protocol a browser page asked for or a person typed goes through external_uri_run (guard_open), only for a person's gesture"),
         ("app/web_popover_app.rs", "external_uri_run", "builds a decision and opens nothing; its caller is checked"),
         ("localfs.rs", "open_with_shell", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
@@ -1117,7 +1182,7 @@ mod tests {
         ("app/actions.rs", "run_key_action", "the user's own key binding"),
         ("app/ai_tools_app.rs", "ai_reveal_file", "reveals the AI's own new file, runs nothing"),
         ("ai_actions.rs", "get_help", "PowerShell Get-Help on a name man_page_plan checked, runs no command"),
-        ("app/api_ui.rs", "open_link", "a fixed More Info page"),
+        ("app/api_ui.rs", "open_info_link", "a fixed More Info page"),
         ("app/claude_code_app.rs", "cc_onboarding_event", "the fixed Learn more page (claude_code::HELP_URL)"),
         ("app/api_ui.rs", "reveal_allow_all_file", "reveals Tandem's own allow-all file"),
         ("app/builtin_ui.rs", "session_method", "a local script's request"),

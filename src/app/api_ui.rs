@@ -1211,7 +1211,7 @@ impl App {
                     self.sync_api_server();
                 }
                 Effect::Verdict { conn, allow, reason } => self.api_decided(conn, allow, reason),
-                Effect::OpenUrl(url) => self.open_link(url),
+                Effect::OpenUrl(url) => self.open_info_link(url),
                 Effect::ConfirmAlways { conn } => self.api_alerts.insert(0, (None, Alert::ConfirmAlways { conn })),
                 Effect::SetCookie => {
                     self.globals.set(SET_COOKIE_KEY, toml::Value::Boolean(true));
@@ -1247,7 +1247,7 @@ impl App {
     }
 
     /// A "More Info" page in the browser.
-    fn open_link(&mut self, url: &str) {
+    fn open_info_link(&mut self, url: &str) {
         if let Err(e) = super::semantic_ui::shell_open(url, false) {
             self.banners.set("action", format!("Could not open {url}: {e}"));
         }

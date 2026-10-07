@@ -86,6 +86,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
         // Cancel: a closed window never runs an opened script or adds a preset (B6).
         Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::TriggerImportMarked(_) => Answer::Button(1),
+        // Cancel: a closed window opens no link and downloads nothing.
+        Then::OpenLink { .. } | Then::BrowserUpsell { .. } => Answer::Button(2),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -297,6 +299,13 @@ pub(super) enum Then {
     /// (B1, 13v1 P21): OK (0) goes on to the profile chooser, Cancel (1) imports nothing. A closed
     /// window cancels; another process raises it, so it is capped.
     TriggerImportMarked(Vec<toml::Table>),
+    /// "Open in Tandem?" for a web link a person clicked (`WS:384-410`): Use Default Browser (0)
+    /// opens it with the system, Open in Tandem (1) in a browser pane, Cancel nothing. The person's
+    /// own click, so it is not capped. `file` is the file wording; no route raises it today.
+    OpenLink { url: String, style: crate::browser::Style, background: bool, pane: Option<crate::layout::PaneId>, file: bool },
+    /// "WebView2 Runtime Required" (`GW:136-160`): Download (0) opens Microsoft's page, Use System
+    /// Browser (1) opens the link, Cancel nothing. Not capped.
+    BrowserUpsell { url: String },
 }
 
 impl Then {
@@ -512,6 +521,8 @@ impl App {
                     _ => {}
                 }
             }
+            Then::OpenLink { url, style, background, pane, file } => self.open_link_answered(&url, style, background, pane, file, index),
+            Then::BrowserUpsell { url } => self.upsell_answered(&url, index),
             Then::DebugLogStart => self.debug_log_start_answered(),
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem | Then::Acknowledged => {}
             Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),

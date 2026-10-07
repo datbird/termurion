@@ -5433,6 +5433,24 @@ type = "string"
 default = "https://suggestqueries.google.com/complete/search?client=firefox&q=%@"
 help = "Template of URL for typeahead search suggestions.\nTandem replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
 
+[[setting]]
+key = "NoSyncOpenLinksInApp"
+tab = "Advanced"
+section = "Warnings"
+label = "Open links using the in-app browser?"
+type = "bool"
+default = false
+help = "Open links using the in-app browser?\nThe same saved answer as \u201cDo not ask again\u201d on the Open in Tandem question."
+
+[[setting]]
+key = "NoSyncBrowserUpsell"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the WebView2 Runtime upsell when clicking links?"
+type = "bool"
+default = false
+help = "Suppress the WebView2 Runtime upsell when clicking links?\nThe same saved answer as \u201cDo not ask again\u201d on the WebView2 Runtime Required question."
+
 # Debug log (13w)
 
 [[setting]]

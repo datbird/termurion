@@ -1011,6 +1011,153 @@ impl<K: std::hash::Hash + Eq> FocusSeen<K> {
     }
 }
 
+// --- Opening links (Task 9) ---
+
+/// Where an opened link goes (`iTermOpenStyle`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    Tab,
+    Window,
+    Vertical,
+    Horizontal,
+}
+
+/// What opening a link does (`NSWorkspace+iTerm.m`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Open {
+    /// The system opens it (through `guard_open` and the 13r rules, as before).
+    System,
+    /// A browser pane shows it.
+    Local(Style),
+    /// Ask first: "Open in Tandem?" (`file`: the text about a file).
+    AskOpenInApp { file: bool },
+    /// The WebView2 Runtime is missing: offer it.
+    Upsell,
+    Nothing,
+}
+
+pub const OPEN_HEADING: &str = "Open in Tandem?";
+pub const OPEN_WEB_TEXT: &str = "Tandem can display web pages! Would you like to open this link in Tandem?";
+pub const OPEN_FILE_TEXT: &str = "Tandem can display files like this in its built-in web browser! Would you like to open this link in Tandem?";
+pub const USE_DEFAULT_BROWSER: &str = "Use Default Browser";
+pub const USE_DEFAULT_APP: &str = "Use Default App";
+pub const OPEN_IN_TANDEM: &str = "Open in Tandem";
+pub const UPSELL_HEADING: &str = "WebView2 Runtime Required";
+pub const UPSELL_TEXT: &str = "Tandem can display web pages! But first you must install the WebView2 Runtime.";
+pub const DOWNLOAD: &str = "Download";
+pub const USE_SYSTEM_BROWSER: &str = "Use System Browser";
+/// Microsoft's own WebView2 page (Decision); opened only through `guard_open`.
+pub const PLUGIN_URL: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
+pub const OPEN_LINKS_ID: &str = "NoSyncOpenLinksInApp";
+pub const OPEN_FILE_LINKS_ID: &str = "NoSyncOpenLinksInAppForFileURL";
+pub const UPSELL_ID: &str = "NoSyncBrowserUpsell";
+
+/// Whether the browser may show a file with this extension (`it_localBrowserIsCompatibleWithFileURL`,
+/// `WS:57-83`): web formats, PDF and images. Never a runnable (iTerm2 lists JavaScript source;
+/// Tandem does not, P12) and never an alternate data stream.
+pub fn compatible_file(ext: &str) -> bool {
+    let e = ext.strip_prefix('.').unwrap_or(ext).to_ascii_lowercase();
+    matches!(e.as_str(), "html" | "htm" | "xhtml" | "xml" | "svg" | "css" | "pdf" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic")
+}
+
+/// The http or https URL a link may open in a browser pane: a host, no white space, control or
+/// bidi character, at most `MAX_URL`, credentials dropped. A terminal's text is untrusted, so this
+/// is the one gate before `open_link` (P12).
+pub fn web_link(url: &str) -> Option<String> {
+    saved_url(&crate::web_popover::quick_look_target(url)?)
+}
+
+/// What opening `url` does (`it_openURL`, `WS:190-420`). `upsell` is true for a person's click
+/// (iTerm2 passes it for every link); `allowed` is `BrowserProfiles` on with the runtime found;
+/// `runtime` is false only when the browser is on and the runtime is missing (`shouldOfferPlugin`).
+/// The saved values are the remembered button of the open-links and upsell warnings.
+#[allow(clippy::too_many_arguments)]
+pub fn open_decision(url: &str, style: Style, upsell: bool, allowed: bool, runtime: bool, saved_open_links: Option<i64>, saved_upsell: Option<i64>) -> Open {
+    let scheme = crate::webhost::scheme_of(url);
+    let file = scheme == "file";
+    let web = matches!(scheme.as_str(), "http" | "https");
+    if file {
+        let name = url.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("");
+        let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
+        if !compatible_file(ext) {
+            return Open::System;
+        }
+    } else if !web {
+        return Open::System;
+    }
+    if !upsell && !allowed {
+        return Open::System;
+    }
+    if !allowed {
+        // The runtime is missing: offer it, unless Use System Browser was remembered.
+        return if runtime || saved_upsell == Some(1) { Open::System } else { Open::Upsell };
+    }
+    match style {
+        Style::Vertical | Style::Horizontal => Open::Local(style),
+        Style::Tab | Style::Window => match saved_open_links {
+            Some(0) => Open::System,
+            Some(1) => Open::Local(style),
+            _ => Open::AskOpenInApp { file },
+        },
+    }
+}
+
+/// Whether `url` would open in Tandem or ask to (`it_urlIsConditionallyLocallyOpenable`, test-only
+/// path of `WS:330-406`): the context menu's split items and Shift+Win-click.
+pub fn conditionally_openable(url: &str, allowed: bool, runtime: bool, saved_open_links: Option<i64>, saved_upsell: Option<i64>) -> bool {
+    if web_link(url).is_none() {
+        return false;
+    }
+    if !allowed {
+        return !runtime && saved_upsell != Some(1);
+    }
+    saved_open_links != Some(0)
+}
+
+/// The warning for "open this link in Tandem?" (`WS:384-410`).
+pub fn open_link_spec(file: bool) -> crate::warnings::Spec {
+    crate::warnings::Spec {
+        id: Some(if file { OPEN_FILE_LINKS_ID } else { OPEN_LINKS_ID }.to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: OPEN_HEADING.to_string(),
+        text: if file { OPEN_FILE_TEXT } else { OPEN_WEB_TEXT }.to_string(),
+        labels: vec![if file { USE_DEFAULT_APP } else { USE_DEFAULT_BROWSER }.to_string(), OPEN_IN_TANDEM.to_string(), crate::api_auth::CANCEL.to_string()],
+        cancel: Some(2),
+        never_remember: Vec::new(),
+    }
+}
+
+/// The runtime upsell (`GW:136-160`): only Use System Browser is remembered (remembering Download
+/// would ask again for ever; Cancel is never remembered).
+pub fn upsell_spec() -> crate::warnings::Spec {
+    crate::warnings::Spec {
+        id: Some(UPSELL_ID.to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: UPSELL_HEADING.to_string(),
+        text: UPSELL_TEXT.to_string(),
+        labels: vec![DOWNLOAD.to_string(), USE_SYSTEM_BROWSER.to_string(), crate::api_auth::CANCEL.to_string()],
+        cancel: Some(2),
+        never_remember: vec![0],
+    }
+}
+
+/// The selection items of the pane menu (`CMH:549-560`): Search is added unconditionally.
+pub fn web_context_items(short: Option<&str>, locally_openable: bool, quick_look: bool) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if short.is_some() {
+        v.push("Open Selection as URL");
+        if locally_openable {
+            v.push("Open URL in Vertical Split Pane");
+            v.push("Open URL in Horizontal Split Pane");
+        }
+        if quick_look {
+            v.push("Quick Look Link");
+        }
+    }
+    v.push("Search the Web for Selection");
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1497,5 +1644,116 @@ mod tests {
     fn browser_io_is_plain_data() {
         let io = BrowserIo::default();
         assert!(io.url.is_empty() && !io.loading && !io.can_back && !io.can_forward && io.favicon.is_none() && !io.dev_null);
+    }
+
+    // --- Opening links (Task 9) ---
+
+    const SYS: Option<i64> = Some(0);
+    const LOCAL: Option<i64> = Some(1);
+
+    #[test]
+    fn open_link_decision_follows_iterm2() {
+        use Style::*;
+        let d = |url: &str, style, upsell, allowed, runtime, open, up| open_decision(url, style, upsell, allowed, runtime, open, up);
+        // Non-web schemes open with the system (`WS:190-220`).
+        assert_eq!(d("mailto:a@b", Tab, true, true, true, None, None), Open::System);
+        assert_eq!(d("ftp://a/b", Tab, true, true, true, None, None), Open::System);
+        assert_eq!(d("ssh://a", Tab, true, true, true, None, None), Open::System);
+        // Not allowed (BrowserProfiles off or the runtime refused): the system, no nagging.
+        assert_eq!(d("https://a", Tab, true, false, true, None, None), Open::System);
+        // The runtime is missing and the browser is on: the upsell, unless Use System Browser was remembered.
+        assert_eq!(d("https://a", Tab, true, false, false, None, None), Open::Upsell);
+        assert_eq!(d("https://a", Tab, true, false, false, None, Some(1)), Open::System);
+        assert_eq!(d("https://a", Tab, true, false, false, None, Some(0)), Open::Upsell, "Download is never remembered");
+        // `upsell` false with the browser not allowed is the system (`WS:249-251`).
+        assert_eq!(d("https://a", Tab, false, false, false, None, None), Open::System);
+        // Allowed: ask, or the remembered answer.
+        assert_eq!(d("https://a", Tab, true, true, true, None, None), Open::AskOpenInApp { file: false });
+        assert_eq!(d("https://a", Window, true, true, true, None, None), Open::AskOpenInApp { file: false });
+        assert_eq!(d("https://a", Tab, true, true, true, LOCAL, None), Open::Local(Tab));
+        assert_eq!(d("https://a", Window, true, true, true, LOCAL, None), Open::Local(Window));
+        assert_eq!(d("https://a", Tab, true, true, true, SYS, None), Open::System);
+        assert_eq!(d("https://a", Tab, true, true, true, Some(2), None), Open::AskOpenInApp { file: false }, "Cancel is never a remembered answer");
+        // A split is implied consent (`WS:414-418`), whatever was remembered.
+        assert_eq!(d("https://a", Vertical, true, true, true, None, None), Open::Local(Vertical));
+        assert_eq!(d("https://a", Horizontal, true, true, true, SYS, None), Open::Local(Horizontal));
+        // A file with a compatible extension asks about a file; a program is never opened here.
+        assert_eq!(d("file:///c:/a.pdf", Tab, true, true, true, None, None), Open::AskOpenInApp { file: true });
+        assert_eq!(d("file:///c:/a.pdf", Tab, true, true, true, LOCAL, None), Open::Local(Tab));
+        assert_eq!(d("file:///c:/a.exe", Tab, true, true, true, LOCAL, None), Open::System);
+        assert_eq!(d("file:///c:/a", Tab, true, true, true, None, None), Open::System);
+        assert_eq!(d("file:///c:/a.pdf", Tab, false, false, true, None, None), Open::System);
+    }
+
+    #[test]
+    fn compatible_files_never_run() {
+        for ext in ["html", "HTM", "xhtml", "xml", "svg", "css", "pdf", "png", "JPG", "jpeg", "gif", "webp", "heic"] {
+            assert!(compatible_file(ext), "{ext}");
+            assert!(compatible_file(&format!(".{ext}")), ".{ext}");
+        }
+        for ext in ["exe", "lnk", "ps1", "bat", "cmd", "hta", "js", "vbs", "msi", "scr", "com", "txt", "", "pdf:stream", "html:zone", "pdf ", "..pdf"] {
+            assert!(!compatible_file(ext), "{ext:?}");
+        }
+    }
+
+    #[test]
+    fn upsell_follows_iterm2() {
+        assert_eq!(UPSELL_HEADING, "WebView2 Runtime Required");
+        assert_eq!(UPSELL_TEXT, "Tandem can display web pages! But first you must install the WebView2 Runtime.");
+        assert_eq!((OPEN_HEADING, OPEN_IN_TANDEM, USE_DEFAULT_BROWSER, USE_DEFAULT_APP), ("Open in Tandem?", "Open in Tandem", "Use Default Browser", "Use Default App"));
+        assert_eq!(OPEN_WEB_TEXT, "Tandem can display web pages! Would you like to open this link in Tandem?");
+        assert_eq!(OPEN_FILE_TEXT, "Tandem can display files like this in its built-in web browser! Would you like to open this link in Tandem?");
+        assert_eq!((DOWNLOAD, USE_SYSTEM_BROWSER), ("Download", "Use System Browser"));
+        assert_eq!((OPEN_LINKS_ID, OPEN_FILE_LINKS_ID, UPSELL_ID), ("NoSyncOpenLinksInApp", "NoSyncOpenLinksInAppForFileURL", "NoSyncBrowserUpsell"));
+        // Microsoft's own page and nothing else: https, the developer.microsoft.com host.
+        assert_eq!(PLUGIN_URL, "https://developer.microsoft.com/microsoft-edge/webview2/");
+        assert_eq!(crate::toolbelt::url_host(PLUGIN_URL).as_deref(), Some("developer.microsoft.com"));
+        let u = upsell_spec();
+        assert_eq!((u.id.as_deref(), u.kind, u.heading.as_str(), u.text.as_str()), (Some("NoSyncBrowserUpsell"), crate::warnings::Kind::Permanent, UPSELL_HEADING, UPSELL_TEXT));
+        assert_eq!(u.labels, vec!["Download", "Use System Browser", "Cancel"]);
+        assert_eq!(u.cancel, Some(2));
+        let remembered: Vec<usize> = (0..3).filter(|i| u.rememberable(*i)).collect();
+        assert_eq!(remembered, vec![1], "only Use System Browser is remembered (`GW:136-160`)");
+        let o = open_link_spec(false);
+        assert_eq!((o.id.as_deref(), o.kind, o.heading.as_str(), o.text.as_str()), (Some("NoSyncOpenLinksInApp"), crate::warnings::Kind::Permanent, "Open in Tandem?", OPEN_WEB_TEXT));
+        assert_eq!(o.labels, vec!["Use Default Browser", "Open in Tandem", "Cancel"]);
+        assert_eq!(o.cancel, Some(2));
+        assert!(o.rememberable(0) && o.rememberable(1) && !o.rememberable(2));
+        let f = open_link_spec(true);
+        assert_eq!((f.id.as_deref(), f.text.as_str()), (Some("NoSyncOpenLinksInAppForFileURL"), OPEN_FILE_TEXT));
+        assert_eq!(f.labels, vec!["Use Default App", "Open in Tandem", "Cancel"]);
+    }
+
+    #[test]
+    fn web_context_items_follow_iterm2() {
+        let split = ["Open Selection as URL", "Open URL in Vertical Split Pane", "Open URL in Horizontal Split Pane"];
+        let mut all = split.to_vec();
+        all.extend(["Quick Look Link", "Search the Web for Selection"]);
+        assert_eq!(web_context_items(Some("https://a.b"), true, true), all);
+        assert_eq!(web_context_items(Some("https://a.b"), false, true), vec!["Open Selection as URL", "Quick Look Link", "Search the Web for Selection"]);
+        assert_eq!(web_context_items(Some("https://a.b"), true, false), vec![split[0], split[1], split[2], "Search the Web for Selection"]);
+        assert_eq!(web_context_items(Some("a b"), false, false), vec!["Open Selection as URL", "Search the Web for Selection"]);
+        assert_eq!(web_context_items(None, true, true), vec!["Search the Web for Selection"], "Search is added unconditionally (`CMH:560`)");
+    }
+
+    #[test]
+    fn web_link_is_the_one_gate() {
+        assert_eq!(web_link("https://a.test/x?y=1").as_deref(), Some("https://a.test/x?y=1"));
+        assert_eq!(web_link("http://u:p@a.test/x").as_deref(), Some("http://a.test/x"), "credentials are dropped");
+        for bad in ["javascript:alert(1)", "data:text/html,x", "file:///c:/a.html", "ftp://a/b", "mailto:a@b", "iterm2-about:history", "https://a b", "https://", "https://a.test/\u{202e}x", "https://a.test/\nx", ""] {
+            assert_eq!(web_link(bad), None, "{bad:?}");
+        }
+        assert_eq!(web_link(&format!("https://a.test/{}", "x".repeat(MAX_URL))), None, "too long");
+    }
+
+    #[test]
+    fn conditional_openability_follows_the_saved_answers() {
+        assert!(conditionally_openable("https://a", true, true, None, None));
+        assert!(conditionally_openable("https://a", true, true, LOCAL, None));
+        assert!(!conditionally_openable("https://a", true, true, SYS, None), "Use Default Browser was remembered");
+        assert!(conditionally_openable("https://a", false, false, None, None), "the upsell would show");
+        assert!(!conditionally_openable("https://a", false, false, None, Some(1)), "Use System Browser was remembered");
+        assert!(!conditionally_openable("https://a", false, true, None, None), "the browser is off");
+        assert!(!conditionally_openable("mailto:a@b", true, true, None, None));
     }
 }

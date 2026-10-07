@@ -5689,6 +5689,15 @@ impl App {
         // would open the Start menu when Win comes up, so that is masked.
         // A click that only brought the window forward is a plain click (`MH:278-295`).
         let acts = crate::semantic::win_click_acts(self.first_mouse_down, was_focused, self.globals.bool("CmdClickWhenInactiveInvokesSemanticHistory"));
+        // Shift+Win-click on a link that opens in Tandem splits the pane (`PTYTextView.m:7987-8043`).
+        if b == 0 && mods.cmd && mods.shift && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
+            let point = self.grid_point(id, col, row);
+            if self.open_link_split(id, point) {
+                #[cfg(windows)]
+                crate::winkeys::mask_start_menu();
+                return self.redraw();
+            }
+        }
         if b == 0 && mods.cmd && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
             #[cfg(windows)]
             crate::winkeys::mask_start_menu();
