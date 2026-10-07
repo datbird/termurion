@@ -121,10 +121,15 @@ impl PlaybackWindow {
         self.shown = Some(i);
         let bytes = &self.frames[i].1;
         // The header's size first: a hostile size is never decoded.
-        let Some((w, h)) = web_replay::jpeg_size(bytes).filter(|(w, h)| u64::from(*w) * u64::from(*h) <= 64 * 1024 * 1024) else { return };
+        if web_replay::jpeg_size(bytes).filter(|(w, h)| u64::from(*w) * u64::from(*h) <= 64 * 1024 * 1024).is_none() {
+            return;
+        }
         let Ok(img) = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg) else { return };
         let rgba = img.to_rgba8();
-        let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw());
+        // The decoded size, not the header's: a JPEG whose first frame header disagrees with the
+        // decoder's output would fail egui's size check (Task 10 M4).
+        let (dw, dh) = rgba.dimensions();
+        let image = egui::ColorImage::from_rgba_unmultiplied([dw as usize, dh as usize], rgba.as_raw());
         self.texture = Some(ctx.load_texture("web-replay", image, egui::TextureOptions::LINEAR));
     }
 

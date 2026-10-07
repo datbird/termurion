@@ -169,8 +169,8 @@ Decision: the movie goes in %LOCALAPPDATA%\Tandem\Replay under a random name (P1
 Decision: playback is from the in-memory frames and Reveal saves the AVI; both use the same timeline - cost if wrong: the saved file is not literally what was played.
 Decision: pauses over 2 s play as 2 s - cost if wrong: the movie is shorter than wall time.
 Decision: the JPEG base64 is decoded on the UI thread - cost if wrong: a tiny memcpy per frame.
-Decision: the password check sees only the top document (iframes are not probed) - cost if wrong: a sign-in iframe could be captured (OPEN: the controller review of Task 10 decides; checklist row 64 tests it).
-Decision: Start Instant Replay with no frames beeps; a minimized window is not detected as hidden (its panes still capture while Windows reports the view shown) - cost if wrong: captures of a minimized window may be blank.
+Decision: the password check sees only the top document (iframes are not probed) - cost if wrong: a sign-in iframe could be captured. SUPERSEDED by the final review fix I1 (below).
+Decision: Start Instant Replay with no frames beeps; a minimized window is not detected as hidden (its panes still capture while Windows reports the view shown) - cost if wrong: captures of a minimized window may be blank. The minimized part is SUPERSEDED by the final review fix I2 (below).
 Decision: a floor of 10 ms between captures; the rate is an upper bound - cost if wrong: a rate above 100 fps is not honored.
 Merge of 13w (merge-report.md):
 Decision: S1 every web view log site is dlog! or rlog! (dlog::origin = scheme and host only, a new sanctioned constructor); COM error text is never logged - cost if wrong: less diagnostic detail.
@@ -181,6 +181,12 @@ Decision: webhost_win::close_all runs in teardown_process before cleanup_files; 
 Decision: the Globals bounds for BrowserPluginPathHint, WebUserAgent, SearchCommand and SearchSuggestURL are in the one BOUNDS table - cost if wrong: none.
 Decision: S9 to S11: the badge loop reads terminal windows only, a browser pane's flash and bell icon draw on the toolbar strip, the trigger loop skips browser panes; S12 place_browser_views runs at the top of render; S2 the Focused arm stays window_focus(id, f) and FocusActions gains bell_reset (Normal gain only) - cost if wrong: none.
 
+Final review fixes (final-fixes.md, final-review.md):
+Ruling: I1 Instant Replay sensitive mark: one AddScriptToExecuteOnDocumentCreated script (web_replay::sensitive_script) in every frame of every browser view marks the page sensitive while a field matching the one selector exists (input type password, or autocomplete holding current-password, new-password, one-time-code, cc-number or cc-csc as a token, any case), found by a scan at document start and DOMContentLoaded, a MutationObserver (attributes type and autocomplete too), focusin and input in the capture phase, open shadow roots and every shadow root made later through attachShadow (open or closed). A child frame tells the top with window.top.postMessage; the top keeps the mark in a non-configurable getter defined before any page script, so a page can only set it. The mark ends only with the top document (a top-level navigation), so a show-password toggle does not resume capture. PROBE_JS reads the flag first and fails closed when it is missing - cost if wrong: a page where the script does not run (an error page) is never recorded; any page (or a frame) can stop its own recording, the safe direction.
+Ruling: I2 a pane records only while its window is on screen (frames_ui::window_on_screen of the window that shows it), a fifth input to web_replay::recording - cost if wrong: none.
+Ruling: I3 a captured frame byte-equal to the ring's newest is not kept (the newest's time stands; the timeline plays the gap), and the next capture waits web_replay::backoff: twice the last wait (at least twice the rate, at most 1 s) after a repeat or a refused probe, the rate again after a changed frame - cost if wrong: a page that changes after a quiet second is first captured up to 1 s late.
+Ruling: Task 10 M3 Clear Instant Replay closes a playback window open on that pane's frames (App.web_replay_pane); M4 the playback picture is built at the decoded size - cost if wrong: none.
+
 Deferred minors (each: cost if wrong)
 
 Ruling: deferred, Task 1 review minors not in the findings list - cost if wrong: none seen; the signer check's success path could not be exercised (no fixed-version runtime on EXTREME), so the first fixed-runtime run is a checklist row.
@@ -190,5 +196,5 @@ Ruling: deferred, Task 3/4: icon_next still takes a view id while waiting (the e
 Ruling: deferred, Task 5 review Minor 1 to 6 not in the findings list - cost if wrong: see the review file; none rose above Minor.
 Ruling: deferred, Task 8: the load_list double read, a banner for a refused proxy host (it silently returns to the default), hiding CSS at DOMContentLoaded, and 403 versus 204 for a blocked request - cost if wrong: a refused host looks accepted until the indicator is read; ads may flash first.
 Ruling: deferred, Task 9: the file ask for a clicked local HTML or PDF path - cost if wrong: parity row partial.
-Ruling: deferred, Task 10: sign-in iframes are not probed for a password field; a minimized window is not detected as hidden - cost if wrong: a frame's password page could be in a movie (the movie is in memory until Reveal, and Reveal writes an owner-only random file swept at the next launch).
+Ruling: deferred, Task 10: sign-in iframes are not probed for a password field; a minimized window is not detected as hidden - cost if wrong: a frame's password page could be in a movie. CLOSED by the final review fixes I1 and I2.
 Ruling: deferred, 13x owes follow-ups: the popover recorded real-runtime source value (checklist row 8), the real rendering of an icon (checklist rows 8 and 21), and page scripts, the page context menu, find on page, reader mode, marks, permissions, autofill, the settings page and the AI browser tools to 13x2 through 13x8 and the AI tools plan - cost if wrong: each is the Browser sessions parity row's missing list.

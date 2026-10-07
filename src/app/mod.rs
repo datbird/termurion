@@ -1606,6 +1606,8 @@ pub struct App {
     /// The browser Instant Replay playback window (one at a time, app-wide like the popovers) and the
     /// movie save in flight.
     web_replay: Option<crate::web_replay_ui::PlaybackWindow>,
+    /// The browser pane whose frames the playback window shows (Clear closes it).
+    web_replay_pane: Option<PaneId>,
     web_replay_save: Option<web_replay_app::Saving>,
     /// Chat icon generations by chat id (app-wide, 13x Task 4): coalescing state, and the candidates being rendered.
     icon_requests: HashMap<String, crate::svg_icon::Request>,
@@ -2598,6 +2600,7 @@ pub fn run() {
         text_popover: None,
         web_popover: None,
         web_replay: None,
+        web_replay_pane: None,
         web_replay_save: None,
         icon_requests: HashMap::new(),
         icon_jobs: HashMap::new(),

@@ -3,8 +3,10 @@
 //! `WebInstantReplayFrameRate` into a per-pane ring bounded by the Instant Replay memory setting
 //! (`IRMemory`) and, over all panes, by `web_replay::TOTAL_CAP`. Start Instant Replay opens the
 //! playback window on a copy of the ring; Reveal in Explorer saves a Motion JPEG AVI in Tandem's own
-//! folder. Nothing is written unless the person asks, a Dev Null pane is never recorded, and a page with
-//! a visible password field is not captured. The capture itself is asynchronous in the browser
+//! folder. Nothing is written unless the person asks, a Dev Null pane is never recorded, a window
+//! that is not on screen is not captured, an unchanged page backs the capture off, and a page marked
+//! sensitive (a password, one-time-code or card field in any frame, until the top page navigates) is
+//! not captured. The capture itself is asynchronous in the browser
 //! process; the app only starts it, so the UI thread never waits on a frame.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -32,12 +34,15 @@ pub(super) struct Recorder {
     pub(super) shown: bool,
     stage: Stage,
     next: Instant,
+    /// The wait after the last answer: the rate's interval, longer while the page does not change
+    /// or is marked sensitive (`web_replay::backoff`).
+    wait: Duration,
 }
 
 impl Recorder {
     pub(super) fn new() -> Recorder {
         let now = Instant::now();
-        Recorder { ring: Ring::new(0), began: now, shown: false, stage: Stage::Idle, next: now }
+        Recorder { ring: Ring::new(0), began: now, shown: false, stage: Stage::Idle, next: now, wait: Duration::ZERO }
     }
 }
 
@@ -56,7 +61,23 @@ impl App {
         let on = self.store.get(&p.profile).is_some_and(|prof| prof.bool("Instant Replay"));
         let dev_null = p.browser_io().is_some_and(|io| io.dev_null);
         let shown = self.browser_views.get(&pane).is_some_and(|b| b.view.is_some() && b.replay.shown);
-        web_replay::recording(on, dev_null, self.globals.int("IRMemory"), shown)
+        // `shown` is set by the placement, which a minimized window does not run: its window is asked.
+        let on_screen = self.pane_window_on_screen(pane);
+        web_replay::recording(on, dev_null, self.globals.int("IRMemory"), shown, on_screen)
+    }
+
+    /// Whether the window that shows `pane` is on screen (not minimized, hidden or a hidden hotkey
+    /// window).
+    fn pane_window_on_screen(&self, pane: PaneId) -> bool {
+        if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
+            let shown = self.hotkey.as_ref().map(|h| h.shown);
+            return self.gpu.as_ref().is_some_and(|g| super::frames_ui::window_on_screen(g.window.is_visible(), g.window.is_minimized(), shown));
+        }
+        self.windows
+            .parked()
+            .find(|(_, s)| s.tabs.iter().any(|t| t.layout.panes().contains(&pane)))
+            .and_then(|(_, s)| s.gpu.as_ref().map(|g| super::frames_ui::window_on_screen(g.window.is_visible(), g.window.is_minimized(), s.hotkey.as_ref().map(|h| h.shown))))
+            .unwrap_or(false)
     }
 
     /// Every pass of the loop: starts the next capture of each recording pane when it is due, forgets
@@ -140,17 +161,24 @@ impl App {
                         return;
                     }
                 }
+                // A sensitive page stays sensitive until it navigates: ask again slowly.
                 r.stage = Stage::Idle;
-                r.next = now + interval;
+                r.wait = web_replay::backoff(r.wait, interval, true);
+                r.next = now + r.wait;
             }
             (web_replay::CAPTURE_TOKEN, Stage::Capturing(_)) => {
                 r.stage = Stage::Idle;
-                r.next = now + interval;
                 use base64::Engine as _;
+                let mut repeated = true;
                 if let Some(bytes) = json.as_ref().ok().and_then(|b| base64::engine::general_purpose::STANDARD.decode(b.trim()).ok()) {
                     let at = now.duration_since(r.began);
-                    r.ring.push(at, bytes);
+                    let fresh = r.ring.push(at, bytes);
+                    repeated = !fresh;
                 }
+                // An unchanged page is not captured at the full rate (iTerm2's stream sends a frame
+                // only on change); the first changed frame resets it.
+                r.wait = web_replay::backoff(r.wait, interval, repeated);
+                r.next = now + r.wait;
             }
             _ => {}
         }
@@ -170,19 +198,27 @@ impl App {
         let size = frames.last().and_then(|f| web_replay::jpeg_size(&f.1)).unwrap_or((800, 600));
         let Some(g) = self.gpu.as_ref() else { return };
         self.web_replay = None;
+        self.web_replay_pane = None;
         match PlaybackWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, frames, size) {
             Ok(w) => {
                 w.focus();
                 self.web_replay = Some(w);
+                self.web_replay_pane = Some(pane);
             }
             Err(_) => find_ui::beep(),
         }
     }
 
-    /// Edit > Clear Instant Replay on a browser pane (`clearInstantReplay`, `BVC:263-266`).
+    /// Edit > Clear Instant Replay on a browser pane (`clearInstantReplay`, `BVC:263-266`). A
+    /// playback window open on that pane's frames closes with them (Task 10 M3): nothing cleared
+    /// stays on screen or saveable.
     pub(super) fn web_replay_clear(&mut self, pane: PaneId) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.replay.ring.clear();
+        }
+        if self.web_replay_pane == Some(pane) {
+            self.web_replay = None;
+            self.web_replay_pane = None;
         }
     }
 
@@ -190,7 +226,10 @@ impl App {
     pub(super) fn web_replay_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
         let Some(w) = self.web_replay.as_mut().filter(|w| w.id() == id) else { return false };
         match w.event(event) {
-            Some(ReplayAct::Closed) => self.web_replay = None,
+            Some(ReplayAct::Closed) => {
+                self.web_replay = None;
+                self.web_replay_pane = None;
+            }
             Some(ReplayAct::Reveal) => self.web_replay_reveal(),
             None => {}
         }
@@ -267,6 +306,8 @@ fn save_movie(frames: &[(Duration, Vec<u8>)], size: (u32, u32)) -> Result<std::p
 
 #[cfg(test)]
 mod tests {
+    use crate::web_replay;
+
     #[test]
     fn browser_replay_is_wired_as_bounded() {
         let src = include_str!("web_replay_app.rs");
@@ -289,5 +330,29 @@ mod tests {
         // Hidden panes are not captured: the placement says so.
         let browser = include_str!("browser_app.rs");
         assert!(browser.contains("bv.replay.shown = true;") && browser.contains("self.web_replay_shown(pane, false);"));
+    }
+
+    /// Final review I1-I3 and Task 10 M3/M4 on the App side.
+    #[test]
+    fn replay_follows_the_final_review() {
+        let src = include_str!("web_replay_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        // I2: the window's on-screen state is the fifth input.
+        let wanted = &prod[prod.find("fn web_replay_wanted").unwrap()..prod.find("pub(super) fn web_replay_tick").unwrap()];
+        assert!(wanted.contains("self.pane_window_on_screen(pane)") && wanted.contains("shown, on_screen)"), "{wanted}");
+        // I3: a repeat backs the capture off; a refused probe waits as long.
+        let done = &prod[prod.find("pub(super) fn web_replay_script_done").unwrap()..prod.find("pub(super) fn web_replay_shown").unwrap()];
+        assert!(done.contains("web_replay::backoff(r.wait, interval,"), "{done}");
+        assert!(done.contains("let fresh = r.ring.push(at, bytes);"));
+        // I1: every browser view carries the sensitive mark script in every frame.
+        let setup = crate::app::browser_app::browser_setup(false, false);
+        assert!(setup.scripts.contains(&web_replay::sensitive_script()));
+        assert!(crate::app::browser_app::browser_setup(true, true).scripts.contains(&web_replay::sensitive_script()));
+        // M3: Clear closes the playback window of that pane (no saveable copy is left).
+        let clear = &prod[prod.find("pub(super) fn web_replay_clear").unwrap()..prod.find("pub(super) fn web_replay_event").unwrap()];
+        assert!(clear.contains("self.web_replay_pane == Some(pane)") && clear.contains("self.web_replay = None;"), "{clear}");
+        // M4: the picture is built at the decoded size, never the header's.
+        let ui = include_str!("../web_replay_ui.rs");
+        assert!(ui.contains("let (dw, dh) = rgba.dimensions();"));
     }
 }

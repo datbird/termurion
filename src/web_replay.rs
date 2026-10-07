@@ -1,5 +1,5 @@
 //! Browser Instant Replay, the pure part (milestone 13x, Task 10): the frame ring bounded by the
-//! Instant Replay memory setting, the capture interval, the playback clock, the time text and the
+//! Instant Replay memory setting, the sensitive-page mark, the capture interval and its back-off, the playback clock, the time text and the
 //! Motion JPEG AVI writer. iTerm2: `BVC:258-340`, `IRMB:22-60`, `VPW`. No web view, no window, no disk.
 //! Frames are page pictures, so they are kept in memory only: nothing here touches a file.
 
@@ -34,9 +34,61 @@ pub const CAPTURE_TOKEN: u64 = 0x7E57_0002;
 /// A capture that has not answered by then is forgotten (the view was hidden or went away).
 pub const PENDING_LIMIT: Duration = Duration::from_secs(5);
 
-/// The script run before each capture: true when a visible password field is in the page, so
-/// nothing of a sign-in form is ever kept. A page that cannot answer is treated as having one.
-pub const PROBE_JS: &str = "(function(){try{var a=document.querySelectorAll('input[type=password]');for(var i=0;i<a.length;i++){var r=a[i].getBoundingClientRect();if(r.width>0&&r.height>0)return true}return false}catch(e){return true}})()";
+/// The `autocomplete` tokens that make a field sensitive (a password, a one-time code, a card).
+pub const SENSITIVE_AUTOCOMPLETE: &[&str] = &["current-password", "new-password", "one-time-code", "cc-number", "cc-csc"];
+
+/// The top document's flag the sensitive mark script keeps (a getter a page cannot redefine).
+pub const SENSITIVE_FLAG: &str = "__tandemReplaySensitive";
+
+/// The one CSS selector of a sensitive field: a password input, or an input whose `autocomplete`
+/// holds one of `SENSITIVE_AUTOCOMPLETE` as a whole token, in any case.
+pub fn sensitive_selector() -> String {
+    let mut parts = vec!["input[type=password i]".to_string()];
+    parts.extend(SENSITIVE_AUTOCOMPLETE.iter().map(|t| format!("input[autocomplete~=\"{t}\" i]")));
+    parts.join(",")
+}
+
+/// The rule `sensitive_selector` states, for an input of `type` with `autocomplete`.
+pub fn sensitive_input(kind: &str, autocomplete: &str) -> bool {
+    kind.eq_ignore_ascii_case("password") || autocomplete.split_ascii_whitespace().any(|t| SENSITIVE_AUTOCOMPLETE.iter().any(|s| s.eq_ignore_ascii_case(t)))
+}
+
+/// The script run at the start of every document in every frame (final review I1): it marks the
+/// page sensitive once a field `sensitive_selector` matches exists anywhere in it, found by a scan
+/// at the start and at DOMContentLoaded, a MutationObserver (attributes too, so a field turned into
+/// a password field counts), focus and input in the capture phase, inside open shadow roots and in
+/// every shadow root made later (open or closed, through `attachShadow`). A child frame tells the
+/// top with `window.top.postMessage` (it stays in the page: no new host channel); the top keeps
+/// the mark in a getter defined before any page script, so a page can only set it, never clear
+/// it. The mark ends only with the top document (a top-level navigation): a "show password"
+/// toggle that turns the field to text does not resume capture.
+pub fn sensitive_script() -> String {
+    let sel = sensitive_selector().replace('\\', "\\\\").replace('\'', "\\'");
+    let flag = SENSITIVE_FLAG;
+    format!(
+        "(function(){{try{{var SEL='{sel}';var top=window===window.top;var hit=false;var watchers=[];\
+function mark(){{if(hit)return;hit=true;for(var i=0;i<watchers.length;i++){{try{{watchers[i].disconnect()}}catch(e){{}}}}watchers=[];\
+if(!top){{try{{window.top.postMessage({{{flag}:1}},'*')}}catch(e){{}}}}}}\
+if(top){{Object.defineProperty(window,'{flag}',{{get:function(){{return hit}},configurable:false}});\
+window.addEventListener('message',function(e){{try{{if(e.data&&e.data.{flag}===1)mark()}}catch(x){{}}}},true)}}\
+function scan(root){{if(hit||!root)return;try{{if(root.shadowRoot)scan(root.shadowRoot);if(root.querySelector&&root.querySelector(SEL))return mark();\
+var all=root.querySelectorAll?root.querySelectorAll('*'):[];for(var i=0;i<all.length&&!hit;i++){{if(all[i].shadowRoot)scan(all[i].shadowRoot)}}}}catch(e){{}}}}\
+function check(n){{try{{if(!n||n.nodeType!==1)return;if(n.matches(SEL))return mark();scan(n)}}catch(e){{}}}}\
+function watch(root){{if(hit)return;try{{var o=new MutationObserver(function(rs){{for(var i=0;i<rs.length&&!hit;i++){{var r=rs[i];\
+if(r.type==='attributes')check(r.target);else for(var j=0;j<r.addedNodes.length;j++)check(r.addedNodes[j])}}}});\
+o.observe(root,{{childList:true,subtree:true,attributes:true,attributeFilter:['type','autocomplete']}});watchers.push(o)}}catch(e){{}}scan(root)}}\
+try{{var attach=Element.prototype.attachShadow;Element.prototype.attachShadow=function(){{var r=attach.apply(this,arguments);try{{watch(r)}}catch(e){{}}return r}}}}catch(e){{}}\
+function ev(e){{try{{var t=e.composedPath?e.composedPath()[0]:e.target;if(t&&t.nodeType===1&&t.matches(SEL))mark()}}catch(x){{}}}}\
+document.addEventListener('focusin',ev,true);document.addEventListener('input',ev,true);\
+watch(document);document.addEventListener('DOMContentLoaded',function(){{scan(document)}})}}catch(e){{}}}})()"
+    )
+}
+
+/// The script run before each capture: true while the page is marked sensitive (the mark script
+/// above, in any frame), or while a visible password field is in the top document; also true when
+/// the mark script is not there or anything fails (fail closed). Only a plain `false` lets a
+/// capture through.
+pub const PROBE_JS: &str = "(function(){try{if(window.__tandemReplaySensitive!==false)return true;var a=document.querySelectorAll('input[type=password]');for(var i=0;i<a.length;i++){var r=a[i].getBoundingClientRect();if(r.width>0&&r.height>0)return true}return false}catch(e){return true}})()";
 
 /// Whether the probe's answer lets the capture go on: only a plain `false`.
 pub fn probe_allows(answer: &Result<String, String>) -> bool {
@@ -59,9 +111,22 @@ pub fn cap_bytes(mb: i64) -> usize {
 }
 
 /// Whether a pane captures now: its profile has Instant Replay on, it is not Dev Null (nothing of a
-/// private pane is kept), the memory setting is not 0 and the pane is shown (no idle wake).
-pub fn recording(profile_on: bool, dev_null: bool, mb: i64, shown: bool) -> bool {
-    profile_on && !dev_null && mb > 0 && shown
+/// private pane is kept), the memory setting is not 0, the pane is shown and its window is on
+/// screen (not minimized or hidden: no idle wake, no blank frames pushing out the history).
+pub fn recording(profile_on: bool, dev_null: bool, mb: i64, shown: bool, on_screen: bool) -> bool {
+    profile_on && !dev_null && mb > 0 && shown && on_screen
+}
+
+/// The slowest the capture backs off to while the page does not change.
+pub const MAX_BACKOFF: Duration = Duration::from_secs(1);
+
+/// The wait before the next capture: the rate's `base` after a changed frame; after a repeat (or a
+/// refused probe) double the last wait, at least twice the rate and at most `MAX_BACKOFF`.
+pub fn backoff(last: Duration, base: Duration, repeated: bool) -> Duration {
+    if !repeated {
+        return base;
+    }
+    last.max(base).saturating_mul(2).min(MAX_BACKOFF.max(base))
 }
 
 /// The time between captures at `rate` frames per second; None for a rate that is not a positive
@@ -99,13 +164,19 @@ impl Ring {
 
     /// Adds a frame, then drops the oldest until the total fits. The newest frame always stays (a
     /// frame bigger than the cap is kept alone), unless it is over `MAX_FRAME` (dropped) or empty.
-    pub fn push(&mut self, at: Duration, jpeg: Vec<u8>) {
+    /// A frame byte-equal to the newest is not kept (the newest's time stands, and the timeline
+    /// plays the gap); false then, true for any other frame.
+    pub fn push(&mut self, at: Duration, jpeg: Vec<u8>) -> bool {
+        if self.frames.last().is_some_and(|(_, last)| last.len() == jpeg.len() && *last == jpeg) {
+            return false;
+        }
         if self.max == 0 || jpeg.is_empty() || jpeg.len() > MAX_FRAME {
-            return;
+            return true;
         }
         self.bytes += jpeg.len();
         self.frames.push((at, jpeg));
         self.fit();
+        true
     }
 
     fn fit(&mut self) {
@@ -455,7 +526,7 @@ mod tests {
         // Lowering the cap trims, oldest first, keeping the newest.
         let mut r = Ring::new(100);
         for i in 0..5 {
-            r.push(ms(i), vec![0; 10]);
+            r.push(ms(i), vec![i as u8; 10]);
         }
         r.set_max(25);
         assert_eq!(r.frames().len(), 2);
@@ -463,9 +534,9 @@ mod tests {
         // The sum over all panes: the ring whose oldest frame is oldest shrinks first.
         let (mut a, mut b) = (Ring::new(1000), Ring::new(1000));
         a.push(ms(0), vec![0; 10]);
-        a.push(ms(500), vec![0; 10]);
+        a.push(ms(500), vec![1; 10]);
         b.push(ms(0), vec![0; 10]);
-        b.push(ms(100), vec![0; 10]);
+        b.push(ms(100), vec![1; 10]);
         // b started 200 ms after a: its oldest frame is at 200, a's at 0.
         trim_total(&mut [(&mut a, ms(0)), (&mut b, ms(200))], 30);
         assert_eq!((a.frames().len(), b.frames().len()), (1, 2));
@@ -474,11 +545,11 @@ mod tests {
         assert_eq!(a.bytes() + b.bytes(), 0);
         // Capture runs only while the profile has it on, the pane shows, the setting is not 0 and the
         // pane is not Dev Null.
-        assert!(recording(true, false, 4, true));
-        assert!(!recording(false, false, 4, true));
-        assert!(!recording(true, true, 4, true), "a Dev Null pane is never recorded");
-        assert!(!recording(true, false, 0, true));
-        assert!(!recording(true, false, 4, false), "a hidden pane has no idle wake");
+        assert!(recording(true, false, 4, true, true));
+        assert!(!recording(false, false, 4, true, true));
+        assert!(!recording(true, true, 4, true, true), "a Dev Null pane is never recorded");
+        assert!(!recording(true, false, 0, true, true));
+        assert!(!recording(true, false, 4, false, true), "a hidden pane has no idle wake");
     }
 
     #[test]
@@ -491,6 +562,76 @@ mod tests {
         assert_ne!(PROBE_TOKEN, CAPTURE_TOKEN);
         let f = replay_folder(std::path::Path::new(r"C:\Users\a\AppData\Local"));
         assert!(f.ends_with(r"Tandem\Replay"), "{f:?}");
+    }
+
+    /// Final review I1: one script in every frame marks the page sensitive while a password,
+    /// one-time-code or card field exists anywhere in it (shadow roots and frames included), and the
+    /// mark sticks until the top page navigates.
+    #[test]
+    fn the_sensitive_mark_covers_frames_shadow_roots_and_field_kinds() {
+        let sel = sensitive_selector();
+        assert!(sel.contains("input[type=password i]"), "{sel}");
+        for t in ["current-password", "new-password", "one-time-code", "cc-number", "cc-csc"] {
+            assert!(sel.contains(&format!("input[autocomplete~=\"{t}\" i]")), "{t}: {sel}");
+            assert!(SENSITIVE_AUTOCOMPLETE.contains(&t));
+        }
+        // The rule the selector states, in Rust (tokens, any case).
+        assert!(sensitive_input("password", ""));
+        assert!(sensitive_input("PassWord", ""));
+        assert!(sensitive_input("text", "section-pay billing cc-number"));
+        assert!(sensitive_input("text", "ONE-TIME-CODE"));
+        assert!(sensitive_input("tel", "cc-csc"));
+        assert!(!sensitive_input("text", "username"));
+        assert!(!sensitive_input("text", "cc-numbers"), "a whole token, not a prefix");
+        assert!(!sensitive_input("email", "email"));
+        let js = sensitive_script();
+        assert!(js.contains(&sel), "the script uses the one selector");
+        // Every frame reports to the top through the page itself (no new host channel); the top
+        // keeps a flag a page cannot clear (a getter defined before any page script).
+        assert!(js.contains("window.top.postMessage"));
+        assert!(js.contains(&format!("Object.defineProperty(window,'{SENSITIVE_FLAG}'")));
+        assert!(js.contains("configurable:false"));
+        // Found by a scan at DOMContentLoaded, a MutationObserver, focus and input in the capture
+        // phase, inside open shadow roots, and in every shadow root made later (open or closed).
+        for part in ["DOMContentLoaded", "MutationObserver", "'focusin'", "'input'", "shadowRoot", "attachShadow", "composedPath"] {
+            assert!(js.contains(part), "{part}");
+        }
+        assert!(!js.contains("\u{2014}") && js.is_ascii());
+        // The probe reads the flag first and fails closed when the script is not there.
+        assert!(PROBE_JS.contains(&format!("window.{SENSITIVE_FLAG}!==false")), "{PROBE_JS}");
+    }
+
+    /// Final review I2: a window that is not on screen (minimized, hidden) never records.
+    #[test]
+    fn a_window_off_screen_never_records() {
+        assert!(recording(true, false, 4, true, true));
+        assert!(!recording(true, false, 4, true, false), "a minimized window has no idle wake");
+    }
+
+    /// Final review I3: a frame byte-equal to the newest is not kept, and the capture backs off
+    /// while nothing changes.
+    #[test]
+    fn identical_frames_are_kept_once_and_the_capture_backs_off() {
+        let mut r = Ring::new(1000);
+        assert!(r.push(ms(0), vec![1, 2, 3]));
+        assert!(!r.push(ms(10), vec![1, 2, 3]), "a repeat is not new");
+        assert_eq!(r.frames().len(), 1);
+        assert_eq!(r.frames()[0].0, ms(0), "the first frame's time stands");
+        assert!(r.push(ms(20), vec![1, 2, 4]));
+        assert!(r.push(ms(30), vec![1, 2, 3]), "only the newest is compared");
+        assert_eq!(r.frames().len(), 3);
+        let base = ms(16);
+        let mut wait = base;
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            wait = backoff(wait, base, true);
+            seen.push(wait);
+        }
+        assert_eq!(seen[0], ms(32));
+        assert!(seen.windows(2).all(|w| w[1] >= w[0]), "{seen:?}");
+        assert_eq!(*seen.last().unwrap(), MAX_BACKOFF, "never slower than once a second");
+        assert_eq!(backoff(wait, base, false), base, "a change resets the rate");
+        assert_eq!(backoff(ms(1), base, true), ms(32), "never faster than the rate");
     }
 
     #[test]

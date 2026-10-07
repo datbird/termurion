@@ -113,7 +113,8 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
         guard_local_schemes: true,
         in_private: dev_null,
         web_message: true,
-        scripts: vec![crate::browser_pages::SHIM_JS.to_string()],
+        // The Instant Replay sensitive mark runs in every frame of every browser page (final review I1).
+        scripts: vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()],
         resource_filters: filters,
         ..Default::default()
     }
