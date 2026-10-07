@@ -88,15 +88,20 @@ impl App {
         }
     }
 
-    /// Every frame: a reading that waited for the interval is applied when it is over.
-    pub(super) fn browser_color_tick(&mut self, pane: PaneId) {
-        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+    /// On the app's tick: a reading that waited for the interval is applied when it is over; else
+    /// the time it is due, the app's next wake (a timed wake, never a redraw loop: final review
+    /// minor 11).
+    pub(super) fn browser_color_tick(&mut self, pane: PaneId) -> Option<Instant> {
+        let bv = self.browser_views.get_mut(&pane)?;
         if !bv.bar.color.waiting() {
-            return;
+            return None;
         }
         match bv.bar.color.due(Instant::now()) {
-            Some(c) => self.browser_color_apply(pane, c),
-            None => self.redraw(),
+            Some(c) => {
+                self.browser_color_apply(pane, c);
+                None
+            }
+            None => bv.bar.color.due_at(),
         }
     }
 
@@ -182,6 +187,20 @@ mod tests {
         assert!(own.contains("browser_restore::own_load(") && own.contains("self.banners.set(") && own.contains("navigate_tandem"), "a refused own load shows a banner, never a blank");
         assert!(finish.contains("self.browser_load_own(pane, &url)") && !finish.contains("navigate_tandem"), "one road for the pane's own load");
         assert!(me.contains("fn browser_restoring(&self) -> bool"));
+    }
+
+    /// Final review minor 11: the color's wait is a timed wake of the app's tick, never a redraw
+    /// from the per-frame placement.
+    #[test]
+    fn the_color_wait_is_a_timed_wake() {
+        let me = prod(include_str!("browser_restore_app.rs"));
+        let tick = &me[me.find("pub(super) fn browser_color_tick").unwrap()..me.find("fn browser_color_apply").unwrap()];
+        assert!(tick.contains("bv.bar.color.due_at()") && !tick.contains("self.redraw()"), "{tick}");
+        let app = prod(include_str!("browser_app.rs"));
+        let place = &app[app.find("pub(super) fn place_browser_views").unwrap()..app.find("fn show_browser_view").unwrap()];
+        assert!(!place.contains("browser_color_tick"), "not on every placement");
+        let tick = &app[app.find("pub(super) fn browser_tick").unwrap()..app.find("fn browser_poll_suggest").unwrap()];
+        assert!(tick.contains("self.browser_color_tick(pane)"), "the browser tick folds it into its wake");
     }
 
     /// Starting records the transition the next history row takes; the page color is read in the

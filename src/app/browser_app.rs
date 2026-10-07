@@ -239,7 +239,6 @@ impl App {
         let in_front = crate::webhost_win::foreground_root() == Some(hwnd);
         let panes: Vec<PaneId> = self.browser_views.keys().copied().collect();
         for pane in panes {
-            self.browser_color_tick(pane);
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
             match rect {
                 Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front),
@@ -1051,6 +1050,9 @@ impl App {
                 }
             }
             self.browser_poll_suggest(pane);
+            if let Some(at) = self.browser_color_tick(pane) {
+                due = Some(due.map_or(at, |d| d.min(at)));
+            }
         }
         let ad_due = self.adblock_tick();
         let replay_due = self.web_replay_tick();

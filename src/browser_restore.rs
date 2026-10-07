@@ -131,6 +131,12 @@ impl ColorLimit {
     pub fn waiting(&self) -> bool {
         self.pending.is_some()
     }
+
+    /// When the waiting reading is due: the app's wake time, so nothing redraws while it waits.
+    pub fn due_at(&self) -> Option<Instant> {
+        self.pending.as_ref()?;
+        Some(self.last.map_or_else(Instant::now, |t| t + COLOR_INTERVAL))
+    }
 }
 
 /// A link target of an arrangement file: a string of at most `MAX_TARGET` characters that holds
@@ -253,6 +259,21 @@ mod tests {
         assert!(!l.waiting());
         assert_eq!(l.due(t0 + Duration::from_secs(5)), None);
         assert_eq!(l.offer(Some((3, 3, 3)), t0 + Duration::from_secs(5)), Some(Some((3, 3, 3))));
+    }
+
+    /// Task 9 minor 1 (final review minor 11): a waiting reading names the time it is due, so the app
+    /// sleeps until then (a timed wake) instead of redrawing every frame while it waits.
+    #[test]
+    fn a_waiting_color_names_its_wake() {
+        let mut l = ColorLimit::default();
+        let t0 = Instant::now();
+        assert_eq!(l.due_at(), None, "nothing waits");
+        l.offer(Some((1, 1, 1)), t0);
+        assert_eq!(l.due_at(), None, "applied at once: nothing waits");
+        l.offer(Some((2, 2, 2)), t0 + Duration::from_millis(100));
+        assert_eq!(l.due_at(), Some(t0 + COLOR_INTERVAL));
+        assert!(l.due(t0 + COLOR_INTERVAL).is_some());
+        assert_eq!(l.due_at(), None);
     }
 
     #[test]
