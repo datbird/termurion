@@ -50,25 +50,17 @@ pub fn inject_name(items: &[ToolbarItem]) -> Vec<ToolbarItem> {
     out
 }
 
-/// The strip of one member: a peer's own items, any other member's with the Name injected.
-pub fn items_for(member: &SessionConfig, peer_group: bool) -> Vec<ToolbarItem> {
-    if peer_group {
-        member.toolbar_items.clone()
-    } else {
+/// The strip of one member (`WI:526-532`, `WPP:135-146`): its own items with the Name injected. A peer
+/// group member (the main session or a peer) keeps its Mode Switcher; a split or a tab never has
+/// one (it would swap the leader's slot from another pane).
+pub fn items_for(member: &SessionConfig) -> Vec<ToolbarItem> {
+    use crate::workgroup::Kind;
+    if matches!(member.kind, Kind::Root | Kind::Peer) {
         inject_name(&member.toolbar_items)
+    } else {
+        let own: Vec<ToolbarItem> = member.toolbar_items.iter().filter(|i| **i != ToolbarItem::ModeSwitcher).cloned().collect();
+        inject_name(&own)
     }
-}
-
-/// The union of a peer group's items, each once, first appearance first (`buildUnion`, `WTB:140-160`):
-/// one strip serves every peer, so a peer without a switcher still has the group's.
-pub fn union_items(members: &[&SessionConfig]) -> Vec<ToolbarItem> {
-    let mut out: Vec<ToolbarItem> = Vec::new();
-    for item in members.iter().flat_map(|m| m.toolbar_items.iter()) {
-        if !out.contains(item) {
-            out.push(item.clone());
-        }
-    }
-    out
 }
 
 /// One item's place across the strip.
@@ -373,15 +365,15 @@ mod tests {
         let nav = ToolbarItem::Navigation(crate::workgroup::NavigationShortcuts::defaults());
         assert_eq!(inject_name(&[nav.clone(), ToolbarItem::GitBaseSelector, Reload(None)]), vec![Name, Reload(None)]);
         assert_eq!(inject_name(&[ToolbarItem::ChangedFileSelector, nav.clone(), ToolbarItem::GitBaseSelector]), vec![Name, ToolbarItem::ChangedFileSelector, nav, ToolbarItem::GitBaseSelector]);
-        // A non-peer member gets the injection; a peer's items are unchanged.
-        let split = member(vec![Reload(None)], Kind::Tab);
-        assert_eq!(items_for(&split, false)[0], Name);
-        assert_eq!(items_for(&split, false).len(), 2);
+        // A split or tab never has a switcher; a peer keeps its own items, never another peer's.
+        let split = member(vec![ModeSwitcher, Reload(None)], Kind::Tab);
+        assert_eq!(items_for(&split), vec![Name, Reload(None)]);
         let peer = member(vec![ModeSwitcher, Name, GitStatus], Kind::Peer);
-        assert_eq!(items_for(&peer, true), vec![ModeSwitcher, Name, GitStatus]);
-        // A peer group shows the union of its members' items, first appearance first.
-        let (a, b) = (member(vec![ModeSwitcher, GitStatus], Kind::Peer), member(vec![GitStatus, Reload(None)], Kind::Peer));
-        assert_eq!(union_items(&[&a, &b]), vec![ModeSwitcher, GitStatus, Reload(None)]);
+        assert_eq!(items_for(&peer), vec![ModeSwitcher, GitStatus]);
+        let chat = member(vec![ModeSwitcher, GitStatus], Kind::Root);
+        assert_eq!(items_for(&chat), vec![ModeSwitcher, GitStatus], "Chat shown with a Diff peer that carries Reload: no Reload");
+        let bare = member(vec![GitStatus], Kind::Peer);
+        assert_eq!(items_for(&bare), vec![Name, GitStatus], "a peer without a switcher gets the Name");
         // The constants are the source's (`STV:187-196`, `SessionView.m:57-59`).
         assert_eq!((TOOLBAR_H, INSET, DIVIDER_PAD, DIVIDER_V_INSET), (40.0, 8.0, 8.0, 8.0));
         assert_eq!(GAP, 17.0, "padding, a 1 point divider, padding");

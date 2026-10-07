@@ -108,20 +108,13 @@ impl App {
         self.panes.get(&id).is_some_and(|p| p.workgroup.is_some() && p.tmux_io().is_none()) && self.workgroup_of(id).is_some()
     }
 
-    /// The items and name of `pane`'s strip. A peer group shows the union of its members' items; any
-    /// other member its own with the Name injected (`WTB`).
+    /// The items and name of `pane`'s strip. The member's own items with the Name injected (`WTB`).
     fn toolbar_plan(&self, pane: PaneId) -> Option<Plan> {
         let inst = self.workgroup_of(pane)?;
         let w = &inst.workgroup;
         let config = inst.config_of(pane).map(str::to_string).or_else(|| inst.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.clone()))?;
         let cfg = w.session(&config)?;
-        let group = inst.peers.len() > 1 && inst.config_of(pane).is_some();
-        let items = if group {
-            let members: Vec<&crate::workgroup::SessionConfig> = peers::members(w).iter().filter_map(|(id, _, _)| w.session(id)).collect();
-            wt::union_items(&members)
-        } else {
-            wt::items_for(cfg, false)
-        };
+        let items = wt::items_for(cfg);
         let browser = self.is_browser_pane(pane);
         // The page's own reload runs in a browser member (13x2 seam S3), so the item is not offered.
         let items = items.into_iter().filter(|i| Self::drawn(i) && !(browser && matches!(i, ToolbarItem::Reload(_)))).collect();
