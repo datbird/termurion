@@ -8,7 +8,7 @@
 use super::*;
 use crate::workgroup::{Mode, SessionConfig, Workgroup};
 use crate::workgroup_peers as peers;
-use crate::workgroup_run::{self as run, Mechanism, Plan, SpawnStep};
+use crate::workgroup_run::{self as run, Mechanism, SpawnStep};
 use std::collections::BTreeMap;
 
 /// Live instances at most (a hostile host printing a trigger's text after every exit cannot fan
@@ -489,14 +489,8 @@ impl App {
     /// The command line a member's `template` starts with `git_base` for `\(gitBase)`: None is the
     /// profile's own shell. An error is the banner text and nothing starts (B4: values are arguments).
     pub(super) fn plan_command(&self, template: &str, git_base: &str) -> Result<Option<String>, String> {
-        match run::command_plan(template, git_base)? {
-            Plan::Profile => Ok(None),
-            Plan::Line(l) => Ok(Some(l)),
-            Plan::Argv(argv) => {
-                let program = crate::semantic::resolve_on_path(std::path::Path::new(&argv[0]), std::env::var_os("PATH").as_deref()).ok_or("A member's program was not found, so it did not start.")?;
-                run::argv_line(&program, &argv[1..]).map(Some)
-            }
-        }
+        let path = std::env::var_os("PATH");
+        run::member_line(run::command_plan(template, git_base)?, &|p| crate::semantic::resolve_on_path(p, path.as_deref()))
     }
 
     /// What a restart of `pane` starts when it is a workgroup member: its own command through

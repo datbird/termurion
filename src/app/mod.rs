@@ -3887,7 +3887,9 @@ impl App {
         // pane's (it leaves the jar with the pane); no Session cookie is minted beside it.
         let mut extra = self.start_env_override.clone().unwrap_or_default();
         let given = extra.iter().find_map(|e| e.strip_prefix("ITERM2_COOKIE=")).map(str::to_string);
-        extra.extend(std::mem::take(&mut self.start_extra_env));
+        // A launch's own entries (a workgroup member's, a git launch's removals) are applied again last.
+        let launch = std::mem::take(&mut self.start_extra_env);
+        extra.extend(launch.iter().cloned());
         let cookie = given.or_else(|| {
             (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
                 .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session))
@@ -3930,7 +3932,7 @@ impl App {
         let posix = self.posix(p, cmd, term.is_some());
         env.extend(crate::session_env::posix_vars(&posix));
         env.extend(term);
-        (env, cookie)
+        (crate::session_env::launch_last(env, &launch), cookie)
     }
 
     /// The POSIX variables a session on `cmd` gets: `COLORFGBG` from the profile's palette, the

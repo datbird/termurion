@@ -4,8 +4,8 @@
 //!
 //! Every Diff launch, per-file pick, All Files, Reload and base change is a RESTART of the member with
 //! an argument vector made from the person's own template (B4): nothing is ever typed into a pane, a
-//! value is exactly one argument, and `git` runs through `guarded_args` after `vet_repo` passed for
-//! the leader's folder. Citations: `WI` `iTermWorkgroupInstance.swift`, `WPP`
+//! value is exactly one argument, and `git` runs only through `git_state::pane_line` (`launch`) after the
+//! worker's verdict for the leader's folder. Citations: `WI` `iTermWorkgroupInstance.swift`, `WPP`
 //! `iTermWorkgroupPeerPort.swift`, `DWV` `DiffWaitingPromptView.swift` under
 //! `~/gitrepos/iterm2-ref/sources/Workgroups`.
 
@@ -269,16 +269,10 @@ impl App {
         let launch = launch.ok_or("Tandem has not finished checking this folder yet.")?;
         let (vet, git) = (launch.vet.ok_or("git will not run in this folder.")?, launch.git.ok_or("git was not found.")?);
         let Some(root) = vet.root.clone() else { return Err("This folder is not in a git repository, so git will not run.".into()) };
-        let program = tokens[0].clone();
-        let stem = std::path::Path::new(&program).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
-        let (line, env) = if stem.as_deref() == Some("git") {
-            let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
-            // The one builder: the repository's own config is judged first, then the overrides and the environment.
-            gs::launch(&git, &vet, &rest)?
-        } else {
-            let found = crate::semantic::resolve_on_path(std::path::Path::new(&program), std::env::var_os("PATH").as_deref()).ok_or("The diff program was not found, so it did not start.")?;
-            (crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new())
-        };
+        // The one rule: git (by name or by the file it resolves to) only through `gs::launch`, which judges
+        // the repository's own config first, then adds the overrides and the environment.
+        let path = std::env::var_os("PATH");
+        let (line, env) = gs::pane_line(&git, &vet, &tokens, &|p| crate::semantic::resolve_on_path(p, path.as_deref()))?;
         // The porcelain paths are relative to the working tree's top: that is where it runs.
         if let Some(p) = pane.and_then(|p| self.panes.get_mut(&p)) {
             p.start_dir = Some(root);
@@ -713,7 +707,7 @@ mod tests {
         let live = THIS.split("\n#[cfg(test)]").next().unwrap();
         let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
         let verdict = line.find("gs::launch_verdict(").expect("verdict");
-        let built = line.find("gs::launch(").expect("launched through the one builder");
+        let built = line.find("gs::pane_line(").expect("launched through the one rule");
         assert!(verdict < built, "the verdict comes first");
         assert!(line.contains("inst.approved.allows(&template)"), "the command comes from the approved list");
         let run = &live[live.find("pub(super) fn diff_run_anyway").unwrap()..live.find("pub(super) fn diff_cancel_reload").unwrap()];
@@ -746,28 +740,80 @@ mod tests {
         assert!(GitSide::for_workgroup(&plain).is_none());
     }
 
-    /// Class rule: ONE function builds every git invocation of workgroup code. No workgroup source builds
-    /// a guarded line or runs git itself; the launch takes the vet's verdict and the launch environment.
+    /// The git spawn shapes in `live` (a source's code outside its tests): a hardened or launch line built
+    /// by hand, git named as a program, a process, a pty or a pane line whose program names git, or the
+    /// poller's runner. Only `git_state` (`launch`, `pane_line`) makes a git line.
+    fn git_spawn_shapes(live: &str) -> Vec<String> {
+        let mut hits: Vec<String> = Vec::new();
+        for banned in [
+            "guarded_args(", "HARDENED", "LAUNCH_ARGS", "launch_args(", "launch_env(", "\"git\"", "\"git.exe\"", "pty::spawn", "spawn_transport(", "spawn_notify(", "spawn_flags(", "GitRun", "git_run_win",
+        ] {
+            if live.contains(banned) {
+                hits.push(banned.to_string());
+            }
+        }
+        for call in ["Command::new(", "argv_line(", "start_command_override = ", "raw_arg(", "start_pane(", "start_pane_as("] {
+            for (at, _) in live.match_indices(call) {
+                let rest = &live[at + call.len()..];
+                let statement = rest.split([';', '\n']).next().unwrap_or("");
+                if statement.to_ascii_lowercase().contains("git") {
+                    hits.push(format!("{call}{statement}"));
+                }
+            }
+        }
+        hits
+    }
+
+    /// Every workgroup and code review source file, found on disk (a new file is scanned too).
+    fn workgroup_sources() -> Vec<(String, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        for dir in [root.clone(), root.join("app")] {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if (name.starts_with("workgroup") || name.starts_with("code_review")) && name.ends_with(".rs") {
+                    out.push((name, std::fs::read_to_string(e.path()).unwrap()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Class rule (13y1 Task 6 item 1, round 3): ONE rule launches git from workgroup code. No workgroup or
+    /// code review source builds a git line, names git as a program, or starts a process, a pty or a pane
+    /// line whose program names git; `diff_launch_line` goes through `gs::pane_line` after the verdict. The
+    /// scan is proved by a planted call of every shape.
     #[test]
     fn git_is_built_in_one_place() {
-        let sources = [
-            include_str!("workgroup_git_app.rs"),
-            include_str!("workgroup_app.rs"),
-            include_str!("workgroup_toolbar_ui.rs"),
-            include_str!("../workgroup_git.rs"),
-            include_str!("../workgroup_run.rs"),
-            include_str!("../workgroup_toolbar.rs"),
-            include_str!("../workgroup_peers.rs"),
+        let planted = [
+            "let c = std::process::Command::new(&git);",
+            "let c = Command::new(git_path).arg(x);",
+            "Command::new(\"git\").arg(x);",
+            "let p = which(\"git.exe\");",
+            "let l = crate::workgroup_run::argv_line(&git, &args)?;",
+            "let l = argv_line(&launch.git.unwrap(), &a)?;",
+            "self.start_command_override = Some(format!(\"{} diff\", git.display()));",
+            "self.start_pane_as(id, rect, Some(git_line), None);",
+            "c.raw_arg(git_args);",
+            "let a = gs::guarded_args(&vet, &[x]);",
+            "let a = gs::launch_args(&vet, &x);",
+            "let e = gs::launch_env();",
+            "let p = crate::pty::spawn_notify(&api, &line, None, &env, 80, 24, n);",
+            "if stem.as_deref() == Some(\"git\") {}",
+            "crate::git_run_win::WinGitRun.run(&g, &d, &a, t, None);",
         ];
-        for src in sources {
-            let live = src.split("\n#[cfg(test)]").next().unwrap();
-            for banned in ["guarded_args(", "HARDENED", "Command::new(git", "Command::new(\"git"] {
-                assert!(!live.contains(banned), "{banned}");
-            }
+        for p in planted {
+            assert!(!git_spawn_shapes(p).is_empty(), "the scan misses {p}");
+        }
+        let sources = workgroup_sources();
+        assert!(sources.len() >= 10, "the sources were found: {:?}", sources.iter().map(|(n, _)| n).collect::<Vec<_>>());
+        for (name, src) in &sources {
+            let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+            assert_eq!(git_spawn_shapes(live), Vec::<String>::new(), "{name}");
         }
         let live = THIS.split("\n#[cfg(test)]").next().unwrap();
         let line = &live[live.find("pub(super) fn diff_launch_line").unwrap()..live.find("pub(super) fn diff_selected").unwrap()];
-        assert!(line.contains("gs::launch(") && line.contains("launch_verdict("), "the one builder, after the verdict");
+        assert!(line.find("launch_verdict(").unwrap() < line.find("gs::pane_line(").expect("the one rule"), "the verdict first");
     }
 
     /// Items 2 and 3: the UI thread never vets a repository or looks for git; both come with the poller's

@@ -458,29 +458,79 @@ const LAUNCH_ARGS: &[&str] = &[
     "protocol.allow=never",
     "-c",
     "core.sshCommand=false",
+    // Never into a submodule: a nested repository's own config is not vetted, and porcelain diff and
+    // status run git inside each one (its filters, its fsmonitor). The command-line flag after the
+    // subcommand is what wins over `.gitmodules`' `ignore`; these keep every other path short.
+    "-c",
+    "submodule.recurse=false",
+    "-c",
+    "diff.submodule=short",
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "status.submoduleSummary=false",
 ];
 
-/// THE git argument vector for a git started in a pane (every workgroup launch of git takes it):
-/// `guarded_args` plus `LAUNCH_ARGS`, and `--no-ext-diff --no-textconv` right after a `diff`
-/// subcommand. The subcommand and its arguments are the person's own template.
-pub fn launch_args(vet: &Vetted, args: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = HARDENED.iter().map(|a| a.to_string()).chain(LAUNCH_ARGS.iter().map(|a| a.to_string())).chain(vet.args.iter().cloned()).collect();
-    for (i, a) in args.iter().enumerate() {
-        out.push(a.to_string());
-        if i == 0 && *a == "diff" {
-            out.push("--no-ext-diff".into());
-            out.push("--no-textconv".into());
-        }
+/// The git subcommands a pane launch runs: each takes `--ignore-submodules=all`. Any other is refused
+/// (a template's own global option before the subcommand, such as `-c`, is refused with it).
+const LAUNCH_SUBCOMMANDS: &[&str] = &["diff", "difftool", "status", "show", "log"];
+
+/// The long options a template must not pass after the subcommand: each would undo an override (a later
+/// option wins). Matched as git matches them, by any unambiguous prefix and through `--no-`.
+const LAUNCH_UNDOES: &[&str] = &["ignore-submodules", "submodule", "recurse-submodules", "ext-diff", "textconv"];
+
+/// Why a template's argument must not reach a launched git: it re-enables a submodule, an external diff or
+/// a textconv. Arguments after `--` are paths.
+fn undoes_an_override(arg: &str) -> bool {
+    let Some(long) = arg.strip_prefix("--") else { return false };
+    let name = long.split('=').next().unwrap_or("");
+    // Our own options, and `--text` (an exact option name wins over an abbreviation of `--textconv`).
+    if matches!(arg, "--no-ext-diff" | "--no-textconv" | "--text") {
+        return false;
     }
-    out
+    let mut core = name;
+    while let Some(rest) = core.strip_prefix("no-") {
+        core = rest;
+    }
+    !core.is_empty() && LAUNCH_UNDOES.iter().any(|u| u.starts_with(core))
 }
 
+/// THE git argument vector for a git started in a pane (every workgroup launch of git takes it):
+/// `HARDENED`, `LAUNCH_ARGS` and the vet's filter overrides, then the subcommand (one of
+/// `LAUNCH_SUBCOMMANDS`) with `--ignore-submodules=all` right after it, and `--no-ext-diff --no-textconv`
+/// after `diff`, `show` and `log`. The rest is the person's own template, less any option that would undo
+/// an override (refused).
+pub fn launch_args(vet: &Vetted, args: &[&str]) -> Result<Vec<String>, String> {
+    let Some((sub, rest)) = args.split_first() else { return Err("The git command has no subcommand, so it did not start.".into()) };
+    if !LAUNCH_SUBCOMMANDS.contains(sub) {
+        return Err("Tandem starts git in a workgroup only for diff, difftool, status, show or log, so this command did not start.".into());
+    }
+    let paths_from = rest.iter().position(|a| *a == "--").unwrap_or(rest.len());
+    if rest[..paths_from].iter().any(|a| undoes_an_override(a)) {
+        return Err("The git command turns submodules, an external diff or a text conversion back on, so it did not start.".into());
+    }
+    let mut out: Vec<String> = HARDENED.iter().chain(LAUNCH_ARGS).map(|a| a.to_string()).chain(vet.args.iter().cloned()).collect();
+    out.push(sub.to_string());
+    out.push("--ignore-submodules=all".into());
+    if matches!(*sub, "diff" | "show" | "log") {
+        out.push("--no-ext-diff".into());
+        out.push("--no-textconv".into());
+    }
+    out.extend(rest.iter().map(|a| a.to_string()));
+    Ok(out)
+}
+
+/// What a launch removes from the environment it inherits: `GIT_ENV_REMOVED` (another repository than the
+/// vetted one) and every variable that names a program git runs or config it reads.
+pub const LAUNCH_ENV_REMOVED: &[&str] =
+    &["GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND"];
+
 /// The environment of a git started in a pane, as the session's `NAME=value` entries; a `-NAME` entry
-/// removes the variable (`session_env::overlay`).
+/// removes the variable. The pane applies them last (`session_env::launch_last`), so they reach the child.
 pub fn launch_env() -> Vec<String> {
     let mut out: Vec<String> = GIT_ENV.iter().map(|(k, v)| format!("{k}={v}")).collect();
     out.extend(["GIT_CONFIG_NOSYSTEM=1", "GIT_PAGER=cat", "PAGER=cat"].map(String::from));
-    out.extend(GIT_ENV_REMOVED.iter().chain(["GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS"].iter()).map(|n| format!("-{n}")));
+    out.extend(GIT_ENV_REMOVED.iter().chain(LAUNCH_ENV_REMOVED).map(|n| format!("-{n}")));
     out
 }
 
@@ -490,8 +540,27 @@ pub fn launch(git: &Path, vet: &Vetted, args: &[&str]) -> Result<(String, Vec<St
     if let Some(why) = vet.launch_refusal() {
         return Err(why);
     }
-    let line = crate::workgroup_run::argv_line(git, &launch_args(vet, args))?;
+    let line = crate::workgroup_run::argv_line(git, &launch_args(vet, args)?)?;
     Ok((line, launch_env()))
+}
+
+/// Whether `program` is git: its file name, without `.exe`, is `git` in any case.
+pub fn is_git(program: &Path) -> bool {
+    program.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("git"))
+}
+
+/// THE rule for a program a workgroup starts in a pane from a template's tokens: git (named git, or a
+/// name that resolves to a file that is git) runs only through `launch`, with the vetted `git`; any other
+/// program as the file `resolve` finds.
+pub fn pane_line(git: &Path, vet: &Vetted, tokens: &[String], resolve: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(String, Vec<String>), String> {
+    let Some(program) = tokens.first() else { return Err("The diff command is empty, so it did not start.".into()) };
+    let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
+    let found = resolve(Path::new(program));
+    if is_git(Path::new(program)) || found.as_deref().is_some_and(is_git) {
+        return launch(git, vet, &rest);
+    }
+    let found = found.ok_or("The diff program was not found, so it did not start.")?;
+    Ok((crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new()))
 }
 
 /// The branch, counts and entries (`GCL:590-630` with the CLI). Every git line starts
@@ -2067,20 +2136,44 @@ mod tests {
     #[test]
     fn launch_line_carries_the_overrides() {
         let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None, programs: vec![] };
-        let diff = launch_args(&vet, &["diff", "HEAD", "--", "f"]);
+        let diff = launch_args(&vet, &["diff", "HEAD", "--", "f"]).unwrap();
         assert_eq!(&diff[..HARDENED.len()], HARDENED);
-        for want in ["--no-pager", "core.hooksPath=NUL", "core.pager=cat", "diff.external=", "credential.helper=", "protocol.allow=never", "core.sshCommand=false", "filter.x.clean="] {
+        for want in [
+            "--no-pager", "core.hooksPath=NUL", "core.pager=cat", "diff.external=", "credential.helper=", "protocol.allow=never", "core.sshCommand=false", "filter.x.clean=", "submodule.recurse=false", "diff.submodule=short",
+            "diff.ignoreSubmodules=all",
+        ] {
             assert!(diff.iter().any(|a| a == want), "{want} in {diff:?}");
         }
         let at = diff.iter().position(|a| a == "diff").unwrap();
-        assert_eq!(&diff[at..], ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", "f"], "the diff options come right after the subcommand");
-        let tool = launch_args(&vet, &["difftool", "-y", "-x", "vimdiff"]);
-        assert!(!tool.iter().any(|a| a == "--no-ext-diff"), "difftool is the person's own tool");
+        assert_eq!(&diff[at..], ["diff", "--ignore-submodules=all", "--no-ext-diff", "--no-textconv", "HEAD", "--", "f"], "the overrides come right after the subcommand");
+        let tool = launch_args(&vet, &["difftool", "-y", "-x", "vimdiff"]).unwrap();
+        let at = tool.iter().position(|a| a == "difftool").unwrap();
+        assert_eq!(&tool[at..], ["difftool", "--ignore-submodules=all", "-y", "-x", "vimdiff"], "difftool is the person's own tool, never into a submodule");
+        for sub in ["status", "show", "log"] {
+            let a = launch_args(&vet, &[sub]).unwrap();
+            let at = a.iter().position(|x| x == sub).unwrap();
+            assert_eq!(a[at + 1], "--ignore-submodules=all", "{a:?}");
+            assert_eq!(a.iter().any(|x| x == "--no-ext-diff"), sub != "status", "{a:?}");
+        }
+        // A subcommand outside the list, or a global option before it, is refused.
+        for bad in [&["-c", "core.pager=calc", "diff"][..], &["fetch"], &["submodule", "foreach", "calc"], &[]] {
+            assert!(launch_args(&vet, bad).is_err(), "{bad:?}");
+        }
+        // An option that undoes an override, also abbreviated or negated twice, is refused before `--`.
+        for bad in ["--ignore-submodules=none", "--ignore-sub=dirty", "--submodule=diff", "--sub=log", "--recurse-submodules", "--ext-diff", "--ext", "--textconv", "--no-no-ext-diff"] {
+            assert!(launch_args(&vet, &["diff", bad]).is_err(), "{bad}");
+        }
+        for ok in ["--no-ext-diff", "--no-textconv", "--stat", "--ignore-space-change", "-w", "--text"] {
+            assert!(launch_args(&vet, &["diff", ok]).is_ok(), "{ok}");
+        }
+        assert!(launch_args(&vet, &["diff", "HEAD", "--", "--ext-diff"]).is_ok(), "a path after -- is a path");
         let env = launch_env();
         for want in ["GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PAGER=cat", "PAGER=cat"] {
             assert!(env.iter().any(|e| e == want), "{want}");
         }
-        for gone in ["-GIT_EXTERNAL_DIFF", "-GIT_ASKPASS", "-SSH_ASKPASS", "-GIT_DIR"] {
+        for gone in [
+            "-GIT_EXTERNAL_DIFF", "-GIT_ASKPASS", "-SSH_ASKPASS", "-GIT_DIR", "-GIT_WORK_TREE", "-GIT_CONFIG_PARAMETERS", "-GIT_CONFIG_COUNT", "-GIT_EXEC_PATH", "-GIT_SSH", "-GIT_SSH_COMMAND", "-GIT_PROXY_COMMAND",
+        ] {
             assert!(env.iter().any(|e| e == gone), "{gone}");
         }
     }
@@ -2868,6 +2961,79 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
         assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
         assert_eq!((got.files_modified, got.lines_inserted), (0, 0));
         assert_eq!(got.branch, "main");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// 13y1 Task 6 item 1 round 3: git, named as git or as a file that is git, starts only through
+    /// `launch` (the vetted git, the overrides, the environment); any other program as it resolves.
+    #[test]
+    fn a_git_program_runs_only_through_the_launch() {
+        let vet = Vetted::default();
+        let git = Path::new(r"C:\Git\cmd\git.exe");
+        let to = |p: &'static str| move |_: &Path| Some(PathBuf::from(p));
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for (tokens, resolved) in [
+            (words(&["git", "diff", "HEAD"]), r"C:\Git\cmd\git.exe"),
+            (words(&[r"C:\Program Files\Git\cmd\GIT.EXE", "diff"]), r"C:\Program Files\Git\cmd\GIT.EXE"),
+            (words(&["g", "diff"]), r"C:\tools\Git.exe"),
+            (words(&["gitwrap", "status"]), r"C:\Git\bin\git"),
+        ] {
+            let (line, env) = pane_line(git, &vet, &tokens, &to(resolved)).expect("a launch");
+            assert!(line.starts_with(r"C:\Git\cmd\git.exe "), "{tokens:?}: the vetted git, {line}");
+            assert!(line.contains("--ignore-submodules=all") && line.contains("core.pager=cat"), "{tokens:?}: {line}");
+            assert!(env.iter().any(|e| e == "-GIT_DIR") && env.iter().any(|e| e == "GIT_PAGER=cat"), "{tokens:?}: {env:?}");
+        }
+        let (line, env) = pane_line(git, &vet, &words(&["delta", "x"]), &to(r"C:\d\delta.exe")).unwrap();
+        assert_eq!((line.as_str(), env.len()), (r"C:\d\delta.exe x", 0), "any other program as it resolves");
+        assert!(pane_line(git, &vet, &words(&["nope"]), &|_: &Path| None).is_err());
+        assert!(pane_line(git, &vet, &[], &to("x")).is_err());
+    }
+
+    /// 13y1 Task 6 item 1 round 3, against real git: a nested repository's own config (the agent can
+    /// write it) never runs through a launched diff, difftool or status. Porcelain diff checks each
+    /// submodule by running status inside it, which reads its config and runs its filter; a launch never
+    /// recurses. The line and environment are exactly what `launch` makes.
+    #[cfg(windows)]
+    #[test]
+    fn a_launch_never_recurses_into_a_submodule() {
+        use std::process::Command;
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = find_git(&path, &crate::localfs::is_file) else {
+            eprintln!("a_launch_never_recurses_into_a_submodule: git was not found; skipped");
+            return;
+        };
+        let dir = temp("wg-submodule");
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let g = |at: &Path, args: &[&str]| {
+            let out = Command::new(&git).current_dir(at).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args).output().expect("git ran");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // A nested repository the agent wrote: its own config names a filter, its attributes use it.
+        g(&sub, &["init", "-q"]);
+        fs::write(sub.join("f.txt"), "hello\n").unwrap();
+        fs::write(sub.join(".gitattributes"), "* filter=z\n").unwrap();
+        g(&sub, &["add", "."]);
+        g(&sub, &["commit", "-q", "-m", "s"]);
+        g(&sub, &["config", "filter.z.clean", "echo ran > ../RAN; cat"]);
+        g(&dir, &["init", "-q"]);
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g(&dir, &["add", "a.txt", "sub"]);
+        g(&dir, &["commit", "-q", "-m", "p"]);
+        // A same-size edit: git must read the content, which runs the clean filter.
+        fs::write(sub.join("f.txt"), "jello\n").unwrap();
+        let vet = vet_repo(&dir).expect("vetted");
+        assert_eq!(vet.launch_refusal(), None, "the parent's own config is clean");
+        let marker = dir.join("RAN");
+        for args in [&["diff", "HEAD"][..], &["diff"], &["status"], &["difftool", "-y", "-x", "true", "HEAD"]] {
+            let _ = fs::remove_file(&marker);
+            let (line, env) = launch(&git, &vet, args).expect("a launch");
+            let argv = crate::semantic::split_command_line(&line);
+            let vars = crate::session_env::merge(std::env::vars().collect(), &crate::session_env::launch_last(Vec::new(), &env));
+            let out = Command::new(&git).current_dir(&dir).args(&argv[1..]).env_clear().envs(vars).stdin(std::process::Stdio::null()).output().expect("git ran");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(!marker.exists(), "{args:?} ran the submodule's filter: {argv:?}");
+        }
         let _ = fs::remove_dir_all(dir);
     }
 

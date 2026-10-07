@@ -388,6 +388,33 @@ pub fn command_plan(template: &str, git_base: &str) -> Result<Plan, String> {
     Ok(Plan::Argv(tokens))
 }
 
+/// Why a member that is not a Diff member does not start git.
+pub const GIT_ONLY_IN_DIFF: &str = "A workgroup starts git only in a Diff member, where Tandem checks the repository first, so this member did not start.";
+
+/// A member's command line from its plan (not a Diff member: those run through `git_state::pane_line`).
+/// `resolve` finds a program on the PATH. git (by name, path, or a name that resolves to it), in a line or
+/// an argument vector, is refused: a git launch needs the repository's verdict (`git_state::launch`).
+pub fn member_line(plan: Plan, resolve: &dyn Fn(&std::path::Path) -> Option<std::path::PathBuf>) -> Result<Option<String>, String> {
+    let program = match &plan {
+        Plan::Profile => return Ok(None),
+        Plan::Line(l) => crate::semantic::split_command_line(l).into_iter().next().unwrap_or_default(),
+        Plan::Argv(argv) => argv[0].clone(),
+    };
+    let named = std::path::Path::new(&program);
+    let found = resolve(named);
+    if crate::git_state::is_git(named) || found.as_deref().is_some_and(crate::git_state::is_git) {
+        return Err(GIT_ONLY_IN_DIFF.to_string());
+    }
+    match plan {
+        Plan::Profile => Ok(None),
+        Plan::Line(l) => Ok(Some(l)),
+        Plan::Argv(argv) => {
+            let program = found.ok_or("A member's program was not found, so it did not start.")?;
+            argv_line(&program, &argv[1..]).map(Some)
+        }
+    }
+}
+
 /// The command line for a program Tandem resolved and its arguments, made with CreateProcess's
 /// rules. A batch file never gets an argument cmd.exe would read as syntax.
 pub fn argv_line(program: &std::path::Path, args: &[String]) -> Result<String, String> {
@@ -470,6 +497,31 @@ mod tests {
         let now = &app[app.find("pub(super) fn enter_workgroup_now").unwrap()..];
         assert!(now[..400].contains("approved.matches(&w)"), "entry refuses a workgroup that is not the one the answer was for");
         assert!(!app.contains("run::approved("), "no fresh snapshot");
+    }
+
+    /// 13y1 Task 6 item 1 round 3: a member that is not a Diff member never starts git (git starts only
+    /// through `git_state::launch`, which needs the worker's verdict): by name, by path, or by a name
+    /// that resolves to git, in a line or an argument vector.
+    #[test]
+    fn a_member_never_runs_git_unchecked() {
+        use std::path::{Path, PathBuf};
+        let path_of = |name: &Path| -> Option<PathBuf> {
+            let n = name.to_string_lossy().to_ascii_lowercase();
+            Some(PathBuf::from(if n == "git" || n == "mygit" { r"C:\Git\cmd\git.exe".to_string() } else { format!(r"C:\bin\{n}.exe") }))
+        };
+        for plan in [
+            command_plan("git diff \\(gitBase)", "HEAD").unwrap(),
+            Plan::Line("git log -p".into()),
+            Plan::Line("GIT.exe log".into()),
+            Plan::Line(r#""C:\Program Files\Git\cmd\git.exe" log"#.into()),
+            Plan::Line("mygit log".into()),
+            Plan::Argv(vec!["mygit".into(), "x".into()]),
+        ] {
+            assert!(member_line(plan.clone(), &path_of).is_err(), "{plan:?}");
+        }
+        assert_eq!(member_line(Plan::Line("claude --resume".into()), &path_of), Ok(Some("claude --resume".into())));
+        assert_eq!(member_line(Plan::Profile, &path_of), Ok(None));
+        assert_eq!(member_line(Plan::Argv(vec!["tool".into(), "a b".into()]), &path_of), Ok(Some(r#"C:\bin\tool.exe "a b""#.into())));
     }
 
     /// Every function that starts a process or a session program in a workgroup source checks the stored
