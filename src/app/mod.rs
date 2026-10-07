@@ -6245,9 +6245,11 @@ impl App {
                     if let Some(p) = self.panes.get(&id) {
                         frame.quads.push(scene::Quad { rect, color: scene::rgba(p.screen.palette.bg, 1.0) });
                     }
-                    if let Some(bar) = self.pane_chrome(tab, id, rect).browser_bar {
+                    if let Some(bar) = self.browser_strip(tab, id) {
                         self.draw_browser_bar(&mut frame, id, bar, rect, self.cell());
                     }
+                    // An announcement bar covers the top of the page (the web view gives way below it).
+                    overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id)).map(|r| (mouse::Overlay::InfoBar, r)));
                     continue;
                 }
                 // Everything a pane's iteration draws lays out in its own cell and shapes in its own

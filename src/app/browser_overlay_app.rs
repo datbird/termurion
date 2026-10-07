@@ -24,21 +24,28 @@ pub(super) enum TipAsk {
 }
 
 impl App {
-    /// Where pane `id`'s web view goes: the pane below its toolbar, and below the front
-    /// announcement bar when one covers the top of it (P21).
-    pub(super) fn browser_web_rect(&self, tab: &Tab, id: PaneId, r: Rect) -> Rect {
-        let rest = self.pane_chrome(tab, id, r).rest;
-        let Some(bar) = self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)) else { return rest };
+    /// Where pane `id`'s web view goes: `r`, the pane's `visible()` rectangle (already below Tandem's
+    /// chrome and the toolbar strip: cut once, never again), and below the front announcement bar
+    /// when one covers the top of it (P21; the scene draws the bar at the top of `r`).
+    pub(super) fn browser_web_rect(&self, id: PaneId, r: Rect) -> Rect {
+        let Some(bar) = self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)) else { return r };
         let bottom = r.y + crate::infobar::layout(bar, r, self.pane_cell(id)).bar.h;
-        let (y, h) = browser_tip::below_bar(rest.y, rest.h, bottom);
-        Rect { y, h, ..rest }
+        let (y, h) = browser_tip::below_bar(r.y, r.h, bottom);
+        Rect { y, h, ..r }
+    }
+
+    /// The toolbar strip of browser pane `id`, cut once from the pane's FULL rectangle (`visible()`
+    /// returns what is left below it, so `pane_chrome` must never be run on that).
+    pub(super) fn browser_strip(&self, tab: &Tab, id: PaneId) -> Option<Rect> {
+        let (_, full) = crate::layout::visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id)?;
+        self.pane_chrome(tab, id, full).browser_bar
     }
 
     /// The rectangle of pane `pane`'s shown web view in this window's pixels; None when it is not shown.
     fn browser_shown_rect(&self, pane: PaneId) -> Option<Rect> {
         let tab = self.tabs.get(self.active)?;
         let (_, r) = self.visible(tab).into_iter().find(|(id, _)| *id == pane)?;
-        Some(self.browser_web_rect(tab, pane, r))
+        Some(self.browser_web_rect(pane, r))
     }
 
     // --- The hovered link and the toast ---
@@ -227,6 +234,27 @@ mod tests {
         &src[..src.find("#[cfg(test)]").unwrap()]
     }
 
+    /// A real bug on main: `App::visible()` already returns each pane's rectangle after Tandem's
+    /// chrome (title bar, status bar and the browser strip), so running `pane_chrome` on it cuts the
+    /// strip a second time. The strip is cut once, from the pane's full rectangle (`browser_strip`),
+    /// and the web view is the `visible()` rectangle itself, below the front announcement bar.
+    #[test]
+    fn the_browser_strip_is_cut_once() {
+        let strip = &prod()[prod().find("pub(super) fn browser_strip").expect("one helper cuts the strip")..];
+        assert!(strip.contains("visible_rects(") && strip.contains("pane_chrome(tab, id, full)"), "from the full rectangle");
+        let web = &prod()[prod().find("pub(super) fn browser_web_rect").unwrap()..prod().find("pub(super) fn browser_strip").unwrap()];
+        assert!(!web.contains("pane_chrome("), "visible() is already the web view's rectangle");
+        let app = include_str!("browser_app.rs");
+        let app = &app[..app.find("#[cfg(test)]").unwrap()];
+        assert!(!app.contains("pane_chrome("), "no browser code re-cuts a visible() rectangle");
+        assert_eq!(app.matches("self.browser_strip(tab,").count(), 2, "the bar's rectangles and the hit test");
+        let m = include_str!("mod.rs");
+        let m = &m[m.find("// A browser pane's view covers its rectangle").unwrap()..];
+        let m = &m[..m.find("continue;").unwrap()];
+        assert!(m.contains("self.browser_strip(tab, id)") && !m.contains("pane_chrome("));
+        assert!(m.contains("self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id))"), "an announcement bar is drawn for a browser pane too");
+    }
+
     /// The overlay is Tandem's: never inside the page, never the page's text unmade inert, never
     /// focused, and the real pointer decides (P14).
     #[test]
@@ -258,7 +286,7 @@ mod tests {
         assert!(chain.find("!self.browser_bar(pane, id, button)").unwrap() < chain.find("!self.host_state_bar(").unwrap(), "browser bars first");
         let place = include_str!("browser_app.rs");
         let place = &place[place.find("pub(super) fn place_browser_views").unwrap()..place.find("fn show_browser_view").unwrap()];
-        assert!(place.contains("self.browser_web_rect(tab, id, r)"));
+        assert!(place.contains("self.browser_web_rect(id, r)"));
         let m = include_str!("mod.rs");
         assert!(m.contains("browser_tip: Option<crate::browser_tip::TipWindow>") && m.contains("self.browser_tip_event(id, &event)"));
         assert!(!include_str!("windows_ui.rs").contains("browser_tip"), "the tip is app-wide, not per window");

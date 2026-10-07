@@ -212,7 +212,7 @@ impl App {
         }
         let Some(hwnd) = self.hwnd() else { return };
         let shown: Vec<(PaneId, Rect)> = match self.tabs.get(self.active) {
-            Some(tab) => self.visible(tab).into_iter().map(|(id, r)| (id, self.browser_web_rect(tab, id, r))).collect(),
+            Some(tab) => self.visible(tab).into_iter().map(|(id, r)| (id, self.browser_web_rect(id, r))).collect(),
             None => Vec::new(),
         };
         let mine: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
@@ -651,7 +651,7 @@ impl App {
     fn browser_bar_rects(&self, pane: PaneId) -> Option<(Rect, Rect)> {
         let tab = self.tabs.get(self.active)?;
         let (_, rect) = self.visible(tab).into_iter().find(|(id, _)| *id == pane)?;
-        Some((self.pane_chrome(tab, pane, rect).browser_bar?, rect))
+        Some((self.browser_strip(tab, pane)?, rect))
     }
 
     /// The rows of the suggestions list of `pane`, as rectangles (empty when it is not open).
@@ -670,7 +670,7 @@ impl App {
     pub(super) fn browser_bar_at(&self, x: f32, y: f32) -> Option<PaneId> {
         let tab = self.tabs.get(self.active)?;
         self.visible(tab).into_iter().filter(|(id, _)| self.is_browser_pane(*id)).find_map(|(id, rect)| {
-            let bar = self.pane_chrome(tab, id, rect).browser_bar?;
+            let bar = self.browser_strip(tab, id)?;
             (bar.contains(x, y) || self.browser_suggest_rects(id, bar, rect).iter().any(|r| r.contains(x, y))).then_some(id)
         })
     }
