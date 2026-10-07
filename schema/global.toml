@@ -5752,6 +5752,15 @@ default = ""
 help = "A list of workgroup ids Tandem keeps so it asks before running their commands after a restart. Saving a workgroup in the editor removes it from the list."
 
 [[setting]]
+key = "NoSyncWorkgroupGitBaseRecents"
+tab = "Stored"
+section = "Workgroups"
+label = "Recently used git bases for workgroups."
+type = "list"
+default = []
+help = "The bases picked in a workgroup's base selector, newest first (at most 16)."
+
+[[setting]]
 key = "NoSyncWorkgroupShortcutsBackfilled"
 tab = "Stored"
 section = "Workgroups"

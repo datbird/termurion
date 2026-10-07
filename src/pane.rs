@@ -657,6 +657,14 @@ impl Pane {
         p
     }
 
+    /// A workgroup Diff member that has not started its command (iTerm2's session with no program,
+    /// `WI:1316-1385`): no pty, nothing runs in it, it never exits; a restart gives it its program.
+    pub fn idle(id: PaneId, cols: u16, rows: u16) -> Pane {
+        let mut p = Pane::with(id, None, cols.max(2), rows.max(1));
+        p.needs_forced_layout = false;
+        p
+    }
+
     /// A restored archive's pane (`PS:3577-3580`): no shell, ended with status 0, the saved text.
     pub fn archived(id: PaneId, cols: u16, rows: u16) -> Pane {
         let mut p = Pane::with(id, None, cols.max(2), rows.max(1));
@@ -5333,6 +5341,14 @@ mod tests {
         let raw = logged(&mut q, crate::session_log::Style::Raw);
         q.log_text("$ ");
         assert_eq!(text(&raw), "");
+    }
+
+    #[test]
+    fn an_idle_pane_runs_nothing_and_never_exits() {
+        let mut p = Pane::idle(3, 80, 24);
+        assert!(p.pty.is_none() && p.exited.is_none() && !p.archived && !p.ended);
+        assert!(!p.pump(), "nothing to read");
+        assert_eq!(p.shell_pid(), None);
     }
 
     #[test]

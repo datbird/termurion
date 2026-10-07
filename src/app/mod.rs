@@ -219,6 +219,7 @@ mod ssh_files_app;
 mod ssh_panel_app;
 mod ssh_url_app;
 mod workgroup_app;
+mod workgroup_git_app;
 mod workgroup_toolbar_ui;
 
 pub enum UserEvent {
@@ -3757,7 +3758,9 @@ impl App {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
             tab.layout.rects(self.pane_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
-        let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
+        // A hidden workgroup peer (in no layout) starts at the content area's size and takes its slot's when shown.
+        let hidden_peer = || self.panes.get(&id).is_some_and(|p| p.workgroup.is_some()) && self.pane_window_id(id).is_none();
+        let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())).or_else(|| hidden_peer().then(|| self.content_area())) else { return };
         // A timer for this pane is stale now (`maybeReplaceTerminatedShellWithNewInstance` checks `_exited`).
         self.pending_restarts.remove(&id);
         // Instant Replay closes first; the new shell starts live.
@@ -3770,7 +3773,7 @@ impl App {
         self.bump_initial_text(id);
         // A live shell ends first, as iTerm2's does (`PS:3863-3871`), with the words under its
         // text; a start that then fails leaves an ended pane.
-        if self.panes.get(&id).is_some_and(|p| p.exited.is_none()) {
+        if self.panes.get(&id).is_some_and(|p| p.exited.is_none() && p.shell_pid().is_some()) {
             let custom = self.globals.string("sessionEndMessageText");
             let text = crate::session_end::restarted_text(&custom, &self.globals.string("SessionRestartedMessageText"));
             let divider = self.globals.string("SessionEndMessageDividerCharacter");
@@ -5396,6 +5399,10 @@ impl App {
         if self.composer_key(ev) {
             return;
         }
+        // A workgroup's base field with the keyboard takes its keys, releases too.
+        if self.base_field_key(ev) {
+            return;
+        }
         // A browser pane's address field takes its keys, releases too; Ctrl+L and F6 focus it.
         if self.browser_key(ev) {
             return;
@@ -5669,6 +5676,10 @@ impl App {
                 self.tmux_drag_start(&d.path, d.axis);
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
             }
+            return;
+        }
+        // A Diff member's waiting panel covers its terminal: every press on it is its own.
+        if self.diff_overlay_press(button, x, y) {
             return;
         }
         // A workgroup member's session toolbar, before a browser pane's (they never overlap).
@@ -6506,6 +6517,7 @@ impl App {
         self.draw_toolbelt(&mut frame, cell);
         self.draw_title_bars(&mut frame, cell);
         self.draw_workgroup_toolbars(&mut frame, cell);
+        self.draw_diff_overlays(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
@@ -7188,7 +7200,7 @@ impl ApplicationHandler<UserEvent> for App {
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
-        self.tick_workgroups(event_loop);
+        let workgroup_due = self.tick_workgroups(event_loop);
         let restart_due = self.tick_restarts();
         self.tick_progress();
         let progress_due = self.progress_wake();
@@ -7204,7 +7216,7 @@ impl ApplicationHandler<UserEvent> for App {
         let command_due = self.command_click_tick();
         // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
-        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

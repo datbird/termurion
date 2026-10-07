@@ -76,6 +76,7 @@ pub mod seltext;
 pub mod wordsel;
 pub mod workgroup;
 pub mod workgroup_edit;
+pub mod workgroup_git;
 pub mod workgroup_peers;
 pub mod workgroup_editor_ui;
 pub mod workgroup_run;

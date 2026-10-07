@@ -357,6 +357,7 @@ mod tests {
             ("NoSyncWorkgroupShortcutsBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeDiffModeBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeReviewSystemPromptCommandBackfilled", "Workgroups", Kind::Bool, bool(false)),
+            ("NoSyncWorkgroupGitBaseRecents", "Workgroups", Kind::List, Some(toml::Value::Array(Vec::new()))),
             ("NoSyncClaudeCodeAutoSendClippingsBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeAutoRequestReviewBackfilled", "Workgroups", Kind::Bool, bool(false)),
         ];

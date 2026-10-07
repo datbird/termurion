@@ -148,6 +148,8 @@ pub(super) struct GitPane {
 pub(super) enum GitReply {
     /// A poll of `path`.
     State { path: String, fetched: Fetched },
+    /// A workgroup poll (`key` is its `cache_key`; `path` the directory polled).
+    Workgroup { key: String, path: String, fetched: Fetched },
     /// The recent branches a pane's menu asked for.
     Branches { pane: PaneId, path: String, branches: Vec<String> },
     /// The Log command's output for a pane.
@@ -158,6 +160,8 @@ pub(super) enum GitReply {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Job {
     State(String),
+    /// A workgroup's poll: the files and stats too, against `base` (None is HEAD).
+    Workgroup { path: String, base: Option<String> },
     Branches(PaneId, String),
     Log(PaneId, String),
 }
@@ -174,7 +178,7 @@ impl Job {
     /// the others.
     fn nothing(&self, timed_out: bool) -> Output {
         match self {
-            Job::State(_) => Output::State(Fetched { state: None, timed_out }),
+            Job::State(_) | Job::Workgroup { .. } => Output::State(Fetched { state: None, timed_out }),
             Job::Branches(..) => Output::Branches(Vec::new()),
             Job::Log(..) => Output::Log(String::new()),
         }
@@ -278,6 +282,18 @@ impl GitWorker {
         }
     }
 
+    /// A workgroup's poll of `path` against `base` with the files and the diff stats, through the
+    /// same cache (the key says which) and threads.
+    pub(super) fn request_workgroup(&mut self, path: String, base: Option<String>, search: String, timeout: Duration) {
+        let now = Instant::now();
+        let key = gs::cache_key(&path, base.as_deref(), true);
+        match self.cache.lookup(&key, now) {
+            Lookup::Cached(state) => self.ready.push(GitReply::Workgroup { key, path, fetched: Fetched { state, timed_out: false } }),
+            Lookup::Joined => {}
+            Lookup::Start => self.start(Job::Workgroup { path, base }, search, timeout, now),
+        }
+    }
+
     /// The 8 most recently committed branches in `path`, for `pane`'s menu.
     pub(super) fn branches(&mut self, pane: PaneId, path: String, search: String, timeout: Duration) {
         self.start(Job::Branches(pane, path), search, timeout, Instant::now());
@@ -334,6 +350,7 @@ impl GitWorker {
             let git = gs::git_program(&search);
             let output = match (&job, git) {
                 (Job::State(path), Some(git)) => Output::State(gs::fetch_state(&*runner, &git, Path::new(path), left)),
+                (Job::Workgroup { path, base }, Some(git)) => Output::State(gs::fetch_state_with(&*runner, &git, Path::new(path), left, base.as_deref(), true)),
                 (Job::Branches(_, path), Some(git)) => Output::Branches(gs::recent_branches(&*runner, &git, Path::new(path), left)),
                 (Job::Log(_, path), Some(git)) => Output::Log(gs::git_log(&*runner, &git, Path::new(path), left)),
                 // No git to run (a network or linked `gitSearchPath`): no state.
@@ -358,6 +375,10 @@ impl GitWorker {
     fn answer(&mut self, job: &Job, output: Output, finished: Instant) -> GitReply {
         match (job, output) {
             (Job::State(path), Output::State(fetched)) => GitReply::State { path: path.clone(), fetched: self.cache.finish(path, fetched, finished) },
+            (Job::Workgroup { path, base }, Output::State(fetched)) => {
+                let key = gs::cache_key(path, base.as_deref(), true);
+                GitReply::Workgroup { fetched: self.cache.finish(&key, fetched, finished), key, path: path.clone() }
+            }
             (Job::Branches(pane, path), Output::Branches(branches)) => GitReply::Branches { pane: *pane, path: path.clone(), branches },
             (Job::Log(pane, _), Output::Log(text)) => GitReply::Log { pane: *pane, text },
             // A thread answers its own job's kind.
@@ -549,6 +570,11 @@ impl App {
                         if gp.poller.did_poll(&path, fetched.clone()) && before != (gp.poller.state.clone(), gp.poller.timed_out, gp.poller.has_fetched) {
                             changed = true;
                         }
+                    }
+                }
+                GitReply::Workgroup { key, path, fetched } => {
+                    if self.workgroup_git_answer(&key, &path, fetched) {
+                        changed = true;
                     }
                 }
                 // The menu waiting for them opens now.

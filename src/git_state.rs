@@ -84,6 +84,30 @@ pub struct GitState {
     pub files_modified: i64,
     pub files_deleted: i64,
     pub repo_state: RepoState,
+    /// The changed files against HEAD or a base (`populateHeadFileStatusesOnState:`); None unless the
+    /// poll asked (a workgroup's). Untracked files are not in it.
+    pub file_statuses: Option<Vec<FileStatus>>,
+}
+
+/// `iTermGitFileChangeKind` (`GCL:198-269`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    None,
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    TypeChange,
+    Untracked,
+    Conflicted,
+}
+
+/// `iTermGitFileStatus`: a path with its index and its working tree change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileStatus {
+    pub path: String,
+    pub index: Change,
+    pub workdir: Change,
 }
 
 impl GitState {
@@ -159,6 +183,193 @@ pub fn parse_porcelain(z: &[u8]) -> Option<GitState> {
     }
     Some(st)
 }
+
+/// The most entries a per-file list holds, and the longest name in it. Git output is the repository's:
+/// a hostile one cannot grow the list, and a name with a control character, an empty name or one that
+/// is not UTF-8 is not listed (it could never be a safe argument).
+pub const MAX_FILES: usize = 10_000;
+pub const MAX_PATH: usize = 1024;
+
+fn usable_path(p: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(p).ok()?;
+    (!s.is_empty() && s.len() <= MAX_PATH && !s.chars().any(char::is_control)).then(|| s.to_string())
+}
+
+fn index_change(c: u8) -> Change {
+    match c {
+        b'A' | b'C' => Change::Added,
+        b'M' => Change::Modified,
+        b'D' => Change::Deleted,
+        b'R' => Change::Renamed,
+        b'T' => Change::TypeChange,
+        _ => Change::None,
+    }
+}
+
+fn workdir_change(c: u8) -> Change {
+    match c {
+        b'A' => Change::Added,
+        b'M' => Change::Modified,
+        b'D' => Change::Deleted,
+        b'R' => Change::Renamed,
+        b'T' => Change::TypeChange,
+        _ => Change::None,
+    }
+}
+
+/// `git status --porcelain=v2 -z --find-renames` as `iTermGitFileStatusForEntry` maps it
+/// (`GCL:198-269`): the index column from X, the workdir column from Y, an unmerged entry Conflicted on
+/// the workdir side, a rename by its new path. Untracked, ignored and header records are not listed.
+pub fn parse_file_statuses(z: &[u8]) -> Vec<FileStatus> {
+    let mut out = Vec::new();
+    let mut records = z.split(|&b| b == 0);
+    while let Some(rec) = records.next() {
+        if out.len() >= MAX_FILES {
+            break;
+        }
+        let fields = match rec.first() {
+            Some(b'1') => 9,
+            Some(b'2') => 10,
+            Some(b'u') => 11,
+            _ => continue,
+        };
+        if rec[0] == b'2' {
+            // A rename's original path is the next record.
+            records.next();
+        }
+        let parts: Vec<&[u8]> = rec.splitn(fields, |&b| b == b' ').collect();
+        if parts.len() != fields || parts[1].len() != 2 {
+            continue;
+        }
+        let Some(path) = usable_path(parts[fields - 1]) else { continue };
+        let (index, workdir) = if rec[0] == b'u' { (Change::None, Change::Conflicted) } else { (index_change(parts[1][0]), workdir_change(parts[1][1])) };
+        if index == Change::None && workdir == Change::None {
+            continue;
+        }
+        out.push(FileStatus { path, index, workdir });
+    }
+    out
+}
+
+/// `git diff --name-status -z --find-renames <tree>` as `populateFileStatusesAgainstBase:` lists it
+/// (`GCL:404-465`): every entry in the workdir column; A, D, M, R (new path), T and U are listed, any
+/// other letter (a copy) is not.
+pub fn parse_base_diff(z: &[u8]) -> Vec<FileStatus> {
+    let mut out = Vec::new();
+    let mut it = z.split(|&b| b == 0);
+    while let Some(code) = it.next() {
+        if out.len() >= MAX_FILES {
+            break;
+        }
+        let Some(&first) = code.first() else { continue };
+        let two = matches!(first, b'R' | b'C');
+        let Some(a) = it.next() else { break };
+        let path = if two {
+            let Some(b) = it.next() else { break };
+            b
+        } else {
+            a
+        };
+        let change = match first {
+            b'A' => Change::Added,
+            b'D' => Change::Deleted,
+            b'M' => Change::Modified,
+            b'R' => Change::Renamed,
+            b'T' => Change::TypeChange,
+            b'U' => Change::Conflicted,
+            _ => continue,
+        };
+        if let Some(path) = usable_path(path) {
+            out.push(FileStatus { path, index: Change::None, workdir: change });
+        }
+    }
+    out
+}
+
+/// The diff stats (`populateDiffStatsOnState:`, `GCL:477-557`) from `--name-status -z --no-renames` and
+/// `--numstat -z --no-renames` against HEAD: (files added, modified, deleted, lines inserted, lines
+/// deleted). Added counts A entries plus `untracked`; modified counts M and T entries; only M and T
+/// entries add their lines (an added file contributes none).
+pub fn diff_stats(name_status_z: &[u8], numstat_z: &[u8], untracked: i64) -> (i64, i64, i64, i64, i64) {
+    let mut lines: HashMap<&[u8], (i64, i64)> = HashMap::new();
+    for rec in numstat_z.split(|&b| b == 0).take(MAX_FILES) {
+        let rec = rec.strip_prefix(b"\n").unwrap_or(rec);
+        let mut f = rec.splitn(3, |&b| b == b'\t');
+        let (Some(a), Some(d), Some(path)) = (f.next(), f.next(), f.next()) else { continue };
+        let n = |x: &[u8]| std::str::from_utf8(x).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        lines.insert(path, (n(a), n(d)));
+    }
+    let (mut added, mut modified, mut deleted, mut ins, mut del) = (untracked, 0, 0, 0, 0);
+    let mut it = z_records(name_status_z);
+    while let Some(code) = it.next() {
+        let Some(&first) = code.first() else { continue };
+        let Some(path) = it.next() else { break };
+        if matches!(first, b'R' | b'C') {
+            it.next();
+        }
+        match first {
+            b'A' => added += 1,
+            b'D' => deleted += 1,
+            b'M' | b'T' => {
+                modified += 1;
+                let (i, d) = lines.get(path).copied().unwrap_or((0, 0));
+                ins += i;
+                del += d;
+            }
+            _ => {}
+        }
+    }
+    (added, modified, deleted, ins, del)
+}
+
+fn z_records(z: &[u8]) -> impl Iterator<Item = &[u8]> {
+    z.split(|&b| b == 0).take(MAX_FILES * 3)
+}
+
+/// The worker cache's key (`GPW:87-105`): the path, `\x01stats` with stats, `\x02<base>` for a base
+/// that is not empty or HEAD.
+pub fn cache_key(path: &str, base: Option<&str>, stats: bool) -> String {
+    let mut key = path.to_string();
+    if stats {
+        key.push_str("\x01stats");
+    }
+    if let Some(b) = base.filter(|b| !b.is_empty() && *b != "HEAD") {
+        key.push('\x02');
+        key.push_str(b);
+    }
+    key
+}
+
+macro_rules! guarded {
+    ($($rest:expr),* $(,)?) => {
+        &[
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.useBuiltinFSMonitor=false",
+            "-c",
+            "safe.bareRepository=explicit",
+            "-c",
+            "core.quotepath=false",
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "core.virtualFilesystem=",
+            $($rest),*
+        ]
+    };
+}
+
+/// Per-file statuses against HEAD (`populateHeadFileStatusesOnState:`, `GCL:326-347`).
+pub const FILES_ARGS: &[&str] = guarded!["status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=all", "--find-renames"];
+/// A base's tree: the caller appends `<base>^{tree}`; the typed base never reaches git as an option.
+pub const BASE_TREE_ARGS: &[&str] = guarded!["rev-parse", "--verify", "--quiet", "--end-of-options"];
+/// Per-file statuses against a base's tree (`GCL:350-475`): the caller appends the tree id and `--`.
+pub const BASE_DIFF_ARGS: &[&str] = guarded!["diff", "--name-status", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"];
+/// The diff stats' two runs, against HEAD (`GCL:477-557`).
+pub const NUMSTAT_ARGS: &[&str] = guarded!["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--"];
+pub const NAME_STATUS_ARGS: &[&str] = guarded!["diff", "--name-status", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--"];
 
 /// The operation in progress, from files in the git directory in libgit2's
 /// `git_repository_state` order, in a judged git directory.
@@ -401,6 +612,9 @@ pub struct Vetted {
     /// A partial clone (`extensions.partialClone` or a `remote.*.promisor`): git may start
     /// a lazy fetch, which only `GIT_NO_LAZY_FETCH` (git 2.44) stops.
     pub partial_clone: bool,
+    /// The nearest folder with a `.git` in it: the working tree's top, which porcelain paths are
+    /// relative to.
+    pub root: Option<PathBuf>,
 }
 
 /// The checks before any git run, in `dir` and every repository git could find above it
@@ -414,11 +628,13 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
     let mut filters = BTreeSet::new();
     let mut partial_clone = false;
     let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone };
+    let mut root = None;
     let mut at = Some(dir);
     while let Some(a) = at {
         // Each name is judged (its link read, the target walked) before it is looked at.
         let dotgit = a.join(".git")?;
         if localfs::lstat(&dotgit).is_ok() {
+            root.get_or_insert_with(|| a.path().to_path_buf());
             let kind = localfs::stat(&dotgit).ok();
             if kind.is_some_and(|k| k.is_dir) {
                 vet_git_dir(&dotgit, a.path(), &mut v)?;
@@ -434,7 +650,7 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
         }
         at = a.parent();
     }
-    Some(Vetted { args: filter_args(&filters), partial_clone })
+    Some(Vetted { args: filter_args(&filters), partial_clone, root })
 }
 
 /// What `vet_config` collects.
@@ -731,6 +947,15 @@ pub struct Fetched {
 /// git directory, all inside `timeout` (iTerm2's helper kills itself at `gitTimeout`).
 /// Exit 128 (not a repository, or `safe.directory` refused it) is no state, not a timeout.
 pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Fetched {
+    fetch_state_with(run, git, dir, timeout, None, false)
+}
+
+/// `fetch_state`, and with `stats` also what a workgroup's poller asks for (`includeDiffStats`): the
+/// per-file statuses against HEAD, or against `base` when it resolves to a tree (an unresolved or
+/// refused base keeps the HEAD list), then the two diff stats runs. All inside the one timeout and the
+/// same checks and hardening; an extra run that fails, is capped or runs out of time leaves its field
+/// unset and the rest of the state stands.
+pub fn fetch_state_with(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration, base: Option<&str>, stats: bool) -> Fetched {
     let start = Instant::now();
     let left = || timeout.saturating_sub(start.elapsed());
     let none = Fetched::default();
@@ -765,7 +990,47 @@ pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) 
         RunResult::TimedOut => return timed_out,
         _ => {}
     }
+    if stats {
+        extra_runs(run, git, dir, &vet, &mut state, base, &left);
+    }
     Fetched { state: Some(state), timed_out: false }
+}
+
+/// The files pass and the stats runs of `fetch_state_with`.
+fn extra_runs(run: &dyn GitRun, git: &Path, dir: &Path, vet: &Vetted, state: &mut GitState, base: Option<&str>, left: &dyn Fn() -> Duration) {
+    let exit0 = |r: RunResult| match r {
+        RunResult::Exit { code: 0, stdout, capped: false } => Some(stdout),
+        _ => None,
+    };
+    let base = base.map(str::trim).filter(|b| !b.is_empty() && *b != "HEAD" && !b.starts_with('-') && b.chars().count() <= 256 && !b.chars().any(char::is_control));
+    let mut statuses = None;
+    if let Some(b) = base {
+        if !left().is_zero() {
+            let mut args = with_extra(BASE_TREE_ARGS, &vet.args);
+            args.push(format!("{b}^{{tree}}"));
+            let tree = exit0(run.run(git, dir, &args, left(), Some(SMALL_CAP))).map(|o| String::from_utf8_lossy(&o).trim().to_string());
+            if let Some(tree) = tree.filter(|t| (40..=64).contains(&t.len()) && t.bytes().all(|c| c.is_ascii_hexdigit())) {
+                let mut args = with_extra(BASE_DIFF_ARGS, &vet.args);
+                args.extend([tree, "--".to_string()]);
+                statuses = exit0(run.run(git, dir, &args, left(), Some(STATUS_CAP))).map(|o| parse_base_diff(&o));
+            }
+        }
+    }
+    if statuses.is_none() && !left().is_zero() {
+        statuses = exit0(run.run(git, dir, &with_extra(FILES_ARGS, &vet.args), left(), Some(STATUS_CAP))).map(|o| parse_file_statuses(&o));
+    }
+    state.file_statuses = statuses;
+    if left().is_zero() {
+        return;
+    }
+    let name_status = exit0(run.run(git, dir, &with_extra(NAME_STATUS_ARGS, &vet.args), left(), Some(STATUS_CAP)));
+    if left().is_zero() {
+        return;
+    }
+    let numstat = exit0(run.run(git, dir, &with_extra(NUMSTAT_ARGS, &vet.args), left(), Some(STATUS_CAP)));
+    if let (Some(n), Some(m)) = (name_status, numstat) {
+        (state.files_added, state.files_modified, state.files_deleted, state.lines_inserted, state.lines_deleted) = diff_stats(&n, &m, state.adds);
+    }
 }
 
 /// The 8 most recently committed branches, newest first; none when git may not run or
@@ -907,8 +1172,10 @@ impl WorkerCache {
 
     /// Forgets the path's cached state and waiting requests (`GPW:161-199`).
     pub fn invalidate(&mut self, path: &str) {
-        self.cache.remove(path);
-        self.pending.remove(path);
+        // Every key made from the path: bare, with stats, with a base (`cache_key`).
+        let of_path = |k: &String| k == path || k.strip_prefix(path).is_some_and(|rest| rest.starts_with(['\x01', '\x02']));
+        self.cache.retain(|k, _| !of_path(k));
+        self.pending.retain(|k, _| !of_path(k));
     }
 
     /// `debugInfoForDirectory:` (`GPW:74-85`); Tandem has no rich cache.
@@ -1174,6 +1441,7 @@ pub fn remote_state(user: &BTreeMap<String, String>) -> Option<GitState> {
         files_modified: opt("gitFilesModified"),
         files_deleted: opt("gitFilesDeleted"),
         repo_state: RepoState::None,
+        file_statuses: None,
     })
 }
 
@@ -1540,7 +1808,7 @@ mod tests {
         for base in [STATUS_ARGS, GIT_DIR_ARGS, BRANCHES_ARGS, LOG_ARGS] {
             assert_eq!(&base[..HARDENED.len()], HARDENED);
         }
-        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false };
+        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None };
         let line = guarded_args(&vet, &["status", "--porcelain"]);
         assert_eq!(&line[..HARDENED.len()], HARDENED);
         assert_eq!(&line[HARDENED.len()..], ["-c", "filter.x.clean=", "status", "--porcelain"]);
@@ -2181,5 +2449,255 @@ This often happens in very large repositories or when the working tree is on a s
         assert!(!looks_like_git("gitk x"));
         assert!(!looks_like_git("echo git"));
         assert!(!looks_like_git(""));
+    }
+
+    // --- 13y1 Task 6: per-file statuses, the base and the diff stats (`iTermGitClient.m`) ---
+
+    fn st(path: &str, index: Change, workdir: Change) -> FileStatus {
+        FileStatus { path: path.into(), index, workdir }
+    }
+
+    /// The porcelain v2 `-z` list `git status --find-renames` prints, one record per entry.
+    const V2: &[u8] = b"# branch.oid 1234567890abcdef1234567890abcdef12345678\0# branch.head main\0\
+1 M. N... 100644 100644 100644 aaaa bbbb a.rs\0\
+1 .M N... 100644 100644 100644 aaaa aaaa b.rs\0\
+1 MM N... 100644 100644 100644 aaaa cccc c.rs\0\
+2 R. N... 100644 100644 100644 aaaa aaaa R100 new.rs\0old.rs\0\
+u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
+
+    /// The per-file list follows `iTermGitFileStatusForEntry` (`GCL:198-269`): the index column from X,
+    /// the workdir column from Y, an unmerged entry is Conflicted on the workdir side, a rename is its
+    /// new path; the base's diff puts everything in the workdir column; the stats count as
+    /// `populateDiffStatsOnState:` does (`GCL:477-557`); the cache key is `GPW:87-105`'s.
+    #[test]
+    fn file_statuses_follow_iterm2() {
+        assert_eq!(
+            parse_file_statuses(V2),
+            vec![
+                st("a.rs", Change::Modified, Change::None),
+                st("b.rs", Change::None, Change::Modified),
+                st("c.rs", Change::Modified, Change::Modified),
+                st("new.rs", Change::Renamed, Change::None),
+                st("d.rs", Change::None, Change::Conflicted),
+            ]
+        );
+        assert_eq!(
+            parse_file_statuses(b"1 A. N... 000000 100644 100644 0 b new file.rs\0 1 T. N... 100644 120000 120000 a b t.rs\0"),
+            vec![st("new file.rs", Change::Added, Change::None)],
+            "a path with a blank is whole; a malformed record is skipped"
+        );
+        assert_eq!(parse_file_statuses(b"1 D. N... 100644 000000 000000 a b gone.rs\0"), vec![st("gone.rs", Change::Deleted, Change::None)]);
+        assert_eq!(parse_file_statuses(b"1 T. N... 100644 120000 120000 a b t.rs\0"), vec![st("t.rs", Change::TypeChange, Change::None)]);
+        assert_eq!(parse_file_statuses(b"? untracked.rs\0"), Vec::new(), "untracked files are not listed");
+
+        assert_eq!(
+            parse_base_diff(b"M\0x.rs\0A\0y.rs\0R087\0o.rs\0n.rs\0"),
+            vec![st("x.rs", Change::None, Change::Modified), st("y.rs", Change::None, Change::Added), st("n.rs", Change::None, Change::Renamed)]
+        );
+        assert_eq!(
+            parse_base_diff(b"D\0d.rs\0T\0t.rs\0U\0u.rs\0C100\0from.rs\0copy.rs\0X\0x\0M\0m.rs\0"),
+            vec![st("d.rs", Change::None, Change::Deleted), st("t.rs", Change::None, Change::TypeChange), st("u.rs", Change::None, Change::Conflicted), st("m.rs", Change::None, Change::Modified)],
+            "a copy and an unknown letter are skipped"
+        );
+
+        assert_eq!(diff_stats(b"M\0a\0A\0b\0D\0c\0T\0d\0", b"3\t1\ta\010\t0\tb\01\t1\td\0", 2), (3, 2, 1, 4, 2));
+        assert_eq!(diff_stats(b"M\0bin\0", b"-\t-\tbin\0", 0), (0, 1, 0, 0, 0), "a binary file adds no lines");
+        assert_eq!(diff_stats(b"", b"", 5), (5, 0, 0, 0, 0), "untracked files count as added");
+
+        assert_eq!(cache_key("C:\\r", None, false), "C:\\r");
+        assert_eq!(cache_key("C:\\r", Some("HEAD"), true), "C:\\r\x01stats");
+        assert_eq!(cache_key("C:\\r", Some(""), true), "C:\\r\x01stats");
+        assert_eq!(cache_key("C:\\r", Some("main"), true), "C:\\r\x01stats\x02main");
+        assert_eq!(cache_key("C:\\r", Some("main"), false), "C:\\r\x02main");
+
+        for (name, args) in [("files", FILES_ARGS), ("base diff", BASE_DIFF_ARGS), ("numstat", NUMSTAT_ARGS), ("name-status", NAME_STATUS_ARGS), ("base tree", BASE_TREE_ARGS)] {
+            assert!(args.starts_with(HARDENED), "{name} starts with the hardening");
+            assert!(args.contains(&"--no-optional-locks") && args.contains(&"core.fsmonitor=false"), "{name}");
+        }
+        for (name, args) in [("base diff", BASE_DIFF_ARGS), ("numstat", NUMSTAT_ARGS), ("name-status", NAME_STATUS_ARGS)] {
+            assert!(args.contains(&"--no-ext-diff") && args.contains(&"--no-textconv"), "{name} never runs a configured diff program");
+        }
+        assert!(FILES_ARGS.contains(&"--untracked-files=no") && FILES_ARGS.contains(&"--find-renames") && FILES_ARGS.contains(&"--porcelain=v2") && FILES_ARGS.contains(&"-z"));
+        assert!(BASE_TREE_ARGS.ends_with(&["--end-of-options"]), "the typed base comes after --end-of-options");
+        assert!(NUMSTAT_ARGS.contains(&"--no-renames") && NAME_STATUS_ARGS.contains(&"--no-renames"));
+    }
+
+    /// Output is bounded and a hostile list cannot panic the parsers.
+    #[test]
+    fn file_status_parsers_are_bounded() {
+        let mut big = Vec::new();
+        for i in 0..(MAX_FILES + 50) {
+            big.extend_from_slice(format!("1 .M N... 100644 100644 100644 a b f{i}.rs\0").as_bytes());
+        }
+        assert_eq!(parse_file_statuses(&big).len(), MAX_FILES);
+        let mut diff = Vec::new();
+        for i in 0..(MAX_FILES + 50) {
+            diff.extend_from_slice(format!("M\0f{i}.rs\0").as_bytes());
+        }
+        assert_eq!(parse_base_diff(&diff).len(), MAX_FILES);
+        // A name with a control character, an empty or over-long name, or invalid UTF-8 is not listed.
+        let long = "x".repeat(MAX_PATH + 1);
+        let hostile = format!("1 .M N... 100644 100644 100644 a b a\x03b.rs\0\
+1 .M N... 100644 100644 100644 a b {long}\0\
+1 .M N... 100644 100644 100644 a b ok.rs\0");
+        assert_eq!(parse_file_statuses(hostile.as_bytes()), vec![st("ok.rs", Change::None, Change::Modified)]);
+        assert!(parse_file_statuses(b"1 .M N... 100644 100644 100644 a b \xff\xfe\0").is_empty());
+        assert!(parse_base_diff(b"M\0a\rb\0R100\0only-one\0").is_empty());
+        for junk in [&b""[..], b"\0\0\0", b"1", b"2 R. N... 1 1 1 a b R100 x\0", b"u UU", b"R\0", b"M"] {
+            let _ = (parse_file_statuses(junk), parse_base_diff(junk), diff_stats(junk, junk, 0));
+        }
+    }
+
+    /// The prefix of a key is its path: invalidating a path forgets every base and stats variant of it.
+    #[test]
+    fn invalidating_a_path_forgets_its_keys() {
+        let now = Instant::now();
+        let mut c = WorkerCache::default();
+        let (p, other) = ("C:\\r", "C:\\r2");
+        for key in [p.to_string(), cache_key(p, Some("main"), true), cache_key(p, None, true), cache_key(other, None, true)] {
+            assert_eq!(c.lookup(&key, now), Lookup::Start);
+            c.finish(&key, fetched(Some(main_state()), false), now);
+        }
+        c.invalidate(p);
+        assert_eq!(c.lookup(p, now), Lookup::Start);
+        assert_eq!(c.lookup(&cache_key(p, Some("main"), true), now), Lookup::Start);
+        assert_eq!(c.lookup(&cache_key(p, None, true), now), Lookup::Start);
+        assert!(matches!(c.lookup(&cache_key(other, None, true), now), Lookup::Cached(Some(_))), "another path (a longer name) keeps its state");
+    }
+
+    /// A `GitRun` that answers by the arguments themselves.
+    struct Script {
+        calls: Mutex<Vec<Vec<String>>>,
+        reply: Box<dyn Fn(&[String]) -> RunResult + Send + Sync>,
+    }
+
+    impl GitRun for Script {
+        fn run(&self, _git: &Path, _dir: &Path, args: &[String], _timeout: Duration, _cap: Option<usize>) -> RunResult {
+            self.calls.lock().unwrap().push(args.to_vec());
+            (self.reply)(args)
+        }
+    }
+
+    fn has(args: &[String], word: &str) -> bool {
+        args.iter().any(|a| a == word)
+    }
+
+    /// `fetch_state` stays today's two runs; with stats it adds the files pass and the two stats runs;
+    /// a base is resolved to a tree first and never reaches git as an option; a failed or capped extra
+    /// run leaves its field unset and keeps the rest of the state.
+    #[test]
+    fn fetch_state_with_asks_only_for_what_is_wanted() {
+        let dir = temp_repo("wg-fetch");
+        let tree = "0123456789abcdef0123456789abcdef01234567";
+        let porcelain = [PORC, b"1 .M N... 100644 100644 100644 a b f.rs\0".as_slice()].concat();
+        let script = |fail_numstat: bool| {
+            let porcelain = porcelain.clone();
+            Script {
+                calls: Mutex::new(Vec::new()),
+                reply: Box::new(move |a| {
+                    if has(a, "status") && has(a, "--branch") {
+                        exit(&porcelain)
+                    } else if has(a, "status") {
+                        exit(b"1 .M N... 100644 100644 100644 a b f.rs\0")
+                    } else if has(a, "--absolute-git-dir") {
+                        exit(b"C:\\nowhere\\.git\n")
+                    } else if has(a, "--verify") {
+                        exit(format!("{tree}\n").as_bytes())
+                    } else if has(a, "--numstat") {
+                        if fail_numstat { RunResult::Exit { code: 128, stdout: Vec::new(), capped: false } } else { exit(b"2\t1\tf.rs\0") }
+                    } else if has(a, "--name-status") && has(a, "--find-renames") {
+                        exit(b"M\0g.rs\0")
+                    } else if has(a, "--name-status") {
+                        exit(b"M\0f.rs\0")
+                    } else {
+                        exit(b"")
+                    }
+                }),
+            }
+        };
+        let s = script(false);
+        let plain = fetch_state(&s, Path::new(GIT), &dir, SEC);
+        assert_eq!(plain.state.as_ref().and_then(|x| x.file_statuses.clone()), None, "no list unless asked");
+        assert_eq!(s.calls.lock().unwrap().len(), 2, "today's callers run what they ran");
+
+        let s = script(false);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, None, true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
+        assert_eq!((got.files_added, got.files_modified, got.files_deleted, got.lines_inserted, got.lines_deleted), (0, 1, 0, 2, 1));
+        assert!(!s.calls.lock().unwrap().iter().any(|a| has(a, "--verify")), "HEAD asks for no tree");
+
+        // A base: its tree first, then the diff against that tree, every entry in the workdir column.
+        let s = script(false);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, Some("HEAD~1"), true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("g.rs", Change::None, Change::Modified)]));
+        let calls = s.calls.lock().unwrap().clone();
+        let verify = calls.iter().find(|a| has(a, "--verify")).expect("rev-parse");
+        assert_eq!(&verify[verify.len() - 2..], ["--end-of-options", "HEAD~1^{tree}"]);
+        let diff = calls.iter().find(|a| has(a, "--find-renames") && has(a, "--name-status")).expect("diff");
+        assert!(diff.contains(&tree.to_string()), "the diff names the tree, not the typed base: {diff:?}");
+
+        // An option as a base never reaches git: the HEAD list stays.
+        let s = script(false);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, Some("-x"), true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
+        assert!(!s.calls.lock().unwrap().iter().any(|a| a.iter().any(|x| x.contains("-x"))), "{:?}", s.calls.lock().unwrap());
+
+        // A failed stats run leaves the stats unset and the rest of the state.
+        let s = script(true);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, None, true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
+        assert_eq!((got.files_modified, got.lines_inserted), (0, 0));
+        assert_eq!(got.branch, "main");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A real repository: staged, unstaged and untracked changes, the base and the stats against real
+    /// git (R13xy-8). Skipped with a note when git is not found.
+    #[cfg(windows)]
+    #[test]
+    fn base_and_stats_follow_iterm2() {
+        use std::process::Command;
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = find_git(&path, &crate::localfs::is_file) else {
+            eprintln!("base_and_stats_follow_iterm2: git was not found; skipped");
+            return;
+        };
+        let dir = temp("wg-real");
+        let g = |args: &[&str]| {
+            let out = Command::new(&git).current_dir(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args).output().expect("git ran");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        g(&["init", "-q"]);
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        fs::write(dir.join("b.txt"), "one\ntwo\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        fs::write(dir.join("a.txt"), "one\nstaged\n").unwrap();
+        g(&["add", "a.txt"]);
+        fs::write(dir.join("b.txt"), "changed\n").unwrap();
+        fs::write(dir.join("u.txt"), "untracked\n").unwrap();
+        let run = crate::git_run_win::WinGitRun;
+        let timeout = Duration::from_secs(20);
+        let got = fetch_state_with(&run, &git, &dir, timeout, None, true).state.expect("a state");
+        assert_eq!(got.file_statuses, Some(vec![st("a.txt", Change::Modified, Change::None), st("b.txt", Change::None, Change::Modified)]), "no u.txt");
+        assert_eq!((got.files_added, got.files_modified, got.files_deleted), (1, 2, 0), "the untracked file counts as added");
+        assert_eq!((got.lines_inserted, got.lines_deleted), (2, 2), "a.txt +1, b.txt +1 -2... as git diff HEAD counts");
+        let plain = fetch_state(&run, &git, &dir, timeout).state.expect("a state");
+        assert_eq!(plain.file_statuses, None);
+
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "second"]);
+        fs::write(dir.join("b.txt"), "third\n").unwrap();
+        let since = fetch_state_with(&run, &git, &dir, timeout, Some("HEAD~1"), true).state.expect("a state");
+        assert_eq!(
+            since.file_statuses,
+            Some(vec![st("a.txt", Change::None, Change::Modified), st("b.txt", Change::None, Change::Modified), st("u.txt", Change::None, Change::Added)]),
+            "the files changed since HEAD~1, all in the workdir column"
+        );
+        let nope = fetch_state_with(&run, &git, &dir, timeout, Some("nope"), true).state.expect("a state");
+        assert_eq!(nope.file_statuses, Some(vec![st("b.txt", Change::None, Change::Modified)]), "an unresolved base keeps the HEAD list");
+        let dash = fetch_state_with(&run, &git, &dir, timeout, Some("-x"), true).state.expect("a state");
+        assert_eq!(dash.file_statuses, nope.file_statuses, "an option is no base");
+        let _ = fs::remove_dir_all(dir);
     }
 }

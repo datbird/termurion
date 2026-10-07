@@ -16,6 +16,8 @@ use crate::workgroup_toolbar::{self as wt, Owner, UsageReport};
 use crate::layout::visible_rects;
 use crate::palette::Rgb;
 use crate::{semantic, session_state};
+use crate::workgroup_git as wgit;
+use super::workgroup_git_app::Nav;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
@@ -31,6 +33,10 @@ const BUTTON_W: f32 = 28.0;
 /// The Reload glyph (Segoe Fluent Icons Refresh), the busy member's mark (Sync).
 const GLYPH_RELOAD: char = '\u{E72C}';
 const GLYPH_BUSY: char = '\u{E895}';
+/// Back, Forward (Segoe Fluent Icons) and the pulldown's chevron.
+const GLYPH_BACK: char = '\u{E72B}';
+const GLYPH_FORWARD: char = '\u{E72A}';
+const GLYPH_CHEVRON: char = '\u{E70D}';
 /// A usage row's text size against the terminal font, and a bar's height in points (`WUT`: 5).
 const USAGE_TEXT: f32 = 0.8;
 const BAR_H: f32 = 5.0;
@@ -71,6 +77,14 @@ enum View {
     Reload,
     Spacer,
     Usage(String),
+    /// The git status text (cleaned) and the component's icon.
+    Git(String),
+    /// The changed-file pulldown's label.
+    Files { label: String, enabled: bool },
+    /// Back, the "X/Y" label, Forward and Reload, each with its rectangle.
+    Nav { back: (bool, Rect), label: Option<(String, Rect)>, forward: (bool, Rect), reload: Rect },
+    /// The base field: its text (or the edit's), and the chevron's rectangle.
+    Base { text: String, editing: bool, chevron: Rect },
 }
 
 struct Laid {
@@ -83,6 +97,10 @@ enum Click {
     Peer(String),
     Reload,
     Usage(String),
+    Files(Rect),
+    Nav(Nav),
+    BaseField,
+    BaseChevron(Rect),
     Nothing,
 }
 
@@ -97,8 +115,19 @@ fn rgb_mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     Rgb { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b) }
 }
 
+const ZERO: Rect = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+
 fn width_of(t: &str, cw: f32) -> f32 {
     unicode_width::UnicodeWidthStr::width(t) as f32 * cw
+}
+
+/// A 1 point outline inside `r`.
+fn outline(frame: &mut scene::Frame, r: Rect, color: Rgb, s: f32) {
+    use scene::Quad;
+    let t = s.max(1.0);
+    for q in [Rect { h: t, ..r }, Rect { y: r.y + r.h - t, h: t, ..r }, Rect { w: t, ..r }, Rect { x: r.x + r.w - t, w: t, ..r }] {
+        frame.quads.push(Quad { rect: q, color: scene::rgba(color, 1.0) });
+    }
 }
 
 impl App {
@@ -123,12 +152,40 @@ impl App {
 
     /// The items this task draws; the rest are Tasks 6 and 7.
     fn drawn(item: &ToolbarItem) -> bool {
-        matches!(item, ToolbarItem::Name | ToolbarItem::ModeSwitcher | ToolbarItem::Reload(_) | ToolbarItem::Spacer { .. } | ToolbarItem::Usage { .. })
+        matches!(item, ToolbarItem::Name | ToolbarItem::ModeSwitcher | ToolbarItem::Reload(_) | ToolbarItem::Spacer { .. } | ToolbarItem::Usage { .. } | ToolbarItem::GitStatus | ToolbarItem::ChangedFileSelector | ToolbarItem::Navigation(_) | ToolbarItem::GitBaseSelector)
     }
 
     /// Whether member `config` of instance `inst` is busy (an agent working): the reported state.
     fn member_busy(&self, pane: Option<PaneId>) -> bool {
         pane.and_then(|p| self.panes.get(&p)).is_some_and(|p| crate::workgroup_peers::busy(session_state::reported_state(&p.own().tab_status)))
+    }
+
+    /// The git status text of an instance: the poller's first variant, cleaned (P19).
+    fn git_status_text(&self, inst: &super::workgroup_app::Instance) -> String {
+        let state = inst.git.as_ref().and_then(|g| g.poller.state.as_ref());
+        wt::shown_text(crate::git_state::git_variants(state, None, state.is_some()).first().map_or("", String::as_str))
+    }
+
+    /// The changed-file pulldown's label and whether it can open (`STV:421-470`).
+    fn files_label(&self, inst: &super::workgroup_app::Instance, pane: PaneId) -> (String, bool) {
+        let sel = inst.config_of(pane).map(str::to_string).or_else(|| inst.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.clone())).and_then(|c| inst.git.as_ref()?.selectors.get(&c));
+        let Some(sel) = sel else { return (wgit::all_files_title(0), false) };
+        let rows = sel.rows();
+        let label = match sel.picked() {
+            Some(p) => rows.iter().find_map(|r| match r {
+                wgit::Row::File { letter, text, path } if path == p => Some(format!("{letter}  {text}")),
+                _ => None,
+            }),
+            None => None,
+        };
+        let label = label.or_else(|| rows.iter().find_map(|r| if let wgit::Row::AllFiles(t) = r { Some(t.clone()) } else { None })).unwrap_or_default();
+        (label, sel.count() > 0)
+    }
+
+    /// Back and Forward enabled, and the "X/Y" label of a member's navigation (`WNT:83-90`).
+    fn nav_state(&self, inst: &super::workgroup_app::Instance, pane: PaneId) -> (bool, bool, Option<String>) {
+        let sel = inst.config_of(pane).map(str::to_string).or_else(|| inst.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.clone())).and_then(|c| inst.git.as_ref()?.selectors.get(&c));
+        sel.map_or((false, false, None), |s| (s.can_back(), s.can_forward(), wgit::nav_label(s.position(), s.count())))
     }
 
     /// The strips of the active tab: (pane, strip rectangle, the pane's full rectangle).
@@ -165,6 +222,24 @@ impl App {
                     let w: f32 = segs.iter().map(|g| width_of(&g.label, cw) + 2.0 * SEG_PAD + if g.busy { cw + 4.0 } else { 0.0 }).sum();
                     ((w, None), View::Switcher(segs))
                 }
+                ToolbarItem::GitStatus => {
+                    let text = self.git_status_text(inst);
+                    ((width_of(&text, cw) + cw + 4.0, None), View::Git(text))
+                }
+                ToolbarItem::ChangedFileSelector => {
+                    let (label, enabled) = self.files_label(inst, pane);
+                    ((width_of(&label, cw) + 28.0, None), View::Files { label, enabled })
+                }
+                ToolbarItem::Navigation(_) => {
+                    let (back, fwd, label) = self.nav_state(inst, pane);
+                    let lw = label.as_deref().map_or(0.0, |l| width_of(l, cw) + 8.0);
+                    ((3.0 * BUTTON_W + lw, None), View::Nav { back: (back, ZERO), label: label.map(|l| (l, ZERO)), forward: (fwd, ZERO), reload: ZERO })
+                }
+                ToolbarItem::GitBaseSelector => {
+                    let editing = self.workgroups.base_edit.as_ref().is_some_and(|e| e.pane == pane);
+                    let text = if editing { self.workgroups.base_edit.as_ref().map(|e| e.edit.text.clone()).unwrap_or_default() } else { wt::shown_text(&inst.git_base) };
+                    (((width_of(&text, cw) + 48.0).clamp(80.0, 400.0), None), View::Base { text, editing, chevron: ZERO })
+                }
                 _ => continue,
             };
             widths.push(w);
@@ -186,6 +261,28 @@ impl App {
                         g.rect = Rect { x, y: rect.y, w: w.min((rect.x + rect.w - x).max(0.0)), h: rect.h };
                         x += w;
                     }
+                }
+                match &mut view {
+                    View::Nav { back, label, forward, reload } => {
+                        let bw = BUTTON_W * s;
+                        let mut x = rect.x;
+                        let mut part = |w: f32| {
+                            let r = Rect { x, w: w.min((rect.x + rect.w - x).max(0.0)), ..rect };
+                            x += w;
+                            r
+                        };
+                        back.1 = part(bw);
+                        if let Some((l, r)) = label {
+                            *r = part((width_of(l, cw) + 8.0) * s);
+                        }
+                        forward.1 = part(bw);
+                        *reload = part(bw);
+                    }
+                    View::Base { chevron, .. } => {
+                        let w = (20.0 * s).min(rect.w);
+                        *chevron = Rect { x: rect.x + rect.w - w, w, ..rect };
+                    }
+                    _ => {}
                 }
                 Some(Laid { rect, view })
             })
@@ -242,6 +339,42 @@ impl App {
                             frame.rows.push(row(x, centered_y(g.rect, ch), vec![span(g.label.clone(), if g.active { fg } else { dim }, false)], g.rect, 1.0));
                         }
                     }
+                    View::Git(text) => {
+                        let icon = crate::statusbar_components::icon(crate::statusbar_components::Kind::Git).unwrap_or('\u{E8AB}');
+                        frame.rows.push(row(r.x, centered_y(r, ch), vec![span(icon.to_string(), dim, true), span(format!(" {text}"), fg, false)], r, 1.0));
+                    }
+                    View::Files { label, enabled } => {
+                        outline(frame, r, line, s);
+                        let color = if *enabled { fg } else { dim };
+                        frame.rows.push(row(r.x + 6.0 * s, centered_y(r, ch), vec![span(label.clone(), color, false)], Rect { w: (r.w - 22.0 * s).max(0.0), ..r }, 1.0));
+                        frame.rows.push(row(r.x + r.w - 16.0 * s, centered_y(r, ch), vec![span(GLYPH_CHEVRON.to_string(), color, true)], r, 1.0));
+                    }
+                    View::Nav { back, label, forward, reload } => {
+                        let glyph = |frame: &mut scene::Frame, g: char, rect: Rect, on: bool| frame.rows.push(row(rect.x + (rect.w - cw) / 2.0, centered_y(rect, ch), vec![span(g.to_string(), if on { fg } else { dim }, true)], rect, 1.0));
+                        glyph(frame, GLYPH_BACK, back.1, back.0);
+                        if let Some((text, lr)) = label {
+                            frame.rows.push(row(lr.x + 4.0 * s, centered_y(*lr, ch), vec![span(text.clone(), fg, false)], *lr, 1.0));
+                        }
+                        glyph(frame, GLYPH_FORWARD, forward.1, forward.0);
+                        glyph(frame, GLYPH_RELOAD, *reload, true);
+                    }
+                    View::Base { text, editing, chevron } => {
+                        outline(frame, r, if *editing { fg } else { line }, s);
+                        let field = Rect { w: (r.w - chevron.w).max(0.0), ..r };
+                        let ty = centered_y(r, ch);
+                        if *editing {
+                            if let Some(e) = self.workgroups.base_edit.as_ref() {
+                                let caret_x = width_of(&text[..e.edit.caret.min(text.len())], cw) * s;
+                                if let Some(sel) = e.edit.selection().filter(|sel| sel.end <= text.len()) {
+                                    let (a, b) = (width_of(&text[..sel.start], cw) * s, width_of(&text[..sel.end], cw) * s);
+                                    frame.quads.push(Quad { rect: Rect { x: r.x + 6.0 * s + a, y: ty, w: b - a, h: ch }, color: scene::rgba(selected, 1.0) });
+                                }
+                                frame.quads.push(Quad { rect: Rect { x: r.x + 6.0 * s + caret_x, y: ty, w: s.max(1.0), h: ch }, color: scene::rgba(fg, 1.0) });
+                            }
+                        }
+                        frame.rows.push(row(r.x + 6.0 * s, ty, vec![span(text.clone(), fg, false)], field, 1.0));
+                        frame.rows.push(row(chevron.x + (chevron.w - cw) / 2.0, ty, vec![span(GLYPH_CHEVRON.to_string(), dim, true)], *chevron, 1.0));
+                    }
                     View::Usage(key) => {
                         let report = usage.and_then(|u| u.get(key)).and_then(|u| u.report.as_ref());
                         let small = ch * USAGE_TEXT;
@@ -292,7 +425,20 @@ impl App {
                 View::Switcher(segs) => segs.into_iter().find(|g| g.rect.contains(x, y)).map_or(Click::Nothing, |g| Click::Peer(g.config)),
                 View::Reload => Click::Reload,
                 View::Usage(key) => Click::Usage(key),
-                View::Name(_) | View::Spacer => Click::Nothing,
+                View::Files { enabled, .. } => if enabled { Click::Files(l.rect) } else { Click::Nothing },
+                View::Nav { back, forward, reload, .. } => {
+                    if back.1.contains(x, y) {
+                        if back.0 { Click::Nav(Nav::Back) } else { Click::Nothing }
+                    } else if forward.1.contains(x, y) {
+                        if forward.0 { Click::Nav(Nav::Forward) } else { Click::Nothing }
+                    } else if reload.contains(x, y) {
+                        Click::Nav(Nav::Reload)
+                    } else {
+                        Click::Nothing
+                    }
+                }
+                View::Base { chevron, .. } => if chevron.contains(x, y) { Click::BaseChevron(l.rect) } else { Click::BaseField },
+                View::Git(_) | View::Name(_) | View::Spacer => Click::Nothing,
             };
         }
         Click::Nothing
@@ -304,7 +450,26 @@ impl App {
         if !self.workgroup_toolbar_member(pane) {
             return false;
         }
-        match self.toolbar_click(pane, x, y) {
+        let click = self.toolbar_click(pane, x, y);
+        // A press anywhere but the base field ends its editing, and commits (`controlTextDidEndEditing`).
+        if !matches!(click, Click::BaseField) && self.workgroups.base_edit.is_some() {
+            self.base_field_blur(false);
+        }
+        let at = |r: Rect| super::statusbar_content::MenuAt { x: r.x, y: r.y + r.h, above: false };
+        let member = self.member_config(pane);
+        match click {
+            Click::Files(r) => self.open_file_menu(pane, at(r)),
+            Click::BaseChevron(r) => self.open_recents_menu(pane, at(r)),
+            Click::BaseField => {
+                if self.workgroups.base_edit.as_ref().is_none_or(|e| e.pane != pane) {
+                    self.base_field_focus(pane);
+                }
+            }
+            Click::Nav(action) => {
+                if let Some((instance, owner)) = member {
+                    self.navigation(&instance, &owner, action);
+                }
+            }
             Click::Peer(config) => {
                 if let Some(inst) = self.workgroup_of(pane).map(|i| i.id.clone()) {
                     self.activate_peer(&inst, &config);
@@ -328,6 +493,10 @@ impl App {
     /// asks first, as Restart Session does). Diff and Code Review members reload through Tasks 6 and 7.
     pub(super) fn workgroup_reload(&mut self, pane: PaneId) {
         let mode = self.workgroup_of(pane).and_then(|i| i.config_of(pane).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.as_str())).and_then(|c| i.workgroup.session(c)).map(|s| s.mode.clone()));
+        if mode == Some(Mode::Diff) {
+            self.diff_reload(pane);
+            return;
+        }
         if mode != Some(Mode::Regular) {
             return;
         }
@@ -342,11 +511,22 @@ impl App {
     /// before the menu's chord (`WI:1696-1700`). True when a Reload shortcut took the key.
     pub(super) fn workgroup_toolbar_shortcut(&mut self, pane: PaneId, key: &crate::keystroke::Keystroke) -> bool {
         let Some(plan) = self.toolbar_plan(pane) else { return false };
-        let matched = plan.items.iter().any(|i| matches!(i, ToolbarItem::Reload(Some(s)) if peers::shortcut_matches(s, key)));
-        if wt::key_owner(false, false, false, matched) != Owner::Toolbar {
+        let is = |s: &Option<crate::workgroup::Shortcut>| s.as_ref().is_some_and(|s| peers::shortcut_matches(s, key));
+        let act = plan.items.iter().find_map(|i| match i {
+            ToolbarItem::Reload(s) if is(s) => Some(Nav::Reload),
+            ToolbarItem::Navigation(n) if is(&n.back) => Some(Nav::Back),
+            ToolbarItem::Navigation(n) if is(&n.forward) => Some(Nav::Forward),
+            ToolbarItem::Navigation(n) if is(&n.reload) => Some(Nav::Reload),
+            _ => None,
+        });
+        if wt::key_owner(false, false, false, act.is_some()) != Owner::Toolbar {
             return false;
         }
-        self.workgroup_reload(pane);
+        match (act, self.member_config(pane)) {
+            (Some(Nav::Reload), _) | (None, _) => self.workgroup_reload(pane),
+            (Some(a), Some((instance, owner))) => self.navigation(&instance, &owner, a),
+            _ => {}
+        }
         true
     }
 
@@ -357,7 +537,12 @@ impl App {
         for inst in self.workgroups.values() {
             for cfg in &inst.workgroup.sessions {
                 for item in &cfg.toolbar_items {
-                    if let ToolbarItem::Reload(Some(s)) = item {
+                    let shortcuts: Vec<&crate::workgroup::Shortcut> = match item {
+                        ToolbarItem::Reload(Some(s)) => vec![s],
+                        ToolbarItem::Navigation(n) => [&n.back, &n.forward, &n.reload].into_iter().flatten().collect(),
+                        _ => Vec::new(),
+                    };
+                    for s in shortcuts {
                         if let Some(k) = crate::keystroke::parse(&s.serialized).filter(|k| k.flags & crate::keystroke::COMMAND != 0) {
                             keys.insert(k.legacy());
                             keys.insert(k.modified_key());

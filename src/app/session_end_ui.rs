@@ -136,7 +136,6 @@ impl App {
             }
         }
         self.close_inline_questions_of(id);
-        self.workgroup_member_exited(id);
         // A git command's window ends its command here, and stays (R3).
         let short_lived = self.short_lived(id);
         self.git_command_ended(id);

@@ -44,6 +44,9 @@ pub(super) struct Instance {
     pub usage: HashMap<String, super::workgroup_toolbar_ui::UsageSlot>,
     /// Every command the person answered for or owns (`run::approved`): the only commands a runner starts.
     pub approved: std::collections::HashSet<String>,
+    /// The git poller, the changed-file lists and the Diff members' deferred launches (Task 6); None
+    /// when no member is in Diff mode and no item needs git (`WI:930-960`).
+    pub git: Option<super::workgroup_git_app::GitSide>,
 }
 
 impl Instance {
@@ -55,6 +58,11 @@ impl Instance {
     /// The config id `pane` is a peer-group member as.
     pub fn config_of(&self, pane: PaneId) -> Option<&str> {
         self.peers.iter().find(|(_, p)| *p == Some(pane)).map(|(c, _)| c.as_str())
+    }
+
+    /// Whether member `config` started (a peer with a pane, or a split or tab).
+    pub fn members_of(&self, config: &str) -> bool {
+        self.peers.iter().any(|(k, p)| k == config && p.is_some()) || self.non_peers.iter().any(|(k, _)| k == config)
     }
 
     /// The pane shown in the group's slot now.
@@ -83,6 +91,9 @@ pub(super) struct Instances {
     to_close: Vec<PaneId>,
     /// When a trigger last entered a workgroup on a session.
     recent: HashMap<PaneId, Instant>,
+    /// The one open pulldown (changed files, recent bases) and the one base field with the keyboard.
+    pub(super) menu: Option<super::workgroup_git_app::OpenMenu>,
+    pub(super) base_edit: Option<super::workgroup_git_app::BaseEdit>,
 }
 
 impl Instances {
@@ -248,6 +259,7 @@ impl App {
             torn_down: false,
             usage: HashMap::new(),
             approved: run::approved(&w),
+            git: super::workgroup_git_app::GitSide::for_workgroup(&w),
         };
         // config id -> the pane that hosts its children
         let mut hosts: HashMap<String, PaneId> = HashMap::from([(root.unique_identifier.clone(), pane)]);
@@ -268,8 +280,8 @@ impl App {
                 }
             };
             let Some(cfg) = w.session(config).cloned() else { continue };
-            // A Diff peer waits for changes (Task 6) and a Code Review peer for its prompt (Task 7).
-            if matches!(place, Place::Peer) && cfg.mode != Mode::Regular {
+            // A Code Review peer waits for its prompt (Task 7); a Diff member starts idle and waits for changes.
+            if matches!(place, Place::Peer) && cfg.mode == Mode::CodeReview {
                 inst.peers.push((config.clone(), None));
                 continue;
             }
@@ -295,6 +307,13 @@ impl App {
                     failed = true;
                     break;
                 }
+            }
+        }
+        // Every Diff member waits for changes before it runs (State A).
+        let diffs: Vec<String> = w.sessions.iter().filter(|c| c.mode == Mode::Diff && inst.members_of(&c.unique_identifier)).map(|c| c.unique_identifier.clone()).collect();
+        if let Some(git) = inst.git.as_mut() {
+            for d in diffs {
+                git.wait_for_changes(&d);
             }
         }
         if failed {
@@ -365,9 +384,12 @@ impl App {
                 }
             }
         }
-        let command = match self.plan_command(&cfg.command, "HEAD") {
-            Ok(c) => c,
-            Err(why) => {
+        // A Diff member has no program until git reports changes (`WI:1316-1385`).
+        let diff = cfg.mode == Mode::Diff;
+        let command = match (diff, self.plan_command(&cfg.command, "HEAD")) {
+            (true, _) => None,
+            (_, Ok(c)) => c,
+            (_, Err(why)) => {
                 self.banners.set("workgroup", why);
                 return Made::Skipped;
             }
@@ -387,7 +409,9 @@ impl App {
         self.start_extra_env = vec![format!("ITERM_WORKGROUP_ID={instance_id}")];
         self.start_command_override = command.clone();
         (self.start_object, self.start_from) = (crate::start_dir::Object::Pane, Some(leader));
-        let started = if command.is_none() && self.is_browser_profile(&profile) {
+        let started = if diff {
+            self.start_idle_pane(rect, guid.as_deref())
+        } else if command.is_none() && self.is_browser_profile(&profile) {
             let id = self.next_id;
             let ok = self.start_browser_pane(id, rect, &run::member_profile(&profile, &cfg.url_string));
             if ok {
@@ -448,14 +472,17 @@ impl App {
     /// `plan_command` (a Diff member through the Diff launcher), with the instance id for its
     /// environment. The one place a restart takes a member's command from.
     pub(super) fn workgroup_launch(&mut self, pane: PaneId) -> MemberLaunch {
-        let Some((instance, _config, base, template)) = self.workgroup_of(pane).and_then(|i| {
+        let Some((instance, config, base, template, diff)) = self.workgroup_of(pane).and_then(|i| {
             let config = i.config_of(pane).map(str::to_string).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.clone()))?;
             let cfg = i.workgroup.session(&config)?;
-            Some((i.id.clone(), config, i.git_base.clone(), cfg.command.clone()))
+            // A Diff member, or one with a changed-file selector, runs as the Diff launcher makes it.
+            let diff = !cfg.command.trim().is_empty() && (cfg.mode == Mode::Diff || i.git.as_ref().is_some_and(|g| g.selectors.contains_key(&config)));
+            Some((i.id.clone(), config, i.git_base.clone(), cfg.command.clone(), diff))
         }) else {
             return MemberLaunch::NotMember;
         };
-        match self.plan_command(&template, &base) {
+        let line = if diff { self.diff_launch_line(&instance, &config) } else { self.plan_command(&template, &base) };
+        match line {
             Ok(command) => MemberLaunch::Run { command, env: format!("ITERM_WORKGROUP_ID={instance}") },
             Err(why) => {
                 self.banners.set("workgroup", why);
@@ -486,17 +513,6 @@ impl App {
     pub(super) fn workgroup_member_ended(&mut self, pane: PaneId) {
         if let Some(id) = self.panes.get(&pane).and_then(|p| p.workgroup.clone()) {
             self.teardown_workgroup(&id, Some(pane));
-        }
-    }
-
-    /// A member's program ended: the same teardown, and a member that is not the leader goes too.
-    pub(super) fn workgroup_member_exited(&mut self, pane: PaneId) {
-        let leader = self.workgroup_of(pane).map(|i| i.leader);
-        // A leader hidden behind a shown peer has no slot to stay in: it ends with the rest.
-        let hidden_leader = leader == Some(pane) && self.pane_window_id(pane).is_none();
-        self.workgroup_member_ended(pane);
-        if leader.is_some_and(|l| l != pane) || hidden_leader {
-            self.workgroups.to_close.push(pane);
         }
     }
 
@@ -561,10 +577,11 @@ impl App {
     }
 
     /// Ends the members a teardown queued (once the closing pane's own close has finished).
-    pub(super) fn tick_workgroups(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn tick_workgroups(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
         self.usage_tick();
+        let due = self.workgroup_git_tick();
         if self.workgroups.to_close.is_empty() {
-            return;
+            return due;
         }
         for id in std::mem::take(&mut self.workgroups.to_close) {
             if self.panes.contains_key(&id) {
@@ -572,6 +589,7 @@ impl App {
             }
         }
         self.redraw();
+        due
     }
 
     /// The close confirmation's extra line when closing `panes` would take other members of a
@@ -831,11 +849,13 @@ mod tests {
         }
     }
 
-    /// Every pane close and every program exit reaches the teardown; the menu pick, the exit command and the close warning are wired.
+    /// Every pane close reaches the teardown; the menu pick, the exit command and the close warning are wired.
     #[test]
     fn the_hooks_are_wired() {
         assert!(MOD.contains("self.workgroup_member_ended(id);"));
-        assert!(include_str!("session_end_ui.rs").contains("self.workgroup_member_exited(id);"));
+        // A program ending is not a termination (`iTermSessionWillTerminate` is the close): a Diff member's
+        // command ends all the time and the group goes on.
+        assert!(!include_str!("session_end_ui.rs").contains("workgroup_member_exited"));
         assert!(include_str!("menu.rs").contains("\"exitWorkgroup:\" =>"));
         assert!(include_str!("menu.rs").contains("self.workgroup_picked(id)"));
         assert!(include_str!("close_ui.rs").contains("self.workgroup_close_warning("));

@@ -679,7 +679,7 @@ impl App {
         if self.tab_menu_picked(id, event_loop) {
             return;
         }
-        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) || self.workgroup_picked(id) {
+        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) || self.workgroup_picked(id) || self.workgroup_file_picked(id) {
             return;
         }
         if self.arrangement_picked(id) || self.window_list_picked(id) || self.archive_picked(id) {
