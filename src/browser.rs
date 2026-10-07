@@ -224,6 +224,8 @@ pub fn button_glyph(b: Button) -> char {
 }
 
 pub const GLYPH_DEV_NULL: char = '\u{E7B3}';
+/// The proxy indicator (Segoe Fluent "NetworkTower"; checklist item to confirm the glyph).
+pub const GLYPH_PROXY: char = '\u{E839}';
 pub const GLYPH_GLOBE: char = '\u{E774}';
 
 /// `BrowserTransitionType` (`BrowserHistory.swift:10-18`): how a visit began.
@@ -815,6 +817,8 @@ pub struct Geometry {
     /// Reload, or Stop while loading.
     pub reload: Rect,
     pub dev_null: Option<Rect>,
+    /// The proxy indicator, after the Dev Null one, while the browser proxy is on.
+    pub proxy: Option<Rect>,
     /// The address field with its mark.
     pub field: Rect,
     /// The favicon (a globe until one loads) at the field's left.
@@ -830,6 +834,7 @@ pub struct Geometry {
 pub enum Hit {
     Button(Button),
     DevNull,
+    Proxy,
     Indicator,
     Mark,
     Field,
@@ -837,6 +842,11 @@ pub enum Hit {
 
 /// The toolbar's parts across `bar`: square buttons the bar's height, the field between.
 pub fn geometry(bar: Rect, scale: f32, dev_null: bool) -> Geometry {
+    geometry_with(bar, scale, dev_null, false)
+}
+
+/// `geometry` with the proxy indicator (Task 8, P15) when `proxy` is set.
+pub fn geometry_with(bar: Rect, scale: f32, dev_null: bool, proxy: bool) -> Geometry {
     let side = bar.h.max(1.0);
     let gap = 4.0 * scale;
     let right = bar.x + bar.w;
@@ -850,6 +860,11 @@ pub fn geometry(bar: Rect, scale: f32, dev_null: bool) -> Geometry {
         x = r.x + r.w;
         r
     });
+    let px = proxy.then(|| {
+        let r = sq(x);
+        x = r.x + r.w;
+        r
+    });
     let menu_x = (right - side).max(x);
     let menu = Rect { x: menu_x, y: bar.y, w: (right - menu_x).max(0.0), h: bar.h };
     let fx = x + gap;
@@ -857,7 +872,7 @@ pub fn geometry(bar: Rect, scale: f32, dev_null: bool) -> Geometry {
     let indicator = Rect { x: field.x, y: field.y, w: field.h.min(field.w), h: field.h };
     let mark = Rect { x: indicator.x + indicator.w, y: field.y, w: (field.h * 0.8).min((field.w - indicator.w).max(0.0)), h: field.h };
     let text = Rect { x: mark.x + mark.w, y: field.y, w: (field.w - indicator.w - mark.w - gap).max(0.0), h: field.h };
-    Geometry { back, forward, reload, dev_null: dn, field, indicator, mark, text, menu }
+    Geometry { back, forward, reload, dev_null: dn, proxy: px, field, indicator, mark, text, menu }
 }
 
 /// The part of the toolbar under a point.
@@ -868,6 +883,9 @@ pub fn hit(g: &Geometry, x: f32, y: f32) -> Option<Hit> {
     }
     if g.dev_null.is_some_and(|r| r.contains(x, y)) {
         return Some(Hit::DevNull);
+    }
+    if g.proxy.is_some_and(|r| r.contains(x, y)) {
+        return Some(Hit::Proxy);
     }
     if g.indicator.w > 0.0 && g.indicator.contains(x, y) {
         return Some(Hit::Indicator);

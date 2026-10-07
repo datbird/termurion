@@ -97,7 +97,13 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 /// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
 /// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
 /// (`browser_pages::route`). No host objects.
-pub(super) fn browser_setup(dev_null: bool) -> ViewSetup {
+pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
+    // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
+    // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
+    let mut filters = vec!["iterm2-about:*".to_string()];
+    if adblock {
+        filters.push("*".to_string());
+    }
     ViewSetup {
         user_agent: Some(String::new()),
         devtools: true,
@@ -106,7 +112,7 @@ pub(super) fn browser_setup(dev_null: bool) -> ViewSetup {
         in_private: dev_null,
         web_message: true,
         scripts: vec![crate::browser_pages::SHIM_JS.to_string()],
-        resource_filters: vec!["iterm2-about:*".to_string()],
+        resource_filters: filters,
         ..Default::default()
     }
 }
@@ -219,8 +225,9 @@ impl App {
                 (bv.id, bv.pending_url.clone().unwrap_or_else(|| io.url.clone()))
             };
             let sink = self.web_envs.sink();
+            let adblock = self.adblock_on();
             let Some(env) = self.web_env(browser::store_of(io.dev_null)) else { return };
-            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null), sink);
+            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock), sink);
             view.navigate_tandem(&url);
             view.set_zoom(if io.zoom > 0.0 { io.zoom / 100.0 } else { 1.0 });
             if focus_now {
@@ -370,6 +377,7 @@ impl App {
                 // A page that really loaded is one history row (an error page is not).
                 if *ok {
                     self.browser_record_visit(pane);
+                    self.adblock_inject(pane);
                 }
                 self.browser_name(pane);
             }
@@ -470,7 +478,7 @@ impl App {
             return Vec::new();
         }
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        let g = browser::geometry(bar, self.scale(), dev_null);
+        let g = self.browser_geom(bar, dev_null);
         let row_h = self.cell().1 + 6.0 * self.scale();
         browser::suggestion_rects(&g, row_h, bv.bar.suggestions.len(), area.y + area.h)
     }
@@ -496,7 +504,7 @@ impl App {
         let (bar_bg, field_bg, dim, line) = (mix(bg, fg, 0.08), mix(bg, fg, 0.16), mix(bg, fg, 0.45), mix(bg, fg, 0.3));
         let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans, clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
-        let g = browser::geometry(bar, scale, io.dev_null);
+        let g = self.browser_geom(bar, io.dev_null);
         frame.quads.push(Quad { rect: bar, color: scene::rgba(bar_bg, 1.0) });
         frame.quads.push(Quad { rect: Rect { y: bar.y + bar.h - 1.0, h: 1.0, ..bar }, color: scene::rgba(line, 1.0) });
         let centered = |r: Rect| (r.x + (r.w - cw) / 2.0, r.y + (r.h - ch) / 2.0);
@@ -516,6 +524,10 @@ impl App {
         if let Some(r) = g.dev_null {
             let (x, y) = centered(r);
             frame.rows.push(row(x, y, vec![span(browser::GLYPH_DEV_NULL.to_string(), fg, true)], r));
+        }
+        if let Some(r) = g.proxy {
+            let (x, y) = centered(r);
+            frame.rows.push(row(x, y, vec![span(browser::GLYPH_PROXY.to_string(), fg, true)], r));
         }
         frame.quads.push(Quad { rect: g.field, color: scene::rgba(field_bg, 1.0) });
         // The favicon, a globe until one loads.
@@ -590,7 +602,7 @@ impl App {
             return true;
         }
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        let g = browser::geometry(bar, self.scale(), dev_null);
+        let g = self.browser_geom(bar, dev_null);
         match browser::hit(&g, x, y) {
             Some(Hit::Field) => {
                 let keys = self.browser_views.get(&pane).is_some_and(|b| b.bar.keys);
@@ -638,7 +650,7 @@ impl App {
         let (x, y) = self.cursor;
         let Some((bar, _)) = self.browser_bar_rects(pane) else { return true };
         let io = self.panes.get(&pane).and_then(|p| p.browser_io()).cloned().unwrap_or_default();
-        let g = browser::geometry(bar, self.scale(), io.dev_null);
+        let g = self.browser_geom(bar, io.dev_null);
         let still = browser::hit(&g, x, y).is_some_and(|h| h == press.hit || (matches!(h, Hit::Button(Button::Reload)) && matches!(press.hit, Hit::Button(Button::Reload | Button::Stop))));
         if !still {
             return true;
@@ -648,6 +660,10 @@ impl App {
                 // Reload and Stop share a place: the one the page's state shows now.
                 let b = if matches!(b, Button::Reload | Button::Stop) { if io.loading { Button::Stop } else { Button::Reload } } else { b };
                 self.browser_button(pane, b, (g.menu.x, bar.y + bar.h));
+            }
+            Hit::Proxy => {
+                let label = self.browser_proxy_label().unwrap_or_default();
+                self.banners.set("action", format!("Browser proxy is on: {label}"));
             }
             Hit::DevNull => self.banners.set("action", "Dev Null Mode: your browsing activity is not being saved. No history, bookmarks or other data are stored."),
             Hit::Mark => {
@@ -800,7 +816,7 @@ impl App {
                     }
                     if let Some((bar, _)) = self.browser_bar_rects(pane) {
                         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-                        let g = browser::geometry(bar, self.scale(), dev_null);
+                        let g = self.browser_geom(bar, dev_null);
                         let r = if b == Button::Back { g.back } else { g.forward };
                         self.show_browser_history(pane, b == Button::Back, (r.x, bar.y + bar.h));
                     }
@@ -811,7 +827,8 @@ impl App {
             }
             self.browser_poll_suggest(pane);
         }
-        due
+        let ad_due = self.adblock_tick();
+        [due, ad_due].into_iter().flatten().min()
     }
 
     /// The suggestion service's answer, when it has come: cached by query and shown if it is
@@ -1185,8 +1202,8 @@ mod tests {
         assert_eq!(browser::window_cells(0, 5000), (1, 1250));
         assert_eq!(browser::store_of(true), webhost::Store::BrowserDevNull);
         // The views are made in the Dev Null store InPrivate, and never with a bridge or host objects.
-        assert!(browser_setup(true).in_private && !browser_setup(false).in_private);
-        let s = browser_setup(false);
+        assert!(browser_setup(true, false).in_private && !browser_setup(false, false).in_private);
+        let s = browser_setup(false, false);
         assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
     }
 
@@ -1232,10 +1249,12 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(!prod.contains("navigate_to_string") && !prod.contains("HostObject"));
         for dev_null in [false, true] {
-            let s = browser_setup(dev_null);
+            let s = browser_setup(dev_null, false);
             assert!(s.web_message, "the local pages post messages; the host judges each by its source");
             assert_eq!(s.scripts, vec![crate::browser_pages::SHIM_JS.to_string()], "the shim is the only injected script");
             assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
+            let on = browser_setup(dev_null, true);
+            assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
         }
     }
 

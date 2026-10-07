@@ -69,6 +69,7 @@ pub mod svg_icon;
 pub mod browser;
 pub mod browser_db;
 pub mod browser_pages;
+pub mod adblock;
 #[cfg(windows)]
 pub mod svg_raster_win;
 pub mod seltext;

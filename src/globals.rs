@@ -88,6 +88,12 @@ const BOUNDS: &[(&str, Bound)] = &[
     ("WebUserAgent", Bound::Text { max: 512, ok: |c| !c.is_control() }),
     ("SearchCommand", Bound::Text { max: crate::browser::MAX_URL, ok: |c| !crate::inert_files::is_hidden(c) && !c.is_whitespace() }),
     ("SearchSuggestURL", Bound::Text { max: crate::browser::MAX_URL, ok: |c| !crate::inert_files::is_hidden(c) && !c.is_whitespace() }),
+    // 13x Task 8 (P14, P15): the proxy host is what `adblock::proxy_host_ok` accepts, so no import,
+    // script or snapshot can store text that is more than a host; the port is a port; the list URL
+    // has no white space or hidden character.
+    ("BrowserProxyHost", Bound::Text { max: 253, ok: |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '[' | ']' | ':') }),
+    ("BrowserProxyPort", Bound::Int { min: 1, max: 65535 }),
+    ("AdblockListURL", Bound::Text { max: crate::browser::MAX_URL, ok: |c| !crate::inert_files::is_hidden(c) && !c.is_whitespace() }),
 ];
 
 /// `value` as `key`'s bound allows; None when it is out of bounds (the default applies).

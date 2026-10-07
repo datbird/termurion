@@ -5362,6 +5362,51 @@ default = ""
 help = "Location of the WebView2 Runtime folder if it cannot be auto-detected (a fixed-version runtime)."
 
 [[setting]]
+key = "WebKitAdblockEnabled"
+tab = "Advanced"
+section = "Web Browser"
+label = "Enable ad blocking in the web browser?"
+type = "bool"
+default = false
+help = "Enable ad blocking in the web browser?\nWhen enabled, downloads and applies ad blocking rules from the configured URL."
+
+[[setting]]
+key = "AdblockListURL"
+tab = "Advanced"
+section = "Web Browser"
+label = "URL for ad blocking filter list"
+type = "string"
+default = "https://easylist-downloads.adblockplus.org/easylist_content_blocker.json"
+help = "URL for ad blocking filter list\nThis should be a JSON file in WebKit content blocker format. The list is downloaded automatically every 24 hours."
+
+[[setting]]
+key = "BrowserProxyEnabled"
+tab = "Advanced"
+section = "Web Browser"
+label = "Enable HTTP proxy for web browser?"
+type = "bool"
+default = false
+help = "Enable HTTP proxy for web browser?\nWhen enabled, routes all browser traffic through the configured proxy server."
+
+[[setting]]
+key = "BrowserProxyHost"
+tab = "Advanced"
+section = "Web Browser"
+label = "HTTP proxy hostname or IP address"
+type = "string"
+default = "127.0.0.1"
+help = "HTTP proxy hostname or IP address\nThe address of the proxy server to use for browser connections."
+
+[[setting]]
+key = "BrowserProxyPort"
+tab = "Advanced"
+section = "Web Browser"
+label = "HTTP proxy port"
+type = "int"
+default = 8118
+help = "HTTP proxy port\nThe port number of the proxy server."
+
+[[setting]]
 key = "BrowserProfiles"
 tab = "Advanced"
 section = "Experimental Features"

@@ -346,6 +346,10 @@ impl Env {
                 f(r);
             }
         };
+        // The one argument that may reach the browser is the proxy's, exactly as `proxy_args` makes it.
+        if !crate::adblock::proxy_args_ok(&opts.args) {
+            return finish(&done, Err("the environment arguments were refused".to_string()));
+        }
         scrub_env();
         if let Err(e) = prepare_folder(folder) {
             return finish(&done, Err(e));

@@ -156,6 +156,7 @@ mod git_ui;
 mod toolbelt_ui;
 mod tool_web_ui;
 mod browser_app;
+mod adblock_app;
 mod browser_db_app;
 mod web_popover_app;
 mod toolbelt_tools_ui;
@@ -1661,6 +1662,8 @@ pub struct App {
     /// The web view of every browser pane (13x Task 5). App-wide: keyed by pane, and a view is
     /// re-parented when its pane changes windows.
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
+    /// The ad blocker: rules, the list download and its schedule (13x Task 8; app-wide).
+    adblock: adblock_app::Adblock,
     /// The pane that was focused at the last placement, to tell a pane change from none.
     focus_seen: crate::browser::FocusSeen<WindowId>,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
@@ -2619,6 +2622,7 @@ pub fn run() {
         web_focus_held: None,
         tool_view_ids: HashMap::new(),
         browser_views: HashMap::new(),
+        adblock: adblock_app::Adblock::default(),
         focus_seen: Default::default(),
         browser_url_override: None,
     };
