@@ -1279,7 +1279,7 @@ impl SettingsWindow {
                                 continue;
                             }
                             if s.key == "Triggers" {
-                                if crate::settings_triggers::editor(ui, profile) {
+                                if crate::settings_triggers::editor(ui, profile, &crate::settings_triggers::workgroup_choices(&globals.string(crate::workgroup::KEY))) {
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;

@@ -17,6 +17,19 @@ const MAX_INSTANCES: usize = 8;
 /// A trigger enters one workgroup per session this often at most (P3).
 const TRIGGER_GAP: Duration = Duration::from_secs(5);
 
+/// A trigger's request, held until the trigger pass is over (iTerm2's callback scheduler: entering
+/// spawns sessions, which must not happen inside the pass that matched the output).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum TriggerWork {
+    /// Enter Workgroup: the stored parameter (empty: the first workgroup by name).
+    Enter(String),
+    /// Exit Workgroup, leader-only or from any member.
+    Exit(bool),
+}
+
+/// Requests held at most (a trigger's text printed in a loop cannot grow the queue).
+const MAX_TRIGGER_QUEUE: usize = 16;
+
 /// One entered workgroup.
 pub(super) struct Instance {
     pub id: String,
@@ -93,6 +106,8 @@ pub(super) struct Instances {
     to_close: Vec<PaneId>,
     /// When a trigger last entered a workgroup on a session.
     recent: HashMap<PaneId, Instant>,
+    /// Trigger requests to run after the pass (Task 8), each session and request once.
+    trigger_due: Vec<(PaneId, TriggerWork)>,
     /// The one open pulldown (changed files, recent bases) and the one base field with the keyboard.
     pub(super) menu: Option<super::workgroup_git_app::OpenMenu>,
     pub(super) base_edit: Option<super::workgroup_git_app::BaseEdit>,
@@ -605,8 +620,53 @@ impl App {
         crate::rlog!("workgroup exited: instance {}", crate::dlog::name(id));
     }
 
+    /// Holds a trigger's Enter or Exit Workgroup until the pass is over (`EWT:performAction`, the
+    /// trigger callback scheduler). One of each per session, and a short queue.
+    pub(super) fn queue_workgroup_trigger(&mut self, pane: PaneId, work: TriggerWork) {
+        let due = &mut self.workgroups.trigger_due;
+        if due.len() < MAX_TRIGGER_QUEUE && !due.iter().any(|(p, w)| *p == pane && *w == work) {
+            due.push((pane, work));
+        }
+    }
+
+    /// The queued triggers, after the pass. Enter is a no-op in a session that is already in a
+    /// workgroup (iTerm2: the menu disables itself there too) and never runs a command unasked:
+    /// `enter_workgroup` asks for every trigger (`needs_ask`) and the answer enters. Exit leaves
+    /// from any member, or, leader-only, from the leader alone (`PS:triggerSideEffectExitWorkgroupLeaderOnly:`).
+    fn run_workgroup_triggers(&mut self) {
+        for (pane, work) in std::mem::take(&mut self.workgroups.trigger_due) {
+            if !self.panes.contains_key(&pane) {
+                continue;
+            }
+            match work {
+                TriggerWork::Enter(param) => {
+                    if self.workgroup_of(pane).is_some() {
+                        continue;
+                    }
+                    let list: Vec<(String, String)> = self.workgroup_model.workgroups.iter().map(|w| (w.unique_identifier.clone(), w.name.clone())).collect();
+                    let Some(id) = crate::triggers::effective_workgroup(&param, &list) else { continue };
+                    // A question for this very entry is already up or waiting: the person has not answered, so no second one.
+                    let pending = scripts_alerts::waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, |t| {
+                        matches!(t, scripts_alerts::Then::EnterWorkgroup { workgroup, pane: p, .. } if *p == pane && workgroup.unique_identifier == id)
+                    });
+                    if !pending {
+                        self.enter_workgroup(&id, pane, Mechanism::Trigger);
+                    }
+                }
+                TriggerWork::Exit(leader_only) => {
+                    let Some(inst) = self.workgroup_of(pane) else { continue };
+                    if leader_only && inst.leader != pane {
+                        continue;
+                    }
+                    self.exit_workgroup(pane);
+                }
+            }
+        }
+    }
+
     /// Ends the members a teardown queued (once the closing pane's own close has finished).
     pub(super) fn tick_workgroups(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
+        self.run_workgroup_triggers();
         self.usage_tick();
         let due = self.workgroup_git_tick();
         if self.workgroups.to_close.is_empty() {
@@ -889,6 +949,26 @@ mod tests {
         assert!(include_str!("menu.rs").contains("self.workgroup_picked(id)"));
         assert!(include_str!("close_ui.rs").contains("self.workgroup_close_warning("));
         assert!(include_str!("scripts_alerts.rs").contains("Then::EnterWorkgroup { workgroup, pane, how, approved } =>"));
+    }
+
+    /// Task 8: a trigger only queues; the queue runs after the pass, an Enter never skips the question
+    /// (`enter_workgroup` asks for every trigger), and an Exit never runs from outside a workgroup.
+    #[test]
+    fn workgroup_triggers_queue_and_ask() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        let queue = &production[production.find("fn run_workgroup_triggers").unwrap()..production.find("/// Ends the members a teardown queued").unwrap()];
+        assert!(queue.contains("self.enter_workgroup(&id, pane, Mechanism::Trigger)"), "{queue}");
+        assert!(!queue.contains("enter_workgroup_now"), "a trigger never enters unasked");
+        assert!(queue.contains("inst.leader != pane"), "leader-only exits only from the leader");
+        assert!(queue.contains("self.workgroup_of(pane).is_some()"), "Enter is a no-op in a session already in a workgroup");
+        let ui = include_str!("triggers_ui.rs");
+        assert!(ui.contains("self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::Enter(param))"));
+        assert!(!ui.contains("enter_workgroup("), "the pass itself never enters");
+        assert!(production.contains("run_workgroup_triggers();\n        self.usage_tick();"), "after the pass, in the workgroup tick");
+        // An imported or dynamic profile's trigger of these classes arrives off (13w).
+        assert!(crate::triggers::IMPORT_OFF.contains(&"iTermEnterWorkgroupTrigger") && crate::triggers::IMPORT_OFF.contains(&"iTermExitWorkgroupTrigger"));
+        // Any entry from a trigger asks: the trust ruling.
+        assert!(crate::workgroup_run::needs_ask(crate::workgroup::Source::Person, crate::workgroup_run::Mechanism::Trigger, 1));
     }
 
     /// The peer swap: only `Layout::replace`, never a close or a reopen of layout space, never the

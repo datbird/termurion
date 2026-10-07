@@ -74,6 +74,11 @@ pub enum TriggerRequest {
     /// placeholder or an empty one opens without an account, `pwm_prompt::trigger_param`).
     OpenPasswordManager(String),
     Unavailable { trigger: usize, title: String, milestone: u8 },
+    /// Enter Workgroup: the stored parameter as is (empty: the first workgroup by name; the app
+    /// resolves it). The app enters after the trigger pass, never inside it.
+    EnterWorkgroup { param: String },
+    /// Exit Workgroup, from any session of the workgroup or, leader-only, from its leader.
+    ExitWorkgroup { leader_only: bool },
     /// Invoke Script Function: the raw parameter, the match's groups (a group that did not
     /// match ""), their UTF-16 ranges in the line, the line's text and its row.
     Invoke { invocation: String, captures: Vec<String>, ranges: Vec<(usize, usize)>, input: String, line: i64 },
@@ -188,7 +193,9 @@ pub(crate) struct Captures<'a> {
 /// An action whose parameter is used as written: Invoke Script Function's is the invocation
 /// (`iTermRPCTrigger.m:62`, no backreferences or interpolation).
 pub(crate) fn raw_parameter(action: &str) -> bool {
-    action == "iTermRPCTrigger"
+    // The workgroup actions name a stored id: no capture, escape or expression of the matched
+    // output ever becomes part of it (iTerm2 reads `param` as stored, `EWT:performAction`).
+    matches!(action, "iTermRPCTrigger" | "iTermEnterWorkgroupTrigger" | "iTermExitWorkgroupTrigger")
 }
 
 /// A trigger with its compiled pattern (or the pattern's error).
@@ -1013,6 +1020,20 @@ impl Screen {
                 Flow::Done
             }
             "StopTrigger" => Flow::StopAll,
+            // The two workgroup actions need a live session: a stored Session Ended match (an
+            // import can carry one) does nothing. The parameter is the stored id, bounded.
+            "iTermEnterWorkgroupTrigger" | "iTermExitWorkgroupTrigger" if !triggers::allows_match_type(info.class, self.triggers.list[i].trigger.match_type) => Flow::Done,
+            "iTermEnterWorkgroupTrigger" => {
+                let param = self.triggers.list[i].trigger.parameter.clone();
+                if param.chars().count() > triggers::MAX_WORKGROUP_ID {
+                    return Flow::Done;
+                }
+                ask(self, TriggerRequest::EnterWorkgroup { param })
+            }
+            "iTermExitWorkgroupTrigger" => {
+                let leader_only = self.triggers.list[i].trigger.extra.get("eventParams").and_then(|v| v.as_table()).and_then(|t| t.get(triggers::LEADER_ONLY_KEY)).is_some_and(|v| v.as_bool().or_else(|| v.as_integer().map(|n| n != 0)).unwrap_or(false));
+                ask(self, TriggerRequest::ExitWorkgroup { leader_only })
+            }
             "AlertTrigger" => ask(self, TriggerRequest::Alert { trigger: i, text: value.to_string() }),
             "iTermUserNotificationTrigger" => ask(self, TriggerRequest::Notify { trigger: i, text: value.to_string() }),
             "BellTrigger" => {
@@ -1683,6 +1704,35 @@ mod tests {
             Request::Trigger(t) => Some(t),
             _ => None,
         }).collect()
+    }
+
+    /// The workgroup triggers carry only what was stored: output never reaches the id, a Session
+    /// Ended match does nothing, and the leader-only flag is read from the event params.
+    #[test]
+    fn workgroup_trigger_requests_carry_only_stored_text() {
+        let mut s = one(r"go (\S+)", "iTermEnterWorkgroupTrigger", "builtin.claudeCode", b"go \x1b[31mevil\r\n");
+        assert_eq!(requests(&mut s), vec![TriggerRequest::EnterWorkgroup { param: "builtin.claudeCode".into() }]);
+        let mut s = one(r"go (\S+)", "iTermEnterWorkgroupTrigger", "\\1", b"go evil\r\n");
+        assert_eq!(requests(&mut s), vec![TriggerRequest::EnterWorkgroup { param: "\\1".into() }], "a capture in the parameter is never substituted");
+        let mut s = one("go", "iTermEnterWorkgroupTrigger", "", b"go\r\n");
+        assert_eq!(requests(&mut s), vec![TriggerRequest::EnterWorkgroup { param: String::new() }]);
+        let mut s = one("go", "iTermEnterWorkgroupTrigger", &"x".repeat(200), b"go\r\n");
+        assert!(requests(&mut s).is_empty(), "an id longer than any real one is dropped");
+        let mut s = one("go", "iTermExitWorkgroupTrigger", "", b"go\r\n");
+        assert_eq!(requests(&mut s), vec![TriggerRequest::ExitWorkgroup { leader_only: false }]);
+        let mut t = trig("go", "iTermExitWorkgroupTrigger", "", false);
+        t.extra.insert("eventParams".into(), toml::Value::Table(toml::Table::from_iter([("leaderOnly".to_string(), toml::Value::Boolean(true))])));
+        let mut s = Screen::with_scrollback(40, 6, 100);
+        s.set_triggers(vec![t], TriggerPrefs::default());
+        s.feed(b"go\r\n");
+        assert_eq!(requests(&mut s), vec![TriggerRequest::ExitWorkgroup { leader_only: true }]);
+        // A stored Session Ended match has no live session to act on.
+        let mut t = trig("", "iTermEnterWorkgroupTrigger", "a", false);
+        t.match_type = crate::trigger_events::EventKind::SessionEnded.match_type();
+        let mut s = Screen::with_scrollback(40, 6, 100);
+        s.set_triggers(vec![t], TriggerPrefs::default());
+        s.fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
+        assert!(requests(&mut s).is_empty());
     }
 
     #[test]

@@ -64,6 +64,7 @@ impl App {
             TriggerRequest::Bounce { .. } => "bounce",
             TriggerRequest::SendText(_) => "send",
             TriggerRequest::RunCommand(_) => "run",
+            TriggerRequest::EnterWorkgroup { .. } | TriggerRequest::ExitWorkgroup { .. } => "workgroup",
             _ => "other",
         };
         crate::dlog!("trigger fired in pane {}: {}", pane, class);
@@ -145,6 +146,9 @@ impl App {
                 let scope = super::script_ui::ScopeSpec::Session { pane, frame };
                 self.invoke(&invocation, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::Report(super::script_ui::TRIGGER.into()));
             }
+            // Held until the pass is over; Enter asks the person before any command runs.
+            TriggerRequest::EnterWorkgroup { param } => self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::Enter(param)),
+            TriggerRequest::ExitWorkgroup { leader_only } => self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::Exit(leader_only)),
             TriggerRequest::ParameterError { trigger, text } => self.tell_once(pane, &format!("parameter-{trigger}"), &format!("Error in Trigger Parameter: {text}")),
             TriggerRequest::TooSlow => self.tell_once(pane, "too-slow", "Triggers are taking too long and were skipped for some output."),
             TriggerRequest::PatternTooSlow { trigger } => self.tell_once(pane, &format!("pattern-slow-{trigger}"), &format!("The pattern of trigger {} took too long to match, so the trigger was turned off for this session.", trigger + 1)),

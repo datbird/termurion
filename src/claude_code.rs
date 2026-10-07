@@ -19,6 +19,9 @@ pub const COMPLETED_KEY: &str = "NoSyncClaudeCodeIntegrationCompleted";
 pub const DIR_KEY: &str = "NoSyncClaudeCodeConfigDirPath";
 /// The hooks cache: set by a successful install, cleared by an uninstall.
 pub const HOOKS_KEY: &str = "NoSyncClaudeCodeHooksInstalled";
+/// The triggers cache: true when every eligible profile has both workgroup triggers
+/// (`iTermUserDefaults.m:31`, no `NoSync` prefix, R13xy-10).
+pub const TRIGGERS_INSTALLED_KEY: &str = "ClaudeCodeTriggersInstalled";
 /// Set by "_Yes" and "Never" on the announcement.
 pub const WATCHER_OFF_KEY: &str = "NoSyncDisableClaudeWatcher";
 /// The repair prompt's silence identifier.
@@ -57,7 +60,10 @@ pub const WATCHER_BUTTONS: [&str; 3] = ["_Yes", "Never", "Ask Later"];
 
 /// The settings the person is asked about: "\u{2022} ..." lines.
 pub fn bullets(settings: &Path) -> String {
-    format!("\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to {}\n\u{2022} The toolbelt is shown", settings.display())
+    format!(
+        "\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to {}\n\u{2022} The toolbelt is shown\n\u{2022} A Claude Code workgroup is added to Tandem\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick",
+        settings.display()
+    )
 }
 
 pub fn write_failed(path: &Path, e: impl std::fmt::Display) -> String {
@@ -82,11 +88,11 @@ pub fn missing_exe(exe: &Path) -> String {
 }
 
 pub fn uninstall_text(path: &Path) -> String {
-    format!("This removes the cc-status hook from {}. You can reinstall any time using Tandem > Install Claude Code Integration.", path.display())
+    format!("This removes the cc-status hook from {}, the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile. You can reinstall any time using Tandem > Install Claude Code Integration.", path.display())
 }
 
 pub fn remove_failed(detail: &str) -> String {
-    format!("{detail} Continue anyway? cc-status will keep running until you fix the underlying issue and try again.")
+    format!("{detail} Continue removing the workgroup and triggers anyway? cc-status will keep running until you fix the underlying issue and try again.")
 }
 
 pub fn broken_text(path: &Path) -> String {
@@ -99,7 +105,7 @@ pub fn hook_command(exe: &Path) -> String {
     format!("\"{}\"", exe.to_string_lossy().replace('\\', "/"))
 }
 
-/// What the three install steps are, and what each says.
+/// What the install steps are, and what each says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     EnablePythonApi,
@@ -107,6 +113,10 @@ pub enum Step {
     EnableCookie,
     InstallHook,
     ShowToolbelt,
+    /// Adds the Claude Code workgroup to Tandem's workgroups (iTerm2's step 4).
+    InstallWorkgroup,
+    /// Adds Enter/Exit Workgroup triggers to the profiles the person picks (iTerm2's step 5).
+    InstallTriggers,
 }
 
 impl Step {
@@ -116,13 +126,15 @@ impl Step {
             Step::EnableCookie => "Enable Session Cookies",
             Step::InstallHook => "Install Hook",
             Step::ShowToolbelt => "Show Toolbelt",
+            Step::InstallWorkgroup => "Install Workgroup",
+            Step::InstallTriggers => "Auto-Enter Workgroup",
         }
     }
 
     pub fn button(self) -> &'static str {
         match self {
             Step::EnablePythonApi | Step::EnableCookie => "Enable",
-            Step::InstallHook => "Install",
+            Step::InstallHook | Step::InstallWorkgroup | Step::InstallTriggers => "Install",
             Step::ShowToolbelt => "Show",
         }
     }
@@ -133,6 +145,8 @@ impl Step {
             Step::EnableCookie => "The hook runs in a new process that has to prove it belongs to a Tandem session. Session cookies let it do that.\n\nWith cookies on, every new session gets a secret that lets a program running in it use Tandem\u{2019}s Python API without a prompt. Click Enable and confirm to turn them on. Setup cannot go on without them: Cancel leaves them as they are, and you can close setup.",
             Step::InstallHook => "Install a Claude Code hook that lets Tandem detect Claude\u{2019}s state (working, waiting, idle) and display it in the Session Status tool.\n\nThis adds a hook to your Claude Code settings that runs automatically as Claude works.",
             Step::ShowToolbelt => "Show the toolbelt and enable the Session Status tool. The toolbelt appears on the right side of your terminal window.\n\nYou can toggle the toolbelt from View > Toolbelt > Show Toolbelt, or with the shortcut Win+Shift+B.",
+            Step::InstallWorkgroup => "Install the Claude Code workgroup, which groups your main Claude session with two peer sessions: a diff viewer and a code-review session. You can switch between them with one click.\n\nYou can customize this layout later in Settings > Arrangements > Workgroups.",
+            Step::InstallTriggers => "Pick the terminal profiles where you run claude. Tandem will add triggers so the Claude Code workgroup is entered automatically when claude starts and exited when it stops.\n\nWithout this, you can still enter the workgroup manually via Shell > Workgroups > Claude Code.",
         }
     }
 }
@@ -404,9 +418,10 @@ pub fn runnable_path(path: &str) -> bool {
     !is_network(path) && crate::localfs::is_local_file(Path::new(path))
 }
 
-/// "Known" (`MC:24-39`): the hooks cache or the completed flag says the integration is in.
-pub fn known(hooks_cache: bool, completed: bool) -> bool {
-    hooks_cache || completed
+/// "Known" (`MC:24-39`, `CCM:integrationKnownToHaveExisted`): any artifact (the hooks cache, the
+/// workgroup, the triggers cache) or the completed flag says the integration is in.
+pub fn known(hooks_cache: bool, workgroup_installed: bool, triggers_installed: bool, completed: bool) -> bool {
+    hooks_cache || workgroup_installed || triggers_installed || completed
 }
 
 /// Which of Install, Reinstall and Uninstall are enabled (muda cannot hide an item).
@@ -425,8 +440,115 @@ pub fn steps(api_enabled: bool, cookie_on: bool) -> Vec<Step> {
     if !cookie_on {
         v.push(Step::EnableCookie);
     }
-    v.extend([Step::InstallHook, Step::ShowToolbelt]);
+    // Every other step is always listed so a person sees what is already done (`CCO:714-721`).
+    v.extend([Step::InstallHook, Step::ShowToolbelt, Step::InstallWorkgroup, Step::InstallTriggers]);
     v
+}
+
+/// The install steps already done when the setup opens, so they show their check mark
+/// (`CCO:744-749`). The hook and the toolbelt are marked by the app from their own state.
+pub fn pre_completed(workgroup_installed: bool, triggers_installed: bool) -> Vec<Step> {
+    let mut v = Vec::new();
+    if workgroup_installed {
+        v.push(Step::InstallWorkgroup);
+    }
+    if triggers_installed {
+        v.push(Step::InstallTriggers);
+    }
+    v
+}
+
+// ---- the workgroup triggers (`CCO:315-333`, `CCO:2111-2137`)
+
+/// The job both triggers watch.
+const JOB: &str = "claude";
+
+fn trigger_value(action: &str, parameter: &str, event: crate::trigger_events::EventKind, params: toml::Table) -> toml::Value {
+    let mut t = crate::triggers::Trigger {
+        regex: String::new(),
+        action: action.into(),
+        parameter: parameter.into(),
+        instant: false,
+        enabled: true,
+        name: String::new(),
+        job: String::new(),
+        match_type: event.match_type(),
+        extra: toml::Table::new(),
+    }
+    .to_table();
+    t.insert("eventParams".into(), toml::Value::Table(params));
+    toml::Value::Table(t)
+}
+
+/// "Job Started: claude" enters the Claude Code workgroup (`makeEnterWorkgroupTrigger`).
+pub fn enter_trigger() -> toml::Value {
+    let params = toml::Table::from_iter([("jobName".to_string(), toml::Value::String(JOB.into()))]);
+    trigger_value("iTermEnterWorkgroupTrigger", crate::workgroup::claude_code::WORKGROUP, crate::trigger_events::EventKind::JobStarted, params)
+}
+
+/// "Job Ended: claude" exits it, from the leader only: a peer's own claude ending or reloading
+/// must not tear the workgroup down (`makeExitWorkgroupTrigger`).
+pub fn exit_trigger() -> toml::Value {
+    let params = toml::Table::from_iter([("jobName".to_string(), toml::Value::String(JOB.into())), (crate::triggers::LEADER_ONLY_KEY.to_string(), toml::Value::Boolean(true))]);
+    trigger_value("iTermExitWorkgroupTrigger", "", crate::trigger_events::EventKind::JobEnded, params)
+}
+
+fn job_of(t: &toml::Table) -> Option<&str> {
+    t.get("eventParams")?.as_table()?.get("jobName")?.as_str()
+}
+
+/// One of the triggers this installer manages: an Enter trigger for the Claude Code workgroup, or
+/// an Exit trigger on the "claude" job, with or without the leader-only flag so an older install is
+/// still recognized (and replaced on a reinstall, removed on an uninstall). A hand-made Exit trigger
+/// on another job is not ours.
+pub fn is_ours(trigger: &toml::Value) -> bool {
+    let Some(t) = trigger.as_table() else { return false };
+    match t.get("action").and_then(toml::Value::as_str) {
+        Some("iTermEnterWorkgroupTrigger") => t.get("parameter").and_then(toml::Value::as_str) == Some(crate::workgroup::claude_code::WORKGROUP),
+        Some("iTermExitWorkgroupTrigger") => job_of(t) == Some(JOB),
+        _ => false,
+    }
+}
+
+/// The list without our triggers; every other entry, whatever it is, stays as stored.
+pub fn strip_ours(triggers: &[toml::Value]) -> Vec<toml::Value> {
+    triggers.iter().filter(|t| !is_ours(t)).cloned().collect()
+}
+
+/// A profile's stored `Triggers` with our two added after the older copies are stripped (so a
+/// reinstall upgrades in place). None when the list would pass the most a profile keeps: the
+/// write point would cut the new ones off, so nothing is written.
+pub fn with_ours(stored: Option<&toml::Value>) -> Option<toml::Value> {
+    let existing: Vec<toml::Value> = stored.and_then(toml::Value::as_array).cloned().unwrap_or_default();
+    let mut list = strip_ours(&existing);
+    if list.len() + 2 > crate::triggers::MAX_TRIGGERS {
+        return None;
+    }
+    list.push(enter_trigger());
+    list.push(exit_trigger());
+    Some(toml::Value::Array(list))
+}
+
+/// Whether a stored `Triggers` holds both of ours as installed: the Enter trigger, and an Exit
+/// trigger on "claude" with the leader-only flag (a pre-flag install reads as not installed, so a
+/// reinstall upgrades it).
+pub fn has_both(stored: Option<&toml::Value>) -> bool {
+    let list = stored.and_then(toml::Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let enter = list.iter().any(|t| t.as_table().is_some_and(|t| t.get("action").and_then(toml::Value::as_str) == Some("iTermEnterWorkgroupTrigger") && t.get("parameter").and_then(toml::Value::as_str) == Some(crate::workgroup::claude_code::WORKGROUP)));
+    let exit = list.iter().any(|t| {
+        t.as_table().is_some_and(|t| {
+            t.get("action").and_then(toml::Value::as_str) == Some("iTermExitWorkgroupTrigger")
+                && job_of(t) == Some(JOB)
+                && t.get("eventParams").and_then(toml::Value::as_table).and_then(|p| p.get(crate::triggers::LEADER_ONLY_KEY)).and_then(toml::Value::as_bool) == Some(true)
+        })
+    });
+    enter && exit
+}
+
+/// Whether the installer may write a profile's triggers: a saved profile, or a dynamic one only
+/// when it is rewritable (the others are regenerated from their file, so an edit would be lost).
+pub fn eligible(profile: &crate::profile::Profile) -> bool {
+    !profile.bool(crate::dynamic_profiles::DYNAMIC_KEY) || profile.bool(crate::dynamic_profiles::REWRITABLE_KEY)
 }
 
 /// Whether the announcement may show (`CWT:13-213`).
@@ -766,14 +888,95 @@ mod tests {
 
     #[test]
     fn menu_rule_follows_iterm2() {
-        assert!(!known(false, false));
+        assert!(!known(false, false, false, false));
         assert_eq!(menu_enabled(false), [true, false, false]);
-        assert!(known(true, false) && known(false, true));
+        assert!(known(true, false, false, false) && known(false, false, false, true));
+        assert!(known(false, true, false, false) && known(false, false, true, false), "any artifact counts, as iTerm2's anyArtifactInstalled");
         assert_eq!(menu_enabled(true), [false, true, true]);
         let titles: Vec<_> = steps(false, true).iter().map(|s| (s.title(), s.button())).collect();
-        assert_eq!(titles, [("Enable Python API", "Enable"), ("Install Hook", "Install"), ("Show Toolbelt", "Show")]);
+        assert_eq!(titles, [("Enable Python API", "Enable"), ("Install Hook", "Install"), ("Show Toolbelt", "Show"), ("Install Workgroup", "Install"), ("Auto-Enter Workgroup", "Install")]);
         assert!(!Step::EnablePythonApi.description().contains("cookie"), "the API step turns nothing else on");
-        assert_eq!(bullets(Path::new(r"C:\c\settings.json")), "\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to C:\\c\\settings.json\n\u{2022} The toolbelt is shown");
+        assert_eq!(bullets(Path::new(r"C:\c\settings.json")), "\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to C:\\c\\settings.json\n\u{2022} The toolbelt is shown\n\u{2022} A Claude Code workgroup is added to Tandem\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick");
+    }
+
+    /// Review Focus 7: iTerm2's steps 4 and 5, the two trigger dictionaries and the matching that
+    /// installs and removes them (`CCO:26-75`, `CCO:315-333`, `CCO:714-749`, `CCO:2111-2137`).
+    #[test]
+    fn claude_code_steps_follow_iterm2() {
+        use crate::trigger_events::EventKind;
+        assert_eq!((Step::InstallWorkgroup.title(), Step::InstallWorkgroup.button()), ("Install Workgroup", "Install"));
+        assert_eq!(
+            Step::InstallWorkgroup.description(),
+            "Install the Claude Code workgroup, which groups your main Claude session with two peer sessions: a diff viewer and a code-review session. You can switch between them with one click.\n\nYou can customize this layout later in Settings > Arrangements > Workgroups."
+        );
+        assert_eq!((Step::InstallTriggers.title(), Step::InstallTriggers.button()), ("Auto-Enter Workgroup", "Install"));
+        assert!(Step::InstallTriggers.description().starts_with("Pick the terminal profiles where you run claude. Tandem will add triggers"));
+        assert!(Step::InstallTriggers.description().ends_with("Shell > Workgroups > Claude Code."));
+        assert!(!Step::InstallTriggers.description().contains("iTerm2"));
+        let tail = [Step::InstallHook, Step::ShowToolbelt, Step::InstallWorkgroup, Step::InstallTriggers];
+        assert_eq!(steps(true, true), tail);
+        assert_eq!(steps(false, false)[..2], [Step::EnablePythonApi, Step::EnableCookie]);
+        assert_eq!(steps(false, true)[0], Step::EnablePythonApi);
+        assert_eq!(pre_completed(true, false), [Step::InstallWorkgroup]);
+        assert_eq!(pre_completed(false, true), [Step::InstallTriggers]);
+        assert_eq!(pre_completed(true, true), [Step::InstallWorkgroup, Step::InstallTriggers]);
+        assert!(pre_completed(false, false).is_empty());
+        assert_eq!(TRIGGERS_INSTALLED_KEY, "ClaudeCodeTriggersInstalled");
+        assert!(bullets(Path::new("s.json")).contains("A Claude Code workgroup is added to Tandem\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick"));
+        assert!(remove_failed("x").contains("Continue removing the workgroup and triggers anyway?"));
+        assert!(uninstall_text(Path::new("s.json")).contains("the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile."));
+
+        let enter = crate::triggers::Trigger::from_table(enter_trigger().as_table().unwrap());
+        assert_eq!((enter.action.as_str(), enter.regex.as_str(), enter.match_type, enter.parameter.as_str()), ("iTermEnterWorkgroupTrigger", "", EventKind::JobStarted.match_type(), "builtin.claudeCode"));
+        assert!(enter.enabled && !enter.instant);
+        let params = enter.extra.get("eventParams").and_then(|v| v.as_table()).unwrap();
+        assert_eq!(params.get("jobName").and_then(|v| v.as_str()), Some("claude"));
+        assert!(params.get("leaderOnly").is_none());
+        let exit = crate::triggers::Trigger::from_table(exit_trigger().as_table().unwrap());
+        assert_eq!((exit.action.as_str(), exit.match_type, exit.parameter.as_str()), ("iTermExitWorkgroupTrigger", EventKind::JobEnded.match_type(), ""));
+        let params = exit.extra.get("eventParams").and_then(|v| v.as_table()).unwrap();
+        assert_eq!((params.get("jobName").and_then(|v| v.as_str()), params.get("leaderOnly").and_then(|v| v.as_bool())), (Some("claude"), Some(true)));
+
+        // Matching: ours with or without the flag; not a hand-made one.
+        assert!(is_ours(&enter_trigger()) && is_ours(&exit_trigger()));
+        let mut old_exit = exit_trigger();
+        old_exit.as_table_mut().unwrap().get_mut("eventParams").unwrap().as_table_mut().unwrap().remove("leaderOnly");
+        assert!(is_ours(&old_exit), "a pre-leaderOnly Exit trigger is still ours");
+        let mut vim = exit_trigger();
+        vim.as_table_mut().unwrap().get_mut("eventParams").unwrap().as_table_mut().unwrap().insert("jobName".into(), "vim".into());
+        assert!(!is_ours(&vim), "an Exit trigger on job vim");
+        let mut other = enter_trigger();
+        other.as_table_mut().unwrap().insert("parameter".into(), "something-else".into());
+        assert!(!is_ours(&other), "an Enter trigger for another workgroup");
+        assert!(!is_ours(&toml::Value::Integer(3)));
+        let mut bell = enter_trigger();
+        bell.as_table_mut().unwrap().insert("action".into(), "BellTrigger".into());
+        assert!(!is_ours(&bell));
+
+        let mine = toml::Value::Table(toml::Table::from_iter([("action".to_string(), "BellTrigger".into()), ("regex".to_string(), "x".into())]));
+        let list = [mine.clone(), enter_trigger(), vim.clone(), old_exit.clone(), toml::Value::Integer(7)];
+        assert_eq!(strip_ours(&list), vec![mine.clone(), vim.clone(), toml::Value::Integer(7)], "everything else stays as stored, in order");
+
+        // A reinstall upgrades in place: the older copies go and the two come back once.
+        let stored = toml::Value::Array(vec![mine.clone(), old_exit.clone()]);
+        let again = with_ours(Some(&stored)).unwrap();
+        assert_eq!(again.as_array().unwrap().iter().filter(|t| is_ours(t)).count(), 2);
+        assert_eq!(again.as_array().unwrap()[0], mine);
+        assert!(has_both(Some(&again)));
+        assert_eq!(with_ours(Some(&again)), Some(again.clone()), "idempotent");
+        assert!(!has_both(Some(&stored)) && !has_both(None));
+        assert!(!has_both(Some(&toml::Value::Array(vec![enter_trigger(), old_exit]))), "a pre-flag install reads as not installed");
+        // A list at the most a profile keeps is not written (the write point would cut ours off).
+        let full = toml::Value::Array((0..crate::triggers::MAX_TRIGGERS - 1).map(|_| mine.clone()).collect());
+        assert_eq!(with_ours(Some(&full)), None);
+
+        // Dynamic profiles only when rewritable.
+        let mut p = crate::profile::Profile::from_values(Default::default());
+        assert!(eligible(&p));
+        p.set("Is Dynamic Profile", toml::Value::Boolean(true));
+        assert!(!eligible(&p));
+        p.set("Rewritable", toml::Value::Boolean(true));
+        assert!(eligible(&p));
     }
 
     #[test]
@@ -815,8 +1018,8 @@ mod tests {
     #[test]
     fn texts_follow_iterm2() {
         let p = Path::new(r"C:\c\settings.json");
-        assert_eq!(uninstall_text(p), "This removes the cc-status hook from C:\\c\\settings.json. You can reinstall any time using Tandem > Install Claude Code Integration.");
-        assert!(remove_failed("Boom.").starts_with("Boom. Continue anyway? cc-status will keep running"));
+        assert_eq!(uninstall_text(p), "This removes the cc-status hook from C:\\c\\settings.json, the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile. You can reinstall any time using Tandem > Install Claude Code Integration.");
+        assert_eq!(remove_failed("Boom."), "Boom. Continue removing the workgroup and triggers anyway? cc-status will keep running until you fix the underlying issue and try again.");
         assert!(broken_text(p).starts_with("Tandem\u{2019}s cc-status hook is no longer in C:\\c\\settings.json. This usually means"));
         assert_eq!(REMOVE_FAILED_HEADING, "Couldn\u{2019}t Remove Hooks");
         assert_eq!(HELP_URL, "https://iterm2.com/claude-code-integration.html");
@@ -828,10 +1031,11 @@ mod tests {
     /// without it, so setup never shows every step done while it is off.
     #[test]
     fn steps_follow_the_api_and_the_cookie() {
-        assert_eq!(steps(false, false), [Step::EnablePythonApi, Step::EnableCookie, Step::InstallHook, Step::ShowToolbelt]);
-        assert_eq!(steps(true, false), [Step::EnableCookie, Step::InstallHook, Step::ShowToolbelt], "API on and cookie off: the cookie is asked for");
-        assert_eq!(steps(false, true), [Step::EnablePythonApi, Step::InstallHook, Step::ShowToolbelt]);
-        assert_eq!(steps(true, true), [Step::InstallHook, Step::ShowToolbelt]);
+        let tail = [Step::InstallHook, Step::ShowToolbelt, Step::InstallWorkgroup, Step::InstallTriggers];
+        assert_eq!(steps(false, false), [&[Step::EnablePythonApi, Step::EnableCookie][..], &tail].concat());
+        assert_eq!(steps(true, false), [&[Step::EnableCookie][..], &tail].concat(), "API on and cookie off: the cookie is asked for");
+        assert_eq!(steps(false, true), [&[Step::EnablePythonApi][..], &tail].concat());
+        assert_eq!(steps(true, true), tail);
         assert_eq!((Step::EnableCookie.title(), Step::EnableCookie.button()), ("Enable Session Cookies", "Enable"));
         assert!(Step::EnableCookie.description().contains("cookie") && Step::EnableCookie.description().contains("Cancel"));
         assert_eq!((COOKIE_HEADING, COOKIE_BUTTONS), ("Enable Session Cookies?", ["Enable", "Cancel"]));

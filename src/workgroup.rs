@@ -1062,6 +1062,12 @@ impl Model {
     pub fn get(&self, id: &str) -> Option<&Workgroup> {
         self.workgroups.iter().find(|w| w.unique_identifier == id)
     }
+
+    /// The stored value failed to decode and is kept as it is until an edit replaces it: a writer
+    /// that is not the person's own edit (the Claude Code installer) must not be that edit.
+    pub fn is_undecodable(&self) -> bool {
+        self.kept_undecodable
+    }
 }
 
 #[cfg(test)]

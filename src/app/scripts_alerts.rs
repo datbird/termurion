@@ -98,6 +98,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeRepair => Answer::Button(1),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
+        // Keep It: a closed window never removes a workgroup the person edited.
+        Then::ClaudeEditedWorkgroup => Answer::Button(0),
         // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
         Then::EnterWorkgroup { .. } | Then::UsageReport { .. } => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
@@ -242,6 +244,8 @@ pub(super) enum Then {
     /// "Couldn't Remove Hooks": Continue (0) goes on and clears the integration's flags; Cancel
     /// (1) stops. A closed window cancels (P10).
     ClaudeHooksFailed,
+    /// Uninstall found a "Claude Code" workgroup that is not the one the installer adds.
+    ClaudeEditedWorkgroup,
     /// "Disable the Python API?" after an uninstall: Leave Enabled (0) or Disable (1). A closed
     /// window leaves it enabled (P10).
     ClaudeDisableApi,
@@ -684,7 +688,7 @@ impl App {
                     self.ssh_upload_confirmed(pane, files, to);
                 }
             }
-            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie => self.claude_answered(&then, index),
+            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie | Then::ClaudeEditedWorkgroup => self.claude_answered(&then, index),
             Then::RunOpenedFile(launch) => {
                 if index == 0 {
                     self.open_runs.push(launch);
@@ -868,6 +872,11 @@ mod tests {
     #[test]
     fn closing_couldnt_remove_hooks_cancels() {
         assert_eq!(on_close(&Then::ClaudeHooksFailed, 0), Answer::Button(1), "Cancel, not Continue");
+    }
+
+    #[test]
+    fn closing_the_edited_workgroup_question_keeps_it() {
+        assert_eq!(on_close(&Then::ClaudeEditedWorkgroup, 1), Answer::Button(0), "Keep It, not Remove");
     }
 
     #[test]

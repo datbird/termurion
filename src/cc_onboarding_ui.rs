@@ -20,7 +20,56 @@ pub enum OnboardAct {
     Learn,
     /// Close on the last step, the window's close box, or Ctrl+W.
     Closed,
+    /// The Auto-Enter picker's Install: the guids of the profiles chosen (never empty).
+    Picked(Vec<String>),
 }
+
+/// A profile the Auto-Enter picker lists. The name is shown as given: the app passes it through
+/// `display_text`, so a profile named by an import cannot carry a control or bidi character.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickRow {
+    pub guid: String,
+    pub name: String,
+    pub dynamic: bool,
+}
+
+/// The Auto-Enter step's profile list: a check box per profile, none chosen at first (the person
+/// opts each profile in; a profile they never named is never written).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picker {
+    pub rows: Vec<PickRow>,
+    pub chosen: Vec<bool>,
+}
+
+impl Picker {
+    pub fn new(rows: Vec<PickRow>) -> Picker {
+        let chosen = vec![false; rows.len()];
+        Picker { rows, chosen }
+    }
+
+    pub fn toggle(&mut self, i: usize) {
+        if let Some(c) = self.chosen.get_mut(i) {
+            *c = !*c;
+        }
+    }
+
+    pub fn select_all(&mut self, on: bool) {
+        self.chosen.iter_mut().for_each(|c| *c = on);
+    }
+
+    /// The chosen profiles' guids, in list order.
+    pub fn selected(&self) -> Vec<String> {
+        self.rows.iter().zip(&self.chosen).filter(|(_, c)| **c).map(|(r, _)| r.guid.clone()).collect()
+    }
+
+    /// Install needs at least one profile.
+    pub fn can_install(&self) -> bool {
+        self.chosen.iter().any(|c| *c)
+    }
+}
+
+pub const PICKER_TITLE: &str = "Install Auto-Enter Triggers";
+pub const PICKER_BODY: &str = "Pick the profiles you\u{2019}ll run claude in. We\u{2019}ll add Enter/Exit Workgroup triggers to each one so the Claude Code workgroup is entered automatically.";
 
 /// The mark in front of a step's line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,11 +107,13 @@ pub struct Flow {
     pub done: Vec<Step>,
     pub current: usize,
     pub intro: bool,
+    /// The profile picker, open over the Auto-Enter step.
+    pub picker: Option<Picker>,
 }
 
 impl Flow {
     pub fn new(steps: Vec<Step>) -> Flow {
-        Flow { steps, done: Vec::new(), current: 0, intro: true }
+        Flow { steps, done: Vec::new(), current: 0, intro: true, picker: None }
     }
 
     pub fn step(&self) -> Step {
@@ -165,6 +216,12 @@ impl OnboardingWindow {
         }
     }
 
+    /// Opens the Auto-Enter profile picker.
+    pub fn pick_profiles(&mut self, rows: Vec<PickRow>) {
+        self.flow.picker = Some(Picker::new(rows));
+        self.host.request_redraw();
+    }
+
     /// Whether a step is marked done.
     pub fn is_done(&self, step: Step) -> bool {
         self.flow.is_done(step)
@@ -185,6 +242,8 @@ impl OnboardingWindow {
             egui::CentralPanel::default().show(ui, |ui| {
                 if flow.intro {
                     intro(ui, flow, settings, &mut acts);
+                } else if flow.picker.is_some() {
+                    picker_page(ui, flow, &mut acts);
                 } else {
                     page(ui, flow, &mut acts);
                 }
@@ -211,6 +270,50 @@ fn intro(ui: &mut egui::Ui, flow: &mut Flow, settings: &std::path::Path, acts: &
             flow.intro = false;
         }
     });
+}
+
+fn picker_page(ui: &mut egui::Ui, flow: &mut Flow, acts: &mut Vec<OnboardAct>) {
+    let Some(picker) = flow.picker.as_mut() else { return };
+    let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    ui.heading(PICKER_TITLE);
+    ui.add_space(6.0);
+    ui.label(PICKER_BODY);
+    ui.add_space(6.0);
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+        ui.horizontal(|ui| {
+            // Left to right: Cancel, Install. Return is never Install: nothing is chosen by default.
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+            if ui.add_enabled(picker.can_install(), egui::Button::new("Install")).clicked() {
+                acts.push(OnboardAct::Picked(picker.selected()));
+                close = true;
+            }
+        });
+        ui.separator();
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.horizontal(|ui| {
+                if ui.small_button("Select All").clicked() {
+                    picker.select_all(true);
+                }
+                if ui.small_button("Select None").clicked() {
+                    picker.select_all(false);
+                }
+            });
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for i in 0..picker.rows.len() {
+                    let label = if picker.rows[i].dynamic { format!("{} (dynamic)", picker.rows[i].name) } else { picker.rows[i].name.clone() };
+                    let mut on = picker.chosen[i];
+                    if ui.checkbox(&mut on, label).changed() {
+                        picker.toggle(i);
+                    }
+                }
+            });
+        });
+    });
+    if close {
+        flow.picker = None;
+    }
 }
 
 fn page(ui: &mut egui::Ui, flow: &mut Flow, acts: &mut Vec<OnboardAct>) {
@@ -308,5 +411,38 @@ mod tests {
         f.mark_done(Step::InstallHook);
         assert_eq!(f.done, [Step::InstallHook]);
         assert_eq!((f.next_label(), f.mark(0)), ("Close", Mark::Done));
+    }
+
+    /// The Auto-Enter picker: nothing chosen at first, Install needs a choice, and only the chosen
+    /// profiles come back, in list order.
+    #[test]
+    fn the_auto_enter_picker_starts_empty() {
+        let row = |g: &str, d: bool| PickRow { guid: g.into(), name: g.to_lowercase(), dynamic: d };
+        let mut p = Picker::new(vec![row("A", false), row("B", true), row("C", false)]);
+        assert!(!p.can_install() && p.selected().is_empty(), "no profile is written unless the person picks it");
+        p.toggle(2);
+        p.toggle(0);
+        assert!(p.can_install());
+        assert_eq!(p.selected(), ["A", "C"]);
+        p.toggle(2);
+        assert_eq!(p.selected(), ["A"]);
+        p.select_all(true);
+        assert_eq!(p.selected(), ["A", "B", "C"]);
+        p.select_all(false);
+        assert!(!p.can_install());
+        p.toggle(9);
+        let mut f = Flow::new(vec![Step::InstallTriggers]);
+        assert!(f.picker.is_none());
+        f.picker = Some(p);
+        assert_eq!((f.step(), f.next_label()), (Step::InstallTriggers, "Close"));
+        // The new steps finish like the old ones: Next waits for the check mark.
+        let mut g = Flow::new(claude_code::steps(true, true));
+        g.next();
+        g.next();
+        assert_eq!((g.step(), g.next_enabled()), (Step::InstallWorkgroup, false));
+        g.mark_done(Step::InstallWorkgroup);
+        assert!(g.next_enabled());
+        g.next();
+        assert_eq!((g.step(), g.next_label()), (Step::InstallTriggers, "Close"));
     }
 }

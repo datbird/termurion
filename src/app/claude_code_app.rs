@@ -39,6 +39,19 @@ fn repair_ask(path: &Path) -> Ask {
     ask(cc::BROKEN_HEADING, &cc::broken_text(path), &[cc::REINSTALL, cc::NOT_NOW], Some(cc::REPAIR_ID), Kind::Permanent, Then::ClaudeRepair)
 }
 
+/// "Remove the Claude Code workgroup?" when the person's own copy differs from the installer's:
+/// a closed window keeps it (P8).
+fn edited_workgroup_ask() -> Ask {
+    ask(
+        "Remove the Claude Code Workgroup?",
+        "The \u{201c}Claude Code\u{201d} workgroup in your settings is not the one the installer adds: you or an import changed it. Keep it, or remove it too?",
+        &["Keep It", "Remove"],
+        None,
+        Kind::Persistent,
+        Then::ClaudeEditedWorkgroup,
+    )
+}
+
 /// "Enable Session Cookies?": a closed window cancels.
 fn cookie_ask() -> Ask {
     ask(cc::COOKIE_HEADING, cc::COOKIE_TEXT, &cc::COOKIE_BUTTONS, None, Kind::Persistent, Then::ClaudeCookie)
@@ -76,7 +89,7 @@ impl App {
 
     /// The integration is installed as far as the menu knows.
     fn claude_known(&self) -> bool {
-        cc::known(self.globals.bool(cc::HOOKS_KEY), self.globals.bool(cc::COMPLETED_KEY))
+        cc::known(self.globals.bool(cc::HOOKS_KEY), self.claude_workgroup_installed(), self.globals.bool(cc::TRIGGERS_INSTALLED_KEY), self.globals.bool(cc::COMPLETED_KEY))
     }
 
     /// Enables Install, Reinstall and Uninstall by `known` in every window's menu bar.
@@ -97,6 +110,11 @@ impl App {
             w.focus();
             return;
         }
+        if self.gpu.is_none() {
+            return;
+        }
+        // The cached triggers flag is read again from the profiles first: they may have changed since launch.
+        self.reconcile_triggers_cache();
         let Some(g) = self.gpu.as_ref() else { return };
         let shown = match self.claude_paths() {
             Ok((_, file)) => file,
@@ -126,6 +144,9 @@ impl App {
                 w.mark_done(step);
             }
         }
+        for step in cc::pre_completed(self.claude_workgroup_installed(), self.globals.bool(cc::TRIGGERS_INSTALLED_KEY)) {
+            w.mark_done(step);
+        }
     }
 
     /// Each pass: a setup an answer asked for opens, and the open setup window shows what has
@@ -154,6 +175,7 @@ impl App {
         for act in acts {
             match act {
                 OnboardAct::DoIt(step) => self.claude_do_step(step),
+                OnboardAct::Picked(guids) => self.claude_install_triggers_picked(&guids),
                 OnboardAct::Learn => {
                     if let Err(e) = super::semantic_ui::shell_open(cc::HELP_URL, false) {
                         self.banners.set("action", format!("Could not open {}: {e}", cc::HELP_URL));
@@ -192,6 +214,23 @@ impl App {
                 }
                 Err(e) => self.ask_scripts(failed_ask(&e)),
             },
+            Step::InstallWorkgroup => match self.install_workgroup() {
+                Ok(()) => {
+                    if let Some(w) = self.cc_onboarding.as_mut() {
+                        w.mark_done(Step::InstallWorkgroup);
+                    }
+                }
+                Err(e) => self.ask_scripts(failed_ask(&e)),
+            },
+            // The profile picker opens in the setup window; its Install button does the work.
+            Step::InstallTriggers => {
+                let rows = self.claude_trigger_profiles();
+                if rows.is_empty() {
+                    self.ask_scripts(failed_ask("No profile can take the triggers: a dynamic profile has to be marked rewritable first."));
+                } else if let Some(w) = self.cc_onboarding.as_mut() {
+                    w.pick_profiles(rows);
+                }
+            }
             Step::ShowToolbelt => {
                 // Shown when hidden, the Session Status tool added when absent; never toggled off.
                 if !self.belt.visible {
@@ -259,6 +298,9 @@ impl App {
     /// The hook is gone (or the person went on anyway): the flags clear, the menu follows, and
     /// with the API on it is offered off.
     pub(super) fn claude_uninstalled(&mut self) {
+        // The workgroup and the triggers go with the hook (`CCM:finishUninstall`).
+        self.uninstall_workgroup();
+        self.uninstall_triggers();
         self.globals.set(cc::COMPLETED_KEY, toml::Value::Boolean(false));
         self.globals.set(cc::HOOKS_KEY, toml::Value::Boolean(false));
         self.save_globals();
@@ -349,6 +391,8 @@ impl App {
         match (then, index) {
             (Then::ClaudeUninstall, 0) => self.claude_uninstall_confirmed(),
             (Then::ClaudeHooksFailed, 0) => self.claude_uninstalled(),
+            // Remove: the person's edited copy goes too, on their answer.
+            (Then::ClaudeEditedWorkgroup, 1) => self.remove_claude_workgroup(),
             (Then::ClaudeDisableApi, 1) => self.claude_disable_api(),
             (Then::ClaudeRepair, 0) => self.claude_install_due = true,
             // Enable: the one place the cookie is turned on, and only by the person's answer.
@@ -357,6 +401,176 @@ impl App {
                 self.claude_set_cookie(next);
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    /// The workgroup the installer adds is in Tandem's workgroups (`workgroupAlreadyInstalled`).
+    fn claude_workgroup_installed(&self) -> bool {
+        self.workgroup_model.get(crate::workgroup::claude_code::WORKGROUP).is_some()
+    }
+
+    /// Install Workgroup (`installWorkgroupIfNeeded`): adds the Claude Code workgroup unless one with
+    /// its id is there. A copy the person edited, or an import's, is never replaced. Nothing is added
+    /// over a saved list Tandem could not read (the add would replace it).
+    pub(super) fn install_workgroup(&mut self) -> Result<(), String> {
+        if self.claude_workgroup_installed() {
+            return Ok(());
+        }
+        if self.workgroup_model.is_undecodable() {
+            return Err("Your saved workgroups could not be read, so the Claude Code workgroup was not added. Fix them in Settings > Arrangements > Workgroups first.".into());
+        }
+        if self.workgroup_model.workgroups.len() >= crate::workgroup::MAX_WORKGROUPS {
+            return Err("There are too many workgroups to add another. Remove one in Settings > Arrangements > Workgroups first.".into());
+        }
+        // Tandem's own constant, added by the person's click: theirs, as the menu's New Workgroup is.
+        self.workgroup_model.add(crate::workgroup::claude_code::config());
+        self.workgroup_model.save(&mut self.globals);
+        if !self.claude_workgroup_installed() {
+            return Err("The Claude Code workgroup could not be stored.".into());
+        }
+        self.save_globals();
+        self.menus_dirty = true;
+        self.refresh_claude_menu();
+        Ok(())
+    }
+
+    /// Uninstall's workgroup step (`uninstallWorkgroup`): the installer's own copy goes; one the person
+    /// or an import changed is asked about, and a closed question keeps it (P8).
+    pub(super) fn uninstall_workgroup(&mut self) {
+        let Some(w) = self.workgroup_model.get(crate::workgroup::claude_code::WORKGROUP) else { return };
+        if *w == crate::workgroup::claude_code::config() {
+            self.remove_claude_workgroup();
+        } else {
+            self.ask_scripts(edited_workgroup_ask());
+        }
+    }
+
+    pub(super) fn remove_claude_workgroup(&mut self) {
+        self.workgroup_model.remove(crate::workgroup::claude_code::WORKGROUP);
+        self.workgroup_model.save(&mut self.globals);
+        self.save_globals();
+        self.menus_dirty = true;
+        self.refresh_claude_menu();
+    }
+
+    /// The profiles the installer may write triggers into: saved ones, and dynamic ones only when
+    /// rewritable (their file is rewritten through the one write-back). Bonjour hosts and browser
+    /// profiles never run triggers, so they are not offered.
+    fn claude_trigger_profiles(&self) -> Vec<crate::cc_onboarding_ui::PickRow> {
+        self.store
+            .profiles
+            .iter()
+            .filter(|p| cc::eligible(p) && !self.store.transient.contains(&p.guid()) && !crate::browser::is_browser(&p.string("Custom Command")))
+            .map(|p| crate::cc_onboarding_ui::PickRow { guid: p.guid(), name: crate::profile_list::display_text(&p.name()), dynamic: p.bool(crate::dynamic_profiles::DYNAMIC_KEY) })
+            .collect()
+    }
+
+    /// The picker's Install: both triggers go into each chosen profile after the older copies are
+    /// stripped (`addClaudeWorkgroupTriggers`), through `Profile::set` (the one write point) and, for a
+    /// dynamic profile, the write-back queue. The step is done once every chosen profile holds them.
+    fn claude_install_triggers_picked(&mut self, guids: &[String]) {
+        let mut done = Vec::new();
+        let mut full = Vec::new();
+        for guid in guids {
+            let Some(p) = self.store.get_mut(guid).filter(|p| cc::eligible(p)) else { continue };
+            let stored = p.get("Triggers");
+            match cc::with_ours(stored.as_ref()) {
+                Some(list) => {
+                    p.set("Triggers", list);
+                    if cc::has_both(p.get("Triggers").as_ref()) {
+                        done.push(guid.clone());
+                    } else {
+                        full.push(crate::profile_list::display_text(&p.name()));
+                    }
+                }
+                None => full.push(crate::profile_list::display_text(&p.name())),
+            }
+        }
+        self.claude_triggers_written(&done);
+        // Session copies that override the triggers do not follow their profile: they get the pair too.
+        let copies: Vec<String> = self.store.sessions.iter().filter(|s| done.contains(&s.original_guid()) && !cc::has_both(s.profile.get("Triggers").as_ref())).map(|s| s.profile.guid()).collect();
+        for copy in copies {
+            let stored = self.store.get(&copy).and_then(|p| p.get("Triggers"));
+            if let Some(list) = cc::with_ours(stored.as_ref()) {
+                self.store.set_session(&copy, &[("Triggers".to_string(), Some(list))]);
+            }
+        }
+        self.refresh_panes();
+        self.reconcile_triggers_cache();
+        if !full.is_empty() {
+            self.ask_scripts(failed_ask(&format!("These profiles have too many triggers to add two more: {}.", full.join(", "))));
+        }
+        if full.is_empty() && !done.is_empty() {
+            if let Some(w) = self.cc_onboarding.as_mut() {
+                w.mark_done(Step::InstallTriggers);
+            }
+        }
+        self.refresh_claude_menu();
+    }
+
+    /// Saved, followed by the sessions, and the dynamic files queued (`dynamic_edited` ignores the rest).
+    fn claude_triggers_written(&mut self, guids: &[String]) {
+        for guid in guids {
+            self.dynamic_edited(guid);
+        }
+        self.store.merge_sessions();
+        self.save_due = Some(Instant::now() + SAVE_DELAY);
+    }
+
+    /// Uninstall's triggers step (`uninstallTriggers`): ours out of every profile the installer could
+    /// write (a non-rewritable dynamic one is regenerated from its file, so it is skipped) and out of
+    /// every session copy; nothing else in any list moves. The cache is recomputed.
+    pub(super) fn uninstall_triggers(&mut self) {
+        let mut changed = Vec::new();
+        for p in self.store.profiles.iter_mut().filter(|p| cc::eligible(p)) {
+            let Some(stored) = p.get("Triggers") else { continue };
+            let Some(list) = stored.as_array() else { continue };
+            let kept = cc::strip_ours(list);
+            if kept.len() != list.len() {
+                p.set("Triggers", toml::Value::Array(kept));
+                changed.push(p.guid());
+            }
+        }
+        self.claude_triggers_written(&changed);
+        let copies: Vec<(String, Vec<toml::Value>)> = self
+            .store
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                let stored = s.profile.get("Triggers")?;
+                let list = stored.as_array()?;
+                let kept = cc::strip_ours(list);
+                (kept.len() != list.len()).then(|| (s.profile.guid(), kept))
+            })
+            .collect();
+        for (copy, kept) in copies {
+            self.store.set_session(&copy, &[("Triggers".to_string(), Some(toml::Value::Array(kept)))]);
+        }
+        self.refresh_panes();
+        self.reconcile_triggers_cache();
+        self.refresh_claude_menu();
+    }
+
+    /// `triggersInstalledOnDisk`: every eligible profile holds both triggers, and there is one.
+    fn triggers_installed_in_profiles(&self) -> bool {
+        let mut any = false;
+        for p in self.store.profiles.iter().filter(|p| cc::eligible(p) && !self.store.transient.contains(&p.guid())) {
+            any = true;
+            if !cc::has_both(p.get("Triggers").as_ref()) {
+                return false;
+            }
+        }
+        any
+    }
+
+    /// Reseeds the cached flag the menu reads (`reconcileTriggersCache`).
+    pub(super) fn reconcile_triggers_cache(&mut self) {
+        let on = self.triggers_installed_in_profiles();
+        if self.globals.bool(cc::TRIGGERS_INSTALLED_KEY) != on {
+            self.globals.set(cc::TRIGGERS_INSTALLED_KEY, toml::Value::Boolean(on));
+            self.save_globals();
         }
     }
 }
@@ -385,6 +599,7 @@ mod tests {
         assert_eq!(closes_to(&disable_api_ask()), "Leave Enabled");
         assert_eq!(closes_to(&repair_ask(p)), "Not Now");
         assert_eq!(closes_to(&cookie_ask()), "Cancel");
+        assert_eq!(closes_to(&edited_workgroup_ask()), "Keep It", "a closed window never removes the person's edited workgroup");
         let a = cookie_ask();
         assert_eq!((a.spec.heading.as_str(), a.spec.labels.clone(), a.spec.id), ("Enable Session Cookies?", vec!["Enable".to_string(), "Cancel".to_string()], None));
     }
@@ -397,7 +612,7 @@ mod tests {
         assert_eq!(a.spec.id, None, "never silenced");
         let a = remove_failed_ask("Could not read x.");
         assert_eq!((a.spec.heading.as_str(), a.spec.labels.clone()), ("Couldn\u{2019}t Remove Hooks", vec!["Continue".to_string(), "Cancel".to_string()]));
-        assert!(a.spec.text.starts_with("Could not read x. Continue anyway?"));
+        assert!(a.spec.text.starts_with("Could not read x. Continue removing the workgroup and triggers anyway?"));
         let a = disable_api_ask();
         assert_eq!((a.spec.heading.as_str(), a.spec.labels.clone(), a.spec.id), ("Disable the Python API?", vec!["Leave Enabled".to_string(), "Disable".to_string()], None));
         // The repair prompt is silenceable for good, but never with Reinstall.
