@@ -2876,6 +2876,41 @@ mod probe {
         p.finish();
     }
 
+    /// Task 8 (review I1, I2, I3): a receiving view takes a replay. Its focused field gets the text once
+    /// and one line break from Enter; a masked field, a password field and a focus on the host of a
+    /// closed shadow root are refused by the receiving guard, so nothing is replayed there. (One
+    /// probe view is the receiver; the sender's side is `browser_keys`' pure model.) Needs the
+    /// console session; `Emulation.setFocusEmulationEnabled` is not used: if an unfocused target
+    /// drops the input, this test shows it and the decision is revisited (m13x2-rulings.txt).
+    #[test]
+    #[ignore]
+    fn broadcast_types_into_a_second_view() {
+        let page_html = "<!doctype html><html><body><textarea id=t autofocus></textarea><input id=m type=text style=\"-webkit-text-security:disc\"><input id=p type=password><div id=h></div><script>const r=document.getElementById('h').attachShadow({mode:'closed'});const i=document.createElement('input');r.appendChild(i);window.__ci=i;</script></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let focused = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            p.page_eval("document.activeElement.id") == Ok("\"t\"".into())
+        });
+        assert!(focused, "the field has the focus");
+        let guard = crate::browser_js::iife(&crate::browser_keys::guard_body());
+        assert_eq!(p.eval(None, &guard), Ok(json!(false)), "a plain textarea may receive");
+        let text = crate::browser_keys::BroadcastEvent::Insert("hi".into());
+        let enter = crate::browser_keys::BroadcastEvent::Key { key: "Enter".into(), code: "Enter".into(), key_code: 13, mods: 0 };
+        for e in [&text, &enter] {
+            for (method, params) in crate::browser_keys::replay_calls(e) {
+                p.call_wait(None, method, &params).expect("the replay call runs");
+            }
+        }
+        assert_eq!(p.page_eval("document.getElementById('t').value"), Ok("\"hi\\n\"".into()), "the text once, one line break");
+        // Fields that must refuse.
+        for focus in ["document.getElementById('m').focus()", "document.getElementById('p').focus()", "window.__ci.focus()"] {
+            p.page_eval(focus).unwrap();
+            assert_eq!(p.eval(None, &guard), Ok(json!(true)), "{focus}");
+        }
+        p.finish();
+    }
+
     /// Task 7: the page's Smart Selection scripts in Tandem's world: the text around a point, the
     /// matcher's counts, and the selection `select-text.js` makes. (`browser_smart_select` is these
     /// calls in order; the App has no test constructor.) Needs the console session.

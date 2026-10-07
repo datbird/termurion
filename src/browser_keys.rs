@@ -403,10 +403,59 @@ pub fn broadcast_peers(domain: &[crate::layout::PaneId], sender: crate::layout::
         .collect()
 }
 
-/// Whether a broadcast message of a pane is acted on: the pane is a broadcast source now and no
-/// replay is in flight to it (`receivingBroadcast`, `BM:882-899`).
-pub fn broadcast_accepts(sends: bool, receiving: u32) -> bool {
-    sends && receiving == 0
+/// How long a pane's own messages are ignored after the last replay to it ended: the replay's
+/// completion and the page's report of it travel different roads, so no ordering is relied on.
+pub const HOLD_OFF: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether a broadcast message of a pane is acted on: the pane is a broadcast source now, no replay
+/// is in flight to it (`receivingBroadcast`, `BM:882-899`) and the last one ended at least `HOLD_OFF`
+/// ago (`quiet_for` None: none ever).
+pub fn broadcast_accepts(sends: bool, receiving: u32, quiet_for: Option<std::time::Duration>) -> bool {
+    sends && receiving == 0 && quiet_for.is_none_or(|d| d >= HOLD_OFF)
+}
+
+/// How long a replayed input waits for its echo before it is forgotten.
+pub const ECHO_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+/// At most this many replayed inputs are remembered per pane.
+pub const ECHO_MAX: usize = 16;
+
+/// The inputs a pane was sent (a per-event origin tag kept natively, since a replayed input is
+/// trusted in the page): the pane's own report of one is dropped once, so a receiver never
+/// re-broadcasts what it received, whatever the order of events.
+#[derive(Default)]
+pub struct EchoGuard {
+    sent: Vec<(BroadcastEvent, std::time::Instant)>,
+}
+
+impl EchoGuard {
+    /// `e` is about to be replayed in this pane.
+    pub fn note(&mut self, e: &BroadcastEvent, now: std::time::Instant) {
+        self.sent.retain(|(_, t)| now.saturating_duration_since(*t) < ECHO_TTL);
+        if self.sent.len() >= ECHO_MAX {
+            self.sent.remove(0);
+        }
+        self.sent.push((e.clone(), now));
+    }
+
+    /// Whether the pane's own report of `e` is the echo of a replay (consumed: true once).
+    pub fn is_echo(&mut self, e: &BroadcastEvent, now: std::time::Instant) -> bool {
+        self.sent.retain(|(_, t)| now.saturating_duration_since(*t) < ECHO_TTL);
+        match self.sent.iter().position(|(s, _)| s == e) {
+            Some(i) => {
+                self.sent.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.sent.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sent.is_empty()
+    }
 }
 
 /// The count of replays in flight to a view goes up before the first call.
@@ -768,9 +817,9 @@ mod tests {
         let dev = |p: u64| peer(true, p == 1 || p == 2);
         assert_eq!(broadcast_peers(&[1, 2, 3], 1, dev), vec![2], "Dev Null panes broadcast among themselves");
         // The sender takes a message only when it sends and no replay is in flight to it.
-        assert!(broadcast_accepts(true, 0));
-        assert!(!broadcast_accepts(true, 1), "a replay in flight: its own events are dropped, nothing ping-pongs");
-        assert!(!broadcast_accepts(false, 0), "not a broadcast source");
+        assert!(broadcast_accepts(true, 0, None));
+        assert!(!broadcast_accepts(true, 1, None), "a replay in flight: its own events are dropped, nothing ping-pongs");
+        assert!(!broadcast_accepts(false, 0, None), "not a broadcast source");
         // The receiving count is a counter: raised before the first call, lowered when the last answers.
         assert_eq!(receiving_raise(0), 1);
         assert_eq!(receiving_raise(u32::MAX), u32::MAX);
@@ -842,5 +891,41 @@ mod tests {
         assert!(g.contains("webkitTextSecurity") && g.contains("tandemSecretField(tandemDeepest(), SEL)") && g.contains("catch (e) { return true; }"));
         let src = resource("broadcast-input.js").unwrap();
         assert!(src.contains("{{FIELD_CHECK}}"));
+    }
+
+    /// Review I1: suppression never depends on the order of the replay's completion and the page's
+    /// own message: a hold-off after the last replay, and an echo guard that drops the very input a
+    /// pane was sent.
+    #[test]
+    fn two_source_panes_never_bounce() {
+        use std::time::{Duration, Instant};
+        // The hold-off: nothing is taken for 250 ms after the last replay ended, count or no count.
+        assert_eq!(HOLD_OFF, Duration::from_millis(250));
+        assert!(!broadcast_accepts(true, 0, Some(Duration::from_millis(100))), "inside the hold-off");
+        assert!(broadcast_accepts(true, 0, Some(Duration::from_millis(250))));
+        assert!(!broadcast_accepts(true, 1, Some(Duration::from_secs(1))), "a replay still in flight");
+        // The echo guard: what a pane was sent is dropped once when its own page reports it, even after
+        // the hold-off, and a later identical input of the person is not lost.
+        let t0 = Instant::now();
+        let a = BroadcastEvent::Insert("a".into());
+        let enter = BroadcastEvent::Key { key: "Enter".into(), code: "Enter".into(), key_code: 13, mods: 0 };
+        let mut b = EchoGuard::default();
+        b.note(&a, t0);
+        b.note(&enter, t0);
+        assert!(!b.is_echo(&BroadcastEvent::Insert("b".into()), t0), "another text is the person's");
+        assert!(b.is_echo(&a, t0 + Duration::from_millis(400)), "the echo, after the hold-off");
+        assert!(!b.is_echo(&a, t0 + Duration::from_millis(500)), "once: the next 'a' is the person's");
+        assert!(b.is_echo(&enter, t0 + Duration::from_secs(1)));
+        b.note(&a, t0);
+        assert!(!b.is_echo(&a, t0 + ECHO_TTL + Duration::from_millis(1)), "an echo that never came expires");
+        // Bounded.
+        for i in 0..100 {
+            b.note(&BroadcastEvent::Insert(i.to_string()), t0);
+        }
+        assert!(b.len() <= ECHO_MAX);
+        // Two panes that both send: A is typed in, B is sent it and reports it, A is then sent nothing.
+        let mut pane_b = EchoGuard::default();
+        pane_b.note(&a, t0);
+        assert!(pane_b.is_echo(&a, t0 + Duration::from_millis(5)), "B's report of the replayed input is dropped, so A never gets it back");
     }
 }

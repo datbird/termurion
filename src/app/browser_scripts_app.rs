@@ -204,6 +204,7 @@ impl App {
             bv.pointer_down = None;
             bv.receiving_broadcast = 0;
             bv.receiving_since = None;
+            bv.echo = Default::default();
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
         for done in dones {
@@ -815,7 +816,7 @@ impl App {
         }
         // Only a pane that is a broadcast source now, with no replay in flight to it, sends.
         if let Some(e) = broadcast {
-            if self.browser_broadcast_accepts(pane) {
+            if self.browser_broadcast_accepts(pane, &e) {
                 self.browser_broadcast(pane, e);
             }
         }

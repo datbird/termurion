@@ -594,14 +594,21 @@ impl App {
         Some(browser_keys::Peer { browser: true, live: bv.view.is_some(), shown: bv.replay.shown, dev_null: io.dev_null })
     }
 
-    /// Whether `sender`'s broadcast message is acted on: the pane is a broadcast source now and no
-    /// replay is in flight to it. A replay that never answered does not count after a while.
-    pub(super) fn browser_broadcast_accepts(&self, sender: PaneId) -> bool {
-        let Some(bv) = self.browser_views.get(&sender) else { return false };
-        let stale = bv.receiving_since.is_none_or(|t| t.elapsed().as_secs() >= browser_keys::RECEIVING_STALE_SECS);
-        let receiving = if stale { 0 } else { bv.receiving_broadcast };
+    /// Whether `sender`'s broadcast message is acted on: the pane is a broadcast source now, no
+    /// replay is in flight to it, the last one ended a hold-off ago, and the message is not the
+    /// report of an input the pane was sent (the echo guard). A replay that never answered does not
+    /// count after a while.
+    pub(super) fn browser_broadcast_accepts(&mut self, sender: PaneId, e: &browser_keys::BroadcastEvent) -> bool {
         let view = self.broadcast_view_in(true);
-        browser_keys::broadcast_accepts(self.is_browser_pane(sender) && self.broadcast.sends(&view, sender), receiving)
+        let sends = self.is_browser_pane(sender) && self.broadcast.sends(&view, sender);
+        let Some(bv) = self.browser_views.get_mut(&sender) else { return false };
+        let since = bv.receiving_since.map(|t| t.elapsed());
+        let stale = since.is_none_or(|d| d.as_secs() >= browser_keys::RECEIVING_STALE_SECS);
+        let receiving = if stale { 0 } else { bv.receiving_broadcast };
+        if !browser_keys::broadcast_accepts(sends, receiving, since) {
+            return false;
+        }
+        !bv.echo.is_echo(e, Instant::now())
     }
 
     /// The panes that get `sender`'s browser input: the other browser panes of its broadcast domain
@@ -619,6 +626,9 @@ impl App {
     pub(super) fn browser_broadcast(&mut self, sender: PaneId, e: browser_keys::BroadcastEvent) {
         let calls = browser_keys::replay_calls(&e);
         for target in self.browser_broadcast_targets(sender) {
+            if let Some(bv) = self.browser_views.get_mut(&target) {
+                bv.echo.note(&e, Instant::now());
+            }
             self.browser_replay(target, calls.clone());
         }
     }
@@ -659,6 +669,8 @@ impl App {
     fn browser_replay_done(&mut self, pane: PaneId) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.receiving_broadcast = browser_keys::receiving_lower(bv.receiving_broadcast);
+            // The hold-off starts when the last replay ends.
+            bv.receiving_since = Some(Instant::now());
         }
     }
 }
@@ -786,9 +798,10 @@ mod tests {
         assert!(b.contains("broadcast_view_in(true)") && b.contains("self.broadcast.sends(&view, sender)") && b.contains("self.broadcast.targets(&view, sender)"));
         assert!(b.contains("browser_keys::guard_body()") && b.contains("Ok(serde_json::Value::Bool(false))"), "only a plain false lets a replay go");
         assert!(b.contains("receiving_raise") && b.contains("receiving_lower"));
+        assert!(b.contains("echo.note(") && b.contains("echo.is_echo(") && b.contains("browser_keys::broadcast_accepts(sends, receiving, since)"), "no ordering is relied on: hold-off and echo guard (review I1)");
         let scripts = include_str!("browser_scripts_app.rs");
         let router = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];
-        assert!(router.contains("if self.browser_broadcast_accepts(pane)"), "the router drops a broadcast message unless the pane sends");
+        assert!(router.contains("if self.browser_broadcast_accepts(pane, &e)"), "the router drops a broadcast message unless the pane sends");
         assert!(router.contains("if !open &&"), "and only the proven isolated world speaks");
         let js = include_str!("../browser_js.rs");
         assert!(js.contains("BROADCAST_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none()"), "the view's secret, main frame");
