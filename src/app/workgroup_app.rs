@@ -517,11 +517,11 @@ impl App {
         if self.panes.contains_key(&inst.leader) {
             match run::leader_fate(skip, inst.leader, shown) {
                 run::LeaderFate::SwapBack => {
-                    if let Some(shown) = shown {
-                        self.swap_slot(shown, inst.leader);
-                    }
-                    // A swap that failed leaves the leader in no layout: it is never left hidden.
-                    leader_closes = !self.tabs.iter().any(|t| t.layout.panes().contains(&inst.leader));
+                    let swapped = shown.is_some_and(|shown| self.swap_slot(shown, inst.leader));
+                    // A swap that failed leaves the leader in no layout of any window: it is never left hidden.
+                    // The tab list is the current window's only, so a group in a background
+                    // window is looked up across windows (the leader is never closed for that).
+                    leader_closes = !swapped && self.pane_window_id(inst.leader).is_none();
                 }
                 run::LeaderFate::Close => leader_closes = true,
                 run::LeaderFate::Stay => {}
@@ -792,6 +792,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
+    /// A swap-back that worked never closes the leader, even when the group is in a background window
+    /// (`self.tabs` is the current window's tabs only).
+    #[test]
+    fn swap_back_never_reads_the_current_windows_tabs() {
+        let src = include_str!("workgroup_app.rs");
+        let arm = &src[src.find("run::LeaderFate::SwapBack =>").unwrap()..src.find("run::LeaderFate::Close =>").unwrap()];
+        assert!(!arm.contains("self.tabs"), "{arm}");
+        assert!(arm.contains("leader_closes = !swapped && self.pane_window_id(inst.leader).is_none();"), "{arm}");
+    }
     const MOD: &str = include_str!("mod.rs");
     const THIS: &str = include_str!("workgroup_app.rs");
 
