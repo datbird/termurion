@@ -284,7 +284,7 @@ const REFUSED_PREFIXES: [&str; 4] = ["NoSyncSetProfileProperty_", "NoSyncAllowOp
 /// consent questions; in iTerm2 `EnableAI` and `AICompletions` are secure defaults no preference
 /// write reaches.
 pub fn refused(key: &str) -> bool {
-    REFUSED.contains(&key) || REFUSED_PREFIXES.iter().any(|p| key.starts_with(p)) || !crate::ai_settings::toggle_allowed(key)
+    REFUSED.contains(&key) || crate::workgroup::is_workgroup_key(key) || REFUSED_PREFIXES.iter().any(|p| key.starts_with(p)) || !crate::ai_settings::toggle_allowed(key)
 }
 
 /// What SetPreference does with `value` for `key` while `setCookie` is `cookie_on`. A
@@ -304,6 +304,15 @@ pub fn preference_step(key: &str, value: &Value, cookie_on: bool) -> PrefStep {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workgroup_settings_are_refused() {
+        // A script must not write the workgroups (their commands run) or the marks and latches
+        // that go with them (13y1 Task 1 fix round 1).
+        for key in ["Workgroups", "WorkgroupsImported", "NoSyncWorkgroupShortcutsBackfilled", "NoSyncClaudeCodeDiffModeBackfilled", "NoSyncClaudeCodeReviewSystemPromptCommandBackfilled", "NoSyncClaudeCodeAutoSendClippingsBackfilled", "NoSyncClaudeCodeAutoRequestReviewBackfilled"] {
+            assert!(refused(key), "{key}");
+        }
+    }
+
     #[test]
     fn alternate_scroll_settings_are_refused() {
         // 13j sends these strings to the program on a wheel event: a script must not set them.

@@ -638,6 +638,12 @@ pub fn bound_imported(raw: &str) -> String {
     }
 }
 
+/// The keys only the model writes: the list, the stored Imported mark and the five latches. No
+/// script, plist or API call writes them (13y1 trust ruling).
+pub fn is_workgroup_key(key: &str) -> bool {
+    [KEY, KEY_IMPORTED, KEY_SHORTCUTS, KEY_DIFF_MODE, KEY_SYSTEM_PROMPT, KEY_AUTO_SEND, KEY_AUTO_REQUEST].contains(&key)
+}
+
 /// After something other than the editor wrote the list (a remote-prefs snapshot, an import):
 /// every workgroup whose data is new or changed is marked Imported, whatever the incoming data
 /// says, and the old marks are put back (the writer cannot clear them). `before_*` are the
