@@ -189,6 +189,10 @@ pub enum Event {
     /// A top-level navigation the view refused after a person's click (`refused_click`): the app
     /// judges the URL itself (a popover link goes through `guard_open`).
     Refused { view: ViewId, url: String, user: bool },
+    /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
+    /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
+    /// `browser_world::Contexts` decides what a context is.
+    DevTools { view: ViewId, session: Option<String>, name: String, json: String },
 }
 
 impl Event {
@@ -205,13 +209,19 @@ impl Event {
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
-            | Event::ProcessFailed { view, .. } => *view,
+            | Event::ProcessFailed { view, .. }
+            | Event::DevTools { view, .. } => *view,
         }
     }
 
     /// An event the queue may drop when a page floods it. Lifecycle, navigation results, focus,
     /// script results and requests (each holds a COM deferral) are never dropped.
     pub fn droppable(&self) -> bool {
+        // A dropped context event leaves a frame without a Tandem world (inert, never unsafe); target
+        // attach and detach are never dropped (an attached child waits until it is resumed).
+        if let Event::DevTools { name, .. } = self {
+            return !name.starts_with("Target.");
+        }
         matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
     }
 
@@ -221,6 +231,7 @@ impl Event {
             Event::Failed(_, s) | Event::Source(_, s) | Event::Title(_, s) => s.len(),
             Event::Favicon(_, b) => b.len(),
             Event::Message { json, source, .. } => json.len() + source.len(),
+            Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),

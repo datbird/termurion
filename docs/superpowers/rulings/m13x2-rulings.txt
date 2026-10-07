@@ -1,0 +1,3 @@
+Probe: PENDING on EXTREME (the desktop-session run waits for Robert's yes; until then the per-view run-time check, browser_world::Setup and world_usable, alone decides whether Client scripts are injected); Runtime.enable detectable: unknown
+13x2 Task 0: the world is set up per WebView (B4), so Task 1 runs Setup::new(sources) right after WebView::create and loads the pending URL only when the state is Ready or Unavailable.
+13x2 Task 0: Contexts::navigated follows Page.frameNavigated of the view's own target for the main frame id (a frame with no parentId, session None).

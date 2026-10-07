@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
@@ -497,6 +497,8 @@ struct Inner {
     next_token: u64,
     last_bounds: Option<(i32, i32, i32, i32)>,
     visible: Option<bool>,
+    /// One DevTools event receiver per event name (`devtools_subscribe`), with its handler's token.
+    devtools: HashMap<String, (ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
@@ -534,6 +536,7 @@ impl WebView {
             next_token: 1,
             last_bounds: None,
             visible: None,
+            devtools: HashMap::new(),
         }));
         let weak = Rc::downgrade(&inner);
         // Every view is known to the process teardown (`close_all`), whatever owns it.
@@ -676,6 +679,77 @@ impl WebView {
         });
     }
 
+    /// `ICoreWebView2::CallDevToolsProtocolMethod`: `Event::ScriptDone { token, .. }` carries the
+    /// result JSON or the error text. The DevTools protocol is reached only from Rust (no debugging port).
+    pub fn devtools_call(&self, method: &str, params_json: &str, token: u64) {
+        self.devtools_call_in(None, method, params_json, token);
+    }
+
+    /// `ICoreWebView2_11::CallDevToolsProtocolMethodForSession`: the same, in a child session
+    /// (a cross-site frame attached with `Target.setAutoAttach`).
+    pub fn devtools_call_for_session(&self, session: &str, method: &str, params_json: &str, token: u64) {
+        self.devtools_call_in(Some(session.to_string()), method, params_json, token);
+    }
+
+    fn devtools_call_in(&self, session: Option<String>, method: &str, params_json: &str, token: u64) {
+        let (wm, wp) = (wide(method), wide(params_json));
+        let ws = session.as_deref().map(wide);
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        self.with(move |c| {
+            let p = poster.clone();
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |hr, json| guard(|| {
+                let json = hr.map(|_| json).map_err(|e| e.to_string());
+                p.post(Event::ScriptDone { view: id, token, json });
+                Ok(())
+            })));
+            let started = match &ws {
+                None => unsafe { c.view.CallDevToolsProtocolMethod(PCWSTR(wm.as_ptr()), PCWSTR(wp.as_ptr()), &handler) },
+                Some(ws) => match c.view.cast::<ICoreWebView2_11>() {
+                    Ok(v11) => unsafe { v11.CallDevToolsProtocolMethodForSession(PCWSTR(ws.as_ptr()), PCWSTR(wm.as_ptr()), PCWSTR(wp.as_ptr()), &handler) },
+                    Err(e) => Err(e),
+                },
+            };
+            if let Err(e) = started {
+                poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
+            }
+        });
+    }
+
+    /// Posts `Event::DevTools` for every `event` the page's target (and its attached children)
+    /// raises. One receiver per event name per view; it is dropped with the view.
+    pub fn devtools_subscribe(&self, event: &str) {
+        if self.inner.borrow().devtools.contains_key(event) {
+            return;
+        }
+        let name = event.to_string();
+        let wname = wide(event);
+        let weak = Rc::downgrade(&self.inner);
+        self.with(move |c| {
+            let Some(inner) = weak.upgrade() else { return };
+            let Ok(receiver) = (unsafe { c.view.GetDevToolsProtocolEventReceiver(PCWSTR(wname.as_ptr())) }) else { return };
+            let (weak2, ev_name) = (Rc::downgrade(&inner), name.clone());
+            let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+                let (Some(inner), Some(args)) = (weak2.upgrade(), args) else { return Ok(()) };
+                let Some(json) = pwstr_out(|p| unsafe { args.ParameterObjectAsJson(p) }) else { return Ok(()) };
+                if json.len() > 2 * webhost::MAX_MESSAGE + 4096 {
+                    return Ok(());
+                }
+                // An empty session id means the view's own target.
+                let session = args.cast::<ICoreWebView2DevToolsProtocolEventReceivedEventArgs2>().ok().and_then(|a| pwstr_out(|p| unsafe { a.SessionId(p) })).filter(|s| !s.is_empty());
+                let i = inner.borrow();
+                i.poster.post(Event::DevTools { view: i.id, session, name: ev_name.clone(), json });
+                Ok(())
+            })));
+            let mut token = 0i64;
+            if unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }.is_ok() {
+                inner.borrow_mut().devtools.insert(name, (receiver, token));
+            }
+        });
+    }
+
     /// Posts a JSON message to the page's `window.chrome.webview` listeners.
     pub fn post_json(&self, json: &str) {
         let w = wide(json);
@@ -811,8 +885,11 @@ thread_local! {
 /// process lets go of the user data folder). Twice is safe: the second finds nothing.
 fn shut(inner: &Rc<RefCell<Inner>>) {
     let Ok(mut i) = inner.try_borrow_mut() else { return };
-    let (pending, core) = (std::mem::take(&mut i.pending), i.core.take());
+    let (pending, core, receivers) = (std::mem::take(&mut i.pending), i.core.take(), std::mem::take(&mut i.devtools));
     drop(i);
+    for (_, (receiver, token)) in receivers {
+        let _ = unsafe { receiver.remove_DevToolsProtocolEventReceived(token) };
+    }
     for (_, p) in pending {
         let _ = unsafe { p.deferral.Complete() };
     }
@@ -1603,5 +1680,642 @@ mod tests {
         if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
             let _ = crate::localfs::remove_dir_all(&lp);
         }
+    }
+}
+
+/// Task 0 of 13x2: the isolated-world probe. Windows only, `#[ignore]`d, and run in a console
+/// session (a session 0 process cannot host WebView2): every test makes one never-shown window,
+/// one view on a fresh environment in a temporary folder, serves every page from memory (hosts
+/// under `.invalid`) and fails on any request it did not serve. A skip is printed as such and is
+/// never a pass.
+#[cfg(test)]
+mod probe {
+    use super::*;
+    use crate::browser_world::{self, ClientWorld, Contexts, Setup};
+    use serde_json::{Value, json};
+    use std::sync::mpsc;
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, TranslateMessage, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW};
+
+    const HOVER: &str = include_str!("../resources/browser/hover-link-detector.js");
+    const GRAPH: &str = include_str!("../resources/browser/graph-discovery.js");
+
+    /// The hostile page's first script: saves what it needs, then replaces the builtins a Client
+    /// script might use with recorders, plants `toJSON` and a secret getter on `Object.prototype`,
+    /// records the page's view of its own window, and holds the forgery functions the tests call.
+    const HOSTILE: &str = r#"<script>
+(function () {
+  const keys = Object.keys, names = Object.getOwnPropertyNames, syms = Object.getOwnPropertySymbols;
+  const origStringify = JSON.stringify, push = Array.prototype.push;
+  const post = window.chrome.webview.postMessage.bind(window.chrome.webview);
+  const R = [], seen = new Set(), counts = {}, ids = [];
+  let busy = false;
+  function ser(x, d) {
+    const t = typeof x;
+    if (t === 'string') return x;
+    if (t !== 'object' || x === null) { try { return t + ':' + x; } catch (e) { return t; } }
+    if (d > 3) return '[deep]';
+    let s = '{', ks;
+    try { ks = keys(x); } catch (e) { return '[opaque]'; }
+    for (let i = 0; i < ks.length && i < 200; i++) { let v; try { v = x[ks[i]]; } catch (e) { v = 'throws'; } s += ks[i] + '=' + ser(v, d + 1) + ';'; }
+    return s + '}';
+  }
+  function rec(tag, self, args) {
+    counts[tag] = (counts[tag] || 0) + 1;
+    const s = tag + '|' + ser(self, 0) + '|' + ser(args, 0);
+    if (!seen.has(s) && R.length < 2000) { seen.add(s); push.call(R, s); }
+  }
+  function wrap(o, n) {
+    const orig = o[n];
+    o[n] = function (...a) {
+      if (busy) return orig.apply(this, a);
+      busy = true;
+      try { rec(n, this, a); } catch (e) {} finally { busy = false; }
+      return orig.apply(this, a);
+    };
+  }
+  wrap(Array.prototype, 'slice'); wrap(Array.prototype, 'join'); wrap(Promise.prototype, 'then');
+  wrap(JSON, 'stringify'); wrap(Function.prototype, 'toString'); wrap(String.prototype, 'indexOf');
+  Object.defineProperty(Object.prototype, 'toJSON', { value: function () { counts.toJSON = (counts.toJSON || 0) + 1; return { hacked: true }; }, configurable: true, writable: true });
+  Object.defineProperty(Object.prototype, 'sessionSecret', { get: function () { counts.getter = (counts.getter || 0) + 1; return undefined; }, set: function (v) { counts.setter = (counts.setter || 0) + 1; rec('sessionSecretSet', null, [v]); }, configurable: true });
+  try { window.chrome.webview.postMessage = function (m) { rec('postMessage', null, [m]); return post(m); }; } catch (e) {}
+  window.addEventListener('message', function (e) {
+    rec('message', null, [e.data]);
+    try { const f = e.data && e.data.payload && e.data.payload.graph && e.data.payload.graph.frameId; if (typeof f === 'string') push.call(ids, f); } catch (x) {}
+  }, true);
+  setInterval(function () {
+    let a = '', n = names(window);
+    for (let i = 0; i < n.length; i++) a += n[i] + ',';
+    rec('globals', null, [a]);
+    let b = '', sy = syms(window);
+    for (let i = 0; i < sy.length; i++) b += String(sy[i]) + ',';
+    rec('symbols', null, [b]);
+    rec('html', null, [document.documentElement.outerHTML]);
+    let c = '', all = document.getElementsByTagName('*');
+    for (let i = 0; i < all.length; i++) { const at = all[i].attributes; for (let j = 0; j < at.length; j++) c += at[j].name + '=' + at[j].value + ';'; }
+    rec('attrs', null, [c]);
+  }, 50);
+  window.__report = function () { return origStringify(R); };
+  window.__counts = function () {
+    const o = {}, n = ['slice', 'join', 'then', 'stringify', 'toString', 'indexOf', 'toJSON', 'getter', 'setter'];
+    for (let i = 0; i < n.length; i++) o[n[i]] = counts[n[i]] || 0;
+    return origStringify(o);
+  };
+  window.__forge = function () {
+    post({ h: 'probeEcho', b: { v: 2, sessionSecret: '{{GUESS}}' } });
+    post({ h: 'iTermSelectionMonitor', b: { selection: 'x', sessionSecret: '{{GUESS}}' } });
+    post({ handler: 'iterm2-about:history', body: { action: 'clearAllHistory' } });
+    const r = {};
+    try { r.client = typeof (window.__tandemClient && window.__tandemClient('{}')); } catch (e) { r.client = 'threw'; }
+    try { r.webkit = typeof (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.probeEcho && window.webkit.messageHandlers.probeEcho.postMessage({})); } catch (e) { r.webkit = 'threw'; }
+    window.postMessage({ namespace: 'IFRAME_GRAPH_DISCOVERY', type: 'CHILD_REPORT', requestId: 'r', payload: { graph: {} } }, '*');
+    return origStringify(r);
+  };
+  window.__forge4 = function (extra) {
+    const r = {};
+    try { const d = window[Symbol.for('iTermGraphDiscovery')]; r.api = typeof (d && d.evaluateInFrame && d.evaluateInFrame('x', "document.title='pwned'", function () {})); } catch (e) { r.api = 'threw'; }
+    r.global = typeof window.graphDiscoveryEvaluateInFrame;
+    const targets = ids.concat(['x', 'guess'], JSON.parse(extra));
+    for (let i = 0; i < targets.length; i++) {
+      post({ h: 'iTermGraphDiscovery', b: { type: 'EVAL_IN_FRAME', target: targets[i], sender: 'x', requestID: 'r', code: "document.title='pwned'" } });
+      try { window.frames[0].__fire(targets[i]); } catch (e) {}
+    }
+    return origStringify(r);
+  };
+})();
+</script>"#;
+
+    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__fire=function(t){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:'x',requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
+
+    fn hostile_page(body: &str, guess: &str) -> String {
+        format!("<!doctype html><html><head><title>hostile</title>{}</head><body>{body}</body></html>", HOSTILE.replace("{{GUESS}}", guess))
+    }
+
+    fn hex32() -> String {
+        let mut b = [0u8; 16];
+        getrandom::fill(&mut b).expect("random");
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// The probe's minimal stand-in for Task 1's `wrap`: the binding is captured into a closure
+    /// before anything else runs, and `window.webkit.messageHandlers.<h>.postMessage(b)` becomes
+    /// `__tandemClient(JSON.stringify({h, b}))`; both exist only in the isolated world.
+    fn client_sources(secret: &str, load_echo: bool) -> Vec<String> {
+        let wrap = |s: &str| {
+            format!(
+                "(function() {{ const __post = globalThis.{}; if (typeof __post !== 'function') {{ return; }} if (!window.webkit) {{ Object.defineProperty(window, 'webkit', {{ value: {{ messageHandlers: new Proxy({{}}, {{ get: (_, h) => ({{ postMessage: (b) => __post(JSON.stringify({{h: String(h), b}})) }}) }}) }} }}); }}\n{s}\n}})();",
+                browser_world::BINDING
+            )
+        };
+        let mut v = vec![wrap(&HOVER.replace("{{SECRET}}", secret)), wrap(GRAPH)];
+        if load_echo {
+            v.push(wrap("window.webkit.messageHandlers.probeEcho.postMessage({where: location.href});"));
+        }
+        v
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Via {
+        Client,
+        Page,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Routed {
+        via: Via,
+        frame: Option<u64>,
+        /// The posting document's URL (Page) or the context's origin (Client).
+        from: String,
+        body: String,
+    }
+
+    impl Routed {
+        /// A Client message is `{h, b}` as the probe's wrapper makes it.
+        fn client(&self) -> Option<(String, Value)> {
+            let v: Value = serde_json::from_str(&self.body).ok()?;
+            Some((v.get("h")?.as_str()?.to_string(), v.get("b")?.clone()))
+        }
+    }
+
+    struct Probe {
+        hwnd: HWND,
+        folder: PathBuf,
+        view: Option<WebView>,
+        env: Option<Env>,
+        rx: mpsc::Receiver<Posted>,
+        pages: HashMap<String, String>,
+        not_served: Vec<String>,
+        contexts: Contexts,
+        setup: Setup,
+        sources: Vec<String>,
+        next_token: u64,
+        setup_token: Option<u64>,
+        sessions: HashMap<String, VecDeque<(&'static str, Value)>>,
+        session_tokens: HashMap<u64, String>,
+        answers: HashMap<u64, Result<String, String>>,
+        /// Every DevTools call and every ExecuteScript the harness issued, with its text.
+        log: Vec<String>,
+        routed: Vec<Routed>,
+        /// `Runtime.bindingCalled` events `Contexts` did not accept as Tandem's.
+        rejected_bindings: usize,
+        attached: Vec<(String, String)>,
+        navigated: Vec<(String, bool)>,
+        failed: Vec<String>,
+        created: bool,
+    }
+
+    impl Probe {
+        /// None (with a printed SKIPPED line) when the runtime is missing or this is session 0.
+        fn start(pages: &[(&str, String)], sources: Vec<String>) -> Option<Probe> {
+            if runtime_version(None).is_err() {
+                println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
+                return None;
+            }
+            let mut session = 0u32;
+            // SAFETY: plain out parameter.
+            unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut session) };
+            println!("probe: process session {session}");
+            if session == 0 {
+                println!("SKIPPED (not a pass): session 0 cannot host WebView2; skipped");
+                return None;
+            }
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            }
+            unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+                unsafe { DefWindowProcW(h, m, w, l) }
+            }
+            let class = windows::core::w!("TandemWorldProbe");
+            let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
+            unsafe { RegisterClassW(&wc) };
+            // Created, never shown: nothing appears on the desktop.
+            let hwnd = unsafe { CreateWindowExW(WS_EX_TOOLWINDOW, class, windows::core::w!("tandem-world-probe"), WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, None, None, None, None) }.expect("a window");
+            let folder = std::env::temp_dir().join(format!("tandem-probe-{}-{}", std::process::id(), hex32()));
+            let (tx, rx) = mpsc::channel::<Posted>();
+            let mut p = Probe {
+                hwnd,
+                folder: folder.clone(),
+                view: None,
+                env: None,
+                rx,
+                pages: pages.iter().map(|(u, b)| (u.to_string(), b.clone())).collect(),
+                not_served: Vec::new(),
+                contexts: Contexts::default(),
+                setup: Setup::new(&sources),
+                sources,
+                next_token: 1,
+                setup_token: None,
+                sessions: HashMap::new(),
+                session_tokens: HashMap::new(),
+                answers: HashMap::new(),
+                log: Vec::new(),
+                routed: Vec::new(),
+                rejected_bindings: 0,
+                attached: Vec::new(),
+                navigated: Vec::new(),
+                failed: Vec::new(),
+                created: false,
+            };
+            let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
+            let c2 = cell.clone();
+            Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *c2.borrow_mut() = Some(r)));
+            assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
+            let env = cell.borrow_mut().take().unwrap().expect("the environment");
+            let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["*".into()], ..Default::default() };
+            let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 400, 300), setup, tx);
+            p.env = Some(env);
+            p.view = Some(view);
+            assert!(p.wait(20, |p| p.created), "Created within 20 s");
+            for name in browser_world::EVENTS {
+                p.view.as_ref().unwrap().devtools_subscribe(name);
+            }
+            p.step_setup();
+            assert!(p.wait(15, |p| *p.setup.state() != ClientWorld::Setting), "the setup finished within 15 s: {:?}", p.log.iter().map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>());
+            assert_eq!(*p.setup.state(), ClientWorld::Ready, "the isolated world is unavailable: {:?}", p.setup.state());
+            Some(p)
+        }
+
+        fn view(&self) -> &WebView {
+            self.view.as_ref().expect("the view")
+        }
+
+        fn token(&mut self) -> u64 {
+            self.next_token += 1;
+            self.next_token
+        }
+
+        /// One DevTools call; its answer arrives as `Event::ScriptDone` with the returned token.
+        fn call(&mut self, session: Option<&str>, method: &str, params: &Value) -> u64 {
+            let (t, ps) = (self.token(), params.to_string());
+            self.log.push(format!("{method} {}{ps}", session.map(|s| format!("[{s}] ")).unwrap_or_default()));
+            match session {
+                None => self.view().devtools_call(method, &ps, t),
+                Some(s) => self.view().devtools_call_for_session(s, method, &ps, t),
+            }
+            t
+        }
+
+        fn call_wait(&mut self, session: Option<&str>, method: &str, params: &Value) -> Result<String, String> {
+            let t = self.call(session, method, params);
+            if !self.wait(10, |p| p.answers.contains_key(&t)) {
+                return Err(format!("{method}: no answer in 10 s"));
+            }
+            self.answers.remove(&t).unwrap()
+        }
+
+        /// `Runtime.evaluate` in a frame's Tandem world (None is the main frame).
+        fn eval(&mut self, frame: Option<u64>, expr: &str) -> Result<Value, String> {
+            let (session, id) = self.contexts.context_for(frame).ok_or("no Tandem context for that frame")?;
+            let r = self.call_wait(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(id, expr))?;
+            browser_world::evaluate_result(&r)
+        }
+
+        /// A script in the page's own world (`ExecuteScript`); the answer is the result's JSON.
+        fn page_eval(&mut self, js: &str) -> Result<String, String> {
+            let t = self.token();
+            self.log.push(format!("ExecuteScript {js}"));
+            self.view().execute_script(js, t);
+            if !self.wait(10, |p| p.answers.contains_key(&t)) {
+                return Err("ExecuteScript: no answer in 10 s".into());
+            }
+            self.answers.remove(&t).unwrap()
+        }
+
+        fn load(&mut self, url: &str) {
+            let n = self.navigated.len();
+            self.view().navigate_tandem(url);
+            assert!(self.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s");
+            assert!(self.navigated[n].1, "the navigation to {url} failed");
+            assert!(self.wait(5, |p| browser_world::world_usable(p.setup.state(), &p.contexts)), "the main frame has a Tandem context after loading {url}");
+        }
+
+        fn step_setup(&mut self) {
+            if let Some((m, params)) = self.setup.next_call() {
+                let t = self.call(None, m, &params);
+                self.setup_token = Some(t);
+            }
+        }
+
+        fn step_session(&mut self, sid: &str) {
+            let next = self.sessions.get_mut(sid).and_then(|q| q.pop_front());
+            match next {
+                Some((m, params)) => {
+                    let t = self.call(Some(sid), m, &params);
+                    self.session_tokens.insert(t, sid.to_string());
+                }
+                None => {
+                    self.sessions.remove(sid);
+                }
+            }
+        }
+
+        fn attach(&mut self, sid: &str, ty: &str) {
+            self.attached.push((sid.to_string(), ty.to_string()));
+            // An iframe gets the world; any other target is only resumed (it would wait for ever).
+            let q: VecDeque<_> = if ty == "iframe" { browser_world::session_calls(&self.sources).into() } else { vec![("Runtime.runIfWaitingForDebugger", json!({}))].into() };
+            self.sessions.insert(sid.to_string(), q);
+            self.step_session(sid);
+        }
+
+        fn handle(&mut self, e: Event) {
+            match e {
+                Event::Created(_) => self.created = true,
+                Event::Failed(_, why) => self.failed.push(why),
+                Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
+                Event::Navigated { ok, url, .. } => self.navigated.push((url, ok)),
+                Event::Request { token, url, .. } => {
+                    let key = url.split(['#', '?']).next().unwrap_or("").to_string();
+                    let answer = match self.pages.get(&key) {
+                        Some(body) => Answer::Respond { status: 200, mime: "text/html".into(), body: body.clone().into_bytes(), headers: vec![] },
+                        None => {
+                            if !key.ends_with("/favicon.ico") {
+                                self.not_served.push(url);
+                            }
+                            Answer::Respond { status: 404, mime: "text/plain".into(), body: b"not found".to_vec(), headers: vec![] }
+                        }
+                    };
+                    self.view().answer_request(token, answer);
+                }
+                Event::Message { json, source, .. } => self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json }),
+                Event::ScriptDone { token, json, .. } => {
+                    if self.setup_token == Some(token) {
+                        self.setup_token = None;
+                        self.setup.answered(json);
+                        if let Some(m) = self.setup.main_frame() {
+                            self.contexts.set_main_frame(m);
+                        }
+                        self.step_setup();
+                    } else if let Some(sid) = self.session_tokens.remove(&token) {
+                        if json.is_err() {
+                            // The frame then has no Tandem world, but it is still resumed.
+                            if let Some(q) = self.sessions.get_mut(&sid) {
+                                let last = q.pop_back();
+                                q.clear();
+                                q.extend(last);
+                            }
+                        }
+                        self.step_session(&sid);
+                    } else {
+                        self.answers.insert(token, json);
+                    }
+                }
+                Event::DevTools { session, name, json, .. } => self.devtools(session, &name, &json),
+                _ => {}
+            }
+        }
+
+        fn devtools(&mut self, session: Option<String>, name: &str, json: &str) {
+            let s = session.as_deref();
+            match name {
+                "Runtime.executionContextCreated" => self.contexts.created(s, json),
+                "Runtime.executionContextDestroyed" => self.contexts.destroyed(s, json),
+                "Runtime.executionContextsCleared" => self.contexts.cleared(s),
+                "Page.frameNavigated" => self.contexts.navigated(s, json),
+                "Runtime.bindingCalled" => match self.contexts.binding_called(s, json) {
+                    Some((frame, origin, payload)) => {
+                        let r = Routed { via: Via::Client, frame, from: origin, body: payload };
+                        // The probe's stand-in for Task 2's rule: EVAL_IN_FRAME is answered only from the
+                        // world, in the frame that sent it.
+                        if let Some((h, b)) = r.client() {
+                            if h == "iTermGraphDiscovery" && b.get("type").and_then(Value::as_str) == Some("EVAL_IN_FRAME") {
+                                if let Some(code) = b.get("code").and_then(Value::as_str) {
+                                    let _ = self.eval(frame, code);
+                                }
+                            }
+                        }
+                        self.routed.push(r);
+                    }
+                    None => self.rejected_bindings += 1,
+                },
+                "Target.attachedToTarget" => {
+                    if let Ok(v) = serde_json::from_str::<Value>(json) {
+                        let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
+                        let ty = v.pointer("/targetInfo/type").and_then(Value::as_str).unwrap_or("").to_string();
+                        if !sid.is_empty() {
+                            self.attach(&sid, &ty);
+                        }
+                    }
+                }
+                "Target.detachedFromTarget" => {
+                    if let Some(sid) = serde_json::from_str::<Value>(json).ok().and_then(|v| v.get("sessionId").and_then(Value::as_str).map(str::to_string)) {
+                        self.contexts.detached(&sid);
+                        self.sessions.remove(&sid);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        /// Pumps the thread's messages and the view's events until `cond` holds or `secs` pass.
+        fn wait(&mut self, secs: u64, mut cond: impl FnMut(&Probe) -> bool) -> bool {
+            let end = Instant::now() + Duration::from_secs(secs);
+            loop {
+                let mut msg = MSG::default();
+                unsafe {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                while let Ok(p) = self.rx.try_recv() {
+                    if let Some(e) = p.event {
+                        self.handle(e);
+                    }
+                }
+                assert!(self.failed.is_empty(), "the view failed: {:?}", self.failed);
+                if cond(self) {
+                    return true;
+                }
+                if Instant::now() >= end {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        /// Lets the page and the world run for `ms` (a bounded pump, never an open wait).
+        fn settle(&mut self, ms: u64) {
+            let end = Instant::now() + Duration::from_millis(ms);
+            self.wait(ms / 1000 + 1, |_| Instant::now() >= end);
+        }
+
+        fn clients(&self, handler: &str) -> Vec<(Option<u64>, Value)> {
+            self.routed.iter().filter(|r| r.via == Via::Client).filter_map(|r| r.client().filter(|(h, _)| h == handler).map(|(_, b)| (r.frame, b))).collect()
+        }
+
+        /// What every test ends with: every request was answered from memory and the world never
+        /// had a binding call from a context it does not know.
+        fn finish(&self) {
+            assert!(self.not_served.is_empty(), "requests not served from memory: {:?}", self.not_served);
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.view.take();
+            self.env.take();
+            let _ = unsafe { DestroyWindow(self.hwnd) };
+            // Best effort: the browser process may still hold the folder for a moment.
+            if let Some(lp) = crate::localfs::LocalPath::judge(&self.folder) {
+                let _ = crate::localfs::remove_dir_all(&lp);
+            }
+        }
+    }
+
+    const PAGE: &str = "https://probe.tandem-probe.invalid/";
+
+    fn echo(secret: &str) -> String {
+        format!("window.webkit.messageHandlers.probeEcho.postMessage({{v: 1, sessionSecret: \"{secret}\"}})")
+    }
+
+    /// The text Task 5's `clear_script` will produce, written out here.
+    fn clear_hover(secret: &str) -> String {
+        format!("(function() {{window.iTermHoverLinkHandler?.clearHover('{secret}');}})();")
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_cannot_read_the_secret() {
+        let secret = hex32();
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page("<a href=\"https://x.invalid/\">link</a>", "g"))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        assert_eq!(p.eval(None, "typeof globalThis.__tandemClient"), Ok(json!("function")), "the world is live: the binding");
+        assert_eq!(p.eval(None, "typeof window.iTermHoverLinkHandler"), Ok(json!("object")), "the world is live: hover");
+        assert_eq!(p.eval(None, "typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok(json!("object")), "the world is live: graph discovery");
+        p.eval(None, &clear_hover(&secret)).expect("clearHover");
+        p.eval(None, &echo(&secret)).expect("the echo");
+        assert!(p.wait(5, |p| !p.clients("probeEcho").is_empty()), "the echo reaches the router");
+        // The page's own world sees none of it.
+        assert_eq!(p.page_eval("typeof window.__tandemClient"), Ok("\"undefined\"".into()));
+        assert_eq!(p.page_eval("typeof window.iTermHoverLinkHandler"), Ok("\"undefined\"".into()));
+        assert_eq!(p.page_eval("typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok("\"undefined\"".into()));
+        p.settle(500);
+        let report = p.page_eval("window.__report()").expect("the report");
+        assert!(report.len() > 100, "the page recorded something: {}", report.len());
+        assert!(!report.contains(&secret), "the secret reached the page");
+        assert!(p.routed.iter().filter(|r| r.via == Via::Page).all(|r| !r.body.contains(&secret)));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_builtins_do_not_reach_the_world() {
+        let secret = hex32();
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page("<p>x</p>", "g"))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        // Control: the recorders are live in the page's own world.
+        let c0 = p.page_eval("window.__counts()").unwrap();
+        p.page_eval("[1, 2, 3].slice(1).join(',') + JSON.stringify({a: 1})").unwrap();
+        let c1 = p.page_eval("window.__counts()").unwrap();
+        assert_ne!(c0, c1, "the recorders count the page's own calls");
+        p.settle(300);
+        let before = p.page_eval("window.__counts()").unwrap();
+        p.eval(None, &clear_hover(&secret)).expect("clearHover");
+        p.eval(None, &echo(&secret)).expect("the echo");
+        let got = p.eval(None, "(async () => { const a = 21; return await Promise.resolve(a).then(x => x * 2); })()");
+        assert_eq!(got, Ok(json!(42)), "the world's own Promise, JSON and Object are intact");
+        assert!(p.wait(5, |p| !p.clients("probeEcho").is_empty()));
+        p.settle(300);
+        let after = p.page_eval("window.__counts()").unwrap();
+        assert_eq!(before, after, "the world's calls reached the page's builtins");
+        let echoes = p.clients("probeEcho");
+        assert_eq!(echoes.len(), 1);
+        assert_eq!(echoes[0].1, json!({"v": 1, "sessionSecret": secret}), "the page's toJSON had no effect");
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_cannot_fake_a_client_message() {
+        let secret = hex32();
+        let guess = hex32();
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page("<p>x</p>", &guess))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        p.eval(None, &echo(&secret)).expect("the echo");
+        let forged = p.page_eval("window.__forge()").expect("the forgery ran");
+        assert!(forged.contains("undefined"), "{forged}");
+        assert!(!forged.contains("threw"), "{forged}");
+        p.settle(1000);
+        let pages: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Page).collect();
+        assert!(pages.len() >= 3, "the page's three messages arrived: {pages:?}");
+        assert!(pages.iter().all(|r| r.from.starts_with(PAGE)), "every page message names the page as its source: {pages:?}");
+        for r in p.routed.iter().filter(|r| r.via == Via::Client) {
+            let (h, b) = r.client().expect("a client message is {h, b}");
+            assert!(h == "probeEcho" || h == "iTermGraphDiscovery", "a client message from the page: {h}");
+            assert!(!r.body.contains(&guess), "the page's guess reached the world's channel");
+            if h == "probeEcho" {
+                assert_eq!(b, json!({"v": 1, "sessionSecret": secret}), "only the world's own echo");
+            }
+        }
+        assert_eq!(p.clients("probeEcho").len(), 1);
+        assert_eq!(p.rejected_bindings, 0, "no binding call came from a context the table does not know");
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_cannot_reach_evaluate_in_frame() {
+        let secret = hex32();
+        let body = format!("<iframe srcdoc=\"{CHILD_SRCDOC}\"></iframe>");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
+        let frame_ids = p.call_wait(None, "Page.getFrameTree", &json!({})).ok().and_then(|t| browser_world::frame_ids(&t)).map(|(_, all)| all).unwrap_or_default();
+        let as_js_string = serde_json::to_string(&serde_json::to_string(&frame_ids).unwrap()).unwrap();
+        let r = p.page_eval(&format!("window.__forge4({as_js_string})")).expect("the forgery ran");
+        assert!(r.contains("undefined"), "{r}");
+        p.settle(1000);
+        let k = p.contexts.frames()[0];
+        assert_eq!(p.eval(Some(k), "document.title"), Ok(json!("child")), "the iframe's title");
+        assert!(p.log.iter().filter(|l| l.starts_with("Runtime.evaluate") || l.starts_with("ExecuteScript")).all(|l| !l.contains("pwned")), "a forged EVAL_IN_FRAME was evaluated");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_world_reaches_every_frame() {
+        let secret = hex32();
+        let (top, child) = ("https://a.tandem-probe.invalid/", "https://b.tandem-probe.invalid/child.html");
+        let nested = "&lt;iframe srcdoc=&quot;&amp;lt;p&amp;gt;nested&amp;lt;/p&amp;gt;&quot;&gt;&lt;/iframe&gt;&lt;p&gt;mid&lt;/p&gt;";
+        let top_page = format!(
+            "<!doctype html><html><head><title>top</title></head><body><iframe srcdoc=\"{nested}\"></iframe><iframe src=\"{child}\"></iframe><script>\n\
+             const e = new Error('x'); Object.defineProperty(e, 'stack', {{ get() {{ window.__stackRead = true; return ''; }} }}); console.debug(e);\n\
+             setTimeout(function () {{ const f = document.createElement('iframe'); f.srcdoc = '<p>late</p>'; document.body.appendChild(f); }}, 300);\n\
+             </script></body></html>"
+        );
+        let Some(mut p) = Probe::start(&[(top, top_page), (child, "<!doctype html><title>child</title><p>b</p>".to_string())], client_sources(&secret, true)) else { return };
+        p.load(top);
+        let frames_ok = p.wait(15, |p| p.contexts.frames().len() == 4);
+        let seen = format!("attached {:?}; frames {:?}; rejected {}", p.attached, p.contexts.frames(), p.rejected_bindings);
+        assert!(frames_ok, "every frame has a Tandem world: {seen}");
+        assert!(p.wait(10, |p| {
+            let mut f: Vec<Option<u64>> = p.clients("probeEcho").into_iter().map(|(f, _)| f).collect();
+            f.sort();
+            f.dedup();
+            f.len() == 5
+        }), "each of the five frames posted its echo through the binding: {seen}");
+        let mut hrefs = Vec::new();
+        let mut cross_on_session = false;
+        let mut keys: Vec<Option<u64>> = vec![None];
+        keys.extend(p.contexts.frames().into_iter().map(Some));
+        for k in keys {
+            let h = p.eval(k, "location.href").expect("location.href in a frame's world");
+            let h = h.as_str().unwrap_or("").to_string();
+            if h == child {
+                cross_on_session = p.contexts.context_for(k).is_some_and(|(s, _)| s.is_some());
+            }
+            hrefs.push(h);
+        }
+        hrefs.sort();
+        assert_eq!(hrefs, vec!["about:srcdoc", "about:srcdoc", "about:srcdoc", child, top], "{hrefs:?}");
+        assert!(cross_on_session, "the cross-site frame's world is on its child session: {seen}");
+        p.settle(500);
+        let stack = p.page_eval("String(window.__stackRead === true)").unwrap_or_default();
+        println!("Runtime.enable detectable: {}", if stack.contains("true") { "yes" } else { "no" });
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
     }
 }
