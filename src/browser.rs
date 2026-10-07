@@ -640,23 +640,42 @@ fn ascii_host(host: &str) -> String {
 /// when the URL has some (never hidden), at most `MAX_URL` characters.
 pub fn display_url(url: &str) -> String {
     let clean = crate::inert_files::display_text(url, usize::MAX, false);
-    let shown = match clean.split_once("://") {
-        Some((scheme, rest)) if !scheme.is_empty() && !scheme.contains('/') => {
-            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-            let (authority, tail) = rest.split_at(end);
-            let (userinfo, hostport) = authority.rsplit_once('@').map_or(("", authority), |(u, h)| (u, h));
-            let (host, port) = if hostport.starts_with('[') {
-                hostport.split_once(']').map_or((hostport, ""), |(h, p)| (&hostport[..h.len() + 1], p))
-            } else {
-                hostport.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or((hostport, ""), |(h, _)| (h, &hostport[h.len()..]))
-            };
-            let at = if authority.contains('@') { format!("{userinfo}@") } else { String::new() };
-            format!("{scheme}://{at}{}{port}{tail}", ascii_host(host))
-        }
-        _ => clean,
+    let Some((scheme, rest)) = clean.split_once("://").filter(|(s, _)| !s.is_empty() && !s.contains('/')) else {
+        return cut_end(&clean, MAX_URL);
     };
-    let chars: Vec<char> = shown.chars().collect();
-    if chars.len() <= MAX_URL { shown } else { chars[..MAX_URL].iter().chain(['\u{2026}'].iter()).collect() }
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (userinfo, hostport) = authority.rsplit_once('@').map_or(("", authority), |(u, h)| (u, h));
+    let (host, port) = if hostport.starts_with('[') {
+        hostport.split_once(']').map_or((hostport, ""), |(h, p)| (&hostport[..h.len() + 1], p))
+    } else {
+        hostport.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or((hostport, ""), |(h, _)| (h, &hostport[h.len()..]))
+    };
+    // The host is what a person must see (a page can push it out by padding what comes before it):
+    // the host and port first, then the user information shortened to what is left of a quarter of
+    // the room, then the path takes the rest. A host too long to be one keeps its end.
+    let host = ascii_host(host);
+    let host = if host.chars().count() > MAX_HOST_SHOWN { format!("\u{2026}{}", tail_chars(&host, MAX_HOST_SHOWN)) } else { host };
+    let at = if authority.contains('@') { format!("{}@", cut_end(userinfo, MAX_USERINFO_SHOWN)) } else { String::new() };
+    let head = format!("{scheme}://{at}{host}{port}");
+    let room = MAX_URL.saturating_sub(head.chars().count());
+    format!("{head}{}", cut_end(tail, room.max(1)))
+}
+
+/// The most of a user name or password a displayed URL shows (the rest is an ellipsis).
+const MAX_USERINFO_SHOWN: usize = 64;
+/// The most of a host a displayed URL shows (a real host is 253 at most).
+const MAX_HOST_SHOWN: usize = 253;
+
+/// The last `n` characters of `text`.
+fn tail_chars(text: &str, n: usize) -> String {
+    let count = text.chars().count();
+    text.chars().skip(count.saturating_sub(n)).collect()
+}
+
+/// `text` cut to `max` characters, with an ellipsis after the cut (so at most `max` + 1 characters).
+fn cut_end(text: &str, max: usize) -> String {
+    if text.chars().count() <= max { text.to_string() } else { text.chars().take(max).chain(['\u{2026}']).collect() }
 }
 
 /// The address as it fits `cells` characters of the idle field. The end of the host always stays
@@ -1470,6 +1489,28 @@ mod tests {
         for f in [include_str!("browser.rs"), include_str!("webhost.rs"), include_str!("web_popover.rs"), include_str!("app/browser_app.rs")] {
             assert!(f.contains("inert_files::display_text("));
         }
+    }
+
+    /// Task 5 review O1 (URL spoofing, a class): no display of a URL ever drops the host. A long user
+    /// name is shortened first, then the path; the host stays whole at the end of the authority.
+    #[test]
+    fn display_url_never_drops_the_host() {
+        let user = format!("{}accounts.google.com", "a".repeat(3000));
+        for url in [format!("https://{user}@evil.test/login"), format!("https://{user}:{user}@evil.test:8443/x?y={}", "z".repeat(5000)), format!("https://{user}@evil.test")] {
+            let shown = display_url(&url);
+            assert!(shown.chars().count() <= MAX_URL + 1, "bounded");
+            assert!(shown.starts_with("https://"), "{shown}");
+            let authority = shown.trim_start_matches("https://");
+            let authority = &authority[..authority.find(['/', '?', '#']).unwrap_or(authority.len())];
+            assert!(authority.ends_with("@evil.test") || authority.ends_with("@evil.test:8443"), "the host is whole after the @: {authority}");
+            assert!(shown.contains('\u{2026}'), "the user information shows it was cut");
+        }
+        // A long path is cut after the host; a short user name is untouched.
+        let shown = display_url(&format!("https://paypal.com@evil.test/{}", "p".repeat(5000)));
+        assert!(shown.starts_with("https://paypal.com@evil.test/") && shown.chars().count() == MAX_URL + 1);
+        // A host too long to be a host keeps its end.
+        let long_host = format!("https://{}.evil.test/", "h".repeat(3000));
+        assert!(display_url(&long_host).contains("evil.test/") || display_url(&long_host).contains("evil.test"), "{}", display_url(&long_host));
     }
 
     #[test]
