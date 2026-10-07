@@ -109,12 +109,28 @@ pub fn clip_home(peer_member: bool, shown: Option<crate::layout::PaneId>, pane: 
     if peer_member { shown.unwrap_or(pane) } else { pane }
 }
 
+/// Whether a member shows its spinner: its agent reported Working.
+pub fn busy(state: crate::session_state::State) -> bool {
+    state == crate::session_state::State::Working
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::menus::{Chord, ChordKey};
     use crate::workgroup::claude_code::{config, DIFF, MAIN, REVIEW};
     use crate::workgroup::Shortcut;
+
+    /// A member is busy while its agent reports Working (12f's status); the toolbar's segment shows the spinner.
+    #[test]
+    fn busy_flags_follow_the_reported_status() {
+        use crate::session_state::State;
+        assert!(busy(State::Working));
+        for s in [State::Idle, State::Waiting, State::Unknown] {
+            assert!(!busy(s), "{s:?}");
+        }
+        assert!(include_str!("app/workgroup_toolbar_ui.rs").contains("crate::workgroup_peers::busy(session_state::reported_state("));
+    }
 
     /// Clippings are the peer group's (`PSPP:30-55`): a split or tab member has its own.
     #[test]

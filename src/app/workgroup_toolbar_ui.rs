@@ -135,7 +135,7 @@ impl App {
 
     /// Whether member `config` of instance `inst` is busy (an agent working): the reported state.
     fn member_busy(&self, pane: Option<PaneId>) -> bool {
-        pane.and_then(|p| self.panes.get(&p)).is_some_and(|p| session_state::reported_state(&p.own().tab_status) == session_state::State::Working)
+        pane.and_then(|p| self.panes.get(&p)).is_some_and(|p| crate::workgroup_peers::busy(session_state::reported_state(&p.own().tab_status)))
     }
 
     /// The strips of the active tab: (pane, strip rectangle, the pane's full rectangle).
