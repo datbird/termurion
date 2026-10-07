@@ -170,7 +170,9 @@ pub const ASK_ENTER: usize = 1;
 
 /// The question's heading and body: who is asking, and every command exactly as it would run, made
 /// inert (no bidi override can disguise one).
-pub fn ask_text(w: &Workgroup, how: Mechanism) -> (String, String) {
+/// Whole commands only: None when the text would pass `ASK_ROOM` (the question cannot show it all,
+/// so it is not offered; Trust it in Settings after reading it there).
+pub fn ask_text(w: &Workgroup, how: Mechanism) -> Option<(String, String)> {
     let heading = format!("Enter the workgroup \u{201c}{}\u{201d}?", display_text(wg::display_name(w), 128, false));
     let mut body = String::new();
     body.push_str(match how {
@@ -182,11 +184,39 @@ pub fn ask_text(w: &Workgroup, how: Mechanism) -> (String, String) {
         body.push_str(&format!("\n{}: ", role(s)));
         match (s.command.is_empty(), s.url_string.is_empty()) {
             (true, true) => body.push_str("the profile's own shell"),
-            (true, false) => body.push_str(&format!("opens {}", display_text(&s.url_string, 300, false))),
-            _ => body.push_str(&display_text(&s.command, 300, false)),
+            (true, false) => body.push_str(&format!("opens {}", visible_runs(&display_text(&s.url_string, usize::MAX, false)))),
+            _ => body.push_str(&visible_runs(&display_text(&s.command, usize::MAX, false))),
         }
     }
-    (heading, body)
+    (body.chars().count() <= ASK_ROOM).then_some((heading, body))
+}
+
+/// The most characters the question's body holds, every command whole.
+pub const ASK_ROOM: usize = 6000;
+
+/// `text` with every run of four or more blanks written as "[N spaces]", so padding cannot push
+/// part of a command out of sight.
+fn visible_runs(text: &str) -> String {
+    let mut out = String::new();
+    let mut run = 0usize;
+    let flush = |out: &mut String, run: &mut usize| {
+        match *run {
+            0 => {}
+            1..=3 => out.push_str(&" ".repeat(*run)),
+            n => out.push_str(&format!(" [{n} spaces] ")),
+        }
+        *run = 0;
+    };
+    for c in text.chars() {
+        if c == ' ' || c == '\t' {
+            run += 1;
+        } else {
+            flush(&mut out, &mut run);
+            out.push(c);
+        }
+    }
+    flush(&mut out, &mut run);
+    out
 }
 
 fn role(s: &SessionConfig) -> String {
@@ -444,14 +474,34 @@ mod tests {
         w.name = "Evil\u{202e}gp".into();
         w.sessions[0].command = "claude --x".into();
         w.sessions[1].display_name = "Diff\nRow".into();
-        let (heading, body) = ask_text(&w, Mechanism::Trigger);
+        let (heading, body) = ask_text(&w, Mechanism::Trigger).unwrap();
         assert!(heading.contains("Enter the workgroup"), "{heading}");
         assert!(!heading.contains('\u{202e}') && !body.contains('\u{202e}'), "text a file supplies is made inert");
         assert!(body.contains("claude --x"), "{body}");
         assert!(body.contains("git diff \\(gitBase)"), "{body}");
         assert!(body.contains("trigger"), "says who asked: {body}");
-        let (_, menu) = ask_text(&w, Mechanism::Menu);
+        let (_, menu) = ask_text(&w, Mechanism::Menu).unwrap();
         assert!(!menu.contains("trigger"));
+    }
+
+    /// No silent cut: a long command is shown to its last character, a long run of spaces is made
+    /// visible, and a workgroup too long to show in full cannot be entered from the question.
+    #[test]
+    fn the_question_never_hides_command_text() {
+        let mut w = wg::presets::coding_agent_plus_diff();
+        let long = format!("cmd /c echo ok{}& calc.exe TAIL", " ".repeat(3900));
+        assert!(long.len() < 4096);
+        w.sessions[1].command = long;
+        let (_, body) = ask_text(&w, Mechanism::Trigger).unwrap();
+        assert!(body.contains("& calc.exe TAIL"), "the tail is shown");
+        assert!(body.contains("3900 spaces"), "a whitespace run is visible: {}", &body[..200.min(body.len())]);
+        assert!(!body.contains("      "), "no run of blanks is left to hide text");
+        // Over the room the question has, Enter is not offered.
+        let mut big = wg::presets::coding_agent_plus_diff_plus_code_review(None, None);
+        for s in &mut big.sessions {
+            s.command = "x".repeat(4000);
+        }
+        assert!(ask_text(&big, Mechanism::Trigger).is_none());
     }
 
     #[test]

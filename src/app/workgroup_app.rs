@@ -149,7 +149,10 @@ impl App {
             return false;
         }
         if run::needs_ask(source, how, w.sessions.len()) {
-            let (heading, body) = run::ask_text(&w, how);
+            let Some((heading, body)) = run::ask_text(&w, how) else {
+                self.banners.set("workgroup", "This workgroup's commands are too long to show in full, so it is not started. Read them in Settings > Arrangements > Workgroups and trust it there.");
+                return false;
+            };
             let then = scripts_alerts::Then::EnterWorkgroup { workgroup: Box::new(w), pane, how };
             let ask = scripts_alerts::ask(&heading, &body, &run::ASK_LABELS, None, crate::warnings::Kind::Persistent, then);
             self.ask_scripts(ask);
