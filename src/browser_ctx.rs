@@ -23,6 +23,92 @@ pub struct Ctx {
     /// The titles of the selection helpers and of the Smart Selection actions (Task 4 fills them).
     pub smart_actions: Vec<String>,
     pub helpers: Vec<String>,
+    /// What each helper copies, and each Smart Selection action with its captures, as they were
+    /// when the menu was built (the items are positions into these).
+    pub helper_data: Vec<crate::ctx_help::Helper>,
+    pub smart_data: Vec<SmartPick>,
+}
+
+/// A Smart Selection action offered in the menu, with the captures of the match that offered it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SmartPick {
+    pub action: crate::smartsel::RuleAction,
+    pub captures: Vec<String>,
+}
+
+/// "Run command?" (`PSB:301-307`).
+pub const RUN_HEADING: &str = "Run command?";
+/// "Open file?" (`PSB:336-342`).
+pub const OPEN_FILE_HEADING: &str = "Open file?";
+
+/// The text of the ask before a command runs.
+pub fn run_text(command: &str) -> String {
+    format!("OK to run:\n{command}")
+}
+
+/// The text of the ask before a file opens.
+pub fn open_file_text(file: &str) -> String {
+    format!("OK to open this file?\n{file}")
+}
+
+/// The longest command or file name the ask shows whole.
+pub const MAX_SHOWN: usize = 400;
+
+/// Whether `text` shows in an ask exactly as it is: no hidden character and no cut. What the person
+/// cannot read in full, a page's text does not get to run or open (a page can pad a line).
+pub fn shown_whole(text: &str) -> bool {
+    crate::inert_files::display_text(text, MAX_SHOWN, false) == text
+}
+
+/// What a Smart Selection action does from a page (`BWV:554-602`), decided before anything runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SmartPlan {
+    Copy(String),
+    OpenFile(String),
+    OpenUrl(String),
+    /// A command line built by the one cmd.exe builder, to run after the ask.
+    Run(String),
+    /// Nothing runs, and why (the builder's refusal).
+    Refused(String),
+    /// "runCommand:", "runCoprocess:", "sendText:" and unknown actions do nothing (`BWV:573-575`).
+    Nothing,
+}
+
+/// The plan of one action with the captures of a page's text. The parameter is built by
+/// `smartsel::parameter` (no interpolation for a page; the host is the page's, the folder and user
+/// empty), so a value a command line would read as syntax refuses the whole action (B5).
+pub fn smart_plan(a: &crate::smartsel::RuleAction, captures: &[String], page_host: &str) -> SmartPlan {
+    if !matches!(a.action.as_str(), "copy:" | "openFile:" | "openUrl:" | "runCommandInWindow:") {
+        return SmartPlan::Nothing;
+    }
+    let eval = |_: &str, _: &[Option<&str>], _: bool| Err("A page's Smart Selection action does not use interpolated strings.".to_string());
+    match crate::smartsel::parameter(a, captures, false, &eval, "", page_host, "") {
+        Err(why) => SmartPlan::Refused(why),
+        Ok(p) => match a.action.as_str() {
+            "copy:" => SmartPlan::Copy(p),
+            "openFile:" => SmartPlan::OpenFile(p),
+            "openUrl:" => SmartPlan::OpenUrl(p),
+            _ => SmartPlan::Run(p),
+        },
+    }
+}
+
+/// The menu's Smart Selection items for a selection (`BCM:101-110`, `:194-212`): one per action of
+/// each rule that matches it, in rule order, titled with the action's own title. A selection of
+/// `MAX_CUSTOM_ACTIONS_TEXT` characters or more gets none.
+pub fn smart_entries(selection: &str, rules: &[crate::smartsel::Rule]) -> (Vec<String>, Vec<SmartPick>) {
+    let mut titles = Vec::new();
+    let mut picks = Vec::new();
+    if selection.chars().count() >= crate::ctx_help::MAX_CUSTOM_ACTIONS_TEXT {
+        return (titles, picks);
+    }
+    for m in crate::browser_smart::all_matches(rules, selection) {
+        for action in rules.get(m.rule).map(|r| r.actions.as_slice()).unwrap_or_default() {
+            titles.push(action.title.clone());
+            picks.push(SmartPick { action: action.clone(), captures: m.captures.clone() });
+        }
+    }
+    (titles, picks)
 }
 
 /// One item of the menu. `Native` marks where WebView2's own items go.
@@ -210,6 +296,21 @@ fn safe_label(raw: &str) -> String {
     clean
 }
 
+/// A color helper's swatch (`CMU:343-350`): 24 by 24 pixels of the color with a 1-pixel border, light
+/// gray on a dark color and dark gray on a light one, as PNG.
+pub fn swatch_png(rgb: (u8, u8, u8)) -> Vec<u8> {
+    let luma = (0.299 * f64::from(rgb.0) + 0.587 * f64::from(rgb.1) + 0.114 * f64::from(rgb.2)) / 255.0;
+    let edge = if luma < 0.5 { 204 } else { 51 };
+    let mut img = image::RgbaImage::new(24, 24);
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        let border = x == 0 || y == 0 || x == 23 || y == 23;
+        *p = if border { image::Rgba([edge, edge, edge, 255]) } else { image::Rgba([rgb.0, rgb.1, rgb.2, 255]) };
+    }
+    let mut out = Vec::new();
+    let _ = image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png);
+    out
+}
+
 /// The entries for `WebView::answer_context_menu`: each custom item with its id (its position plus
 /// one), `Native` where WebView2's own items go. Every label passes `safe_label`; an item with no
 /// label at all (a helper index the list does not have) is left out.
@@ -224,7 +325,12 @@ pub fn entries(items: &[Option<Item>], ctx: &Ctx, search_engine: Option<&str>) -
                 if label.is_empty() {
                     continue;
                 }
-                out.push(MenuEntry::Custom { id: at as u32 + 1, label, enabled: true, icon_png: None });
+                // A helper that copies nothing (a color, a byte count) is shown, not offered; a
+                // color has its swatch beside the label.
+                let helper = if let Item::Helper(n) = i { ctx.helper_data.get(*n) } else { None };
+                let enabled = helper.is_none_or(|h| h.copy.is_some());
+                let icon_png = helper.and_then(|h| h.color).map(swatch_png);
+                out.push(MenuEntry::Custom { id: at as u32 + 1, label, enabled, icon_png });
             }
         }
     }
@@ -368,5 +474,72 @@ mod tests {
             assert!(!l.is_empty());
         }
         assert!(matches!(e[2], MenuEntry::Custom { id: 3, .. }));
+    }
+
+    fn act(action: &str, parameter: &str) -> crate::smartsel::RuleAction {
+        crate::smartsel::RuleAction { title: "t".into(), action: action.into(), parameter: parameter.into() }
+    }
+
+    /// `BWV:554-602`, `PSB:300-346` and the one command path (B5): what each action does with the
+    /// captures a page's text gave.
+    #[test]
+    fn smart_actions_follow_iterm2() {
+        assert_eq!(RUN_HEADING, "Run command?");
+        assert_eq!(OPEN_FILE_HEADING, "Open file?");
+        assert_eq!(run_text("ls"), "OK to run:\nls");
+        assert_eq!(open_file_text("C:\\a.txt"), "OK to open this file?\nC:\\a.txt");
+        let caps = |c: &str| vec![c.to_string(), c.to_string()];
+        let plan = |a: &str, p: &str, c: &str| smart_plan(&act(a, p), &caps(c), "example.com");
+        assert_eq!(plan("copy:", "", "abc"), SmartPlan::Copy("abc".into()));
+        assert_eq!(plan("copy:", "x\\1", "abc"), SmartPlan::Copy("xabc".into()));
+        assert_eq!(plan("openFile:", "\\1", "C:\\a.txt"), SmartPlan::OpenFile("C:\\a.txt".into()));
+        assert_eq!(plan("openUrl:", "https://\\h/\\1", "a b"), SmartPlan::OpenUrl("https://example.com/a b".into()));
+        assert_eq!(plan("runCommandInWindow:", "echo \\1", "hi"), SmartPlan::Run("echo \"hi\"".into()));
+        // Not supported in a page (BWV:573-575).
+        for a in ["runCommand:", "runCoprocess:", "sendText:", "bogus:"] {
+            assert_eq!(plan(a, "x", "y"), SmartPlan::Nothing, "{a}");
+        }
+        // Page text that a command line would read as syntax runs nothing (13p-r, B5).
+        for bad in ["x%CMDCMDLINE%&calc", "a^b", "a|b", "a<b", "a>b", "a\"b", "a\u{7}b", "a!b", "a(b", "a)b", "a\u{201c}b", "a\u{ff02}b", "a\\", "a`b"] {
+            assert_eq!(plan("runCommandInWindow:", "echo \\1", bad), SmartPlan::Refused(crate::semantic::CMD_REFUSED.into()), "{bad:?}");
+        }
+        assert_eq!(plan("runCommandInWindow:", "echo ok", "x&y"), SmartPlan::Run("echo ok".into()), "only a substituted value is judged");
+    }
+
+    /// P15: an action's title is page-independent text from the profile, still made inert; the
+    /// menu's data is a snapshot taken with the menu.
+    #[test]
+    fn color_swatches_follow_iterm2() {
+        let px = |rgb: (u8, u8, u8)| {
+            let img = image::load_from_memory(&swatch_png(rgb)).unwrap().to_rgba8();
+            assert_eq!(img.dimensions(), (24, 24));
+            (img.get_pixel(0, 5).0, img.get_pixel(12, 12).0)
+        };
+        assert_eq!(px((0, 0, 0)), ([204, 204, 204, 255], [0, 0, 0, 255]), "light gray on a dark color");
+        assert_eq!(px((255, 128, 0)), ([51, 51, 51, 255], [255, 128, 0, 255]), "dark gray on a light one");
+        let c = Ctx { helpers: vec!["#ff8000".into(), "5 hex bytes".into(), "255 = 0xff".into()], helper_data: vec![crate::ctx_help::color("#ff8000").unwrap(), crate::ctx_help::Helper { title: "5 hex bytes".into(), copy: None, color: None }, crate::ctx_help::hex_or_decimal("255").unwrap()], ..Ctx::default() };
+        let e = entries(&[Some(Item::Helper(0)), Some(Item::Helper(1)), Some(Item::Helper(2))], &c, None);
+        let flags: Vec<(bool, bool)> = e.iter().map(|m| if let MenuEntry::Custom { enabled, icon_png, .. } = m { (*enabled, icon_png.is_some()) } else { (false, false) }).collect();
+        assert_eq!(flags, vec![(false, true), (false, false), (true, false)]);
+    }
+
+    #[test]
+    fn what_the_person_cannot_read_does_not_run() {
+        assert!(shown_whole("echo \"hi\""));
+        assert!(!shown_whole("echo hi\u{202e}"));
+        assert!(!shown_whole(&format!("echo {}", " ".repeat(500))));
+        assert!(!shown_whole("a\nb"));
+    }
+
+    #[test]
+    fn smart_menu_entries_follow_the_rules() {
+        let rules = vec![crate::smartsel::Rule { regex: r"\d+".into(), precision: 1.0, notes: String::new(), actions: vec![act("copy:", ""), act("openUrl:", "u")] }, crate::smartsel::Rule { regex: "zzz".into(), precision: 1.0, notes: String::new(), actions: vec![act("copy:", "")] }];
+        let (titles, picks) = smart_entries("go 42", &rules);
+        assert_eq!(titles, vec!["t".to_string(), "t".to_string()]);
+        assert_eq!(picks.len(), 2);
+        assert_eq!(picks[0].captures, vec!["42".to_string()]);
+        // Over 400 characters: no actions at all (CMH:39).
+        assert!(smart_entries(&"1".repeat(400), &rules).0.is_empty());
+        assert!(!smart_entries(&"1".repeat(399), &rules).0.is_empty());
     }
 }

@@ -18,6 +18,12 @@ impl App {
     /// the clicked session), the menu is built and WebView2 is answered. The helpers and Smart
     /// Selection actions are Task 4's and are empty until then.
     pub(super) fn browser_context_menu(&mut self, pane: PaneId, token: u64, target: MenuTarget) {
+        // The helpers and Smart Selection actions are made from the selection exactly as the page gave
+        // it (`BCM:72-110`): white space is trimmed for the conversions and kept for the Base64 copy.
+        let raw = target.selection.clone().unwrap_or_default();
+        let helpers = crate::ctx_help::menu_helpers(&raw);
+        let rules = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).map(crate::smartsel::rules).unwrap_or_default();
+        let (smart_titles, smart_data) = if raw.trim().is_empty() { (Vec::new(), Vec::new()) } else { browser_ctx::smart_entries(&raw, &rules) };
         let engine = browser_ctx::search_engine_name(&self.globals.string("SearchCommand"));
         let zoom = self.panes.get(&pane).and_then(|p| p.browser_io()).map_or(1.0, |io| io.zoom);
         let mut scale = 1.0;
@@ -30,7 +36,11 @@ impl App {
             scale = f64::from(a.scale());
             a.redraw();
         });
-        let ctx = browser_ctx::ctx_of(&target, scale, zoom);
+        let mut ctx = browser_ctx::ctx_of(&target, scale, zoom);
+        ctx.helpers = helpers.iter().map(|h| h.title.clone()).collect();
+        ctx.helper_data = helpers;
+        ctx.smart_actions = smart_titles;
+        ctx.smart_data = smart_data;
         let built = self.browser_ctx_built();
         let items = browser_ctx::items(&ctx, &built, engine, multiple);
         let entries = browser_ctx::entries(&items, &ctx, engine);
@@ -90,8 +100,22 @@ impl App {
                         a.remember_paste(&text);
                     }
                 }
-                // Task 4 (helpers, Smart Selection actions) and the later plans' items.
-                Item::Helper(_) | Item::SmartAction(_) | Item::AddNamedMark | Item::SavePageAs | Item::ViewSource | Item::RemoveElement | Item::Native => {}
+                // A helper copies its text, or its bytes decoded as UTF-8 with what is not lost
+                // (`BWV:943-945`), and remembers it.
+                Item::Helper(i) => {
+                    if let Some(copy) = ctx.helper_data.get(i).and_then(|h| h.copy.as_ref()) {
+                        let text = crate::ctx_help::copy_text(copy);
+                        a.set_clipboard_text(text.clone());
+                        a.remember_paste(&text);
+                    }
+                }
+                Item::SmartAction(i) => {
+                    if let Some(pick) = ctx.smart_data.get(i) {
+                        a.browser_smart_action(pane, &pick.action, &pick.captures, event_loop);
+                    }
+                }
+                // The later plans' items.
+                Item::AddNamedMark | Item::SavePageAs | Item::ViewSource | Item::RemoveElement | Item::Native => {}
             }
         });
     }
@@ -115,8 +139,10 @@ mod tests {
         for banned in ["open_url_in_browser(", "open_link(", "execute(", "execute_with(", "Command::new(", "guard_open(", "shell_open("] {
             assert!(!p.contains(banned), "{banned}");
         }
-        // Copy Page Title is the only copy and it copies the title or the URL, never the context's text.
-        assert_eq!(run.matches("set_clipboard_text(").count(), 1);
+        // Copy Page Title copies the title or the URL; a helper copies what the menu built for it
+        // (never the context's raw text); a Smart Selection action goes to its own function.
+        assert_eq!(run.matches("set_clipboard_text(").count(), 2);
+        assert!(run.contains("a.browser_smart_action(pane, &pick.action, &pick.captures, event_loop)"));
     }
 
     /// A pick acts only for the menu that is current and an id that names an item.

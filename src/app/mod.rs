@@ -160,6 +160,7 @@ mod adblock_app;
 mod browser_db_app;
 mod browser_scripts_app;
 mod browser_ctx_app;
+mod browser_smart_app;
 mod browser_frames_app;
 mod web_popover_app;
 mod web_replay_app;
@@ -1677,6 +1678,9 @@ pub struct App {
     /// The web view of every browser pane (13x Task 5). App-wide: keyed by pane, and a view is
     /// re-parented when its pane changes windows.
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
+    /// Commands a person confirmed from a page's Smart Selection action, each run in a single-use
+    /// window by the next tick (the answer has no event loop). App-wide: pane ids are.
+    browser_runs: Vec<(PaneId, String)>,
     /// The ad blocker: rules, the list download and its schedule (13x Task 8; app-wide).
     adblock: adblock_app::Adblock,
     /// The pane that was focused at the last placement, to tell a pane change from none.
@@ -2642,6 +2646,7 @@ pub fn run() {
         tool_view_ids: HashMap::new(),
         tool_restarts: HashMap::new(),
         browser_views: HashMap::new(),
+        browser_runs: Vec::new(),
         adblock: adblock_app::Adblock::default(),
         focus_seen: Default::default(),
         browser_url_override: None,
@@ -7069,6 +7074,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.browser_runs_tick(event_loop);
         self.open_locale_asks(event_loop);
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
