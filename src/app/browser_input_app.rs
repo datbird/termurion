@@ -96,6 +96,13 @@ impl App {
     /// the key); the route is repeated here with the state of now, and a key the gate took that no
     /// longer routes to anything does nothing (P16).
     pub(super) fn browser_accel_key(&mut self, pane: PaneId, vk: u32, mods: u8, taken: bool, event_loop: &ActiveEventLoop) {
+        // A key the page kept ends a pending Leader (`IA:552-572`); a modifier alone is not a key.
+        if !taken && self.leader_on && !matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5) {
+            self.in_pane_window(pane, |a| {
+                a.leader_on = false;
+                a.refresh_route();
+            });
+        }
         // The gate's order, repeated: a bar's button first (its letter may be D), a person's binding
         // before the address keys, then 13x's accelerators and Win chords.
         let state = self.browser_gate_state(pane);
@@ -108,13 +115,6 @@ impl App {
                     return;
                 }
             }
-        }
-        // A key the page kept ends a pending Leader (`IA:552-572`); a modifier alone is not a key.
-        if !taken && self.leader_on && !matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5) {
-            self.in_pane_window(pane, |a| {
-                a.leader_on = false;
-                a.refresh_route();
-            });
         }
         if !taken || mods & browser_keys::WIN != 0 {
             return;
@@ -769,6 +769,8 @@ mod tests {
         assert!(key.find("Owner::Bar(i)").unwrap() < key.find("self.browser_page_key(").unwrap(), "the bar first");
         assert!(key.contains("Owner::Binding"), "a binding beats the address keys");
         assert!(key.contains("self.leader_on") && key.contains("!taken"), "a kept key disarms the Leader");
+        // Round 2 minor: a key `browser_page_key` consumes (F6, Ctrl+L) disarms it too, so the disarm is first.
+        assert!(key.find("self.leader_on").unwrap() < key.find("self.browser_page_key(").unwrap(), "the Leader ends on any key the page kept");
     }
 
     /// Broadcast (Task 8): a message is acted on only when the pane sends now, the replay never

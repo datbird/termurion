@@ -65,7 +65,12 @@ impl App {
                     self.browser_tip_next = Some(TipAsk::Clear(pane));
                 }
             }
-            show => self.browser_tip_next = Some(TipAsk::Hover(pane, show)),
+            // Nor does a page's Show replace a waiting toast (a hover flood in the tick before it).
+            show => {
+                if !matches!(&self.browser_tip_next, Some(TipAsk::Toast(..))) {
+                    self.browser_tip_next = Some(TipAsk::Hover(pane, show));
+                }
+            }
         }
     }
 
@@ -402,6 +407,9 @@ mod tests {
         let p = prod();
         let hover = &p[p.find("pub(super) fn browser_hover(").unwrap()..p.find("fn browser_hover_now").unwrap()];
         assert!(hover.contains("TipAsk::Toast(..)") && hover.contains("*p != pane"), "{hover}");
+        // Round 2 minor: a page's Show (a hover flood in the tick before a "Copied" toast) never replaces it either.
+        let show = &hover[hover.find("show =>").unwrap()..];
+        assert!(show.contains("TipAsk::Toast(..)") && show.find("TipAsk::Toast(..)").unwrap() < show.find("TipAsk::Hover(pane, show)").unwrap(), "{show}");
         let tick = &p[p.find("pub(super) fn browser_tip_tick").unwrap()..p.find("// --- Announcement bars ---").unwrap()];
         assert!(tick.contains("Some(TipAsk::Clear(pane))") && tick.contains("is_toast() && !t.expired(Instant::now())"), "{tick}");
     }
