@@ -812,6 +812,7 @@ impl App {
             ("findUrls:", _) => self.reveal_shortcuts("urls"),
             ("smartSelectAllVisible:", _) => self.reveal_shortcuts("smart"),
             ("revealContentNavigationShortcuts:", _) => self.reveal_shortcuts("pick"),
+            ("jumpToSelection:", _) if self.is_browser_pane(id) => self.browser_jump_to_selection(id),
             ("jumpToSelection:", _) => {
                 if let Some(p) = self.panes.get_mut(&id) {
                     let term = p.screen.term();

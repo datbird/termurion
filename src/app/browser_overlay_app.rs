@@ -135,7 +135,6 @@ impl App {
     }
 
     /// "Copied" and its like: `text` (Tandem's own) at the pointer for `secs`.
-    #[allow(dead_code)] // Task 7 (Copy Link Address)
     pub(super) fn browser_toast(&mut self, pane: PaneId, text: &str, secs: f64) {
         self.browser_tip_next = Some(TipAsk::Toast(pane, text.to_string(), secs));
     }

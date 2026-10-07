@@ -2875,4 +2875,59 @@ mod probe {
         assert_eq!(p.page_eval("document.getElementById('t').value + document.getElementById('c').textContent"), Ok("\"hi\\nyo\"".into()), "the page is unchanged");
         p.finish();
     }
+
+    /// Task 7: the page's Smart Selection scripts in Tandem's world: the text around a point, the
+    /// matcher's counts, and the selection `select-text.js` makes. (`browser_smart_select` is these
+    /// calls in order; the App has no test constructor.) Needs the console session.
+    #[test]
+    #[ignore]
+    fn smart_selection_selects_in_a_page() {
+        let page_html = "<!doctype html><html><body style=\"margin:0\"><p id=p>write to <span id=m>bob@example.com</span> today</p></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let center = p.eval(None, "(() => { const r = document.getElementById('m').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()").expect("the center");
+        let (x, y) = (center[0].as_f64().unwrap(), center[1].as_f64().unwrap());
+        let fill = |name: &str, extra: &[(&str, String)]| {
+            let (xs, ys) = (crate::browser_pointer::num(x), crate::browser_pointer::num(y));
+            let mut subs: Vec<(&str, &str)> = vec![("X", &xs), ("Y", &ys)];
+            subs.extend(extra.iter().map(|(k, v)| (*k, v.as_str())));
+            crate::browser_js::fill_template(crate::browser_js::resource(name).unwrap(), &subs)
+        };
+        let text = p.eval(None, &crate::browser_js::make_safe(&fill("extract-text-at-point.js", &[("RADIUS", "2".into())]))).expect("the text");
+        let (before, after) = (text["before"].as_str().unwrap().to_string(), text["after"].as_str().unwrap().to_string());
+        let rule = crate::smartsel::Rule { regex: r"\S+@\S+".into(), precision: 1000.0, notes: String::new(), actions: Vec::new() };
+        let m = crate::browser_smart::first_match(&before, &after, &[rule], false).expect("the address matches");
+        let select = fill("select-text.js", &[("BEFORE_COUNT", m.before.to_string()), ("AFTER_COUNT", m.after.to_string())]);
+        p.eval(None, &crate::browser_js::make_safe(&select)).expect("the selection");
+        assert_eq!(p.page_eval("window.getSelection().toString()"), Ok("\"bob@example.com\"".into()));
+        p.finish();
+    }
+
+    /// Task 7 (I7): a page's synthetic press, release and auxclick run no binding; a real middle press
+    /// through `Input.dispatchMouseEvent` (trusted) reaches the router once as down and once as up, and
+    /// the page never sees it. Needs the console session.
+    #[test]
+    #[ignore]
+    fn synthetic_click_runs_nothing() {
+        let secret = hex32();
+        let page_html = "<!doctype html><html><body style=\"margin:0\"><div id=t style=\"width:300px;height:200px\"></div><script>window.__saw = []; for (const n of ['mousedown','mouseup','auxclick']) { window.addEventListener(n, e => window.__saw.push([n, e.isTrusted]), true); }</script></body></html>";
+        let code = crate::browser_pointer::user_script(&secret, &["Button,2,1,,".to_string()], true, false).code;
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        p.page_eval("(() => { const el = document.getElementById('t'); for (const n of ['mousedown','mouseup','auxclick']) { el.dispatchEvent(new MouseEvent(n, {button: 1, bubbles: true, detail: 1})); } })()").expect("the page dispatches");
+        p.settle(500);
+        assert!(p.clients(crate::browser_pointer::GATE_HANDLER).is_empty(), "a synthetic press reaches nothing");
+        assert_eq!(p.page_eval("window.__saw.length"), Ok("3".into()), "the page saw its own events");
+        p.page_eval("window.__saw = []").unwrap();
+        for kind in ["mousePressed", "mouseReleased"] {
+            p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": 20, "y": 20, "button": "middle", "clickCount": 1})).expect("the real press");
+        }
+        assert!(p.wait(10, |p| p.clients(crate::browser_pointer::GATE_HANDLER).len() >= 2), "the real press reaches the router");
+        let kinds: Vec<String> = p.clients(crate::browser_pointer::GATE_HANDLER).iter().map(|(_, b)| b["type"].as_str().unwrap_or("").to_string()).collect();
+        assert_eq!(kinds, vec!["down".to_string(), "up".to_string()]);
+        let body = &p.clients(crate::browser_pointer::GATE_HANDLER)[0].1;
+        assert_eq!(crate::browser_pointer::press_of(body), Some(crate::browser_pointer::Press::Down { button: 2, clicks: 1, mods: crate::pointer::Mods::default(), x: 20.0, y: 20.0 }));
+        assert_eq!(p.page_eval("window.__saw.length"), Ok("0".into()), "the page never saw the taken press");
+        p.finish();
+    }
 }

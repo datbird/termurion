@@ -26,6 +26,11 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "extend-selection-character.js" => include_str!("../resources/browser/extend-selection-character.js"),
         "extend-selection-line.js" => include_str!("../resources/browser/extend-selection-line.js"),
         "extend-selection-word.js" => include_str!("../resources/browser/extend-selection-word.js"),
+        "extract-text-at-point.js" => include_str!("../resources/browser/extract-text-at-point.js"),
+        "extend-selection-to-point.js" => include_str!("../resources/browser/extend-selection-to-point.js"),
+        "open-link-at-point.js" => include_str!("../resources/browser/open-link-at-point.js"),
+        "select-text.js" => include_str!("../resources/browser/select-text.js"),
+        "urls-at-point.js" => include_str!("../resources/browser/urls-at-point.js"),
         "graph-discovery-api.js" => include_str!("../resources/browser/graph-discovery-api.js"),
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
@@ -36,6 +41,7 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "iterm-browser-common.css" => include_str!("../resources/browser/iterm-browser-common.css"),
         "log-errors.js" => include_str!("../resources/browser/log-errors.js"),
         "monitor-selection.js" => include_str!("../resources/browser/monitor-selection.js"),
+        "pointer-gate.js" => include_str!("../resources/browser/pointer-gate.js"),
         "selection-gesture.js" => include_str!("../resources/browser/selection-gesture.js"),
         "tandem-cloak.js" => include_str!("../resources/browser/tandem-cloak.js"),
         "welcome-page.html" => include_str!("../resources/browser/welcome-page.html"),
@@ -326,6 +332,8 @@ pub enum AlwaysOn {
     Editing(bool),
     /// The link under the pointer, or none (`HLH`).
     Hover(crate::browser_tip::Hover),
+    /// A trusted press the pointer gate took (Task 7).
+    Pointer(crate::browser_pointer::Press),
 }
 
 /// What an always-on handler's message means. The console log comes from either world and needs no
@@ -350,6 +358,7 @@ pub fn always_on(r: &Routed, secret: &str, dom_secret: &str) -> Option<AlwaysOn>
         SELECTION_GESTURE_HANDLER if secret_ok(&r.body, secret) => Some(AlwaysOn::Gesture(r.body.get("phase").and_then(Value::as_str) == Some("down"))),
         EDITING_HANDLER if secret_ok(&r.body, dom_secret) => Some(AlwaysOn::Editing(r.body.get("editable")?.as_bool()?)),
         crate::browser_tip::HOVER_HANDLER if secret_ok(&r.body, secret) => crate::browser_tip::hover_of(&r.body).map(AlwaysOn::Hover),
+        crate::browser_pointer::GATE_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none() => crate::browser_pointer::press_of(&r.body).map(AlwaysOn::Pointer),
         _ => None,
     }
 }
@@ -882,7 +891,7 @@ mod tests {
         let cloak = code("tandem-cloak");
         assert!(cloak.contains("delete window.chrome.webview") && cloak.contains("hcaptcha") && !cloak.contains("webkit"));
         // Every listener of a Tandem script checks isTrusted first (P26).
-        for name in ["selection-gesture.js", "tandem-cloak.js"] {
+        for name in ["selection-gesture.js", "tandem-cloak.js", "pointer-gate.js"] {
             let text = resource(name).unwrap();
             assert!(text.contains("Tandem's own script"), "{name} says it is Tandem's");
             let mut at = 0;

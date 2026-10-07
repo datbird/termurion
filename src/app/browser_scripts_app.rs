@@ -153,7 +153,14 @@ impl App {
         // Offered while the world is being set up (that is when they are registered) or ready, never
         // once it is Unavailable; messages are acted on only when it is Ready.
         let client_ok = bv.is_none_or(|b| !matches!(b.client_world, ClientWorld::Unavailable(_)));
-        browser_js::always_on_scripts(secret, dom, client_ok, cfg!(debug_assertions))
+        let mut scripts = browser_js::always_on_scripts(secret, dom, client_ok, cfg!(debug_assertions));
+        // Tandem's pointer gate (Task 7): the table as it is now; a later change reaches the live
+        // worlds through `browser_pointer_sync`.
+        if client_ok {
+            let (keys, four, focus) = self.browser_pointer_table();
+            scripts.push(crate::browser_pointer::user_script(secret, &keys, four, focus));
+        }
+        scripts
     }
 
     /// The one gate of every Client-world handler: the view's isolated world was proven (`Ready`).
@@ -187,6 +194,8 @@ impl App {
             bv.page_frames.clear();
             bv.eval_waiting.clear();
             bv.world = WorldState::default();
+            bv.pointer_sig = None;
+            bv.pointer_down = None;
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
         for done in dones {
@@ -414,7 +423,7 @@ impl App {
 
     /// The one DevTools sender of the app: `done` gets the answer (the result object) or the error.
     /// A method outside `browser_world::ALLOWED` is refused here and in the host.
-    fn devtools_send(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, done: JsDone) -> Option<u64> {
+    pub(super) fn devtools_send(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, done: JsDone) -> Option<u64> {
         let why = match self.browser_views.get_mut(&pane) {
             Some(bv) if bv.view.is_some() && browser_world::method_allowed(method) => {
                 let token = bv.next_token;
@@ -448,6 +457,7 @@ impl App {
                 bv.contexts.created(session, json);
                 bv.frames = bv.contexts.frames();
                 self.browser_world_pump(pane);
+                self.browser_pointer_push_new(pane, session, json);
             }
             "Runtime.executionContextDestroyed" => {
                 bv.contexts.destroyed(session, json);
@@ -752,6 +762,7 @@ impl App {
         }
         let mut copy = None;
         let mut hover = None;
+        let mut pointer = None;
         match what {
             browser_js::AlwaysOn::Console { level, size } => {
                 // iTerm2 logs the text (`BM:1066-1087`); a page's words are never logged here (B6): a
@@ -765,6 +776,7 @@ impl App {
             browser_js::AlwaysOn::Gesture(false) => copy = bv.selection_gate.up(Instant::now(), copy_on),
             browser_js::AlwaysOn::Editing(e) => bv.editing = e,
             browser_js::AlwaysOn::Hover(h) => hover = Some(h),
+            browser_js::AlwaysOn::Pointer(p) => pointer = Some(p),
             browser_js::AlwaysOn::Selection(text) => {
                 bv.selection = Some(browser_js::store_selection(&text));
                 copy = bv.selection_gate.accept(&text, Instant::now(), copy_on);
@@ -776,6 +788,9 @@ impl App {
         }
         if let Some(h) = hover {
             self.browser_hover(pane, h);
+        }
+        if let Some(p) = pointer {
+            self.browser_pointer(pane, p);
         }
     }
 

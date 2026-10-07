@@ -1180,6 +1180,7 @@ mod tests {
         ("app/browser_app.rs", "upsell_answered", "the answer to the upsell open_link raised; opens the fixed plugin page or the link it settled"),
         ("app/browser_ctx_app.rs", "browser_ctx_picked", "Search with opens a URL built from the person's own selection through browser_page_open (nav_gate first); no other item opens anything"),
         ("app/browser_smart_app.rs", "browser_smart_action", "a page's Smart Selection action, from the person's own menu pick: the one parameter builder (smartsel::parameter, the 13p-r refusals), a URL only through browser_page_open, a file and a command only after the ask that shows the whole text"),
+        ("app/browser_input_app.rs", "browser_next_tick", "opens a page-supplied URL only through browser_page_open (queued only when nav_gate said Navigate), a Smart Selection action only through browser_smart_action (its ask), and the session's own pointer actions"),
         ("app/browser_smart_app.rs", "browser_open_file_confirmed", "the answer to the Open file? ask: open_file_run's plan (a program is revealed, never run) through the sink"),
         ("app/browser_smart_app.rs", "browser_runs_tick", "runs the commands the person confirmed, each built by the one cmd.exe builder before the ask, in a single-use window"),
         ("app/browser_scripts_app.rs", "browser_page_open", "the one gate for URLs a page, page text or an arrangement supplied: nav_gate, then guard_open, never a path"),

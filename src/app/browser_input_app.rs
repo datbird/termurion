@@ -8,8 +8,25 @@
 
 use super::*;
 use crate::browser_keys::{self, Do, Facts, GateState, KeyAct, Owner};
+use super::browser_scripts_app::{JsDone, PageOpen};
+use crate::browser_pointer::{self, Press, PointerAct};
+use crate::browser_smart::WebMatch;
 use crate::keyroute::Route;
+use crate::pointer::{self, Down, PointerBinding, Up};
 use crate::webhost;
+
+/// What a Smart Selection answers with (`WebMatch` or none).
+pub(super) type SmartDone = Box<dyn FnOnce(&mut App, PaneId, Option<WebMatch>)>;
+
+/// What a pointer press, or the page's answer to one, asks that needs the event loop: the tick
+/// that follows has it. Every URL goes through `browser_page_open` there.
+pub(super) enum PageNext {
+    Open(PaneId, String, PageOpen),
+    /// A Smart Selection rule's first action on a match (`BWV:528-546`).
+    Smart(PaneId, crate::smartsel::RuleAction, Vec<String>),
+    /// The session's own pointer actions (tabs, windows, panes, profiles).
+    Session(PaneId, PointerBinding),
+}
 
 /// Text sent or pasted into a page is bounded (the page's own paste limit).
 const MAX_TEXT: usize = 1_048_576;
@@ -44,6 +61,7 @@ impl App {
         let panes: Vec<PaneId> = self.browser_views.keys().copied().filter(|p| self.panes.contains_key(p)).collect();
         for pane in panes {
             self.browser_gate_refresh(pane);
+            self.browser_pointer_sync(pane);
         }
     }
 
@@ -287,6 +305,260 @@ impl App {
         }
     }
 
+    // --- Pointer bindings (Task 7) ---
+
+    /// The table the gate script reads: the keys a binding claims, the fourth-click Smart Selection
+    /// (always on, as iTerm2's `BWV:414-433`) and the focus preference.
+    pub(super) fn browser_pointer_table(&self) -> (Vec<String>, bool, bool) {
+        let keys = browser_pointer::gate_keys(&self.globals.table("PointerActions"), &self.pointer_prefs());
+        (keys, true, self.globals.bool("FocusOnRightOrMiddleClick"))
+    }
+
+    /// Gives every live world the table of now when it changed (a map or preference edit; no reload).
+    pub(super) fn browser_pointer_sync(&mut self, pane: PaneId) {
+        if !self.client_open(pane) {
+            return;
+        }
+        let (keys, four, focus) = self.browser_pointer_table();
+        let sig = (keys.clone(), focus);
+        if self.browser_views.get(&pane).is_none_or(|b| b.pointer_sig.as_ref() == Some(&sig)) {
+            return;
+        }
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.pointer_sig = Some(sig);
+        }
+        self.browser_world_update(pane, &browser_pointer::gate_update(&keys, four, focus));
+    }
+
+    /// A new Tandem world (a document that loaded) reads the table of now, not the one the script was
+    /// registered with.
+    pub(super) fn browser_pointer_push_new(&mut self, pane: PaneId, session: Option<&str>, json: &str) {
+        if !self.client_open(pane) {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
+        let c = &v["context"];
+        let named = c["name"].as_str() == Some(crate::browser_world::WORLD_NAME) && c.pointer("/auxData/type").and_then(|t| t.as_str()) == Some("isolated");
+        let Some(unique) = c["uniqueId"].as_str().filter(|_| named) else { return };
+        let (keys, four, focus) = self.browser_pointer_table();
+        let params = crate::browser_world::evaluate_params(unique, &browser_pointer::gate_update(&keys, four, focus));
+        let session = session.map(str::to_string);
+        self.devtools_send(pane, session.as_deref(), "Runtime.evaluate", &params, Box::new(|_, _, _| {}));
+    }
+
+    fn browser_rules(&self, pane: PaneId) -> Vec<crate::smartsel::Rule> {
+        self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).map(crate::smartsel::rules).unwrap_or_default()
+    }
+
+    /// A press the gate script took (a trusted one: the script ignores every other). Down remembers a
+    /// press a binding owns; its release runs the binding (`PointerController`).
+    pub(super) fn browser_pointer(&mut self, pane: PaneId, press: Press) {
+        let map = self.globals.table("PointerActions");
+        let prefs = self.pointer_prefs();
+        match press {
+            Press::Down { button, clicks, mods, .. } => {
+                let bound = pointer::on_down(button, clicks, mods, false, false, &map, &prefs) == Down::Bound;
+                if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    bv.pointer_down = bound.then_some((button, clicks));
+                }
+            }
+            Press::Up { button, clicks, mods, x, y } => {
+                let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+                if bv.pointer_down.take() != Some((button, clicks)) {
+                    return;
+                }
+                if let Up::Perform(b) = pointer::on_up(button, clicks, mods, false, false, &map, &prefs) {
+                    self.browser_pointer_perform(pane, &b, (x, y));
+                }
+            }
+            Press::SmartSelect { x, y } => {
+                self.browser_smart_select(pane, (x, y), false, Box::new(|a, p, m| {
+                    if m.is_some() && a.globals.bool("CopySelection") {
+                        a.browser_copy_selection(p);
+                    }
+                }));
+            }
+            // Win-click: the best rule that has an action; the selection is not copied (`WVA:254`).
+            Press::SmartAction { x, y } => {
+                self.browser_smart_select(pane, (x, y), true, Box::new(|a, p, m| {
+                    let Some(m) = m else { return };
+                    let action = a.browser_rules(p).get(m.rule).and_then(|r| r.actions.first().cloned());
+                    if let Some(action) = action {
+                        a.browser_next.push(PageNext::Smart(p, action, m.captures));
+                    }
+                }));
+            }
+            Press::Focus => {
+                if self.globals.bool("FocusOnRightOrMiddleClick") {
+                    self.in_pane_window(pane, |a| {
+                        if let Some(t) = a.tabs.iter_mut().find(|t| t.layout.panes().contains(&pane)) {
+                            t.focused = pane;
+                        }
+                        a.redraw();
+                    });
+                    if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                        v.focus();
+                    }
+                }
+            }
+        }
+    }
+
+    /// One binding of the pointer map, at the page point `js` (`PAP:13-173`).
+    fn browser_pointer_perform(&mut self, pane: PaneId, b: &PointerBinding, js: (f64, f64)) {
+        match browser_pointer::classify(&b.action) {
+            PointerAct::Session => self.browser_next.push(PageNext::Session(pane, b.clone())),
+            PointerAct::OpenLink { new_tab } => self.browser_link_at(pane, js, Box::new(move |a, p, r| {
+                if let Some(url) = r.ok().and_then(|v| browser_pointer::link_of(&v)) {
+                    a.browser_queue_open(p, &url, if new_tab { PageOpen::Tab } else { PageOpen::Here });
+                }
+            })),
+            PointerAct::CopyLinkAddress => self.browser_link_at(pane, js, Box::new(|a, p, r| {
+                if let Some(url) = r.ok().and_then(|v| browser_pointer::link_of(&v)) {
+                    a.set_clipboard_text(url.clone());
+                    a.remember_paste(&url);
+                    a.browser_toast(p, crate::browser_tip::COPIED, crate::browser_tip::COPIED_SECS);
+                }
+            })),
+            PointerAct::QuickLook => {
+                let script = self.browser_point_script("urls-at-point.js", js, &[]);
+                self.browser_eval_in_frame(pane, None, &script, Box::new(|a, p, r| {
+                    if let Some(url) = r.ok().and_then(|v| browser_pointer::first_url_of(&v)) {
+                        if crate::web_popover::quick_look_scheme_ok(&url) {
+                            let at = crate::browser_tip::pointer_now().unwrap_or_else(|| a.pointer_screen());
+                            a.browser_queue_open_gated(p, &url, PageOpen::QuickLook(at));
+                        }
+                    }
+                }));
+            }
+            PointerAct::SmartSelect => {
+                self.browser_smart_select(pane, js, false, Box::new(|a, p, m| {
+                    if m.is_some() && a.globals.bool("CopySelection") {
+                        a.browser_copy_selection(p);
+                    }
+                }));
+            }
+            PointerAct::ExtendSelection => {
+                let script = self.browser_point_script("extend-selection-to-point.js", js, &[]);
+                self.browser_eval_in_frame(pane, None, &script, Box::new(|_, _, _| {}));
+            }
+            PointerAct::ContextMenu => self.browser_context_menu_at(pane, js),
+            PointerAct::PasteClipboard => self.browser_paste(pane),
+            PointerAct::PasteSelection => self.browser_read_selection(pane, Box::new(|a, p, text| {
+                if !text.is_empty() && text.len() <= MAX_TEXT {
+                    a.browser_insert_raw(p, &text);
+                }
+            })),
+            PointerAct::CopyOrPaste => {
+                let script = crate::browser_js::resource("has-selection.js").unwrap_or_default();
+                self.browser_eval_in_frame(pane, None, script, Box::new(|a, p, r| {
+                    if matches!(r, Ok(serde_json::Value::Bool(true))) {
+                        a.browser_copy_selection(p);
+                    } else {
+                        a.browser_paste(p);
+                    }
+                }));
+            }
+            PointerAct::SendText => {
+                let text = if b.action == "kSendHexCodePointerAction" {
+                    String::from_utf8(crate::keyaction::hex_bytes(&b.argument)).unwrap_or_default()
+                } else {
+                    crate::keyaction::expand(&b.argument, b.escaping())
+                };
+                self.browser_send_text(pane, &text);
+            }
+            PointerAct::Nothing => {}
+        }
+    }
+
+    /// The right click iTerm2's Open Context Menu is (`BVC:1494-1500`): a trusted right press through
+    /// DevTools at the point, so the page may intercept it and WebView2 shows its menu with Tandem's
+    /// items (Task 3). Not done when the right button has a binding of its own (the gate would take it).
+    fn browser_context_menu_at(&mut self, pane: PaneId, js: (f64, f64)) {
+        let (keys, _, _) = self.browser_pointer_table();
+        if keys.contains(&browser_pointer::js_press_key(1, 1, &pointer::Mods::default())) {
+            return;
+        }
+        for kind in ["mousePressed", "mouseReleased"] {
+            let params = serde_json::json!({ "type": kind, "x": js.0, "y": js.1, "button": "right", "clickCount": 1 });
+            self.browser_devtools(pane, "Input.dispatchMouseEvent", params, Box::new(|_, _, _| {}));
+        }
+    }
+
+    /// A point script (`{{X}}`, `{{Y}}` and `extra`), filled as iTerm2's loader does.
+    fn browser_point_script(&self, name: &str, js: (f64, f64), extra: &[(&str, String)]) -> String {
+        let (x, y) = (browser_pointer::num(js.0), browser_pointer::num(js.1));
+        let mut subs: Vec<(&str, &str)> = vec![("X", &x), ("Y", &y)];
+        subs.extend(extra.iter().map(|(k, v)| (*k, v.as_str())));
+        crate::browser_js::fill_template(crate::browser_js::resource(name).unwrap_or_default(), &subs)
+    }
+
+    /// The link at a page point (`WVA:158-178`), in Tandem's world: the page cannot choose what the
+    /// script finds by overriding `elementFromPoint`.
+    pub(super) fn browser_link_at(&mut self, pane: PaneId, js: (f64, f64), done: JsDone) {
+        let script = self.browser_point_script("open-link-at-point.js", js, &[]);
+        self.browser_eval_in_frame(pane, None, &script, done);
+    }
+
+    /// Smart Selection at a page point (`WVA:201-259`, `:306-377`): the text around the point, the
+    /// best rule match over it, and the selection of the match. `then` gets the match (None when the
+    /// profile has no rules or nothing matched) after the selection is made. With `require_action`
+    /// only rules that have an action count, and the caller copies nothing.
+    pub(super) fn browser_smart_select(&mut self, pane: PaneId, js: (f64, f64), require_action: bool, then: SmartDone) {
+        let rules = self.browser_rules(pane);
+        if rules.is_empty() {
+            return then(self, pane, None);
+        }
+        let radius = super::semantic_ui::radius(&self.globals).to_string();
+        let script = self.browser_point_script("extract-text-at-point.js", js, &[("RADIUS", radius)]);
+        self.browser_eval_in_frame(pane, None, &script, Box::new(move |a, p, r| {
+            let text = r.ok().and_then(|v| Some((v.get("before")?.as_str()?.to_string(), v.get("after")?.as_str()?.to_string())));
+            let found = text.and_then(|(before, after)| crate::browser_smart::first_match(&before, &after, &rules, require_action));
+            let Some(m) = found else { return then(a, p, None) };
+            let select = a.browser_point_script("select-text.js", js, &[("BEFORE_COUNT", m.before.to_string()), ("AFTER_COUNT", m.after.to_string())]);
+            a.browser_eval_in_frame(p, None, &select, Box::new(move |a, p, _| then(a, p, Some(m))));
+        }));
+    }
+
+    /// The page's selection scrolls to the middle of the view (`BVC:295-311`), in the page.
+    pub(super) fn browser_jump_to_selection(&mut self, pane: PaneId) {
+        const SCRIPT: &str = "(function() { try { const sel = window.getSelection(); if (sel.rangeCount === 0) return; const rect = sel.getRangeAt(0).getBoundingClientRect(); window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight/2, behavior: 'smooth' }); } catch (e) { console.error(e); } })();";
+        self.browser_eval(pane, SCRIPT, Box::new(|_, _, _| {}));
+    }
+
+    /// A page URL for the next tick, only when `nav_gate` says Navigate: a pointer click never opens a
+    /// local file or runs anything. A network or script URL is a banner (the gate's refusal).
+    fn browser_queue_open(&mut self, pane: PaneId, raw: &str, how: PageOpen) {
+        match crate::browser_js::nav_gate(raw) {
+            crate::browser_js::NavGate::Navigate(_) => self.browser_next.push(PageNext::Open(pane, raw.to_string(), how)),
+            crate::browser_js::NavGate::Blocked(why) => {
+                self.banners.set("action", why);
+                self.redraw();
+            }
+            crate::browser_js::NavGate::Open(_) => {}
+        }
+    }
+
+    fn browser_queue_open_gated(&mut self, pane: PaneId, raw: &str, how: PageOpen) {
+        if matches!(crate::browser_js::nav_gate(raw), crate::browser_js::NavGate::Navigate(_)) {
+            self.browser_next.push(PageNext::Open(pane, raw.to_string(), how));
+        }
+    }
+
+    /// The tick that has the event loop: opens, Smart Selection actions and session actions.
+    pub(super) fn browser_next_tick(&mut self, event_loop: &ActiveEventLoop) {
+        for next in std::mem::take(&mut self.browser_next) {
+            match next {
+                PageNext::Open(pane, url, how) if self.browser_views.contains_key(&pane) => self.browser_page_open(pane, &url, how, event_loop),
+                PageNext::Smart(pane, action, captures) if self.browser_views.contains_key(&pane) => self.browser_smart_action(pane, &action, &captures, event_loop),
+                PageNext::Session(pane, b) if self.browser_views.contains_key(&pane) => {
+                    self.in_pane_window(pane, |a| a.run_pointer_action(&b, pane, (0, 0), event_loop));
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Key action 73 (copy mode): 13x3 Task 8 replaces this body.
     pub(super) fn browser_copy_mode_commands(&mut self, _pane: PaneId, _keys: &str) {}
 }
@@ -339,5 +611,52 @@ mod tests {
         let refresh = include_str!("mod.rs");
         let r = &refresh[refresh.find("fn refresh_route").unwrap()..refresh.find("fn save_pending_settings").unwrap()];
         assert!(r.contains("self.browser_gates_refresh()"), "the gate follows the maps");
+    }
+
+    /// Pointer bindings act as iTerm2's browser does (`BWV`, `PAP`, `BVC`): a press reaches here only
+    /// from the gate script's Client message (trusted events, the Ready gate, the view's secret), the
+    /// release runs the binding, every URL goes through the one funnel, a program only through the
+    /// Smart Selection path with its ask.
+    #[test]
+    fn pointer_runs_as_iterm2() {
+        let p = prod();
+        let at = |s: &str| p.find(s).unwrap_or_else(|| panic!("missing {s}"));
+        let ptr = &p[at("pub(super) fn browser_pointer(")..at("fn browser_pointer_perform")];
+        assert!(ptr.contains("pointer::on_down(") && ptr.contains("pointer::on_up("), "the map decides, as the terminal does");
+        assert!(ptr.contains("bv.pointer_down.take() != Some((button, clicks))"), "a release without its press runs nothing");
+        assert!(ptr.contains("Up::Perform(b)") && ptr.contains("self.globals.bool(\"FocusOnRightOrMiddleClick\")"));
+        assert!(ptr.contains("globals.bool(\"CopySelection\")"), "Smart Selection copies only when that preference is on");
+        let smart_action = &ptr[ptr.find("Press::SmartAction").unwrap()..ptr.find("Press::Focus").unwrap()];
+        assert!(smart_action.contains("true, Box::new") && !smart_action.contains("browser_copy_selection"), "the Win-click needs an action and copies nothing");
+        let perf = &p[at("fn browser_pointer_perform")..at("fn browser_context_menu_at")];
+        assert!(perf.contains("PageNext::Session(pane, b.clone())"), "the session's actions run through run_pointer_action");
+        assert!(perf.contains("PageOpen::Tab") && perf.contains("PageOpen::Here") && perf.contains("PageOpen::QuickLook(at)"));
+        assert!(perf.contains("quick_look_scheme_ok(&url)") && perf.contains("browser_queue_open_gated"));
+        assert!(perf.contains("COPIED") && perf.contains("COPIED_SECS") && perf.contains("remember_paste"));
+        assert!(perf.contains("extend-selection-to-point.js") && perf.contains("urls-at-point.js"));
+        let sel = &p[at("pub(super) fn browser_smart_select")..at("pub(super) fn browser_jump_to_selection")];
+        assert!(sel.contains("extract-text-at-point.js") && sel.contains("\"RADIUS\"") && sel.contains("semantic_ui::radius(&self.globals)"));
+        assert!(sel.contains("first_match(") && sel.contains("select-text.js") && sel.contains("BEFORE_COUNT") && sel.contains("AFTER_COUNT"));
+        assert!(sel.find("extract-text-at-point.js").unwrap() < sel.find("select-text.js").unwrap());
+        // The page's answers never open a URL by themselves: only `nav_gate` Navigate is queued, and
+        // the tick opens through the funnel.
+        let q = &p[at("fn browser_queue_open(")..at("pub(super) fn browser_next_tick")];
+        assert!(q.contains("NavGate::Navigate(_) =>") && q.contains("NavGate::Open(_) => {}"), "a pointer click never opens a local file");
+        let tick = &p[at("pub(super) fn browser_next_tick")..at("/// Key action 73")];
+        assert!(tick.contains("self.browser_page_open(pane, &url, how, event_loop)") && tick.contains("self.browser_smart_action(") && tick.contains("run_pointer_action(&b, pane, (0, 0), event_loop)"));
+        for banned in ["Command::new(", "execute_with(", "guard_open(", "shell_open(", "open_url_in_browser(", "navigate_tandem("] {
+            assert!(!p.contains(banned), "{banned}");
+        }
+        // Jump to Selection scrolls the page (`BVC:295-311`); the find menu hands a browser pane to it.
+        assert!(p.contains("window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight/2, behavior: 'smooth' })"));
+        assert!(include_str!("find_ui.rs").contains("(\"jumpToSelection:\", _) if self.is_browser_pane(id) => self.browser_jump_to_selection(id)"));
+        // The router acts on a press only through the one gate of Client handlers.
+        let scripts = include_str!("browser_scripts_app.rs");
+        let on = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];
+        assert!(on.contains("!open && !matches!(what, browser_js::AlwaysOn::Console") && on.contains("self.browser_pointer(pane, p)"));
+        assert!(!scripts[..scripts.find("#[cfg(test)]").unwrap()].contains("browser_send_text"));
+        // The table reaches live worlds when it changes and new worlds when they are made.
+        assert!(include_str!("browser_scripts_app.rs").contains("self.browser_pointer_push_new(pane, session, json)"));
+        assert!(p.contains("self.browser_pointer_sync(pane)") && p.contains("browser_world_update(pane, &browser_pointer::gate_update("));
     }
 }
