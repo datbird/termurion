@@ -217,10 +217,11 @@ impl Event {
     /// An event the queue may drop when a page floods it. Lifecycle, navigation results, focus,
     /// script results and requests (each holds a COM deferral) are never dropped.
     pub fn droppable(&self) -> bool {
-        // A dropped context event leaves a frame without a Tandem world (inert, never unsafe); target
-        // attach and detach are never dropped (an attached child waits until it is resumed).
+        // Only a binding call (a page can make them at will) is droppable. A context or target
+        // lifecycle event never is: a lost Destroyed would leave a stale context in the table, and an
+        // attached child waits until it is resumed (B12, fix round 1).
         if let Event::DevTools { name, .. } = self {
-            return !name.starts_with("Target.");
+            return name == BINDING_EVENT;
         }
         matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
     }
@@ -238,6 +239,14 @@ impl Event {
             _ => 0,
         }
     }
+}
+
+/// The one DevTools event a page can raise at will.
+pub const BINDING_EVENT: &str = "Runtime.bindingCalled";
+
+/// The largest DevTools event body the host queues (a binding payload and a URL).
+pub const fn devtools_json_cap() -> usize {
+    MAX_MESSAGE + MAX_URL
 }
 
 /// `COREWEBVIEW2_PROCESS_FAILED_KIND` values (the WebView2 headers).
@@ -608,7 +617,7 @@ impl ViewGate {
     /// admitted. The Charge returned is released on drop.
     pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
         let weight = event.weight();
-        let message = matches!(event, Event::Message { .. });
+        let message = matches!(event, Event::Message { .. }) || matches!(event, Event::DevTools { name, .. } if name == BINDING_EVENT);
         let new_window = matches!(event, Event::NewWindow { .. });
         if event.droppable() {
             let over = self.events.load(Ordering::Acquire) >= MAX_QUEUED_EVENTS
@@ -640,6 +649,11 @@ impl ViewGate {
     /// Events queued now.
     pub fn queued(&self) -> usize {
         self.events.load(Ordering::Acquire)
+    }
+
+    /// Counts one event the handler refused before queueing it.
+    pub fn note_dropped(&self) {
+        self.dropped.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Events dropped since the last call.
@@ -1415,6 +1429,30 @@ mod tests {
         assert!(!Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.droppable());
         assert!(!Event::ScriptDone { view: 1, token: 1, json: Ok("2".into()) }.droppable());
         assert!(Event::Message { view: 1, json: String::new(), source: String::new() }.droppable());
+    }
+
+    /// Fix round 1, item 1 (B12): only a binding call is droppable (and counts as a message); every
+    /// context and target lifecycle event is admitted over any cap.
+    #[test]
+    fn devtools_events_follow_the_caps() {
+        let ev = |name: &str, json: &str| Event::DevTools { view: 1, session: None, name: name.into(), json: json.into() };
+        for lifecycle in ["Runtime.executionContextCreated", "Runtime.executionContextDestroyed", "Runtime.executionContextsCleared", "Page.frameNavigated", "Target.attachedToTarget", "Target.detachedFromTarget"] {
+            assert!(!ev(lifecycle, "{}").droppable(), "{lifecycle}");
+        }
+        assert!(ev("Runtime.bindingCalled", "{}").droppable());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            held.push(gate.admit(&ev("Runtime.bindingCalled", "{}")).expect("room"));
+        }
+        assert!(gate.admit(&ev("Runtime.bindingCalled", "{}")).is_err(), "a binding call counts against the message cap");
+        for _ in 0..(MAX_QUEUED_EVENTS + 10) {
+            held.push(gate.admit(&ev("Runtime.executionContextDestroyed", "{}")).expect("lifecycle is never refused"));
+        }
+        assert!(gate.admit(&Event::Message { view: 1, json: "{}".into(), source: String::new() }).is_err());
+        assert!(gate.admit(&ev("Runtime.bindingCalled", &"x".repeat(MAX_MESSAGE + MAX_URL + 1))).is_err());
+        assert_eq!(devtools_json_cap(), MAX_MESSAGE + MAX_URL);
+        drop(held);
     }
 
     /// Review Focus 11: a focus loss into this window's own child is not a window focus loss.

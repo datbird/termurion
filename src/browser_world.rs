@@ -66,9 +66,10 @@ pub fn create_world_call(frame_id: &str) -> Call {
     ("Page.createIsolatedWorld", json!({"frameId": frame_id, "worldName": WORLD_NAME, "grantUniveralAccess": false}))
 }
 
-/// `Runtime.evaluate` in one context.
-pub fn evaluate_params(context_id: i64, expression: &str) -> Value {
-    json!({"expression": expression, "contextId": context_id, "awaitPromise": true, "returnByValue": true, "userGesture": false})
+/// `Runtime.evaluate` in one context, named by its unique id: a numeric context id is reused when a
+/// frame changes process, and CDP's own guard against evaluating in another context is the unique id.
+pub fn evaluate_params(unique_context_id: &str, expression: &str) -> Value {
+    json!({"expression": expression, "uniqueContextId": unique_context_id, "awaitPromise": true, "returnByValue": true, "userGesture": false})
 }
 
 /// The value of a `Runtime.evaluate` answer; `undefined` is null, an exception is the error text.
@@ -181,6 +182,9 @@ pub fn world_usable(state: &ClientWorld, contexts: &Contexts) -> bool {
 struct Ctx {
     frame: String,
     origin: String,
+    unique: String,
+    /// Creation order: the newest context of a frame is the live one.
+    seq: u64,
 }
 
 /// The execution contexts that are Tandem's world, keyed by session and context id (ids are per
@@ -191,6 +195,7 @@ pub struct Contexts {
     table: HashMap<(Option<String>, i64), Ctx>,
     keys: HashMap<String, u64>,
     frame_names: Vec<String>,
+    seq: u64,
 }
 
 impl Contexts {
@@ -214,18 +219,29 @@ impl Contexts {
         if c.get("name").and_then(Value::as_str) != Some(WORLD_NAME) || c.pointer("/auxData/type").and_then(Value::as_str) != Some("isolated") {
             return;
         }
-        let (Some(id), Some(frame)) = (c.get("id").and_then(Value::as_i64), c.pointer("/auxData/frameId").and_then(Value::as_str)) else { return };
+        // No unique id, no entry: nothing is ever evaluated by the reusable numeric id.
+        let (Some(id), Some(frame), Some(unique)) = (c.get("id").and_then(Value::as_i64), c.pointer("/auxData/frameId").and_then(Value::as_str), c.get("uniqueId").and_then(Value::as_str)) else { return };
         let origin = c.get("origin").and_then(Value::as_str).unwrap_or_default().chars().take(crate::webhost::MAX_URL).collect();
         let key = (session.map(str::to_string), id);
         if !self.table.contains_key(&key) && self.table.len() >= MAX_CONTEXTS {
             return;
         }
-        self.table.insert(key, Ctx { frame: frame.to_string(), origin });
+        self.seq += 1;
+        self.table.insert(key, Ctx { frame: frame.to_string(), origin, unique: unique.chars().take(128).collect(), seq: self.seq });
     }
 
     pub fn destroyed(&mut self, session: Option<&str>, json: &str) {
-        let Some(id) = serde_json::from_str::<Value>(json).ok().and_then(|v| v.get("executionContextId").and_then(Value::as_i64)) else { return };
-        self.table.remove(&(session.map(str::to_string), id));
+        let Ok(v) = serde_json::from_str::<Value>(json) else { return };
+        let key = |id: i64| (session.map(str::to_string), id);
+        // A late Destroyed of an old document names its unique id: it must not remove the new context
+        // that reuses the numeric id.
+        if let Some(u) = v.get("executionContextUniqueId").and_then(Value::as_str) {
+            self.table.retain(|k, c| !(k.0.as_deref() == session && c.unique == u));
+            return;
+        }
+        if let Some(id) = v.get("executionContextId").and_then(Value::as_i64) {
+            self.table.remove(&key(id));
+        }
     }
 
     pub fn cleared(&mut self, session: Option<&str>) {
@@ -274,7 +290,16 @@ impl Contexts {
             None => self.main.as_deref()?,
             Some(k) => self.frame_names.get((k as usize).checked_sub(1)?)?.as_str(),
         };
-        self.table.iter().filter(|(_, c)| c.frame == name).map(|((s, id), _)| (s.clone(), *id)).min_by_key(|(_, id)| *id)
+        self.table.iter().filter(|(_, c)| c.frame == name).max_by_key(|(_, c)| c.seq).map(|((s, id), _)| (s.clone(), *id))
+    }
+
+    /// The session and unique context id of a frame's Tandem world: what `Runtime.evaluate` names.
+    pub fn unique_for(&self, frame: Option<u64>) -> Option<(Option<String>, String)> {
+        let name = match frame {
+            None => self.main.as_deref()?,
+            Some(k) => self.frame_names.get((k as usize).checked_sub(1)?)?.as_str(),
+        };
+        self.table.iter().filter(|(_, c)| c.frame == name).max_by_key(|(_, c)| c.seq).map(|((s, _), c)| (s.clone(), c.unique.clone()))
     }
 
     /// The keys of the non-main frames that have a Tandem world.
@@ -332,8 +357,9 @@ mod tests {
         let (m, p) = create_world_call("F");
         assert_eq!(m, "Page.createIsolatedWorld");
         assert_eq!(p, json!({"frameId": "F", "worldName": "tandem-client", "grantUniveralAccess": false}));
-        let e = evaluate_params(5, "1");
-        assert_eq!((e["contextId"].as_i64(), e["awaitPromise"].as_bool(), e["returnByValue"].as_bool(), e["userGesture"].as_bool()), (Some(5), Some(true), Some(true), Some(false)));
+        let e = evaluate_params("U5", "1");
+        assert_eq!((e["uniqueContextId"].as_str(), e["awaitPromise"].as_bool(), e["returnByValue"].as_bool(), e["userGesture"].as_bool()), (Some("U5"), Some(true), Some(true), Some(false)));
+        assert!(e.get("contextId").is_none(), "never the reusable numeric id");
         assert_eq!(e["expression"], "1");
         assert_eq!(evaluate_result(r#"{"result":{"type":"number","value":42}}"#), Ok(json!(42)));
         assert_eq!(evaluate_result(r#"{"result":{"type":"undefined"}}"#), Ok(serde_json::Value::Null));
@@ -392,6 +418,32 @@ mod tests {
         c.navigated(None, r#"{"frame":{"id":"N"}}"#);
         assert_eq!(c.context_for(None), None);
         assert_eq!(c.frame_key(Some("S1"), "C"), Some(k), "the key is stable for the view's life");
+    }
+
+    /// Fix round 1, item 1: a process swap reuses numeric ids; the stale context is never picked and a
+    /// late Destroyed of the old one never removes the new one. Evaluation names the unique id.
+    #[test]
+    fn a_reused_id_never_picks_the_stale_context() {
+        let mut c = Contexts::default();
+        c.set_main_frame("M");
+        let made = |id: i64, unique: &str, frame: &str| json!({"context": {"id": id, "origin": "o", "name": "tandem-client", "uniqueId": unique, "auxData": {"frameId": frame, "type": "isolated"}}}).to_string();
+        c.created(None, &made(3, "OLD", "M"));
+        // The old document's Destroyed was lost; the new renderer reuses id 3 and a lower id 2 is stale.
+        c.created(None, &made(2, "STALE", "M"));
+        c.created(None, &made(3, "NEW", "M"));
+        assert_eq!(c.unique_for(None), Some((None, "NEW".to_string())), "the newest context wins, never the lowest id");
+        // A late Destroyed that names the old unique id removes only the old one.
+        c.destroyed(None, &json!({"executionContextId": 3, "executionContextUniqueId": "OLD"}).to_string());
+        assert_eq!(c.unique_for(None), Some((None, "NEW".to_string())));
+        let call = json!({"name": "__tandemClient", "payload": "{}", "executionContextId": 3}).to_string();
+        assert!(c.binding_called(None, &call).is_some());
+        c.destroyed(None, &json!({"executionContextId": 3, "executionContextUniqueId": "NEW"}).to_string());
+        assert!(c.binding_called(None, &call).is_none());
+        // A context with no unique id is never recorded.
+        let mut d = Contexts::default();
+        d.set_main_frame("M");
+        d.created(None, &json!({"context": {"id": 1, "origin": "o", "name": "tandem-client", "auxData": {"frameId": "M", "type": "isolated"}}}).to_string());
+        assert!(d.is_empty());
     }
 
     #[test]

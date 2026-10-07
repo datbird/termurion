@@ -734,7 +734,8 @@ impl WebView {
             let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
                 let (Some(inner), Some(args)) = (weak2.upgrade(), args) else { return Ok(()) };
                 let Some(json) = pwstr_out(|p| unsafe { args.ParameterObjectAsJson(p) }) else { return Ok(()) };
-                if json.len() > 2 * webhost::MAX_MESSAGE + 4096 {
+                if json.len() > webhost::devtools_json_cap() {
+                    inner.borrow().poster.gate.note_dropped();
                     return Ok(());
                 }
                 // An empty session id means the view's own target.
@@ -1966,8 +1967,8 @@ mod probe {
 
         /// `Runtime.evaluate` in a frame's Tandem world (None is the main frame).
         fn eval(&mut self, frame: Option<u64>, expr: &str) -> Result<Value, String> {
-            let (session, id) = self.contexts.context_for(frame).ok_or("no Tandem context for that frame")?;
-            let r = self.call_wait(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(id, expr))?;
+            let (session, unique) = self.contexts.unique_for(frame).ok_or("no Tandem context for that frame")?;
+            let r = self.call_wait(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr))?;
             browser_world::evaluate_result(&r)
         }
 
