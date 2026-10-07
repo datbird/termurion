@@ -243,12 +243,17 @@ impl App {
     }
 
     /// Enters `w` on `pane` without asking: the menu's own entry, or an answered question. The
-    /// question showed this very workgroup, so it is carried, not looked up again.
+    /// question carried the workgroup it showed; the saved workgroup runs only while its commands are
+    /// the answered ones (`run::to_enter`).
     pub(super) fn enter_workgroup_now(&mut self, w: Workgroup, pane: PaneId, how: Mechanism, approved: run::Approved) -> bool {
-        if !approved.matches(&w) {
-            self.banners.set("workgroup", "That workgroup changed after it was shown, so it was not started.");
-            return false;
-        }
+        // What runs is the saved workgroup as it is now, and only when its commands are the answered ones.
+        let w = match run::to_enter(&approved, &w, self.workgroup_model.get(&w.unique_identifier)) {
+            Ok(w) => w,
+            Err(why) => {
+                self.banners.set("workgroup", why);
+                return false;
+            }
+        };
         let facts = self.workgroup_facts(pane);
         let d = run::disposition(Some(&w), facts.as_ref().map(|(i, g, l)| (i.as_str(), g.as_str(), *l)), false);
         let exit_first = match d {

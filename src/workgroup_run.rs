@@ -252,6 +252,17 @@ impl Approved {
     }
 }
 
+/// Why an answered entry did not start: the saved workgroup's commands are not the ones the answer was for.
+pub const CHANGED_SINCE_ASKED: &str = "That workgroup changed after it was shown, so it was not started.";
+
+/// The workgroup an answered entry runs. The answer's stored digest is compared with the digest of what
+/// is about to run: the saved workgroup as it is NOW (`current`, None once deleted), not the copy the
+/// question carried, so a command changed after the answer is refused.
+pub fn to_enter(approved: &Approved, carried: &Workgroup, current: Option<&Workgroup>) -> Result<Workgroup, &'static str> {
+    let now = current.filter(|c| c.unique_identifier == carried.unique_identifier).ok_or(CHANGED_SINCE_ASKED)?;
+    if approved.matches(now) { Ok(now.clone()) } else { Err(CHANGED_SINCE_ASKED) }
+}
+
 fn digest_of(list: &[(String, String)]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -495,7 +506,7 @@ mod tests {
         assert!(alerts.contains("EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism, approved: crate::workgroup_run::Approved }"));
         let app = include_str!("app/workgroup_app.rs");
         let now = &app[app.find("pub(super) fn enter_workgroup_now").unwrap()..];
-        assert!(now[..400].contains("approved.matches(&w)"), "entry refuses a workgroup that is not the one the answer was for");
+        assert!(now[..600].contains("run::to_enter(&approved,"), "entry refuses a workgroup that is not the one the answer was for");
         assert!(!app.contains("run::approved("), "no fresh snapshot");
     }
 
@@ -522,6 +533,26 @@ mod tests {
         assert_eq!(member_line(Plan::Line("claude --resume".into()), &path_of), Ok(Some("claude --resume".into())));
         assert_eq!(member_line(Plan::Profile, &path_of), Ok(None));
         assert_eq!(member_line(Plan::Argv(vec!["tool".into(), "a b".into()]), &path_of), Ok(Some(r#"C:\bin\tool.exe "a b""#.into())));
+    }
+
+    /// 13y1 Task 5 item 1, minor (round 3): the digest check is against what is about to run, the saved
+    /// workgroup as it is at entry, so a command changed after the answer is refused.
+    #[test]
+    fn a_command_changed_after_the_answer_is_refused() {
+        let w = wg::presets::coding_agent_plus_diff();
+        let answered = Approved::of(&w);
+        let mut changed = w.clone();
+        changed.sessions[1].command = "calc.exe".into();
+        assert_eq!(to_enter(&answered, &w, Some(&changed)), Err(CHANGED_SINCE_ASKED), "changed after the answer");
+        assert!(to_enter(&answered, &w, None).is_err(), "deleted after the answer");
+        let mut renamed = w.clone();
+        renamed.name = "Renamed".into();
+        assert_eq!(to_enter(&answered, &w, Some(&renamed)), Ok(renamed.clone()), "the same commands: what runs is the saved one");
+        assert_eq!(to_enter(&answered, &w, Some(&w)), Ok(w.clone()));
+        let app = include_str!("app/workgroup_app.rs");
+        let now = &app[app.find("pub(super) fn enter_workgroup_now").unwrap()..];
+        let now = &now[..now.find("let facts").unwrap()];
+        assert!(now.contains("run::to_enter(&approved, &w, self.workgroup_model.get(&w.unique_identifier))"), "{now}");
     }
 
     /// Every function that starts a process or a session program in a workgroup source checks the stored
