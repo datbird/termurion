@@ -655,6 +655,12 @@ pub fn is_workgroup_key(key: &str) -> bool {
     [KEY, KEY_IMPORTED, KEY_SHORTCUTS, KEY_DIFF_MODE, KEY_SYSTEM_PROMPT, KEY_AUTO_SEND, KEY_AUTO_REQUEST].contains(&key)
 }
 
+/// Whether Toggle Setting may flip `key`: not a workgroup latch (a key binding could make a
+/// one-time migration run again) or the list.
+pub fn toggle_allowed(key: &str) -> bool {
+    !is_workgroup_key(key)
+}
+
 /// After something other than the editor wrote the list (a remote-prefs snapshot, an import):
 /// every workgroup whose data is new or changed is marked Imported, whatever the incoming data
 /// says, and the old marks are put back (the writer cannot clear them). `before_*` are the
@@ -1727,5 +1733,16 @@ mod tests {
         let mut w = Workgroup::new_empty("w");
         w.sessions[0].command = "echo h\u{e9}llo \u{4e16}".into();
         assert!(check(&w).is_ok(), "ordinary non-ASCII text stays");
+    }
+
+    #[test]
+    fn toggle_setting_never_flips_a_workgroup_key() {
+        for k in [KEY, KEY_IMPORTED, KEY_SHORTCUTS, KEY_DIFF_MODE, KEY_SYSTEM_PROMPT, KEY_AUTO_SEND, KEY_AUTO_REQUEST] {
+            assert!(!toggle_allowed(k), "{k}");
+        }
+        assert!(toggle_allowed("QuitWhenAllWindowsClosed"));
+        // Both Toggle Setting sites ask: the action and the picker.
+        assert!(include_str!("app/actions.rs").contains("crate::workgroup::toggle_allowed(&key)"));
+        assert!(include_str!("settings_keys.rs").contains("crate::workgroup::toggle_allowed(&s.key)"));
     }
 }
