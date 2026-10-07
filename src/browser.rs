@@ -657,13 +657,17 @@ pub fn display_url(url: &str) -> String {
     let host = ascii_host(host);
     let host = if host.chars().count() > MAX_HOST_SHOWN { format!("\u{2026}{}", tail_chars(&host, MAX_HOST_SHOWN)) } else { host };
     let at = if authority.contains('@') { format!("{}@", cut_end(userinfo, MAX_USERINFO_SHOWN)) } else { String::new() };
-    let head = format!("{scheme}://{at}{host}{port}");
+    // A scheme and a port of any length cannot push the host out (round 2).
+    let head = format!("{}://{at}{host}{}", cut_end(scheme, MAX_SCHEME_SHOWN), cut_end(port, MAX_PORT_SHOWN));
     let room = MAX_URL.saturating_sub(head.chars().count());
     format!("{head}{}", cut_end(tail, room.max(1)))
 }
 
 /// The most of a user name or password a displayed URL shows (the rest is an ellipsis).
 const MAX_USERINFO_SHOWN: usize = 64;
+/// The most of a scheme and of a `:port` a displayed URL shows.
+const MAX_SCHEME_SHOWN: usize = 32;
+const MAX_PORT_SHOWN: usize = 6;
 /// The most of a host a displayed URL shows (a real host is 253 at most).
 const MAX_HOST_SHOWN: usize = 253;
 
@@ -678,14 +682,20 @@ fn cut_end(text: &str, max: usize) -> String {
     if text.chars().count() <= max { text.to_string() } else { text.chars().take(max).chain(['\u{2026}']).collect() }
 }
 
-/// The address as it fits `cells` characters of the idle field. The end of the host always stays
-/// visible (a long user name cannot push it out, `https://accounts.google.com...@evil.test/` must
-/// show `evil.test`): the path is cut first, then the user information is shortened to a marked
-/// prefix, and last the host is cut from its left.
+/// A URL of any display as it fits `cells` characters: THE shortener (round 2, class fix), used by
+/// the address field, the link tip, the suggestion rows and the Open Quickly rows. The registrable
+/// host (public suffix and one label, `registrable_labels`) always stays whole and visible: the path
+/// is cut first (from the right), then the user information is shortened to a marked prefix, then
+/// subdomain labels go from the LEFT behind an ellipsis, and last (narrower than the registrable host
+/// itself) the host is cut from its left. A URL after a lead-in text and before a closing quote (the
+/// "Navigate to" row) is fitted in what those leave. Not a URL: cut from the right.
 pub fn fit_address(shown: &str, cells: usize) -> String {
-    let chars: Vec<char> = shown.chars().collect();
-    if chars.len() <= cells {
+    if shown.chars().count() <= cells {
         return shown.to_string();
+    }
+    if let Some((lead, url, trail)) = embedded_url(shown) {
+        let used = lead.chars().count() + trail.chars().count();
+        return format!("{lead}{}{trail}", fit_address(url, cells.saturating_sub(used).max(1)));
     }
     let cut = |text: &str, room: usize| -> String {
         let c: Vec<char> = text.chars().collect();
@@ -708,11 +718,54 @@ pub fn fit_address(shown: &str, cells: usize) -> String {
             return format!("{head}{}", cut(tail, cells - n));
         }
     }
-    // The host itself does not fit: keep its end.
+    // The host does not fit whole: whole labels go from the left, never into the registrable part.
+    let (host, port) = match hostport.rsplit_once(':').filter(|(h, _)| !h.contains(']') || h.ends_with(']')).filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())) {
+        Some((h, _)) => (h, &hostport[h.len()..]),
+        None => (hostport, ""),
+    };
+    let labels: Vec<&str> = host.split('.').collect();
+    let floor = registrable_labels(host, &labels);
+    for marker in if userinfo.is_some() { ["\u{2026}@", ""] } else { ["", ""] } {
+        for keep in (floor..labels.len()).rev() {
+            let head = format!("{prefix}{marker}\u{2026}{}{port}", labels[labels.len() - keep..].join("."));
+            let n = head.chars().count();
+            if n <= cells {
+                return format!("{head}{}", cut(tail, cells - n));
+            }
+        }
+    }
+    // Narrower than the registrable host itself: its end.
     let at = if userinfo.is_some() { "@" } else { "" };
     let host: Vec<char> = format!("{at}{hostport}").chars().collect();
     let room = cells.saturating_sub(1);
     ['\u{2026}'].iter().chain(host[host.len().saturating_sub(room)..].iter()).take(cells).collect()
+}
+
+/// How many trailing labels of a host are never cut: the registrable part (public suffix and one
+/// label; a two-letter country code behind a short second level, `co.uk`, is one suffix). A numeric
+/// or bracketed host is whole.
+fn registrable_labels(host: &str, labels: &[&str]) -> usize {
+    let n = labels.len();
+    if host.starts_with('[') || n < 3 || labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit())) {
+        return n;
+    }
+    if labels[n - 1].chars().count() == 2 && labels[n - 2].chars().count() <= 3 { 3 } else { 2 }
+}
+
+/// A URL inside a longer display text: what comes before its scheme, the URL, and a closing quote.
+/// None when the text is only the URL.
+fn embedded_url(shown: &str) -> Option<(&str, &str, &str)> {
+    let at = shown.find("://")?;
+    let start = shown[..at].rfind(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))).map_or(0, |p| p + shown[p..].chars().next().map_or(1, char::len_utf8));
+    if start == at {
+        return None;
+    }
+    let (lead, url) = shown.split_at(start);
+    let (url, trail) = match url.strip_suffix('\u{201d}') {
+        Some(u) => (u, "\u{201d}"),
+        None => (url, ""),
+    };
+    (!lead.is_empty() || !trail.is_empty()).then_some((lead, url, trail))
 }
 
 /// What the lock mark beside the address shows.
@@ -1570,6 +1623,55 @@ mod tests {
         assert!(fit.starts_with('\u{2026}') && fit.contains("bank.test") && fit.chars().count() <= 24, "{fit}");
         // Something that is not an authority URL is cut from the right.
         assert_eq!(fit_address("about:blank", 6), "about\u{2026}");
+    }
+
+    /// Round 2, class fix: ONE shortener for every URL display. The registrable host (public suffix and
+    /// one label) always stays whole: subdomain labels go from the LEFT, the path from the right; a
+    /// long scheme or a lead-in text cannot push it out.
+    #[test]
+    fn one_shortener_keeps_the_registrable_host() {
+        let chain = vec!["a123456789".to_string(); 25].join(".");
+        assert!(chain.len() >= 249);
+        let url = format!("https://{chain}.evil.test/login?x=1");
+        for cells in [12usize, 14, 20, 30, 60, 100, 200] {
+            let fit = fit_address(&display_url(&url), cells);
+            assert!(fit.chars().count() <= cells, "{cells}: {fit}");
+            assert!(fit.contains("evil.test"), "{cells}: {fit}");
+        }
+        // Whole labels go from the left, behind an ellipsis; the path is cut first.
+        assert_eq!(fit_address("https://a.b.c.evil.test/path/long/long", 25), "https://a.b.c.evil.test/\u{2026}");
+        assert_eq!(fit_address("https://a.b.c.evil.test/", 21), "https://\u{2026}c.evil.test/");
+        assert_eq!(fit_address("https://a.b.c.evil.test/", 19), "https://\u{2026}evil.test/");
+        // A two-letter country suffix with a short second level is one suffix (co.uk).
+        assert!(fit_address("https://login.paypal.co.uk/x", 20).contains("paypal.co.uk"));
+        // Narrower than the registrable host: its end, never its start.
+        let tiny = fit_address("https://a.b.evil.test/", 6);
+        assert!(tiny.ends_with("l.test") || tiny.ends_with(".test"), "{tiny}");
+        // A lead-in and a closing quote (the Navigate row) leave the URL what they leave of the room.
+        let row = format!("Navigate to \u{201c}{}\u{201d}", display_url(&url));
+        for cells in [30usize, 40, 60, 90] {
+            let fit = fit_address(&row, cells);
+            assert!(fit.chars().count() <= cells && fit.contains("evil.test") && fit.starts_with("Navigate to") && fit.ends_with('\u{201d}'), "{cells}: {fit}");
+        }
+        // A scheme of any length cannot push the host out or past MAX_URL.
+        let long = format!("{}://{chain}.evil.test/x", "s".repeat(5000));
+        let shown = display_url(&long);
+        assert!(shown.chars().count() <= MAX_URL + 1 && shown.contains("evil.test"), "{}", shown.len());
+        assert!(fit_address(&shown, 40).contains("evil.test"));
+        // The one shortener is the only one in the browser's displays.
+        let uses = [
+            ("browser_app.rs", include_str!("app/browser_app.rs")),
+            ("browser_tip.rs", include_str!("browser_tip.rs")),
+            ("open_quickly.rs", include_str!("open_quickly.rs")),
+        ];
+        for (name, src) in uses {
+            let live = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+            assert!(live.contains("fit_address("), "{name}");
+            assert!(!live.contains("tail_chars(") && !live.contains("cut_end("), "{name}: no second shortener");
+        }
+        let app = include_str!("app/browser_app.rs");
+        let draw = &app[app.find("let main = Rect { w: r.w * 0.62").unwrap()..];
+        assert!(draw[..700].contains("browser::fit_address(&s.text") && draw[..700].contains("browser::fit_address(&s.detail"), "the suggestion rows");
     }
 
     #[test]

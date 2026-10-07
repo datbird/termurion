@@ -779,8 +779,11 @@ impl App {
                 let y = r.y + (r.h - ch) / 2.0;
                 let main = Rect { w: r.w * 0.62, ..*r };
                 let detail = Rect { x: r.x + r.w * 0.64, w: r.w * 0.35, ..*r };
-                frame.rows.push(row(r.x + 6.0 * scale, y, vec![span(s.text.clone(), fg, false)], main));
-                frame.rows.push(row(detail.x, y, vec![span(s.detail.clone(), dim, false)], detail));
+                // A URL in a row keeps its host whatever the row's width (the one shortener).
+                let text = browser::fit_address(&s.text, ((main.w - 6.0 * scale) / cw).floor().max(1.0) as usize);
+                let detail_text = browser::fit_address(&s.detail, (detail.w / cw).floor().max(1.0) as usize);
+                frame.rows.push(row(r.x + 6.0 * scale, y, vec![span(text, fg, false)], main));
+                frame.rows.push(row(detail.x, y, vec![span(detail_text, dim, false)], detail));
             }
         }
     }
