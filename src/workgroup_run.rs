@@ -527,6 +527,9 @@ mod tests {
             Plan::Line(r#""C:\Program Files\Git\cmd\git.exe" log"#.into()),
             Plan::Line("mygit log".into()),
             Plan::Argv(vec!["mygit".into(), "x".into()]),
+            // Git for Windows' dashed programs are git too (round 4).
+            Plan::Line(r#""C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe" HEAD"#.into()),
+            Plan::Argv(vec!["Git-Log".into()]),
         ] {
             assert!(member_line(plan.clone(), &path_of).is_err(), "{plan:?}");
         }

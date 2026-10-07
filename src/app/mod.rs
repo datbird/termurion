@@ -8249,6 +8249,19 @@ mod tests {
         assert!(body.find("posix_vars(&posix)").unwrap() < body.find("env.extend(term)").unwrap(), "TERM= still goes last");
     }
 
+    /// 13y1 Task 7 round 4: a launch's own entries (a git launch's `-NAME` removals) are applied after
+    /// everything else the session sets, so they reach the child (`session_env::launch_last`).
+    #[test]
+    fn session_env_applies_the_launch_last() {
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("    fn session_env(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        let take = body.find("let launch = std::mem::take(&mut self.start_extra_env);").expect("the launch is taken once");
+        let last = body.find("(crate::session_env::launch_last(env, &launch), cookie)").expect("the launch goes last");
+        assert!(take < last && body.find("env.extend(term)").unwrap() < last, "after TERM");
+        assert!(body.trim_end().ends_with("(crate::session_env::launch_last(env, &launch), cookie)"), "nothing follows it");
+    }
+
     #[test]
     fn menu_bar_hides_in_full_screen() {
         assert!(menu_should_hide(true, true));

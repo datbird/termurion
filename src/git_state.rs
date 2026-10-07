@@ -458,6 +458,22 @@ const LAUNCH_ARGS: &[&str] = &[
     "protocol.allow=never",
     "-c",
     "core.sshCommand=false",
+    "-c",
+    "core.askPass=",
+    // No signature check: `log.showSignature` (log and show) runs the gpg program of the format the
+    // signature names; each is pointed at a program that does not exist.
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "gpg.program=false",
+    "-c",
+    "gpg.ssh.program=false",
+    "-c",
+    "gpg.x509.program=false",
+    // Paths printed as git prints them by default (a repository's `diff.noPrefix` changes what a diff
+    // tool reading them sees).
+    "-c",
+    "diff.noprefix=false",
     // Never into a submodule: a nested repository's own config is not vetted, and porcelain diff and
     // status run git inside each one (its filters, its fsmonitor). The command-line flag after the
     // subcommand is what wins over `.gitmodules`' `ignore`; these keep every other path short.
@@ -477,7 +493,7 @@ const LAUNCH_SUBCOMMANDS: &[&str] = &["diff", "difftool", "status", "show", "log
 
 /// The long options a template must not pass after the subcommand: each would undo an override (a later
 /// option wins). Matched as git matches them, by any unambiguous prefix and through `--no-`.
-const LAUNCH_UNDOES: &[&str] = &["ignore-submodules", "submodule", "recurse-submodules", "ext-diff", "textconv"];
+const LAUNCH_UNDOES: &[&str] = &["ignore-submodules", "submodule", "recurse-submodules", "ext-diff", "textconv", "show-signature"];
 
 /// Why a template's argument must not reach a launched git: it re-enables a submodule, an external diff or
 /// a textconv. Arguments after `--` are paths.
@@ -485,7 +501,7 @@ fn undoes_an_override(arg: &str) -> bool {
     let Some(long) = arg.strip_prefix("--") else { return false };
     let name = long.split('=').next().unwrap_or("");
     // Our own options, and `--text` (an exact option name wins over an abbreviation of `--textconv`).
-    if matches!(arg, "--no-ext-diff" | "--no-textconv" | "--text") {
+    if matches!(arg, "--no-ext-diff" | "--no-textconv" | "--no-show-signature" | "--text") {
         return false;
     }
     let mut core = name;
@@ -497,8 +513,8 @@ fn undoes_an_override(arg: &str) -> bool {
 
 /// THE git argument vector for a git started in a pane (every workgroup launch of git takes it):
 /// `HARDENED`, `LAUNCH_ARGS` and the vet's filter overrides, then the subcommand (one of
-/// `LAUNCH_SUBCOMMANDS`) with `--ignore-submodules=all` right after it, and `--no-ext-diff --no-textconv`
-/// after `diff`, `show` and `log`. The rest is the person's own template, less any option that would undo
+/// `LAUNCH_SUBCOMMANDS`) with `--ignore-submodules=all` right after it, `--no-ext-diff --no-textconv`
+/// after `diff`, `show` and `log`, and `--no-show-signature` after `show` and `log`. The rest is the person's own template, less any option that would undo
 /// an override (refused).
 pub fn launch_args(vet: &Vetted, args: &[&str]) -> Result<Vec<String>, String> {
     let Some((sub, rest)) = args.split_first() else { return Err("The git command has no subcommand, so it did not start.".into()) };
@@ -507,7 +523,7 @@ pub fn launch_args(vet: &Vetted, args: &[&str]) -> Result<Vec<String>, String> {
     }
     let paths_from = rest.iter().position(|a| *a == "--").unwrap_or(rest.len());
     if rest[..paths_from].iter().any(|a| undoes_an_override(a)) {
-        return Err("The git command turns submodules, an external diff or a text conversion back on, so it did not start.".into());
+        return Err("The git command turns submodules, an external diff, a text conversion or a signature check back on, so it did not start.".into());
     }
     let mut out: Vec<String> = HARDENED.iter().chain(LAUNCH_ARGS).map(|a| a.to_string()).chain(vet.args.iter().cloned()).collect();
     out.push(sub.to_string());
@@ -515,6 +531,9 @@ pub fn launch_args(vet: &Vetted, args: &[&str]) -> Result<Vec<String>, String> {
     if matches!(*sub, "diff" | "show" | "log") {
         out.push("--no-ext-diff".into());
         out.push("--no-textconv".into());
+    }
+    if matches!(*sub, "show" | "log") {
+        out.push("--no-show-signature".into());
     }
     out.extend(rest.iter().map(|a| a.to_string()));
     Ok(out)
@@ -544,9 +563,20 @@ pub fn launch(git: &Path, vet: &Vetted, args: &[&str]) -> Result<(String, Vec<St
     Ok((line, launch_env()))
 }
 
-/// Whether `program` is git: its file name, without `.exe`, is `git` in any case.
+/// Whether `program` is git: its file name, without `.exe`, is `git` or Git for Windows' dashed form
+/// `git-<name>` (libexec's `git-diff.exe` is `git diff`), in any case.
 pub fn is_git(program: &Path) -> bool {
-    program.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("git"))
+    dashed(program).is_some()
+}
+
+/// The subcommand a git program's name carries: Some("") for `git`, Some("diff") for `git-diff`
+/// (lowercased: Windows names are not case-sensitive, git's subcommands are), None for any other program.
+fn dashed(program: &Path) -> Option<String> {
+    let stem = program.file_stem()?.to_str()?.to_ascii_lowercase();
+    if stem == "git" {
+        return Some(String::new());
+    }
+    stem.strip_prefix("git-").filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// THE rule for a program a workgroup starts in a pane from a template's tokens: git (named git, or a
@@ -556,8 +586,10 @@ pub fn pane_line(git: &Path, vet: &Vetted, tokens: &[String], resolve: &dyn Fn(&
     let Some(program) = tokens.first() else { return Err("The diff command is empty, so it did not start.".into()) };
     let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
     let found = resolve(Path::new(program));
-    if is_git(Path::new(program)) || found.as_deref().is_some_and(is_git) {
-        return launch(git, vet, &rest);
+    // The name as written first, then the file it resolves to; a dashed name carries its subcommand.
+    if let Some(sub) = dashed(Path::new(program)).or_else(|| found.as_deref().and_then(dashed)) {
+        let args: Vec<&str> = (!sub.is_empty()).then_some(sub.as_str()).into_iter().chain(rest).collect();
+        return launch(git, vet, &args);
     }
     let found = found.ok_or("The diff program was not found, so it did not start.")?;
     Ok((crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new()))
@@ -950,19 +982,28 @@ fn vet_config(file: &LocalPath, root: &Path, v: &mut Vet, depth: usize) -> Optio
     Some(())
 }
 
-/// Records the key when it names a program git would run in a pane (not by the poller's lines).
-/// Section and key are lowercased by the parser. Filter drivers are not listed: `-c` switches
-/// them off for every line.
+/// Records the key when it names a program git would run in a pane (not by the poller's lines), or
+/// makes git run one: every program-running key of git-config(1), by section and by the key name shapes
+/// that name a program in any section (`*.program`, `*.helper`, `*.command`, `*.cmd`, `*.textconv`,
+/// `*hook`), plus `log.showSignature` (runs the gpg program) and `protocol.*.allow` (another transport).
+/// Section and key are lowercased by the parser. Filter drivers are not listed: `-c` switches them off
+/// for every line.
 fn note_program(section: &str, sub: Option<&str>, key: &str, out: &mut Vec<String>) {
-    let runs = match section {
-        "core" => matches!(key, "pager" | "sshcommand" | "fsmonitor" | "editor" | "askpass"),
-        "pager" | "alias" | "difftool" | "mergetool" | "credential" | "uploadpack" | "receive" | "web" | "browser" | "man" | "gpg" | "gui" => true,
-        "sequence" => key == "editor",
-        "diff" => matches!(key, "external" | "tool" | "guitool") || (sub.is_some() && matches!(key, "command" | "textconv")),
-        "merge" => sub.is_some() && key == "driver" || key == "tool",
-        "http" => matches!(key, "proxy" | "sslcommand"),
-        _ => false,
-    };
+    let any_section = ["program", "helper", "command", "cmd", "textconv", "hook"].iter().any(|k| key.ends_with(k));
+    let runs = any_section
+        || match section {
+            "core" => matches!(key, "pager" | "sshcommand" | "fsmonitor" | "editor" | "askpass" | "gitproxy"),
+            "pager" | "alias" | "difftool" | "mergetool" | "credential" | "uploadpack" | "receive" | "web" | "browser" | "man" | "gpg" | "gui" | "guitool" | "sendemail" | "instaweb" => true,
+            "protocol" => key == "allow",
+            "sequence" => key == "editor",
+            "log" => key == "showsignature",
+            "diff" => matches!(key, "external" | "tool" | "guitool"),
+            "merge" => sub.is_some() && key == "driver" || key == "tool",
+            "http" => matches!(key, "proxy" | "sslcommand"),
+            "remote" => matches!(key, "vcs" | "uploadpack" | "receivepack" | "proxy"),
+            "submodule" => key == "update",
+            _ => false,
+        };
     if runs {
         let name = match sub {
             Some(s) => format!("{section}.{s}.{key}"),
@@ -2091,6 +2132,33 @@ mod tests {
             ("promisor", "[remote \"o\"]\n\tpromisor = true\n"),
             ("partial", "[extensions]\n\tpartialClone = o\n"),
             ("include", "[include]\n\tpath = more.cfg\n"),
+            // Round 4: every key git-config(1) documents as naming a program, and the keys that make a
+            // launched git run one (signature checks, other transports).
+            ("showsig", "[log]\n\tshowSignature = true\n"),
+            ("gpg", "[gpg]\n\tprogram = calc\n"),
+            ("gpgssh", "[gpg \"ssh\"]\n\tprogram = calc\n"),
+            ("gpgkeycmd", "[gpg \"ssh\"]\n\tdefaultKeyCommand = calc\n"),
+            ("gpgformat", "[gpg]\n\tformat = x509\n"),
+            ("askpass", "[core]\n\taskPass = calc\n"),
+            ("gitproxy", "[core]\n\tgitProxy = calc\n"),
+            ("altrefs", "[core]\n\talternateRefsCommand = calc\n"),
+            ("gchook", "[gc]\n\trecentObjectsHook = calc\n"),
+            ("trailer", "[trailer \"t\"]\n\tcommand = calc\n"),
+            ("trailercmd", "[trailer \"t\"]\n\tcmd = calc\n"),
+            ("sendemail", "[sendemail]\n\tsmtpServer = calc\n"),
+            ("sendemailcmd", "[sendemail \"x\"]\n\tsendmailCmd = calc\n"),
+            ("protocol", "[protocol \"ext\"]\n\tallow = always\n"),
+            ("protocolall", "[protocol]\n\tallow = always\n"),
+            ("remotevcs", "[remote \"o\"]\n\tvcs = calc\n"),
+            ("remoteupload", "[remote \"o\"]\n\tuploadpack = calc\n"),
+            ("remotereceive", "[remote \"o\"]\n\treceivepack = calc\n"),
+            ("submoduleupdate", "[submodule \"s\"]\n\tupdate = !calc\n"),
+            ("anyhelper", "[x \"y\"]\n\thelper = calc\n"),
+            ("anyprogram", "[x]\n\tprogram = calc\n"),
+            ("anytextconv", "[x \"y\"]\n\ttextconv = calc\n"),
+            ("anycommand", "[x \"y\"]\n\tcommand = calc\n"),
+            ("instaweb", "[instaweb]\n\thttpd = calc\n"),
+            ("browser", "[browser \"b\"]\n\tcmd = calc\n"),
         ];
         for (name, text) in cases {
             let d = temp_repo(&format!("launch-{name}"));
@@ -2101,7 +2169,11 @@ mod tests {
             fs::remove_dir_all(&d).unwrap();
         }
         let d = temp_repo("launch-plain");
-        fs::write(d.join(".git").join("config"), "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.com/r.git\n[filter \"lfs\"]\n\tclean = git-lfs clean\n[user]\n\tname = a\n").unwrap();
+        fs::write(
+            d.join(".git").join("config"),
+            "[core]\n\tbare = false\n\trepositoryformatversion = 0\n\tfilemode = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n[remote \"origin\"]\n\turl = https://example.com/r.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n[filter \"lfs\"]\n\tclean = git-lfs clean\n[lfs]\n\trepositoryformatversion = 0\n[user]\n\tname = a\n\tsigningKey = ABC\n[commit]\n\tgpgSign = true\n[pull]\n\trebase = true\n[protocol]\n\tversion = 2\n[diff]\n\trenames = true\n",
+        )
+        .unwrap();
         let v = vet_repo(&d).unwrap();
         assert_eq!(v.launch_refusal(), None, "a plain config launches (filters are switched off by -c)");
         assert!(v.args.iter().any(|a| a == "filter.lfs.clean="));
@@ -2140,7 +2212,7 @@ mod tests {
         assert_eq!(&diff[..HARDENED.len()], HARDENED);
         for want in [
             "--no-pager", "core.hooksPath=NUL", "core.pager=cat", "diff.external=", "credential.helper=", "protocol.allow=never", "core.sshCommand=false", "filter.x.clean=", "submodule.recurse=false", "diff.submodule=short",
-            "diff.ignoreSubmodules=all",
+            "diff.ignoreSubmodules=all", "log.showSignature=false", "gpg.program=false", "gpg.ssh.program=false", "gpg.x509.program=false", "core.askPass=", "diff.noprefix=false",
         ] {
             assert!(diff.iter().any(|a| a == want), "{want} in {diff:?}");
         }
@@ -2154,6 +2226,7 @@ mod tests {
             let at = a.iter().position(|x| x == sub).unwrap();
             assert_eq!(a[at + 1], "--ignore-submodules=all", "{a:?}");
             assert_eq!(a.iter().any(|x| x == "--no-ext-diff"), sub != "status", "{a:?}");
+            assert_eq!(a[at..].iter().any(|x| x == "--no-show-signature"), sub != "status", "log and show never verify a signature: {a:?}");
         }
         // A subcommand outside the list, or a global option before it, is refused.
         for bad in [&["-c", "core.pager=calc", "diff"][..], &["fetch"], &["submodule", "foreach", "calc"], &[]] {
@@ -2162,6 +2235,12 @@ mod tests {
         // An option that undoes an override, also abbreviated or negated twice, is refused before `--`.
         for bad in ["--ignore-submodules=none", "--ignore-sub=dirty", "--submodule=diff", "--sub=log", "--recurse-submodules", "--ext-diff", "--ext", "--textconv", "--no-no-ext-diff"] {
             assert!(launch_args(&vet, &["diff", bad]).is_err(), "{bad}");
+        }
+        for bad in ["--show-signature", "--show-sig", "--no-no-show-signature"] {
+            assert!(launch_args(&vet, &["log", bad]).is_err(), "{bad}");
+        }
+        for ok in ["--show-notes", "--shortstat", "--stat", "--no-show-signature"] {
+            assert!(launch_args(&vet, &["log", ok]).is_ok(), "{ok}");
         }
         for ok in ["--no-ext-diff", "--no-textconv", "--stat", "--ignore-space-change", "-w", "--text"] {
             assert!(launch_args(&vet, &["diff", ok]).is_ok(), "{ok}");
@@ -2983,6 +3062,20 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             assert!(line.contains("--ignore-submodules=all") && line.contains("core.pager=cat"), "{tokens:?}: {line}");
             assert!(env.iter().any(|e| e == "-GIT_DIR") && env.iter().any(|e| e == "GIT_PAGER=cat"), "{tokens:?}: {env:?}");
         }
+        // Round 4: Git for Windows' dashed form (`git-diff.exe` in libexec) is `git diff`, through the launch;
+        // a dashed program that is no allowed subcommand is refused.
+        for (tokens, resolved, sub) in [
+            (words(&[r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe", "HEAD"]), r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe", "diff"),
+            (words(&["GIT-LOG", "-1"]), r"C:\Git\mingw64\libexec\git-core\git-log.exe", "log"),
+            (words(&["gd", "HEAD"]), r"C:\Git\mingw64\libexec\git-core\git-difftool.exe", "difftool"),
+        ] {
+            let (line, _) = pane_line(git, &vet, &tokens, &to(resolved)).expect("a launch");
+            assert!(line.starts_with(r"C:\Git\cmd\git.exe "), "{tokens:?}: the vetted git, {line}");
+            assert!(line.contains(&format!(" {sub} --ignore-submodules=all")), "{tokens:?}: {line}");
+        }
+        for (tokens, resolved) in [(words(&["git-credential-manager", "get"]), r"C:\Git\mingw64\bin\git-credential-manager.exe"), (words(&["git-upload-pack", "."]), r"C:\Git\mingw64\bin\git-upload-pack.exe")] {
+            assert!(pane_line(git, &vet, &tokens, &to(resolved)).is_err(), "{tokens:?}");
+        }
         let (line, env) = pane_line(git, &vet, &words(&["delta", "x"]), &to(r"C:\d\delta.exe")).unwrap();
         assert_eq!((line.as_str(), env.len()), (r"C:\d\delta.exe x", 0), "any other program as it resolves");
         assert!(pane_line(git, &vet, &words(&["nope"]), &|_: &Path| None).is_err());
@@ -3033,6 +3126,83 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             let out = Command::new(&git).current_dir(&dir).args(&argv[1..]).env_clear().envs(vars).stdin(std::process::Stdio::null()).output().expect("git ran");
             assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
             assert!(!marker.exists(), "{args:?} ran the submodule's filter: {argv:?}");
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// 13y1 Task 7 round 4, against real git: a repository's own `log.showSignature = true` and
+    /// `gpg.program` (the agent can write both) never run a program through any launched git. The vet
+    /// refuses the repository; even past the vet, the launch line itself never verifies a signature, with
+    /// the repository's gpg program or the person's own (named in their global config).
+    #[cfg(windows)]
+    #[test]
+    fn a_launch_never_verifies_a_signature() {
+        use std::process::Command;
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = find_git(&path, &crate::localfs::is_file) else {
+            eprintln!("a_launch_never_verifies_a_signature: git was not found; skipped");
+            return;
+        };
+        let dir = temp("wg-signature");
+        let out = |args: &[&str], env: &[(&str, &Path)]| {
+            let mut c = Command::new(&git);
+            c.current_dir(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args);
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            let o = c.output().expect("git ran");
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        out(&["init", "-q"], &[]);
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        out(&["add", "a.txt"], &[]);
+        let tree = out(&["write-tree"], &[]);
+        // A commit with a signature header: showing it with log.showSignature runs gpg.program.
+        let commit = format!(
+            "tree {tree}\nauthor t <t@t> 1700000000 +0000\ncommitter t <t@t> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----\n\nsigned\n"
+        );
+        fs::write(dir.join("commit.txt"), commit).unwrap();
+        let sha = out(&["hash-object", "-t", "commit", "-w", "commit.txt"], &[]);
+        out(&["update-ref", "HEAD", &sha], &[]);
+        fs::remove_file(dir.join("commit.txt")).unwrap();
+        let marker = dir.join("RAN");
+        let script = dir.join("marker-gpg");
+        let unix = |p: &Path| p.to_string_lossy().replace('\\', "/");
+        fs::write(&script, format!("#!/bin/sh\necho ran > '{}'\nexit 1\n", unix(&marker))).unwrap();
+        let global = dir.join("global.cfg");
+        fs::write(&global, format!("[gpg]\n\tprogram = {}\n", unix(&script))).unwrap();
+        let config = dir.join(".git").join("config");
+        let base = fs::read_to_string(&config).unwrap();
+        // The repository's own gpg program, then the person's (the repository only asks to show signatures).
+        for (name, local, env) in [
+            ("repo gpg.program", format!("[log]\n\tshowSignature = true\n[gpg]\n\tprogram = {}\n", unix(&script)), Vec::<(&str, &Path)>::new()),
+            ("global gpg.program", "[log]\n\tshowSignature = true\n".to_string(), vec![("GIT_CONFIG_GLOBAL", global.as_path())]),
+        ] {
+            fs::write(&config, format!("{base}{local}")).unwrap();
+            // The setup runs the marker without the launch's overrides (the test is not vacuous).
+            let _ = fs::remove_file(&marker);
+            let mut plain = Command::new(&git);
+            plain.current_dir(&dir).args(["log", "-1"]).envs(env.iter().copied());
+            let _ = plain.output().expect("git ran");
+            assert!(marker.exists(), "{name}: plain git log must run the marker, or this test proves nothing");
+            let vet = vet_repo(&dir).expect("vetted for the poller");
+            assert!(vet.launch_refusal().is_some(), "{name}: the vet refuses: {:?}", vet.programs);
+            assert!(launch(&git, &vet, &["log"]).is_err(), "{name}: no launch");
+            let past_the_vet = Vetted { programs: Vec::new(), ..vet };
+            for args in [&["log", "-1"][..], &["show", "HEAD"], &["log", "-p", "HEAD"], &["diff", "HEAD"], &["status"]] {
+                let _ = fs::remove_file(&marker);
+                let (line, launch_env) = launch(&git, &past_the_vet, args).expect("a launch");
+                let argv = crate::semantic::split_command_line(&line);
+                let mut vars = crate::session_env::merge(std::env::vars().collect(), &crate::session_env::launch_last(Vec::new(), &launch_env));
+                vars.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string_lossy().into_owned())));
+                let o = Command::new(&git).current_dir(&dir).args(&argv[1..]).env_clear().envs(vars).stdin(std::process::Stdio::null()).output().expect("git ran");
+                assert!(o.status.success(), "{name} {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+                assert!(!marker.exists(), "{name} {args:?} ran the gpg program: {argv:?}");
+                for want in ["log.showSignature=false", "gpg.program=false", "gpg.ssh.program=false", "gpg.x509.program=false"] {
+                    assert!(argv.iter().any(|a| a == want), "{name} {args:?}: {want} in {argv:?}");
+                }
+            }
         }
         let _ = fs::remove_dir_all(dir);
     }

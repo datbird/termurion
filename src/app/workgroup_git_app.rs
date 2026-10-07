@@ -741,7 +741,7 @@ mod tests {
     }
 
     /// The git spawn shapes in `live` (a source's code outside its tests): a hardened or launch line built
-    /// by hand, git named as a program, a process, a pty or a pane line whose program names git, or the
+    /// by hand, git named as a program (also in its dashed `git-diff` form), a process, a pty or a pane line whose program names git, or the
     /// poller's runner. Only `git_state` (`launch`, `pane_line`) makes a git line.
     fn git_spawn_shapes(live: &str) -> Vec<String> {
         let mut hits: Vec<String> = Vec::new();
@@ -751,6 +751,10 @@ mod tests {
             if live.contains(banned) {
                 hits.push(banned.to_string());
             }
+        }
+        // Git for Windows' dashed programs (`git-diff.exe`) named in a string, in any case.
+        if live.to_ascii_lowercase().contains("\"git-") {
+            hits.push("\"git-".to_string());
         }
         for call in ["Command::new(", "argv_line(", "start_command_override = ", "raw_arg(", "start_pane(", "start_pane_as("] {
             for (at, _) in live.match_indices(call) {
@@ -790,6 +794,8 @@ mod tests {
             "let c = Command::new(git_path).arg(x);",
             "Command::new(\"git\").arg(x);",
             "let p = which(\"git.exe\");",
+            "let p = which(\"git-diff.exe\");",
+            "let p = libexec.join(\"Git-Diff\");",
             "let l = crate::workgroup_run::argv_line(&git, &args)?;",
             "let l = argv_line(&launch.git.unwrap(), &a)?;",
             "self.start_command_override = Some(format!(\"{} diff\", git.display()));",
