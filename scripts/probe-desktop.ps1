@@ -4,14 +4,14 @@
 # Run this over ssh ONLY after Robert said yes. Plain ASCII on purpose.
 #
 # Usage (from an ssh session on EXTREME):
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\tandem-13x2\scripts\probe-desktop.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\tandem\scripts\probe-desktop.ps1
 # Optional: -Repo <folder>  -TimeoutMinutes <n>  -Filters <cargo test filters>
 # If the ssh session drops while this runs, nothing cleans up by itself: run
 #   schtasks /Query /FO LIST | findstr tandem-probe   then   schtasks /Delete /TN <name> /F
 # by hand and look for leftover tandem-probe-* folders under %TEMP% and your home folder.
 
 param(
-    [string]$Repo = 'C:\Users\datbi\src\tandem-13x2',
+    [string]$Repo = 'C:\Users\datbi\src\tandem',
     [int]$TimeoutMinutes = 40,
     [string[]]$Filters = @('webhost_win::probe::', 'webhost_win::tests::menu_gets_our_items')
 )
