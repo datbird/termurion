@@ -2795,6 +2795,8 @@ mod probe {
         p.load(PAGE);
         p.eval(None, &echo(&secret)).expect("the echo");
         let forged = p.page_eval("window.__forge()").expect("the forgery ran");
+        // ExecuteScript answers with JSON: a string result arrives quoted, so decode it first.
+        let forged = serde_json::from_str::<String>(&forged).unwrap_or(forged);
         assert!(forged.contains("\"client\":\"undefined\""), "the binding does not exist in the page world: {forged}");
         assert!(!forged.contains("threw"), "{forged}");
         p.settle(1000);
@@ -2907,7 +2909,14 @@ mod probe {
         let mut want = vec!["about:srcdoc", "about:srcdoc", "about:srcdoc", child, top];
         want.sort();
         assert_eq!(hrefs, want, "{hrefs:?}");
-        assert!(cross_on_session, "the cross-site frame's world is on its child session: {seen}");
+        // The runtime may keep a cross-site frame in-process (the 2026-10-07 console run attached no
+        // iframe target for *.invalid hosts). The world reaching it is asserted above by its href;
+        // when the frame IS out of process, its world must be on the child session.
+        if p.attached.iter().any(|(_, kind)| kind == "iframe") {
+            assert!(cross_on_session, "the cross-site frame's world is on its child session: {seen}");
+        } else {
+            eprintln!("probe: the cross-site frame ran in-process; its world was reached ({seen})");
+        }
         p.settle(500);
         let stack = p.page_eval("String(window.__stackRead === true)").unwrap_or_default();
         println!("Runtime.enable detectable: {}", if stack.contains("true") { "yes" } else { "no" });
