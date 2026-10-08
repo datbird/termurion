@@ -7,7 +7,7 @@ Runtime installed (one run). Mark each line pass or fail. Nothing of 13x2's wind
 isolated-world code has run on a real WebView2: the ignored runtime tests, the context menu, the
 link tip window, the overlays, the DevTools replay and the world itself are all on this list.
 
-Before anything else: `m13x2-rulings.txt` line 1 says `Probe: PENDING`. Section A records the
+Before anything else: `m13x2-rulings.txt` line 1 records the probe (`PENDING`, or the last run's `PASS`/`FAIL`). Section A records the
 probe; until it passes the per-view run-time check alone decides whether Client scripts run, and
 every row marked (world) below may be inert, which is a fail only when section A passed.
 
@@ -46,9 +46,9 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 
 | # | Check | Result |
 |---|---|---|
-| **A. The probe (Probe: PENDING until this passes)** | | |
-| 1 | With Robert's yes and no implementer building in `tandem-13x2`, run `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\tandem-13x2\scripts\probe-desktop.ps1` from an ssh session on EXTREME (`scripts/probe-desktop.ps1` is the only desktop command; a PowerShell console window shows for the whole run). The output shows `probe: process session N` with N not 0 (session 0 prints SKIPPED, which is not a pass). | |
-| 2 | The output shows 5 `ok` results (the five `webhost_win::probe::` tests) and no failure; a timeout is a fail. | |
+| **A. The probe (not passed until every row here passes; the 2026-10-07 run failed on probe defects, fixed after it)** | | |
+| 1 | With Robert's yes and no implementer building in the checkout under test, run `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout>` from an ssh session on EXTREME (`scripts/probe-desktop.ps1` is the only desktop command; a PowerShell console window shows for the whole run). The output shows `probe: process session N` with N not 0 (session 0 prints SKIPPED, which is not a pass). | |
+| 2 | The output shows `running 12 tests` and 12 `ok` results (the eleven ignored `webhost_win::probe::` tests and `webhost_win::tests::menu_gets_our_items`) and no failure; a timeout is a fail. | |
 | 3 | The output's `Runtime.enable detectable: yes` or `no` line is copied into the rulings file; replace line 1 with `Probe: PASS\|FAIL on EXTREME, WebView2 Runtime <version>, <date>; Runtime.enable detectable: yes\|no`. If yes, the controller revisits P25 before 13x3. | |
 | 4 | The script's last lines say `left running: none`, `left scheduled: none` and `left on disk: none`; `schtasks /Query /TN tandem-probe-<stamp>` says the task cannot be found; no `tandem-probe-*` folder remains under `C:\Users\datbi` or `%TEMP%`, and Teams, Outlook and other WebView2 hosts were not touched. | |
 | 5 | Also in the console session (same method, one task): the other ignored runtime tests pass: `bridge_round_trip` (`typeof window.webkit` is "undefined" on an https page and "object" on `iterm2-about:history`), `menu_gets_our_items`, `hover_reaches_the_router`, `send_text_reaches_a_field` (a field, a contenteditable, nothing focused), `smart_selection_selects_in_a_page`, `synthetic_click_runs_nothing`, `broadcast_types_into_a_second_view`, `probe_page_cannot_reach_evaluate_in_frame`. The script's default filters (`webhost_win::probe::` and `webhost_win::tests::menu_gets_our_items`) run all of them. (`synthetic_selection_copies_nothing` is not written: row 10 covers it by hand.) | |
@@ -97,7 +97,7 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 | 43 | Copy Link Address (pointer action or menu) shows "Copied" for 1 second above the pointer and does not vanish early when a hover happens during it. | |
 | 44 | An announcement bar (when 13x6 or 13x7 raise one) covers the top of the page and the page starts below it; each button answers once; closing answers nothing. A browser pane's toolbar sits flush under the title bar with no empty second strip, also beside an open Clippings or inline-chat panel. | |
 | **G. Key bindings in a page** | | |
-| 45 | Bind Ctrl+J to Send Text "hi" in the profile: with the page focused and no text field editing, "hi" goes to the focused element; in a text field Ctrl+J types into the page and your binding does not run (the editing rule, world). With the field not editing and a non-text element focused, the text goes to that element (ruled, iTerm2 parity: do not mark this a fail). | |
+| 45 | Bind Ctrl+J to Send Text "hi" in the profile: with the page focused and no text field editing, "hi" goes to the focused element; in a text field Ctrl+J types into the page and your binding does not run (the editing rule, world). With the field not editing and a non-text element focused, the text goes to that element (ruled, iTerm2 parity: do not mark this a fail). With nothing focused but a caret left in a contenteditable the page blurred, the text goes at that caret (Chromium, ruled F4: not a fail). | |
 | 46 | Bind Page Down to Scroll Page Down: the page scrolls when no field has focus; Home, End and Line scrolls too. Bindings on a plain character key (no Ctrl or Alt) do not act while the page has focus (ruled limit). | |
 | 47 | A binding on Ctrl+Alt+J (Next Tab) switches tab while a page has focus and the page does not see the key. A binding on Bypass passes the key to the page. | |
 | 48 | Copy or Send on Ctrl+C with a selection copies it (clipboard and Paste History); with none the letter goes into the field. Paste or Send, Paste... and Paste from Selection... insert into the focused field. Move end of selection by character, word, line extends the page selection. | |

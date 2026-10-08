@@ -1124,7 +1124,8 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
 
 #[cfg(test)]
 thread_local! {
-    /// The last answered menu's items (kind 3 is a separator, else the label or the native name), for the ignored runtime test.
+    /// The last answered menu's items for the ignored runtime test: "---" for a separator, else
+    /// "name:label" (WebView2 names a custom item by its label), or the label when there is no name.
     static LAST_MENU: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -2127,8 +2128,9 @@ mod tests {
                 view.answer_context_menu(token, vec![Custom { id: 1, label: "First".into(), enabled: true, icon_png: None }, Separator, Native, Separator, Custom { id: 4, label: "Last".into(), enabled: true, icon_png: None }]);
                 let labels = LAST_MENU.with(|m| m.borrow().clone());
                 println!("menu: {labels:?}");
-                assert_eq!(labels.first().map(String::as_str), Some("First"));
-                assert_eq!(labels.last().map(String::as_str), Some("Last"));
+                // WebView2 names a custom item by its label (the 2026-10-07 run), so it reads "name:label".
+                assert_eq!(labels.first().map(String::as_str), Some("First:First"));
+                assert_eq!(labels.last().map(String::as_str), Some("Last:Last"));
                 assert!(!labels.iter().any(|l| l.starts_with("saveAs:") || l.starts_with("print:")), "{labels:?}");
                 assert!(labels.windows(2).all(|w| w[0] != "---" || w[1] != "---"), "{labels:?}");
             }
@@ -2169,8 +2171,17 @@ mod probe {
   const keys = Object.keys, names = Object.getOwnPropertyNames, syms = Object.getOwnPropertySymbols;
   const origStringify = JSON.stringify, push = Array.prototype.push;
   const post = window.chrome.webview.postMessage.bind(window.chrome.webview);
-  const R = [], seen = new Set(), counts = {}, ids = [];
+  // `counts` has no prototype: 'toString' and 'toJSON' are counted, not read from Object.prototype.
+  const R = [], seen = new Set(), counts = Object.create(null), ids = [];
   let busy = false;
+  // The page's own answers to the harness, serialized with its `toJSON` plant lifted for the call:
+  // the plant is on `Object.prototype`, so it would answer for the page's own objects too and every
+  // answer would read {"hacked":true} (the 2026-10-07 desktop run).
+  function out(x) {
+    const d = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+    if (d) delete Object.prototype.toJSON;
+    try { return origStringify(x); } finally { if (d) Object.defineProperty(Object.prototype, 'toJSON', d); }
+  }
   function ser(x, d) {
     const t = typeof x;
     if (t === 'string') return x;
@@ -2216,11 +2227,11 @@ mod probe {
     for (let i = 0; i < all.length; i++) { const at = all[i].attributes; for (let j = 0; j < at.length; j++) c += at[j].name + '=' + at[j].value + ';'; }
     rec('attrs', null, [c]);
   }, 50);
-  window.__report = function () { return origStringify(R); };
+  window.__report = function () { return out(R); };
   window.__counts = function () {
     const o = {}, n = ['slice', 'join', 'then', 'stringify', 'toString', 'indexOf', 'toJSON', 'getter', 'setter'];
     for (let i = 0; i < n.length; i++) o[n[i]] = counts[n[i]] || 0;
-    return origStringify(o);
+    return out(o);
   };
   window.__forge = function () {
     post({ h: 'probeEcho', b: { v: 2, sessionSecret: '{{GUESS}}' } });
@@ -2230,23 +2241,27 @@ mod probe {
     try { r.client = typeof window.__tandemClient; } catch (e) { r.client = 'threw'; }
     try { r.webkit = typeof (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.probeEcho && window.webkit.messageHandlers.probeEcho.postMessage({})); } catch (e) { r.webkit = 'threw'; }
     window.postMessage({ namespace: 'IFRAME_GRAPH_DISCOVERY', type: 'CHILD_REPORT', requestId: 'r', payload: { graph: {} } }, '*');
-    return origStringify(r);
+    return out(r);
   };
   window.__forge4 = function (extra) {
     const r = {};
     try { const d = window[Symbol.for('iTermGraphDiscovery')]; r.api = typeof (d && d.evaluateInFrame && d.evaluateInFrame('x', "document.title='pwned'", function () {})); } catch (e) { r.api = 'threw'; }
     r.global = typeof window.graphDiscoveryEvaluateInFrame;
+    // Every pair of ids the page has or was handed (the world's own graph ids among them), as target
+    // and as sender, from the page and from its child frame.
     const targets = ids.concat(['x', 'guess'], JSON.parse(extra));
     for (let i = 0; i < targets.length; i++) {
-      post({ h: 'iTermGraphDiscovery', b: { type: 'EVAL_IN_FRAME', target: targets[i], sender: 'x', requestID: 'r', code: "document.title='pwned'" } });
-      try { window.frames[0].__fire(targets[i]); } catch (e) {}
+      for (let j = 0; j < targets.length; j++) {
+        post({ h: 'iTermGraphDiscovery', b: { type: 'EVAL_IN_FRAME', target: targets[i], sender: targets[j], requestID: 'r', code: "document.title='pwned'" } });
+        try { window.frames[0].__fire(targets[i], targets[j]); } catch (e) {}
+      }
     }
-    return origStringify(r);
+    return out(r);
   };
 })();
 </script>"#;
 
-    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__fire=function(t){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:'x',requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
+    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__fire=function(t,s){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:s,requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
 
     fn hostile_page(body: &str, guess: &str) -> String {
         format!("<!doctype html><html><head><title>hostile</title>{}</head><body>{body}</body></html>", HOSTILE.replace("{{GUESS}}", guess))
@@ -2322,6 +2337,13 @@ mod probe {
         created: bool,
         /// WebView2's own frame ids (`watch_frames`).
         frames: Vec<u64>,
+        /// The production frame graph (`browser_frames::Frames`), when a test turns it on: every
+        /// message goes through the app's own rule, Client from the binding and Page from the page.
+        graph: Option<crate::browser_frames::Frames>,
+        /// A graph evaluation's DevTools token, and the graph's own token for it.
+        graph_tokens: HashMap<u64, u64>,
+        /// Evaluations the graph planned for a Page-world message (production plans none).
+        page_graph_acts: usize,
     }
 
     impl Probe {
@@ -2376,6 +2398,9 @@ mod probe {
                 failed: Vec::new(),
                 created: false,
                 frames: Vec::new(),
+                graph: None,
+                graph_tokens: HashMap::new(),
+                page_graph_acts: 0,
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -2498,9 +2523,15 @@ mod probe {
                     };
                     self.view().answer_request(token, answer);
                 }
-                Event::Message { json, source, .. } => self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json }),
+                Event::Message { json, source, .. } => {
+                    self.graph_page(&json, None, &source);
+                    self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json });
+                }
                 Event::FrameCreated { frame, .. } => self.frames.push(frame),
-                Event::FrameMessage { frame, json, source, .. } => self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json }),
+                Event::FrameMessage { frame, json, source, .. } => {
+                    self.graph_page(&json, Some(frame), &source);
+                    self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json });
+                }
                 Event::ScriptDone { token, json, .. } => {
                     if self.setup_token == Some(token) {
                         self.setup_token = None;
@@ -2509,6 +2540,10 @@ mod probe {
                             self.contexts.set_main_frame(m);
                         }
                         self.step_setup();
+                    } else if let Some(g) = self.graph_tokens.remove(&token) {
+                        let value = json.and_then(|t| browser_world::evaluate_result(&t));
+                        let acts = self.graph.as_mut().map(|graph| graph.answered(g, &value).1).unwrap_or_default();
+                        self.graph_run(acts);
                     } else if let Some(sid) = self.session_tokens.remove(&token) {
                         if json.is_err() {
                             // The frame then has no Tandem world, but it is still resumed.
@@ -2532,6 +2567,32 @@ mod probe {
             }
         }
 
+        /// A Page-world message as the app routes it (`browser_script_event`): Page, to the same graph.
+        fn graph_page(&mut self, json: &str, frame: Option<u64>, source: &str) {
+            let Some(routed) = crate::browser_js::route(json, crate::browser_js::World::Page, frame, source) else { return };
+            if routed.handler != crate::browser_frames::HANDLER {
+                return;
+            }
+            let acts = self.graph.as_mut().map(|g| g.handle(&routed, true, &mut crate::browser_js::new_secret)).unwrap_or_default();
+            self.page_graph_acts += acts.len();
+            self.graph_run(acts);
+        }
+
+        /// What the graph planned, evaluated as the app does (`graph_run`): in the Tandem world of the
+        /// frame it names, the answer back to the graph. A frame with no Tandem context gets nothing.
+        fn graph_run(&mut self, acts: Vec<crate::browser_frames::Act>) {
+            for act in acts {
+                let Some((session, unique)) = self.contexts.unique_for(act.frame) else { continue };
+                let t = self.call(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, &crate::browser_js::make_safe(&act.code)));
+                self.graph_tokens.insert(t, act.token);
+            }
+        }
+
+        /// The graph ids the world's `REGISTER_FRAME` messages named, with the frame each came from.
+        fn graph_ids(&self) -> Vec<(Option<u64>, String)> {
+            self.clients(crate::browser_frames::HANDLER).into_iter().filter(|(_, b)| b["type"] == "REGISTER_FRAME").filter_map(|(f, b)| b["frameId"].as_str().map(|id| (f, id.to_string()))).collect()
+        }
+
         fn devtools_held(&mut self) {
             for (session, name, json) in self.view().take_devtools_held() {
                 self.devtools(session, &name, &json);
@@ -2549,17 +2610,15 @@ mod probe {
                 "Page.frameNavigated" => self.contexts.navigated(s, json),
                 "Runtime.bindingCalled" => match self.contexts.binding_called(s, json) {
                     Some((frame, origin, payload)) => {
-                        let r = Routed { via: Via::Client, frame, from: origin, body: payload };
-                        // The probe's stand-in for Task 2's rule: EVAL_IN_FRAME is answered only from the
-                        // world, in the frame that sent it.
-                        if let Some((h, b)) = r.client() {
-                            if h == "iTermGraphDiscovery" && b.get("type").and_then(Value::as_str) == Some("EVAL_IN_FRAME") {
-                                if let Some(code) = b.get("code").and_then(Value::as_str) {
-                                    let _ = self.eval(frame, code);
-                                }
+                        // As the app routes it (`browser_devtools_event`): Client, and the graph's
+                        // messages to the production `Frames`.
+                        if let Some(routed) = crate::browser_js::route(&payload, crate::browser_js::World::Client, frame, &origin) {
+                            if routed.handler == crate::browser_frames::HANDLER {
+                                let acts = self.graph.as_mut().map(|g| g.handle(&routed, true, &mut crate::browser_js::new_secret)).unwrap_or_default();
+                                self.graph_run(acts);
                             }
                         }
-                        self.routed.push(r);
+                        self.routed.push(Routed { via: Via::Client, frame, from: origin, body: payload });
                     }
                     None => self.rejected_bindings += 1,
                 },
@@ -2640,13 +2699,34 @@ mod probe {
 
     const PAGE: &str = "https://probe.tandem-probe.invalid/";
 
+    /// The echo as the app evaluates a posting body in the Tandem world (`browser_js_call`, `call_js`):
+    /// the world has no global `window.webkit` (Task 1's bridge is closure-local, so the page can never
+    /// replace it), and `call_js` gives the body the same rewrite and binding capture `wrap` does.
     fn echo(secret: &str) -> String {
-        format!("window.webkit.messageHandlers.probeEcho.postMessage({{v: 1, sessionSecret: \"{secret}\"}})")
+        crate::browser_js::call_js(&format!("window.webkit.messageHandlers.probeEcho.postMessage({{v: 1, sessionSecret: {}}});", crate::browser_js::js_string(secret)), &Value::Null).expect("the echo")
     }
 
     /// The text Task 5's `clear_script` will produce, written out here.
     fn clear_hover(secret: &str) -> String {
         format!("(function() {{window.iTermHoverLinkHandler?.clearHover('{secret}');}})();")
+    }
+
+    /// The 2026-10-07 desktop run (probe-fix-report.md): the hostile page's answers to the harness
+    /// are its own data, never its `toJSON` plant's `{"hacked":true}`, and its counters cannot read
+    /// `Object.prototype`; the echo is evaluated as the app evaluates a posting body (the world has
+    /// no global `window.webkit`). Pure: no view is made.
+    #[test]
+    fn probe_page_answers_and_echo_are_real() {
+        assert_eq!(HOSTILE.matches("origStringify(").count(), 1, "called only by out(), {} answers called it directly", HOSTILE.matches("return origStringify(").count());
+        assert!(HOSTILE.contains("try { return origStringify(x); } finally {"), "out() lifts the plant for its own call");
+        for f in ["window.__report = function () { return out(R); };", "    return out(o);\n"] {
+            assert!(HOSTILE.contains(f), "{f}");
+        }
+        assert_eq!(HOSTILE.matches("    return out(r);\n").count(), 2, "both forgeries answer through out()");
+        assert!(HOSTILE.contains("counts = Object.create(null)"));
+        let e = echo("abc");
+        assert!(!e.contains("window.webkit") && e.contains("const __tandemPost = globalThis.__tandemClient;"), "{e}");
+        assert!(e.contains("__tandemWebkit.messageHandlers.probeEcho.postMessage({v: 1, sessionSecret: \"abc\"});"), "{e}");
     }
 
     #[test]
@@ -2734,22 +2814,45 @@ mod probe {
         p.finish();
     }
 
+    /// The page cannot make Tandem evaluate anything in any frame. The harness runs the app's own
+    /// rule: the production `Frames` gets every Client message from the binding and every Page message
+    /// from the page, and evaluates what it plans in the Tandem world. The page forges `EVAL_IN_FRAME`
+    /// from itself and from its child frame with every pair of ids it has, the world's real graph ids
+    /// among them; nothing is planned for a Page message and no forged code is evaluated. The control:
+    /// the world's own `evaluateInFrame` still answers, across frames, through the same path.
     #[test]
     #[ignore]
     fn probe_page_cannot_reach_evaluate_in_frame() {
         let secret = hex32();
         let body = format!("<iframe srcdoc=\"{CHILD_SRCDOC}\"></iframe>");
         let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], client_sources(&secret, false)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.view().watch_frames();
         p.load(PAGE);
         assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
-        let frame_ids = p.call_wait(None, "Page.getFrameTree", &json!({})).ok().and_then(|t| browser_world::frame_ids(&t)).map(|(_, all)| all).unwrap_or_default();
-        let as_js_string = serde_json::to_string(&serde_json::to_string(&frame_ids).unwrap()).unwrap();
-        let r = p.page_eval(&format!("window.__forge4({as_js_string})")).expect("the forgery ran");
-        assert!(r.contains("undefined"), "{r}");
-        p.settle(1000);
         let k = p.contexts.frames()[0];
+        assert!(p.wait(10, |p| p.graph_ids().iter().any(|(f, _)| f.is_none()) && p.graph_ids().iter().any(|(f, _)| *f == Some(k))), "both frames registered with the graph: {:?}", p.graph_ids());
+        let graph_ids: Vec<String> = p.graph_ids().into_iter().map(|(_, id)| id).collect();
+        let main_id = p.graph_ids().into_iter().find(|(f, _)| f.is_none()).unwrap().1;
+        let child_id = p.graph_ids().into_iter().find(|(f, _)| *f == Some(k)).unwrap().1;
+        let mut extra = p.call_wait(None, "Page.getFrameTree", &json!({})).ok().and_then(|t| browser_world::frame_ids(&t)).map(|(_, all)| all).unwrap_or_default();
+        extra.extend(graph_ids);
+        let as_js_string = serde_json::to_string(&serde_json::to_string(&extra).unwrap()).unwrap();
+        let r = p.page_eval(&format!("window.__forge4({as_js_string})")).expect("the forgery ran");
+        let r: Value = serde_json::from_str::<String>(&r).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        assert_eq!(r, json!({"api": "undefined", "global": "undefined"}), "the page world has no graph API");
+        p.settle(1000);
+        let forged = p.routed.iter().filter(|r| r.via == Via::Page && r.body.contains("EVAL_IN_FRAME")).count();
+        assert!(forged > 0, "the page's forgeries reached the host (as the page's)");
+        assert_eq!(p.page_graph_acts, 0, "the graph planned nothing for a Page message");
         assert_eq!(p.eval(Some(k), "document.title"), Ok(json!("child")), "the iframe's title");
+        assert_eq!(p.page_eval("document.title"), Ok("\"hostile\"".into()), "the page's title");
         assert!(p.log.iter().filter(|l| l.starts_with("Runtime.evaluate") || l.starts_with("ExecuteScript")).all(|l| !l.contains("pwned")), "a forged EVAL_IN_FRAME was evaluated");
+        // Control: the path is live for the world itself, both ways across frames.
+        let ask = |target: &str| format!("new Promise(function (res) {{ window[Symbol.for('iTermGraphDiscovery')].evaluateInFrame({}, 'document.title', res, 5000); }})", crate::browser_js::js_string(target));
+        assert_eq!(p.eval(Some(k), &ask(&main_id)), Ok(json!("hostile")), "the child's world asks the main frame");
+        assert_eq!(p.eval(None, &ask(&child_id)), Ok(json!("child")), "the main world asks the child frame");
+        assert_eq!(p.page_graph_acts, 0);
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
@@ -2801,7 +2904,9 @@ mod probe {
             hrefs.push(h);
         }
         hrefs.sort();
-        assert_eq!(hrefs, vec!["about:srcdoc", "about:srcdoc", "about:srcdoc", child, top], "{hrefs:?}");
+        let mut want = vec!["about:srcdoc", "about:srcdoc", "about:srcdoc", child, top];
+        want.sort();
+        assert_eq!(hrefs, want, "{hrefs:?}");
         assert!(cross_on_session, "the cross-site frame's world is on its child session: {seen}");
         p.settle(500);
         let stack = p.page_eval("String(window.__stackRead === true)").unwrap_or_default();
@@ -2900,7 +3005,10 @@ mod probe {
         p.page_eval("document.getElementById('c').focus()").unwrap();
         assert_eq!(p.page_eval(&crate::browser_keys::insert_script("yo")), Ok("true".into()));
         assert_eq!(p.page_eval("document.getElementById('c').textContent"), Ok("\"yo\"".into()));
-        p.page_eval("document.activeElement.blur()").unwrap();
+        // Nothing focused and no caret: a blurred contenteditable keeps the page's selection, and
+        // Chromium's `Input.insertText` types at that caret (the 2026-10-07 run: "yono"; see the rulings).
+        p.page_eval("document.activeElement.blur(); window.getSelection().removeAllRanges()").unwrap();
+        assert_eq!(p.page_eval("document.activeElement === document.body && window.getSelection().rangeCount === 0"), Ok("true".into()), "nothing focused, no caret");
         assert_eq!(p.page_eval(&crate::browser_keys::insert_script("no")), Ok("false".into()), "nothing focused: the script says so");
         p.call_wait(None, "Input.insertText", &json!({"text": "no"})).expect("the fallback runs");
         assert_eq!(p.page_eval("document.getElementById('t').value + document.getElementById('c').textContent"), Ok("\"hi\\nyo\"".into()), "the page is unchanged");
