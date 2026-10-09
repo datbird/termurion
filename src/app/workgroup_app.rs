@@ -637,11 +637,19 @@ impl App {
                 self.set_session_values(inst.leader, &[(crate::profile::NAME.to_string(), Some(toml::Value::String(name)))]);
             }
             if let Some(before) = inst.group_before.take() {
-                if let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&inst.leader)) {
-                    let gid = before.as_ref().map(|g| g.id.clone());
-                    self.tabs[at].group = before;
-                    self.set_tab_group(at, gid);
-                    self.group_changed();
+                // The leader's tab may sit in another window now (the shown member was moved, or its
+                // tab torn off): the group goes back where the leader is.
+                let home = self.current_window();
+                if self.enter_pane_window(inst.leader) {
+                    if let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&inst.leader)) {
+                        let gid = before.as_ref().map(|g| g.id.clone());
+                        self.tabs[at].group = before;
+                        self.set_tab_group(at, gid);
+                        self.group_changed();
+                    }
+                }
+                if let Some(h) = home.filter(|h| self.current_window() != Some(*h)) {
+                    self.enter(h);
                 }
             }
         }

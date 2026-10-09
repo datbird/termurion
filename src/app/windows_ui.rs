@@ -1416,7 +1416,7 @@ impl App {
     pub(super) fn move_session_to_window(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
         // A loaded recording and a locked pane are not moved (`PT:13883-13893`; the menu item
-        // is static here, so the refusal beeps), nor a workgroup member (seam S4).
+        // is static here, so the refusal beeps), nor a hidden workgroup peer (seam S4).
         if self.pane_locked(pane) || self.member_refuses_move(pane) {
             return find_ui::beep();
         }

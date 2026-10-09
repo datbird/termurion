@@ -836,12 +836,31 @@ mod tests {
         assert!(input.contains("Some(Owner::Workgroup) if taken") && input.contains("a.peer_shortcut(pane, &stroke) || a.workgroup_toolbar_shortcut(pane, &stroke)"));
         let keys = include_str!("../browser_keys.rs");
         assert!(keys.contains("key_owner(bar, address_accelerator(vk, mods), mapped, workgroup)"));
-        // S4: the one refusal, in the pick, the drop target and every break-out.
+        // S4, narrowed to iTerm2 (merge review I1, MovePaneController.m:71-133, :315): a move, swap or
+        // break-out is refused only for Lock Layout and the session's own lock (and Tandem's recording
+        // and tmux rules). A member in a layout moves like any pane; the one member guard is for a pane
+        // in no layout (a hidden peer, reachable only by id), in the pick, the drop target and every
+        // break-out.
         let mv = include_str!("pane_move_ui.rs");
         let refused = &mv[mv.find("pub(super) fn pane_move_refused").unwrap()..];
         assert!(refused[..refused.find('}').unwrap()].contains("self.member_refuses_move(pane)"));
+        let guard = &mv[mv.find("pub(super) fn member_refuses_move").unwrap()..];
+        let guard = &guard[..guard.find("\n    }\n").unwrap()];
+        assert!(guard.contains("self.pane_window_id(pane).is_none()"), "only a member in no layout: {guard}");
         let win = include_str!("windows_ui.rs");
         assert_eq!(win.matches("self.member_refuses_move(pane)").count(), 4, "to window, to tab, to a new tab, to a window at a point");
+        // The peer swap follows the shown member wherever it moved (PTYTab.m:5909-5940): the slot is
+        // looked up in the window that holds it now, and Exit puts the leader's tab group back there.
+        let wg = include_str!("workgroup_app.rs");
+        let swap = &wg[wg.find("    fn swap_slot(").unwrap()..];
+        let swap = &swap[..swap.find("\n    }\n").unwrap()];
+        assert!(swap.contains("if !self.enter_pane_window(from)") && swap.contains("self.tabs.iter().position(|t| t.layout.panes().contains(&from))"), "{swap}");
+        let activate = &wg[wg.find("pub(super) fn activate_peer(").unwrap()..];
+        assert!(activate[..activate.find("\n    }\n").unwrap()].contains("self.swap_slot("));
+        let teardown = &wg[wg.find("    fn teardown_workgroup(").unwrap()..];
+        let teardown = &teardown[..teardown.find("\n    }\n").unwrap()];
+        let group = &teardown[teardown.find("inst.group_before.take()").unwrap()..];
+        assert!(group.contains("self.enter_pane_window(inst.leader)"), "a moved member's group is found in its own window: {group}");
         let ctx = include_str!("browser_ctx_app.rs");
         assert!(ctx.contains("a.start_pane_move(pane, false, event_loop)") && ctx.contains("a.move_session_to_tab()") && ctx.contains("a.move_session_to_window()"), "the page menu takes the terminal's paths");
     }
