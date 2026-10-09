@@ -1,8 +1,9 @@
-//! A zip archive's safety check before anything extracts it: the file must be a zip (its
-//! first bytes a local header or an empty archive's end record), and every entry of its
-//! central directory must name a plain file or folder inside the folder it is extracted
-//! into. Pure: it reads bytes only, so the Scripts import (milestone 11d) and later SSH file
-//! transfers can share it.
+//! An archive's safety check before tar.exe extracts it, the one rule every extraction in
+//! Tandem uses: a zip (its first bytes a local header or an empty archive's end record, every
+//! entry of its central directory) or a gzip tar (every header, `check_tgz`) must name only
+//! plain files and folders inside the folder it is extracted into, refused whole otherwise.
+//! Pure: it reads bytes only, so the Scripts import (milestone 11d), SSH file transfers and
+//! Import All share it.
 
 /// Why an archive was refused.
 pub fn refused(reason: &str) -> String {
@@ -90,6 +91,23 @@ fn bad_name(name: &str) -> Option<&'static str> {
     }
     let trimmed = name.strip_suffix('/').unwrap_or(name);
     trimmed.split('/').find_map(bad_part)
+}
+
+/// The name rule of every entry, zip or tar: `bad_name`, the types Explorer reads on listing (an
+/// icon location can reach a UNC host), and any part `more` refuses (Import All: the 8.3 short
+/// names, `settings_export::aliased`).
+fn check_name(text: &str, more: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    if let Some(why) = bad_name(text) {
+        return Err(refused(&format!("\u{201c}{}\u{201d} has {why}", text.escape_debug())));
+    }
+    let parts = || text.strip_suffix('/').unwrap_or(text).split('/');
+    if parts().any(crate::inert_files::refused_on_listing) {
+        return Err(refused(&format!("\u{201c}{}\u{201d} is a type Explorer reads when it lists a folder", text.escape_debug())));
+    }
+    if parts().any(more) {
+        return Err(refused(&format!("\u{201c}{}\u{201d} has a name Windows reads as another item", text.escape_debug())));
+    }
+    Ok(())
 }
 
 /// An extra field block's fields, or None when it is damaged.
@@ -214,13 +232,7 @@ pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
         if !text.is_ascii() && flags & 0x800 == 0 {
             return Err(refused(&format!("\u{201c}{}\u{201d} is not marked as a UTF-8 name", text.escape_debug())));
         }
-        if let Some(why) = bad_name(text) {
-            return Err(refused(&format!("\u{201c}{}\u{201d} has {why}", text.escape_debug())));
-        }
-        // The types Explorer reads on listing (an icon location can reach a UNC host).
-        if text.strip_suffix('/').unwrap_or(text).split('/').any(crate::inert_files::refused_on_listing) {
-            return Err(refused(&format!("\u{201c}{}\u{201d} is a type Explorer reads when it lists a folder", text.escape_debug())));
-        }
+        check_name(text, &|_| false)?;
         let host = (made_by >> 8) as u8;
         if host == HOST_UNIX || host == HOST_OSX {
             let kind = (external >> 16) & S_IFMT;
@@ -259,6 +271,106 @@ pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
     }
     if seen != count {
         return Err(corrupt());
+    }
+    Ok(total)
+}
+
+/// The pax keys a tar entry may carry: what bsdtar writes for a plain file or folder (a long or
+/// non-ASCII name, times, owners). Any other key is refused: `linkpath` makes a file a link,
+/// `size` moves where the next header is, `hdrcharset` changes how the name is read, and the
+/// sparse, xattr, ACL and flag keys write more than the data.
+const PAX_KEYS: [&str; 9] = ["path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname", "LIBARCHIVE.creationtime"];
+/// The most a long name or pax header may hold.
+const MAX_META: u64 = 64 << 10;
+
+/// Checks the gzip tar read from `r` before tar.exe extracts it (Task 9 findings r3; Windows'
+/// bsdtar refuses no hard link, R14de-1): every header is ustar or GNU with a good checksum and
+/// is a regular file, a folder (no data), a pax header or a GNU long name; no entry links
+/// anywhere (no link name, no `linkpath`); every name (pax `path`, else the long name, else the
+/// header's, never two) passes the one name rule (`check_name`, with `more` for the caller's own
+/// parts); every header is where both readers put it (the gzip members are all read, no pax
+/// `size`, a folder carries no data, a file's name does not end in "/"); and the entry count
+/// and the total size stay within `limits`. The total size when accepted.
+pub fn check_tgz(r: impl std::io::Read, limits: Limits, more: &dyn Fn(&str) -> bool) -> Result<u64, String> {
+    use std::io::Read;
+    let bad = || refused("it is not a gzip tar or it is damaged");
+    let mut archive = tar::Archive::new(flate2::read::MultiGzDecoder::new(r));
+    let mut entries = archive.entries().map_err(|_| bad())?.raw(true);
+    let (mut path, mut long): (Option<Vec<u8>>, Option<Vec<u8>>) = (None, None);
+    let (mut pax, mut seen, mut total) = (false, 0u64, 0u64);
+    for entry in entries.by_ref() {
+        let mut entry = entry.map_err(|_| bad())?;
+        let h = entry.header().clone();
+        if h.as_ustar().is_none() && h.as_gnu().is_none() {
+            return Err(refused("a header is neither ustar nor GNU"));
+        }
+        let size = h.entry_size().map_err(|_| bad())?;
+        let kind = h.entry_type();
+        if h.link_name_bytes().is_some_and(|l| !l.is_empty()) {
+            return Err(refused("an entry is a link"));
+        }
+        if kind.is_pax_local_extensions() || kind.is_gnu_longname() {
+            if size > MAX_META {
+                return Err(bad());
+            }
+            let mut body = Vec::new();
+            entry.read_to_end(&mut body).map_err(|_| bad())?;
+            if kind.is_gnu_longname() {
+                if long.is_some() {
+                    return Err(bad());
+                }
+                long = Some(body.strip_suffix(&[0]).unwrap_or(&body).to_vec());
+            } else {
+                if pax {
+                    return Err(bad());
+                }
+                pax = true;
+                for field in tar::PaxExtensions::new(&body) {
+                    let field = field.map_err(|_| bad())?;
+                    let key = field.key().map_err(|_| bad())?;
+                    if key == "linkpath" {
+                        return Err(refused("an entry is a link"));
+                    }
+                    if !PAX_KEYS.contains(&key) {
+                        return Err(refused(&format!("an entry carries the pax key \u{201c}{}\u{201d}", key.escape_debug())));
+                    }
+                    if key == "path" {
+                        if path.is_some() {
+                            return Err(bad());
+                        }
+                        path = Some(field.value_bytes().to_vec());
+                    }
+                }
+            }
+            continue;
+        }
+        let name = match (path.take(), long.take()) {
+            (Some(_), Some(_)) => return Err(refused("an entry has two names")),
+            (Some(n), None) | (None, Some(n)) => n,
+            (None, None) => h.path_bytes().into_owned(),
+        };
+        pax = false;
+        let Ok(text) = std::str::from_utf8(&name) else {
+            return Err(refused(&format!("\u{201c}{}\u{201d} is not a UTF-8 name", String::from_utf8_lossy(&name).escape_debug())));
+        };
+        if kind != tar::EntryType::Regular && kind != tar::EntryType::Directory {
+            return Err(refused(&format!("\u{201c}{}\u{201d} is a link or a special file", text.escape_debug())));
+        }
+        check_name(text, more)?;
+        if (kind == tar::EntryType::Directory && size != 0) || (kind == tar::EntryType::Regular && text.ends_with('/')) {
+            return Err(refused(&format!("\u{201c}{}\u{201d} is a folder and a file at once", text.escape_debug())));
+        }
+        seen += 1;
+        if seen > limits.entries {
+            return Err(refused("it holds too many entries"));
+        }
+        total = total.saturating_add(size);
+        if total > limits.bytes {
+            return Err(refused("it would expand to too much data"));
+        }
+    }
+    if pax || path.is_some() || long.is_some() {
+        return Err(refused("a header describes an entry that never comes"));
     }
     Ok(total)
 }
@@ -348,6 +460,47 @@ pub(crate) mod tests {
         out.extend(cd_offset.to_le_bytes());
         out.extend(0u16.to_le_bytes());
         out
+    }
+
+    /// One tar entry as raw blocks: a ustar header of type `kind` naming `name` (any bytes, nothing
+    /// cleaned) and linking to `link`, then `data` padded to a block.
+    pub(crate) fn tar_entry(name: &str, kind: u8, data: &[u8], link: &str) -> Vec<u8> {
+        let mut h = tar::Header::new_ustar();
+        let u = h.as_ustar_mut().unwrap();
+        u.name[..name.len()].copy_from_slice(name.as_bytes());
+        u.linkname[..link.len()].copy_from_slice(link.as_bytes());
+        u.typeflag = [kind];
+        h.set_mode(0o644);
+        h.set_size(data.len() as u64);
+        h.set_mtime(0);
+        h.set_cksum();
+        let mut out = h.as_bytes().to_vec();
+        out.extend(data);
+        out.resize(out.len().div_ceil(512) * 512, 0);
+        out
+    }
+
+    /// A pax extended header ('x') carrying `records` for the entry after it.
+    pub(crate) fn pax(records: &[(&str, &str)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (k, v) in records {
+            let rest = format!(" {k}={v}\n");
+            let mut len = rest.len() + 1;
+            while format!("{len}").len() + rest.len() != len {
+                len += 1;
+            }
+            body.extend(format!("{len}{rest}").into_bytes());
+        }
+        tar_entry("PaxHeader/x", b'x', &body, "")
+    }
+
+    /// `blocks` with the end-of-archive mark, gzipped.
+    pub(crate) fn tgz(blocks: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(blocks).unwrap();
+        gz.write_all(&[0u8; 1024]).unwrap();
+        gz.finish().unwrap()
     }
 
     /// A valid full-environment export: `tool/setup.cfg` and `tool/tool/tool.py`.
@@ -496,6 +649,91 @@ pub(crate) mod tests {
         }
         assert_eq!(bad_part("tool"), None);
         assert!(bad_part("tool.").is_some() && bad_part("a:b").is_some() && bad_part("CON").is_some() && bad_part("").is_some());
+    }
+
+    /// Task 9 findings r3: the gzip tar check refuses every entry that is not a plain file or
+    /// folder, every link however it is spelled, every name the zip rule refuses, and every
+    /// header two readers could place differently.
+    #[test]
+    fn tgz_check_refuses_unsafe_entries() {
+        let none = |_: &str| false;
+        let ok = |blocks: &[u8]| check_tgz(&tgz(blocks)[..], Limits::DEFAULT, &none);
+        let base = [tar_entry("app-support/", b'5', b"", ""), tar_entry("app-support/a.txt", b'0', b"abc", ""), tar_entry("app-support/old.txt", 0, b"de", "")].concat();
+        assert_eq!(ok(&base), Ok(5));
+        let long = "d/".to_string() + &"n".repeat(150) + "\u{e9}.txt";
+        assert_eq!(ok(&[pax(&[("path", long.as_str()), ("mtime", "1.5"), ("LIBARCHIVE.creationtime", "1")]), tar_entry("d/short", b'0', b"x", "")].concat()), Ok(1), "a pax path");
+        let gnu_long = |name: &str| {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::GNULongName);
+            h.set_size(name.len() as u64 + 1);
+            h.as_gnu_mut().unwrap().name[..13].copy_from_slice(b"././@LongLink");
+            h.set_cksum();
+            let mut out = h.as_bytes().to_vec();
+            out.extend(format!("{name}\0").as_bytes());
+            out.resize(out.len().div_ceil(512) * 512, 0);
+            out.extend(tar_entry("d/short", b'0', b"x", ""));
+            out
+        };
+        let gnu_blocks = gnu_long(&long);
+        assert_eq!(ok(&gnu_blocks), Ok(1), "a GNU long name");
+        assert!(ok(&gnu_long(&format!("../{long}"))).is_err(), "the long name is the one checked");
+        assert!(ok(&[pax(&[("path", "../x")]), tar_entry("d/short", b'0', b"x", "")].concat()).is_err(), "the pax path is the one checked");
+        assert!(ok(&[pax(&[("path", "d/a")]), gnu_blocks.clone()].concat()).is_err(), "two names for one entry");
+        assert!(ok(&[pax(&[("mtime", "1")]), pax(&[("mtime", "1")]), tar_entry("d/a", b'0', b"", "")].concat()).is_err(), "two pax headers");
+        assert!(ok(&pax(&[("mtime", "1")])).is_err(), "a pax header with no entry");
+
+        // Every type that is not a file or a folder: hard link, symlink, devices, fifo, contiguous,
+        // GNU long link, pax global, sparse, multi-volume, dump dir, vendor letters.
+        for kind in [b'1', b'2', b'3', b'4', b'6', b'7', b'K', b'g', b'S', b'M', b'D', b'V', b'N', b'A', b'X'] {
+            assert!(ok(&[base.clone(), tar_entry("app-support/z", kind, b"", "")].concat()).is_err(), "{}", kind as char);
+        }
+        // A link name on any entry, in the header or as pax linkpath, data or not.
+        for (name, kind, data, link) in [("d/a", b'0', &b"x"[..], "C:/t"), ("d/", b'5', &b""[..], "../../t"), ("d/a", b'1', &b"PWNED"[..], "../../t"), ("d/a", b'2', &b""[..], "/etc")] {
+            assert!(ok(&tar_entry(name, kind, data, link)).is_err(), "{name} {link}");
+        }
+        for key in ["linkpath", "size", "hdrcharset", "GNU.sparse.size", "SCHILY.xattr.x", "LIBARCHIVE.xattr.x", "SCHILY.fflags", "SCHILY.acl.access", "comment"] {
+            let refused = ok(&[pax(&[(key, "1")]), tar_entry("d/a", b'0', b"x", "")].concat());
+            assert!(refused.is_err(), "{key}");
+        }
+        // The zip's name rule, and the caller's own parts.
+        for name in ["/x", "../x", "d/../x", "C:/x", "d/a:b", "d\\x", "d/CON", "d/x.", "d/x ", "d/a\u{1}b", "d//x", "d/./x", "d/x.lnk", "d/desktop.ini"] {
+            assert!(ok(&tar_entry(name, b'0', b"x", "")).is_err(), "{name:?}");
+        }
+        assert!(check_tgz(&tgz(&tar_entry("d/SETTIN~1.TOM", b'0', b"x", ""))[..], Limits::DEFAULT, &crate::settings_export::aliased).is_err());
+        assert_eq!(ok(&tar_entry("d/SETTIN~1.TOM", b'0', b"x", "")), Ok(1), "the short-name rule is the caller's");
+        let mut latin = tar_entry("d/e", b'0', b"x", "");
+        latin[2] = 0xe9;
+        let mut h = tar::Header::new_old();
+        h.as_mut_bytes().copy_from_slice(&latin[..512]);
+        h.set_cksum();
+        latin[..512].copy_from_slice(h.as_bytes());
+        assert!(ok(&latin).is_err(), "a name that is not UTF-8");
+        // Headers placed differently by another reader: a folder with data, a file named as a
+        // folder, a header that is neither ustar nor GNU, a bad checksum.
+        assert!(ok(&tar_entry("d/", b'5', b"PWNED", "")).is_err());
+        assert!(ok(&tar_entry("d/", b'0', b"PWNED", "")).is_err());
+        let mut v7 = tar_entry("d/a", b'0', b"x", "");
+        v7[257..265].copy_from_slice(&[0; 8]);
+        assert!(ok(&v7).is_err(), "an old v7 header");
+        let mut sum = tar_entry("d/a", b'0', b"x", "");
+        sum[0] = b'e';
+        assert!(ok(&sum).is_err());
+        // A second gzip member is read too (tar.exe reads them all).
+        let mut two = {
+            use std::io::Write;
+            let mut first = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            first.write_all(&tar_entry("d/a", b'0', b"x", "")).unwrap();
+            first.finish().unwrap()
+        };
+        two.extend(tgz(&tar_entry("d/l", b'1', b"", "../../t")));
+        assert!(check_tgz(&two[..], Limits::DEFAULT, &none).is_err(), "a link in the second gzip member");
+        // Not a gzip tar.
+        for other in [b"not an archive".to_vec(), zip(&valid())] {
+            assert!(check_tgz(&other[..], Limits::DEFAULT, &none).is_err());
+        }
+        // The caps.
+        assert!(check_tgz(&tgz(&base)[..], Limits { entries: 2, bytes: 1 << 20 }, &none).is_err());
+        assert!(check_tgz(&tgz(&base)[..], Limits { entries: 3, bytes: 4 }, &none).is_err());
     }
 
     /// libarchive replaces an entry's name with the Info-ZIP Unicode Path field (0x7075) when its

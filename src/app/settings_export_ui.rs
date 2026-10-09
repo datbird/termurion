@@ -224,10 +224,15 @@ fn alias_entry(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` extracted into a fresh
-/// `<temp>\.tandem-import-<uuid>`, refused when it holds a link (`staged_links`), then the
-/// marker in `appdata` naming it. On a failure nothing is left behind.
+/// Import's first phase (`Importer.importEntities`, `IE:81-110`): every entry of `file` checked
+/// before tar.exe sees it (`zip_check::check_tgz`, the rule every Tandem extraction uses: plain
+/// files and folders only, no link of any kind, no name that leaves the folder or that Windows
+/// reads as another, Task 9 findings r3), then extracted into a fresh
+/// `<temp>\.tandem-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
+/// the marker in `appdata` naming it. On a failure nothing is left behind.
 fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
+    let archive = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    crate::zip_check::check_tgz(std::io::BufReader::new(archive), crate::zip_check::Limits::DEFAULT, &se::aliased)?;
     let staging = se::staging_dir(temp, &uuid::Uuid::new_v4().to_string());
     let staged = std::fs::create_dir_all(&staging)
         .map_err(|e| format!("{}: {e}", staging.display()))
@@ -848,6 +853,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(verbatim(&root));
     }
 
+    /// Task 9 findings r3, on the real file system with the real tar.exe: a hard-link entry
+    /// whose target leaves the staging folder (absolute with either slash, or "..") never
+    /// writes there, whether the link carries data or a file of the same name follows it. Every
+    /// entry is checked before tar.exe runs and the archive is refused whole.
+    #[test]
+    fn import_checks_every_entry_before_tar_runs() {
+        use crate::zip_check::tests::{pax, tar_entry, tgz};
+        let root = temp("hardlink");
+        let canary = root.join("canary.txt");
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let back = canary.to_string_lossy().into_owned();
+        let targets = [back.replace('\\', "/"), back, "../../canary.txt".to_string()];
+        let mut seen = Vec::new();
+        for target in &targets {
+            for follow in [false, true] {
+                std::fs::write(&canary, "ours").unwrap();
+                let name = "app-support/evil.txt";
+                let mut blocks = tar_entry("user-defaults/", b'5', b"", "");
+                let data: &[u8] = if follow { b"" } else { b"PWNED" };
+                let link = if target.len() < 100 { tar_entry(name, b'1', data, target) } else { [pax(&[("linkpath", target)]), tar_entry(name, b'1', data, "")].concat() };
+                blocks.extend(link);
+                if follow {
+                    blocks.extend(tar_entry(name, b'0', b"PWNED", ""));
+                }
+                let file = root.join("evil.tandemexport");
+                std::fs::write(&file, tgz(&blocks)).unwrap();
+                let got = stage_import(&file, &temp_dir, &to);
+                let after = std::fs::read_to_string(&canary).unwrap_or_default();
+                seen.push((target.clone(), follow, after, got, entries(&temp_dir).len(), to.join(se::MARKER).exists()));
+            }
+        }
+        for (target, follow, after, got, left, marker) in &seen {
+            let refused = got.as_ref().err().is_some_and(|e| e.starts_with("The archive is not safe to extract") && e.contains("is a link"));
+            assert!(after == "ours" && refused && *left == 0 && !marker, "{target} (a file follows: {follow}): canary {after:?}, {got:?}, left {left}; all: {seen:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn import_refuses_links() {
         // The Task 10 review's Important 1 (invariant 5): an export holding a link, a junction
@@ -863,7 +907,7 @@ mod tests {
         let (to, temp_dir) = (root.join("To"), root.join("Temp"));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let refused = stage_import(&out, &temp_dir, &to).unwrap_err();
-        assert!(refused.contains("is a link or has another name"), "{refused}");
+        assert!(refused.contains("is a link"), "{refused}");
         assert!(!to.join(se::MARKER).exists());
         assert!(entries(&temp_dir).is_empty(), "a refused archive leaves nothing");
 
@@ -900,6 +944,10 @@ mod tests {
         std::fs::create_dir_all(scripts.join("AutoLaunch")).unwrap();
         std::fs::write(from.join("settings.toml"), "[settings]\nFocusFollowsMouse = true\n").unwrap();
         std::fs::write(from.join("snippets.json"), "[1]").unwrap();
+        // A long name with a letter past ASCII: bsdtar writes a pax header for it, and the entry
+        // check before tar.exe takes it.
+        let long = format!("{}\u{e9}.json", "n".repeat(120));
+        std::fs::write(from.join(&long), "[2]").unwrap();
         std::fs::write(scripts.join(r"AutoLaunch\auto.py"), "print(1)\n").unwrap();
         let snap = user_defaults(&from);
         let out = root.join("x.tandemexport");
@@ -916,6 +964,7 @@ mod tests {
         let g = Globals::load(&to.join("settings.toml")).unwrap();
         assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
         assert_eq!(std::fs::read_to_string(to.join("snippets.json")).unwrap(), "[1]");
+        assert_eq!(std::fs::read_to_string(to.join(&long)).unwrap(), "[2]");
         assert!(entries(&temp_dir).is_empty(), "the staging folder is gone");
 
         let bad = root.join("bad.tandemexport");
