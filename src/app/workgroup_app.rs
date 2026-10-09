@@ -256,20 +256,11 @@ impl App {
         self.enter_workgroup_now(w, pane, how, approved)
     }
 
-    /// Why this session cannot enter a workgroup now (P6, P3).
+    /// Why this session cannot enter a workgroup now (P6, P3): the standing refusals, then a trigger's
+    /// own gap.
     fn entry_refusal(&mut self, pane: PaneId, how: Mechanism) -> Option<String> {
-        let Some(p) = self.panes.get(&pane) else { return Some("That session has closed.".into()) };
-        if p.tmux_io().is_some() || self.tmux_of(pane).is_some() {
-            return Some("A tmux session cannot be the main session of a workgroup.".into());
-        }
-        if self.in_instant_replay() || p.archived || p.dvr.read_only {
-            return Some("A workgroup cannot start in a replay or an archive.".into());
-        }
-        if !self.layout_allowed_quiet(crate::winmodel::LayoutOp::Split) {
-            return Some("The layout is locked, so the workgroup cannot add its sessions.".into());
-        }
-        if self.workgroups.len() >= MAX_INSTANCES {
-            return Some(format!("{MAX_INSTANCES} workgroups are running; exit one first."));
+        if let Some(why) = self.standing_refusal(pane) {
+            return Some(why);
         }
         if matches!(how, Mechanism::Trigger | Mechanism::BrowserTrigger) {
             let now = Instant::now();
@@ -428,11 +419,29 @@ impl App {
         true
     }
 
-    /// The refusals that can change between a question and its answer (the entry's first look has
-    /// the rest, and a trigger's rate limit counted that first look).
+    /// The refusals checked again at the answer: every standing one (each can change while the question
+    /// is up); only a trigger's rate limit is not, since the first look counted it.
     fn entry_refusal_quiet(&self, pane: PaneId) -> Option<String> {
-        let p = self.panes.get(&pane).map_or(Some("That session has closed.".to_string()), |_| None);
-        p.or_else(|| (self.workgroups.len() >= MAX_INSTANCES).then(|| format!("{MAX_INSTANCES} workgroups are running; exit one first.")))
+        self.standing_refusal(pane)
+    }
+
+    /// The refusals that hold whenever an entry is asked or answered (any can change while a question is
+    /// up): a closed session, tmux, a replay or archive, a locked layout, the cap.
+    fn standing_refusal(&self, pane: PaneId) -> Option<String> {
+        let Some(p) = self.panes.get(&pane) else { return Some("That session has closed.".into()) };
+        if p.tmux_io().is_some() || self.tmux_of(pane).is_some() {
+            return Some("A tmux session cannot be the main session of a workgroup.".into());
+        }
+        if self.in_instant_replay() || p.archived || p.dvr.read_only {
+            return Some("A workgroup cannot start in a replay or an archive.".into());
+        }
+        if !self.layout_allowed_quiet(crate::winmodel::LayoutOp::Split) {
+            return Some("The layout is locked, so the workgroup cannot add its sessions.".into());
+        }
+        if self.workgroups.len() >= MAX_INSTANCES {
+            return Some(format!("{MAX_INSTANCES} workgroups are running; exit one first."));
+        }
+        None
     }
 
     fn session_guid_of(&self, pane: PaneId) -> String {
@@ -1078,6 +1087,21 @@ mod tests {
         // Restoring an instance again gives it a later place.
         all.add(inst("wg-Z", 40));
         assert_eq!(all.in_order().last().map(|i| i.id.as_str()), Some("wg-Z"));
+    }
+
+    /// Final review minor 8: the answer to an entry question meets the same refusals as the question did
+    /// (tmux, a replay or archive, the layout lock, the cap), any of which can change while it is up.
+    #[test]
+    fn the_answer_rechecks_every_entry_refusal() {
+        let live = include_str!("workgroup_app.rs").split("#[cfg(test)]").next().unwrap();
+        let quiet = &live[live.find("fn entry_refusal_quiet(").unwrap()..];
+        let quiet = &quiet[..quiet.find("\n    }\n").unwrap()];
+        for needed in ["tmux_io()", "in_instant_replay()", "layout_allowed_quiet(", "MAX_INSTANCES"] {
+            assert!(quiet.contains(needed) || (quiet.contains("self.standing_refusal(pane)") && live.contains(needed)), "{needed}: {quiet}");
+        }
+        assert!(quiet.contains("self.standing_refusal(pane)"), "{quiet}");
+        let asked = &live[live.find("fn entry_refusal(").unwrap()..];
+        assert!(asked[..asked.find("\n    }\n").unwrap()].contains("self.standing_refusal(pane)"), "one list of refusals");
     }
 
     /// Final review 3a: Session Status labels a peer of the focused session's group with its peer-switch
