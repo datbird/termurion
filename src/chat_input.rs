@@ -1275,8 +1275,8 @@ mod tests {
 
     fn world_with(id: &str) -> crate::cockpit_rows::World {
         use crate::cockpit_rows::{SessionFact, TabFact, WindowFact};
-        let fact = SessionFact { pane: 1, stable_id: id.into(), name: "build".into(), status: Default::default(), exited: false, alt_screen: false, ancestors: Vec::new(), armed: false };
-        crate::cockpit_rows::World { windows: vec![WindowFact { guid: "g".into(), number: 1, title: String::new(), active_tab: 0, armed: false, tabs: vec![TabFact { id: 5, title: String::new(), sessions: vec![fact] }] }], buried: Vec::new() }
+        let fact = SessionFact { pane: 1, stable_id: id.into(), name: "build".into(), status: Default::default(), exited: false, alt_screen: false, ancestors: Vec::new(), armed: false, role: None };
+        crate::cockpit_rows::World { windows: vec![WindowFact { guid: "g".into(), number: 1, title: String::new(), active_tab: 0, armed: false, tabs: vec![TabFact { id: 5, title: String::new(), sessions: vec![fact] }] }], buried: Vec::new(), ..Default::default() }
     }
 
     #[test]

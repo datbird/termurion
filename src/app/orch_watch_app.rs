@@ -137,14 +137,16 @@ impl App {
             return Err(OrchError::Unsupported(ow::NO_WATCH_MODEL.to_string()));
         }
         let name = self.orch_name(pane);
+        // A member of a workgroup is watched under its instance and role (`doRegisterWatch`).
+        let (workgroup_id, workgroup_name, role_id, role_name) = self.orch_identity(&target).unwrap_or_else(|| (format!("{}{target}", orch::SYNTHETIC_PREFIX), name.clone(), "default".to_string(), name));
         let now = now_secs();
         let mut w = Watcher {
             watcher_id: crate::chat_message::new_id(),
             session_guid: target.clone(),
-            workgroup_id: format!("{}{target}", orch::SYNTHETIC_PREFIX),
-            workgroup_name: name.clone(),
-            role_id: "default".to_string(),
-            role_name: name,
+            workgroup_id,
+            workgroup_name,
+            role_id,
+            role_name,
             target_state: a.target_state,
             registered_at: now,
             mode: Some(if screen_poll { Mode::ScreenPoll } else { Mode::TabStatus }),

@@ -763,8 +763,12 @@ impl App {
         for (ti, t) in self.tabs.iter().enumerate() {
             let panes = t.layout.panes();
             let ordered = self.ordered_panes(t);
+            // A peer group's hidden members have statuses too (iTerm2 lists every session); they sit in
+            // the slot of the member shown, so they belong to this tab.
+            let hidden: Vec<PaneId> = panes.iter().filter_map(|p| self.peer_group_of(*p)).flat_map(|i| i.peers.iter().filter_map(|(_, q)| *q)).filter(|q| !panes.contains(q)).collect();
             let facts: Vec<(u64, bool, bool, Option<String>, bool)> = panes
                 .iter()
+                .chain(&hidden)
                 .filter_map(|id| self.panes.get(id).map(|p| (*id, true, self.buried.contains(*id), p.own().tab_status.status.clone(), p.own().tab_status.indicator.is_some())))
                 .collect();
             for id in rows_for(&facts) {
@@ -783,6 +787,10 @@ impl App {
                     shortcut: status_tool::shortcut_label(ti + 1, ti == self.active, ordinal, panes.len(), tab_tag, pane_tag),
                 });
             }
+        }
+        if self.globals.bool(status_tool::MERGE_KEY) {
+            let shown_of_switcher = |p: u64| self.peer_group_of(p).is_some_and(|i| i.peers.iter().filter(|(_, q)| q.is_some()).count() > 1);
+            rows = status_tool::merge_rows(rows, &|p| self.workgroup_of(p).map(|i| i.id.clone()), &shown_of_switcher);
         }
         status_tool::sort_rows(&mut rows);
         rows
@@ -818,6 +826,16 @@ impl App {
                 self.buried.contains(id).hash(h);
             }
             0u8.hash(h);
+        }
+        // Merge and the hidden members of peer groups (their statuses are rows too).
+        self.globals.bool(status_tool::MERGE_KEY).hash(h);
+        for inst in self.workgroups.values() {
+            (&inst.id, &inst.active).hash(h);
+            for (_, q) in &inst.peers {
+                if let Some(p) = q.and_then(|q| self.panes.get(&q)) {
+                    p.own().tab_status_gen.hash(h);
+                }
+            }
         }
         (self.active, self.focused_id(), &self.belt.snoozed, &self.status_watches, self.status_armed).hash(h);
         (self.globals.int("SwitchTabModifier"), self.globals.int("SwitchPaneModifier")).hash(h);

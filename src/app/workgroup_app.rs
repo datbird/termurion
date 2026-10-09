@@ -45,13 +45,14 @@ pub(super) struct Instance {
     pub non_peers: Vec<(String, PaneId)>,
     /// The workgroup-wide base ref (Task 6) and who started the entry (the orchestration snapshot, Task 10).
     pub git_base: String,
-    #[allow(dead_code)]
     pub provenance: String,
     /// The leader's name before the root's display name replaced it.
     pub leader_title: Option<String>,
     /// The entry tab's group before the workgroup's: Some(None) was no group.
     pub group_before: Option<Option<crate::tab_groups::TabGroup>>,
     pub torn_down: bool,
+    /// When it was entered, counting from 1 (`Instances::add` sets it): the Cockpit lists instances in this order.
+    pub seq: u64,
     /// AI Usage items' reports and runs, by item key (Task 5); dropped with the instance.
     pub usage: HashMap<String, super::workgroup_toolbar_ui::UsageSlot>,
     /// Every command the person answered for or owns (`run::approved`): the only commands a runner starts.
@@ -100,6 +101,8 @@ impl Instance {
 #[derive(Default)]
 pub(super) struct Instances {
     map: BTreeMap<String, Instance>,
+    /// Instances entered so far (`Instance::seq`).
+    entered: u64,
     /// Members a teardown ends; closed on the next tick (the leader's own close must finish first,
     /// `WI:deferredClose`), by `tick_workgroups`.
     to_close: Vec<PaneId>,
@@ -146,8 +149,17 @@ impl Instances {
     }
 
     /// Registers an instance a restore rebuilt (its id was resolved against the live ones).
-    pub fn add(&mut self, inst: Instance) {
+    pub fn add(&mut self, mut inst: Instance) {
+        self.entered += 1;
+        inst.seq = self.entered;
         self.map.insert(inst.id.clone(), inst);
+    }
+
+    /// The live instances in the order they were entered (`allInstances`).
+    pub fn in_order(&self) -> Vec<&Instance> {
+        let mut all: Vec<&Instance> = self.map.values().collect();
+        all.sort_by_key(|i| i.seq);
+        all
     }
 
     /// Queues a pane the next tick closes.
@@ -304,6 +316,7 @@ impl App {
             leader_title: None,
             group_before: None,
             torn_down: false,
+            seq: 0,
             usage: HashMap::new(),
             approved,
             git: super::workgroup_git_app::GitSide::for_workgroup(&w),
@@ -399,7 +412,7 @@ impl App {
             p.workgroup = Some(instance_id.clone());
         }
         crate::rlog!("workgroup entered: instance {} members {}", crate::dlog::name(&instance_id), inst.members().len());
-        self.workgroups.map.insert(instance_id, inst);
+        self.workgroups.add(inst);
         self.menus_dirty = true;
         self.relayout();
         true
@@ -942,8 +955,132 @@ impl App {
     }
 }
 
+// --- The Cockpit, orchestration and status (Task 10): the facts they read ---
+
+impl Instance {
+    /// Every live member: (config id, pane), the leader first, then the peers that started, then
+    /// the splits and tabs in the order they started.
+    pub fn member_panes(&self) -> Vec<(String, PaneId)> {
+        let mut out: Vec<(String, PaneId)> = Vec::new();
+        for (c, p) in self.peers.iter().filter_map(|(c, p)| p.map(|p| (c.clone(), p))).chain(self.non_peers.iter().cloned()) {
+            if !out.iter().any(|(_, q)| *q == p) {
+                out.push((c, p));
+            }
+        }
+        out
+    }
+}
+
+impl App {
+    /// The instance and the config of the member `pane` is.
+    pub(super) fn member_of(&self, pane: PaneId) -> Option<(&Instance, &SessionConfig)> {
+        let (instance, config) = self.member_config(pane)?;
+        let inst = self.workgroups.get(&instance)?;
+        Some((inst, inst.workgroup.session(&config)?))
+    }
+
+    /// The role a member's title carries (`cockpitSessionRolePrefix`).
+    pub(super) fn member_role_prefix(&self, pane: PaneId) -> Option<String> {
+        let (_, cfg) = self.member_of(pane)?;
+        crate::cockpit_rows::role_prefix(&cfg.kind, cfg.mode, &cfg.display_name)
+    }
+
+    /// The scope a write to `pane` claims under: its instance for a member (approving a workgroup
+    /// once approves all its roles, `claimScope(forSessionGuid:)`), else its own `session:` scope.
+    pub(super) fn claim_scope_of(&self, pane: PaneId) -> String {
+        match self.workgroup_of(pane) {
+            Some(i) => i.id.clone(),
+            None => crate::orch_tools::session_scope(&self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default()),
+        }
+    }
+
+    /// The live instances, in the order they were entered, with their live members (a member whose
+    /// pane is gone is left out).
+    pub(super) fn workgroup_world(&self) -> Vec<crate::cockpit_rows::WorkgroupFact> {
+        use crate::cockpit_rows::{MemberFact, WorkgroupFact};
+        self.workgroups
+            .in_order()
+            .into_iter()
+            .map(|i| WorkgroupFact {
+                id: i.id.clone(),
+                name: i.workgroup.name.clone(),
+                members: i
+                    .member_panes()
+                    .into_iter()
+                    .filter_map(|(config, pane)| {
+                        let p = self.panes.get(&pane)?;
+                        let cfg = i.workgroup.session(&config)?;
+                        Some(MemberFact { pane, stable_id: p.stable_id.clone(), role: cfg.display_name.clone(), mode: cfg.mode, config })
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The pane whose `ClipState` holds the clippings of the workgroup `id` (an instance id, `wg-`):
+    /// the leader's group, which the shown member carries (`WorkgroupIntrospection.swift:366-389`).
+    /// None for an id no live instance has.
+    pub(super) fn workgroup_clippings(&self, id: &str) -> Option<PaneId> {
+        if !id.starts_with(run::INSTANCE_PREFIX) {
+            return None;
+        }
+        let inst = self.workgroups.get(id).filter(|i| self.panes.contains_key(&i.leader))?;
+        Some(self.clip_home(inst.leader))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn inst(id: &str, leader: PaneId) -> Instance {
+        let w = crate::workgroup::presets::coding_agent_plus_diff_plus_code_review(Some(("builtin.claudeCode", "MAIN", "DIFF", "REVIEW")), Some("Claude Code"));
+        Instance {
+            id: id.into(),
+            leader,
+            peers: vec![("MAIN".into(), Some(leader)), ("DIFF".into(), Some(leader + 1)), ("REVIEW".into(), None)],
+            active: "MAIN".into(),
+            non_peers: vec![("TAB".into(), leader + 2), ("DUP".into(), leader)],
+            git_base: "HEAD".into(),
+            provenance: String::new(),
+            leader_title: None,
+            group_before: None,
+            torn_down: false,
+            seq: 0,
+            usage: HashMap::new(),
+            approved: run::Approved::of(&w),
+            git: None,
+            review: Default::default(),
+            workgroup: w,
+        }
+    }
+
+    /// The Cockpit and the snapshot list instances in the order they were entered, and a member once.
+    #[test]
+    fn instances_list_in_entry_order() {
+        let mut all = Instances::default();
+        for (id, leader) in [("wg-Z", 10), ("wg-A", 20), ("wg-M", 30)] {
+            all.add(inst(id, leader));
+        }
+        assert_eq!(all.in_order().iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["wg-Z", "wg-A", "wg-M"], "entry order, not id order");
+        let first = all.get("wg-Z").unwrap();
+        assert_eq!(first.member_panes(), vec![("MAIN".to_string(), 10), ("DIFF".to_string(), 11), ("TAB".to_string(), 12)], "the leader first, a peer that has not started left out, a pane once");
+        // Restoring an instance again gives it a later place.
+        all.add(inst("wg-Z", 40));
+        assert_eq!(all.in_order().last().map(|i| i.id.as_str()), Some("wg-Z"));
+    }
+
+    /// The facts the Cockpit, the snapshot and the clipping tools read come from one place.
+    #[test]
+    fn the_facts_are_wired() {
+        let app = include_str!("workgroup_app.rs");
+        let world = &app[app.find("pub(super) fn workgroup_world(").unwrap()..];
+        assert!(world.contains("self.workgroups.in_order()") && world.contains("member_panes()"));
+        let cockpit = include_str!("cockpit_app.rs");
+        assert!(cockpit.contains("world.workgroups = self.workgroup_world()") && cockpit.contains("role: self.member_role_prefix(pane)"));
+        let watch = include_str!("orch_watch_app.rs");
+        assert!(watch.contains("self.orch_identity(&target)"), "watchers carry the real workgroup id and role");
+    }
 
     /// A swap-back that worked never closes the leader, even when the group is in a background window
     /// (`self.tabs` is the current window's tabs only).

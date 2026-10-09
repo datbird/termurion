@@ -20,6 +20,7 @@ impl App {
             .flat_map(|w| &w.tabs)
             .flat_map(|t| &t.sessions)
             .chain(&world.buried)
+            .chain(&world.hidden)
             .filter_map(|s| {
                 let screen = self.panes.get(&s.pane)?.own();
                 let changed = screen.newest_visible_change().map(|t| now - f64::from(t)).filter(|age| *age >= 0.0);
@@ -37,10 +38,28 @@ impl App {
             .collect()
     }
 
+    /// Every workgroup the model can address (`allWorkgroups`): the live instances with their
+    /// members' roles, then a synthetic one for each session in none.
+    pub(super) fn orch_groups(&self) -> Vec<orch::WorkgroupSummary> {
+        orch::all_workgroups(&self.orch_live_groups(), &self.orch_facts())
+    }
+
+    /// The live instances with who started each entry.
+    pub(super) fn orch_live_groups(&self) -> Vec<(crate::cockpit_rows::WorkgroupFact, Option<String>)> {
+        self.workgroup_world().into_iter().map(|w| { let p = self.workgroups.get(&w.id).map(|i| i.provenance.clone()); (w, p) }).collect()
+    }
+
+    /// The workgroup and role a session answers to: (workgroup id, workgroup name, role id, role
+    /// name), the instance's for a member, else its synthetic one.
+    pub(super) fn orch_identity(&self, stable_id: &str) -> Option<(String, String, String, String)> {
+        let groups = self.orch_groups();
+        groups.into_iter().find_map(|g| g.sessions.iter().find(|s| s.session_guid == stable_id).map(|s| (g.workgroup_id.clone(), g.workgroup_name.clone(), s.role_id.clone(), s.role_name.clone())))
+    }
+
     /// The trailing message of an orchestration chat's every request: the workgroups snapshot,
     /// said to be data and cut to a size (it holds text programs wrote). None for any other chat.
     pub(super) fn orch_volatile(&self, chat: &Chat) -> Option<String> {
-        orch::volatile_for(chat.orchestration_enabled, || self.orch_facts().iter().map(orch::synthetic).collect())
+        orch::volatile_for(chat.orchestration_enabled, || self.orch_groups())
     }
 
     /// The engine returned an orchestration call: run it, and answer the model at once unless it

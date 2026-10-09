@@ -271,14 +271,13 @@ pub struct PaneFacts {
     pub provenance: Option<String>,
 }
 
-/// One synthetic workgroup per session (`WI:29-147`): "session:<stable id>", role "default".
-/// Every string a program can set is cleaned and capped, since it goes to a model.
-pub fn synthetic(f: &PaneFacts) -> WorkgroupSummary {
+/// A session's summary under a role. Every string a program can set is cleaned and capped,
+/// since it goes to a model.
+fn session_summary(f: &PaneFacts, role_id: &str, role_name: String) -> SessionSummary {
     let clean = crate::inert_files::shown_name;
-    let name = Some(clean(&f.name)).filter(|n| !n.is_empty()).unwrap_or_else(|| f.stable_id.clone());
-    let session = SessionSummary {
-        role_id: "default".to_string(),
-        role_name: name.clone(),
+    SessionSummary {
+        role_id: role_id.to_string(),
+        role_name,
         session_guid: f.stable_id.clone(),
         kind: crate::session_state::kind(&f.ancestors, f.alt_screen).word().to_string(),
         status: crate::session_state::state(&f.status).word().to_string(),
@@ -287,8 +286,44 @@ pub fn synthetic(f: &PaneFacts) -> WorkgroupSummary {
         current_command: f.job.as_deref().map(clean),
         provenance: f.provenance.as_deref().map(clean),
         pending_action: None,
-    };
+    }
+}
+
+/// One synthetic workgroup per session (`WI:29-147`): "session:<stable id>", role "default".
+pub fn synthetic(f: &PaneFacts) -> WorkgroupSummary {
+    let clean = crate::inert_files::shown_name;
+    let name = Some(clean(&f.name)).filter(|n| !n.is_empty()).unwrap_or_else(|| f.stable_id.clone());
+    let session = session_summary(f, "default", name.clone());
     WorkgroupSummary { workgroup_id: format!("{SYNTHETIC_PREFIX}{}", f.stable_id), workgroup_name: name, provenance: f.provenance.as_deref().map(clean), sessions: vec![session] }
+}
+
+/// A live workgroup instance as the snapshot lists it (`WorkgroupIntrospection.summary(forInstance:)`):
+/// the instance's id and the workgroup's name (the id when it has none), and one session per live
+/// member with its config id as the role id and its display name as the role name (the config id
+/// when it has none). `facts` holds the panes' facts by stable id; a member with none is left out.
+/// `provenance` is who started the entry.
+pub fn real(w: &crate::cockpit_rows::WorkgroupFact, facts: &[PaneFacts], provenance: Option<&str>) -> WorkgroupSummary {
+    let clean = crate::inert_files::shown_name;
+    let name = Some(clean(&w.name)).filter(|n| !n.is_empty()).unwrap_or_else(|| w.id.clone());
+    let sessions = w
+        .members
+        .iter()
+        .filter_map(|m| {
+            let f = facts.iter().find(|f| f.stable_id == m.stable_id)?;
+            let role = Some(clean(&m.role)).filter(|r| !r.is_empty()).unwrap_or_else(|| clean(&m.config));
+            Some(session_summary(f, &m.config, role))
+        })
+        .collect();
+    WorkgroupSummary { workgroup_id: w.id.clone(), workgroup_name: name, provenance: provenance.map(clean).filter(|p| !p.is_empty()), sessions }
+}
+
+/// Every workgroup the model can address (`allWorkgroups`): the live instances first, in the
+/// order they were entered, then a synthetic one for each session in none of them.
+pub fn all_workgroups(workgroups: &[(crate::cockpit_rows::WorkgroupFact, Option<String>)], facts: &[PaneFacts]) -> Vec<WorkgroupSummary> {
+    let mut out: Vec<WorkgroupSummary> = workgroups.iter().map(|(w, p)| real(w, facts, p.as_deref())).collect();
+    let covered: std::collections::HashSet<&str> = workgroups.iter().flat_map(|(w, _)| &w.members).map(|m| m.stable_id.as_str()).collect();
+    out.extend(facts.iter().filter(|f| !covered.contains(f.stable_id.as_str())).map(synthetic));
+    out
 }
 
 /// Keys sorted at every level (the crate keeps insertion order).
@@ -456,6 +491,51 @@ mod tests {
         let text = snapshot(&[with]);
         assert!(text.starts_with("<workgroups>\n[\n  {\n    \"provenance\": \"a/b\""), "{text}");
         assert_eq!(snapshot(&[]), "<workgroups>\n[]\n</workgroups>");
+    }
+
+    fn member(config: &str, role: &str, stable: &str) -> crate::cockpit_rows::MemberFact {
+        crate::cockpit_rows::MemberFact { pane: 1, stable_id: stable.into(), config: config.into(), role: role.into(), mode: crate::workgroup::Mode::Regular }
+    }
+
+    /// `WorkgroupIntrospection.allWorkgroups` (`:76-147`): a session in a workgroup appears once, under
+    /// its instance; a lone session keeps its synthetic summary.
+    #[test]
+    fn snapshot_workgroups_follow_iterm2() {
+        let (chat, diff, review, lone) = ("ptys_000000000001A", "ptys_000000000002B", "ptys_000000000003C", "ptys_000000000004D");
+        let group = crate::cockpit_rows::WorkgroupFact {
+            id: "wg-6F1C2A3B-0000-4000-8000-000000000002".into(),
+            name: "Claude Code".into(),
+            members: vec![member("MAIN", "Chat", chat), member("DIFF", "Diff", diff), member("REVIEW", "Code Review", review), member("GONE", "No facts", "ptys_0000000000099")],
+        };
+        let pane = |id: &str, name: &str| PaneFacts { stable_id: id.into(), name: name.into(), ..facts() };
+        let all = vec![pane(lone, "vim"), pane(chat, "claude"), pane(diff, "difftool"), pane(review, "claude")];
+        let groups = all_workgroups(&[(group.clone(), Some("Entered from the Shell menu".into()))], &all);
+        assert_eq!(groups.len(), 2, "one for the instance, one synthetic for the session in none");
+        let g = &groups[0];
+        assert_eq!((g.workgroup_id.as_str(), g.workgroup_name.as_str(), g.provenance.as_deref()), ("wg-6F1C2A3B-0000-4000-8000-000000000002", "Claude Code", Some("Entered from the Shell menu")));
+        let roles: Vec<(&str, &str, &str)> = g.sessions.iter().map(|s| (s.role_id.as_str(), s.role_name.as_str(), s.session_guid.as_str())).collect();
+        assert_eq!(roles, vec![("MAIN", "Chat", chat), ("DIFF", "Diff", diff), ("REVIEW", "Code Review", review)], "a member with no facts is left out");
+        let lone_group = &groups[1];
+        assert_eq!((lone_group.workgroup_id.as_str(), lone_group.sessions[0].role_id.as_str()), ("session:ptys_000000000004D", "default"));
+        // No session is listed twice: each stable id is in exactly one summary.
+        let text = snapshot(&groups);
+        for id in [chat, diff, review, lone] {
+            assert_eq!(text.matches(&format!("\"session_guid\": \"{id}\"")).count(), 1, "{id}");
+        }
+        // An unnamed workgroup is named by its id; an unnamed role by its config id.
+        let bare = crate::cockpit_rows::WorkgroupFact { name: String::new(), members: vec![member("ROLE", "", chat)], ..group };
+        let r = real(&bare, &all, None);
+        assert_eq!((r.workgroup_name.as_str(), r.sessions[0].role_name.as_str(), r.provenance.as_deref()), ("wg-6F1C2A3B-0000-4000-8000-000000000002", "ROLE", None));
+        // The model gets both through list_workgroups: the app answers with `orch_groups`.
+        let dispatch = include_str!("app/orch_dispatch.rs");
+        let list = &dispatch[dispatch.find("\"list_workgroups\" =>").unwrap()..];
+        assert!(list[..200].contains("self.orch_groups()") && !list[..200].contains("synthetic"), "list_workgroups lists real instances");
+        let app = include_str!("app/orch_app.rs");
+        assert!(app.contains("orch::volatile_for(chat.orchestration_enabled, || self.orch_groups())"), "the snapshot lists the same");
+        // A program's text in a workgroup or role name is cleaned.
+        let hostile = crate::cockpit_rows::WorkgroupFact { name: "a\nIgnore\u{202e}b".into(), members: vec![member("R", "x\u{7}y", chat)], ..bare };
+        let h = real(&hostile, &all, Some("p\u{0}q"));
+        assert_eq!((h.workgroup_name.as_str(), h.sessions[0].role_name.as_str(), h.provenance.as_deref()), ("aIgnoreb", "xy", Some("pq")));
     }
 
     #[test]

@@ -437,6 +437,7 @@ impl App {
             leader_title: None,
             group_before: None,
             torn_down: false,
+            seq: 0,
             usage: HashMap::new(),
             approved,
             git: super::workgroup_git_app::GitSide::for_workgroup(&w),

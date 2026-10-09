@@ -24,8 +24,7 @@ pub struct Pattern {
 pub const PATTERNS_KEY: &str = "StatusPriorityEntries";
 /// The legacy key: a plain array of pattern strings, migrated once (`SPS:13`).
 pub const LEGACY_KEY: &str = "StatusPriorities";
-/// Collapses each workgroup to one row. Tandem has no workgroups, so this is stored but
-/// changes nothing (ruling).
+/// Collapses each workgroup to one row (`merge_rows`).
 pub const MERGE_KEY: &str = "StatusMergeWorkgroups";
 /// Whether a tab's subtitle shows its status text (already a schema key; `requests_ui.rs`
 /// reads it today with the fixed `PRIORITIES` list, which Task 6 changes to the user's
@@ -125,6 +124,54 @@ pub struct StatusRow {
 /// pane (iTerm2 breaks a full tie on session id; a pane id is Tandem's stand-in).
 pub fn sort_rows(rows: &mut [StatusRow]) {
     rows.sort_by(|a, b| a.snoozed.cmp(&b.snoozed).then(a.priority.cmp(&b.priority)).then(a.changed.cmp(&b.changed)).then(a.pane.cmp(&b.pane)));
+}
+
+/// Whether `candidate` represents its workgroup instead of `current` (`mergeRepresentativePrefers`,
+/// `ToolStatus.swift:1333-1362`): a member that is not snoozed beats one that is, the shown peer of
+/// a switcher beats a hidden sibling, then the more recent status wins, then the higher priority
+/// (the smaller number), then the lower pane.
+fn represents(candidate: (&StatusRow, bool), current: (&StatusRow, bool)) -> bool {
+    let ((c, c_visible), (k, k_visible)) = (candidate, current);
+    if c.snoozed != k.snoozed {
+        return !c.snoozed;
+    }
+    if c_visible != k_visible {
+        return c_visible;
+    }
+    if c.changed != k.changed {
+        return c.changed > k.changed;
+    }
+    if c.priority != k.priority {
+        return c.priority < k.priority;
+    }
+    c.pane < k.pane
+}
+
+/// "Merge workgroup statuses": each workgroup's rows collapse to one, the member that represents
+/// it (`mergeByWorkgroup`, `ToolStatus.swift:812-826`); rows in no workgroup stay. `group_of` names
+/// a pane's workgroup instance, `visible` says whether a pane is the shown peer of a switcher with
+/// more than one peer. The rows are left in the order the groups were first met; sort them after.
+pub fn merge_rows(rows: Vec<StatusRow>, group_of: &dyn Fn(u64) -> Option<String>, visible: &dyn Fn(u64) -> bool) -> Vec<StatusRow> {
+    let mut out: Vec<StatusRow> = Vec::new();
+    let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for row in rows {
+        let Some(group) = group_of(row.pane) else {
+            out.push(row);
+            continue;
+        };
+        match at.get(&group) {
+            Some(&i) => {
+                if represents((&row, visible(row.pane)), (&out[i], visible(out[i].pane))) {
+                    out[i] = row;
+                }
+            }
+            None => {
+                at.insert(group, out.len());
+                out.push(row);
+            }
+        }
+    }
+    out
 }
 
 /// The row index to draw a separator above: the first snoozed row after an un-snoozed one, or
@@ -236,8 +283,7 @@ pub const SETTINGS_TEXT: &str = "Statuses are sorted by priority. Items near the
 pub const NEW_PATTERN: (&str, &str) = ("New Priority Pattern", "Enter a substring to match against status text (case-insensitive).");
 
 /// The "Merge workgroup statuses" checkbox: label, then tooltip (`SPS`,
-/// `StatusPriority.MergeWorkgroups` / `MergeWorkgroupsTooltip`). Stored but a no-op in Tandem
-/// (ruling: no workgroups).
+/// `StatusPriority.MergeWorkgroups` / `MergeWorkgroupsTooltip`); `merge_rows` applies it.
 pub const MERGE_LABEL: (&str, &str) = ("Merge workgroup statuses", "When enabled, only the most recent status from each workgroup is shown.");
 
 /// The "Show status in tab subtitle" checkbox's label (`SPS`,
@@ -425,5 +471,40 @@ mod tests {
         // A single-pane current tab also falls through to the tab label (iTerm2 only gives a
         // pane shortcut when the current tab has more than one session).
         assert_eq!(shortcut_label(3, true, 1, 1, 4, 1), Some("Win+3".to_string()));
+    }
+
+    fn srow(pane: u64, changed: u64, status: &str) -> StatusRow {
+        StatusRow { pane, snoozed: false, priority: 1, changed, name: String::new(), status: Some(status.into()), detail: None, shortcut: None }
+    }
+
+    /// `ToolStatus.mergeByWorkgroup` (`:812-826`): a workgroup shows its most recent status only.
+    #[test]
+    fn merge_statuses_follow_iterm2() {
+        let rows = || vec![srow(1, 1, "idle"), srow(2, 3, "working"), srow(3, 2, "waiting"), srow(9, 5, "solo")];
+        let group = |p: u64| (p <= 3).then(|| "wg-A".to_string());
+        let none = |_: u64| false;
+        let merged = merge_rows(rows(), &group, &none);
+        let shown: Vec<(u64, &str)> = merged.iter().map(|r| (r.pane, r.status.as_deref().unwrap())).collect();
+        assert_eq!(shown, vec![(2, "working"), (9, "solo")], "the time-3 status represents the workgroup; a session in none stays");
+        // Off (no group lookup) shows all of them.
+        let off = merge_rows(rows(), &|_| None, &none);
+        assert_eq!(off.iter().map(|r| r.pane).collect::<Vec<_>>(), vec![1, 2, 3, 9]);
+        // Two workgroups stay two rows.
+        let two = merge_rows(rows(), &|p| match p { 1 | 2 => Some("A".to_string()), 3 => Some("B".to_string()), _ => None }, &none);
+        assert_eq!(two.iter().map(|r| r.pane).collect::<Vec<_>>(), vec![2, 3, 9]);
+        // A member that is not snoozed beats a snoozed one; the shown peer beats a more recent hidden one.
+        let mut snoozed = rows();
+        snoozed[1].snoozed = true;
+        assert_eq!(merge_rows(snoozed, &group, &none)[0].pane, 3, "a snoozed member loses representation");
+        assert_eq!(merge_rows(rows(), &group, &|p| p == 1)[0].pane, 1, "the shown peer of a switcher represents the group");
+        // Ties: priority (smaller wins), then the lower pane.
+        let mut tie = vec![srow(4, 7, "a"), srow(5, 7, "b")];
+        tie[1].priority = 0;
+        assert_eq!(merge_rows(tie, &|_| Some("G".into()), &none)[0].pane, 5);
+        assert_eq!(merge_rows(vec![srow(6, 7, "a"), srow(4, 7, "b")], &|_| Some("G".into()), &none)[0].pane, 4);
+        // The setting is no longer a no-op.
+        assert!(!MERGE_LABEL.1.is_empty());
+        let app = include_str!("app/toolbelt_more_ui.rs");
+        assert!(app.contains("status_tool::merge_rows(rows,"), "Session Status applies the merge");
     }
 }

@@ -350,10 +350,22 @@ pub fn parse_add_workgroup_clipping(args: &Value) -> Result<AddClipping, OrchErr
     Ok(AddClipping { workgroup_id: req_str(args, "workgroup_id")?, kind, title: req_str(args, "title")?, detail: req_str(args, "detail")? })
 }
 
-/// The session a clipping tool names: only a `session:` scope (Tandem has no workgroups before
-/// milestone 13, so a `wg-` id names nothing).
-pub fn clipping_target(workgroup_id: &str) -> Result<&str, OrchError> {
-    workgroup_id.strip_prefix(crate::orch::SYNTHETIC_PREFIX).ok_or_else(|| OrchError::UnknownWorkgroup(workgroup_id.to_string()))
+/// What a clipping tool names: a session by `session:<stable id>`, or a workgroup instance by its
+/// own `wg-` id (`WorkgroupIntrospection.swift:366-389`). Whether either is live is the app's to say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClippingTarget<'a> {
+    Session(&'a str),
+    Workgroup(&'a str),
+}
+
+pub fn clipping_target(workgroup_id: &str) -> Result<ClippingTarget<'_>, OrchError> {
+    if let Some(id) = workgroup_id.strip_prefix(crate::orch::SYNTHETIC_PREFIX) {
+        return Ok(ClippingTarget::Session(id));
+    }
+    if crate::workgroup_run::valid_instance_id(workgroup_id) {
+        return Ok(ClippingTarget::Workgroup(workgroup_id));
+    }
+    Err(OrchError::UnknownWorkgroup(workgroup_id.to_string()))
 }
 
 /// `list_workgroup_clippings`' payload (`ClippingInfo`): the live list, filtered by exact type.
@@ -898,8 +910,11 @@ mod tests {
         assert!(matches!(ok("   "), Err(OrchError::Malformed(_))));
         assert!(matches!(ok(&"a".repeat(81)), Err(OrchError::Malformed(m)) if m == "type must be 80 characters or fewer (got 81)."));
         assert_eq!(ok(&format!(" {} ", "a".repeat(80))).unwrap().kind, "a".repeat(80));
-        assert_eq!(clipping_target("session:ptys_0123456789ABW"), Ok("ptys_0123456789ABW"));
-        assert_eq!(clipping_target("wg-1"), Err(OrchError::UnknownWorkgroup("wg-1".into())));
+        assert_eq!(clipping_target("session:ptys_0123456789ABW"), Ok(ClippingTarget::Session("ptys_0123456789ABW")));
+        let wg = "wg-6F1C2A3B-0000-4000-8000-000000000002";
+        assert_eq!(clipping_target(wg), Ok(ClippingTarget::Workgroup(wg)));
+        assert_eq!(clipping_target("wg-1"), Err(OrchError::UnknownWorkgroup("wg-1".into())), "not an instance id");
+        assert_eq!(clipping_target("x"), Err(OrchError::UnknownWorkgroup("x".into())));
         let c = |k: &str| crate::clippings::Clipping { kind: k.into(), title: "T".into(), detail: "D".into() };
         let list = [c("Bug"), c("Note")];
         assert_eq!(result_json("clippings", clippings_value(&list, Some("Bug"))), result_json("clippings", json!([{"type": "Bug", "title": "T", "detail": "D"}])));
