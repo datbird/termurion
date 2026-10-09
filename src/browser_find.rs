@@ -244,9 +244,10 @@ fn shown(s: &str) -> String {
     crate::inert_files::display_text(s, MAX_TEXT, true)
 }
 
-/// A count a page reported: a non-negative integer, else 0 (`as? Int ?? 0`), held to `MAX_COUNT`.
+/// A count a page reported: a non-negative integer, else 0 (`as? Int ?? 0`), held to `MAX_COUNT`
+/// (one past `i64` too).
 fn count(v: Option<&Value>) -> usize {
-    v.and_then(Value::as_i64).filter(|n| *n > 0).map_or(0, |n| (n as u64).min(MAX_COUNT as u64) as usize)
+    v.and_then(Value::as_u64).map_or(0, |n| n.min(MAX_COUNT as u64) as usize)
 }
 
 /// The results of one full update (`FM:126-176`), bounded: at most `MAX_HITS`, strings shown
@@ -297,20 +298,17 @@ impl Model {
         if std::mem::take(&mut self.owed_hide) { Some(self.global.command("hideResults", json!({}), secret)) } else { None }
     }
 
-    /// The `hideResults` for the global instance that the last `start`, `continue_find` or
-    /// `navigation_shortcuts` owes: the app sends it BEFORE that call's command. At most once.
-    pub fn take_hide(&mut self, secret: &str) -> Option<Value> {
-        self.hide_command(secret)
-    }
-
-    /// `startFind` (`FM:469-477`). `None`: an unchanged term that is not forced.
-    pub fn start(&mut self, term: &str, mode: FindMode, force: bool, secret: &str) -> Option<Value> {
+    /// `startFind` (`FM:469-477`): the commands in the order they are sent, the owed global
+    /// `hideResults` first (`FM:470`). An unchanged term that is not forced sends only that hide.
+    pub fn start(&mut self, term: &str, mode: FindMode, force: bool, secret: &str) -> Vec<Value> {
         self.owe_hide();
+        let mut out: Vec<Value> = self.hide_command(secret).into_iter().collect();
         if self.default.term.as_deref() == Some(term) && !force {
-            return None;
+            return out;
         }
         self.in_progress = true;
-        Some(self.default.start(term, mode, 0, secret))
+        out.push(self.default.start(term, mode, 0, secret));
+        out
     }
 
     /// `findNext` (`FM:479-482`): the owed hide, then the step while a search is active.
@@ -356,7 +354,12 @@ impl Model {
 
     /// `reveal(globalFindResultWithIdentifier:)` (`FM:438-450`): show the global results first when
     /// the last search was local, then reveal. The measurement that follows is skipped (Decision).
+    /// Only an identifier the model would keep goes back to the page (an object within
+    /// `MAX_IDENTIFIER_JSON`); any other sends nothing.
     pub fn global_reveal(&mut self, identifier: &Value, secret: &str) -> Vec<Value> {
+        if !identifier.is_object() || identifier.to_string().len() > MAX_IDENTIFIER_JSON {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         if !self.last_global {
             out.push(self.global.command("showResults", json!({}), secret));
@@ -369,7 +372,7 @@ impl Model {
     }
 
     /// `convertVisibleSearchResultsToContentNavigationShortcuts` (`FM:377-399`): `action` is
-    /// "open" or "copy", anything else sends nothing. The owed hide goes first (`take_hide`).
+    /// "open" or "copy", anything else sends nothing. The owed hide goes first.
     pub fn navigation_shortcuts(&mut self, action: &str, secret: &str) -> Vec<Value> {
         if !matches!(action, "open" | "copy") {
             return Vec::new();
@@ -393,8 +396,16 @@ impl Model {
             return Update::Ignored;
         }
         let Some(data) = body.get("data").filter(|d| d.is_object()) else { return Update::Ignored };
-        let is_global = data.get("instanceId").and_then(Value::as_str) == Some(self.global.instance.as_str());
+        let instance = data.get("instanceId").and_then(Value::as_str);
+        let is_global = instance == Some(self.global.instance.as_str());
+        if !is_global && instance != Some(self.default.instance.as_str()) {
+            return Update::Ignored;
+        }
         let state = if is_global { &mut self.global } else { &mut self.default };
+        // A late report for a search that was cleared brings nothing back.
+        if !state.active {
+            return Update::Ignored;
+        }
         let full = data.get("matchIdentifiers").is_some_and(|v| !v.is_null());
         let total = count(data.get("totalMatches"));
         let current = count(data.get("currentMatch")).min(total);
@@ -423,7 +434,8 @@ impl Model {
         }
     }
 
-    /// `continueFind` (`FM:518-544`): whether more work is coming, and the progress.
+    /// `continueFind` (`FM:518-544`): whether more work is coming, and the progress. The global
+    /// hide it owes is not sent here: the next command the model returns carries it first.
     pub fn continue_find(&mut self) -> (bool, f64) {
         self.owe_hide();
         if !self.default.active || self.default.complete {
@@ -462,16 +474,16 @@ pub fn label(total: usize, current: usize, swap: bool) -> String {
     if current == 0 {
         return if total == 0 { String::new() } else { total.to_string() };
     }
-    let i = if swap { current } else { (total + 1).wrapping_sub(current) };
+    let i = if swap { current } else { (total + 1).saturating_sub(current) };
     format!("{i}/{total}")
 }
 
-/// A global-search row (`GSEC:484-494`): before, the match, after, newlines as spaces; with the
-/// match's byte range.
+/// A global-search row (`GSEC:484-494`): before, the match, after, newlines as spaces (the
+/// match's too: one row); with the match's byte range.
 pub fn snippet(r: &FindResult) -> (String, std::ops::Range<usize>) {
     let flat = |s: &Option<String>| s.as_deref().unwrap_or("").replace('\n', " ");
     let before = flat(&r.before);
-    let text = r.text.as_deref().unwrap_or("");
+    let text = flat(&r.text);
     let start = before.len();
     (format!("{before}{text}{}", flat(&r.after)), start..start + text.len())
 }
@@ -638,16 +650,17 @@ mod tests {
         assert_eq!(m.active_term(), None);
         assert!(m.next("s").is_empty(), "FM:291");
         assert!(m.previous("s").is_empty());
-        let c = m.start("a", FindMode::CaseSensitive, false, "s").expect("a fresh search starts");
-        assert_eq!(c, json!({"action": "startFind", "searchTerm": "a", "contextLength": 0, "searchMode": "caseSensitive", "instanceId": "main_U", "sessionSecret": "s"}));
+        let c = m.start("a", FindMode::CaseSensitive, false, "s");
+        assert_eq!(c.len(), 1, "a fresh search starts");
+        assert_eq!(c[0], json!({"action": "startFind", "searchTerm": "a", "contextLength": 0, "searchMode": "caseSensitive", "instanceId": "main_U", "sessionSecret": "s"}));
         assert_eq!(m.active_term(), Some("a"));
         assert!(m.in_progress());
-        assert_eq!(m.start("a", FindMode::CaseSensitive, false, "s"), None, "FM:471-474");
-        assert!(m.start("a", FindMode::CaseSensitive, true, "s").is_some(), "forced");
+        assert_eq!(m.start("a", FindMode::CaseSensitive, false, "s"), Vec::<Value>::new(), "FM:471-474");
+        assert_eq!(m.start("a", FindMode::CaseSensitive, true, "s").len(), 1, "forced");
         assert_eq!(m.next("s"), vec![command("findNext", json!({}), "main_U", "s")]);
         assert_eq!(m.previous("s"), vec![command("findPrevious", json!({}), "main_U", "s")]);
-        let c = m.start("", FindMode::CaseSensitive, false, "s").expect("an empty term clears");
-        assert_eq!(cmd(&c), ("clearFind", "main_U"));
+        let c = m.start("", FindMode::CaseSensitive, false, "s");
+        assert_eq!(c.iter().map(cmd).collect::<Vec<_>>(), [("clearFind", "main_U")], "an empty term clears");
         assert_eq!(m.active_term(), None, "FM:315-326");
         assert!(m.next("s").is_empty(), "no longer active");
         // Progress ends when a complete result is seen (`FM:536-541`).
@@ -787,9 +800,8 @@ mod tests {
         assert_eq!(cmd(&c[0]).1, "global_V");
         // A local search after a global one hides the global results first (`FM:452-459`).
         let s = m.start("a", FindMode::CaseSensitive, false, "s");
-        assert!(s.is_some());
-        assert_eq!(m.take_hide("s"), Some(command("hideResults", json!({}), "global_V", "s")));
-        assert_eq!(m.take_hide("s"), None, "once");
+        assert_eq!(s.iter().map(cmd).collect::<Vec<_>>(), [("hideResults", "global_V"), ("startFind", "main_U")], "the hide first");
+        assert_eq!(m.next("s"), vec![command("findNext", json!({}), "main_U", "s")], "the hide is sent once");
         m.global_start("q", FindMode::CaseInsensitive, "s");
         assert_eq!(m.next("s"), vec![command("hideResults", json!({}), "global_V", "s")], "the default search is inactive after a global start");
         assert_eq!(m.next("s"), Vec::<Value>::new());
@@ -812,6 +824,65 @@ mod tests {
         m.start("a", FindMode::CaseSensitive, false, "s");
         assert_eq!(cmd(&m.clear("s")), ("clearFind", "main_U"));
         assert_eq!(m.active_term(), None);
+    }
+
+    /// Task 2 review I1: `start` returns its commands in the order they are sent, the owed global
+    /// `hideResults` first, and the hide alone when the term is unchanged.
+    #[test]
+    fn start_sends_the_owed_hide_first() {
+        let hide = command("hideResults", json!({}), "global_V", "s");
+        let mut m = Model::new("U", "V");
+        m.global_start("q", FindMode::CaseInsensitive, "s");
+        let c: Vec<Value> = m.start("a", FindMode::CaseSensitive, false, "s").into_iter().collect();
+        assert_eq!(c.iter().map(cmd).collect::<Vec<_>>(), [("hideResults", "global_V"), ("startFind", "main_U")]);
+        assert!(m.start("a", FindMode::CaseSensitive, false, "s").into_iter().next().is_none(), "unchanged and nothing owed: nothing");
+        // A reveal shows the global results again; the unchanged term still sends the owed hide.
+        m.global_reveal(&json!({"index": 0}), "s");
+        let c: Vec<Value> = m.start("a", FindMode::CaseSensitive, false, "s").into_iter().collect();
+        assert_eq!(c, vec![hide.clone()], "the hide alone");
+        assert_eq!(m.next("s"), vec![command("findNext", json!({}), "main_U", "s")], "sent once");
+        // Forced: hide, then the start.
+        m.global_reveal(&json!({"index": 0}), "s");
+        let c: Vec<Value> = m.start("a", FindMode::CaseSensitive, true, "s").into_iter().collect();
+        assert_eq!(c.iter().map(cmd).collect::<Vec<_>>(), [("hideResults", "global_V"), ("startFind", "main_U")]);
+    }
+
+    /// Task 2 review minors: foreign instance ids, a late update after a clear, counts, the label,
+    /// the snippet's match text, and the identifier a reveal hands back.
+    #[test]
+    fn task_2_review_minors() {
+        let mut m = Model::new("U", "V");
+        m.start("a", FindMode::CaseSensitive, false, "s");
+        // 1. Only the two instance ids are read.
+        for id in ["main_X", "", "global_U", "global_V"] {
+            assert_eq!(m.on_message(&full(id, 2, 1, vec![ident(0, "a")], None), "s"), Update::Ignored, "{id:?}");
+        }
+        let mut no_id = full("main_U", 2, 1, vec![ident(0, "a")], None);
+        no_id["data"].as_object_mut().unwrap().remove("instanceId");
+        assert_eq!(m.on_message(&no_id, "s"), Update::Ignored, "no instance id");
+        assert_eq!(m.total(), 0);
+        // Counts: held to MAX_COUNT, a float or a negative is 0, a u64 past i64 is held too.
+        for (raw, want) in [(json!(200_000_000u64), MAX_COUNT), (json!(2.5), 0), (json!(u64::MAX), MAX_COUNT), (json!(-3), 0)] {
+            let mut b = full("main_U", 0, 0, vec![ident(0, "a")], None);
+            b["data"]["totalMatches"] = raw.clone();
+            m.on_message(&b, "s");
+            assert_eq!(m.total(), want, "{raw}");
+        }
+        // 5. A late update after a clear does not bring the results back.
+        m.clear("s");
+        assert_eq!(m.on_message(&full("main_U", 3, 1, vec![ident(0, "a")], None), "s"), Update::Ignored);
+        let partial = json!({"sessionSecret": "s", "action": "currentChanged", "data": {"instanceId": "main_U", "totalMatches": 3, "currentMatch": 2}});
+        assert_eq!(m.on_message(&partial, "s"), Update::Ignored);
+        assert_eq!((m.total(), m.current()), (0, 0));
+        // 2. The label never wraps.
+        assert_eq!(label(1, 5, false), "0/1");
+        // 3. The match text's newlines are spaces too.
+        let r = FindResult { index: 0, identifier: json!({}), text: Some("h\ni".into()), before: Some("a ".into()), after: None };
+        assert_eq!(snippet(&r), ("a h i".to_string(), 2..5));
+        // 4. A reveal hands back only an identifier the model would keep.
+        assert!(m.global_reveal(&json!("x"), "s").is_empty(), "not an object");
+        assert!(m.global_reveal(&json!({"c": "y".repeat(MAX_IDENTIFIER_JSON)}), "s").is_empty(), "too big");
+        assert_eq!(m.global_reveal(&json!({"index": 1}), "s").len(), 2);
     }
 
     #[test]
