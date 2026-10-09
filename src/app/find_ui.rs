@@ -858,6 +858,9 @@ impl App {
     }
 
     pub(super) fn find_regex_in(&mut self, id: PaneId, regex: &str) {
+        if self.is_browser_pane(id) {
+            return self.browser_find_regex(id, regex);
+        }
         let Some(p) = self.panes.get_mut(&id) else { return };
         match find::find_all(&p.screen, regex) {
             Err(e) => self.banners.set("action", format!("Find Regular Expression: {e}")),

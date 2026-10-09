@@ -420,14 +420,21 @@ impl Model {
     /// (`MAX_SEARCH_TERM_LENGTH`, `FC:8`); `None` for an empty or over-long one. The shortcuts follow
     /// through `shortcuts_after_complete`.
     pub fn temporary(&mut self, pattern: &str, secret: &str) -> Option<Vec<Value>> {
+        let out = self.temporary_search(pattern, secret)?;
+        self.urls_pending = true;
+        Some(out)
+    }
+
+    /// The same temporary search with no open shortcuts to follow (key action 36, `PS:12119-12125`).
+    pub fn temporary_search(&mut self, pattern: &str, secret: &str) -> Option<Vec<Value>> {
         if pattern.is_empty() || pattern.encode_utf16().count() > MAX_TERM {
             return None;
         }
         self.owe_hide();
         let mut out: Vec<Value> = self.hide_command(secret).into_iter().collect();
         self.in_progress = true;
+        self.urls_pending = false;
         out.push(self.default.start(pattern, FindMode::CaseSensitiveRegex, 0, secret));
-        self.urls_pending = true;
         Some(out)
     }
 
@@ -829,6 +836,11 @@ mod tests {
         m.on_message(&full("main_U", 1, 1, vec![ident(0, "a")], None), "s");
         assert!(m.shortcuts_after_complete("s").is_none(), "the person's own search is not Find URLs");
         // The pattern is page-bound: empty and over-long ones are refused.
+        // Key action 36's search owes no open shortcuts when its result is in.
+        let mut k = Model::new("U", "V");
+        k.temporary_search("u", "s").unwrap();
+        k.on_message(&full("main_U", 2, 1, vec![ident(0, "a"), ident(1, "b")], None), "s");
+        assert!(k.shortcuts_after_complete("s").is_none());
         assert!(m.temporary("", "s").is_none());
         assert!(m.temporary(&"a".repeat(1001), "s").is_none());
         assert!(m.temporary(&"a".repeat(1000), "s").is_some());

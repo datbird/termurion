@@ -296,11 +296,28 @@ impl App {
         let secret = bv.secret.clone();
         let cmds = bv.find.navigation_shortcuts("open", &secret);
         self.browser_find_send(pane, cmds);
-        if self.browser_page_may_focus(pane) {
-            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                v.focus();
-            }
+        // The page gets the keyboard whatever has it now, as iTerm2 makes the web view first
+        // responder (`BVC:1429-1435`): a typing find bar stops typing, the bar stays open.
+        self.browser_page_took_keyboard(pane);
+        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+            v.focus();
         }
+    }
+
+    /// Key action 36 on a browser pane (`PS:12119-12125`): a temporary case-sensitive regex search
+    /// on the page, with no open shortcuts and the bar's query untouched.
+    pub(super) fn browser_find_regex(&mut self, pane: PaneId, regex: &str) {
+        if !self.client_open(pane) {
+            self.banners.set("action", "No match.");
+            return self.redraw();
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        match bv.find.temporary_search(regex, &secret) {
+            Some(cmds) => self.browser_find_send(pane, cmds),
+            None => self.banners.set("action", "Find Regular Expression: the pattern is empty or too long."),
+        }
+        self.redraw();
     }
 
     /// A Find Globally search reaches every browser pane (`GSEC:443-455`): a page with the find
@@ -588,6 +605,28 @@ mod tests {
         assert!(err.contains("self.banners.set(\"action\", banner)") && !err.contains(".focus()"), "no focus after the banner");
     }
 
+    /// Pick Result to Open hands the page the keyboard even while the find bar types (final review
+    /// I2b): the hand-over state is the one `browser_page_took_keyboard` makes, the bar stays open.
+    #[test]
+    fn pick_result_takes_the_keyboard_from_a_typing_bar() {
+        let mut f = FindState::default();
+        f.open();
+        let mut keys = false;
+        find_takes_keyboard(&mut keys, &mut f);
+        assert!(!page_may_focus(keys, f.typing), "the gated path would leave the bar typing");
+        page_takes_keyboard(&mut keys, Some(&mut f));
+        assert!(f.open && !f.typing && !keys, "the bar stays open and stops typing");
+        let me = prod(include_str!("browser_find_app.rs"));
+        let pick = between(me, "pub(super) fn browser_pick_result", "/// Key action 36 on a browser pane");
+        assert!(pick.contains("self.browser_page_took_keyboard(pane)") && pick.contains(".focus()") && !pick.contains("browser_page_may_focus") && !pick.contains("close()"));
+        // Key action 36 goes to the page, not to the terminal's empty screen.
+        let f = prod(include_str!("find_ui.rs"));
+        let r = between(f, "pub(super) fn find_regex_in", "match find::find_all");
+        assert!(r.contains("self.is_browser_pane(id)") && r.contains("self.browser_find_regex(id, regex)"));
+        let reg = between(me, "pub(super) fn browser_find_regex", "/// A Find Globally search reaches every");
+        assert!(reg.contains("temporary_search(") && !reg.contains("urls_commands"));
+    }
+
     /// B6: the address field, the find bar and the page never type together.
     #[test]
     fn keyboard_has_one_owner() {
@@ -770,7 +809,7 @@ mod tests {
         let us = between(me, "pub(super) fn browser_use_selection", "pub(super) fn browser_pick_result");
         assert!(us.contains("self.browser_read_selection(") && us.contains("selection_query(") && us.contains("set_find_pasteboard_always("));
         let pick = between(me, "pub(super) fn browser_pick_result", "/// A Find Globally search reaches every");
-        assert!(pick.contains("active_term().is_none()") && pick.contains("navigation_shortcuts(\"open\"") && pick.contains("browser_page_may_focus(pane)") && pick.contains("self.client_open(pane)"));
+        assert!(pick.contains("active_term().is_none()") && pick.contains("navigation_shortcuts(\"open\"") && pick.contains("self.browser_page_took_keyboard(pane)") && pick.contains(".focus()") && !pick.contains("browser_page_may_focus") && pick.contains("self.client_open(pane)"));
         assert!(prod(include_str!("browser_input_app.rs")).contains("pub(super) fn browser_read_selection"));
     }
 
