@@ -270,7 +270,8 @@ impl App {
         for mut p in std::mem::take(&mut self.workgroups.restoring.pending) {
             // A kept yes is checked again against the workgroup as it is now (as `restore_answered` does).
             let kept = p.m.answer.take();
-            let answer = kept.as_ref().map(|(w, approved)| run::to_enter(approved, w, self.workgroup_model.get(&w.unique_identifier)).is_ok());
+            let profiles = |g: Option<&str>| self.member_profile_of(g);
+            let answer = kept.as_ref().map(|(w, approved)| run::to_enter(approved, w, self.workgroup_model.get(&w.unique_identifier), &profiles).is_ok());
             let look = self.look(&p, now, answer);
             waiting |= matches!(look.step, wr::Step::Wait { .. });
             p.m.answer = kept.clone().filter(|_| matches!(look.step, wr::Step::Wait { .. }));
@@ -286,7 +287,7 @@ impl App {
         let Some(at) = self.workgroups.restoring.pending.iter().position(|p| p.m.token == token) else { return };
         let p = self.workgroups.restoring.pending.remove(at);
         let current = self.workgroup_model.get(&workgroup.unique_identifier).cloned();
-        let ok = yes && match run::to_enter(&approved, &workgroup, current.as_ref()) {
+        let ok = yes && match run::to_enter(&approved, &workgroup, current.as_ref(), &|g| self.member_profile_of(g)) {
             Ok(_) => true,
             Err(why) => {
                 self.banners.set("workgroup", why);
@@ -318,8 +319,9 @@ impl App {
                 Ok(plan) => {
                     let w = &plan.workgroup;
                     let origin = if p.m.launch { wr::Origin::Launch } else { wr::Origin::Named };
-                    if answer.is_none() && wr::needs_question(self.workgroup_model.source_of(&w.unique_identifier), &p.descriptor, w, origin, approval_key().map(|k| &k[..])) {
-                        look.ask = run::ask_text(w, Mechanism::Restore);
+                    let profiles = |g: Option<&str>| self.member_profile_of(g);
+                    if answer.is_none() && wr::needs_question(self.workgroup_model.source_of(&w.unique_identifier), &p.descriptor, w, origin, approval_key().map(|k| &k[..]), &profiles) {
+                        look.ask = run::ask_text(w, Mechanism::Restore, &profiles);
                         question = if look.ask.is_some() { wr::Question::Showable } else { wr::Question::TooLong };
                     }
                     look.plan = Some(plan);
@@ -357,13 +359,13 @@ impl App {
                 let (Some(plan), Some((heading, body))) = (look.plan, look.ask) else { return self.end_restore(p, wr::Why::Unfit) };
                 let w = plan.workgroup;
                 p.m.asked = true;
-                let then = scripts_alerts::Then::RestoreWorkgroup { token: p.m.token, approved: Approved::of(&w), workgroup: Box::new(w) };
+                let then = scripts_alerts::Then::RestoreWorkgroup { token: p.m.token, approved: Approved::of(&w, &|g| self.member_profile_of(g)), workgroup: Box::new(w) };
                 self.workgroups.restoring.pending.push(p);
                 self.ask_scripts(scripts_alerts::ask(&heading, &body, &run::RESTORE_LABELS, None, crate::warnings::Kind::Persistent, then));
             }
             wr::Step::Adopt => match look.plan {
                 Some(plan) => {
-                    let approved = answered.unwrap_or_else(|| Approved::of(&plan.workgroup));
+                    let approved = answered.unwrap_or_else(|| Approved::of(&plan.workgroup, &|g| self.member_profile_of(g)));
                     self.adopt_one(p, plan, approved);
                 }
                 None => self.end_restore(p, wr::Why::Unfit),
@@ -606,7 +608,7 @@ mod tests {
 
         let w = crate::workgroup::presets::coding_agent_plus_diff_plus_code_review(Some(("W", "MAIN", "DIFF", "REVIEW")), Some("Claude Code"));
         let ours = [3u8; wr::KEY_LEN];
-        let digest = Approved::of(&w).digest().to_string();
+        let digest = Approved::of(&w, &|_| run::MemberProfile::default()).digest().to_string();
         let mut d = descriptor();
         d.workgroup_id = w.unique_identifier.clone();
         let delivered = [digest.clone(), wr::seal(&[4u8; wr::KEY_LEN], &w.unique_identifier, &digest)];
@@ -615,11 +617,11 @@ mod tests {
                 for a in &delivered {
                     d.approval = Some(a.clone());
                     let origin = if launch { wr::Origin::Launch } else { wr::Origin::Named };
-                    assert!(wr::needs_question(source, &d, &w, origin, Some(&ours)), "{path} {source:?}");
+                    assert!(wr::needs_question(source, &d, &w, origin, Some(&ours), &|_| run::MemberProfile::default()), "{path} {source:?}");
                 }
                 // Even this install's own seal, carried in a named arrangement, asks.
                 d.approval = Some(wr::seal(&ours, &w.unique_identifier, &digest));
-                assert_eq!(wr::needs_question(source, &d, &w, if launch { wr::Origin::Launch } else { wr::Origin::Named }, Some(&ours)), !launch, "{path}");
+                assert_eq!(wr::needs_question(source, &d, &w, if launch { wr::Origin::Launch } else { wr::Origin::Named }, Some(&ours), &|_| run::MemberProfile::default()), !launch, "{path}");
             }
         }
     }

@@ -540,14 +540,15 @@ fn same(a: &str, b: &str) -> bool {
 
 /// Whether adopting asks the person again: the person's own workgroup never; an import runs its
 /// commands unasked only from Tandem's own launch state (`Origin::Launch`) whose approval is this
-/// install's seal (`key`) of the commands it would run now. A named arrangement, a missing key, a
+/// install's seal (`key`) of the commands it would run now, with its members' profiles as `profiles`
+/// resolves them now. A named arrangement, a missing key, a
 /// plain digest or a seal from another install all ask (the trust ruling and the Task 9 review).
-pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup, origin: Origin, key: Option<&[u8]>) -> bool {
+pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup, origin: Origin, key: Option<&[u8]>, profiles: crate::workgroup_run::Profiles) -> bool {
     if source.is_person() {
         return false;
     }
     let (Origin::Launch, Some(key), Some(approval)) = (origin, key, d.approval.as_deref()) else { return true };
-    !same(approval, &seal(key, &w.unique_identifier, crate::workgroup_run::Approved::of(w).digest()))
+    !same(approval, &seal(key, &w.unique_identifier, crate::workgroup_run::Approved::of(w, profiles).digest()))
 }
 
 /// The entropy the key is protected with: DPAPI unprotects it only with these bytes too, so a blob
@@ -918,25 +919,25 @@ mod tests {
     fn restored_imports_need_their_stored_approval() {
         let w = model();
         let key = [7u8; KEY_LEN];
-        let sealed = seal(&key, &w.unique_identifier, crate::workgroup_run::Approved::of(&w).digest());
+        let sealed = seal(&key, &w.unique_identifier, crate::workgroup_run::Approved::of(&w, &|_| crate::workgroup_run::MemberProfile::default()).digest());
         let mut d = descriptor();
         d.approval = Some(sealed.clone());
-        assert!(!needs_question(Source::Person, &d, &w, Origin::Named, None));
-        assert!(!needs_question(Source::Import, &d, &w, Origin::Launch, Some(&key)), "the answer the person gave is still the one on file");
+        assert!(!needs_question(Source::Person, &d, &w, Origin::Named, None, &|_| crate::workgroup_run::MemberProfile::default()));
+        assert!(!needs_question(Source::Import, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "the answer the person gave is still the one on file");
         d.approval = None;
-        assert!(needs_question(Source::Import, &d, &w, Origin::Launch, Some(&key)));
-        assert!(needs_question(Source::DynamicProfile, &d, &w, Origin::Launch, Some(&key)));
+        assert!(needs_question(Source::Import, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()));
+        assert!(needs_question(Source::DynamicProfile, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()));
         d.approval = Some("0".repeat(64));
-        assert!(needs_question(Source::RemotePrefs, &d, &w, Origin::Launch, Some(&key)), "a command changed since");
+        assert!(needs_question(Source::RemotePrefs, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "a command changed since");
         let mut changed = w.clone();
         changed.sessions[1].command.push_str(" --x");
         d.approval = Some(sealed.clone());
-        assert!(needs_question(Source::Import, &d, &changed, Origin::Launch, Some(&key)));
+        assert!(needs_question(Source::Import, &d, &changed, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()));
         let mut renamed = w.clone();
         renamed.unique_identifier = "other".into();
-        assert!(needs_question(Source::Import, &d, &renamed, Origin::Launch, Some(&key)), "a seal is for one workgroup");
+        assert!(needs_question(Source::Import, &d, &renamed, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "a seal is for one workgroup");
         d.approval = None;
-        assert!(needs_question(Source::Stored, &d, &w, Origin::Launch, Some(&key)), "an unknown mark fails closed");
+        assert!(needs_question(Source::Stored, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "an unknown mark fails closed");
     }
 
     /// Task 9 review C1: the plain digest of the commands is computable by anyone who holds the
@@ -947,18 +948,18 @@ mod tests {
     fn a_computable_digest_is_no_approval() {
         let w = model();
         let key = [7u8; KEY_LEN];
-        let digest = crate::workgroup_run::Approved::of(&w).digest().to_string();
+        let digest = crate::workgroup_run::Approved::of(&w, &|_| crate::workgroup_run::MemberProfile::default()).digest().to_string();
         let sealed = seal(&key, &w.unique_identifier, &digest);
         let mut d = descriptor();
         for source in [Source::Import, Source::RemotePrefs, Source::DynamicProfile, Source::Stored] {
             d.approval = Some(digest.clone());
-            assert!(needs_question(source, &d, &w, Origin::Launch, Some(&key)), "{source:?}: a forged digest still asks");
-            assert!(needs_question(source, &d, &w, Origin::Named, Some(&key)), "{source:?}");
+            assert!(needs_question(source, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "{source:?}: a forged digest still asks");
+            assert!(needs_question(source, &d, &w, Origin::Named, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "{source:?}");
             d.approval = Some(seal(&[8u8; KEY_LEN], &w.unique_identifier, &digest));
-            assert!(needs_question(source, &d, &w, Origin::Launch, Some(&key)), "{source:?}: another install's seal");
+            assert!(needs_question(source, &d, &w, Origin::Launch, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "{source:?}: another install's seal");
             d.approval = Some(sealed.clone());
-            assert!(needs_question(source, &d, &w, Origin::Named, Some(&key)), "{source:?}: a named arrangement always asks");
-            assert!(needs_question(source, &d, &w, Origin::Launch, None), "{source:?}: no key, no approval");
+            assert!(needs_question(source, &d, &w, Origin::Named, Some(&key), &|_| crate::workgroup_run::MemberProfile::default()), "{source:?}: a named arrangement always asks");
+            assert!(needs_question(source, &d, &w, Origin::Launch, None, &|_| crate::workgroup_run::MemberProfile::default()), "{source:?}: no key, no approval");
         }
         assert_ne!(sealed, digest);
         assert!(digest_ok(&sealed), "a seal reads back as an approval");

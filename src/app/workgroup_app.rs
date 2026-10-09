@@ -241,18 +241,18 @@ impl App {
             self.banners.set("workgroup", why);
             return false;
         }
+        let profiles = |g: Option<&str>| self.member_profile_of(g);
+        let approved = run::Approved::of(&w, &profiles);
         if run::needs_ask(source, how, w.sessions.len()) {
-            let Some((heading, body)) = run::ask_text(&w, how) else {
+            let Some((heading, body)) = run::ask_text(&w, how, &profiles) else {
                 self.banners.set("workgroup", "This workgroup's commands are too long to show in full, so it is not started. Read them in Settings > Arrangements > Workgroups and trust it there.");
                 return false;
             };
-            let approved = run::Approved::of(&w);
             let then = scripts_alerts::Then::EnterWorkgroup { workgroup: Box::new(w), pane, how, approved };
             let ask = scripts_alerts::ask(&heading, &body, &run::ASK_LABELS, None, crate::warnings::Kind::Persistent, then);
             self.ask_scripts(ask);
             return false;
         }
-        let approved = run::Approved::of(&w);
         self.enter_workgroup_now(w, pane, how, approved)
     }
 
@@ -278,7 +278,8 @@ impl App {
     /// the answered ones (`run::to_enter`).
     pub(super) fn enter_workgroup_now(&mut self, w: Workgroup, pane: PaneId, how: Mechanism, approved: run::Approved) -> bool {
         // What runs is the saved workgroup as it is now, and only when its commands are the answered ones.
-        let w = match run::to_enter(&approved, &w, self.workgroup_model.get(&w.unique_identifier)) {
+        let profiles = |g: Option<&str>| self.member_profile_of(g);
+        let w = match run::to_enter(&approved, &w, self.workgroup_model.get(&w.unique_identifier), &profiles) {
             Ok(w) => w,
             Err(why) => {
                 self.banners.set("workgroup", why);
@@ -442,6 +443,12 @@ impl App {
             return Some(format!("{MAX_INSTANCES} workgroups are running; exit one first."));
         }
         None
+    }
+
+    /// The profile a member with `guid` starts with, as `spawn_member` resolves it (a missing one is
+    /// the default), for the question and the approval (`run::Profiles`, final review minor 4).
+    pub(super) fn member_profile_of(&self, guid: Option<&str>) -> run::MemberProfile {
+        run::MemberProfile::of(&self.profile(guid.filter(|g| self.store.get(g).is_some())))
     }
 
     fn session_guid_of(&self, pane: PaneId) -> String {
@@ -1067,7 +1074,7 @@ mod tests {
             torn_down: false,
             seq: 0,
             usage: HashMap::new(),
-            approved: run::Approved::of(&w),
+            approved: run::Approved::of(&w, &|_| run::MemberProfile::default()),
             git: None,
             review: Default::default(),
             workgroup: w,

