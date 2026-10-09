@@ -665,8 +665,10 @@ impl App {
             for cfg in &inst.workgroup.sessions {
                 for item in &cfg.toolbar_items {
                     if let ToolbarItem::Usage { command, interval_seconds, .. } = item {
-                        // A custom command runs only when it is on the list the person answered for.
-                        if !command.trim().is_empty() && !inst.approved.allows(command.trim()) {
+                        // A command runs only when it is on the list the person answered for: the item's own,
+                        // or the built-in run an item without one makes (final review minor 5).
+                        let shown = if command.trim().is_empty() { crate::workgroup_run::BUILTIN_USAGE } else { command.trim() };
+                        if !inst.approved.allows(shown) {
                             continue;
                         }
                         let key = usage_key(command, *interval_seconds);
