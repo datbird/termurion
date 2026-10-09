@@ -385,6 +385,11 @@ impl App {
         if !self.is_browser_pane(pane) || !self.client_open(pane) {
             return;
         }
+        // A workgroup peer hidden since the search (13y1 seam S4) is in no layout: it gets no find
+        // state, as `browser_global_start` never searched it.
+        if !self.all_tab_panes().iter().any(|(_, _, panes)| panes.contains(&pane)) {
+            return;
+        }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let secret = bv.secret.clone();
         let cmds = reveal_commands(&mut bv.find, identifier, &secret);
@@ -859,6 +864,20 @@ mod tests {
         assert!(between(m, "fn close_pane(&mut self", "self.single_use_ended(id)").contains("self.global_pane_gone(id)") && m.contains("global_generation: 1,"));
         assert!(ev.contains("GlobalEvent::Close => self.global_closed()") && f.contains("CloseRequested => self.global_closed()"));
         assert!(me.contains("Update::Global(results) => self.browser_global_results(pane, results)"));
+    }
+
+    /// 13y1 merge seam S4: a hidden workgroup peer (in no layout) gets no find state. Find Globally
+    /// searches the layouts only, and a row picked after a peer swap hid its pane reveals nothing.
+    #[test]
+    fn hidden_peers_get_no_find_state() {
+        let me = prod(include_str!("browser_find_app.rs"));
+        let start = between(me, "pub(super) fn browser_global_start", "pub(super) fn browser_global_results");
+        assert!(start.contains("self.all_tab_panes()"), "the search reaches the layouts only");
+        let reveal = between(me, "pub(super) fn browser_global_reveal", "pub(super) fn browser_find_command");
+        let guard = reveal.find("self.all_tab_panes().iter().any(|(_, _, panes)| panes.contains(&pane))").expect("layout guard");
+        assert!(guard < reveal.find("reveal_commands(").unwrap(), "the guard comes before any find state");
+        let windows = prod(include_str!("windows_ui.rs"));
+        assert!(between(windows, "pub(super) fn all_tab_panes", "\n    }\n").contains("layout.panes()"), "a hidden peer is in no layout");
     }
 
     /// 13x3 Task 9: a find for "world", then "/" from copy mode opens the find bar with the query
