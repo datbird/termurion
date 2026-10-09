@@ -77,6 +77,7 @@ pub mod browser_keys;
 pub mod browser_pointer;
 pub mod browser_frames;
 pub mod browser_find;
+pub mod browser_copymode;
 pub mod browser_db;
 pub mod browser_pages;
 pub mod browser_restore;

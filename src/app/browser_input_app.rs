@@ -31,6 +31,15 @@ pub(super) enum PageNext {
 /// Text sent or pasted into a page is bounded (the page's own paste limit).
 const MAX_TEXT: usize = 1_048_576;
 
+/// The unique id of the Tandem world named by a `Runtime.executionContextCreated` event (never the
+/// numeric id, which is reused); None for any other context.
+pub(super) fn isolated_unique(json: &str) -> Option<String> {
+    let v = serde_json::from_str::<serde_json::Value>(json).ok()?;
+    let c = &v["context"];
+    let named = c["name"].as_str() == Some(crate::browser_world::WORLD_NAME) && c.pointer("/auxData/type").and_then(|t| t.as_str()) == Some("isolated");
+    c["uniqueId"].as_str().filter(|_| named).map(str::to_string)
+}
+
 impl App {
     /// The gate pane `pane`'s view asks.
     #[allow(dead_code)] // the pointer gate of Task 7 and 13y1's peers reach it too
@@ -53,6 +62,7 @@ impl App {
             switch: [self.globals.int("SwitchTabModifier"), self.globals.int("SwitchPaneModifier"), self.globals.int("SwitchWindowModifier")],
             bar: self.bars.get(&pane).and_then(|b| b.front()).cloned(),
             editing: bv.editing,
+            copy_mode: bv.copy_mode.is_some(),
         })
     }
 
@@ -65,9 +75,9 @@ impl App {
         }
     }
 
-    fn browser_gate_refresh(&mut self, pane: PaneId) {
+    pub(super) fn browser_gate_refresh(&mut self, pane: PaneId) {
         let Some(state) = self.browser_gate_state(pane) else { return };
-        let sig = (state.editing, state.bar.as_ref().map(|b| b.id.clone()), state.leader_on);
+        let sig = (state.editing, state.bar.as_ref().map(|b| b.id.clone()), state.leader_on, state.copy_mode);
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.gate_sig = Some(sig);
         // The closure holds copies only: it runs inside the COM handler, with no App borrow.
@@ -81,7 +91,7 @@ impl App {
             .iter()
             .filter(|(p, bv)| {
                 self.panes.contains_key(*p) && {
-                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on);
+                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, bv.copy_mode.is_some());
                     bv.gate_sig.as_ref() != Some(&sig)
                 }
             })
@@ -123,6 +133,8 @@ impl App {
         match state.owner(vk, mods) {
             Owner::Bar(i) => self.browser_bar_press(pane, i, event_loop),
             Owner::Page | Owner::Address => {}
+            // Copy mode's keys (the gate took them, so the page never saw them).
+            Owner::CopyMode => self.browser_copy_mode_vk(pane, vk, mods),
             Owner::Binding | Owner::Number | Owner::Leader => {
                 let route = state.route(&chord);
                 // What the key types in the person's layout (Copy or Send's character, `BAP:171`).
@@ -357,12 +369,9 @@ impl App {
         if !self.client_open(pane) {
             return;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
-        let c = &v["context"];
-        let named = c["name"].as_str() == Some(crate::browser_world::WORLD_NAME) && c.pointer("/auxData/type").and_then(|t| t.as_str()) == Some("isolated");
-        let Some(unique) = c["uniqueId"].as_str().filter(|_| named) else { return };
+        let Some(unique) = isolated_unique(json) else { return };
         let (keys, four, focus) = self.browser_pointer_table();
-        let params = crate::browser_world::evaluate_params(unique, &browser_pointer::gate_update(&keys, four, focus));
+        let params = crate::browser_world::evaluate_params(&unique, &browser_pointer::gate_update(&keys, four, focus));
         let session = session.map(str::to_string);
         self.devtools_send(pane, session.as_deref(), "Runtime.evaluate", &params, Box::new(|_, _, _| {}));
     }
@@ -582,8 +591,6 @@ impl App {
         }
     }
 
-    /// Key action 73 (copy mode): 13x3 Task 8 replaces this body.
-    pub(super) fn browser_copy_mode_commands(&mut self, _pane: PaneId, _keys: &str) {}
 }
 
 impl App {
@@ -725,7 +732,7 @@ mod tests {
         let send = &p[p.find("pub(super) fn browser_send_text").unwrap()..p.find("fn browser_insert_raw").unwrap()];
         assert!(send.contains("insert_script(text)") && send.contains("Bool(true)") && send.contains("browser_insert_raw"), "insert-text.js, then DevTools");
         assert!(!p.contains("send_to_focused") && !p.contains("execCommand"), "no pty, no execCommand");
-        let paste = &p[p.find("fn browser_paste_text").unwrap()..p.find("pub(super) fn browser_copy_mode_commands").unwrap()];
+        let paste = &p[p.find("fn browser_paste_text").unwrap()..p.find("// --- Pointer bindings (Task 7) ---").unwrap()];
         assert!(paste.contains("sanitize(&job, &prefs)") && paste.contains("flags &= !crate::paste::BRACKET"));
         let copy = &p[p.find("pub(super) fn browser_copy_selection").unwrap()..p.find("fn browser_read_selection").unwrap()];
         assert!(copy.contains("remember_paste") && copy.contains("set_clipboard_text"));
@@ -779,7 +786,7 @@ mod tests {
         // the tick opens through the funnel.
         let q = &p[at("fn browser_queue_open(")..at("pub(super) fn browser_next_tick")];
         assert!(q.contains("NavGate::Navigate(_) =>") && q.contains("NavGate::Open(_) => {}"), "a pointer click never opens a local file");
-        let tick = &p[at("pub(super) fn browser_next_tick")..at("/// Key action 73")];
+        let tick = &p[at("pub(super) fn browser_next_tick")..at("// --- Broadcast between browser panes (Task 8) ---")];
         assert!(tick.contains("self.browser_page_open(pane, &url, how, event_loop)") && tick.contains("self.browser_smart_action(") && tick.contains("run_pointer_action(&b, pane, (0, 0), event_loop)"));
         for banned in ["Command::new(", "execute_with(", "guard_open(", "shell_open(", "open_url_in_browser(", "navigate_tandem("] {
             assert!(!p.contains(banned), "{banned}");

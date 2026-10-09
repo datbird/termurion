@@ -171,6 +171,13 @@ impl App {
                 Ok(s) => scripts.push(s),
                 Err(_) => crate::rlog!("browser find script not registered"),
             }
+            // iTerm2's copy mode cursor and Tandem's key listener (13x3 Task 8): both or neither, and
+            // only with an isolated world (this block); without them Edit > Copy Mode is not offered.
+            // (They fail together only for a secret that is not plain letters and digits, which the find
+            // script above would already have logged.)
+            if let (Ok(cursor), Ok(keys)) = (crate::browser_copymode::user_script(secret), crate::browser_copymode::keys_script(secret)) {
+                scripts.extend([cursor, keys]);
+            }
         }
         scripts
     }
@@ -214,6 +221,8 @@ impl App {
             // The new secret makes the old search and its queued commands the old page's.
             bv.find = crate::browser_find::fresh_model();
             bv.find_out.reset();
+            // And the old page's copy mode: its switch and cursor lived in the old world.
+            bv.copy_mode = None;
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
         self.global_pane_gone(pane);
@@ -494,6 +503,7 @@ impl App {
                 self.browser_world_pump(pane);
                 if recorded {
                     self.browser_pointer_push_new(pane, session, json);
+                    self.browser_copy_mode_new_context(pane, session, json);
                 }
             }
             "Runtime.executionContextDestroyed" => {
@@ -745,6 +755,8 @@ impl App {
                     bv.selection_gate.reset();
                     bv.graph.will_navigate();
                 }
+                // `BM:1254`: a navigation that starts turns copy mode off (the page's cursor is gone).
+                self.browser_copy_mode_set(pane, false);
                 let dones: Vec<JsDone> = match self.browser_views.get_mut(&pane) {
                     // The setup's own calls and checks are not a page's: they are kept.
                     Some(bv) if bv.world.setup.is_none() => {
@@ -779,6 +791,7 @@ impl App {
             }
             h if h == crate::browser_frames::HANDLER => self.browser_graph_message(pane, &r),
             h if h == crate::browser_find::HANDLER => self.browser_find_message(pane, &r),
+            h if h == crate::browser_copymode::KEY_HANDLER => self.browser_copy_mode_key(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -973,7 +986,7 @@ mod tests {
     /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
     /// router or is a listed Client handler that asks `client_open` before it acts.
     fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
-        let known = ["browser_graph_message", "browser_always_on", "browser_find_message"];
+        let known = ["browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
         let mut out = Vec::new();
         for (file, src) in files {

@@ -157,6 +157,7 @@ mod toolbelt_ui;
 mod tool_web_ui;
 mod browser_app;
 mod browser_find_app;
+mod browser_copymode_app;
 mod adblock_app;
 mod browser_db_app;
 mod browser_scripts_app;
