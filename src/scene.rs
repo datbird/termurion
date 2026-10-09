@@ -638,6 +638,12 @@ pub fn find_strip(frame: &mut Frame, row: Rect) {
     frame.quads.push(Quad { rect: row, color: rgba(FIND_BAR, 1.0) });
 }
 
+/// The find bar's height: one row of text and its padding, two rows with a notice. The browser
+/// pane's strip is cut to the same height (`browser_find::split`).
+pub fn find_bar_height(ch: f32, notice: bool) -> f32 {
+    if notice { 2.0 * ch + 8.0 } else { ch + 8.0 }
+}
+
 /// Draws the find bar at the top right of `pane`, over the text. Returns the mode label's
 /// rectangle, which opens the mode menu when clicked.
 pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) -> Rect {
@@ -646,7 +652,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     let mode = format!("[{}]", bar.mode);
     let chars = (1 + FIELD + 2 + bar.count.chars().count() + 2 + mode.chars().count() + 1).max(bar.notice.map_or(0, |n| n.chars().count() + 2));
     let w = (chars as f32 * cw).min(pane.w);
-    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: if bar.notice.is_some() { 2.0 * ch + 8.0 } else { ch + 8.0 } };
+    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: find_bar_height(ch, bar.notice.is_some()) };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     if let Some(p) = bar.progress {
         let w = (r.w * p.clamp(0.0, 1.0)).max(0.0);

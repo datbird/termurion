@@ -32,19 +32,9 @@ impl App {
     /// again). Both strips want the top of `r`: the front announcement bar first (the scene draws it
     /// at the top of `r`, P21), then the find bar's row below it, then the page.
     pub(super) fn browser_split(&self, id: PaneId, r: Rect) -> (Option<Rect>, Rect) {
-        let below = match self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)) {
-            Some(bar) => {
-                let bottom = r.y + crate::infobar::layout(bar, r, self.pane_cell(id)).bar.h;
-                let (y, h) = browser_tip::below_bar(r.y, r.h, bottom);
-                Rect { y, h, ..r }
-            }
-            None => r,
-        };
-        if !self.browser_find_strip_open(id) {
-            return (None, below);
-        }
-        let (bar, view) = crate::browser_find::strip(below, self.pane_cell(id).1 + 8.0);
-        (Some(bar), view)
+        let bottom = self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)).map(|bar| r.y + crate::infobar::layout(bar, r, self.pane_cell(id)).bar.h);
+        let find_h = self.browser_find_strip_open(id).then(|| crate::scene::find_bar_height(self.pane_cell(id).1, false));
+        crate::browser_find::split(r, bottom, find_h)
     }
 
     /// Where pane `id`'s web view goes: `r` below the announcement bar and the find bar's row.

@@ -642,8 +642,8 @@ mod tests {
         let overlay = include_str!("browser_overlay_app.rs");
         let overlay = prod(overlay);
         let split = between(overlay, "pub(super) fn browser_split", "pub(super) fn browser_web_rect");
-        assert!(split.find("below_bar(").unwrap() < split.find("browser_find::strip(").unwrap(), "the announcement bar first, then the find row");
-        assert!(split.contains("browser_find_strip_open(id)") && !split.contains("pane_chrome("));
+        assert!(split.contains("crate::browser_find::split(r, bottom, find_h)") && !split.contains("below_bar(") && !split.contains("+ 8.0"), "the pure split is the one cut, the height is the scene's");
+        assert!(split.contains("browser_find_strip_open(id)") && split.contains("scene::find_bar_height(") && !split.contains("pane_chrome("));
         let web = between(overlay, "pub(super) fn browser_web_rect", "pub(super) fn browser_find_strip_open");
         assert!(web.contains("self.browser_split(id, r).1"));
         let shown = between(overlay, "fn browser_shown_rect", "// --- The hovered link");

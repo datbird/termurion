@@ -606,6 +606,27 @@ pub fn strip(web: Rect, bar_h: f32) -> (Rect, Rect) {
 }
 
 /// iTerm2's one-at-a-time command mutex (`FM:270`): commands wait here, the next goes out when the
+/// A browser pane's whole top split in one place (13x3 B1): the front announcement bar first (its
+/// bottom edge, when one is up), then the find bar's row of `find_h` below it (when one is open),
+/// then the page. The find row is None while no bar is open. The app's `browser_split` calls this
+/// and nothing else cuts these strips, so the placed view, the hover anchor and the scene agree.
+pub fn split(r: Rect, announcement_bottom: Option<f32>, find_h: Option<f32>) -> (Option<Rect>, Rect) {
+    let below = match announcement_bottom {
+        Some(bottom) => {
+            let (y, h) = crate::browser_tip::below_bar(r.y, r.h, bottom);
+            Rect { y, h, ..r }
+        }
+        None => r,
+    };
+    match find_h {
+        Some(h) => {
+            let (bar, view) = strip(below, h);
+            (Some(bar), view)
+        }
+        None => (None, below),
+    }
+}
+
 /// previous was answered.
 #[derive(Clone, Debug, Default)]
 pub struct Outbox {
@@ -1144,6 +1165,33 @@ mod tests {
     #[test]
     fn commands_go_out_one_at_a_time() {
         let mut o = Outbox::default();
+    /// 13x3 B1, made behavioural (Task 4 review): the announcement bar, the find row and the page
+    /// stack in that order from one function, so the placed view (this rectangle) is the one the
+    /// hover anchor and the scene read; the rows never overlap and never leave the area.
+    #[test]
+    fn announcement_and_find_strips_stack_once() {
+        let r = Rect { x: 10.0, y: 32.0, w: 800.0, h: 600.0 };
+        // Nothing open: the page is the whole area.
+        assert_eq!(split(r, None, None), (None, r));
+        // Find alone.
+        let (find, view) = split(r, None, Some(24.0));
+        assert_eq!(find, Some(Rect { h: 24.0, ..r }));
+        assert_eq!(view, Rect { y: 56.0, h: 576.0, ..r });
+        // The announcement bar alone (it reaches y = 62).
+        let (find, view) = split(r, Some(62.0), None);
+        assert_eq!((find, view), (None, Rect { y: 62.0, h: 570.0, ..r }));
+        // Both: the find row starts where the bar ends, the page where the row ends.
+        let (find, view) = split(r, Some(62.0), Some(24.0));
+        let find = find.expect("a find row");
+        assert_eq!((find.y, find.h), (62.0, 24.0));
+        assert_eq!((view.y, view.h), (86.0, 546.0));
+        assert_eq!(find.y + find.h, view.y);
+        assert_eq!(view.y + view.h, r.y + r.h, "nothing is lost at the bottom");
+        // A bar reaching past the area leaves no page and no negative height.
+        let (find, view) = split(r, Some(900.0), Some(24.0));
+        assert_eq!((find.map(|f| f.h), view.h), (Some(0.0), 0.0));
+    }
+
         assert_eq!(o.push(vec![json!(1), json!(2)]), Some(json!(1)));
         assert_eq!(o.push(vec![json!(3)]), None, "one is in flight");
         assert_eq!(o.answered(), Some(json!(2)));
