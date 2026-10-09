@@ -232,7 +232,8 @@ fn alias_entry(dir: &Path) -> Option<PathBuf> {
 /// `<temp>\.tandem-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
 /// the marker in `appdata` naming it. On a failure nothing is left behind.
 fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
-    let archive = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    // The archive came from outside: judged before it is read (as a script zip is).
+    let archive = crate::localfs::judge_io(file).and_then(|f| crate::localfs::open(&f)).map_err(|e| format!("{}: {e}", file.display()))?;
     crate::zip_check::check_tgz(std::io::BufReader::new(archive), crate::zip_check::Limits::DEFAULT, &se::aliased)?;
     let staging = se::staging_dir(temp, &uuid::Uuid::new_v4().to_string());
     let staged = std::fs::create_dir_all(&staging)
