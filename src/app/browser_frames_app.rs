@@ -91,6 +91,6 @@ mod tests {
         let d = &router[router.find("fn browser_devtools_event").unwrap()..router.find("fn browser_attached").unwrap()];
         assert!(d.contains("graph.gone(") && d.contains("fn_frames_lost") == false);
         // The new files' log sites are listed.
-        assert!(include_str!("../dlog.rs").contains("(\"app/browser_scripts_app.rs\", 4)"));
+        assert!(include_str!("../dlog.rs").contains("(\"app/browser_scripts_app.rs\", 5)"));
     }
 }

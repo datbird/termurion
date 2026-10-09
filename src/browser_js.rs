@@ -32,6 +32,19 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "open-link-at-point.js" => include_str!("../resources/browser/open-link-at-point.js"),
         "select-text.js" => include_str!("../resources/browser/select-text.js"),
         "urls-at-point.js" => include_str!("../resources/browser/urls-at-point.js"),
+        "custom-find.js" => include_str!("../resources/browser/custom-find.js"),
+        "find-api.js" => include_str!("../resources/browser/find-api.js"),
+        "find-constants.js" => include_str!("../resources/browser/find-constants.js"),
+        "find-engine.js" => include_str!("../resources/browser/find-engine.js"),
+        "find-global-click.js" => include_str!("../resources/browser/find-global-click.js"),
+        "find-highlighter.js" => include_str!("../resources/browser/find-highlighter.js"),
+        "find-iframe-segment.js" => include_str!("../resources/browser/find-iframe-segment.js"),
+        "find-match.js" => include_str!("../resources/browser/find-match.js"),
+        "find-nav.js" => include_str!("../resources/browser/find-nav.js"),
+        "find-security.js" => include_str!("../resources/browser/find-security.js"),
+        "find-segment.js" => include_str!("../resources/browser/find-segment.js"),
+        "find-text-segment.js" => include_str!("../resources/browser/find-text-segment.js"),
+        "find-utils.js" => include_str!("../resources/browser/find-utils.js"),
         "graph-discovery-api.js" => include_str!("../resources/browser/graph-discovery-api.js"),
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
@@ -177,11 +190,18 @@ fn rewrite_bridge(code: &str) -> String {
 const PAGE_CAPTURE: &str = "const __tandemPost = (window.chrome && window.chrome.webview) ? window.chrome.webview.postMessage.bind(window.chrome.webview) : null;";
 const CLIENT_CAPTURE: &str = "const __tandemPost = globalThis.__tandemClient;";
 
+/// B2 (13x3): the find engine posts every match of a page in one message, which a long page pushes
+/// past `MAX_MESSAGE` (the count would never update). For the find handler only, the Client bridge
+/// cuts each match text and context to 200 characters and keeps the first N entries of
+/// `matchIdentifiers` and `contexts` so the JSON stays within 49152 bytes; `totalMatches` and
+/// `currentMatch` stay whole. The copied find scripts are not edited.
+const CLIENT_CAP: &str = "function (name, body) { if (name !== 'iTermCustomFind' || !body || typeof body !== 'object' || !body.data || typeof body.data !== 'object') { return body; } const ids = Array.isArray(body.data.matchIdentifiers) ? body.data.matchIdentifiers : null; const ctx = Array.isArray(body.data.contexts) ? body.data.contexts : null; if (!ids && !ctx) { return body; } const cut = function (s) { return typeof s === 'string' && s.length > 200 ? s.slice(0, 200) : s; }; const build = function (n) { const data = Object.assign({}, body.data); if (ids) { data.matchIdentifiers = ids.slice(0, n).map(function (m) { return Object.assign({}, m, {text: cut(m && m.text)}); }); } if (ctx) { data.contexts = ctx.slice(0, n).map(function (c) { return Object.assign({}, c, {contextBefore: cut(c && c.contextBefore), contextAfter: cut(c && c.contextAfter)}); }); } return Object.assign({}, body, {data: data}); }; let n = Math.max(ids ? ids.length : 0, ctx ? ctx.length : 0); let out = build(n); let size = new TextEncoder().encode(JSON.stringify(out)).length; while (size > 49152 && n > 0) { const next = Math.floor(n * 49152 / size * 0.9); n = next < n ? next : n - 1; out = build(n); size = new TextEncoder().encode(JSON.stringify(out)).length; } return out; }";
+
 /// The closure-local `webkit` object: a Proxy answering `{postMessage}` for any handler name.
-fn bridge_object(world: World) -> &'static str {
+fn bridge_object(world: World) -> String {
     match world {
-        World::Client => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };",
-        World::Page => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__tandemPost) { __tandemPost({h: name, b: body}); } } }; } }) };",
+        World::Client => "const __tandemCap = __CAP__;\nconst __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { body = __tandemCap(name, body); if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };".replace("__CAP__", CLIENT_CAP),
+        World::Page => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__tandemPost) { __tandemPost({h: name, b: body}); } } }; } }) };".to_string(),
     }
 }
 
@@ -204,7 +224,7 @@ pub fn wrap(script: &UserScript) -> String {
     if script.main_frame_only {
         s.push_str("if (window.top !== window) return;\n");
     }
-    s.push_str(bridge_object(script.world));
+    s.push_str(&bridge_object(script.world));
     s.push('\n');
     match script.inject {
         Inject::DocumentStart => {
@@ -695,6 +715,21 @@ mod tests {
         // Two wrapped scripts never collide when they share one global (each is its own function).
         assert_eq!(start.matches("(function () {").count(), 1);
         assert!(start.trim_end().ends_with("})();"));
+    }
+
+    /// B2: a find result is capped inside the Client bridge, before it is posted, so the copied find
+    /// engine stays unedited and a long page's result still fits `MAX_MESSAGE`.
+    #[test]
+    fn the_client_bridge_caps_find_results() {
+        let c = wrap(&script("window.webkit.messageHandlers.iTermCustomFind.postMessage({a: 1})", World::Client));
+        assert!(c.contains("const __tandemCap = function (name, body)"), "{c}");
+        assert!(c.contains("name !== 'iTermCustomFind'"), "only the find handler is capped: {c}");
+        assert!(c.contains("body = __tandemCap(name, body);"), "applied before the post: {c}");
+        assert!(c.contains("49152"), "the byte budget: {c}");
+        assert!(!c.to_ascii_lowercase().contains("secret"), "the cap copies the body whole and names no secret");
+        // The page-world bridge (local pages) is not touched.
+        assert!(!wrap(&script("x", World::Page)).contains("__tandemCap"));
+        assert!(49152 + 4096 < crate::webhost::MAX_MESSAGE, "the budget leaves room for the envelope");
     }
 
     #[test]

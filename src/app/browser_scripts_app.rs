@@ -165,6 +165,12 @@ impl App {
             // Tandem's broadcast script (Task 8): always installed, so turning broadcast on works at
             // once without a reload; `browser_always_on` drops its messages unless the pane sends.
             scripts.push(crate::browser_keys::user_script(secret));
+            // iTerm2's find script (13x3 Task 1): every browser pane, the isolated world only. No
+            // script when it cannot be assembled: find then finds nothing.
+            match crate::browser_find::user_script(secret) {
+                Ok(s) => scripts.push(s),
+                Err(_) => crate::rlog!("browser find script not registered"),
+            }
         }
         scripts
     }

@@ -2344,6 +2344,8 @@ mod probe {
         graph_tokens: HashMap<u64, u64>,
         /// Evaluations the graph planned for a Page-world message (production plans none).
         page_graph_acts: usize,
+        /// Page-initiated windows the host let through (`Event::NewWindow`: user-initiated only).
+        new_windows: Vec<String>,
     }
 
     impl Probe {
@@ -2401,6 +2403,7 @@ mod probe {
                 graph: None,
                 graph_tokens: HashMap::new(),
                 page_graph_acts: 0,
+                new_windows: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -2528,6 +2531,7 @@ mod probe {
                     self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json });
                 }
                 Event::FrameCreated { frame, .. } => self.frames.push(frame),
+                Event::NewWindow { url, .. } => self.new_windows.push(url),
                 Event::FrameMessage { frame, json, source, .. } => {
                     self.graph_page(&json, Some(frame), &source);
                     self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json });
@@ -3111,6 +3115,81 @@ mod probe {
         let body = &p.clients(crate::browser_pointer::GATE_HANDLER)[0].1;
         assert_eq!(crate::browser_pointer::press_of(body), Some(crate::browser_pointer::Press::Down { button: 2, clicks: 1, mods: crate::pointer::Mods::default(), x: 20.0, y: 20.0 }));
         assert_eq!(p.page_eval("window.__saw.length"), Ok("0".into()), "the page never saw the taken press");
+        p.finish();
+    }
+
+    /// The Client sources of a find test: the always-present graph script (find-api talks to it) and
+    /// the find script itself, wrapped as the app registers it.
+    fn find_sources(secret: &str) -> Vec<String> {
+        let mut v = vec![wrapped(GRAPH)];
+        v.push(crate::browser_js::wrap(&crate::browser_find::user_script(secret).expect("the find script")));
+        v
+    }
+
+    fn find_start(p: &mut Probe, secret: &str, term: &str) -> Result<Value, String> {
+        let cmd = crate::browser_find::command("startFind", json!({"searchTerm": term, "contextLength": 10, "searchMode": "caseInsensitive"}), "main_probe", secret);
+        let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": cmd})).expect("the command");
+        p.eval(None, &expr)
+    }
+
+    /// 13x3 Task 1 (B2): a long page's find result reaches the router whole in its count and within
+    /// the message limit, because the Client bridge cuts it. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_result_is_capped_in_the_bridge() {
+        let secret = hex32();
+        let body = "<p>".to_string() + &"word ".repeat(6000) + "</p>";
+        let sources = find_sources(&secret);
+        let size: usize = sources.iter().map(String::len).sum();
+        println!("find sources: {size} bytes (P15: one addScriptToEvaluateOnNewDocument per script)");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], sources) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        find_start(&mut p, &secret, "word").expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived: {:?}", p.log.last());
+        let routed: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Client && r.client().is_some_and(|(h, _)| h == crate::browser_find::HANDLER)).collect();
+        let big = routed.iter().find(|r| r.client().is_some_and(|(_, b)| b["action"] == "resultsUpdated")).expect("resultsUpdated");
+        assert!(big.body.len() <= 49152 + 4096, "the message is {} bytes", big.body.len());
+        let (_, b) = big.client().unwrap();
+        assert_eq!(b["data"]["totalMatches"], 6000, "the count is kept whole");
+        assert!(b["data"]["matchIdentifiers"].as_array().is_some_and(|a| !a.is_empty() && a.len() < 6000));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 1 (B7, m13x2 B9 for the find scripts): window messages a page forges or reads. The
+    /// page sees the find scripts' `postMessage` traffic and can forge `iTermGlobalClick` and
+    /// `iTermIframeClick`; neither carries the view secret, and a forged one only moves where the
+    /// next match starts. Synthetic keys at `find-nav`'s listener open nothing: a page-initiated
+    /// window is host-gated to a person's action. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_messages_forged_by_a_page() {
+        let secret = hex32();
+        let child = "&lt;p&gt;alpha in a child&lt;/p&gt;&lt;a href=&quot;https://z.invalid/&quot;&gt;alpha link&lt;/a&gt;";
+        let body = format!("<p>alpha beta alpha</p><a href=\"https://x.invalid/\">alpha link</a><iframe srcdoc=\"{child}\"></iframe>");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, &secret))], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        find_start(&mut p, &secret, "alpha").expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
+        let before = p.clients(crate::browser_find::HANDLER).len();
+        // Forged window messages, in the main frame and in the child frame, then synthetic keys.
+        p.page_eval("window.postMessage({type: 'iTermGlobalClick', clickData: {offset: 1, textContent: 'alpha', coordinates: {x: 1, y: 1}}}, '*'); window.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {x: 1, y: 1}, framePath: ['guess']}, '*'); 1").expect("the forgery runs");
+        p.page_eval("for (const k of ['a', 'b', 'Enter', 'Escape']) { document.dispatchEvent(new KeyboardEvent('keydown', {key: k, bubbles: true})); } window.dispatchEvent(new KeyboardEvent('keydown', {key: 'a'})); 1").expect("the synthetic keys run");
+        p.settle(1500);
+        // 1. The page recorded every message it could see: none holds the secret or its field name.
+        let report = p.page_eval("window.__report()").expect("the page report");
+        assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
+        // 2. Nothing a page forged made a window open or a Client message other than find's own.
+        assert!(p.new_windows.is_empty(), "a page-initiated window got through: {:?}", p.new_windows);
+        let after: Vec<String> = p.clients(crate::browser_find::HANDLER).iter().skip(before).filter_map(|(_, b)| b["action"].as_str().map(str::to_string)).collect();
+        assert!(after.iter().all(|a| a == "currentChanged" || a == "resultsUpdated"), "only find's own reports followed: {after:?}");
+        // 3. The engine still answers a real command after the forgeries.
+        let cmd = crate::browser_find::command("findNext", json!({}), "main_probe", &secret);
+        let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": cmd})).unwrap();
+        p.eval(None, &expr).expect("findNext still runs");
+        assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
 }
