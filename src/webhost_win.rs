@@ -3456,4 +3456,249 @@ window.addEventListener('message', function (e) {
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
+
+    // --- 13x3 Task 9: copy mode on a real page ---
+
+    fn copy_sources(secret: &str) -> Vec<String> {
+        let mut v = vec![wrapped(GRAPH)];
+        v.push(crate::browser_js::wrap(&crate::browser_copymode::user_script(secret).expect("the copy mode script")));
+        v.push(crate::browser_js::wrap(&crate::browser_copymode::keys_script(secret).expect("the copy mode keys script")));
+        v
+    }
+
+    /// What `browser_copy_mode_set(pane, true)` does: the page's cursor on, then the key switch in
+    /// every live Tandem world (the main frame and each iframe's).
+    fn copy_on(p: &mut Probe, secret: &str) {
+        use crate::browser_copymode as cm;
+        p.eval(None, &cm::enable_js(secret)).expect("enable runs in the Tandem world");
+        copy_keys_switch(p, secret, true);
+    }
+
+    /// What `browser_world_update(pane, keys_on_js)` does: every live Tandem world gets the switch.
+    fn copy_keys_switch(p: &mut Probe, secret: &str, on: bool) {
+        let js = crate::browser_copymode::keys_on_js(secret, on);
+        p.eval(None, &js).expect("the switch in the main frame");
+        for f in p.contexts.frames() {
+            p.eval(Some(f), &js).expect("the switch in a frame");
+        }
+    }
+
+    /// What `browser_copy_mode_set(pane, false)` does.
+    fn copy_off(p: &mut Probe, secret: &str) {
+        p.eval(None, &crate::browser_copymode::disable_js(secret)).expect("disable runs");
+        copy_keys_switch(p, secret, false);
+    }
+
+    /// One real key from the browser (`Input.dispatchKeyEvent` is trusted).
+    fn real_key(p: &mut Probe, c: char) {
+        let (key, upper) = (c.to_string(), c.to_ascii_uppercase());
+        for kind in ["keyDown", "keyUp"] {
+            let mut k = json!({"type": kind, "key": key, "code": format!("Key{upper}"), "windowsVirtualKeyCode": upper as u32});
+            if kind == "keyDown" {
+                k["text"] = json!(key);
+            }
+            p.call_wait(None, "Input.dispatchKeyEvent", &k).expect("the real key");
+        }
+    }
+
+    /// A real key through the world's listener and the model, as `browser_copy_mode_key` and
+    /// `browser_copy_mode_apply` take it. The page-side steps run in the main frame's Tandem world;
+    /// Copy and Leave are returned for the test to finish, as the app finishes them natively.
+    fn copy_press(p: &mut Probe, m: &mut crate::browser_copymode::Model, secret: &str, c: char) -> crate::browser_copymode::Step {
+        use crate::browser_copymode as cm;
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(p, c);
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "key {c} reached the world's listener");
+        let (_, body) = p.clients(cm::KEY_HANDLER).pop().unwrap();
+        let (key, ctrl, alt) = cm::key_of(&body).expect("a typed key body");
+        let name = cm::key_name(&key, ctrl, alt).expect("a named key");
+        let step = m.key(&name, secret);
+        if let cm::Step::Script(js) = &step {
+            p.eval(None, js).expect("the step runs in the Tandem world");
+        }
+        step
+    }
+
+    fn cursor_display(p: &mut Probe) -> String {
+        p.eval(None, "(document.getElementById('iterm-copy-mode-cursor') || {style: {display: 'absent'}}).style.display").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    }
+
+    fn selection(p: &mut Probe) -> String {
+        p.eval(None, "window.getSelection().toString()").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    }
+
+    /// 13x3 Task 9, Review Focus 8: copy mode follows iTerm2 on a page `<p>hello world</p>`. Enabling
+    /// shows the cursor (`CMC:37-48`); "v", "w", "w" select from "hello"; "y" is the Copy step (the
+    /// text the app's one reader, `browser_copy_selection`, puts on the clipboard) and leaving hides
+    /// the cursor; a second enable and "q" hides the cursor and keeps the selection (`CMI:75-88`).
+    /// The probe does not write the person's clipboard: the write is `set_clipboard_text`, pinned by
+    /// the app's source tests. Needs the console session.
+    #[test]
+    #[ignore]
+    fn browser_copy_mode_follows_iterm2() {
+        use crate::browser_copymode as cm;
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>c</title></head><body><p>hello world</p></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
+        p.load(PAGE);
+        p.view().focus();
+        assert_eq!(cursor_display(&mut p), "absent", "no cursor before copy mode");
+        copy_on(&mut p, &secret);
+        assert_ne!(cursor_display(&mut p), "none", "the cursor is displayed");
+        let mut m = cm::Model::default();
+        for c in ['v', 'w', 'w'] {
+            copy_press(&mut p, &mut m, &secret, c);
+        }
+        let sel = selection(&mut p);
+        assert!(sel.starts_with("hello") && !sel.is_empty(), "the selection starts at hello: {sel:?}");
+        assert!(m.selecting);
+        // y: the Copy step, reading what the app's reader reads, capped as it caps.
+        assert_eq!(copy_press(&mut p, &mut m, &secret, 'y'), cm::Step::Copy);
+        let copied = crate::browser_js::store_selection(&selection(&mut p));
+        assert!(copied.starts_with("hello"), "what the clipboard would hold: {copied:?}");
+        copy_off(&mut p, &secret);
+        assert_eq!(cursor_display(&mut p), "none", "the cursor is hidden after the copy");
+        // Second enable, "q": the cursor hides, the selection stays, selecting stops.
+        let keep = selection(&mut p);
+        copy_on(&mut p, &secret);
+        assert_ne!(cursor_display(&mut p), "none");
+        let mut m = cm::Model::default();
+        let step = copy_press(&mut p, &mut m, &secret, 'q');
+        assert_eq!(step, cm::Step::Leave { stop_selecting: true });
+        p.eval(None, cm::STOP_SELECTING_JS).expect("stop selecting");
+        copy_off(&mut p, &secret);
+        assert_eq!(cursor_display(&mut p), "none", "q hides the cursor");
+        assert_eq!(selection(&mut p), keep, "q keeps the selection");
+        // With the switch off a real key reaches the page, not copy mode.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(&mut p, 'j');
+        p.settle(500);
+        assert_eq!(p.clients(cm::KEY_HANDLER).len(), n, "the listener is silent while copy mode is off");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 9 (R13x23-3, C1): a page cannot hijack copy mode. Its first script assigns
+    /// `window.iTerm2CopyMode` with a recorder for every method and a recording `selecting`, and
+    /// tries to flip every global that looks like a key switch; copy mode still drives the real
+    /// cursor, the recorder is never called, the page's recorders never hold the secret, and the
+    /// page's `window.iTerm2CopyMode` is its own. The same page with no copy mode script (a view
+    /// whose isolated world is unavailable gets none, `browser_user_scripts`): the recorder is never
+    /// called either. Needs the console session.
+    #[test]
+    #[ignore]
+    fn page_cannot_hijack_copy_mode() {
+        use crate::browser_copymode as cm;
+        const FIRST: &str = r#"<script>
+(function () {
+  window.__leaks = [];
+  const leak = function () { window.__leaks.push(Array.prototype.slice.call(arguments).join('|')); };
+  const names = ['enable', 'disable', 'moveBackwardWord', 'moveForwardWord', 'moveBackwardBigWord', 'moveForwardBigWord', 'moveLeft', 'moveRight', 'moveUp', 'moveDown', 'moveToStartOfNextLine', 'pageUp', 'pageDown', 'pageUpHalfScreen', 'pageDownHalfScreen', 'previousMark', 'nextMark', 'moveToStart', 'moveToEnd', 'moveToStartOfIndentation', 'moveToBottomOfVisibleArea', 'moveToMiddleOfVisibleArea', 'moveToTopOfVisibleArea', 'moveToStartOfLine', 'moveToEndOfLine', 'swap', 'scrollUp', 'scrollDown', 'scrollCursorIntoView', 'copySelection', 'getState'];
+  const mine = {};
+  for (const n of names) mine[n] = function (s) { leak(n, s); };
+  Object.defineProperty(mine, 'selecting', { get: function () { return false; }, set: function (v) { leak('selecting', v); } });
+  Object.defineProperty(mine, 'mode', { get: function () { return 0; }, set: function (v) { leak('mode', v); } });
+  window.iTerm2CopyMode = mine;
+  window.__mine = mine;
+  // Every global that looks like a key switch: replaced by a recorder, in the page's world.
+  for (const k of ['__tandemCopyModeKeys', 'tandemCopyModeKeys', 'copyModeKeys', 'iTerm2CopyModeKeys']) {
+    window[k] = function () { leak(k, Array.prototype.slice.call(arguments).join(',')); };
+  }
+  for (const k of Object.getOwnPropertyNames(window)) {
+    if (/key|copy|switch/i.test(k) && typeof window[k] === 'function' && k !== 'leak') {
+      try { const f = window[k]; window[k] = function () { leak(k, 'called'); return f.apply(this, arguments); }; } catch (e) {}
+    }
+  }
+})();
+</script>"#;
+        let page = format!("<!doctype html><html><head><title>h</title>{FIRST}{}</head><body><p>one two</p><p>three four</p></body></html>", HOSTILE.replace("{{GUESS}}", "g"));
+        // With the isolated world: the real cursor moves and copies.
+        {
+            let secret = hex32();
+            let Some(mut p) = Probe::start(&[(PAGE, page.clone())], copy_sources(&secret)) else { return };
+            p.load(PAGE);
+            p.view().focus();
+            copy_on(&mut p, &secret);
+            let top = |p: &mut Probe| p.eval(None, "parseFloat(document.getElementById('iterm-copy-mode-cursor').style.top) || 0").ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let before = top(&mut p);
+            let mut m = cm::Model::default();
+            copy_press(&mut p, &mut m, &secret, 'j');
+            assert!(top(&mut p) > before, "j moved the real cursor down: {before} -> {}", top(&mut p));
+            copy_press(&mut p, &mut m, &secret, 'v');
+            copy_press(&mut p, &mut m, &secret, 'l');
+            copy_press(&mut p, &mut m, &secret, 'l');
+            assert_eq!(copy_press(&mut p, &mut m, &secret, 'y'), cm::Step::Copy);
+            assert!(!selection(&mut p).is_empty(), "y has a selection to copy");
+            assert_eq!(p.page_eval("window.__leaks.length").as_deref(), Ok("0"), "the page's recorder was never called: {:?}", p.page_eval("window.__leaks.join(';')"));
+            assert_eq!(p.page_eval("String(window.iTerm2CopyMode === window.__mine)").as_deref(), Ok("\"true\""), "the page world holds the page's own object");
+            assert_eq!(p.eval(None, "String(window.iTerm2CopyMode === window.__mine)"), Ok(json!("false")), "the Tandem world holds Tandem's");
+            assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode.getState"), Ok(json!("function")));
+            let report = p.page_eval("window.__report()").expect("the page report");
+            assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
+            assert_eq!(p.rejected_bindings, 0);
+            p.finish();
+        }
+        // No isolated world, so no copy mode script (and the menu item is off): nothing leaks.
+        {
+            let secret = hex32();
+            let Some(mut p) = Probe::start(&[(PAGE, page)], vec![wrapped(GRAPH)]) else { return };
+            p.load(PAGE);
+            p.view().focus();
+            assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode"), Ok(json!("undefined")), "no copy mode script in the Tandem world");
+            let _ = &secret;
+            real_key(&mut p, 'j');
+            p.settle(500);
+            assert!(p.clients(cm::KEY_HANDLER).is_empty(), "no key listener, so nothing is reported");
+            assert_eq!(p.page_eval("window.__leaks.length").as_deref(), Ok("0"), "the recorder was never called");
+            p.finish();
+        }
+    }
+
+    /// 13x3 Task 9 (I4): keys in iframes and untrusted ones. With focus inside a `srcdoc` iframe and
+    /// copy mode on, a trusted "j" is reported by the iframe's world (a frame message) and the
+    /// iframe page's own `keydown` listener sees nothing; a page's synthetic "y" in either frame
+    /// changes nothing; an iframe added after copy mode started captures keys too once the new
+    /// context is told (`browser_copy_mode_new_context`). Needs the console session.
+    #[test]
+    #[ignore]
+    fn copy_mode_keys_in_iframes_and_untrusted() {
+        use crate::browser_copymode as cm;
+        let secret = hex32();
+        const SRC: &str = "&lt;body tabindex=&quot;0&quot;&gt;&lt;p&gt;inside frame&lt;/p&gt;&lt;script&gt;window.__seen=0;document.addEventListener('keydown',function(){window.__seen++});window.addEventListener('keydown',function(){window.__seen++});&lt;/script&gt;&lt;/body&gt;";
+        let page = format!("<!doctype html><html><head><title>i</title></head><body><p>outer text</p><iframe id=\"f1\" srcdoc=\"{SRC}\"></iframe></body></html>");
+        let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
+        p.view().focus();
+        copy_on(&mut p, &secret);
+        p.page_eval("document.getElementById('f1').contentWindow.focus(); document.getElementById('f1').contentDocument.body.focus(); 1").expect("focus moves into the iframe");
+        // A trusted j with focus in the iframe: reported from the frame, the frame's page sees nothing.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(&mut p, 'j');
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "the iframe's world reported the key");
+        let (frame, body) = p.clients(cm::KEY_HANDLER).pop().unwrap();
+        assert!(frame.is_some(), "it came from the iframe's world");
+        assert_eq!(cm::key_of(&body).map(|k| k.0), Some("j".to_string()));
+        assert_eq!(p.page_eval("document.getElementById('f1').contentWindow.__seen").as_deref(), Ok("0"), "the iframe page's own listeners saw no key");
+        // A page's synthetic y, in the iframe and in the top frame: nothing is reported, copy mode stays on.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        p.page_eval("const e = () => new KeyboardEvent('keydown', {key: 'y', bubbles: true}); document.dispatchEvent(e()); document.getElementById('f1').contentDocument.dispatchEvent(e()); document.getElementById('f1').contentWindow.dispatchEvent(e()); window.dispatchEvent(e()); 1").expect("the synthetic keys run");
+        p.settle(500);
+        assert_eq!(p.clients(cm::KEY_HANDLER).len(), n, "synthetic keys are not reported");
+        assert_ne!(cursor_display(&mut p), "none", "copy mode is still on");
+        assert_eq!(selection(&mut p), "", "nothing was copied or selected");
+        // An iframe added after copy mode started: its world takes keys once it is told.
+        p.page_eval("const f = document.createElement('iframe'); f.id = 'f2'; f.srcdoc = '<body tabindex=0><p>late</p></body>'; document.body.appendChild(f); 1").expect("an iframe is added");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 2), "the new iframe has a Tandem world");
+        let js = cm::keys_on_js(&secret, true);
+        for f in p.contexts.frames() {
+            p.eval(Some(f), &js).expect("the new context is told");
+        }
+        p.page_eval("document.getElementById('f2').contentWindow.focus(); document.getElementById('f2').contentDocument.body.focus(); 1").expect("focus moves into the new iframe");
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(&mut p, 'j');
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "the late iframe reported the key");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
 }

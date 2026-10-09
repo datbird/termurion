@@ -20,6 +20,9 @@ pub const FILES: &[&str] = &["copy-mode.js", "copy-mode-util.js", "copy-mode-cur
 /// 100000 by `copymode::accrue`).
 pub const MAX_REPEAT: usize = 1000;
 
+/// The page stops selecting (Quit, `CPH:441-444`); the selection itself stays (`CMI:75-88`).
+pub const STOP_SELECTING_JS: &str = "window.iTerm2CopyMode.selecting = false;";
+
 /// What a key does to the page and to Tandem.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {

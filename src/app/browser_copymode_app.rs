@@ -9,9 +9,6 @@ use crate::browser_copymode::{self as cm, Model, Step};
 use crate::browser_js::{Routed, World};
 use serde_json::json;
 
-/// The page stops selecting (Quit, `CPH:441-444`); the selection itself stays (`CMI:75-88`).
-const STOP_SELECTING_JS: &str = "window.iTerm2CopyMode.selecting = false;";
-
 impl App {
     /// Whether copy mode is on in browser pane `pane`.
     pub(super) fn is_browser_copy_mode(&self, pane: PaneId) -> bool {
@@ -143,7 +140,7 @@ impl App {
             }
             Step::Leave { stop_selecting } => {
                 if stop_selecting {
-                    self.browser_js_call(pane, STOP_SELECTING_JS, json!({}), Box::new(|_, _, _| {}));
+                    self.browser_js_call(pane, cm::STOP_SELECTING_JS, json!({}), Box::new(|_, _, _| {}));
                 }
                 self.browser_copy_mode_set(pane, false);
             }

@@ -759,3 +759,38 @@ mod tests {
         assert!(me.contains("Update::Global(results) => self.browser_global_results(pane, results)"));
     }
 }
+
+    /// 13x3 Task 9: a find for "world", then "/" from copy mode opens the find bar with the query
+    /// kept (`CPH:480-483`, ShowFindPanel). The copy-mode key is the shared table's, the step is the
+    /// one the app sends through `browser_find_command`, and Open reopens the bar on the same query.
+    #[test]
+    fn find_then_copy_mode() {
+        use crate::browser_copymode::{Model as CopyModel, Step};
+        let mut s = Sim::new();
+        for c in "world".chars() {
+            s.key(BarKey::Text(c.to_string()), false);
+        }
+        s.due(Mode::SmartCase);
+        assert_eq!(actions(&s.sent), ["startFind"]);
+        assert_eq!(s.sent[0]["searchTerm"], "world");
+        // Esc-free hand-over: the bar stops typing when copy mode takes the keys (the page takes the keyboard).
+        let mut keys = false;
+        page_takes_keyboard(&mut keys, Some(&mut s.f));
+        assert!(!s.f.typing && s.f.open);
+        // "/" in copy mode is Find, and the app answers it with the Find... command.
+        assert_eq!(CopyModel::default().key("/", SECRET), Step::Find);
+        let apply = between(prod(include_str!("browser_copymode_app.rs")), "fn browser_copy_mode_apply", "\n}\n");
+        assert!(apply.contains("Step::Find =>") && apply.contains("self.browser_find_command(pane, \"performFindPanelAction:\", \"Find...\")"));
+        assert_eq!(browser_find::route("performFindPanelAction:", "Find..."), browser_find::Route::Open);
+        // Open: the bar opens and takes the keyboard, the query is still "world" and is searched again.
+        s.f.open();
+        find_takes_keyboard(&mut keys, &mut s.f);
+        let q = s.f.query.clone();
+        s.f.set_query(&q, s.t);
+        assert!(s.f.open && s.f.typing && !keys);
+        assert_eq!(s.f.query, "world", "the query is kept");
+        s.sent.clear();
+        s.due(Mode::SmartCase);
+        assert_eq!(actions(&s.sent), ["startFind"]);
+        assert_eq!(s.sent[0]["searchTerm"], "world");
+    }
