@@ -377,12 +377,35 @@ pub fn clippings_value(list: &[crate::clippings::Clipping], type_filter: Option<
 #[derive(Clone, Debug, PartialEq)]
 pub struct StartCodeReview {
     pub guid: String,
+    /// A saved prompt's name; None for null or "".
+    pub prompt_name: Option<String>,
+    /// Free-form prompt text; None for null or "".
+    pub custom_prompt: Option<String>,
 }
 
 pub fn parse_start_code_review(args: &Value) -> Result<StartCodeReview, OrchError> {
-    opt_str(args, "prompt_name")?;
-    opt_str(args, "custom_prompt")?;
-    Ok(StartCodeReview { guid: parse_guid(args)? })
+    let given = |k: &str| -> Result<Option<String>, OrchError> { Ok(opt_str(args, k)?.filter(|s| !s.is_empty())) };
+    let (prompt_name, custom_prompt) = (given("prompt_name")?, given("custom_prompt")?);
+    if prompt_name.is_some() && custom_prompt.is_some() {
+        return Err(OrchError::Malformed("prompt_name and custom_prompt are mutually exclusive; supply at most one.".into()));
+    }
+    Ok(StartCodeReview { guid: parse_guid(args)?, prompt_name, custom_prompt })
+}
+
+/// The prompt a start_code_review call chose (`DI:3195-3216`): a saved prompt by its exact name (else
+/// the names there are), or the custom text; None when neither was given (the review's own choice: the
+/// overlay's text, the last one used, the store's default). The text reaches the review only as its
+/// prompt argument, under the same cap as the person's (`code_review::MAX_PROMPT_CHARS`).
+pub fn review_prompt(saved: &[crate::code_review::SavedPrompt], a: &StartCodeReview) -> Result<Option<String>, OrchError> {
+    if let Some(name) = &a.prompt_name {
+        let Some(found) = saved.iter().find(|p| &p.name == name) else {
+            let names = saved.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+            let available = if names.is_empty() { "(none)".to_string() } else { names };
+            return Err(OrchError::Malformed(format!("No saved Code Review prompt named \u{201C}{name}\u{201D}. Available: {available}.")));
+        };
+        return Ok(Some(found.text.clone()));
+    }
+    Ok(a.custom_prompt.clone())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -813,6 +836,20 @@ mod tests {
             assert_eq!((e.code(), e.message()), (code, message.to_string()));
         }
         assert_eq!(ack_json(), "{\n  \"ack\": true\n}");
+        // Task 10 review minor 1 (`DI:3195-3216`): one prompt choice at most; a saved prompt by its exact
+        // name, else the names there are; neither is the default (None: the overlay's text, the last, the
+        // store's default).
+        let both = json!({"session_guid": "G", "prompt_name": "A", "custom_prompt": "x"});
+        assert_eq!(parse_start_code_review(&both).unwrap_err(), OrchError::Malformed("prompt_name and custom_prompt are mutually exclusive; supply at most one.".into()));
+        let empty = json!({"session_guid": "G", "prompt_name": "", "custom_prompt": "look"});
+        assert_eq!(parse_start_code_review(&empty).unwrap().custom_prompt.as_deref(), Some("look"), "an empty name is no choice");
+        let saved = [crate::code_review::SavedPrompt { uuid: "U1".into(), name: "Deep".into(), text: "deep text".into() }, crate::code_review::SavedPrompt { uuid: "U2".into(), name: "Quick".into(), text: "quick text".into() }];
+        let pick = |n: Option<&str>, c: Option<&str>| review_prompt(&saved, &StartCodeReview { guid: "G".into(), prompt_name: n.map(Into::into), custom_prompt: c.map(Into::into) });
+        assert_eq!(pick(Some("Quick"), None), Ok(Some("quick text".into())));
+        assert_eq!(pick(None, Some("mine")), Ok(Some("mine".into())));
+        assert_eq!(pick(None, None), Ok(None));
+        assert_eq!(pick(Some("quick"), None), Err(OrchError::Malformed("No saved Code Review prompt named \u{201C}quick\u{201D}. Available: Deep, Quick.".into())));
+        assert_eq!(review_prompt(&[], &StartCodeReview { guid: "G".into(), prompt_name: Some("X".into()), custom_prompt: None }), Err(OrchError::Malformed("No saved Code Review prompt named \u{201C}X\u{201D}. Available: (none).".into())));
         // Task 10 review Important 1 (`DI:3184-3186`).
         assert_eq!(review_busy("Review", "Feature", "working"), "Target Review in Feature is busy (status: working). Wait until it returns to idle before starting a review.");
         assert_eq!(not_code_review("default", "vim"), "Target default in vim is not the Code Review role. start_code_review only targets the Code Review role; use send_text if you want to type text into another role.");

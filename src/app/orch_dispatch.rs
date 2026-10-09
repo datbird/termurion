@@ -444,6 +444,7 @@ impl App {
                 // The session must be a Code Review member of a workgroup (`WorkgroupIntrospection`): the call
                 // runs a review on the workgroup's code review member. Any other session keeps the error.
                 let a = ot::parse_start_code_review(args)?;
+                let prompt = ot::review_prompt(&crate::code_review::prompts_of(&self.globals), &a)?;
                 let pane = self.orch_resolve(&a.guid)?;
                 if self.orch_pane_state(pane).exited {
                     return Err(OrchError::TargetGone(a.guid));
@@ -472,7 +473,7 @@ impl App {
                     }
                 }
                 match instance.filter(|_| is_review) {
-                    Some(i) if self.request_review(&i) => Ok(done(ot::ack_json())),
+                    Some(i) if self.request_review_with(&i, prompt) => Ok(done(ot::ack_json())),
                     Some(_) => Err(OrchError::Unsupported("The code review session could not start a review now (it needs to be live and restartable).".to_string())),
                     None => Err(OrchError::Unsupported(ot::not_code_review("default", &self.orch_name(pane)))),
                 }
@@ -1496,12 +1497,16 @@ mod tests {
         assert!(body(c, "fn orch_mirror(").contains("self.claim_scope_of(pane)"));
         // start_code_review needs the claim first, then only the member's own restart runs.
         let review = body(c, "\"start_code_review\" => {");
-        assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review(").unwrap(), "a model starts a review only where the person let it act");
+        assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review_with(").unwrap(), "a model starts a review only where the person let it act");
         // Task 10 review Important 1: with no overlay up, a review member that is not idle is refused
         // before anything restarts it (`DI:3177-3189`), after the claim.
         let busy = review.find("ot::review_busy(").expect("the busy refusal");
-        assert!(review.find("self.orch_claim(").unwrap() < busy && busy < review.find("self.request_review(").unwrap(), "claim, then the idle check, then the restart");
+        assert!(review.find("self.orch_claim(").unwrap() < busy && busy < review.find("self.request_review_with(").unwrap(), "claim, then the idle check, then the restart");
         assert!(review.contains("session_state::State::Idle") && review.contains("review.overlays.contains_key("), "idle unless the overlay is up");
+        // Task 10 review minor 1: the model's prompt choice is resolved before the claim (a bad name is
+        // malformed, as iTerm2) and is the one the review starts with.
+        assert!(review.find("ot::review_prompt(").unwrap() < review.find("self.orch_claim(").unwrap());
+        assert!(review.contains("self.request_review_with(&i, prompt)"), "{review}");
         // Nothing an orchestration tool does can enter a workgroup, mark one trusted, or answer its question.
         for banned in ["enter_workgroup", "workgroup_picked", "Approved::of", "Mechanism::", "enter_workgroup_now", "Trust", "restore_answered"] {
             assert!(!c.contains(banned), "orchestration must not reach {banned}");

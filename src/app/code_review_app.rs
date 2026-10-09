@@ -588,6 +588,12 @@ impl App {
     /// member shown without moving the window. False unless there is exactly one live review member that
     /// can start.
     pub(super) fn request_review(&mut self, instance: &str) -> bool {
+        self.request_review_with(instance, None)
+    }
+
+    /// `request_review` with the prompt a start_code_review call chose (`DI:3195-3216`), which replaces
+    /// the overlay's text; None keeps the review's own choice.
+    pub(super) fn request_review_with(&mut self, instance: &str, chosen: Option<String>) -> bool {
         let Some(inst) = self.workgroups.get(instance) else { return false };
         let reviews: Vec<&crate::workgroup::SessionConfig> = inst.workgroup.sessions.iter().filter(|s| s.mode == Mode::CodeReview).collect();
         let [only] = reviews.as_slice() else { return false };
@@ -601,7 +607,7 @@ impl App {
         if shown.is_none() && !self.restartable(pane) {
             return false;
         }
-        let prompt = shown.unwrap_or_else(|| self.review_default_text(last.as_ref()));
+        let prompt = chosen.or(shown).unwrap_or_else(|| self.review_default_text(last.as_ref()));
         self.start_review(pane, &prompt);
         let started = self.workgroups.get(instance).is_some_and(|i| !i.review.overlays.contains_key(&config));
         if started {
