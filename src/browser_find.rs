@@ -95,7 +95,25 @@ pub fn find_script(secret: &str) -> Result<String, String> {
     let script = browser_js::fill_template(src, &[("SECRET", secret), ("SCROLL_BEHAVIOR", "smooth"), ("TEST_FUNCTIONS", ""), ("TEST_IMPLS", ""), ("TEST_FREEZE", "")]);
     match missing_include(&script) {
         Some(name) => Err(format!("find script include not found: {name}")),
-        None => Ok(script),
+        None => type_global_click(&script),
+    }
+}
+
+/// R13x3-1 (Task 1 review, critical): `importIframeGlobalClick` (`FE:665-673`) pastes the coordinates
+/// of an `iTermGlobalClick` window message, which any frame can forge, into the script it has run in
+/// that frame's Tandem world. Every value put into that script is typed where it is put: the two
+/// coordinates are numbers or the click is dropped, the instance id a JSON string. The copied file is
+/// not edited; this text is replaced when the script is assembled, and only when it is found exactly
+/// once (an iTerm2 update that moved it fails closed: no find script).
+const CLICK_RAW: &str = "        const x = globalClickLocation.clickData.coordinates.x;\n        const y = globalClickLocation.clickData.coordinates.y;\n\n        const conversionScript = `\n            (function() {\n                if (window.iTermCustomFind && window.iTermCustomFind.handleClickInFrame) {\n                    return window.iTermCustomFind.handleClickInFrame(${x}, ${y}, '${this.instanceId}');";
+const CLICK_TYPED: &str = "        const __tandemAt = (globalClickLocation.clickData && globalClickLocation.clickData.coordinates) || {};\n        const x = Number(__tandemAt.x);\n        const y = Number(__tandemAt.y);\n        if (!Number.isFinite(x) || !Number.isFinite(y)) {\n            this.log('importGlobalClickLocation: refused a click without finite coordinates');\n            globalClickLocation = null;\n            return;\n        }\n\n        const conversionScript = `\n            (function() {\n                if (window.iTermCustomFind && window.iTermCustomFind.handleClickInFrame) {\n                    return window.iTermCustomFind.handleClickInFrame(${x}, ${y}, ${JSON.stringify(String(this.instanceId))});";
+
+/// The find script with the global click typed (`CLICK_TYPED`); an error unless `CLICK_RAW` is in it
+/// exactly once.
+fn type_global_click(script: &str) -> Result<String, String> {
+    match script.matches(CLICK_RAW).count() {
+        1 => Ok(script.replacen(CLICK_RAW, CLICK_TYPED, 1)),
+        n => Err(format!("the find script's global click text is there {n} times, not once")),
     }
 }
 
@@ -477,9 +495,11 @@ mod tests {
         "find-utils.js",
     ];
 
-    /// A file's text as it sits in the script: its two slots filled.
+    /// A file's text as it sits in the script: its two slots filled, and find-engine's global click
+    /// typed (R13x3-1).
     fn filled(name: &str, secret: &str) -> String {
-        browser_js::resource(name).unwrap().replace("{{SECRET}}", secret).replace("{{SCROLL_BEHAVIOR}}", "smooth")
+        let t = browser_js::resource(name).unwrap().replace("{{SECRET}}", secret).replace("{{SCROLL_BEHAVIOR}}", "smooth");
+        if name == "find-engine.js" { type_global_click(&t).unwrap() } else { t }
     }
 
     #[test]
@@ -552,6 +572,23 @@ mod tests {
         // A leftover include is an error naming it, never a silent gap.
         assert_eq!(missing_include("a {{INCLUDE:nope.js}} b"), Some("nope.js".to_string()));
         assert_eq!(missing_include("a b"), None);
+    }
+
+    /// R13x3-1: the forged-click coordinates are typed in the assembled script, and an iTerm2 text
+    /// that no longer holds the target exactly once fails closed.
+    #[test]
+    fn the_global_click_is_typed() {
+        let s = find_script("abc").expect("the script assembles");
+        assert_eq!(s.matches(CLICK_TYPED).count(), 1, "the typed text is in the script once");
+        assert_eq!(s.matches("handleClickInFrame(${x}, ${y}, '${this.instanceId}')").count(), 0, "the raw interpolation is gone");
+        assert_eq!(s.matches("const x = Number(__tandemAt.x);").count(), 1);
+        assert!(s.contains("if (!Number.isFinite(x) || !Number.isFinite(y))"));
+        // The copied file itself is unchanged and holds the target once.
+        assert_eq!(browser_js::resource("find-engine.js").unwrap().matches(CLICK_RAW).count(), 1);
+        // Fails closed: the target missing, or there twice.
+        assert!(type_global_click("no target here").is_err(), "a missing target is an error");
+        assert!(type_global_click(&format!("{CLICK_RAW}\n{CLICK_RAW}")).is_err(), "a doubled target is an error");
+        assert_eq!(type_global_click(&format!("a{CLICK_RAW}b")), Ok(format!("a{CLICK_TYPED}b")));
     }
 
     #[test]
