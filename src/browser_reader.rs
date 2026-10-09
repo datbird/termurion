@@ -21,6 +21,12 @@ fn file(name: &str) -> &'static str {
     resource(name).unwrap_or_default()
 }
 
+/// A resource the loaders need: a missing entry is an error, never an empty library (Err means the
+/// feature is off).
+fn try_file(name: &str) -> Result<&'static str, String> {
+    resource(name).ok_or_else(|| format!("the resource {name} is missing"))
+}
+
 /// A copied expression file as a function body: `return (` + the text without trailing space and
 /// semicolons + `)`. The parenthesis sits after a newline, so a file that begins with a `//` comment
 /// still returns its value (a bare `return // c` returns undefined, R13x45-2).
@@ -51,9 +57,9 @@ fn trust_escape(script: &str) -> Result<String, String> {
 /// its CSS. Err when the Escape patch does not match exactly once: no script is injected, so the
 /// reader stays inert and its toolbar entries stay hidden.
 pub fn loader_bodies() -> Result<[String; 2], String> {
-    let readability = fill_template(file("load-readability.js"), &[("READABILITY_JS", file("Readability.js"))]);
-    let styled = fill_template(file("reader-mode-with-styles.js"), &[("READER_MODE_CSS", file("reader-mode.css"))]);
-    let reader = fill_template(file("load-reader-mode.js"), &[("READER_MODE_JS", &trust_escape(&styled)?)]);
+    let readability = fill_template(try_file("load-readability.js")?, &[("READABILITY_JS", try_file("Readability.js")?)]);
+    let styled = fill_template(try_file("reader-mode-with-styles.js")?, &[("READER_MODE_CSS", try_file("reader-mode.css")?)]);
+    let reader = fill_template(try_file("load-reader-mode.js")?, &[("READER_MODE_JS", &trust_escape(&styled)?)]);
     Ok([statement_body(&readability), statement_body(&reader)])
 }
 
@@ -162,6 +168,12 @@ mod tests {
         "Readability.js", "reader-mode.css", "reader-mode-with-styles.js", "load-readability.js", "load-reader-mode.js", "enter-reader-mode.js", "exit-reader-mode.js", "distraction-removal.js",
         "distraction-removal-helpers.js", "enter-distraction-removal.js", "exit-distraction-removal.js", "remove-element-at-point.js", "extract-plain-text.js", "convert-to-markdown.js", "turndown.browser.umd.js",
     ];
+
+    #[test]
+    fn a_missing_loader_resource_is_an_error() {
+        assert!(try_file("no-such-file.js").is_err(), "no empty library");
+        assert!(try_file("Readability.js").is_ok_and(|t| !t.is_empty()));
+    }
 
     #[test]
     fn reader_scripts_follow_iterm2() {

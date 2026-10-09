@@ -3288,28 +3288,39 @@ mod probe {
     fn reader_article_handlers_stay_in_the_page_world() {
         let probe = "window.__hits = (window.__hits || []).concat([[typeof window.iTermReaderMode, typeof window.Readability, typeof window.__tandemClient, (window.chrome && window.chrome.webview) ? (() => { try { window.chrome.webview.postMessage({handler: 'readerMode', body: {action: 'distractionRemovalEntered'}}); } catch (e) {} return 'webview'; })() : 'none']])";
         let handler = probe.replace('"', "&quot;");
-        let img = format!("<p><img src=\"x\" onerror=\"{handler}\"><a href=\"javascript:{handler}\">link</a></p>");
-        let title = format!("&lt;img src=x onerror=&quot;{handler}&quot;&gt;");
-        let Some(mut p) = Probe::start(&[(PAGE, article_page(&title, &img))], Vec::new()) else { return };
+        // The image path is served (a non-image body, so the decode fails and onerror still fires).
+        let img = format!("<p><img src=\"{PAGE}x\" onerror=\"{handler}\"><a href=\"javascript:{handler}\">link</a></p>");
+        // Readability may split a title on ": ", so the title's copy has none.
+        let title = format!("&lt;img src=x onerror=&quot;{}&quot;&gt;", handler.replace(": ", ":"));
+        let image = format!("{PAGE}x");
+        let Some(mut p) = Probe::start(&[(PAGE, article_page(&title, &img)), (image.as_str(), "not an image".to_string())], Vec::new()) else { return };
         p.load(PAGE);
         reader_load(&mut p);
+        // The original page's own onerror fires at load; only growth after entering counts.
+        p.settle(500);
+        let hit_count = |p: &mut Probe| p.page_eval("(window.__hits || []).length").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+        let before = hit_count(&mut p);
         assert_eq!(reader_run(&mut p, &crate::browser_reader::enter_reader_body()), Ok(json!(true)));
-        let mut ran = false;
+        let mut grew = false;
         for _ in 0..20 {
-            if p.page_eval("(window.__hits || []).length").is_ok_and(|n| n != "0") {
-                ran = true;
+            if hit_count(&mut p) > before {
+                grew = true;
                 break;
             }
             p.settle(250);
         }
-        assert!(ran, "the article's handler ran");
+        assert!(grew, "the reader-inserted copy of the handler ran in the page world ({before} hits before)");
         let hits = p.page_eval("JSON.stringify(window.__hits)").expect("the hits");
         let hits: Vec<Vec<String>> = serde_json::from_str(&serde_json::from_str::<String>(&hits).unwrap()).unwrap();
         for h in &hits {
             assert_eq!(&h[..3], &["undefined", "undefined", "undefined"], "a handler sees no reader object, no Readability, no client binding");
+            assert_eq!(h[3], "webview", "chrome.webview is present in the page world by design, so the forged post was really sent");
         }
+        // No handler ran in the isolated world: its own window.__hits was never written.
+        assert_eq!(reader_run(&mut p, "return typeof window.__hits"), Ok(json!("undefined")), "no handler ran in the isolated world");
         p.settle(500);
         assert_eq!(reader_actions(&p), vec!["entered".to_string()], "a page-world post is no Client message: nothing but the reader's own");
+        assert!(p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("distractionRemovalEntered")), "the forged post arrived as a page message");
         assert!(p.routed.iter().filter(|r| r.via == Via::Client).all(|r| r.client().map_or(true, |(h, _)| h == crate::browser_reader::HANDLER)));
         p.finish();
     }
