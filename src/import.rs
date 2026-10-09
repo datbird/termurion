@@ -189,6 +189,7 @@ pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     Ok(crate::schema::global()
         .iter()
         .filter(|s| !crate::ai_settings::guards_consent(&s.key))
+        .filter(|s| !crate::workgroup::is_workgroup_key(&s.key))
         .filter_map(|s| {
             let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key)))?;
             Some((s.key.clone(), from_plist(v)?))
@@ -502,6 +503,24 @@ mod tests {
         assert_eq!(got, [("tmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&both);
+    }
+
+    /// 13y1 trust ruling: a plist never brings the workgroups, the Imported marks or the latches
+    /// (iTerm2 stores the workgroups as binary data, which the import drops; a crafted string
+    /// value must not get past it either). The task that converts them sets the mark.
+    #[test]
+    fn a_plist_never_brings_workgroup_keys() {
+        let path = std::env::temp_dir().join(format!("tandem-import-wg-{}.plist", std::process::id()));
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Workgroups</key><string>[]</string>
+  <key>WorkgroupsImported</key><string>[]</string>
+  <key>NoSyncWorkgroupShortcutsBackfilled</key><true/>
+  <key>TmuxTitlePrefix</key><string>x </string>
+</dict></plist>"#).unwrap();
+        let got = globals_from_file(&path).unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Controller ruling I5: Import from iTerm2, with 13a's capitalized defaults keys and its

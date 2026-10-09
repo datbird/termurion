@@ -1782,6 +1782,15 @@ default = "\\n--\\n"
 help = "Separator inserted between multiple clippings when sending or copying them.\nThe value should use Vim syntax, such as \\n for newline and \\e for escape."
 
 [[setting]]
+key = "WorkgroupAutoSendSubmitDelay"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Delay in seconds before the Return that submits an auto-sent code review."
+type = "float"
+default = 0.501
+help = "Delay in seconds before the Return that submits an auto-sent code review.\nWhen the code-review workgroup toolbar auto-sends review results to the main session, it pastes the results and then sends a Return to submit them. This is how long it waits, after the pasted results finish, before sending that Return. A paste-debouncing TUI (such as Claude Code) processes a paste and a Return that arrive together as one batch, so the Return can be swallowed and the review never submits; the delay makes the Return land in a later read so it submits. The default matches Claude Code\u2019s 500 ms paste-settling window. Set to 0 to send it immediately."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"
@@ -5732,3 +5741,93 @@ label = "Default value for the top margin for the badge"
 type = "int"
 default = 10
 help = "Default value for the top margin for the badge\nHow much space to leave between the top edge of the badge and the top edge of the terminal. Can be overridden by a profile setting. This is the default value if a profile does not have a setting."
+
+[[setting]]
+key = "Workgroups"
+tab = "Stored"
+section = "Workgroups"
+label = "Workgroups"
+type = "string"
+default = ""
+help = "The workgroups, stored as iTerm2 stores them (Settings > Arrangements > Workgroups edits them). Whatever writes this value, it is bounded: over 1 MiB it is dropped, and a workgroup that breaks a limit is removed."
+
+[[setting]]
+key = "WorkgroupsImported"
+tab = "Stored"
+section = "Workgroups"
+label = "The workgroups that came from an import, a remote folder or a Dynamic Profile."
+type = "string"
+default = ""
+help = "A list of workgroup ids Tandem keeps so it asks before running their commands after a restart. Saving a workgroup in the editor removes it from the list."
+
+[[setting]]
+key = "CodeReviewSavedPrompts"
+tab = "Stored"
+section = "Workgroups"
+label = "Saved code review prompts."
+type = "string"
+default = ""
+help = "The saved code review prompts as JSON, written as iTerm2 writes them (an array of objects with uuid, name and text). At most 64 prompts; a name is at most 128 characters and a text at most 64 KiB. A value that does not decode is left as it is until a prompt is edited."
+
+[[setting]]
+key = "NoSyncCodeReviewLastSelectedPromptUUID"
+tab = "Stored"
+section = "Workgroups"
+label = "The code review prompt last selected."
+type = "string"
+default = ""
+help = "The uuid of the saved code review prompt chosen last; the prompt overlay opens with its text."
+
+[[setting]]
+key = "NoSyncWorkgroupGitBaseRecents"
+tab = "Stored"
+section = "Workgroups"
+label = "Recently used git bases for workgroups."
+type = "list"
+default = []
+help = "The bases picked in a workgroup's base selector, newest first (at most 16)."
+
+[[setting]]
+key = "NoSyncWorkgroupShortcutsBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The default navigation and reload shortcuts were added to existing workgroups."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeDiffModeBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The Claude Code workgroup's Diff peer was switched to Diff mode."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeReviewSystemPromptCommandBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "Code review commands were moved to the editable system prompt file."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeAutoSendClippingsBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The Claude Code review peer was given Auto-Send Clippings When Idle."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncClaudeCodeAutoRequestReviewBackfilled"
+tab = "Stored"
+section = "Workgroups"
+label = "The Claude Code main session was given Auto-Request Review When Idle."
+type = "bool"
+default = false
+help = "Remembered so the one-time workgroup migration does not run again."

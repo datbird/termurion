@@ -122,7 +122,7 @@ pub struct PickerItem {
 pub fn picker_items(world: &World, query: &str) -> Vec<PickerItem> {
     let q = query.to_lowercase();
     let hit = |label: &str| q.is_empty() || label.to_lowercase().contains(&q);
-    let session = |s: &cockpit_rows::SessionFact, depth: u8| PickerItem { chip: Chip::Session { stable_id: s.stable_id.clone() }, label: cockpit_rows::session_title(&s.name, s.pane), depth };
+    let session = |s: &cockpit_rows::SessionFact, depth: u8| PickerItem { chip: Chip::Session { stable_id: s.stable_id.clone() }, label: cockpit_rows::session_title(&s.name, s.pane, s.role.as_deref()), depth };
     let mut out = Vec::new();
     for w in &world.windows {
         let window = PickerItem { chip: Chip::Window { guid: w.guid.clone() }, label: cockpit_rows::window_title(w.number, &w.title), depth: 0 };
@@ -284,6 +284,42 @@ pub fn resolve(world: &World, mention: &Mention) -> Option<PaneId> {
     crate::stable_id::find(&mention.id, all.map(|s| (s.pane, s.stable_id.as_str())))
 }
 
+/// A workgroup mention's name: the workgroup's, "Untitled workgroup" when it has none, `DEFUNCT`
+/// when no live instance has exactly that id (`OrchestrationMentionRenderer.swift:257-268`), as the
+/// clipping tools match it.
+pub fn workgroup_label(workgroups: &[cockpit_rows::WorkgroupFact], id: &str) -> String {
+    match workgroups.iter().find(|w| w.id == id) {
+        Some(w) => Some(crate::inert_files::shown_name(&w.name)).filter(|n| !n.is_empty()).unwrap_or_else(|| UNTITLED_WORKGROUP.to_string()),
+        None => DEFUNCT.to_string(),
+    }
+}
+
+pub const UNTITLED_WORKGROUP: &str = "Untitled workgroup";
+
+/// A session mention's name: "<role>: <title>", the role alone with no title, and the title (else
+/// the pane's id) for a session in no workgroup (`ChatSessionMentionAttachment.swift:158-168`).
+/// `role` is the member's display name.
+pub fn session_label(role: Option<&str>, title: &str, pane: PaneId) -> String {
+    let clean = |t: &str| crate::inert_files::shown_name(t).trim().to_string();
+    let (title, role) = (clean(title), role.map(clean).filter(|r| !r.is_empty()));
+    match role {
+        Some(r) if title.is_empty() => r,
+        Some(r) => format!("{r}: {title}"),
+        None => cockpit_rows::session_title(&title, pane, None),
+    }
+}
+
+/// The scope a mention's claim lives under (`claimScope(forMention:)`): a mention with a prefix
+/// ("session:" or "wg-") names its scope as written, a bare session through `scope_of` (its
+/// instance for a workgroup member, else its `session:` scope). Only ever called with what the
+/// person picked (`send_grants`): a model's text never reaches it (ruling P9).
+pub fn claim_scope(prefix: Option<&str>, id: &str, scope_of: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    match prefix {
+        Some(p) => Some(format!("{p}{id}")),
+        None => scope_of(id),
+    }
+}
+
 /// What a chip shows: a window's, tab's or session's current title, else `DEFUNCT`.
 pub fn chip_label(world: &World, chip: &Chip) -> String {
     let found = match chip {
@@ -292,7 +328,7 @@ pub fn chip_label(world: &World, chip: &Chip) -> String {
         Chip::Session { stable_id } => {
             let all = world.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.sessions).chain(&world.buried);
             let pane = crate::stable_id::find(stable_id, all.clone().map(|s| (s.pane, s.stable_id.as_str())));
-            pane.and_then(|p| all.into_iter().find(|s| s.pane == p)).map(|s| cockpit_rows::session_title(&s.name, s.pane))
+            pane.and_then(|p| all.into_iter().find(|s| s.pane == p)).map(|s| cockpit_rows::session_title(&s.name, s.pane, s.role.as_deref()))
         }
     };
     found.unwrap_or_else(|| DEFUNCT.to_string())
@@ -395,7 +431,7 @@ mod tests {
 
     fn fact(pane: PaneId, status: Option<&str>, name: &str) -> SessionFact {
         let st = Status { status: status.map(str::to_string), ..Default::default() };
-        SessionFact { pane, stable_id: format!("ptys_{pane}00000000000{pane}").chars().take(18).collect(), name: name.into(), status: st, exited: false, alt_screen: false, ancestors: Vec::new(), armed: false }
+        SessionFact { pane, stable_id: format!("ptys_{pane}00000000000{pane}").chars().take(18).collect(), name: name.into(), status: st, exited: false, alt_screen: false, ancestors: Vec::new(), armed: false, role: None }
     }
 
     fn sess(id: &str) -> Chip {
@@ -419,6 +455,7 @@ mod tests {
                 WindowFact { guid: "pty-B".into(), number: 2, title: "Logs".into(), active_tab: 0, armed: false, tabs: vec![TabFact { id: 21, title: String::new(), sessions: vec![fact(4, Some("idle"), "tail logs")] }] },
             ],
             buried: vec![fact(9, Some("Waiting"), "")],
+            ..Default::default()
         }
     }
 
@@ -526,5 +563,50 @@ mod tests {
         assert_eq!(chip_label(&w, &sess("ptys_9000000000009")), "9");
         assert_eq!(chip_label(&w, &sess(ID)), DEFUNCT);
         assert_eq!(chip_label(&w, &Chip::Window { guid: "gone".into() }), DEFUNCT);
+    }
+
+    /// `OrchestrationMentionRenderer.swift:232-268`, `ChatSessionMentionAttachment.swift:158-168`,
+    /// `OrchestratorDispatcher.swift:1766-1787`.
+    #[test]
+    fn workgroup_mentions_follow_iterm2() {
+        use crate::cockpit_rows::WorkgroupFact;
+        let live = "wg-6F1C2A3B-0000-4000-8000-000000000002";
+        let groups = vec![
+            WorkgroupFact { id: live.into(), name: "Claude Code".into(), members: Vec::new() },
+            WorkgroupFact { id: "wg-6F1C2A3B-0000-4000-8000-000000000003".into(), name: String::new(), members: Vec::new() },
+        ];
+        assert_eq!(workgroup_label(&groups, live), "Claude Code");
+        // Task 10 review minor 4: the id matches exactly, as iTerm2's resolveWorkgroup and the clipping tools.
+        assert_eq!(workgroup_label(&groups, &live.to_ascii_lowercase()), DEFUNCT, "an id in another case names no instance");
+        assert_eq!(workgroup_label(&groups, "wg-6F1C2A3B-0000-4000-8000-000000000003"), "Untitled workgroup");
+        assert_eq!(workgroup_label(&groups, "wg-6F1C2A3B-0000-4000-8000-0000000000FF"), DEFUNCT, "a gone instance");
+        // A member session reads "<role>: <title>", the role alone with no title.
+        assert_eq!(session_label(Some("Diff"), "git difftool", 3), "Diff: git difftool");
+        assert_eq!(session_label(Some("Diff"), "  ", 3), "Diff");
+        assert_eq!(session_label(Some(""), "vim", 3), "vim", "a role with no name adds nothing");
+        assert_eq!(session_label(None, "vim", 3), "vim");
+        assert_eq!(session_label(None, "", 3), "3");
+        // `@wg-<id>` is a mention with the prefix; it claims the scope as written, a bare session
+        // under the scope the app resolves (its instance for a member).
+        let found = mentions(&format!("see @{live}"), false);
+        assert_eq!((found[0].prefix.as_deref(), found[0].id.as_str()), (Some("wg-"), &live[3..]));
+        let resolve = |id: &str| (id == "ptys_0123456789ABW").then(|| live.to_string());
+        let m = &found[0];
+        assert_eq!(claim_scope(m.prefix.as_deref(), &m.id, &resolve).as_deref(), Some(live));
+        assert_eq!(claim_scope(Some("session:"), "ptys_0123456789ABW", &resolve).as_deref(), Some("session:ptys_0123456789ABW"));
+        assert_eq!(claim_scope(None, "ptys_0123456789ABW", &resolve).as_deref(), Some(live), "a member claims its instance");
+        assert_eq!(claim_scope(None, "ptys_0123456789ACX", &resolve), None);
+        // Only a picked stable id ever reaches a claim: a typed or model-written wg- mention grants nothing.
+        assert!(session_tokens(&format!("@{live}")).is_empty());
+        assert!(granted_ids(&format!("@{live}"), Source::Typed).is_empty());
+        // The app side.
+        let app = include_str!("app/cockpit_app.rs");
+        let label = &app[app.find("fn mention_label(").unwrap()..];
+        let label = &label[..label.find("/// A chip").unwrap()];
+        assert!(label.contains("crate::mention::workgroup_label(") && label.contains("crate::mention::session_label("));
+        let dispatch = include_str!("app/orch_dispatch.rs");
+        let grant = &dispatch[dispatch.find("fn orch_grant_mentions(").unwrap()..];
+        let grant = &grant[..grant.find("/// Types `text`").unwrap()];
+        assert!(grant.contains("crate::mention::claim_scope(None, id, &|_| Some(self.claim_scope_of(pane)))") && grant.contains("self.orch_scope_name(&scope)"));
     }
 }

@@ -133,6 +133,7 @@ mod tests {
         ("scripts/", Cover::Root),
         ("ColorPresets.plist", Cover::Root),
         ("tips.toml", Cover::Root),
+        ("code-review-settings.txt", Cover::Root),
         ("shell_integration/tandem_shell_integration.ps1", Cover::Own("Tandem's own PowerShell script")),
     ];
 

@@ -84,6 +84,30 @@ pub struct GitState {
     pub files_modified: i64,
     pub files_deleted: i64,
     pub repo_state: RepoState,
+    /// The changed files against HEAD or a base (`populateHeadFileStatusesOnState:`); None unless the
+    /// poll asked (a workgroup's). Untracked files are not in it.
+    pub file_statuses: Option<Vec<FileStatus>>,
+}
+
+/// `iTermGitFileChangeKind` (`GCL:198-269`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    None,
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    TypeChange,
+    Untracked,
+    Conflicted,
+}
+
+/// `iTermGitFileStatus`: a path with its index and its working tree change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileStatus {
+    pub path: String,
+    pub index: Change,
+    pub workdir: Change,
 }
 
 impl GitState {
@@ -160,6 +184,193 @@ pub fn parse_porcelain(z: &[u8]) -> Option<GitState> {
     Some(st)
 }
 
+/// The most entries a per-file list holds, and the longest name in it. Git output is the repository's:
+/// a hostile one cannot grow the list, and a name with a control character, an empty name or one that
+/// is not UTF-8 is not listed (it could never be a safe argument).
+pub const MAX_FILES: usize = 10_000;
+pub const MAX_PATH: usize = 1024;
+
+fn usable_path(p: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(p).ok()?;
+    (!s.is_empty() && s.len() <= MAX_PATH && !s.chars().any(char::is_control)).then(|| s.to_string())
+}
+
+fn index_change(c: u8) -> Change {
+    match c {
+        b'A' | b'C' => Change::Added,
+        b'M' => Change::Modified,
+        b'D' => Change::Deleted,
+        b'R' => Change::Renamed,
+        b'T' => Change::TypeChange,
+        _ => Change::None,
+    }
+}
+
+fn workdir_change(c: u8) -> Change {
+    match c {
+        b'A' => Change::Added,
+        b'M' => Change::Modified,
+        b'D' => Change::Deleted,
+        b'R' => Change::Renamed,
+        b'T' => Change::TypeChange,
+        _ => Change::None,
+    }
+}
+
+/// `git status --porcelain=v2 -z --find-renames` as `iTermGitFileStatusForEntry` maps it
+/// (`GCL:198-269`): the index column from X, the workdir column from Y, an unmerged entry Conflicted on
+/// the workdir side, a rename by its new path. Untracked, ignored and header records are not listed.
+pub fn parse_file_statuses(z: &[u8]) -> Vec<FileStatus> {
+    let mut out = Vec::new();
+    let mut records = z.split(|&b| b == 0);
+    while let Some(rec) = records.next() {
+        if out.len() >= MAX_FILES {
+            break;
+        }
+        let fields = match rec.first() {
+            Some(b'1') => 9,
+            Some(b'2') => 10,
+            Some(b'u') => 11,
+            _ => continue,
+        };
+        if rec[0] == b'2' {
+            // A rename's original path is the next record.
+            records.next();
+        }
+        let parts: Vec<&[u8]> = rec.splitn(fields, |&b| b == b' ').collect();
+        if parts.len() != fields || parts[1].len() != 2 {
+            continue;
+        }
+        let Some(path) = usable_path(parts[fields - 1]) else { continue };
+        let (index, workdir) = if rec[0] == b'u' { (Change::None, Change::Conflicted) } else { (index_change(parts[1][0]), workdir_change(parts[1][1])) };
+        if index == Change::None && workdir == Change::None {
+            continue;
+        }
+        out.push(FileStatus { path, index, workdir });
+    }
+    out
+}
+
+/// `git diff --name-status -z --find-renames <tree>` as `populateFileStatusesAgainstBase:` lists it
+/// (`GCL:404-465`): every entry in the workdir column; A, D, M, R (new path), T and U are listed, any
+/// other letter (a copy) is not.
+pub fn parse_base_diff(z: &[u8]) -> Vec<FileStatus> {
+    let mut out = Vec::new();
+    let mut it = z.split(|&b| b == 0);
+    while let Some(code) = it.next() {
+        if out.len() >= MAX_FILES {
+            break;
+        }
+        let Some(&first) = code.first() else { continue };
+        let two = matches!(first, b'R' | b'C');
+        let Some(a) = it.next() else { break };
+        let path = if two {
+            let Some(b) = it.next() else { break };
+            b
+        } else {
+            a
+        };
+        let change = match first {
+            b'A' => Change::Added,
+            b'D' => Change::Deleted,
+            b'M' => Change::Modified,
+            b'R' => Change::Renamed,
+            b'T' => Change::TypeChange,
+            b'U' => Change::Conflicted,
+            _ => continue,
+        };
+        if let Some(path) = usable_path(path) {
+            out.push(FileStatus { path, index: Change::None, workdir: change });
+        }
+    }
+    out
+}
+
+/// The diff stats (`populateDiffStatsOnState:`, `GCL:477-557`) from `--name-status -z --no-renames` and
+/// `--numstat -z --no-renames` against HEAD: (files added, modified, deleted, lines inserted, lines
+/// deleted). Added counts A entries plus `untracked`; modified counts M and T entries; only M and T
+/// entries add their lines (an added file contributes none).
+pub fn diff_stats(name_status_z: &[u8], numstat_z: &[u8], untracked: i64) -> (i64, i64, i64, i64, i64) {
+    let mut lines: HashMap<&[u8], (i64, i64)> = HashMap::new();
+    for rec in numstat_z.split(|&b| b == 0).take(MAX_FILES) {
+        let rec = rec.strip_prefix(b"\n").unwrap_or(rec);
+        let mut f = rec.splitn(3, |&b| b == b'\t');
+        let (Some(a), Some(d), Some(path)) = (f.next(), f.next(), f.next()) else { continue };
+        let n = |x: &[u8]| std::str::from_utf8(x).ok().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        lines.insert(path, (n(a), n(d)));
+    }
+    let (mut added, mut modified, mut deleted, mut ins, mut del) = (untracked, 0, 0, 0, 0);
+    let mut it = z_records(name_status_z);
+    while let Some(code) = it.next() {
+        let Some(&first) = code.first() else { continue };
+        let Some(path) = it.next() else { break };
+        if matches!(first, b'R' | b'C') {
+            it.next();
+        }
+        match first {
+            b'A' => added += 1,
+            b'D' => deleted += 1,
+            b'M' | b'T' => {
+                modified += 1;
+                let (i, d) = lines.get(path).copied().unwrap_or((0, 0));
+                ins += i;
+                del += d;
+            }
+            _ => {}
+        }
+    }
+    (added, modified, deleted, ins, del)
+}
+
+fn z_records(z: &[u8]) -> impl Iterator<Item = &[u8]> {
+    z.split(|&b| b == 0).take(MAX_FILES * 3)
+}
+
+/// The worker cache's key (`GPW:87-105`): the path, `\x01stats` with stats, `\x02<base>` for a base
+/// that is not empty or HEAD.
+pub fn cache_key(path: &str, base: Option<&str>, stats: bool) -> String {
+    let mut key = path.to_string();
+    if stats {
+        key.push_str("\x01stats");
+    }
+    if let Some(b) = base.filter(|b| !b.is_empty() && *b != "HEAD") {
+        key.push('\x02');
+        key.push_str(b);
+    }
+    key
+}
+
+macro_rules! guarded {
+    ($($rest:expr),* $(,)?) => {
+        &[
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.useBuiltinFSMonitor=false",
+            "-c",
+            "safe.bareRepository=explicit",
+            "-c",
+            "core.quotepath=false",
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "core.virtualFilesystem=",
+            $($rest),*
+        ]
+    };
+}
+
+/// Per-file statuses against HEAD (`populateHeadFileStatusesOnState:`, `GCL:326-347`).
+pub const FILES_ARGS: &[&str] = guarded!["status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=all", "--find-renames"];
+/// A base's tree: the caller appends `<base>^{tree}`; the typed base never reaches git as an option.
+pub const BASE_TREE_ARGS: &[&str] = guarded!["rev-parse", "--verify", "--quiet", "--end-of-options"];
+/// Per-file statuses against a base's tree (`GCL:350-475`): the caller appends the tree id and `--`.
+pub const BASE_DIFF_ARGS: &[&str] = guarded!["diff", "--name-status", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"];
+/// The diff stats' two runs, against HEAD (`GCL:477-557`).
+pub const NUMSTAT_ARGS: &[&str] = guarded!["diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--"];
+pub const NAME_STATUS_ARGS: &[&str] = guarded!["diff", "--name-status", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "HEAD", "--"];
+
 /// The operation in progress, from files in the git directory in libgit2's
 /// `git_repository_state` order, in a judged git directory.
 /// Links are not followed: a link is neither a file nor a folder here.
@@ -228,6 +439,173 @@ pub const HARDENED: &[&str] = &[
 /// `args` (the subcommand and its arguments).
 pub fn guarded_args(vet: &Vetted, args: &[&str]) -> Vec<String> {
     HARDENED.iter().map(|a| a.to_string()).chain(vet.args.iter().cloned()).chain(args.iter().map(|a| a.to_string())).collect()
+}
+
+/// What a git started in a pane adds to `HARDENED`: no pager (a repository's `core.pager` and `pager.*`
+/// run programs), no external diff, no hooks, no credential helper, no ssh program, no transport but
+/// the repository's own files.
+const LAUNCH_ARGS: &[&str] = &[
+    "--no-pager",
+    "-c",
+    "core.hooksPath=NUL",
+    "-c",
+    "core.pager=cat",
+    "-c",
+    "diff.external=",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "core.sshCommand=false",
+    "-c",
+    "core.askPass=",
+    // No signature check: `log.showSignature` (log and show) runs the gpg program of the format the
+    // signature names; each is pointed at a program that does not exist.
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "gpg.program=false",
+    "-c",
+    "gpg.ssh.program=false",
+    "-c",
+    "gpg.x509.program=false",
+    // Paths printed as git prints them by default (a repository's `diff.noPrefix` changes what a diff
+    // tool reading them sees).
+    "-c",
+    "diff.noprefix=false",
+    // Never into a submodule: a nested repository's own config is not vetted, and porcelain diff and
+    // status run git inside each one (its filters, its fsmonitor). The command-line flag after the
+    // subcommand is what wins over `.gitmodules`' `ignore`; these keep every other path short.
+    "-c",
+    "submodule.recurse=false",
+    "-c",
+    "diff.submodule=short",
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "status.submoduleSummary=false",
+];
+
+/// The git subcommands a pane launch runs: each takes `--ignore-submodules=all`. Any other is refused
+/// (a template's own global option before the subcommand, such as `-c`, is refused with it).
+const LAUNCH_SUBCOMMANDS: &[&str] = &["diff", "difftool", "status", "show", "log"];
+
+/// The long options a template must not pass after the subcommand: each would undo an override (a later
+/// option wins). Matched as git matches them, by any unambiguous prefix and through `--no-`.
+const LAUNCH_UNDOES: &[&str] = &["ignore-submodules", "submodule", "recurse-submodules", "ext-diff", "textconv", "show-signature"];
+
+/// Why a template's argument must not reach a launched git: it re-enables a submodule, an external diff or
+/// a textconv. Arguments after `--` are paths.
+fn undoes_an_override(arg: &str) -> bool {
+    let Some(long) = arg.strip_prefix("--") else { return false };
+    let name = long.split('=').next().unwrap_or("");
+    // Our own options, and `--text` (an exact option name wins over an abbreviation of `--textconv`).
+    if matches!(arg, "--no-ext-diff" | "--no-textconv" | "--no-show-signature" | "--text") {
+        return false;
+    }
+    let mut core = name;
+    while let Some(rest) = core.strip_prefix("no-") {
+        core = rest;
+    }
+    !core.is_empty() && LAUNCH_UNDOES.iter().any(|u| u.starts_with(core))
+}
+
+/// THE git argument vector for a git started in a pane (every workgroup launch of git takes it):
+/// `HARDENED`, `LAUNCH_ARGS` and the vet's filter overrides, then the subcommand (one of
+/// `LAUNCH_SUBCOMMANDS`) with `--ignore-submodules=all` right after it, `--no-ext-diff --no-textconv`
+/// after `diff`, `show` and `log`, and `--no-show-signature` after `show` and `log`. The rest is the person's own template, less any option that would undo
+/// an override (refused).
+pub fn launch_args(vet: &Vetted, args: &[&str]) -> Result<Vec<String>, String> {
+    let Some((sub, rest)) = args.split_first() else { return Err("The git command has no subcommand, so it did not start.".into()) };
+    if !LAUNCH_SUBCOMMANDS.contains(sub) {
+        return Err("Tandem starts git in a workgroup only for diff, difftool, status, show or log, so this command did not start.".into());
+    }
+    let paths_from = rest.iter().position(|a| *a == "--").unwrap_or(rest.len());
+    if rest[..paths_from].iter().any(|a| undoes_an_override(a)) {
+        return Err("The git command turns submodules, an external diff, a text conversion or a signature check back on, so it did not start.".into());
+    }
+    let mut out: Vec<String> = HARDENED.iter().chain(LAUNCH_ARGS).map(|a| a.to_string()).chain(vet.args.iter().cloned()).collect();
+    out.push(sub.to_string());
+    out.push("--ignore-submodules=all".into());
+    if matches!(*sub, "diff" | "show" | "log") {
+        out.push("--no-ext-diff".into());
+        out.push("--no-textconv".into());
+    }
+    if matches!(*sub, "show" | "log") {
+        out.push("--no-show-signature".into());
+    }
+    out.extend(rest.iter().map(|a| a.to_string()));
+    Ok(out)
+}
+
+/// What a launch removes from the environment it inherits: `GIT_ENV_REMOVED` (another repository than the
+/// vetted one) and every variable that names a program git runs or config it reads.
+pub const LAUNCH_ENV_REMOVED: &[&str] =
+    &["GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND"];
+
+/// The environment of a git started in a pane, as the session's `NAME=value` entries; a `-NAME` entry
+/// removes the variable. The pane applies them last (`session_env::launch_last`), so they reach the child.
+pub fn launch_env() -> Vec<String> {
+    let mut out: Vec<String> = GIT_ENV.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    out.extend(["GIT_CONFIG_NOSYSTEM=1", "GIT_PAGER=cat", "PAGER=cat"].map(String::from));
+    out.extend(GIT_ENV_REMOVED.iter().chain(LAUNCH_ENV_REMOVED).map(|n| format!("-{n}")));
+    out
+}
+
+/// A launch of git in a pane: its command line and environment, or why it must not run. The ONE place a
+/// workgroup git line is made: the verdict of the repository's own config comes first.
+pub fn launch(git: &Path, vet: &Vetted, args: &[&str]) -> Result<(String, Vec<String>), String> {
+    if let Some(why) = vet.launch_refusal() {
+        return Err(why);
+    }
+    let line = crate::workgroup_run::argv_line(git, &launch_args(vet, args)?)?;
+    Ok((line, launch_env()))
+}
+
+/// Whether `program` is git: its file name as Windows reads it, without `.exe`, is `git` or Git for
+/// Windows' dashed form `git-<name>` (libexec's `git-diff.exe` is `git diff`), in any case; or its name
+/// is one Windows reads as another item (`settings_export::aliased`, the one alias rule: a trailing dot
+/// or space, a stream, a device, an 8.3 short name), which could be git (final findings r2 3).
+pub fn is_git(program: &Path) -> bool {
+    dashed(program).is_some() || program.file_name().and_then(|n| n.to_str()).is_some_and(crate::settings_export::aliased)
+}
+
+/// The subcommand a git program's name carries: Some("") for `git`, Some("diff") for `git-diff`
+/// (lowercased: Windows names are not case-sensitive, git's subcommands are), None for any other program.
+/// The name is the one Windows opens: a stream suffix cut, then trailing dots and spaces (`git.exe.`
+/// and `git.exe::$DATA` are git.exe).
+fn dashed(program: &Path) -> Option<String> {
+    let name = program.file_name()?.to_str()?;
+    let name = name.split(':').next().unwrap_or(name).trim_end_matches(['.', ' ']);
+    let stem = Path::new(name).file_stem()?.to_str()?.to_ascii_lowercase();
+    if stem == "git" {
+        return Some(String::new());
+    }
+    stem.strip_prefix("git-").filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// Why a diff program whose name Windows reads as another item does not start.
+pub const ALIASED_PROGRAM: &str = "The diff program's name is one Windows reads as another file, so it did not start.";
+
+/// THE rule for a program a workgroup starts in a pane from a template's tokens: git (named git, or a
+/// name that resolves to a file that is git) runs only through `launch`, with the vetted `git`; any other
+/// program as the file `resolve` finds.
+pub fn pane_line(git: &Path, vet: &Vetted, tokens: &[String], resolve: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(String, Vec<String>), String> {
+    let Some(program) = tokens.first() else { return Err("The diff command is empty, so it did not start.".into()) };
+    let rest: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
+    let found = resolve(Path::new(program));
+    // The name as written first, then the file it resolves to; a dashed name carries its subcommand.
+    if let Some(sub) = dashed(Path::new(program)).or_else(|| found.as_deref().and_then(dashed)) {
+        let args: Vec<&str> = (!sub.is_empty()).then_some(sub.as_str()).into_iter().chain(rest).collect();
+        return launch(git, vet, &args);
+    }
+    // A name Windows reads as another item may be git under a name the check cannot read.
+    if is_git(Path::new(program)) || found.as_deref().is_some_and(is_git) {
+        return Err(ALIASED_PROGRAM.into());
+    }
+    let found = found.ok_or("The diff program was not found, so it did not start.")?;
+    Ok((crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new()))
 }
 
 /// The branch, counts and entries (`GCL:590-630` with the CLI). Every git line starts
@@ -401,6 +779,49 @@ pub struct Vetted {
     /// A partial clone (`extensions.partialClone` or a `remote.*.promisor`): git may start
     /// a lazy fetch, which only `GIT_NO_LAZY_FETCH` (git 2.44) stops.
     pub partial_clone: bool,
+    /// The nearest folder with a `.git` in it: the working tree's top, which porcelain paths are
+    /// relative to.
+    pub root: Option<PathBuf>,
+    /// The config keys (names only, never values) that run a program: a pager, an external diff or
+    /// textconv, a tool, an alias, a credential helper, ssh. They change nothing for the poller, whose
+    /// lines never reach them, but a git started in a pane does (`launch_refusal`).
+    pub programs: Vec<String>,
+}
+
+impl Vetted {
+    /// Why a git started in a pane must not run here: the repository's own config names programs
+    /// (it is untrusted: the coding agent being reviewed writes it), or it is a partial clone whose
+    /// lazy fetch would reach ssh or a credential helper. None when it may.
+    pub fn launch_refusal(&self) -> Option<String> {
+        if let Some(first) = self.programs.first() {
+            let shown: Vec<String> = self.programs.iter().take(3).map(|k| crate::inert_files::display_text(k, 64, false)).collect();
+            let more = if self.programs.len() > 3 { format!(" and {} more", self.programs.len() - 3) } else { String::new() };
+            let _ = first;
+            return Some(format!("This repository's own git configuration runs programs ({}{more}), so Tandem will not start git in it. Remove those settings from its .git/config to use it here.", shown.join(", ")));
+        }
+        self.partial_clone.then(|| "This repository is a partial clone, so git may fetch from a remote while it runs; Tandem will not start git in it.".to_string())
+    }
+}
+
+/// What the worker found for a folder: the vet verdict and the git it would run. A launch in a pane takes
+/// only this (the UI thread never vets or searches).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Launch {
+    pub vet: Option<Vetted>,
+    pub git: Option<PathBuf>,
+}
+
+/// Why a git started in a pane must not run for this verdict (Run Anyway and every launch): None when it may.
+pub fn launch_verdict(l: Option<&Launch>) -> Option<String> {
+    let Some(l) = l else { return Some("Tandem has not finished checking this folder yet.".into()) };
+    let Some(vet) = &l.vet else { return Some("git will not run in this folder (its configuration is not safe to read).".into()) };
+    if vet.root.is_none() {
+        return Some("This folder is not in a git repository, so git will not run.".into());
+    }
+    if l.git.is_none() {
+        return Some("git was not found, so the diff did not start.".into());
+    }
+    vet.launch_refusal()
 }
 
 /// The checks before any git run, in `dir` and every repository git could find above it
@@ -413,12 +834,15 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
     let dir = LocalPath::judge(dir)?;
     let mut filters = BTreeSet::new();
     let mut partial_clone = false;
-    let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone };
+    let mut programs: Vec<String> = Vec::new();
+    let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone, programs: &mut programs };
+    let mut root = None;
     let mut at = Some(dir);
     while let Some(a) = at {
         // Each name is judged (its link read, the target walked) before it is looked at.
         let dotgit = a.join(".git")?;
         if localfs::lstat(&dotgit).is_ok() {
+            root.get_or_insert_with(|| a.path().to_path_buf());
             let kind = localfs::stat(&dotgit).ok();
             if kind.is_some_and(|k| k.is_dir) {
                 vet_git_dir(&dotgit, a.path(), &mut v)?;
@@ -434,13 +858,16 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
         }
         at = a.parent();
     }
-    Some(Vetted { args: filter_args(&filters), partial_clone })
+    programs.sort();
+    programs.dedup();
+    Some(Vetted { args: filter_args(&filters), partial_clone, root, programs })
 }
 
 /// What `vet_config` collects.
 struct Vet<'a> {
     filters: &'a mut BTreeSet<String>,
     partial_clone: &'a mut bool,
+    programs: &'a mut Vec<String>,
 }
 
 /// A `.git` file's `gitdir:` (a worktree or submodule), when it is relative or local.
@@ -542,6 +969,7 @@ fn vet_config(file: &LocalPath, root: &Path, v: &mut Vet, depth: usize) -> Optio
             return None;
         }
         let sub = e.sub.as_deref().unwrap_or("");
+        note_program(&e.section, e.sub.as_deref(), &e.key, v.programs);
         match (e.section.as_str(), e.key.as_str()) {
             ("filter", _) => {
                 if sub.is_empty() || sub.contains(['=', '\n', '\r', '\0']) {
@@ -565,6 +993,39 @@ fn vet_config(file: &LocalPath, root: &Path, v: &mut Vet, depth: usize) -> Optio
         }
     }
     Some(())
+}
+
+/// Records the key when it names a program git would run in a pane (not by the poller's lines), or
+/// makes git run one: every program-running key of git-config(1), by section and by the key name shapes
+/// that name a program in any section (`*.program`, `*.helper`, `*.command`, `*.cmd`, `*.textconv`,
+/// `*hook`), plus `log.showSignature` (runs the gpg program) and `protocol.*.allow` (another transport).
+/// Section and key are lowercased by the parser. Filter drivers are not listed: `-c` switches them off
+/// for every line.
+fn note_program(section: &str, sub: Option<&str>, key: &str, out: &mut Vec<String>) {
+    let any_section = ["program", "helper", "command", "cmd", "textconv", "hook"].iter().any(|k| key.ends_with(k));
+    let runs = any_section
+        || match section {
+            "core" => matches!(key, "pager" | "sshcommand" | "fsmonitor" | "editor" | "askpass" | "gitproxy"),
+            "pager" | "alias" | "difftool" | "mergetool" | "credential" | "uploadpack" | "receive" | "web" | "browser" | "man" | "gpg" | "gui" | "guitool" | "sendemail" | "instaweb" => true,
+            "protocol" => key == "allow",
+            "sequence" => key == "editor",
+            "log" => key == "showsignature",
+            "diff" => matches!(key, "external" | "tool" | "guitool"),
+            "merge" => sub.is_some() && key == "driver" || key == "tool",
+            "http" => matches!(key, "proxy" | "sslcommand"),
+            "remote" => matches!(key, "vcs" | "uploadpack" | "receivepack" | "proxy"),
+            "submodule" => key == "update",
+            _ => false,
+        };
+    if runs {
+        let name = match sub {
+            Some(s) => format!("{section}.{s}.{key}"),
+            None => format!("{section}.{key}"),
+        };
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
 }
 
 /// `-c` overrides that switch off the named filter drivers (an empty command runs nothing;
@@ -731,6 +1192,15 @@ pub struct Fetched {
 /// git directory, all inside `timeout` (iTerm2's helper kills itself at `gitTimeout`).
 /// Exit 128 (not a repository, or `safe.directory` refused it) is no state, not a timeout.
 pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Fetched {
+    fetch_state_with(run, git, dir, timeout, None, false)
+}
+
+/// `fetch_state`, and with `stats` also what a workgroup's poller asks for (`includeDiffStats`): the
+/// per-file statuses against HEAD, or against `base` when it resolves to a tree (an unresolved or
+/// refused base keeps the HEAD list), then the two diff stats runs. All inside the one timeout and the
+/// same checks and hardening; an extra run that fails, is capped or runs out of time leaves its field
+/// unset and the rest of the state stands.
+pub fn fetch_state_with(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration, base: Option<&str>, stats: bool) -> Fetched {
     let start = Instant::now();
     let left = || timeout.saturating_sub(start.elapsed());
     let none = Fetched::default();
@@ -765,7 +1235,47 @@ pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) 
         RunResult::TimedOut => return timed_out,
         _ => {}
     }
+    if stats {
+        extra_runs(run, git, dir, &vet, &mut state, base, &left);
+    }
     Fetched { state: Some(state), timed_out: false }
+}
+
+/// The files pass and the stats runs of `fetch_state_with`.
+fn extra_runs(run: &dyn GitRun, git: &Path, dir: &Path, vet: &Vetted, state: &mut GitState, base: Option<&str>, left: &dyn Fn() -> Duration) {
+    let exit0 = |r: RunResult| match r {
+        RunResult::Exit { code: 0, stdout, capped: false } => Some(stdout),
+        _ => None,
+    };
+    let base = base.map(str::trim).filter(|b| !b.is_empty() && *b != "HEAD" && !b.starts_with('-') && b.chars().count() <= 256 && !b.chars().any(char::is_control));
+    let mut statuses = None;
+    if let Some(b) = base {
+        if !left().is_zero() {
+            let mut args = with_extra(BASE_TREE_ARGS, &vet.args);
+            args.push(format!("{b}^{{tree}}"));
+            let tree = exit0(run.run(git, dir, &args, left(), Some(SMALL_CAP))).map(|o| String::from_utf8_lossy(&o).trim().to_string());
+            if let Some(tree) = tree.filter(|t| (40..=64).contains(&t.len()) && t.bytes().all(|c| c.is_ascii_hexdigit())) {
+                let mut args = with_extra(BASE_DIFF_ARGS, &vet.args);
+                args.extend([tree, "--".to_string()]);
+                statuses = exit0(run.run(git, dir, &args, left(), Some(STATUS_CAP))).map(|o| parse_base_diff(&o));
+            }
+        }
+    }
+    if statuses.is_none() && !left().is_zero() {
+        statuses = exit0(run.run(git, dir, &with_extra(FILES_ARGS, &vet.args), left(), Some(STATUS_CAP))).map(|o| parse_file_statuses(&o));
+    }
+    state.file_statuses = statuses;
+    if left().is_zero() {
+        return;
+    }
+    let name_status = exit0(run.run(git, dir, &with_extra(NAME_STATUS_ARGS, &vet.args), left(), Some(STATUS_CAP)));
+    if left().is_zero() {
+        return;
+    }
+    let numstat = exit0(run.run(git, dir, &with_extra(NUMSTAT_ARGS, &vet.args), left(), Some(STATUS_CAP)));
+    if let (Some(n), Some(m)) = (name_status, numstat) {
+        (state.files_added, state.files_modified, state.files_deleted, state.lines_inserted, state.lines_deleted) = diff_stats(&n, &m, state.adds);
+    }
 }
 
 /// The 8 most recently committed branches, newest first; none when git may not run or
@@ -907,8 +1417,10 @@ impl WorkerCache {
 
     /// Forgets the path's cached state and waiting requests (`GPW:161-199`).
     pub fn invalidate(&mut self, path: &str) {
-        self.cache.remove(path);
-        self.pending.remove(path);
+        // Every key made from the path: bare, with stats, with a base (`cache_key`).
+        let of_path = |k: &String| k == path || k.strip_prefix(path).is_some_and(|rest| rest.starts_with(['\x01', '\x02']));
+        self.cache.retain(|k, _| !of_path(k));
+        self.pending.retain(|k, _| !of_path(k));
     }
 
     /// `debugInfoForDirectory:` (`GPW:74-85`); Tandem has no rich cache.
@@ -1174,6 +1686,7 @@ pub fn remote_state(user: &BTreeMap<String, String>) -> Option<GitState> {
         files_modified: opt("gitFilesModified"),
         files_deleted: opt("gitFilesDeleted"),
         repo_state: RepoState::None,
+        file_statuses: None,
     })
 }
 
@@ -1540,7 +2053,7 @@ mod tests {
         for base in [STATUS_ARGS, GIT_DIR_ARGS, BRANCHES_ARGS, LOG_ARGS] {
             assert_eq!(&base[..HARDENED.len()], HARDENED);
         }
-        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false };
+        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None, programs: vec![] };
         let line = guarded_args(&vet, &["status", "--porcelain"]);
         assert_eq!(&line[..HARDENED.len()], HARDENED);
         assert_eq!(&line[HARDENED.len()..], ["-c", "filter.x.clean=", "status", "--porcelain"]);
@@ -1605,6 +2118,166 @@ mod tests {
         for p in [d, d2, merging] {
             fs::remove_dir_all(p).unwrap();
         }
+    }
+
+    /// Task 6 round 1, item 1 (class: a repository's own config is untrusted): a repo that sets any key
+    /// that runs a program is refused for a launch, whatever the key.
+    #[test]
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
+    fn launch_refuses_a_repo_that_configures_programs() {
+        let cases = [
+            ("pager", "[core]\n\tpager = calc.exe\n"),
+            ("pagerdiff", "[pager]\n\tdiff = calc\n"),
+            ("ext", "[diff]\n\texternal = calc\n"),
+            ("drivercmd", "[diff \"x\"]\n\tcommand = calc\n"),
+            ("textconv", "[diff \"x\"]\n\ttextconv = calc\n"),
+            ("difftool", "[difftool \"t\"]\n\tcmd = calc\n"),
+            ("difftool-name", "[diff]\n\ttool = t\n"),
+            ("mergetool", "[mergetool \"t\"]\n\tcmd = calc\n"),
+            ("alias", "[alias]\n\tdiff = !calc\n"),
+            ("ssh", "[core]\n\tsshCommand = calc\n"),
+            ("cred", "[credential]\n\thelper = calc\n"),
+            ("credurl", "[credential \"https://x\"]\n\thelper = calc\n"),
+            ("fsm", "[core]\n\tfsmonitor = calc\n"),
+            ("editor", "[core]\n\teditor = calc\n"),
+            ("seqeditor", "[sequence]\n\teditor = calc\n"),
+            ("upload", "[uploadpack]\n\tpackObjectsHook = calc\n"),
+            ("promisor", "[remote \"o\"]\n\tpromisor = true\n"),
+            ("partial", "[extensions]\n\tpartialClone = o\n"),
+            ("include", "[include]\n\tpath = more.cfg\n"),
+            // Round 4: every key git-config(1) documents as naming a program, and the keys that make a
+            // launched git run one (signature checks, other transports).
+            ("showsig", "[log]\n\tshowSignature = true\n"),
+            ("gpg", "[gpg]\n\tprogram = calc\n"),
+            ("gpgssh", "[gpg \"ssh\"]\n\tprogram = calc\n"),
+            ("gpgkeycmd", "[gpg \"ssh\"]\n\tdefaultKeyCommand = calc\n"),
+            ("gpgformat", "[gpg]\n\tformat = x509\n"),
+            ("askpass", "[core]\n\taskPass = calc\n"),
+            ("gitproxy", "[core]\n\tgitProxy = calc\n"),
+            ("altrefs", "[core]\n\talternateRefsCommand = calc\n"),
+            ("gchook", "[gc]\n\trecentObjectsHook = calc\n"),
+            ("trailer", "[trailer \"t\"]\n\tcommand = calc\n"),
+            ("trailercmd", "[trailer \"t\"]\n\tcmd = calc\n"),
+            ("sendemail", "[sendemail]\n\tsmtpServer = calc\n"),
+            ("sendemailcmd", "[sendemail \"x\"]\n\tsendmailCmd = calc\n"),
+            ("protocol", "[protocol \"ext\"]\n\tallow = always\n"),
+            ("protocolall", "[protocol]\n\tallow = always\n"),
+            ("remotevcs", "[remote \"o\"]\n\tvcs = calc\n"),
+            ("remoteupload", "[remote \"o\"]\n\tuploadpack = calc\n"),
+            ("remotereceive", "[remote \"o\"]\n\treceivepack = calc\n"),
+            ("submoduleupdate", "[submodule \"s\"]\n\tupdate = !calc\n"),
+            ("anyhelper", "[x \"y\"]\n\thelper = calc\n"),
+            ("anyprogram", "[x]\n\tprogram = calc\n"),
+            ("anytextconv", "[x \"y\"]\n\ttextconv = calc\n"),
+            ("anycommand", "[x \"y\"]\n\tcommand = calc\n"),
+            ("instaweb", "[instaweb]\n\thttpd = calc\n"),
+            ("browser", "[browser \"b\"]\n\tcmd = calc\n"),
+        ];
+        for (name, text) in cases {
+            let d = temp_repo(&format!("launch-{name}"));
+            fs::write(d.join(".git").join("config"), text).unwrap();
+            fs::write(d.join(".git").join("more.cfg"), "[core]\n\tpager = calc\n").unwrap();
+            let v = vet_repo(&d).unwrap_or_else(|| panic!("{name}: still vetted for the poller"));
+            assert!(v.launch_refusal().is_some(), "{name}: a launch must be refused");
+            fs::remove_dir_all(&d).unwrap();
+        }
+        let d = temp_repo("launch-plain");
+        fs::write(
+            d.join(".git").join("config"),
+            "[core]\n\tbare = false\n\trepositoryformatversion = 0\n\tfilemode = false\n\tlogallrefupdates = true\n\tsymlinks = false\n\tignorecase = true\n[remote \"origin\"]\n\turl = https://example.com/r.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n[filter \"lfs\"]\n\tclean = git-lfs clean\n[lfs]\n\trepositoryformatversion = 0\n[user]\n\tname = a\n\tsigningKey = ABC\n[commit]\n\tgpgSign = true\n[pull]\n\trebase = true\n[protocol]\n\tversion = 2\n[diff]\n\trenames = true\n",
+        )
+        .unwrap();
+        let v = vet_repo(&d).unwrap();
+        assert_eq!(v.launch_refusal(), None, "a plain config launches (filters are switched off by -c)");
+        assert!(v.args.iter().any(|a| a == "filter.lfs.clean="));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Task 6 round 1, items 2 and 3: a launch (and Run Anyway) needs the worker's verdict for the folder:
+    /// a vetted repository with a working tree top, a git, and a config that runs nothing.
+    #[test]
+    fn run_anyway_needs_a_vetted_repository() {
+        let ok = Launch { vet: Some(Vetted { root: Some(PathBuf::from(r"C:\r")), ..Default::default() }), git: Some(PathBuf::from(r"C:\g\git.exe")) };
+        assert_eq!(launch_verdict(Some(&ok)), None);
+        assert!(launch_verdict(None).is_some_and(|t| t.contains("not finished")), "no answer yet: git does not run");
+        assert!(launch_verdict(Some(&Launch { vet: None, ..ok.clone() })).is_some_and(|t| t.contains("not safe")));
+        assert!(launch_verdict(Some(&Launch { vet: Some(Vetted::default()), ..ok.clone() })).is_some_and(|t| t.contains("not in a git repository")), "no working tree top");
+        assert!(launch_verdict(Some(&Launch { git: None, ..ok.clone() })).is_some_and(|t| t.contains("git was not found")));
+        let bad = Launch { vet: Some(Vetted { root: Some(PathBuf::from(r"C:\r")), programs: vec!["core.pager".into()], ..Default::default() }), ..ok };
+        assert!(launch_verdict(Some(&bad)).is_some_and(|t| t.contains("core.pager")));
+    }
+
+    #[test]
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
+    fn a_folder_outside_any_repository_has_no_root() {
+        let d = temp("no-repo");
+        let v = vet_repo(&d).expect("outside a repository is not unsafe");
+        assert_eq!(v.root, None);
+        assert!(launch_verdict(Some(&Launch { vet: Some(v), git: Some(PathBuf::from("git")) })).is_some());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The pty launch's argv and environment carry the overrides, and are built in one place.
+    #[test]
+    fn launch_line_carries_the_overrides() {
+        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false, root: None, programs: vec![] };
+        let diff = launch_args(&vet, &["diff", "HEAD", "--", "f"]).unwrap();
+        assert_eq!(&diff[..HARDENED.len()], HARDENED);
+        for want in [
+            "--no-pager", "core.hooksPath=NUL", "core.pager=cat", "diff.external=", "credential.helper=", "protocol.allow=never", "core.sshCommand=false", "filter.x.clean=", "submodule.recurse=false", "diff.submodule=short",
+            "diff.ignoreSubmodules=all", "log.showSignature=false", "gpg.program=false", "gpg.ssh.program=false", "gpg.x509.program=false", "core.askPass=", "diff.noprefix=false",
+        ] {
+            assert!(diff.iter().any(|a| a == want), "{want} in {diff:?}");
+        }
+        let at = diff.iter().position(|a| a == "diff").unwrap();
+        assert_eq!(&diff[at..], ["diff", "--ignore-submodules=all", "--no-ext-diff", "--no-textconv", "HEAD", "--", "f"], "the overrides come right after the subcommand");
+        let tool = launch_args(&vet, &["difftool", "-y", "-x", "vimdiff"]).unwrap();
+        let at = tool.iter().position(|a| a == "difftool").unwrap();
+        assert_eq!(&tool[at..], ["difftool", "--ignore-submodules=all", "-y", "-x", "vimdiff"], "difftool is the person's own tool, never into a submodule");
+        for sub in ["status", "show", "log"] {
+            let a = launch_args(&vet, &[sub]).unwrap();
+            let at = a.iter().position(|x| x == sub).unwrap();
+            assert_eq!(a[at + 1], "--ignore-submodules=all", "{a:?}");
+            assert_eq!(a.iter().any(|x| x == "--no-ext-diff"), sub != "status", "{a:?}");
+            assert_eq!(a[at..].iter().any(|x| x == "--no-show-signature"), sub != "status", "log and show never verify a signature: {a:?}");
+        }
+        // A subcommand outside the list, or a global option before it, is refused.
+        for bad in [&["-c", "core.pager=calc", "diff"][..], &["fetch"], &["submodule", "foreach", "calc"], &[]] {
+            assert!(launch_args(&vet, bad).is_err(), "{bad:?}");
+        }
+        // An option that undoes an override, also abbreviated or negated twice, is refused before `--`.
+        for bad in ["--ignore-submodules=none", "--ignore-sub=dirty", "--submodule=diff", "--sub=log", "--recurse-submodules", "--ext-diff", "--ext", "--textconv", "--no-no-ext-diff"] {
+            assert!(launch_args(&vet, &["diff", bad]).is_err(), "{bad}");
+        }
+        for bad in ["--show-signature", "--show-sig", "--no-no-show-signature"] {
+            assert!(launch_args(&vet, &["log", bad]).is_err(), "{bad}");
+        }
+        for ok in ["--show-notes", "--shortstat", "--stat", "--no-show-signature"] {
+            assert!(launch_args(&vet, &["log", ok]).is_ok(), "{ok}");
+        }
+        for ok in ["--no-ext-diff", "--no-textconv", "--stat", "--ignore-space-change", "-w", "--text"] {
+            assert!(launch_args(&vet, &["diff", ok]).is_ok(), "{ok}");
+        }
+        assert!(launch_args(&vet, &["diff", "HEAD", "--", "--ext-diff"]).is_ok(), "a path after -- is a path");
+        let env = launch_env();
+        for want in ["GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PAGER=cat", "PAGER=cat"] {
+            assert!(env.iter().any(|e| e == want), "{want}");
+        }
+        for gone in [
+            "-GIT_EXTERNAL_DIFF", "-GIT_ASKPASS", "-SSH_ASKPASS", "-GIT_DIR", "-GIT_WORK_TREE", "-GIT_CONFIG_PARAMETERS", "-GIT_CONFIG_COUNT", "-GIT_EXEC_PATH", "-GIT_SSH", "-GIT_SSH_COMMAND", "-GIT_PROXY_COMMAND",
+        ] {
+            assert!(env.iter().any(|e| e == gone), "{gone}");
+        }
+    }
+
+    #[test]
+    fn programs_in_a_config_are_listed_without_values() {
+        let mut programs = Vec::new();
+        let text = "[core]\n\tpager = secret-value\n[alias]\n\tx = !y\n";
+        for e in config_entries(text).unwrap() {
+            note_program(&e.section, e.sub.as_deref(), &e.key, &mut programs);
+        }
+        assert_eq!(programs, ["core.pager", "alias.x"]);
     }
 
     #[test]
@@ -2181,5 +2854,427 @@ This often happens in very large repositories or when the working tree is on a s
         assert!(!looks_like_git("gitk x"));
         assert!(!looks_like_git("echo git"));
         assert!(!looks_like_git(""));
+    }
+
+    // --- 13y1 Task 6: per-file statuses, the base and the diff stats (`iTermGitClient.m`) ---
+
+    fn st(path: &str, index: Change, workdir: Change) -> FileStatus {
+        FileStatus { path: path.into(), index, workdir }
+    }
+
+    /// The porcelain v2 `-z` list `git status --find-renames` prints, one record per entry.
+    const V2: &[u8] = b"# branch.oid 1234567890abcdef1234567890abcdef12345678\0# branch.head main\0\
+1 M. N... 100644 100644 100644 aaaa bbbb a.rs\0\
+1 .M N... 100644 100644 100644 aaaa aaaa b.rs\0\
+1 MM N... 100644 100644 100644 aaaa cccc c.rs\0\
+2 R. N... 100644 100644 100644 aaaa aaaa R100 new.rs\0old.rs\0\
+u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
+
+    /// The per-file list follows `iTermGitFileStatusForEntry` (`GCL:198-269`): the index column from X,
+    /// the workdir column from Y, an unmerged entry is Conflicted on the workdir side, a rename is its
+    /// new path; the base's diff puts everything in the workdir column; the stats count as
+    /// `populateDiffStatsOnState:` does (`GCL:477-557`); the cache key is `GPW:87-105`'s.
+    #[test]
+    fn file_statuses_follow_iterm2() {
+        assert_eq!(
+            parse_file_statuses(V2),
+            vec![
+                st("a.rs", Change::Modified, Change::None),
+                st("b.rs", Change::None, Change::Modified),
+                st("c.rs", Change::Modified, Change::Modified),
+                st("new.rs", Change::Renamed, Change::None),
+                st("d.rs", Change::None, Change::Conflicted),
+            ]
+        );
+        assert_eq!(
+            parse_file_statuses(b"1 A. N... 000000 100644 100644 0 b new file.rs\0 1 T. N... 100644 120000 120000 a b t.rs\0"),
+            vec![st("new file.rs", Change::Added, Change::None)],
+            "a path with a blank is whole; a malformed record is skipped"
+        );
+        assert_eq!(parse_file_statuses(b"1 D. N... 100644 000000 000000 a b gone.rs\0"), vec![st("gone.rs", Change::Deleted, Change::None)]);
+        assert_eq!(parse_file_statuses(b"1 T. N... 100644 120000 120000 a b t.rs\0"), vec![st("t.rs", Change::TypeChange, Change::None)]);
+        assert_eq!(parse_file_statuses(b"? untracked.rs\0"), Vec::new(), "untracked files are not listed");
+
+        assert_eq!(
+            parse_base_diff(b"M\0x.rs\0A\0y.rs\0R087\0o.rs\0n.rs\0"),
+            vec![st("x.rs", Change::None, Change::Modified), st("y.rs", Change::None, Change::Added), st("n.rs", Change::None, Change::Renamed)]
+        );
+        assert_eq!(
+            parse_base_diff(b"D\0d.rs\0T\0t.rs\0U\0u.rs\0C100\0from.rs\0copy.rs\0X\0x\0M\0m.rs\0"),
+            vec![st("d.rs", Change::None, Change::Deleted), st("t.rs", Change::None, Change::TypeChange), st("u.rs", Change::None, Change::Conflicted), st("m.rs", Change::None, Change::Modified)],
+            "a copy and an unknown letter are skipped"
+        );
+
+        assert_eq!(diff_stats(b"M\0a\0A\0b\0D\0c\0T\0d\0", b"3\t1\ta\010\t0\tb\01\t1\td\0", 2), (3, 2, 1, 4, 2));
+        assert_eq!(diff_stats(b"M\0bin\0", b"-\t-\tbin\0", 0), (0, 1, 0, 0, 0), "a binary file adds no lines");
+        assert_eq!(diff_stats(b"", b"", 5), (5, 0, 0, 0, 0), "untracked files count as added");
+
+        assert_eq!(cache_key("C:\\r", None, false), "C:\\r");
+        assert_eq!(cache_key("C:\\r", Some("HEAD"), true), "C:\\r\x01stats");
+        assert_eq!(cache_key("C:\\r", Some(""), true), "C:\\r\x01stats");
+        assert_eq!(cache_key("C:\\r", Some("main"), true), "C:\\r\x01stats\x02main");
+        assert_eq!(cache_key("C:\\r", Some("main"), false), "C:\\r\x02main");
+
+        for (name, args) in [("files", FILES_ARGS), ("base diff", BASE_DIFF_ARGS), ("numstat", NUMSTAT_ARGS), ("name-status", NAME_STATUS_ARGS), ("base tree", BASE_TREE_ARGS)] {
+            assert!(args.starts_with(HARDENED), "{name} starts with the hardening");
+            assert!(args.contains(&"--no-optional-locks") && args.contains(&"core.fsmonitor=false"), "{name}");
+        }
+        for (name, args) in [("base diff", BASE_DIFF_ARGS), ("numstat", NUMSTAT_ARGS), ("name-status", NAME_STATUS_ARGS)] {
+            assert!(args.contains(&"--no-ext-diff") && args.contains(&"--no-textconv"), "{name} never runs a configured diff program");
+        }
+        assert!(FILES_ARGS.contains(&"--untracked-files=no") && FILES_ARGS.contains(&"--find-renames") && FILES_ARGS.contains(&"--porcelain=v2") && FILES_ARGS.contains(&"-z"));
+        assert!(BASE_TREE_ARGS.ends_with(&["--end-of-options"]), "the typed base comes after --end-of-options");
+        assert!(NUMSTAT_ARGS.contains(&"--no-renames") && NAME_STATUS_ARGS.contains(&"--no-renames"));
+    }
+
+    /// Output is bounded and a hostile list cannot panic the parsers.
+    #[test]
+    fn file_status_parsers_are_bounded() {
+        let mut big = Vec::new();
+        for i in 0..(MAX_FILES + 50) {
+            big.extend_from_slice(format!("1 .M N... 100644 100644 100644 a b f{i}.rs\0").as_bytes());
+        }
+        assert_eq!(parse_file_statuses(&big).len(), MAX_FILES);
+        let mut diff = Vec::new();
+        for i in 0..(MAX_FILES + 50) {
+            diff.extend_from_slice(format!("M\0f{i}.rs\0").as_bytes());
+        }
+        assert_eq!(parse_base_diff(&diff).len(), MAX_FILES);
+        // A name with a control character, an empty or over-long name, or invalid UTF-8 is not listed.
+        let long = "x".repeat(MAX_PATH + 1);
+        let hostile = format!("1 .M N... 100644 100644 100644 a b a\x03b.rs\0\
+1 .M N... 100644 100644 100644 a b {long}\0\
+1 .M N... 100644 100644 100644 a b ok.rs\0");
+        assert_eq!(parse_file_statuses(hostile.as_bytes()), vec![st("ok.rs", Change::None, Change::Modified)]);
+        assert!(parse_file_statuses(b"1 .M N... 100644 100644 100644 a b \xff\xfe\0").is_empty());
+        assert!(parse_base_diff(b"M\0a\rb\0R100\0only-one\0").is_empty());
+        for junk in [&b""[..], b"\0\0\0", b"1", b"2 R. N... 1 1 1 a b R100 x\0", b"u UU", b"R\0", b"M"] {
+            let _ = (parse_file_statuses(junk), parse_base_diff(junk), diff_stats(junk, junk, 0));
+        }
+    }
+
+    /// The prefix of a key is its path: invalidating a path forgets every base and stats variant of it.
+    #[test]
+    fn invalidating_a_path_forgets_its_keys() {
+        let now = Instant::now();
+        let mut c = WorkerCache::default();
+        let (p, other) = ("C:\\r", "C:\\r2");
+        for key in [p.to_string(), cache_key(p, Some("main"), true), cache_key(p, None, true), cache_key(other, None, true)] {
+            assert_eq!(c.lookup(&key, now), Lookup::Start);
+            c.finish(&key, fetched(Some(main_state()), false), now);
+        }
+        c.invalidate(p);
+        assert_eq!(c.lookup(p, now), Lookup::Start);
+        assert_eq!(c.lookup(&cache_key(p, Some("main"), true), now), Lookup::Start);
+        assert_eq!(c.lookup(&cache_key(p, None, true), now), Lookup::Start);
+        assert!(matches!(c.lookup(&cache_key(other, None, true), now), Lookup::Cached(Some(_))), "another path (a longer name) keeps its state");
+    }
+
+    /// A `GitRun` that answers by the arguments themselves.
+    struct Script {
+        calls: Mutex<Vec<Vec<String>>>,
+        reply: Box<dyn Fn(&[String]) -> RunResult + Send + Sync>,
+    }
+
+    impl GitRun for Script {
+        fn run(&self, _git: &Path, _dir: &Path, args: &[String], _timeout: Duration, _cap: Option<usize>) -> RunResult {
+            self.calls.lock().unwrap().push(args.to_vec());
+            (self.reply)(args)
+        }
+    }
+
+    fn has(args: &[String], word: &str) -> bool {
+        args.iter().any(|a| a == word)
+    }
+
+    /// `fetch_state` stays today's two runs; with stats it adds the files pass and the two stats runs;
+    /// a base is resolved to a tree first and never reaches git as an option; a failed or capped extra
+    /// run leaves its field unset and keeps the rest of the state.
+    #[test]
+    fn fetch_state_with_asks_only_for_what_is_wanted() {
+        let dir = temp_repo("wg-fetch");
+        let tree = "0123456789abcdef0123456789abcdef01234567";
+        let porcelain = [PORC, b"1 .M N... 100644 100644 100644 a b f.rs\0".as_slice()].concat();
+        let script = |fail_numstat: bool| {
+            let porcelain = porcelain.clone();
+            Script {
+                calls: Mutex::new(Vec::new()),
+                reply: Box::new(move |a| {
+                    if has(a, "status") && has(a, "--branch") {
+                        exit(&porcelain)
+                    } else if has(a, "status") {
+                        exit(b"1 .M N... 100644 100644 100644 a b f.rs\0")
+                    } else if has(a, "--absolute-git-dir") {
+                        exit(b"C:\\nowhere\\.git\n")
+                    } else if has(a, "--verify") {
+                        exit(format!("{tree}\n").as_bytes())
+                    } else if has(a, "--numstat") {
+                        if fail_numstat { RunResult::Exit { code: 128, stdout: Vec::new(), capped: false } } else { exit(b"2\t1\tf.rs\0") }
+                    } else if has(a, "--name-status") && has(a, "--find-renames") {
+                        exit(b"M\0g.rs\0")
+                    } else if has(a, "--name-status") {
+                        exit(b"M\0f.rs\0")
+                    } else {
+                        exit(b"")
+                    }
+                }),
+            }
+        };
+        let s = script(false);
+        let plain = fetch_state(&s, Path::new(GIT), &dir, SEC);
+        assert_eq!(plain.state.as_ref().and_then(|x| x.file_statuses.clone()), None, "no list unless asked");
+        assert_eq!(s.calls.lock().unwrap().len(), 2, "today's callers run what they ran");
+
+        let s = script(false);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, None, true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
+        assert_eq!((got.files_added, got.files_modified, got.files_deleted, got.lines_inserted, got.lines_deleted), (0, 1, 0, 2, 1));
+        assert!(!s.calls.lock().unwrap().iter().any(|a| has(a, "--verify")), "HEAD asks for no tree");
+
+        // A base: its tree first, then the diff against that tree, every entry in the workdir column.
+        let s = script(false);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, Some("HEAD~1"), true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("g.rs", Change::None, Change::Modified)]));
+        let calls = s.calls.lock().unwrap().clone();
+        let verify = calls.iter().find(|a| has(a, "--verify")).expect("rev-parse");
+        assert_eq!(&verify[verify.len() - 2..], ["--end-of-options", "HEAD~1^{tree}"]);
+        let diff = calls.iter().find(|a| has(a, "--find-renames") && has(a, "--name-status")).expect("diff");
+        assert!(diff.contains(&tree.to_string()), "the diff names the tree, not the typed base: {diff:?}");
+
+        // An option as a base never reaches git: the HEAD list stays.
+        let s = script(false);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, Some("-x"), true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
+        assert!(!s.calls.lock().unwrap().iter().any(|a| a.iter().any(|x| x.contains("-x"))), "{:?}", s.calls.lock().unwrap());
+
+        // A failed stats run leaves the stats unset and the rest of the state.
+        let s = script(true);
+        let got = fetch_state_with(&s, Path::new(GIT), &dir, SEC, None, true).state.unwrap();
+        assert_eq!(got.file_statuses, Some(vec![st("f.rs", Change::None, Change::Modified)]));
+        assert_eq!((got.files_modified, got.lines_inserted), (0, 0));
+        assert_eq!(got.branch, "main");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// 13y1 Task 6 item 1 round 3: git, named as git or as a file that is git, starts only through
+    /// `launch` (the vetted git, the overrides, the environment); any other program as it resolves.
+    #[test]
+    fn a_git_program_runs_only_through_the_launch() {
+        let vet = Vetted::default();
+        let git = Path::new(r"C:\Git\cmd\git.exe");
+        let to = |p: &'static str| move |_: &Path| Some(PathBuf::from(p));
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for (tokens, resolved) in [
+            (words(&["git", "diff", "HEAD"]), r"C:\Git\cmd\git.exe"),
+            (words(&[r"C:\Program Files\Git\cmd\GIT.EXE", "diff"]), r"C:\Program Files\Git\cmd\GIT.EXE"),
+            (words(&["g", "diff"]), r"C:\tools\Git.exe"),
+            (words(&["gitwrap", "status"]), r"C:\Git\bin\git"),
+        ] {
+            let (line, env) = pane_line(git, &vet, &tokens, &to(resolved)).expect("a launch");
+            assert!(line.starts_with(r"C:\Git\cmd\git.exe "), "{tokens:?}: the vetted git, {line}");
+            assert!(line.contains("--ignore-submodules=all") && line.contains("core.pager=cat"), "{tokens:?}: {line}");
+            assert!(env.iter().any(|e| e == "-GIT_DIR") && env.iter().any(|e| e == "GIT_PAGER=cat"), "{tokens:?}: {env:?}");
+        }
+        // Round 4: Git for Windows' dashed form (`git-diff.exe` in libexec) is `git diff`, through the launch;
+        // a dashed program that is no allowed subcommand is refused.
+        for (tokens, resolved, sub) in [
+            (words(&[r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe", "HEAD"]), r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe", "diff"),
+            (words(&["GIT-LOG", "-1"]), r"C:\Git\mingw64\libexec\git-core\git-log.exe", "log"),
+            (words(&["gd", "HEAD"]), r"C:\Git\mingw64\libexec\git-core\git-difftool.exe", "difftool"),
+        ] {
+            let (line, _) = pane_line(git, &vet, &tokens, &to(resolved)).expect("a launch");
+            assert!(line.starts_with(r"C:\Git\cmd\git.exe "), "{tokens:?}: the vetted git, {line}");
+            assert!(line.contains(&format!(" {sub} --ignore-submodules=all")), "{tokens:?}: {line}");
+        }
+        for (tokens, resolved) in [(words(&["git-credential-manager", "get"]), r"C:\Git\mingw64\bin\git-credential-manager.exe"), (words(&["git-upload-pack", "."]), r"C:\Git\mingw64\bin\git-upload-pack.exe")] {
+            assert!(pane_line(git, &vet, &tokens, &to(resolved)).is_err(), "{tokens:?}");
+        }
+        // Final findings r2 3: a name Windows reads as git.exe (trailing dots or spaces, a stream) is git,
+        // through the launch; a name Windows reads as another item it cannot read (an 8.3 short name)
+        // is refused.
+        for (tokens, resolved) in [(words(&["git.exe.", "diff"]), r"C:\Git\cmd\git.exe."), (words(&["git.exe ..", "diff"]), r"C:\Git\cmd\git.exe .."), (words(&["git.exe::$DATA", "diff"]), r"C:\Git\cmd\git.exe::$DATA"), (words(&["d", "diff"]), r"C:\Git\cmd\git.exe.")] {
+            let (line, _) = pane_line(git, &vet, &tokens, &to(resolved)).expect("a launch");
+            assert!(line.starts_with(r"C:\Git\cmd\git.exe "), "{tokens:?}: the vetted git, {line}");
+        }
+        assert_eq!(pane_line(git, &vet, &words(&["GIT~1.EXE", "diff"]), &to(r"C:\Git\cmd\GIT~1.EXE")), Err(ALIASED_PROGRAM.to_string()));
+        let (line, env) = pane_line(git, &vet, &words(&["delta", "x"]), &to(r"C:\d\delta.exe")).unwrap();
+        assert_eq!((line.as_str(), env.len()), (r"C:\d\delta.exe x", 0), "any other program as it resolves");
+        assert!(pane_line(git, &vet, &words(&["nope"]), &|_: &Path| None).is_err());
+        assert!(pane_line(git, &vet, &[], &to("x")).is_err());
+    }
+
+    /// 13y1 Task 6 item 1 round 3, against real git: a nested repository's own config (the agent can
+    /// write it) never runs through a launched diff, difftool or status. Porcelain diff checks each
+    /// submodule by running status inside it, which reads its config and runs its filter; a launch never
+    /// recurses. The line and environment are exactly what `launch` makes.
+    #[cfg(windows)]
+    #[test]
+    fn a_launch_never_recurses_into_a_submodule() {
+        use std::process::Command;
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = find_git(&path, &crate::localfs::is_file) else {
+            eprintln!("a_launch_never_recurses_into_a_submodule: git was not found; skipped");
+            return;
+        };
+        let dir = temp("wg-submodule");
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let g = |at: &Path, args: &[&str]| {
+            let out = Command::new(&git).current_dir(at).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args).output().expect("git ran");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // A nested repository the agent wrote: its own config names a filter, its attributes use it.
+        g(&sub, &["init", "-q"]);
+        fs::write(sub.join("f.txt"), "hello\n").unwrap();
+        fs::write(sub.join(".gitattributes"), "* filter=z\n").unwrap();
+        g(&sub, &["add", "."]);
+        g(&sub, &["commit", "-q", "-m", "s"]);
+        g(&sub, &["config", "filter.z.clean", "echo ran > ../RAN; cat"]);
+        g(&dir, &["init", "-q"]);
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g(&dir, &["add", "a.txt", "sub"]);
+        g(&dir, &["commit", "-q", "-m", "p"]);
+        // A same-size edit: git must read the content, which runs the clean filter.
+        fs::write(sub.join("f.txt"), "jello\n").unwrap();
+        let vet = vet_repo(&dir).expect("vetted");
+        assert_eq!(vet.launch_refusal(), None, "the parent's own config is clean");
+        let marker = dir.join("RAN");
+        for args in [&["diff", "HEAD"][..], &["diff"], &["status"], &["difftool", "-y", "-x", "true", "HEAD"]] {
+            let _ = fs::remove_file(&marker);
+            let (line, env) = launch(&git, &vet, args).expect("a launch");
+            let argv = crate::semantic::split_command_line(&line);
+            let vars = crate::session_env::merge(std::env::vars().collect(), &crate::session_env::launch_last(Vec::new(), &env));
+            let out = Command::new(&git).current_dir(&dir).args(&argv[1..]).env_clear().envs(vars).stdin(std::process::Stdio::null()).output().expect("git ran");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(!marker.exists(), "{args:?} ran the submodule's filter: {argv:?}");
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// 13y1 Task 7 round 4, against real git: a repository's own `log.showSignature = true` and
+    /// `gpg.program` (the agent can write both) never run a program through any launched git. The vet
+    /// refuses the repository; even past the vet, the launch line itself never verifies a signature, with
+    /// the repository's gpg program or the person's own (named in their global config).
+    #[cfg(windows)]
+    #[test]
+    fn a_launch_never_verifies_a_signature() {
+        use std::process::Command;
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = find_git(&path, &crate::localfs::is_file) else {
+            eprintln!("a_launch_never_verifies_a_signature: git was not found; skipped");
+            return;
+        };
+        let dir = temp("wg-signature");
+        let out = |args: &[&str], env: &[(&str, &Path)]| {
+            let mut c = Command::new(&git);
+            c.current_dir(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args);
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            let o = c.output().expect("git ran");
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        out(&["init", "-q"], &[]);
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        out(&["add", "a.txt"], &[]);
+        let tree = out(&["write-tree"], &[]);
+        // A commit with a signature header: showing it with log.showSignature runs gpg.program.
+        let commit = format!(
+            "tree {tree}\nauthor t <t@t> 1700000000 +0000\ncommitter t <t@t> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----\n\nsigned\n"
+        );
+        fs::write(dir.join("commit.txt"), commit).unwrap();
+        let sha = out(&["hash-object", "-t", "commit", "-w", "commit.txt"], &[]);
+        out(&["update-ref", "HEAD", &sha], &[]);
+        fs::remove_file(dir.join("commit.txt")).unwrap();
+        let marker = dir.join("RAN");
+        let script = dir.join("marker-gpg");
+        let unix = |p: &Path| p.to_string_lossy().replace('\\', "/");
+        fs::write(&script, format!("#!/bin/sh\necho ran > '{}'\nexit 1\n", unix(&marker))).unwrap();
+        let global = dir.join("global.cfg");
+        fs::write(&global, format!("[gpg]\n\tprogram = {}\n", unix(&script))).unwrap();
+        let config = dir.join(".git").join("config");
+        let base = fs::read_to_string(&config).unwrap();
+        // The repository's own gpg program, then the person's (the repository only asks to show signatures).
+        for (name, local, env) in [
+            ("repo gpg.program", format!("[log]\n\tshowSignature = true\n[gpg]\n\tprogram = {}\n", unix(&script)), Vec::<(&str, &Path)>::new()),
+            ("global gpg.program", "[log]\n\tshowSignature = true\n".to_string(), vec![("GIT_CONFIG_GLOBAL", global.as_path())]),
+        ] {
+            fs::write(&config, format!("{base}{local}")).unwrap();
+            // The setup runs the marker without the launch's overrides (the test is not vacuous).
+            let _ = fs::remove_file(&marker);
+            let mut plain = Command::new(&git);
+            plain.current_dir(&dir).args(["log", "-1"]).envs(env.iter().copied());
+            let _ = plain.output().expect("git ran");
+            assert!(marker.exists(), "{name}: plain git log must run the marker, or this test proves nothing");
+            let vet = vet_repo(&dir).expect("vetted for the poller");
+            assert!(vet.launch_refusal().is_some(), "{name}: the vet refuses: {:?}", vet.programs);
+            assert!(launch(&git, &vet, &["log"]).is_err(), "{name}: no launch");
+            let past_the_vet = Vetted { programs: Vec::new(), ..vet };
+            for args in [&["log", "-1"][..], &["show", "HEAD"], &["log", "-p", "HEAD"], &["diff", "HEAD"], &["status"]] {
+                let _ = fs::remove_file(&marker);
+                let (line, launch_env) = launch(&git, &past_the_vet, args).expect("a launch");
+                let argv = crate::semantic::split_command_line(&line);
+                let mut vars = crate::session_env::merge(std::env::vars().collect(), &crate::session_env::launch_last(Vec::new(), &launch_env));
+                vars.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string_lossy().into_owned())));
+                let o = Command::new(&git).current_dir(&dir).args(&argv[1..]).env_clear().envs(vars).stdin(std::process::Stdio::null()).output().expect("git ran");
+                assert!(o.status.success(), "{name} {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+                assert!(!marker.exists(), "{name} {args:?} ran the gpg program: {argv:?}");
+                for want in ["log.showSignature=false", "gpg.program=false", "gpg.ssh.program=false", "gpg.x509.program=false"] {
+                    assert!(argv.iter().any(|a| a == want), "{name} {args:?}: {want} in {argv:?}");
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A real repository: staged, unstaged and untracked changes, the base and the stats against real
+    /// git (R13xy-8). Skipped with a note when git is not found.
+    #[cfg(windows)]
+    #[test]
+    fn base_and_stats_follow_iterm2() {
+        use std::process::Command;
+        let path = std::env::var("PATH").unwrap_or_default();
+        let Some(git) = find_git(&path, &crate::localfs::is_file) else {
+            eprintln!("base_and_stats_follow_iterm2: git was not found; skipped");
+            return;
+        };
+        let dir = temp("wg-real");
+        let g = |args: &[&str]| {
+            let out = Command::new(&git).current_dir(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]).args(args).output().expect("git ran");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        g(&["init", "-q"]);
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        fs::write(dir.join("b.txt"), "one\ntwo\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        fs::write(dir.join("a.txt"), "one\nstaged\n").unwrap();
+        g(&["add", "a.txt"]);
+        fs::write(dir.join("b.txt"), "changed\n").unwrap();
+        fs::write(dir.join("u.txt"), "untracked\n").unwrap();
+        let run = crate::git_run_win::WinGitRun;
+        let timeout = Duration::from_secs(20);
+        let got = fetch_state_with(&run, &git, &dir, timeout, None, true).state.expect("a state");
+        assert_eq!(got.file_statuses, Some(vec![st("a.txt", Change::Modified, Change::None), st("b.txt", Change::None, Change::Modified)]), "no u.txt");
+        assert_eq!((got.files_added, got.files_modified, got.files_deleted), (1, 2, 0), "the untracked file counts as added");
+        assert_eq!((got.lines_inserted, got.lines_deleted), (2, 2), "a.txt +1, b.txt +1 -2... as git diff HEAD counts");
+        let plain = fetch_state(&run, &git, &dir, timeout).state.expect("a state");
+        assert_eq!(plain.file_statuses, None);
+
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "second"]);
+        fs::write(dir.join("b.txt"), "third\n").unwrap();
+        let since = fetch_state_with(&run, &git, &dir, timeout, Some("HEAD~1"), true).state.expect("a state");
+        assert_eq!(
+            since.file_statuses,
+            Some(vec![st("a.txt", Change::None, Change::Modified), st("b.txt", Change::None, Change::Modified), st("u.txt", Change::None, Change::Added)]),
+            "the files changed since HEAD~1, all in the workdir column"
+        );
+        let nope = fetch_state_with(&run, &git, &dir, timeout, Some("nope"), true).state.expect("a state");
+        assert_eq!(nope.file_statuses, Some(vec![st("b.txt", Change::None, Change::Modified)]), "an unresolved base keeps the HEAD list");
+        let dash = fetch_state_with(&run, &git, &dir, timeout, Some("-x"), true).state.expect("a state");
+        assert_eq!(dash.file_statuses, nope.file_statuses, "an option is no base");
+        let _ = fs::remove_dir_all(dir);
     }
 }

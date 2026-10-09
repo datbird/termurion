@@ -82,6 +82,9 @@ pub(super) struct Chrome {
     /// A browser pane's toolbar, taken from the top of `rest` after the title bar (the one order
     /// for every strip from a pane's top: title bar, then 13y1's workgroup toolbar, then this).
     pub(super) browser_bar: Option<Rect>,
+    /// A workgroup member's session toolbar (13y1 Task 5): `TOOLBAR_H` points off the top of `rest`
+    /// below any title bar, above the browser toolbar.
+    pub(super) toolbar: Option<Rect>,
 }
 
 /// The pure split (`SessionView.m:2255-2275`): the title bar off the top, then a bottom bar
@@ -91,16 +94,35 @@ pub(super) struct Chrome {
 pub(super) fn chrome(rect: Rect, title_h: f32, title: bool, bar: Option<(f32, Position)>, scale: f32) -> Chrome {
     if !title {
         let (rest, bar) = sbl::pane_split(rect, bar);
-        return Chrome { rest, title: None, bar, browser_bar: None };
+        return Chrome { rest, title: None, bar, browser_bar: None, toolbar: None };
     }
     let (title_rect, below) = pane_title::split(rect, title_h.min((rect.h - 1.0).max(0.0)));
     match bar {
-        Some((_, Position::Top)) => Chrome { rest: below, bar: Some(pane_title::geometry(title_rect, scale, false).status), title: Some(title_rect), browser_bar: None },
+        Some((_, Position::Top)) => Chrome { rest: below, bar: Some(pane_title::geometry(title_rect, scale, false).status), title: Some(title_rect), browser_bar: None, toolbar: None },
         other => {
             let (rest, bar) = sbl::pane_split(below, other);
-            Chrome { rest, title: Some(title_rect), bar, browser_bar: None }
+            Chrome { rest, title: Some(title_rect), bar, browser_bar: None, toolbar: None }
         }
     }
+}
+
+/// The strips taken from the top of a pane's `rest`, in the one order: the title bar (already off),
+/// then a workgroup member's toolbar, then a browser pane's toolbar. Each keeps a pixel for what
+/// is under it.
+pub(super) fn take_strips(mut c: Chrome, toolbar: Option<f32>, browser: Option<f32>) -> Chrome {
+    let take = |h: f32, rest: &mut Rect| {
+        let h = h.min((rest.h - 1.0).max(0.0));
+        let strip = Rect { h, ..*rest };
+        *rest = Rect { y: rest.y + h, h: rest.h - h, ..*rest };
+        strip
+    };
+    if let Some(h) = toolbar {
+        c.toolbar = Some(take(h, &mut c.rest));
+    }
+    if let Some(h) = browser {
+        c.browser_bar = Some(take(h, &mut c.rest));
+    }
+    c
 }
 
 impl App {
@@ -254,14 +276,11 @@ impl App {
     /// A pane's rectangle cut into title bar, status bar and terminal.
     pub(super) fn pane_chrome(&self, tab: &Tab, id: PaneId, rect: Rect) -> Chrome {
         let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));
-        let mut c = chrome(rect, self.title_height(), self.tab_shows_titles(tab), bar, self.scale());
-        if self.is_browser_pane(id) {
-            let h = (crate::browser::TOOLBAR_H * self.scale()).min((c.rest.h - 1.0).max(0.0));
-            let (strip, below) = (Rect { h, ..c.rest }, Rect { y: c.rest.y + h, h: c.rest.h - h, ..c.rest });
-            c.browser_bar = Some(strip);
-            c.rest = below;
-        }
-        c
+        let c = chrome(rect, self.title_height(), self.tab_shows_titles(tab), bar, self.scale());
+        let scale = self.scale();
+        let toolbar = self.workgroup_toolbar_member(id).then(|| crate::workgroup_toolbar::TOOLBAR_H * scale);
+        let browser = self.is_browser_pane(id).then(|| crate::browser::TOOLBAR_H * scale);
+        take_strips(c, toolbar, browser)
     }
 }
 
@@ -334,13 +353,40 @@ mod tests {
         assert!(c.rest.h >= 0.0 && c.title.unwrap().h <= 9.0, "a short pane keeps a pixel");
     }
 
+    /// `SessionView.m:57-59`: a workgroup member's toolbar is 40 points off the top of what the
+    /// title bar left; the terminal gets the rest.
+    #[test]
+    fn toolbar_takes_room_as_iterm2() {
+        let rect = r(0.0, 0.0, 500.0, 400.0);
+        let c = take_strips(chrome(rect, 22.0, false, None, 1.0), Some(40.0), None);
+        assert_eq!((c.title, c.toolbar, c.rest), (None, Some(r(0.0, 0.0, 500.0, 40.0)), r(0.0, 40.0, 500.0, 360.0)));
+        let c = take_strips(chrome(rect, 22.0, true, None, 1.0), Some(40.0), None);
+        assert_eq!((c.title, c.toolbar, c.rest), (Some(r(0.0, 0.0, 500.0, 22.0)), Some(r(0.0, 22.0, 500.0, 40.0)), r(0.0, 62.0, 500.0, 338.0)), "below the title bar");
+        // The one order from a pane's top: title bar, workgroup toolbar, browser toolbar.
+        let c = take_strips(chrome(rect, 22.0, true, None, 1.0), Some(40.0), Some(32.0));
+        assert_eq!((c.toolbar, c.browser_bar, c.rest), (Some(r(0.0, 22.0, 500.0, 40.0)), Some(r(0.0, 62.0, 500.0, 32.0)), r(0.0, 94.0, 500.0, 306.0)));
+        let c = take_strips(chrome(rect, 22.0, true, None, 1.0), None, Some(32.0));
+        assert_eq!((c.toolbar, c.browser_bar), (None, Some(r(0.0, 22.0, 500.0, 32.0))), "a browser pane outside a workgroup is as before");
+        // A status bar at the bottom comes off before the strips; a short pane keeps a pixel.
+        let c = take_strips(chrome(rect, 22.0, true, Some((21.0, Position::Bottom)), 1.0), Some(40.0), None);
+        assert_eq!((c.bar, c.rest), (Some(r(0.0, 379.0, 500.0, 21.0)), r(0.0, 62.0, 500.0, 317.0)));
+        let c = take_strips(chrome(r(0.0, 0.0, 500.0, 30.0), 22.0, true, None, 1.0), Some(40.0), None);
+        assert!(c.rest.h >= 0.0 && c.toolbar.unwrap().h <= 7.0, "a short pane keeps a pixel: {:?}", c.rest);
+        // tmux: a tmux pane is never a workgroup member (P6), so the strip never takes a tmux size.
+        let enter = include_str!("workgroup_app.rs");
+        assert!(enter.contains("A tmux session cannot be the main session of a workgroup."), "entering refuses a tmux pane");
+        let f = include_str!("pane_title_ui.rs");
+        let f = &f[f.find("pub(super) fn pane_chrome").unwrap()..];
+        assert!(f.find("chrome(rect").unwrap() < f.find("take_strips(").unwrap(), "title bar first, then the strips");
+    }
+
     #[test]
     fn the_browser_toolbar_follows_the_title_bar() {
         let c = chrome(r(0.0, 0.0, 400.0, 100.0), 22.0, true, None, 1.0);
         assert!(c.browser_bar.is_none());
         let src = include_str!("pane_title_ui.rs");
         let f = &src[src.find("fn pane_chrome").unwrap()..];
-        assert!(f.find("chrome(rect").unwrap() < f.find("browser_bar = Some").unwrap(), "title bar first, then the toolbar");
+        assert!(f.find("chrome(rect").unwrap() < f.find("take_strips(").unwrap(), "title bar first, then the toolbar");
     }
 
     #[test]

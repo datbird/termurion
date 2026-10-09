@@ -163,9 +163,12 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
 /// setting goes and the snapshot's come; the profiles become the snapshot's (one new "Default"
 /// when it has none, as Tandem always has a profile).
 pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
+    let before = (g.string(crate::workgroup::KEY), g.string(crate::workgroup::KEY_IMPORTED));
     rp::apply(snap, &mut g.values);
     // The snapshot's values are bounded as the one write point bounds them (custom presets).
     g.bound_values();
+    // Its workgroups are marked Imported and it cannot carry or clear the marks (13y1 trust ruling).
+    crate::workgroup::mark_foreign_write(g, &before.0, &before.1);
     // A start folder naming a network path from the loaded file is emptied: it was not typed
     // in Settings (`start_dir::scrub_map`).
     let mut profiles: Vec<Profile> = snap.profiles.iter().cloned().map(|mut values| {
@@ -345,6 +348,7 @@ impl App {
         // Edits still waiting for their file go first: the snapshot replaces the list under them.
         self.flush_dynamic_writes();
         apply_snapshot(&snap, &mut self.globals, &mut self.store);
+        self.workgroup_model = crate::workgroup::Model::load(&self.globals).0;
         self.reload_dynamic_profiles();
         self.bonjour_profiles_replaced();
         let n = snap.profiles.len();
@@ -816,6 +820,33 @@ mod tests {
         assert_eq!(store.dynamic_guids(), ["dyn1"], "the running dynamic profile survives; a clash goes to the snapshot");
         assert!(store.unsaved("dyn1"));
         assert_eq!(store.file_profiles().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Trust ruling: whatever a remote snapshot writes into the workgroups is marked Imported, and
+    /// it cannot carry its own marks in (13y1 Task 1 fix round 1).
+    #[test]
+    fn a_loaded_snapshot_marks_its_workgroups_imported() {
+        use crate::workgroup::{self as wg, Source};
+        let dir = std::env::temp_dir().join(format!("tandem-prefs-wg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut g, mut store) = local(&dir, "x");
+        let mut m = wg::Model::default();
+        m.add(wg::Workgroup::new_empty("mine"));
+        m.save(&mut g);
+        let mine = m.workgroups[0].unique_identifier.clone();
+        let other = wg::Workgroup::new_empty("remote");
+        let other_id = other.unique_identifier.clone();
+        let snap = Snapshot {
+            settings: map(&[(wg::KEY, Value::String(wg::encode(&[other]))), (wg::KEY_IMPORTED, Value::String(String::new()))]),
+            default: "s1".into(),
+            profiles: vec![map(&[("Guid", Value::String("s1".into())), ("Name", Value::String("S".into()))])],
+        };
+        apply_snapshot(&snap, &mut g, &mut store);
+        let (back, _) = wg::Model::load(&g);
+        assert_eq!(back.workgroups.len(), 1);
+        assert_eq!(back.source_of(&other_id), Source::Import);
+        assert!(back.get(&mine).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -94,6 +94,9 @@ pub enum Kind {
     /// A password manager account's display string, from a pop-up of the cached names
     /// (`PasswordTrigger`'s `paramIsPopupButton`).
     Accounts,
+    /// A workgroup's id, from a pop-up of the configured workgroups sorted by name
+    /// (`EnterWorkgroupTrigger.paramIsPopupButton`).
+    Workgroup,
 }
 
 /// An action as iTerm2's Triggers editor lists it.
@@ -109,10 +112,15 @@ pub struct ActionInfo {
     pub multi_fire: bool,
     /// The milestone that brings it (0: not planned yet); None when it works now.
     pub later: Option<u8>,
+    /// Exit Workgroup's "leader only" check box (`hasLeaderOnlyOption`), stored in the event params.
+    pub leader_only_option: bool,
+    /// Offered only for a regex and the events that have a live session to act on (every event
+    /// but Session Ended): the two workgroup actions (`allowedMatchTypes`).
+    pub live_session_only: bool,
 }
 
 const fn act(class: &'static str, title: &'static str, kind: Kind, placeholder: &'static str, idempotent: bool) -> ActionInfo {
-    ActionInfo { class, title, kind, placeholder, idempotent, multi_fire: false, later: None }
+    ActionInfo { class, title, kind, placeholder, idempotent, multi_fire: false, later: None, leader_only_option: false, live_session_only: false }
 }
 
 const BOUNCE: &[(&str, i64)] = &[("Bounce Until Activated", 0), ("Bounce Once", 1)];
@@ -126,8 +134,8 @@ pub const CATALOG: &[ActionInfo] = &[
     act("iTermBufferInputTrigger", "Buffer Input\u{2026}", Kind::Popup(BUFFER), "", true),
     act("CaptureTrigger", "Capture Output", Kind::Text, "Coprocess to run on activation", false),
     act("iTermSGRTrigger", "Change Style\u{2026}", Kind::Text, "Enter SGR codes. See help button for details.", false),
-    ActionInfo { later: Some(0), ..act("iTermEnterWorkgroupTrigger", "Enter Workgroup\u{2026}", Kind::Text, "", true) },
-    ActionInfo { later: Some(0), ..act("iTermExitWorkgroupTrigger", "Exit Workgroup", Kind::None, "", true) },
+    ActionInfo { live_session_only: true, ..act("iTermEnterWorkgroupTrigger", "Enter Workgroup\u{2026}", Kind::Workgroup, "", true) },
+    ActionInfo { live_session_only: true, leader_only_option: true, ..act("iTermExitWorkgroupTrigger", "Exit Workgroup", Kind::None, "", true) },
     act("iTermFoldTrigger", "Fold to Named Mark", Kind::Text, "Name of Mark", false),
     act("iTermHighlightLineTrigger", "Highlight Line\u{2026}", Kind::TwoColors, "", true),
     ActionInfo { multi_fire: true, ..act("HighlightTrigger", "Highlight Text\u{2026}", Kind::TwoColors, "", true) },
@@ -160,6 +168,72 @@ pub const SYNONYMS: &[(&str, &str)] = &[("GrowlTrigger", "iTermUserNotificationT
 pub fn action_info(class: &str) -> Option<&'static ActionInfo> {
     let class = SYNONYMS.iter().find(|(old, _)| *old == class).map_or(class, |(_, new)| new);
     CATALOG.iter().find(|a| a.class == class)
+}
+
+/// The key Exit Workgroup keeps its leader-only flag under, in the trigger's event params
+/// (`ExitWorkgroupTrigger.leaderOnlyParamKey`).
+pub const LEADER_ONLY_KEY: &str = "leaderOnly";
+
+/// The longest workgroup id a trigger's parameter may hold: ids are Tandem's own uuids or
+/// `builtin.` names, so anything longer is not one.
+pub const MAX_WORKGROUP_ID: usize = 128;
+
+/// A workgroup's name as the pop-up and the description show it (`EWT:67-79`): "Untitled" for none.
+fn workgroup_name(name: &str) -> &str {
+    if name.is_empty() { "Untitled" } else { name }
+}
+
+/// The configured workgroups, (id, name), in the pop-up's order: by shown name, case-insensitive
+/// (`localizedCaseInsensitiveCompare:`), the id breaking a tie.
+pub fn sorted_workgroups(workgroups: &[(String, String)]) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = workgroups.to_vec();
+    v.sort_by_key(|(id, name)| (workgroup_name(name).to_lowercase(), id.clone()));
+    v
+}
+
+/// The workgroup a trigger enters: its parameter, or, when empty, the first in the pop-up's
+/// order (what the pop-up visibly shows, `EWT:48-66`). None when there is neither.
+pub fn effective_workgroup(param: &str, workgroups: &[(String, String)]) -> Option<String> {
+    if !param.is_empty() {
+        return Some(param.to_string());
+    }
+    sorted_workgroups(workgroups).into_iter().next().map(|(id, _)| id)
+}
+
+/// The label for the workgroup the parameter names (`EWT:67-79`): "(unset)" for none, "(missing)"
+/// for one that is not configured, "Untitled" for a nameless one, else its name. The name is the
+/// person's or an import's, so it is made inert before it is shown.
+pub fn enter_workgroup_label(param: &str, workgroups: &[(String, String)]) -> String {
+    let Some(id) = effective_workgroup(param, workgroups) else { return "(unset)".into() };
+    match workgroups.iter().find(|(i, _)| *i == id) {
+        Some((_, name)) => crate::inert_files::display_text(workgroup_name(name), 128, false),
+        None => "(missing)".into(),
+    }
+}
+
+/// "Enter Workgroup \u{201c}<label>\u{201d}" (`EWT:25-27`).
+pub fn enter_workgroup_description(label: &str) -> String {
+    format!("Enter Workgroup \u{201c}{label}\u{201d}")
+}
+
+/// The events an action is offered for: every event, except that the two workgroup actions need
+/// a live session and so leave out Session Ended (`allowedMatchTypes`). A regex match is always
+/// allowed.
+pub fn allowed_events(class: &str) -> Vec<crate::trigger_events::EventKind> {
+    use crate::trigger_events::EventKind;
+    let live = action_info(class).is_some_and(|a| a.live_session_only);
+    EventKind::ALL.iter().copied().filter(|e| !(live && *e == EventKind::SessionEnded)).collect()
+}
+
+/// Whether a trigger of this action may match this way (a stored one from an import may not).
+pub fn allows_match_type(class: &str, match_type: i64) -> bool {
+    if !action_info(class).is_some_and(|a| a.live_session_only) {
+        return true;
+    }
+    match crate::trigger_events::EventKind::from_match_type(match_type) {
+        Some(e) => allowed_events(class).contains(&e),
+        None => match_type == 0,
+    }
 }
 
 /// iTerm2's plain parameter: `\0` to `\8` are the capture groups (a missing one is empty;
@@ -533,6 +607,45 @@ mod tests {
         assert_eq!(p.take_dropped(), 41, "the newest were dropped, counted once");
         assert_eq!(p.take_dropped(), 0);
         assert_eq!(p.finished(), Some("w".into()), "the oldest waits first");
+    }
+
+    /// Review Focus 7: the two workgroup triggers as iTerm2 has them (`EWT`, `XWT`).
+    #[test]
+    fn workgroup_triggers_follow_iterm2() {
+        use crate::trigger_events::EventKind;
+        let enter = action_info("iTermEnterWorkgroupTrigger").unwrap();
+        assert_eq!((enter.later, enter.idempotent, enter.title, enter.kind), (None, true, "Enter Workgroup\u{2026}", Kind::Workgroup));
+        assert!(!enter.leader_only_option);
+        let exit = action_info("iTermExitWorkgroupTrigger").unwrap();
+        assert_eq!((exit.later, exit.idempotent, exit.title, exit.kind), (None, true, "Exit Workgroup", Kind::None));
+        assert!(exit.leader_only_option, "the leader-only check box");
+        assert_eq!(LEADER_ONLY_KEY, "leaderOnly");
+        assert_eq!(enter_workgroup_label("", &[]), "(unset)");
+        assert_eq!(enter_workgroup_label("x", &[("y".into(), "Y".into())]), "(missing)");
+        assert_eq!(enter_workgroup_label("y", &[("y".into(), String::new())]), "Untitled");
+        assert_eq!(enter_workgroup_label("y", &[("y".into(), "Why".into())]), "Why");
+        assert_eq!(enter_workgroup_description("Why"), "Enter Workgroup \u{201c}Why\u{201d}");
+        let two = [("b".to_string(), "Beta".to_string()), ("a".to_string(), "Alpha".to_string())];
+        assert_eq!(effective_workgroup("", &two), Some("a".to_string()), "empty falls back to the first by sorted name");
+        assert_eq!(effective_workgroup("b", &two), Some("b".to_string()));
+        assert_eq!(effective_workgroup("", &[]), None);
+        assert_eq!(enter_workgroup_label("", &two), "Alpha", "the label shows what the pop-up shows");
+        let mixed = [("1".to_string(), "bravo".to_string()), ("2".to_string(), "Alpha".to_string()), ("3".to_string(), String::new())];
+        assert_eq!(sorted_workgroups(&mixed).iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(), ["2", "1", "3"], "case-insensitive; Untitled sorts as Untitled");
+        // Session Ended has no live session to act on: not offered for either; every other event is.
+        for class in ["iTermEnterWorkgroupTrigger", "iTermExitWorkgroupTrigger"] {
+            let events = allowed_events(class);
+            assert!(!events.contains(&EventKind::SessionEnded), "{class}");
+            assert_eq!(events.len(), EventKind::ALL.len() - 1);
+            assert!(allows_match_type(class, 0) && allows_match_type(class, EventKind::JobStarted.match_type()));
+            assert!(!allows_match_type(class, EventKind::SessionEnded.match_type()));
+        }
+        assert_eq!(allowed_events("BellTrigger").len(), EventKind::ALL.len());
+        assert!(allows_match_type("BellTrigger", EventKind::SessionEnded.match_type()));
+        // A name an import chose cannot disguise the label.
+        assert_eq!(enter_workgroup_label("y", &[("y".into(), "A\u{202e}B".into())]), "AB");
+        // Imported ones still arrive off.
+        assert!(!imports_enabled("iTermEnterWorkgroupTrigger") && !imports_enabled("iTermExitWorkgroupTrigger"));
     }
 
     #[test]

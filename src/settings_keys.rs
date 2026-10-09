@@ -243,6 +243,8 @@ pub enum HotkeySlot {
     OpenQuickly,
     /// The Session Hotkey row of Edit Session.
     Session,
+    /// A shortcut of the Workgroups editor (peer and toolbar shortcuts).
+    Workgroup,
 }
 
 /// The binding editors' state, kept by the settings window.
@@ -431,7 +433,7 @@ fn menu_combo(ui: &mut egui::Ui, salt: &str, text: &mut String, pointer: bool) -
 fn toggle_choices() -> Vec<(String, bool, String)> {
     let bools = |list: &'static [Setting], is_profile: bool| {
         list.iter()
-            .filter(|s| s.kind == Kind::Bool && !s.macos_only && crate::ai_settings::toggle_allowed(&s.key))
+            .filter(|s| s.kind == Kind::Bool && !s.macos_only && crate::ai_settings::toggle_allowed(&s.key) && crate::workgroup::toggle_allowed(&s.key))
             .map(move |s| (s.key.clone(), is_profile, s.label.clone()))
     };
     bools(schema::global(), false).chain(bools(schema::profile(), true)).collect()

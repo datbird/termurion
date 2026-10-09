@@ -146,6 +146,10 @@ pub struct Snapshot {
     /// The keys (A-Z, 0-9) some saved profile's Shortcut claims for Ctrl+Win+<key>
     /// (`claimed_shortcuts`), rebuilt with the Profiles menu.
     pub profile_shortcuts: Vec<char>,
+    /// A workgroup has a peer group: Alt+Shift+Win+1..9 are Tandem's (13y1 Task 4).
+    pub peer_digits: bool,
+    /// The forms of the peers' custom shortcuts that have Win in them.
+    pub peer_keys: HashSet<String>,
 }
 
 impl Snapshot {
@@ -169,7 +173,7 @@ impl Snapshot {
                 }
             }
         }
-        Snapshot { keys, user, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, respect_system: false, profile_shortcuts: Vec::new() }
+        Snapshot { keys, user, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, respect_system: false, profile_shortcuts: Vec::new(), peer_digits: false, peer_keys: HashSet::new() }
     }
 }
 
@@ -194,6 +198,10 @@ pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     let mut typed = p.stroke.clone();
     typed.char_is_modified = true;
     let (a, b) = (p.stroke.legacy(), typed.modified_key());
+    // A workgroup's peer shortcuts are Tandem's, after a mapping and before a menu command.
+    if (s.peer_digits && crate::workgroup_peers::chord_digit(chord).is_some()) || s.peer_keys.contains(&a) || s.peer_keys.contains(&b) {
+        return true;
+    }
     let menu = crate::commands::command_for_chord(chord).is_some();
     // 13t: a profile shortcut claims Ctrl+Win+<key> and counts as a menu command (R7);
     // `claimed_shortcuts` never holds a chord the shell keeps, so it never takes one from Windows.

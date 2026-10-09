@@ -6,12 +6,20 @@ use crate::arrangements::{self, Store};
 use crate::globals::Globals;
 use crate::layout::{Axis, Tree};
 
+/// The page's two sub-tabs (`PreferencePanel.xib:10244`, `:10343`).
+pub fn tab_titles() -> [&'static str; 2] {
+    ["Arrangements", "Workgroups"]
+}
+
 /// The page's own state between frames.
 #[derive(Default)]
 pub struct State {
     selected: Option<String>,
     rename: String,
     profile: Option<String>,
+    /// The sub-tab shown: 0 Arrangements, 1 Workgroups.
+    tab: usize,
+    workgroups: crate::workgroup_editor_ui::EditorState,
 }
 
 fn load(g: &Globals) -> Store {
@@ -47,8 +55,25 @@ fn draw_tree(p: &egui::Painter, t: &Tree<Value>, r: egui::Rect, stroke: egui::St
     }
 }
 
-/// The page. `profiles` are (guid, name, values). True when the arrangements changed.
-pub fn page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String, toml::Table)], st: &mut State) -> bool {
+/// The page. `profiles` are (guid, name, values). True when the arrangements or the workgroups
+/// changed.
+pub fn page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String, toml::Table)], keys: &mut crate::settings_keys::KeysState, st: &mut State) -> bool {
+    ui.horizontal(|ui| {
+        for (i, title) in tab_titles().iter().enumerate() {
+            ui.selectable_value(&mut st.tab, i, *title);
+        }
+    });
+    ui.separator();
+    if st.tab == 1 {
+        let list: Vec<(String, String)> = profiles.iter().map(|p| (p.0.clone(), p.1.clone())).collect();
+        st.workgroups.browser = profiles.iter().filter(|p| p.2.get("Custom Command").and_then(|v| v.as_str()).is_some_and(crate::browser::is_browser)).map(|p| p.0.clone()).collect();
+        st.workgroups.dynamic = profiles.iter().filter(|p| p.2.get(crate::dynamic_profiles::DYNAMIC_KEY).and_then(|v| v.as_bool()).unwrap_or(false)).map(|p| p.0.clone()).collect();
+        return crate::workgroup_editor_ui::page(ui, g, &list, keys, &mut st.workgroups);
+    }
+    arrangements_page(ui, g, profiles, st)
+}
+
+fn arrangements_page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String, toml::Table)], st: &mut State) -> bool {
     let mut store = load(g);
     let mut changed = false;
     ui.heading("Arrangements");

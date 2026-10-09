@@ -55,7 +55,10 @@ pub fn is_hidden(c: char) -> bool {
     let bidi = matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
     let unseen = matches!(c, '\u{2028}' | '\u{2029}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{206f}' | '\u{feff}');
     let format = matches!(c, '\u{ad}' | '\u{600}'..='\u{605}' | '\u{6dd}' | '\u{70f}' | '\u{fff9}'..='\u{fffb}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0000}'..='\u{e007f}');
-    c.is_control() || bidi || unseen || format
+    // The whole Unicode format class, from the crate's table, never a hand list (the list above
+    // stays for the characters that are not Cf: line and paragraph separators, the interlinear marks).
+    let cf = unicode_general_category::get_general_category(c) == unicode_general_category::GeneralCategory::Format;
+    c.is_control() || bidi || unseen || format || cf
 }
 
 /// THE sanitizer for text a program supplied and Tandem shows (badge text, alert text, host
@@ -249,5 +252,23 @@ mod tests {
         assert!(mark_strict(&dir, None).is_err());
         assert!(mark_strict(&dir.join("no").join("b.txt"), None).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every Unicode format character (General_Category Cf) is hidden, not a hand list of them: the
+    /// ones a list misses (Arabic marks above, Kaithi, Egyptian hieroglyph controls, shorthand
+    /// controls) can disguise a command as well as a bidi override.
+    #[test]
+    fn every_format_character_is_hidden() {
+        for c in ['\u{890}', '\u{891}', '\u{8e2}', '\u{110bd}', '\u{110cd}', '\u{13430}', '\u{1343f}', '\u{1bca0}', '\u{1bca3}', '\u{61c}', '\u{180e}', '\u{202e}', '\u{2066}'] {
+            assert!(is_hidden(c), "{:#x}", c as u32);
+            assert_eq!(display_text(&format!("a{c}b"), 10, false), "ab", "{:#x}", c as u32);
+        }
+        // Cf lives in planes 0, 1 and 14 only.
+        for c in (0..=0x1ffffu32).chain(0xe0000..=0xe0fff).filter_map(char::from_u32) {
+            if unicode_general_category::get_general_category(c) == unicode_general_category::GeneralCategory::Format {
+                assert!(is_hidden(c), "Cf {:#x}", c as u32);
+            }
+        }
+        assert!(!is_hidden('a') && !is_hidden(' ') && !is_hidden('\u{e9}'));
     }
 }

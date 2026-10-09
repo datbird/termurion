@@ -1175,6 +1175,8 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("app/workgroup_toolbar_ui.rs", "usage_report_answered", "opens the fixed issue form; the person's click on Report Bug, the query holds only the report Tandem built"),
+        ("app/workgroup_toolbar_ui.rs", "run_usage", "runs `claude.exe` from the path or the item's own command line (the person's settings, never pane text), with no substitution"),
         ("app/browser_app.rs", "open_link", "takes a Run::Open from guard_open or a web_link; its callers (execute_with, open_selection_url, open_link_split) are checked"),
         ("app/browser_app.rs", "open_link_answered", "the answer to the ask open_link raised for a link it had settled"),
         ("app/browser_app.rs", "upsell_answered", "the answer to the upsell open_link raised; opens the fixed plugin page or the link it settled"),

@@ -385,10 +385,12 @@ fn wide_dir(cwd: Option<&std::path::Path>) -> Option<Vec<u16>> {
 /// The null environment (inherit ours) unless there is something to add. Never logged: it can
 /// hold the session's API cookie.
 fn env_block(env: &[String]) -> Option<Vec<u16>> {
-    (!env.is_empty()).then(|| {
-        let ours = std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
-        crate::session_env::block(&crate::session_env::merge(ours, env))
-    })
+    (!env.is_empty()).then(|| block_over(std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect(), env))
+}
+
+/// The block a child gets: `env` merged over the inherited `ours`.
+fn block_over(ours: Vec<(String, String)>, env: &[String]) -> Vec<u16> {
+    crate::session_env::block(&crate::session_env::merge(ours, env))
 }
 
 /// Starts the child on two anonymous pipes with no console (`Transport::Pipes`): its stdin is
@@ -758,6 +760,37 @@ impl Drop for Pty {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// 13y1 Task 6 item 1 round 3: a git launch's removals reach the child. The block is made the way a
+    /// pane's is: the session's variables, the POSIX ones and TERM, the launch's entries applied last
+    /// (`session_env::launch_last`), merged over an inherited environment that holds every variable a
+    /// launch removes. None of them is in the final block; the launch's own values are.
+    #[test]
+    fn a_launch_env_survives_into_the_block() {
+        let removed = [
+            "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS",
+            "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_EXEC_PATH", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND",
+        ];
+        let mut inherited: Vec<(String, String)> = removed.iter().enumerate().map(|(i, n)| (if i % 2 == 0 { n.to_string() } else { n.to_lowercase() }, "C:\\evil\\calc.exe".to_string())).collect();
+        inherited.push(("Path".into(), "C:\\W".into()));
+        inherited.push(("GIT_PAGER".into(), "calc".into()));
+        let features = "F";
+        let facts = crate::session_env::Facts { window: 0, tab: 0, pane: 0, id: "1", profile_name: "P", cookie: None, term_features: features, lc_terminal: true, path: None, ssh_path: None, ssh_transport: None };
+        let mut session = crate::session_env::vars(&facts);
+        session.extend(crate::session_env::posix_vars(&crate::session_env::Posix { colorfgbg: Some("15;0".into()), ..Default::default() }));
+        session.push("TERM=xterm-256color".into());
+        let mut launch = crate::git_state::launch_env();
+        launch.insert(0, "ITERM_WORKGROUP_ID=wg-1".into());
+        let env = crate::session_env::launch_last(session, &launch);
+        let block = String::from_utf16(&super::block_over(inherited, &env)).unwrap();
+        let names: Vec<(String, String)> = block.split('\0').filter(|e| !e.is_empty()).filter_map(|e| e.split_once('=')).map(|(n, v)| (n.to_uppercase(), v.to_string())).collect();
+        for gone in removed {
+            assert!(!names.iter().any(|(n, _)| n == gone), "{gone} reached the child: {names:?}");
+        }
+        for (n, v) in [("GIT_PAGER", "cat"), ("PAGER", "cat"), ("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_TERMINAL_PROMPT", "0"), ("ITERM_WORKGROUP_ID", "wg-1"), ("PATH", "C:\\W"), ("TERM", "xterm-256color")] {
+            assert!(names.iter().any(|(k, x)| k == n && x == v), "{n}={v} in {names:?}");
+        }
+    }
 
     /// Round 3: CreateProcessW opens the working folder, so a share or a path the judge refuses
     /// never becomes one (the home folder takes its place when it passes).

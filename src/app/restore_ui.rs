@@ -174,7 +174,17 @@ impl App {
         for w in windows.iter_mut() {
             sessions_mut(w, &mut sessions);
         }
-        let keys: Vec<Option<crate::reattach::HostKey>> = sessions.iter().map(|s| s.get(restore_state::HOST_KEY).and_then(parse_host_key)).collect();
+        let mut keys: Vec<Option<crate::reattach::HostKey>> = sessions.iter().map(|s| s.get(restore_state::HOST_KEY).and_then(parse_host_key)).collect();
+        // A workgroup's buried members are embedded in its shown member's session: their hosted shells
+        // are claimed too, or each would come back as an orphan tab of its own.
+        let parents = sessions.len();
+        let mut owners: Vec<(usize, usize)> = Vec::new();
+        for (i, s) in sessions.iter().enumerate() {
+            for (k, m) in crate::workgroup_restore::embedded(s).into_iter().enumerate() {
+                owners.push((i, k));
+                keys.push(m.get(restore_state::HOST_KEY).and_then(parse_host_key));
+            }
+        }
         let plan = crate::reattach::plan(&keys, saved_instance, &welcome.instance, &welcome.sessions);
         for (i, id, since) in &plan.attach {
             let pid = keys[*i].as_ref().map_or(0, |k| k.pid);
@@ -182,9 +192,15 @@ impl App {
             t.insert("Id".into(), Value::Integer(*id as i64));
             t.insert("Pid".into(), Value::Integer(pid as i64));
             t.insert("Since".into(), Value::Integer(*since as i64));
-            sessions[*i].insert(crate::arrangement::ATTACH_KEY.into(), Value::Table(t));
-            // The job came back: no "Session Contents Restored" banner (iTerm2).
-            sessions[*i].remove(crate::arrangement::BANNER_KEY);
+            let target = match i.checked_sub(parents) {
+                None => Some(&mut *sessions[*i]),
+                Some(n) => owners.get(n).and_then(|(p, k)| crate::workgroup_restore::embedded_mut(&mut *sessions[*p]).into_iter().nth(*k)),
+            };
+            if let Some(target) = target {
+                target.insert(crate::arrangement::ATTACH_KEY.into(), Value::Table(t));
+                // The job came back: no "Session Contents Restored" banner (iTerm2).
+                target.remove(crate::arrangement::BANNER_KEY);
+            }
         }
         for id in &plan.forget {
             host.forget(*id);
@@ -254,6 +270,9 @@ fn mark_adoptable(windows: &mut [Value]) {
     }
     for s in sessions {
         crate::arrangement::mark_adoptable(s);
+        for m in crate::workgroup_restore::embedded_mut(s) {
+            crate::arrangement::mark_adoptable(m);
+        }
     }
 }
 
@@ -320,6 +339,11 @@ fn mark_banner(v: &mut Value, line: &str) {
                 if let Some(Value::Table(s)) = t.get_mut("Session") {
                     if s.contains_key(crate::arrangement::STYLED_KEY) {
                         s.insert(crate::arrangement::BANNER_KEY.into(), Value::String(line.into()));
+                    }
+                    for m in crate::workgroup_restore::embedded_mut(s) {
+                        if m.contains_key(crate::arrangement::STYLED_KEY) {
+                            m.insert(crate::arrangement::BANNER_KEY.into(), Value::String(line.into()));
+                        }
                     }
                 }
                 return;

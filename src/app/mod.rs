@@ -228,6 +228,11 @@ mod ssh_framer_app;
 mod ssh_files_app;
 mod ssh_panel_app;
 mod ssh_url_app;
+mod workgroup_app;
+mod workgroup_git_app;
+mod workgroup_restore_app;
+mod code_review_app;
+mod workgroup_toolbar_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -423,6 +428,16 @@ pub struct App {
     /// Global bindings to Do Not Remap Modifiers, for the hook.
     exempt_map: Arc<std::sync::RwLock<toml::Table>>,
     globals: Globals,
+    /// The workgroups (13y1): the definitions, their latches and where each came from. Read by the
+    /// editor, the menu and the entry code of the later tasks.
+    workgroup_model: crate::workgroup::Model,
+    /// The live workgroup instances, app-wide (13y1): every member pane keeps `Pane.workgroup`.
+    /// Not per window.
+    workgroups: workgroup_app::Instances,
+    /// `NAME=value` variables the next pane gets after the REPL's (`ITERM_WORKGROUP_ID`). Set by
+    /// one workgroup spawn, read once by `session_env` and emptied; a launch override it is not
+    /// (the REPL's `start_env_override` suppresses Initial Text and injection, this does not).
+    start_extra_env: Vec<String>,
     /// The Leader was pressed; the next key carries the Leader flag.
     leader_on: bool,
     mru: Mru,
@@ -1007,6 +1022,8 @@ pub struct App {
     /// Each pane's pastes being written (the queue, how they are written, and whether the
     /// progress bar shows), and pastes waiting on a question.
     pastes: HashMap<PaneId, (crate::paste::Queue, crate::broadcast::Write, bool)>,
+    /// Literal writes waiting for a pane's pastes to drain (13y1 Task 7: the auto-send's Return).
+    paste_after: Vec<paste_ui::LiteralAfter>,
     paste_asks: HashMap<PaneId, paste_ui::Asking>,
     /// Paste history (read on first use), its popup, Advanced Paste (the pane it pastes
     /// into; whether it came from the menu), and an "Advanced..." waiting for the loop.
@@ -1997,6 +2014,14 @@ pub fn run() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
     }
+    // The workgroups, with their one-time migrations; written back only when something changed.
+    let (mut workgroup_model, workgroups_changed) = crate::workgroup::Model::load(&globals);
+    if workgroups_changed {
+        workgroup_model.save(&mut globals);
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+    }
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
@@ -2061,6 +2086,9 @@ pub fn run() {
         route_snapshot: Arc::new(std::sync::RwLock::new(keyroute::Snapshot::default())),
         exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
         globals,
+        workgroup_model,
+        workgroups: Default::default(),
+        start_extra_env: Vec::new(),
         leader_on: false,
         mru: Mru::default(),
         next_tab_id: 1,
@@ -2322,6 +2350,7 @@ pub fn run() {
         started: Instant::now(),
         uploads: HashMap::new(),
         pastes: HashMap::new(),
+        paste_after: Vec::new(),
         paste_asks: HashMap::new(),
         paste_history: None,
         snippets: snippets_ui::load_snippets(),
@@ -3715,7 +3744,7 @@ impl App {
         if self.panes.get(&id).is_some_and(|p| p.exited.is_some() && !p.live_survivors().is_empty()) {
             return;
         }
-        self.restart_confirmed(id);
+        self.restart_launching(id);
     }
 
     /// A restart asked for by `via` (13q B7): what it does first follows `restart_step`. A running
@@ -3750,6 +3779,23 @@ impl App {
     }
 
     /// The restart itself, after whatever question it needed was answered.
+    fn restart_launching(&mut self, id: PaneId) {
+        // A workgroup member restarts with its own command and its instance's environment.
+        let launch = self.workgroup_launch(id);
+        if matches!(launch, workgroup_app::MemberLaunch::Refused) {
+            return;
+        }
+        if let workgroup_app::MemberLaunch::Run { command, env } = &launch {
+            self.start_command_override = command.clone();
+            self.start_extra_env = env.clone();
+        }
+        self.restart_confirmed(id);
+        if matches!(launch, workgroup_app::MemberLaunch::Run { .. }) {
+            self.start_command_override = None;
+            self.start_extra_env.clear();
+        }
+    }
+
     fn restart_confirmed(&mut self, id: PaneId) {
         if !self.restartable(id) {
             return;
@@ -3758,7 +3804,9 @@ impl App {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
             tab.layout.rects(self.pane_area_for(tab), self.gap()).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
         };
-        let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
+        // A hidden workgroup peer (in no layout) starts at the content area's size and takes its slot's when shown.
+        let hidden_peer = || self.panes.get(&id).is_some_and(|p| p.workgroup.is_some()) && self.pane_window_id(id).is_none();
+        let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())).or_else(|| hidden_peer().then(|| self.content_area())) else { return };
         // A timer for this pane is stale now (`maybeReplaceTerminatedShellWithNewInstance` checks `_exited`).
         self.pending_restarts.remove(&id);
         // Instant Replay closes first; the new shell starts live.
@@ -3771,7 +3819,7 @@ impl App {
         self.bump_initial_text(id);
         // A live shell ends first, as iTerm2's does (`PS:3863-3871`), with the words under its
         // text; a start that then fails leaves an ended pane.
-        if self.panes.get(&id).is_some_and(|p| p.exited.is_none()) {
+        if self.panes.get(&id).is_some_and(|p| p.exited.is_none() && p.shell_pid().is_some()) {
             let custom = self.globals.string("sessionEndMessageText");
             let text = crate::session_end::restarted_text(&custom, &self.globals.string("SessionRestartedMessageText"));
             let divider = self.globals.string("SessionEndMessageDividerCharacter");
@@ -3858,7 +3906,7 @@ impl App {
         let Some(now) = self.panes.get(&id).map(|p| p.restart_subject()) else { return };
         self.enter_pane_window(id);
         match crate::session_end::answer_step(asked, &now) {
-            crate::session_end::AnswerStep::Restart => self.restart_confirmed(id),
+            crate::session_end::AnswerStep::Restart => self.restart_launching(id),
             crate::session_end::AnswerStep::AskAgain => {
                 self.restart_via(id, crate::session_end::Via::Menu);
             }
@@ -3879,8 +3927,11 @@ impl App {
         let (tab, pane) = crate::session_env::numbers(&counts, holding, self.start_tab);
         // The REPL's variables (`start_env_override`) carry its own cookie, which then is the
         // pane's (it leaves the jar with the pane); no Session cookie is minted beside it.
-        let extra = self.start_env_override.clone().unwrap_or_default();
+        let mut extra = self.start_env_override.clone().unwrap_or_default();
         let given = extra.iter().find_map(|e| e.strip_prefix("ITERM2_COOKIE=")).map(str::to_string);
+        // A launch's own entries (a workgroup member's, a git launch's removals) are applied again last.
+        let launch = std::mem::take(&mut self.start_extra_env);
+        extra.extend(launch.iter().cloned());
         let cookie = given.or_else(|| {
             (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
                 .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session))
@@ -3923,7 +3974,7 @@ impl App {
         let posix = self.posix(p, cmd, term.is_some());
         env.extend(crate::session_env::posix_vars(&posix));
         env.extend(term);
-        (env, cookie)
+        (crate::session_env::launch_last(env, &launch), cookie)
     }
 
     /// The POSIX variables a session on `cmd` gets: `COLORFGBG` from the profile's palette, the
@@ -4452,6 +4503,8 @@ impl App {
     /// settle, or the next pass), so a script's request that changed them is answered first.
     pub(super) fn globals_changed(&mut self, api_now: bool) {
         self.save_globals();
+        // The workgroups editor wrote "Workgroups" and its marks: the running model follows.
+        self.workgroup_model = crate::workgroup::Model::load(&self.globals).0;
         // Job updates wait on a job's exit, or only poll (Advanced > Experimental Features).
         self.jobs.set_fast_updates(self.globals.bool("FastForegroundJobUpdates"));
         self.jobs.set_ancestry_diagnostics(self.globals.bool("LogForegroundJobAncestryDiagnostics"));
@@ -4826,6 +4879,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // Any member of a workgroup ending takes the instance down (`WI:257-296`).
+        self.workgroup_member_ended(id);
         // The pane's own window is current for all that follows: an archive of a pane closed in
         // a background window is built from that window's frame, style and title.
         self.enter_pane_window(id);
@@ -5263,6 +5318,8 @@ impl App {
         snapshot.composer = self.composer_has_keys();
         snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
         snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
+        (snapshot.peer_digits, snapshot.peer_keys) = self.peer_route_keys();
+        snapshot.peer_keys.extend(self.toolbar_route_keys());
         *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
@@ -5394,6 +5451,14 @@ impl App {
         if self.composer_key(ev) {
             return;
         }
+        // A workgroup's base field with the keyboard takes its keys, releases too.
+        if self.base_field_key(ev) {
+            return;
+        }
+        // A review member's prompt field with the keyboard takes its keys, releases too.
+        if self.review_overlay_key(ev) {
+            return;
+        }
         // A browser pane's address field takes its keys, releases too; Ctrl+L and F6 focus it.
         if self.browser_key(ev) {
             return;
@@ -5488,6 +5553,18 @@ impl App {
             }
             Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
             Route::Terminal => {
+                // After the global bindings (the route above): a workgroup's peer shortcuts, then the
+                // toolbar's (Task 5) and the menu's.
+                if self.peer_key(&press.stroke, chord) {
+                    self.relayout();
+                    return;
+                }
+                if let Some(pane) = self.focused_id().filter(|p| self.workgroup_toolbar_member(*p)) {
+                    if self.workgroup_toolbar_shortcut(pane, &press.stroke) {
+                        self.relayout();
+                        return;
+                    }
+                }
                 if let Some(c) = chord {
                     // A menu chord, then a profile's Ctrl+Win shortcut (`keyroute::terminal_chord`);
                     // neither sends bytes to the session, so neither clears a selection (S10).
@@ -5656,6 +5733,22 @@ impl App {
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
             }
             return;
+        }
+        // A Diff member's waiting panel covers its terminal: every press on it is its own.
+        if self.review_overlay_press(button, x, y) {
+            return;
+        }
+        if self.diff_overlay_press(button, x, y) {
+            return;
+        }
+        // A workgroup member's session toolbar, before a browser pane's (they never overlap).
+        if let Some(pane) = self.workgroup_toolbar_at(x, y) {
+            if button == MouseButton::Left && self.workgroup_toolbar_press(pane, x, y, event_loop) {
+                return;
+            }
+            if button != MouseButton::Left {
+                return;
+            }
         }
         // A browser pane's toolbar, and the suggestions list under its address field.
         if let Some(pane) = self.browser_bar_at(x, y) {
@@ -6501,6 +6594,9 @@ impl App {
         }
         self.draw_toolbelt(&mut frame, cell);
         self.draw_title_bars(&mut frame, cell);
+        self.draw_workgroup_toolbars(&mut frame, cell);
+        self.draw_diff_overlays(&mut frame, cell);
+        self.draw_review_overlays(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         // After the bars, so the overlay cuts their text out (P22).
         overlay_drawn.extend(self.draw_pane_move(&mut frame, cell).into_iter().map(|r| (mouse::Overlay::PaneMove, r)));
@@ -7197,6 +7293,7 @@ impl ApplicationHandler<UserEvent> for App {
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
+        let workgroup_due = self.tick_workgroups(event_loop);
         let restart_due = self.tick_restarts();
         self.tick_progress();
         let progress_due = self.progress_wake();
@@ -7212,7 +7309,7 @@ impl ApplicationHandler<UserEvent> for App {
         let command_due = self.command_click_tick();
         // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
-        let wake = [jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -7329,7 +7426,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;
@@ -8233,6 +8330,20 @@ mod tests {
         let term = body.find("let term = crate::session_env::term_var(").expect("TERM is decided first");
         assert!(term < body.find("self.posix(p, cmd, term.is_some())").unwrap());
         assert!(body.find("posix_vars(&posix)").unwrap() < body.find("env.extend(term)").unwrap(), "TERM= still goes last");
+    }
+
+    /// 13y1 Task 7 round 4: a launch's own entries (a git launch's `-NAME` removals) are applied after
+    /// everything else the session sets, so they reach the child (`session_env::launch_last`).
+    #[test]
+    fn session_env_applies_the_launch_last() {
+        let src = include_str!("mod.rs");
+        let body = &src[src.find("    fn session_env(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        // Split so this test does not count as a second take (`workgroup_env_keeps_session_guards`).
+        let take = body.find(concat!("let launch = std::mem::take(&mut self.", "start_extra_env);")).expect("the launch is taken once");
+        let last = body.find("(crate::session_env::launch_last(env, &launch), cookie)").expect("the launch goes last");
+        assert!(take < last && body.find("env.extend(term)").unwrap() < last, "after TERM");
+        assert!(body.trim_end().ends_with("(crate::session_env::launch_last(env, &launch), cookie)"), "nothing follows it");
     }
 
     #[test]

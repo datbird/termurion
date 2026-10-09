@@ -191,6 +191,10 @@ pub fn session(cols: u16, rows: u16, profile: Table, guid: &str, cwd: Option<&st
 /// started in, which a restart reuses (`PS:4890-4896`), never OSC 7's current folder.
 pub const START_KEY: &str = "Start Directory";
 
+/// The key a workgroup's shown member saves its descriptor under (iTerm2's
+/// `SESSION_ARRANGEMENT_WORKGROUP`, `PS:343`): `workgroup_restore::Descriptor::to_value`.
+pub const WORKGROUP_KEY: &str = "Workgroup";
+
 /// The start folder a session table saves: a local drive folder only. A pane whose text came
 /// through a framing conductor (`remote`), a network or device path and anything that is not a
 /// drive path save none, so a restore never starts a shell in a folder somebody else named.

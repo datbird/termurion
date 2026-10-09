@@ -161,6 +161,19 @@ pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
     }
 }
 
+/// Whether the open file is this user's own plain single-link file with the owner-only DACL
+/// `create_owner_only` makes: owned by the user's SID, protected, one allow entry (full access)
+/// for that SID. The handle was opened with read access.
+#[cfg(windows)]
+pub fn is_owner_only(f: &File) -> bool {
+    let Ok(st) = file_stat(f) else { return false };
+    let owner_only = |sid: &str| dacl_sddl_of(f).is_ok_and(|s| s == format!("D:P(A;;FA;;;{sid})"));
+    st.is_file
+        && !st.is_reparse
+        && link_count(f).is_ok_and(|n| n == 1)
+        && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
+}
+
 /// Opens the SQLite database at a judged path (created when absent, no URI parsing, no shared
 /// mutex). The gate's one database opener: a path from outside reaches SQLite only as a `LocalPath`.
 pub fn open_database(p: &LocalPath) -> rusqlite::Result<rusqlite::Connection> {
@@ -749,7 +762,7 @@ mod tests {
         ("app/scripts_app.rs", "container_inputs", 2, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "export_one", 1, "the Desktop known folder, a free name for the export"),
         ("app/scripts_app.rs", "export_script_to", 3, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
-        ("app/scripts_app.rs", "extract_archive", 3, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
+        ("app/scripts_app.rs", "extract_archive", 2, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "finish_new_script", 1, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "import_environment_ready", 1, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "import_install", 2, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
@@ -771,11 +784,13 @@ mod tests {
         ("app/settings_export_ui.rs", "entries", 1, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "export_entity", 3, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "export_into", 3, "Tandem's own settings folders and its export and import staging folders"),
+        ("app/settings_export_ui.rs", "final_name", 1, "Tandem's own settings folders and its export and import staging folders"),
+        ("app/settings_export_ui.rs", "importable", 2, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "finish_import", 6, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "is_reparse", 1, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "restored_scripts_done", 1, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "runtime_requirements", 2, "Tandem's own settings folders and its export and import staging folders"),
-        ("app/settings_export_ui.rs", "stage_import", 4, "Tandem's own settings folders and its export and import staging folders"),
+        ("app/settings_export_ui.rs", "stage_import", 3, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "stage_scripts", 4, "Tandem's own settings folders and its export and import staging folders"),
         ("app/shell_history_ui.rs", "save_shell_history", 1, "Tandem's own shell history file"),
         ("app/shell_history_ui.rs", "shell_history", 1, "Tandem's own shell history file"),
@@ -806,7 +821,6 @@ mod tests {
         ("script_provision.rs", "download", 1, "Tandem's own runtime, download and environment folders under %APPDATA%"),
         ("script_provision.rs", "exists", 1, "Tandem's own runtime, download and environment folders under %APPDATA%"),
         ("script_provision.rs", "extract", 1, "Tandem's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "extract_watched", 1, "Tandem's own runtime, download and environment folders under %APPDATA%"),
         ("script_provision.rs", "find_file", 1, "Tandem's own runtime, download and environment folders under %APPDATA%"),
         ("script_provision.rs", "list_dirs", 2, "Tandem's own runtime, download and environment folders under %APPDATA%"),
         ("script_provision.rs", "remove", 3, "Tandem's own runtime, download and environment folders under %APPDATA%"),

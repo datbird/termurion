@@ -727,7 +727,7 @@ pub(super) struct Import {
     /// volume, so the install is a rename; removed at the end, and at the next start if Tandem
     /// ended first.
     staging: PathBuf,
-    /// The extraction's layout while tar.exe runs off the UI thread.
+    /// The extraction's layout while it is extracted off the UI thread.
     extracting: Option<std::sync::mpsc::Receiver<Result<sa::Layout, String>>>,
     layout: Option<sa::Layout>,
     /// The script's name, where it is installed, and where a replaced one was moved aside.
@@ -781,17 +781,16 @@ pub(super) fn run_tar(args: Vec<String>) -> Result<(), String> {
 pub(super) use sa::stage_entries;
 
 /// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread). Nothing
-/// that could reach outside `to` gets through: the file must be a zip whose every entry is a
-/// plain file or folder with a safe name (`zip_check`) before tar.exe sees it; after, the
-/// extracted tree must hold no link, junction or other reparse point and no file with
-/// another hard link; the script's name must be safe; and a full environment's hidden
-/// entries (`.venv`, its build and swap folders) are removed, so provisioning starts clean.
+/// that could reach outside `to` gets through: the file is read once, and its bytes must be a zip
+/// whose every entry is a plain file or folder with a safe name (`zip_check`), written by Tandem's
+/// own walk of those same bytes (`extract::zip`, never tar.exe); after, the extracted tree must hold
+/// no link, junction or other reparse point and no file with another hard link; the script's name
+/// must be safe; and a full environment's hidden entries (`.venv`, its build and swap folders) are
+/// removed, so provisioning starts clean.
 fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
-    // The archive came from outside: judged before it is read.
-    let bytes = crate::localfs::judge_io(zip).and_then(|z| crate::localfs::read(&z)).map_err(|e| sa::unzip_failed(&e.to_string()))?;
-    crate::zip_check::check(&bytes).map_err(|e| sa::unzip_failed(&e))?;
-    std::fs::create_dir_all(to).map_err(|e| sa::unzip_failed(&e.to_string()))?;
-    run_tar(sa::extract_tar_args(zip, to)).map_err(|e| sa::unzip_failed(&e))?;
+    // The archive came from outside: judged before it is read, read once.
+    let bytes = crate::extract::read_whole(zip, crate::extract::MAX_ARCHIVE).map_err(|e| sa::unzip_failed(&e))?;
+    crate::extract::zip(&bytes, to, crate::zip_check::Limits::DEFAULT).map_err(|e| sa::unzip_failed(&e))?;
     if let Some(entry) = sa::unsafe_entry(to, &stage_entries) {
         return Err(sa::unzip_failed(&sa::unsafe_entry_text(entry.strip_prefix(to).unwrap_or(&entry))));
     }
@@ -1412,7 +1411,7 @@ mod tests {
         assert_eq!(names(&staging.join("tool")), ["setup.cfg", "tool"]);
         let _ = std::fs::remove_dir_all(&staging);
 
-        // Hostile names and links are refused before tar.exe runs: nothing is extracted and
+        // Hostile names and links are refused before anything is written: nothing is extracted and
         // nothing lands beside the staging folder.
         for bad in ["../x.py", "C:/x.py", "/x.py", "tool/tool/a:b", "tool/CON"] {
             let mut entries = valid();

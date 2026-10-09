@@ -125,6 +125,12 @@ impl App {
         self.sync_checks();
     }
 
+    /// One buried member's session table for a workgroup descriptor (Task 9): the session's own value,
+    /// which never carries a descriptor of its own.
+    pub(super) fn session_value_for_restore(&self, id: PaneId, contents: Contents) -> Value {
+        self.session_value(id, contents)
+    }
+
     /// One session's table.
     fn session_value(&self, id: PaneId, contents: Contents) -> Value {
         let Some(p) = self.panes.get(&id) else { return Value::Table(Default::default()) };
@@ -178,6 +184,13 @@ impl App {
             // PS:1920: every session saves its lock.
             t.insert("Locked".into(), Value::Boolean(p.locked));
             t.extend(self.clippings_table(id));
+            // The workgroup toolbar toggles, written only when on (`PS:7445-7462`).
+            if p.auto_send_clippings {
+                t.insert(crate::workgroup::AUTO_SEND_KEY.into(), Value::Boolean(true));
+            }
+            if p.auto_request_review {
+                t.insert(crate::workgroup::AUTO_REQUEST_KEY.into(), Value::Boolean(true));
+            }
             t.extend(self.inline_table(id));
             // Session restoration keeps the pane's chat reference, so a chat's link survives a
             // relaunch; a saved arrangement, a file or a duplicate never carries it.
@@ -218,7 +231,13 @@ impl App {
     /// recording's pane is left out (iTerm2 never restores one); a tab or window with
     /// nothing else is left out whole (None).
     pub(super) fn snapshot_window(&self, contents: Contents) -> Option<Value> {
-        self.snapshot_tabs(contents, None)
+        self.snapshot_tabs(contents, None, true)
+    }
+
+    /// The window as Duplicate Window copies it: no session carries a workgroup descriptor, so the
+    /// copy never adopts the original's instance (P9).
+    pub(super) fn snapshot_window_copy(&self) -> Option<Value> {
+        self.snapshot_tabs(Contents::None, None, false)
     }
 
     /// A tab's panes without a loaded recording's (None when nothing else is left).
@@ -227,10 +246,18 @@ impl App {
     }
 
     /// One tab's table: its panes' sessions laid out in the content area.
-    fn tab_value(&self, t: &Tab, tree: &crate::layout::Tree<PaneId>, contents: Contents, selected: bool) -> Value {
+    /// `workgroups`: the shown member of a workgroup's peer group saves its descriptor (a saved
+    /// arrangement and session restoration); a duplicate and an archive carry none (P9).
+    fn tab_value(&self, t: &Tab, tree: &crate::layout::Tree<PaneId>, contents: Contents, selected: bool, workgroups: bool) -> Value {
         let area = self.content_area();
         let active = tree.leaves().iter().position(|p| **p == t.focused);
-        let tree = tree.clone().map(&mut |id| self.session_value(id, contents));
+        let tree = tree.clone().map(&mut |id| {
+            let mut v = self.session_value(id, contents);
+            if let (true, Some(d), Some(t)) = (workgroups, self.workgroup_descriptor(id, contents), v.as_table_mut()) {
+                t.insert(arrangement::WORKGROUP_KEY.into(), d);
+            }
+            v
+        });
         // "Title Override" is the format, unevaluated (`PTYTab.m:3916`).
         arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), selected, t.title.as_deref(), t.pinned, t.group.as_ref())
     }
@@ -241,12 +268,12 @@ impl App {
     pub(super) fn snapshot_tab(&self, at: usize) -> Option<Value> {
         let t = self.tabs.get(at)?;
         let tree = self.kept_tree(t)?;
-        Some(self.tab_value(t, &tree, Contents::None, false))
+        Some(self.tab_value(t, &tree, Contents::None, false, false))
     }
 
     /// The current window as an arrangement window table holding only the tabs `only` names
     /// (ids; None: every tab).
-    fn snapshot_tabs(&self, contents: Contents, only: Option<&[u64]>) -> Option<Value> {
+    fn snapshot_tabs(&self, contents: Contents, only: Option<&[u64]>, workgroups: bool) -> Option<Value> {
         let kept: Vec<(usize, &Tab, crate::layout::Tree<PaneId>)> = self
             .tabs
             .iter()
@@ -259,7 +286,7 @@ impl App {
         }
         // The selected tab, or the first kept one when it was a recording's.
         let selected = kept.iter().position(|(i, _, _)| *i == self.active).unwrap_or(0);
-        let tabs: Vec<Value> = kept.iter().enumerate().map(|(n, (_, t, tree))| self.tab_value(t, tree, contents, n == selected)).collect();
+        let tabs: Vec<Value> = kept.iter().enumerate().map(|(n, (_, t, tree))| self.tab_value(t, tree, contents, n == selected, workgroups)).collect();
         let first = kept[0].2.leaves().first().map(|p| **p);
         Some(self.window_table(tabs, selected, first))
     }
@@ -310,7 +337,7 @@ impl App {
         let p = self.panes.get(&id).filter(|p| !p.dvr.read_only)?;
         let tab = Tab::new(0, Layout::new(id), id);
         let tree = crate::layout::Tree::Leaf(id);
-        let tabs = vec![self.tab_value(&tab, &tree, Contents::Archive, true)];
+        let tabs = vec![self.tab_value(&tab, &tree, Contents::Archive, true, false)];
         let term = p.own().term();
         let (cols, rows) = (term.columns() as u16, term.screen_lines() as u16);
         let mut window = self.window_table(tabs, 0, Some(id));
@@ -410,7 +437,7 @@ impl App {
             SaveWhat::Window => self.snapshot_window(contents).into_iter().collect(),
             SaveWhat::Tabs(window, ids) => {
                 if self.enter(*window) {
-                    self.snapshot_tabs(contents, Some(ids)).into_iter().collect()
+                    self.snapshot_tabs(contents, Some(ids), true).into_iter().collect()
                 } else {
                     Vec::new()
                 }
@@ -623,21 +650,38 @@ impl App {
             let mut launched = true;
             // A browser pane comes back at its saved URL, judged again (an arrangement file is another party's).
             self.browser_url_override = super::browser_app::restored_url(&session);
+            // A workgroup's shown member saved its descriptor (Task 9). A restored Code Review or Diff
+            // member with no program to take back is an idle session, never a stray shell.
+            let attach = super::restore_ui::attach_key(&session);
+            let descriptor = if archive { None } else { self.restored_descriptor(&session, launch, name.is_some()) };
+            let inhibit = self.restore_inhibits(descriptor.as_ref());
+            let inhibited = inhibit.with(attach.is_some()) && !archive;
             let id = if archive {
                 launched = false;
                 self.archived_pane(area, guid.as_deref())
             } else {
-                match super::restore_ui::attach_key(&session) {
+                match attach {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
                     Ok(id) => {
                         launched = false;
                         Some(id)
                     }
                     Err(e) => {
-                        self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
-                        self.start_pane(area, guid.as_deref())
+                        // No program came back after all: a Code Review or Diff session is idle.
+                        if inhibit.with(false) {
+                            self.banners.set("reattach", format!("A running shell could not be taken back ({e})."));
+                            launched = false;
+                            self.start_idle_pane(area, guid.as_deref())
+                        } else {
+                            self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
+                            self.start_pane(area, guid.as_deref())
+                        }
                     }
                 },
+                None if inhibited => {
+                    launched = false;
+                    self.start_idle_pane(area, guid.as_deref())
+                }
                 None => self.start_pane(area, guid.as_deref()),
                 }
             };
@@ -686,6 +730,16 @@ impl App {
                         }
                     }
                     self.restore_clippings(id, &session);
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        // P9: only a member adopted into a restored instance takes the saved toggles.
+                        let on = |k: &str| session.get(k).and_then(Value::as_bool).unwrap_or(false);
+                        (p.auto_send_clippings, p.auto_request_review) = crate::workgroup::restored_toggles(on, p.workgroup.is_some());
+                    }
+                    // What the session saved is kept until its instance is adopted (P9).
+                    self.note_saved_toggles(id, &session);
+                    if let Some(d) = descriptor {
+                        self.register_restored_anchor(id, d, name, launch);
+                    }
                     self.restore_inline(id, &session);
                     let notice = if launched { notice } else { FolderNotice::Nothing };
                     self.arrangement_announcements(id, &session, &choice, name, notice, &folder);

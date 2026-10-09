@@ -61,13 +61,47 @@ fn is_reparse(p: &Path) -> bool {
     p.symlink_metadata().is_ok_and(|m| m.file_attributes() & 0x400 != 0)
 }
 
+/// The name the existing entry at `p` really has (its final path's last part, the reparse point
+/// itself never followed); None when there is none.
+fn final_name(p: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, GetFinalPathNameByHandleW};
+    let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(p).ok()?;
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: an open handle and a buffer of the length given.
+    let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]));
+    Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Whether the archive's entry `name` may be copied to `dest`: never a name Import keeps out
+/// (`se::kept_from_import`: hidden, excluded, or one Windows reads as another entry), and never
+/// onto an existing entry whose real name is another (an alias the rule did not foresee) or is
+/// itself kept out (Task 9 findings r2), and never onto an existing link, junction or other reparse
+/// point, which the copy would follow (Task 9 re-review r2).
+fn importable(name: &str, dest: &Path, top: bool) -> bool {
+    if se::kept_from_import(name, top) || is_reparse(dest) {
+        return false;
+    }
+    match final_name(dest) {
+        Some(real) => real.eq_ignore_ascii_case(name) && !se::kept_from_import(&real, top),
+        None => !dest.exists() && dest.symlink_metadata().is_err(),
+    }
+}
+
 /// `deepCopyContentsOfDirectory` (`IE:1163-1208`): every entry of `src` but the hidden ones
-/// into `dst`, folders recursively; at the top level the excluded names stay out too. Links and
-/// junctions are not followed (Decision: nothing outside the folder is copied).
+/// into `dst`, folders recursively; at the top level the excluded names stay out too, and at
+/// every level a name that is (or reaches) another entry (`importable`). Links and junctions are
+/// not followed (Decision: nothing outside the folder is copied).
 fn copy_contents(src: &Path, dst: &Path, top: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for (name, path) in entries(src) {
-        if name.starts_with('.') || (top && se::excluded(&name)) || is_reparse(&path) {
+        if !importable(&name, &dst.join(&name), top) || is_reparse(&path) {
             continue;
         }
         if path.is_dir() {
@@ -163,20 +197,46 @@ fn appdata_tandem() -> PathBuf {
 /// (11d's rule for script zips, `sa::unsafe_entry`), so nothing the import reads or copies can
 /// reach outside the staging folder or onto a network path.
 fn staged_links(staging: &Path) -> Result<(), String> {
+    if let Some(entry) = alias_entry(staging) {
+        let shown = entry.strip_prefix(staging).unwrap_or(&entry).display().to_string();
+        return Err(crate::zip_check::refused(&format!("\u{201c}{shown}\u{201d} has a name Windows reads as another item")));
+    }
     match crate::script_archive::unsafe_entry(staging, &super::scripts_app::stage_entries) {
         Some(entry) => Err(crate::script_archive::unsafe_entry_text(entry.strip_prefix(staging).unwrap_or(&entry))),
         None => Ok(()),
     }
 }
 
-/// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` extracted into a fresh
-/// `<temp>\.tandem-import-<uuid>`, refused when it holds a link (`staged_links`), then the
-/// marker in `appdata` naming it. On a failure nothing is left behind.
+/// The first entry under `dir` whose name Windows may read as another entry (`se::aliased`: a
+/// trailing dot or space, a stream, a device name, an 8.3 short name), walked without following
+/// anything (Task 9 findings r2: such a name could reach a protected file of `%APPDATA%\Tandem`).
+fn alias_entry(dir: &Path) -> Option<PathBuf> {
+    for (name, stat) in super::scripts_app::stage_entries(dir) {
+        let path = dir.join(&name);
+        if se::aliased(&name) {
+            return Some(path);
+        }
+        if stat == crate::script_archive::Stat::Dir {
+            if let Some(found) = alias_entry(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` read ONCE into memory, every
+/// entry checked and then written from those same bytes by Tandem's own walk (`extract::tgz`, the
+/// rule every Tandem extraction uses: plain files and folders only, no link of any kind, no name
+/// that leaves the folder or that Windows reads as another, Task 9 findings r3; no tar.exe, so no
+/// second parser and no reopen by path, final findings r2) into a fresh
+/// `<temp>\.tandem-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
+/// the marker in `appdata` naming it. On a failure nothing is left behind.
 fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
+    // The archive came from outside: judged before it is read (as a script zip is), read once.
+    let archive = crate::extract::read_whole(file, crate::extract::MAX_ARCHIVE)?;
     let staging = se::staging_dir(temp, &uuid::Uuid::new_v4().to_string());
-    let staged = std::fs::create_dir_all(&staging)
-        .map_err(|e| format!("{}: {e}", staging.display()))
-        .and_then(|_| super::scripts_app::run_tar(se::extract_args(file, &staging)))
+    let staged = crate::extract::tgz(&archive, &staging, crate::zip_check::Limits::DEFAULT, &se::aliased)
         .and_then(|_| staged_links(&staging))
         .and_then(|_| std::fs::create_dir_all(appdata).map_err(|e| format!("{}: {e}", appdata.display())))
         .and_then(|_| std::fs::write(appdata.join(se::MARKER), staging.to_string_lossy().as_bytes()).map_err(|e| format!("{}: {e}", appdata.join(se::MARKER).display())));
@@ -486,6 +546,7 @@ mod tests {
         std::fs::write(appdata.join("profiles.toml"), "default = \"g\"\n").unwrap();
         std::fs::write(appdata.join("snippets.json"), "[]").unwrap();
         std::fs::write(appdata.join("host.log"), "log").unwrap();
+        std::fs::write(appdata.join(crate::workgroup_restore::KEY_FILE), [1u8; 32]).unwrap();
         let snap = user_defaults(&appdata);
         let out = root.join("Tandem State.tandemexport");
         let scripts = appdata.join("Scripts");
@@ -497,7 +558,7 @@ mod tests {
         for want in ["user-defaults/UserDefaults.toml", "app-support/snippets.json", "python-runtimes/PythonRuntimes.json", "scripts"] {
             assert!(names.contains(&want), "{want} in {names:?}");
         }
-        for never in ["app-support/host.log", "app-support/settings.toml", "app-support/profiles.toml", "app-support/Scripts"] {
+        for never in ["app-support/host.log", "app-support/settings.toml", "app-support/profiles.toml", "app-support/Scripts", "app-support/workgroup-approval-key"] {
             assert!(!names.contains(&never), "{never} in {names:?}");
         }
 
@@ -689,7 +750,7 @@ mod tests {
         let staging = se::staging_dir(&root, "K");
         let support = staging.join("app-support");
         std::fs::create_dir_all(support.join(r"state")).unwrap();
-        for name in ["python-api-consent", "settings.toml", "profiles.toml", ".hidden"] {
+        for name in ["python-api-consent", "settings.toml", "profiles.toml", ".hidden", crate::workgroup_restore::KEY_FILE] {
             std::fs::write(support.join(name), "from the archive").unwrap();
         }
         std::fs::write(support.join(r"state\s.json"), "{}").unwrap();
@@ -698,8 +759,159 @@ mod tests {
         assert!(!tandem.join("python-api-consent").exists());
         assert!(!tandem.join("settings.toml").exists());
         assert!(!tandem.join(".hidden").exists());
+        assert!(!tandem.join(crate::workgroup_restore::KEY_FILE).exists(), "an archive never brings the approval key");
         assert_eq!(std::fs::read_to_string(tandem.join("profiles.toml")).unwrap(), "");
         assert!(tandem.join(r"state\s.json").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 9 findings r2 (Critical), on the real file system: an archive's Application Support
+    /// entry that Windows reads as a protected entry (a trailing dot or space beside the excluded
+    /// name itself, an 8.3 short name, a case Windows folds) never replaces or enters it. Each
+    /// alias is its own archive, so one cannot hide another's short name.
+    #[test]
+    fn import_never_reaches_a_protected_entry_through_an_alias() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let verbatim = |p: &Path| PathBuf::from(format!(r"\\?\{}", p.display()));
+        let short_name = |p: &Path| -> Option<String> {
+            let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: a NUL-terminated path and a buffer of the length given.
+            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n.min(buf.len())]));
+            let name = short.file_name()?.to_string_lossy().into_owned();
+            (n > 0 && name != p.file_name()?.to_string_lossy()).then_some(name)
+        };
+        let root = temp("alias");
+        let tandem = root.join("Tandem");
+        std::fs::create_dir_all(&tandem).unwrap();
+        let files = [crate::workgroup_restore::KEY_FILE, "python-api-consent", "settings.toml", "profiles.toml", "host.log"];
+        let dirs = ["Scripts", "uv", IMPORT_SCRIPTS_DIR];
+        for f in files {
+            std::fs::write(tandem.join(f), format!("ours: {f}")).unwrap();
+        }
+        for d in dirs {
+            std::fs::create_dir_all(tandem.join(d)).unwrap();
+        }
+        // (the staged name, whether it is a folder, whether the archive also holds the excluded name itself)
+        let mut cases: Vec<(String, bool, bool)> = Vec::new();
+        for f in files {
+            for tail in [".", " ", ". ", " ."] {
+                cases.push((format!("{f}{tail}"), false, true));
+            }
+            match short_name(&tandem.join(f)) {
+                Some(s) => {
+                    // The final-path check sees through the alias by itself too.
+                    assert_eq!(final_name(&tandem.join(&s)).as_deref(), Some(f), "{s}");
+                    assert!(!importable("anything", &tandem.join(&s), false), "{s}");
+                    cases.push((s, false, false));
+                }
+                None => eprintln!("no 8.3 name for {f} on this volume"),
+            }
+        }
+        for d in dirs {
+            cases.push((format!("{d}."), true, false));
+            cases.push((format!("{d} "), true, false));
+            if let Some(s) = short_name(&tandem.join(d)) {
+                cases.push((s, true, false));
+            }
+        }
+        cases.push(("\u{17f}cripts".into(), true, false));
+        let before = entries(&tandem).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert!(cases.iter().any(|(n, _, _)| n.contains('~')), "8.3 names are on for this volume: {cases:?}");
+        for (i, (name, dir, literal)) in cases.iter().enumerate() {
+            let staging = se::staging_dir(&root, &format!("A{i}"));
+            let support = staging.join("app-support");
+            std::fs::create_dir_all(&support).unwrap();
+            if *dir {
+                std::fs::create_dir_all(verbatim(&support.join(name))).unwrap();
+                std::fs::write(verbatim(&support.join(name).join("evil.py")), "from the archive").unwrap();
+            } else {
+                std::fs::write(verbatim(&support.join(name)), "from the archive").unwrap();
+            }
+            if *literal {
+                let plain = name.trim_end_matches(['.', ' ']);
+                std::fs::write(support.join(plain), "from the archive").unwrap();
+            }
+            std::fs::write(support.join("notes.txt"), "kept").unwrap();
+            std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+            assert!(finish_import(&tandem).is_empty());
+            for f in files {
+                assert_eq!(std::fs::read_to_string(tandem.join(f)).unwrap(), format!("ours: {f}"), "{name:?} reached {f}");
+            }
+            for d in dirs {
+                assert!(entries(&tandem.join(d)).is_empty(), "{name:?} reached {d}");
+            }
+            if se::aliased(name) {
+                assert!(!tandem.join("notes.txt").exists(), "{name:?}: an archive holding an alias is refused whole");
+            } else {
+                assert_eq!(std::fs::read_to_string(tandem.join("notes.txt")).unwrap(), "kept", "{name:?}: the rest is still imported");
+                std::fs::remove_file(tandem.join("notes.txt")).unwrap();
+            }
+            assert_eq!(entries(&tandem).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), before, "{name:?} made a new entry");
+        }
+        let _ = std::fs::remove_dir_all(verbatim(&root));
+    }
+
+    /// Task 9 findings r3, on the real file system: a hard-link entry whose target leaves the
+    /// staging folder (absolute with either slash, or "..") never writes there, whether the link
+    /// carries data or a file of the same name follows it. Every entry is checked before anything
+    /// is written (since final findings r2 by Tandem itself, no tar.exe) and the archive is refused
+    /// whole.
+    #[test]
+    fn import_checks_every_entry_before_tar_runs() {
+        use crate::zip_check::tests::{pax, tar_entry, tgz};
+        let root = temp("hardlink");
+        let canary = root.join("canary.txt");
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let back = canary.to_string_lossy().into_owned();
+        let targets = [back.replace('\\', "/"), back, "../../canary.txt".to_string()];
+        let mut seen = Vec::new();
+        for target in &targets {
+            for follow in [false, true] {
+                std::fs::write(&canary, "ours").unwrap();
+                let name = "app-support/evil.txt";
+                let mut blocks = tar_entry("user-defaults/", b'5', b"", "");
+                let data: &[u8] = if follow { b"" } else { b"PWNED" };
+                let link = if target.len() < 100 { tar_entry(name, b'1', data, target) } else { [pax(&[("linkpath", target)]), tar_entry(name, b'1', data, "")].concat() };
+                blocks.extend(link);
+                if follow {
+                    blocks.extend(tar_entry(name, b'0', b"PWNED", ""));
+                }
+                let file = root.join("evil.tandemexport");
+                std::fs::write(&file, tgz(&blocks)).unwrap();
+                let got = stage_import(&file, &temp_dir, &to);
+                let after = std::fs::read_to_string(&canary).unwrap_or_default();
+                seen.push((target.clone(), follow, after, got, entries(&temp_dir).len(), to.join(se::MARKER).exists()));
+            }
+        }
+        for (target, follow, after, got, left, marker) in &seen {
+            let refused = got.as_ref().err().is_some_and(|e| e.starts_with("The archive is not safe to extract") && e.contains("is a link"));
+            assert!(after == "ours" && refused && *left == 0 && !marker, "{target} (a file follows: {follow}): canary {after:?}, {got:?}, left {left}; all: {seen:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 9 re-review r2, new minor 2: an existing entry of `%APPDATA%\Tandem` that is itself a
+    /// link or junction is never written through: the import skips it.
+    #[test]
+    fn import_never_writes_through_a_link_at_the_destination() {
+        let root = temp("destlink");
+        let (to, outside) = (root.join("Tandem"), root.join("Outside"));
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let made = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"]).arg(to.join("notes")).arg(&outside).output().unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let staging = se::staging_dir(&root, "D");
+        std::fs::create_dir_all(staging.join(r"app-support\notes")).unwrap();
+        std::fs::write(staging.join(r"app-support\notes\x.txt"), "from the archive").unwrap();
+        std::fs::write(staging.join(r"app-support\kept.txt"), "kept").unwrap();
+        std::fs::write(to.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&to).is_empty());
+        assert!(!outside.join("x.txt").exists(), "written through the junction");
+        assert_eq!(std::fs::read_to_string(to.join("kept.txt")).unwrap(), "kept", "the rest is imported");
+        let _ = std::fs::remove_dir(to.join("notes"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -718,7 +930,7 @@ mod tests {
         let (to, temp_dir) = (root.join("To"), root.join("Temp"));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let refused = stage_import(&out, &temp_dir, &to).unwrap_err();
-        assert!(refused.contains("is a link or has another name"), "{refused}");
+        assert!(refused.contains("is a link"), "{refused}");
         assert!(!to.join(se::MARKER).exists());
         assert!(entries(&temp_dir).is_empty(), "a refused archive leaves nothing");
 
@@ -744,7 +956,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Beyond the plan: an export imported into another Tandem folder through the real tar.exe
+    /// Beyond the plan: an export written by the real tar.exe imported into another Tandem folder
     /// (the first phase names the staging folder in the marker; the next start applies it),
     /// and a file that is not an archive fails with nothing left behind.
     #[test]
@@ -755,6 +967,10 @@ mod tests {
         std::fs::create_dir_all(scripts.join("AutoLaunch")).unwrap();
         std::fs::write(from.join("settings.toml"), "[settings]\nFocusFollowsMouse = true\n").unwrap();
         std::fs::write(from.join("snippets.json"), "[1]").unwrap();
+        // A long name with a letter past ASCII: bsdtar writes a pax header for it, and the entry
+        // check and the extraction take it.
+        let long = format!("{}\u{e9}.json", "n".repeat(120));
+        std::fs::write(from.join(&long), "[2]").unwrap();
         std::fs::write(scripts.join(r"AutoLaunch\auto.py"), "print(1)\n").unwrap();
         let snap = user_defaults(&from);
         let out = root.join("x.tandemexport");
@@ -771,6 +987,7 @@ mod tests {
         let g = Globals::load(&to.join("settings.toml")).unwrap();
         assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
         assert_eq!(std::fs::read_to_string(to.join("snippets.json")).unwrap(), "[1]");
+        assert_eq!(std::fs::read_to_string(to.join(&long)).unwrap(), "[2]");
         assert!(entries(&temp_dir).is_empty(), "the staging folder is gone");
 
         let bad = root.join("bad.tandemexport");
@@ -779,6 +996,137 @@ mod tests {
         assert!(stage_import(&bad, &temp_dir, &other).is_err());
         assert!(!other.join(se::MARKER).exists());
         assert!(entries(&temp_dir).is_empty(), "a failed extraction leaves nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every name under `dir`, relative, folders with a trailing "/" (nothing followed).
+    fn tree_names(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![(String::new(), dir.to_path_buf())];
+        while let Some((rel, d)) = stack.pop() {
+            for (name, path) in entries(&d) {
+                let shown = format!("{rel}{name}");
+                if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                    out.push(format!("{shown}/"));
+                    stack.push((format!("{shown}/"), path));
+                } else {
+                    out.push(shown);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// A raw header block's checksum written again with `spell` (the octal value as text).
+    fn reseal(block: &mut [u8], spell: &dyn Fn(u32) -> String) {
+        block[148..156].copy_from_slice(b"        ");
+        let sum: u32 = block[..512].iter().map(|&b| u32::from(b)).sum();
+        let text = spell(sum);
+        block[148..156].fill(0);
+        block[148..148 + text.len()].copy_from_slice(text.as_bytes());
+    }
+
+    /// Final findings r2 1(a), on the real file system: a number field the tar crate reads one way and
+    /// libarchive another (a leading "+" in the size or the checksum) never lets an entry the check did
+    /// not see reach the staging folder. The second entry's data block is itself a header naming
+    /// `hidden.url`, a type the check refuses; the archive is refused, or holds only the checked entries.
+    #[test]
+    fn import_never_extracts_an_entry_the_check_did_not_see() {
+        use crate::zip_check::tests::{tar_entry, tgz};
+        let root = temp("numeric");
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let hidden = tar_entry("app-support/hidden.url", b'0', b"", "");
+        let plus_size = |b: &mut Vec<u8>| {
+            b[124..136].copy_from_slice(b"+0000001000\0");
+            reseal(b, &|s| format!("{s:06o}\0 "));
+        };
+        let plus_sum = |b: &mut Vec<u8>| reseal(b, &|s| format!("+0{s:05o}\0"));
+        let mut seen = Vec::new();
+        for (what, edit) in [("size", &plus_size as &dyn Fn(&mut Vec<u8>)), ("checksum", &plus_sum)] {
+            let mut second = tar_entry("app-support/a.txt", b'0', &hidden[..512], "");
+            edit(&mut second);
+            let blocks = [tar_entry("user-defaults/", b'5', b"", ""), second].concat();
+            let file = root.join(format!("{what}.tandemexport"));
+            std::fs::write(&file, tgz(&blocks)).unwrap();
+            let got = stage_import(&file, &temp_dir, &to);
+            let names = tree_names(&temp_dir);
+            seen.push((what, got.clone(), names.clone()));
+            let _ = std::fs::remove_file(to.join(se::MARKER));
+            for (_, p) in entries(&temp_dir) {
+                let _ = std::fs::remove_dir_all(p);
+            }
+        }
+        for (what, got, names) in &seen {
+            assert!(!names.iter().any(|n| n.ends_with("hidden.url")), "{what}: an unchecked entry was extracted: {got:?} {names:?}; all: {seen:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Final findings r2 1(c): a gzip tar whose first entry's name is bzip2's magic is read as the gzip tar
+    /// it is (no second filter is guessed on the decompressed bytes), so the entry the check saw is the one
+    /// extracted.
+    #[test]
+    fn import_guesses_no_second_filter() {
+        use crate::zip_check::tests::{tar_entry, tgz};
+        let root = temp("bzip2");
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let blocks = [tar_entry("BZh91AY&SY", b'0', b"plain", ""), tar_entry("user-defaults/", b'5', b"", "")].concat();
+        let file = root.join("magic.tandemexport");
+        std::fs::write(&file, tgz(&blocks)).unwrap();
+        let got = stage_import(&file, &temp_dir, &to);
+        assert_eq!(got, Ok(()), "the checked archive is the extracted one");
+        let staging = PathBuf::from(std::fs::read_to_string(to.join(se::MARKER)).unwrap());
+        assert_eq!(tree_names(&staging), ["BZh91AY&SY", "user-defaults/"]);
+        assert_eq!(std::fs::read(staging.join("BZh91AY&SY")).unwrap(), b"plain");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Final findings r2 1(b): the archive is read once. While another writer swaps the file between a
+    /// checked archive and one the check refuses (a `.url` entry), no staging folder ever holds the
+    /// refused archive's entry: what is extracted is the bytes that were checked.
+    #[test]
+    fn import_extracts_the_bytes_it_checked() {
+        use crate::zip_check::tests::{tar_entry, tgz};
+        let root = temp("swap");
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let good = tgz(&[tar_entry("user-defaults/", b'5', b"", ""), tar_entry("app-support/a.txt", b'0', b"a", "")].concat());
+        let evil = tgz(&[tar_entry("user-defaults/", b'5', b"", ""), tar_entry("app-support/swapped.url", b'0', b"a", "")].concat());
+        let file = root.join("swap.tandemexport");
+        std::fs::write(&file, &good).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (stop, file, good, evil) = (stop.clone(), file.clone(), good.clone(), evil.clone());
+            std::thread::spawn(move || {
+                let mut flip = false;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = std::fs::write(&file, if flip { &evil } else { &good });
+                    flip = !flip;
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            })
+        };
+        let started = std::time::Instant::now();
+        let mut leaked = None;
+        let mut runs = 0;
+        while started.elapsed() < std::time::Duration::from_secs(8) && leaked.is_none() {
+            runs += 1;
+            let _ = stage_import(&file, &temp_dir, &to);
+            let names = tree_names(&temp_dir);
+            if names.iter().any(|n| n.ends_with("swapped.url")) {
+                leaked = Some(names);
+            }
+            let _ = std::fs::remove_file(to.join(se::MARKER));
+            for (_, p) in entries(&temp_dir) {
+                let _ = std::fs::remove_dir_all(p);
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(leaked, None, "an entry the check refused was extracted ({runs} runs)");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

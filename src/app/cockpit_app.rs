@@ -36,8 +36,11 @@ impl App {
     /// A mention's current session name, else `DEFUNCT` (a session that is gone, or an id that
     /// names none; only a stable id names a session, ruling P3).
     pub(super) fn mention_label(&self, id: &str) -> String {
+        if id.get(..crate::workgroup_run::INSTANCE_PREFIX.len()).is_some_and(|p| p.eq_ignore_ascii_case(crate::workgroup_run::INSTANCE_PREFIX)) {
+            return crate::mention::workgroup_label(&self.workgroup_world(), id);
+        }
         match self.pane_by_reference(id) {
-            Some(p) => crate::cockpit_rows::session_title(&self.session_label(p).0, p),
+            Some(p) => crate::mention::session_label(self.member_of(p).map(|(_, c)| c.display_name.as_str()), &self.session_label(p).0, p),
             None => crate::mention::DEFUNCT.to_string(),
         }
     }
@@ -51,7 +54,7 @@ impl App {
     fn session_fact(&self, pane: PaneId) -> Option<SessionFact> {
         let p = self.panes.get(&pane)?;
         let s = p.own();
-        Some(SessionFact { pane, stable_id: p.stable_id.clone(), name: self.session_label(pane).0, status: s.tab_status.clone(), exited: p.exited.is_some(), alt_screen: s.alt_screen(), ancestors: s.shell.job_ancestors.clone(), armed: self.status_watches.contains_key(&pane) })
+        Some(SessionFact { pane, stable_id: p.stable_id.clone(), name: self.session_label(pane).0, status: s.tab_status.clone(), exited: p.exited.is_some(), alt_screen: s.alt_screen(), ancestors: s.shell.job_ancestors.clone(), armed: self.status_watches.contains_key(&pane), role: self.member_role_prefix(pane) })
     }
 
     /// The Cockpit's snapshot: every window by number (current or parked, as `quickly_sources`
@@ -66,6 +69,11 @@ impl App {
             world.windows.push(WindowFact { guid: guid.to_string(), number, title, active_tab: active, tabs, armed: self.window_armed(k) });
         }
         world.buried = self.buried.items().into_iter().filter_map(|(p, _)| self.session_fact(p)).collect();
+        world.workgroups = self.workgroup_world();
+        // A peer that is not shown is in no window: the workgroup outline and the snapshot still list it.
+        let listed: Vec<PaneId> = world.windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.sessions).chain(&world.buried).map(|s| s.pane).collect();
+        let hidden: Vec<PaneId> = world.workgroups.iter().flat_map(|w| &w.members).map(|m| m.pane).filter(|p| !listed.contains(p)).collect();
+        world.hidden = hidden.into_iter().filter_map(|p| self.session_fact(p)).collect();
         world
     }
 
@@ -316,12 +324,15 @@ impl App {
     }
 
     /// A double-click on a row (`CW:667-743`): a session is shown (a buried one is put back
-    /// first), a window shows its active tab's focused session, a tab its focused session.
+    /// first), a window shows its active tab's focused session, a tab its focused session, a
+    /// workgroup its leader (`jumpToWorkgroup`; `reveal_pane` swaps the leader in when a peer is
+    /// shown in its place). An instance that is gone does nothing.
     pub(super) fn cockpit_jump(&mut self, jump: Jump) {
         let pane = match jump {
             Jump::Session(p) => Some(p),
             Jump::Window(guid) => self.registry.by_guid(&guid).and_then(|k| self.window_tabs(k)).and_then(|(tabs, active)| tabs.get(active).map(|t| t.focused)),
             Jump::Tab(id) => self.registry.order().into_iter().find_map(|k| self.window_tabs(k).and_then(|(tabs, _)| tabs.iter().find(|t| t.id == id).map(|t| t.focused))),
+            Jump::Workgroup(id) => self.workgroups.get(&id).map(|i| i.leader),
             Jump::Nothing => None,
         };
         let Some(pane) = pane.filter(|p| self.panes.contains_key(p)) else { return };

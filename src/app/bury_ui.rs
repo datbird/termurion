@@ -17,6 +17,11 @@ impl App {
     /// unless "Quit when all windows are closed" is on (Tandem would end, and the session with it).
     /// True when it was buried.
     pub(super) fn bury_pane(&mut self, id: PaneId) -> bool {
+        // A workgroup member stays where the group put it (B2): a buried one would be in two places.
+        if let Some(why) = crate::workgroup_run::bury_refusal(self.workgroup_of(id).is_some()) {
+            self.banners.set("bury", why);
+            return false;
+        }
         // A tmux pane is not buried: its tmux window is hidden (iTerm2's bury of a tmux client).
         if let Some((gw, _, window)) = self.tmux_of(id) {
             self.tmux_note_burial(gw, window);

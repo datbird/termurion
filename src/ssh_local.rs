@@ -233,44 +233,6 @@ pub fn finish(temp: &Path, final_path: &Path, host_url: &str) -> Result<PathBuf,
     finish_with(temp, final_path, host_url, &|p, u| crate::inert_files::mark_strict(p, Some(u)))
 }
 
-/// What the extraction watch decides.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Verdict {
-    Continue,
-    Kill,
-}
-
-/// The extraction watch (R14de-1, zip bombs): the sizes a zip claims are never trusted alone,
-/// so `tar.exe` is stopped once it has written more than the claimed total plus 1 percent
-/// (at least 1 MiB of slack), or when the drive is down to `RESERVE` free.
-pub fn watchdog(written: u64, claimed: u64, free: u64) -> Verdict {
-    let slack = (claimed / 100).max(1 << 20);
-    if written > claimed.saturating_add(slack) || free < crate::ssh_transfer::RESERVE {
-        Verdict::Kill
-    } else {
-        Verdict::Continue
-    }
-}
-
-/// The bytes of the files under `dir`, symlinks not followed (a folder being extracted into).
-pub fn dir_bytes(dir: &Path) -> u64 {
-    let (mut total, mut stack) = (0u64, localfs::LocalPath::judge(dir).into_iter().collect::<Vec<_>>());
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = localfs::entries(&d) else { continue };
-        for e in entries {
-            if e.stat.is_dir {
-                stack.extend(e.local());
-            } else if e.stat.is_file {
-                total = total.saturating_add(e.stat.len);
-            }
-        }
-    }
-    total
-}
-
-/// The error a stopped extraction fails the job with.
-pub const EXPANDED_TOO_FAR: &str = "The folder expanded to more data than its archive claimed";
-
 /// What a zip may weigh as a file we read whole before checking it.
 const ZIP_FILE_MAX: u64 = 1 << 30;
 
@@ -349,56 +311,27 @@ pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn F
     Ok(())
 }
 
-/// Unzips `zip` into `dest` (a folder download, `FT:150-172`): the file is read and checked by
-/// `zip_check` first (the whole archive is refused on any unsafe entry, and `extract` is never
-/// called), `extract` unpacks it into a fresh empty folder beside `dest`, and `mark_and_move`
-/// moves the marked files into place. The fresh folder is removed on every path. The caller
-/// removes the zip.
+/// Unzips `zip` into `dest` (a folder download, `FT:150-172`): the file is read once and its
+/// bytes checked by `zip_check` (the whole archive is refused on any unsafe entry, before anything
+/// is written), the claimed total must fit on the drive, Tandem's own walk of those same bytes
+/// (`extract::zip`, never tar.exe: one parser, and each file gets exactly its claimed size, so no
+/// zip bomb can grow past the claim) writes it into a fresh empty folder beside `dest`, and
+/// `mark_and_move` moves the marked files into place. The fresh folder is removed on every path.
+/// The caller removes the zip.
 #[cfg(windows)]
-pub fn unzip_with(zip: &Path, dest: &Path, host_url: &str, extract: &mut dyn FnMut(&Path, &Path, u64) -> Result<(), String>) -> Result<(), String> {
-    let local = localfs::judge_io(zip).map_err(|e| e.to_string())?;
-    let size = localfs::stat(&local).map_err(|e| e.to_string())?.len;
-    if size > ZIP_FILE_MAX {
-        return Err(crate::zip_check::refused("the archive is too large"));
-    }
-    let bytes = localfs::read(&local).map_err(|e| e.to_string())?;
+pub fn unzip(zip: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
+    let bytes = crate::extract::read_whole(zip, ZIP_FILE_MAX)?;
     let claimed = crate::zip_check::check_total(&bytes, crate::zip_check::Limits::DEFAULT)?;
-    drop(bytes);
     let parent = dest.parent().ok_or_else(|| "no folder to unzip into".to_string())?;
-    // The claimed total must fit before anything is written (it is watched while it is).
+    // The claimed total must fit before anything is written (nothing writes more).
     if !crate::ssh_transfer::has_room(free_space(parent)?, claimed) {
         return Err(NOT_ENOUGH_SPACE.to_string());
     }
     let fresh = localfs::judge_io(parent.join(temp_name(&uuid::Uuid::new_v4().to_string().to_uppercase()))).map_err(|e| e.to_string())?;
     localfs::create_dir(&fresh).map_err(|e| e.to_string())?;
-    let result = extract(zip, fresh.path(), claimed).and_then(|()| mark_and_move(fresh.path(), dest, host_url));
+    let result = crate::extract::zip(&bytes, fresh.path(), crate::zip_check::Limits::DEFAULT).and_then(|_| mark_and_move(fresh.path(), dest, host_url));
     let _ = localfs::remove_dir_all(&fresh);
     result
-}
-
-/// `unzip_with` through System32 `tar.exe` (`script_provision::RealRunner`, never `-P`).
-#[cfg(windows)]
-pub fn unzip(zip: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
-    use crate::script_provision::RealRunner;
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut runner = RealRunner::new(tx);
-    let r = unzip_with(zip, dest, host_url, &mut |z, to, claimed| {
-        // tar.exe runs in a Job Object that is killed when the folder grows past what the
-        // archive claimed or the drive runs low; the partial tree is then removed.
-        let last = std::cell::Cell::new(std::time::Instant::now());
-        let watch = || {
-            if last.get().elapsed() < std::time::Duration::from_millis(250) {
-                return false;
-            }
-            last.set(std::time::Instant::now());
-            let free = free_space(to).unwrap_or(0);
-            watchdog(dir_bytes(to), claimed, free) == Verdict::Kill
-        };
-        runner.extract_watched(z, to, &watch).map_err(|e| if e == crate::script_provision::STOPPED { EXPANDED_TOO_FAR.to_string() } else { e })
-    });
-    // The runner's log lines are not shown.
-    while rx.try_recv().is_ok() {}
-    r
 }
 
 /// The bytes free for the person on the drive holding `dir` (`GetDiskFreeSpaceExW`).
@@ -547,7 +480,7 @@ mod tests {
         assert!(!is_stale_temp("Tandem-notes", true, 2 * day));
     }
 
-    // The hostile archives of the pure check also stop `unzip_with` before anything runs.
+    // The hostile archives of the pure check also stop `unzip` before anything is written.
     #[cfg(windows)]
     fn hostile() -> Vec<(&'static str, Vec<u8>)> {
         vec![
@@ -678,7 +611,7 @@ mod tests {
             }
             assert_eq!(std::fs::read_to_string(out.join("d").join("a.txt")).unwrap(), "a");
             assert_eq!(listing(&t), before, "no .Tandem. folder is left beside the destination");
-            // Not a zip: refused before tar runs.
+            // Not a zip: refused before anything is written.
             let bad = t.join("bad.zip");
             std::fs::write(&bad, "hello").unwrap();
             assert!(unzip(&bad, &t.join("o2"), "ssh://h/d").unwrap_err().contains("not a zip"));
@@ -692,13 +625,8 @@ mod tests {
                 let z = t.join("x.zip");
                 std::fs::write(&z, &bytes).unwrap();
                 let before = listing(&t);
-                let mut calls = 0;
-                let r = unzip_with(&z, &t.join("out"), "ssh://h/d", &mut |_, _, _| {
-                    calls += 1;
-                    Ok(())
-                });
+                let r = unzip(&z, &t.join("out"), "ssh://h/d");
                 assert!(r.is_err(), "{name}");
-                assert_eq!(calls, 0, "{name}: tar.exe must not start");
                 assert_eq!(listing(&t), before, "{name}: nothing new on disk");
                 let _ = std::fs::remove_dir_all(&t);
             }
@@ -760,22 +688,5 @@ mod tests {
             assert_eq!(listing(&t), [".Tandem.NEW", "keep.txt"]);
             let _ = std::fs::remove_dir_all(&t);
         }
-    }
-
-    #[test]
-    fn the_extraction_watch_stops_a_zip_bomb() {
-        const MIB: u64 = 1 << 20;
-        let free = crate::ssh_transfer::RESERVE + (100 << 30);
-        assert_eq!(watchdog(0, 0, free), Verdict::Continue);
-        assert_eq!(watchdog(10, 10, free), Verdict::Continue, "exactly as claimed");
-        assert_eq!(watchdog(MIB, 0, free), Verdict::Continue, "the minimum slack is 1 MiB");
-        assert_eq!(watchdog(MIB + 1, 0, free), Verdict::Kill, "a 1-byte claim that writes more");
-        assert_eq!(watchdog(1000 * MIB, 1000 * MIB + 10 * MIB, free), Verdict::Continue, "within 1 percent");
-        assert_eq!(watchdog(1000 * MIB + 10 * MIB + 1, 1000 * MIB, free), Verdict::Kill, "past 1 percent of a large claim");
-        assert_eq!(watchdog(u64::MAX, u64::MAX, free), Verdict::Continue, "no overflow");
-        // The drive: free space under the reserve ends it whatever was claimed.
-        assert_eq!(watchdog(1, 1 << 40, crate::ssh_transfer::RESERVE), Verdict::Continue, "exactly the reserve is allowed");
-        assert_eq!(watchdog(1, 1 << 40, crate::ssh_transfer::RESERVE - 1), Verdict::Kill);
-        assert_eq!(watchdog(1, 1 << 40, 0), Verdict::Kill);
     }
 }

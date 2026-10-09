@@ -300,6 +300,7 @@ mod tests {
             // iTerm2 defines it among the experimental ones but with SECTION_GENERAL (ASM:924).
             ("GenerativeAIAllowed", "General"),
             ("clippingSeparator", "Pasteboard"),
+            ("WorkgroupAutoSendSubmitDelay", "Pasteboard"),
             ("toolbeltFont", "Windows"),
             ("toolbeltFontSize", "Windows"),
             ("PinEditSession", "General"),
@@ -351,6 +352,17 @@ mod tests {
             ("Custom Color Presets", "Colors", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
             ("NoSyncProfilesWindowTagsOpen", "Profiles", Kind::Bool, bool(false)),
             ("CloseBookmarksWindowAfterOpening", "Profiles", Kind::Bool, bool(false)),
+            // 13y1: the workgroups and the latches of their one-time migrations.
+            ("Workgroups", "Workgroups", Kind::String, text("")),
+            ("WorkgroupsImported", "Workgroups", Kind::String, text("")),
+            ("NoSyncWorkgroupShortcutsBackfilled", "Workgroups", Kind::Bool, bool(false)),
+            ("NoSyncClaudeCodeDiffModeBackfilled", "Workgroups", Kind::Bool, bool(false)),
+            ("NoSyncClaudeCodeReviewSystemPromptCommandBackfilled", "Workgroups", Kind::Bool, bool(false)),
+            ("NoSyncWorkgroupGitBaseRecents", "Workgroups", Kind::List, Some(toml::Value::Array(Vec::new()))),
+            ("CodeReviewSavedPrompts", "Workgroups", Kind::String, text("")),
+            ("NoSyncCodeReviewLastSelectedPromptUUID", "Workgroups", Kind::String, text("")),
+            ("NoSyncClaudeCodeAutoSendClippingsBackfilled", "Workgroups", Kind::Bool, bool(false)),
+            ("NoSyncClaudeCodeAutoRequestReviewBackfilled", "Workgroups", Kind::Bool, bool(false)),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

@@ -341,6 +341,10 @@ impl App {
             v.session.insert("logFilename", path.display().to_string());
         }
         self.scope_variables(pane, &mut v, titles);
+        // iTerm2's gitBase on a workgroup's leader (13y1), from the live instance.
+        if let Some(base) = self.workgroups.git_base_of_leader(pane) {
+            v.session.insert("gitBase", base.to_string());
+        }
         v.session.insert("columns", grid.columns().to_string());
         v.session.insert("rows", grid.screen_lines().to_string());
         v.session.insert("showingAlternateScreen", if s.term().mode().contains(TermMode::ALT_SCREEN) { "1" } else { "0" }.to_string());

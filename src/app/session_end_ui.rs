@@ -59,6 +59,10 @@ impl App {
     pub(super) fn end_action_of(&self, id: PaneId) -> EndAction {
         let single = self.single_use.get(&id).map(|s| s.end_action);
         let Some(p) = self.panes.get(&id) else { return EndAction::NoAction };
+        // A workgroup member keeps its ended pane: the instance's teardown is what closes it (`PS:4829-4835`).
+        if p.workgroup.is_some() {
+            return EndAction::NoAction;
+        }
         let value = self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile()).int(se::END_ACTION_KEY);
         end_action_for(single, p.hold_open, value)
     }

@@ -215,6 +215,9 @@ pub enum Owner {
     /// A window, pane or tab number shortcut.
     Number,
     Leader,
+    /// A workgroup member's peer shortcut or session toolbar shortcut (13y1, seam S3): after the
+    /// global bindings, before the menu's keys (`workgroup_toolbar::key_owner`, P13).
+    Workgroup,
     Page,
 }
 
@@ -226,13 +229,15 @@ impl Owner {
 
 /// The one order (iTerm2's, 13y1 merge review ruling a): a bar's button, then a binding the person
 /// made (it beats the default address accelerators, as a mapping beats a menu key in iTerm2,
-/// `IA:527-548`), then (13y1 adds its workgroup owner here) the address accelerators, then copy mode
-/// while it is on (every remaining key, so `h` and `j` never reach the page), then the rest of what
-/// the key maps say.
-pub fn key_owner(bar: Option<usize>, address: bool, copy_mode: bool, mapped: Owner) -> Owner {
+/// `IA:527-548`), then a workgroup member's own keys for a key no mapping routes (13y1: after the
+/// global bindings, before the menu, as in a terminal member), then the address accelerators, then
+/// copy mode while it is on (every remaining key, so `h` and `j` never reach the page), then the rest
+/// of what the key maps say.
+pub fn key_owner(bar: Option<usize>, address: bool, workgroup: bool, copy_mode: bool, mapped: Owner) -> Owner {
     match bar {
         Some(i) => Owner::Bar(i),
         None if mapped == Owner::Binding => Owner::Binding,
+        None if workgroup && mapped == Owner::Page => Owner::Workgroup,
         None if address => Owner::Address,
         None if copy_mode => Owner::CopyMode,
         None => mapped,
@@ -268,6 +273,8 @@ pub struct GateState {
     pub switch: [i64; 3],
     pub bar: Option<Bar>,
     pub editing: bool,
+    /// A workgroup member's peer and toolbar shortcuts (13y1), as stored; empty for other panes.
+    pub workgroup_keys: Vec<crate::workgroup::Shortcut>,
     /// Copy mode is on in this browser pane (13x3 Task 8): it owns the keys nothing else claims.
     pub copy_mode: bool,
 }
@@ -295,12 +302,18 @@ impl GateState {
         }
         let copy = self.copy_mode && !modifier_vk(vk) && !system_key(vk, mods);
         let address = address_accelerator(vk, mods);
-        let Some(chord) = chord_of(vk, mods) else { return key_owner(None, address, copy, Owner::Page) };
+        let Some(chord) = chord_of(vk, mods) else { return key_owner(None, address, false, copy, Owner::Page) };
         let bar = self.bar.as_ref().filter(|_| shortcut_mods(chord.alt, chord.ctrl, chord.shift, chord.cmd)).and_then(|b| match chord.key {
             ChordKey::Char(c) => b.shortcut(c),
             _ => None,
         });
-        let mapped = match self.route(&chord) {
+        let route = self.route(&chord);
+        // Only a key no mapping routes reaches a member's keys, as `route_press` does (Route::Terminal).
+        let workgroup = matches!(route, Route::Terminal) && !self.workgroup_keys.is_empty() && {
+            let stroke = keyroute::press_from_chord(&chord).stroke;
+            self.workgroup_keys.iter().any(|s| crate::workgroup_peers::shortcut_matches(s, &stroke))
+        };
+        let mapped = match route {
             // Bypass is not actionable (`KBA:617-622`): its key goes on to the page.
             Route::Binding(b) if b.action == 74 => Owner::Page,
             Route::Binding(b) if editing_blocks(&b, &chord.key, self.editing) => Owner::Page,
@@ -309,7 +322,7 @@ impl GateState {
             Route::LeaderOn => Owner::Leader,
             Route::Terminal => Owner::Page,
         };
-        key_owner(bar, address, copy, mapped)
+        key_owner(bar, address, workgroup, copy, mapped)
     }
 }
 
@@ -807,11 +820,16 @@ mod tests {
 
     #[test]
     fn the_owner_order_is_one_function() {
-        assert_eq!(key_owner(Some(2), true, false, Owner::Binding), Owner::Bar(2));
-        assert_eq!(key_owner(None, true, false, Owner::Binding), Owner::Binding, "a person's own binding beats the default address keys");
-        assert_eq!(key_owner(None, true, false, Owner::Page), Owner::Address);
-        assert_eq!(key_owner(None, false, false, Owner::Binding), Owner::Binding);
-        assert!(Owner::Binding.taken() && Owner::Bar(0).taken() && Owner::Address.taken() && Owner::Number.taken() && Owner::Leader.taken());
+        assert_eq!(key_owner(Some(2), true, false, false, Owner::Binding), Owner::Bar(2));
+        assert_eq!(key_owner(None, true, false, false, Owner::Binding), Owner::Binding, "a person's own binding beats the default address keys");
+        assert_eq!(key_owner(None, true, false, false, Owner::Page), Owner::Address);
+        assert_eq!(key_owner(None, false, false, false, Owner::Binding), Owner::Binding);
+        // 13y1 (S3): a member's own key after the bindings and the bar, before the address keys.
+        assert_eq!(key_owner(None, true, true, false, Owner::Page), Owner::Workgroup);
+        assert_eq!(key_owner(None, false, true, false, Owner::Binding), Owner::Binding, "a global binding wins (P13)");
+        assert_eq!(key_owner(Some(1), false, true, false, Owner::Page), Owner::Bar(1));
+        assert_eq!(key_owner(None, false, true, false, Owner::Number), Owner::Number, "a number route never reaches the member's keys");
+        assert!(Owner::Binding.taken() && Owner::Bar(0).taken() && Owner::Address.taken() && Owner::Number.taken() && Owner::Leader.taken() && Owner::Workgroup.taken() && Owner::CopyMode.taken());
         assert!(!Owner::Page.taken());
     }
 
@@ -819,13 +837,13 @@ mod tests {
     /// the number shortcuts and the leader, and a binding or a bar button beats it.
     #[test]
     fn copy_mode_has_one_place_in_the_owner_order() {
-        assert_eq!(key_owner(Some(0), false, true, Owner::Page), Owner::Bar(0), "the bar first");
-        assert_eq!(key_owner(None, false, true, Owner::Binding), Owner::Binding, "a person's binding beats copy mode");
-        assert_eq!(key_owner(None, true, true, Owner::Page), Owner::Address, "the address keys beat it");
-        assert_eq!(key_owner(None, false, true, Owner::Page), Owner::CopyMode);
-        assert_eq!(key_owner(None, false, true, Owner::Number), Owner::CopyMode, "and it beats the number shortcuts");
-        assert_eq!(key_owner(None, false, true, Owner::Leader), Owner::CopyMode);
-        assert_eq!(key_owner(None, false, false, Owner::Page), Owner::Page);
+        assert_eq!(key_owner(Some(0), false, false, true, Owner::Page), Owner::Bar(0), "the bar first");
+        assert_eq!(key_owner(None, false, false, true, Owner::Binding), Owner::Binding, "a person's binding beats copy mode");
+        assert_eq!(key_owner(None, true, false, true, Owner::Page), Owner::Address, "the address keys beat it");
+        assert_eq!(key_owner(None, false, false, true, Owner::Page), Owner::CopyMode);
+        assert_eq!(key_owner(None, false, false, true, Owner::Number), Owner::CopyMode, "and it beats the number shortcuts");
+        assert_eq!(key_owner(None, false, false, true, Owner::Leader), Owner::CopyMode);
+        assert_eq!(key_owner(None, false, false, false, Owner::Page), Owner::Page);
         assert!(Owner::CopyMode.taken());
         // Through the gate: plain keys, with copy mode on; a binding on Ctrl+B still wins; Win never; a
         // modifier alone is never taken.
@@ -852,6 +870,44 @@ mod tests {
         assert_eq!(on.owner(0x73, 0), Owner::CopyMode, "F4 alone is an ordinary key");
         assert_eq!(on.owner(0x73, CTRL), Owner::CopyMode, "Ctrl+F4 is not the system close");
         assert_eq!(on.owner(0x75, 0), Owner::Address, "F6 stays the address key in every branch");
+    }
+
+    /// The ruled order, whole (13y1 and 13x3 agree, 13y1 merge review ruling a): Bar, the person's
+    /// Binding, Workgroup, Address, CopyMode, then the rest. Every flag on at once, each one dropped in
+    /// turn, gives the next owner down; and through the gate a member key beats copy mode.
+    #[test]
+    fn the_full_owner_order_after_the_13x3_merge() {
+        // (bar, address, workgroup, copy_mode, mapped)
+        assert_eq!(key_owner(Some(3), true, true, true, Owner::Binding), Owner::Bar(3));
+        assert_eq!(key_owner(None, true, true, true, Owner::Binding), Owner::Binding);
+        assert_eq!(key_owner(None, true, true, true, Owner::Page), Owner::Workgroup);
+        assert_eq!(key_owner(None, true, false, true, Owner::Page), Owner::Address);
+        assert_eq!(key_owner(None, false, false, true, Owner::Page), Owner::CopyMode);
+        assert_eq!(key_owner(None, false, false, false, Owner::Page), Owner::Page);
+        // The rest (Number, Leader) only after copy mode; a member key never claims a routed key.
+        assert_eq!(key_owner(None, false, true, true, Owner::Number), Owner::CopyMode);
+        assert_eq!(key_owner(None, false, true, false, Owner::Leader), Owner::Leader);
+        // Through the one gate.
+        let ctrl_m = keyroute::press_from_chord(&chord_of(0x4D, CTRL).unwrap()).stroke.serialized();
+        let g = GateState { copy_mode: true, workgroup_keys: vec![crate::workgroup::Shortcut { serialized: ctrl_m }], profile_map: table(&[("0x62-0x40000", 0)]), ..GateState::default() };
+        assert_eq!(g.owner(0x4D, CTRL), Owner::Workgroup, "a member's key beats copy mode");
+        assert_eq!(g.owner(0x42, CTRL), Owner::Binding, "the person's binding beats both");
+        assert_eq!(g.owner(0x4C, CTRL), Owner::Address, "Ctrl+L beats copy mode");
+        assert_eq!(g.owner(0x4A, 0), Owner::CopyMode, "j");
+        assert_eq!(g.owner(0x73, ALT), Owner::Page, "Alt+F4 is never copy mode's");
+    }
+
+    #[test]
+    fn the_gate_offers_a_members_own_keys() {
+        // 13y1 seam S3: a member's peer or toolbar shortcut is Tandem's, not the page's.
+        let ctrl_m = keyroute::press_from_chord(&chord_of(0x4D, CTRL).unwrap()).stroke.serialized();
+        let peer = crate::workgroup::Shortcut { serialized: ctrl_m };
+        let mut g = GateState { profile_map: table(&[("0x6a-0x40000", 0)]), ..GateState::default() };
+        assert_eq!(g.owner(0x4D, CTRL), Owner::Page, "not a member: the page's");
+        g.workgroup_keys = vec![peer];
+        assert_eq!(g.owner(0x4D, CTRL), Owner::Workgroup);
+        assert_eq!(g.owner(0x4E, CTRL), Owner::Page, "another key stays the page's");
+        assert_eq!(g.owner(0x4A, CTRL), Owner::Binding, "a mapping still wins");
     }
 
     #[test]

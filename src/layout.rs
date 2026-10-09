@@ -216,6 +216,47 @@ impl Layout {
         go(&mut self.root, target, axis, new)
     }
 
+    /// Splits `target` with `new` first when `before`, else after it; `new_fraction` is the new
+    /// pane's share, clamped 0.02 to 0.98 like `from_tree` (a workgroup's split location).
+    /// False if `target` is not in this layout.
+    pub fn split_at(&mut self, target: PaneId, axis: Axis, new: PaneId, before: bool, new_fraction: f32) -> bool {
+        fn go(n: &mut Node, t: PaneId, axis: Axis, new: PaneId, before: bool, share: f32) -> bool {
+            match n {
+                Node::Leaf(id) if *id == t => {
+                    let (a, b, ratio) = if before { (new, t, share) } else { (t, new, 1.0 - share) };
+                    *n = Node::Split { axis, ratio, a: Box::new(Node::Leaf(a)), b: Box::new(Node::Leaf(b)) };
+                    true
+                }
+                Node::Leaf(_) => false,
+                Node::Split { a, b, .. } => go(a, t, axis, new, before, share) || go(b, t, axis, new, before, share),
+            }
+        }
+        let share = if new_fraction.is_finite() { new_fraction.clamp(0.02, 0.98) } else { 0.5 };
+        go(&mut self.root, target, axis, new, before, share)
+    }
+
+    /// Puts `new` in the slot `old` holds, keeping the slot's place and every ratio (a workgroup
+    /// swapping the shown peer). False, and nothing changes, when `old` is not here or `new` already is.
+    pub fn replace(&mut self, old: PaneId, new: PaneId) -> bool {
+        fn find(n: &mut Node, t: PaneId) -> Option<&mut PaneId> {
+            match n {
+                Node::Leaf(id) if *id == t => Some(id),
+                Node::Leaf(_) => None,
+                Node::Split { a, b, .. } => find(a, t).or_else(|| find(b, t)),
+            }
+        }
+        if old == new || self.panes().contains(&new) {
+            return false;
+        }
+        match find(&mut self.root, old) {
+            Some(slot) => {
+                *slot = new;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Removes `target`, and its sibling takes its space. False if `target` is not
     /// here or is the last pane.
     pub fn remove(&mut self, target: PaneId) -> bool {
@@ -848,5 +889,51 @@ mod tests {
         assert_eq!(width(&l, 1), 120.0);
         assert!(has_row_ancestor(&nested, 3));
         assert!(!has_row_ancestor(&Tree::Split { axis: Axis::Column, ratio: 0.5, a: leaf(1), b: leaf(2) }, 1));
+    }
+
+    #[test]
+    fn split_at_follows_iterm2() {
+        let ratio = |l: &Layout| match l.tree() {
+            Tree::Split { axis, ratio, a, b } => (axis, ratio, *a, *b),
+            _ => panic!("not split"),
+        };
+        let mut l = Layout::new(1);
+        assert!(l.split_at(1, Axis::Row, 2, true, 0.3));
+        assert_eq!(ratio(&l), (Axis::Row, 0.3, Tree::Leaf(2), Tree::Leaf(1)));
+        let mut l = Layout::new(1);
+        assert!(l.split_at(1, Axis::Row, 2, false, 0.3));
+        let (axis, r, a, b) = ratio(&l);
+        assert_eq!((axis, a, b), (Axis::Row, Tree::Leaf(1), Tree::Leaf(2)));
+        assert!((r - 0.7).abs() < 1e-6, "the new pane's share is 0.3");
+        let mut l = Layout::new(1);
+        assert!(l.split_at(1, Axis::Column, 2, true, 1.5));
+        assert_eq!(ratio(&l).1, 0.98);
+        let mut l = Layout::new(1);
+        assert!(l.split_at(1, Axis::Column, 2, true, f32::NAN));
+        assert_eq!(ratio(&l).1, 0.5);
+        assert!(!l.split_at(9, Axis::Row, 3, true, 0.5), "a target that is not here");
+        assert_eq!(l.panes(), [2, 1]);
+    }
+
+    #[test]
+    fn replace_keeps_the_slot() {
+        let tree = |l: &Layout| match l.tree() {
+            Tree::Split { axis, ratio, a, b } => (axis, ratio, *a, *b),
+            _ => panic!("not split"),
+        };
+        let mut l = Layout::new(1);
+        assert!(l.split_at(1, Axis::Row, 2, false, 0.7));
+        let before = tree(&l);
+        assert_eq!(before.2, Tree::Leaf(1));
+        assert!(l.replace(1, 5));
+        let after = tree(&l);
+        assert_eq!((after.0, after.1, after.2.clone(), after.3.clone()), (before.0, before.1, Tree::Leaf(5), Tree::Leaf(2)));
+        assert!(!l.replace(9, 6), "an absent pane");
+        assert!(!l.replace(5, 2), "a pane already present");
+        assert!(!l.replace(5, 5), "the same pane");
+        assert_eq!(tree(&l), after, "nothing changed");
+        let mut single = Layout::new(1);
+        assert!(single.replace(1, 4));
+        assert_eq!(single.panes(), [4]);
     }
 }

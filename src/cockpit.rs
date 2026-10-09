@@ -208,16 +208,19 @@ pub enum Jump {
     Window(String),
     /// The tab's id: its focused session.
     Tab(u64),
+    /// The instance's id: its leader, swapped in when a peer is shown (`jumpToWorkgroup`).
+    Workgroup(String),
     Nothing,
 }
 
-/// Groups and the buried root do nothing; workgroups have no leader until milestone 13.
+/// Groups and the buried root do nothing; a workgroup reveals its leader.
 pub fn jump_for(key: &RowKey) -> Jump {
     match key {
         RowKey::Session(p) => Jump::Session(*p),
         RowKey::Window(g) => Jump::Window(g.clone()),
         RowKey::Tab(t) => Jump::Tab(*t),
-        RowKey::Group { .. } | RowKey::BuriedRoot | RowKey::Workgroup(_) => Jump::Nothing,
+        RowKey::Workgroup(id) => Jump::Workgroup(id.clone()),
+        RowKey::Group { .. } | RowKey::BuriedRoot => Jump::Nothing,
     }
 }
 
@@ -728,7 +731,24 @@ mod tests {
         assert_eq!(jump_for(&RowKey::Tab(12)), Jump::Tab(12));
         assert_eq!(jump_for(&RowKey::Group { scope: "pty-A".into(), status: "idle".into() }), Jump::Nothing);
         assert_eq!(jump_for(&RowKey::BuriedRoot), Jump::Nothing);
-        assert_eq!(jump_for(&RowKey::Workgroup("w".into())), Jump::Nothing);
+    }
+
+    /// `CW:667-743`: a workgroup row's double-click reveals the instance's leader.
+    #[test]
+    fn workgroup_jump_follows_iterm2() {
+        assert_eq!(jump_for(&RowKey::Workgroup("wg-X".into())), Jump::Workgroup("wg-X".into()));
+        // Groups and the buried root still do nothing.
+        assert_eq!(jump_for(&RowKey::BuriedRoot), Jump::Nothing);
+        // The app side: the leader is revealed, a peer shown in its place is swapped out, and an
+        // instance that is gone does nothing (source pins; the App has no test harness).
+        let app = include_str!("app/cockpit_app.rs");
+        let jump = &app[app.find("pub(super) fn cockpit_jump(").expect("cockpit_jump")..];
+        let jump = &jump[..jump.find("fn cockpit_store").expect("end")];
+        assert!(jump.contains("Jump::Workgroup(id) =>") && jump.contains("self.workgroups.get(&id).map(|i| i.leader)"), "the leader of the live instance");
+        assert!(jump.contains("self.reveal_pane(pane)"), "the leader is revealed");
+        let alerts = include_str!("app/alerts_ui.rs");
+        assert!(alerts[alerts.find("fn reveal_pane(").expect("reveal_pane")..].contains("self.reveal_as_peer(pane)"), "a peer shown in the leader's place is swapped out");
+        assert!(jump.contains("filter(|p| self.panes.contains_key(p))"), "a gone instance does nothing");
     }
 
     #[test]
@@ -822,7 +842,7 @@ mod tests {
     }
 
     fn session(pane: PaneId, id: &str, exited: bool) -> crate::cockpit_rows::SessionFact {
-        crate::cockpit_rows::SessionFact { pane, stable_id: id.into(), name: format!("s{pane}"), status: Default::default(), exited, alt_screen: false, ancestors: Vec::new(), armed: false }
+        crate::cockpit_rows::SessionFact { pane, stable_id: id.into(), name: format!("s{pane}"), status: Default::default(), exited, alt_screen: false, ancestors: Vec::new(), armed: false, role: None }
     }
 
     fn world() -> World {
@@ -830,6 +850,7 @@ mod tests {
         World {
             windows: vec![WindowFact { guid: "G".into(), number: 1, title: String::new(), active_tab: 0, tabs: vec![TabFact { id: 7, title: String::new(), sessions: vec![session(1, "ptys_0123456789ABW", false), session(2, "ptys_0123456789ACX", true)] }], armed: false }],
             buried: vec![session(3, "ptys_0123456789ADY", false)],
+            ..Default::default()
         }
     }
 

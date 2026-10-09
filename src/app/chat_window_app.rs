@@ -1838,7 +1838,7 @@ mod tests {
         let later = t0 + Duration::from_secs(1);
         assert_eq!(icon_wake(&[later, t0], &[t0]), Some(t0 + crate::svg_icon::RENDER_TIMEOUT), "the earliest of all");
         let m = include_str!("mod.rs");
-        let wake = &m[m.find("let wake = [jump_due").unwrap()..];
+        let wake = &m[m.find("let wake = [").unwrap()..];
         let wake = &wake[..wake.find("].into_iter()").unwrap()];
         assert!(wake.contains("icon_due"), "the wake array names the icon deadline");
         assert!(m.contains("let icon_due = self.icon_due();"), "computed after icon_tick, before the array");

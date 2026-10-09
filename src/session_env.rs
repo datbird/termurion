@@ -120,12 +120,38 @@ pub fn overlay(vars: Vec<String>, extra: &[String]) -> Vec<String> {
     let name = |e: &str| e.split_once('=').map_or(e.to_uppercase(), |(n, _)| n.to_uppercase());
     let mut out = vars;
     for e in extra {
+        if let Some(gone) = e.strip_prefix('-').filter(|n| !n.is_empty() && !n.contains('=')) {
+            out.retain(|v| name(v) != gone.to_uppercase());
+            continue;
+        }
         match out.iter_mut().find(|v| name(v) == name(e)) {
             Some(v) => *v = e.clone(),
             None => out.push(e.clone()),
         }
     }
     out
+}
+
+/// A launch's environment over the session's: the ONE rule for a launch env. The launch's entries
+/// (`NAME=value` overrides and `-NAME` removals, such as a git launch's) are applied LAST: every
+/// session entry with a name the launch names goes, and the launch's entries follow in order, so
+/// `merge` applies each one to the inherited block after everything else (a removal reaches the child
+/// as the variable's absence).
+pub fn launch_last(env: Vec<String>, launch: &[String]) -> Vec<String> {
+    let named: Vec<String> = launch.iter().map(|e| entry_name(e)).collect();
+    let mut out: Vec<String> = env.into_iter().filter(|e| !named.contains(&entry_name(e))).collect();
+    out.extend(launch.iter().cloned());
+    out
+}
+
+/// The uppercase name an entry sets or (`-NAME`) removes. A name ends at the first `=` after its first
+/// character, as `merge` reads it.
+fn entry_name(e: &str) -> String {
+    if let Some(gone) = e.strip_prefix('-').filter(|n| !n.contains('=')) {
+        return gone.to_uppercase();
+    }
+    let at = e.char_indices().skip(1).find(|(_, c)| *c == '=').map_or(e.len(), |(i, _)| i);
+    e[..at].to_uppercase()
 }
 
 /// `extra`'s `NAME=value` entries over `base`: a name already there (compared ignoring case,
@@ -137,6 +163,10 @@ pub fn merge(base: Vec<(String, String)>, extra: &[String]) -> Vec<(String, Stri
     let mut out = base;
     out.retain(|(n, _)| !NEVER_INHERITED.iter().any(|x| n.eq_ignore_ascii_case(x)));
     for e in extra.iter().filter(|e| !e.contains('\0')) {
+        if let Some(gone) = e.strip_prefix('-').filter(|n| !n.is_empty() && !n.contains('=')) {
+            out.retain(|(n, _)| n.to_uppercase() != gone.to_uppercase());
+            continue;
+        }
         // The name ends at the first `=` after its first character: a drive's current folder
         // is kept as `=C:=C:\x`.
         let Some(at) = e.char_indices().skip(1).find(|(_, c)| *c == '=').map(|(i, _)| i) else { continue };
@@ -280,6 +310,21 @@ pub fn block(pairs: &[(String, String)]) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry `-NAME` removes the variable (a launch that must not inherit GIT_EXTERNAL_DIFF).
+    #[test]
+    fn a_dash_entry_removes_a_variable() {
+        let out = overlay(vec!["A=1".into(), "git_external_diff=calc".into(), "B=2".into()], &["-GIT_EXTERNAL_DIFF".into(), "C=3".into()]);
+        assert_eq!(out, ["A=1", "B=2", "C=3"]);
+        let m = merge(vec![("A".into(), "1".into()), ("Git_External_Diff".into(), "calc".into())], &["-GIT_EXTERNAL_DIFF".into(), "B=2".into()]);
+        assert_eq!(m, [("A".to_string(), "1".to_string()), ("B".to_string(), "2".to_string())]);
+        // The composed path: a launch's entries survive the session's and come last.
+        let env = launch_last(vec!["A=1".into(), "git_dir=x".into(), "PAGER=less".into(), "B=2".into()], &["-GIT_DIR".into(), "PAGER=cat".into()]);
+        assert_eq!(env, ["A=1", "B=2", "-GIT_DIR", "PAGER=cat"]);
+        let m = merge(vec![("Git_Dir".into(), "C:\\other".into()), ("C".into(), "3".into())], &env);
+        assert_eq!(m, pairs(&[("A", "1"), ("B", "2"), ("C", "3"), ("PAGER", "cat")]), "GIT_DIR is gone from the inherited block");
+        assert_eq!(launch_last(vec!["=C:=C:\\x".into()], &["X=1".into()]), ["=C:=C:\\x", "X=1"], "a drive entry keeps its name");
+    }
 
     #[test]
     fn termid_follows_iterm2() {

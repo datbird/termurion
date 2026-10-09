@@ -1,6 +1,6 @@
 //! Open Python REPL's banner and arguments (`AD:3528-3551`, `API/iTermReplLauncher.swift`),
 //! and import and export (`IM`, `AR`, `EX`): which layouts an archive may have, the export's
-//! zip name and the tar.exe arguments that write and read it, the replace backup's names and
+//! zip name and the tar.exe arguments that write it (Tandem reads it itself, `extract`), the replace backup's names and
 //! the texts. Pure.
 
 use std::path::{Path, PathBuf};
@@ -125,13 +125,6 @@ pub fn export_name(folder: &Path, name: &str, exists: &dyn Fn(&Path) -> bool) ->
 pub fn export_tar_args(out: &Path, parent: &Path, name: &str) -> Vec<String> {
     let s = |p: &Path| p.to_string_lossy().into_owned();
     vec!["--format".into(), "zip".into(), "-c".into(), "-f".into(), s(out), "-C".into(), s(parent), format!("{name}/{SETUP_CFG}"), format!("{name}/{name}")]
-}
-
-/// tar.exe's arguments extracting an archive (bsdtar refuses absolute paths and ".." unless
-/// `-P` is passed; it is not).
-pub fn extract_tar_args(zip: &Path, to: &Path) -> Vec<String> {
-    let s = |p: &Path| p.to_string_lossy().into_owned();
-    vec!["-xf".into(), s(zip), "-C".into(), s(to)]
 }
 
 /// `writeMetadataTo:` (`EX:92-100`).
@@ -449,7 +442,6 @@ mod tests {
         assert_eq!(export_name(desktop, "tool", &|_| false), PathBuf::from(r"C:\U\Desktop\tool.zip"));
         let (out, parent) = (Path::new(r"C:\U\Desktop\tool.zip"), Path::new(r"C:\S"));
         assert_eq!(export_tar_args(out, parent, "tool"), ["--format", "zip", "-c", "-f", r"C:\U\Desktop\tool.zip", "-C", r"C:\S", "tool/setup.cfg", "tool/tool"]);
-        assert_eq!(extract_tar_args(out, Path::new(r"C:\S\.installing-x")), ["-xf", r"C:\U\Desktop\tool.zip", "-C", r"C:\S\.installing-x"]);
         assert_eq!(metadata_json(false), "{\"AutoLaunch\":false}");
         assert_eq!(metadata_json(true), "{\"AutoLaunch\":true}");
     }

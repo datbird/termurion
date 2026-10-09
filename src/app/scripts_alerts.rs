@@ -100,6 +100,10 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeRepair => Answer::Button(1),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
+        // Keep It: a closed window never removes a workgroup the person edited.
+        Then::ClaudeEditedWorkgroup => Answer::Button(0),
+        // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
+        Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. } | Then::UsageReport { .. } => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -242,6 +246,8 @@ pub(super) enum Then {
     /// "Couldn't Remove Hooks": Continue (0) goes on and clears the integration's flags; Cancel
     /// (1) stops. A closed window cancels (P10).
     ClaudeHooksFailed,
+    /// Uninstall found a "Claude Code" workgroup that is not the one the installer adds.
+    ClaudeEditedWorkgroup,
     /// "Disable the Python API?" after an uninstall: Leave Enabled (0) or Disable (1). A closed
     /// window leaves it enabled (P10).
     ClaudeDisableApi,
@@ -308,6 +314,16 @@ pub(super) enum Then {
     /// "WebView2 Runtime Required" (`GW:136-160`): Download (0) opens Microsoft's page, Use System
     /// Browser (1) opens the link, Cancel nothing. Not capped.
     BrowserUpsell { url: String },
+    /// "Enter the workgroup ...?" for an imported workgroup, a trigger, or more than eight members
+    /// (13y1): Cancel (0, the default) nothing, Enter (1, `ASK_ENTER`) enters the very workgroup the
+    /// question showed. A trigger raises it, so then it is capped.
+    EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism, approved: crate::workgroup_run::Approved },
+    /// A restored workgroup that is not the person's own, or whose commands changed since they were
+    /// answered for (Task 9): `token` names the waiting restore.
+    RestoreWorkgroup { token: u64, workgroup: Box<crate::workgroup::Workgroup>, approved: crate::workgroup_run::Approved },
+    /// The AI Usage item's report alert (13y1 Task 5): Cancel (0, the default), Report Bug (1) copies
+    /// the report and opens the issue form.
+    UsageReport { title: String, text: String },
     /// "Run command?" for a Smart Selection action from a page (`PSB:300-317`): OK (0) queues the
     /// command, built already by the one cmd.exe builder, to run in a single-use window; Cancel (1)
     /// nothing. The person's own pick, so not capped.
@@ -342,6 +358,7 @@ impl Then {
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
         matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_))
+            || matches!(self, Then::EnterWorkgroup { how: crate::workgroup_run::Mechanism::Trigger | crate::workgroup_run::Mechanism::BrowserTrigger, .. })
     }
 }
 
@@ -404,6 +421,8 @@ impl App {
             // The finished download keeps both files.
             Then::SshKeepOrReplace { .. } => self.scripts_answered(then, 0),
             Then::Paste(pane) => self.paste_answered(pane, None),
+            // The question could not open: a restored workgroup is not rebuilt unasked.
+            Then::RestoreWorkgroup { token, workgroup, approved } => self.restore_answered(token, *workgroup, approved, false),
             Then::DynamicProfilesError(_) => self.dynamic_errors_pending = 0,
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
@@ -465,7 +484,13 @@ impl App {
         let Some(ask) = self.scripts_alerts.pop_front() else { return };
         let underline = self.globals.bool("AlertsIndicateShortcuts");
         match super::warnings_app::open_warning(event_loop, (instance, adapter, device, queue), &ask.spec, ask.remembered.as_deref(), underline) {
-            Ok(w) => self.scripts_alert = Some((w, ask)),
+            Ok(mut w) => {
+                // The entry question's Enter waits until the whole body has been shown (13y1 review).
+                if matches!(ask.then, Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. }) {
+                    w.require_read(crate::workgroup_run::ASK_ENTER);
+                }
+                self.scripts_alert = Some((w, ask));
+            }
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
                 self.scripts_dropped(ask.then);
@@ -687,7 +712,7 @@ impl App {
                     self.ssh_upload_confirmed(pane, files, to);
                 }
             }
-            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie => self.claude_answered(&then, index),
+            Then::ClaudeUninstall | Then::ClaudeHooksFailed | Then::ClaudeDisableApi | Then::ClaudeRepair | Then::ClaudeCookie | Then::ClaudeEditedWorkgroup => self.claude_answered(&then, index),
             Then::RunOpenedFile(launch) => {
                 if index == 0 {
                     self.open_runs.push(launch);
@@ -704,6 +729,20 @@ impl App {
                     self.trigger_import_queue(imported);
                 }
             }
+            Then::UsageReport { title, text } => {
+                if index == 1 {
+                    self.usage_report_answered(&title, &text);
+                }
+            }
+            Then::EnterWorkgroup { workgroup, pane, how, approved } => {
+                if index == crate::workgroup_run::ASK_ENTER {
+                    self.enter_workgroup_now(*workgroup, pane, how, approved);
+                } else if matches!(how, crate::workgroup_run::Mechanism::Trigger | crate::workgroup_run::Mechanism::BrowserTrigger) {
+                    // Cancel: this trigger does not ask again in this session (not every 5 s).
+                    self.workgroups.restoring.decline(pane, &workgroup.unique_identifier);
+                }
+            }
+            Then::RestoreWorkgroup { token, workgroup, approved } => self.restore_answered(token, *workgroup, approved, index == crate::workgroup_run::ASK_ENTER),
         }
     }
 }
@@ -711,6 +750,21 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entry question's default (Return) is Cancel; Return, Escape and a closed window all cancel,
+    /// and only the second button, by click or access key, enters.
+    #[test]
+    fn the_entry_question_defaults_to_cancel() {
+        use crate::workgroup_run::{ASK_ENTER, ASK_LABELS};
+        let then = || Then::EnterWorkgroup { workgroup: Box::new(crate::workgroup::Workgroup::new_empty("x")), pane: 1, how: crate::workgroup_run::Mechanism::Trigger, approved: Default::default() };
+        let a = ask("H", "T", &ASK_LABELS, None, crate::warnings::Kind::Persistent, then());
+        assert_eq!(a.spec.labels[0], crate::api_auth::CANCEL, "Return presses the first button");
+        assert_eq!(a.spec.cancel, Some(0), "Escape presses it too");
+        assert_eq!(a.spec.labels[ASK_ENTER], "Enter");
+        assert_eq!(on_close(&then(), 7), Answer::Button(0), "a closed window cancels");
+        assert!(include_str!("scripts_alerts.rs").contains("if index == crate::workgroup_run::ASK_ENTER {"));
+        assert!(include_str!("scripts_alerts.rs").contains("w.require_read(crate::workgroup_run::ASK_ENTER);"), "Enter waits for the whole body");
+    }
 
     #[test]
     fn asks_follow_iterm2() {
@@ -846,6 +900,11 @@ mod tests {
     #[test]
     fn closing_couldnt_remove_hooks_cancels() {
         assert_eq!(on_close(&Then::ClaudeHooksFailed, 0), Answer::Button(1), "Cancel, not Continue");
+    }
+
+    #[test]
+    fn closing_the_edited_workgroup_question_keeps_it() {
+        assert_eq!(on_close(&Then::ClaudeEditedWorkgroup, 1), Answer::Button(0), "Keep It, not Remove");
     }
 
     #[test]

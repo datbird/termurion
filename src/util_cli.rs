@@ -9,10 +9,11 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// iTerm2's bundled utilities that Tandem ports, sorted (the Swift `it2` is not ported).
-pub const NAMES: [&str; 17] = [
+/// iTerm2's bundled utilities that Tandem ports, sorted. `it2` is the Swift program's two clipping verbs only (13y1 Task 7).
+pub const NAMES: [&str; 18] = [
     "imgcat",
     "imgls",
+    "it2",
     "it2api",
     "it2attention",
     "it2cat",
@@ -228,6 +229,7 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
         "it2profile" => util_query::it2profile(args, io),
         "it2ul" => util_query::it2ul(args, io),
         "it2api" => crate::util_api::it2api(args, io),
+        "it2" => crate::it2_session::it2(args, io),
         "it2ssh" => crate::util_it2ssh::run(args, io),
         #[cfg(windows)]
         "imgls" => {
@@ -445,8 +447,8 @@ mod tests {
         let mut sorted = NAMES;
         sorted.sort();
         assert_eq!(sorted, NAMES);
-        assert_eq!(NAMES.len(), 17);
-        assert!(NAMES.contains(&"it2ssh") && !NAMES.contains(&"it2"));
+        assert_eq!(NAMES.len(), 18);
+        assert!(NAMES.contains(&"it2ssh") && NAMES.contains(&"it2"));
         assert_eq!(name_of("C:\\t\\utilities\\IMGCAT.EXE"), Some("imgcat"));
         assert_eq!(name_of("it2ul"), Some("it2ul"));
         assert_eq!(name_of("tandem-utils.exe"), None);
@@ -454,7 +456,7 @@ mod tests {
         assert_eq!(pick(&strings(&["imgcat.exe", "a.png"])), Ok(("imgcat", strings(&["a.png"]))));
         assert_eq!(pick(&strings(&["tandem-utils.exe"])), Err(multi_usage()));
         assert_eq!(pick(&strings(&["tandem-utils.exe", "it2ssh", "h"])), Ok(("it2ssh", strings(&["h"]))));
-        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2"])), Err(multi_usage()));
+        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2", "session"])), Ok(("it2", strings(&["session"]))));
         assert!(multi_usage().starts_with("Usage: tandem-utils <utility> [arguments...]\nUtilities: imgcat, imgls, "));
         assert!(multi_usage().ends_with(", it2universion\n"));
     }

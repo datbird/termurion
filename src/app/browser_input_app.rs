@@ -59,6 +59,7 @@ impl App {
             switch: [self.globals.int("SwitchTabModifier"), self.globals.int("SwitchPaneModifier"), self.globals.int("SwitchWindowModifier")],
             bar: self.bars.get(&pane).and_then(|b| b.front()).cloned(),
             editing: bv.editing,
+            workgroup_keys: self.workgroup_gate_keys(pane),
             copy_mode: bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world),
         })
     }
@@ -74,7 +75,7 @@ impl App {
 
     pub(super) fn browser_gate_refresh(&mut self, pane: PaneId) {
         let Some(state) = self.browser_gate_state(pane) else { return };
-        let sig = (state.editing, state.bar.as_ref().map(|b| b.id.clone()), state.leader_on, state.copy_mode);
+        let sig = (state.editing, state.bar.as_ref().map(|b| b.id.clone()), state.leader_on, state.copy_mode, state.workgroup_keys.iter().map(|k| k.serialized.clone()).collect());
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.gate_sig = Some(sig);
         // The closure holds copies only: it runs inside the COM handler, with no App borrow.
@@ -88,7 +89,8 @@ impl App {
             .iter()
             .filter(|(p, bv)| {
                 self.panes.contains_key(*p) && {
-                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world));
+                    // A member's keys change with entering, peer swaps and edits (13y1 seam S3).
+                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world), self.workgroup_gate_keys(**p).into_iter().map(|k| k.serialized).collect());
                     bv.gate_sig.as_ref() != Some(&sig)
                 }
             })
@@ -116,6 +118,17 @@ impl App {
         let owner = state.as_ref().map(|s| s.owner(vk, mods));
         match owner {
             Some(Owner::Bar(i)) if taken => return self.browser_bar_press(pane, i, event_loop),
+            // A workgroup member's peer or toolbar shortcut (13y1 seam S3), as `route_press` runs them
+            // for a terminal member: the peer's, then the toolbar's.
+            Some(Owner::Workgroup) if taken => {
+                let Some(stroke) = browser_keys::chord_of(vk, mods).map(|c| crate::keyroute::press_from_chord(&c).stroke) else { return };
+                self.in_pane_window(pane, |a| {
+                    if a.peer_shortcut(pane, &stroke) || a.workgroup_toolbar_shortcut(pane, &stroke) {
+                        a.relayout();
+                    }
+                });
+                return;
+            }
             Some(Owner::Binding) if taken && mods & browser_keys::WIN == 0 => {}
             _ => {
                 if self.browser_page_key(pane, vk, mods, event_loop) {
@@ -129,7 +142,7 @@ impl App {
         let (Some(state), Some(chord)) = (state, browser_keys::chord_of(vk, mods)) else { return };
         match state.owner(vk, mods) {
             Owner::Bar(i) => self.browser_bar_press(pane, i, event_loop),
-            Owner::Page | Owner::Address => {}
+            Owner::Page | Owner::Address | Owner::Workgroup => {}
             // Copy mode's keys (the gate took them, so the page never saw them).
             Owner::CopyMode => self.browser_copy_mode_vk(pane, vk, mods),
             Owner::Binding | Owner::Number | Owner::Leader => {

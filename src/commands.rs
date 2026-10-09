@@ -88,6 +88,7 @@ pub const DONE: &[&str] = &[
     "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openAIChats:", "openAIChat:", "toggleShowInlineChat:", "performNaturalLanguageQuery:", "explainOutputWithAI:", "openPasswordManager:",
     "sshDisconnect:", "downloadFiles:",
     "installClaudeCodeIntegration:", "reinstallClaudeCodeIntegration:", "uninstallClaudeCodeIntegration:",
+    "exitWorkgroup:", "previousWorkgroupPeer:", "nextWorkgroupPeer:",
 ];
 
 /// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).
@@ -148,7 +149,7 @@ fn owner(item: &Item) -> u8 {
     } else if sel("Trigger") || sel("Coprocess") || sel("Notify") || sel("Logging") && has("Log") {
         6
     } else if has("Broadcast") || has("Arrangements") || has("Window Style") || has("Arrange Windows") || has("Resize Window")
-        || sel("Workgroup") || sel("TabGroup") || sel("Group") || sel("moveSession") || sel("movePane") || sel("bury")
+        || sel("TabGroup") || sel("Group") || sel("moveSession") || sel("movePane") || sel("bury")
         || sel("Hotkey") || sel("Archive") || sel("TabToNewWindow") || sel("Locked") || sel("duplicateWindow")
         || sel("undoClose") || sel("editWindowTitle") || sel("editTabTitle") || sel("Transparency") || sel("FullScreenTabBar")
         || sel("mergeAll") || sel("arrangeHorizontally") || sel("SizeChanges")

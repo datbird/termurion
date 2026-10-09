@@ -372,7 +372,7 @@ impl App {
     fn orch_tool(&mut self, chat: &str, call_id: &str, name: &str, args: &Value) -> Result<Outcome, OrchError> {
         match name {
             "list_workgroups" => {
-                let groups: Vec<orch::WorkgroupSummary> = self.orch_facts().iter().map(orch::synthetic).collect();
+                let groups = self.orch_groups();
                 Ok(done(ot::result_json("workgroups", serde_json::to_value(groups).unwrap_or_default())))
             }
             "get_state" => {
@@ -394,9 +394,8 @@ impl App {
             }
             "list_workgroup_clippings" => {
                 let a = ot::parse_list_workgroup_clippings(args)?;
-                let unknown = || OrchError::UnknownWorkgroup(a.workgroup_id.clone());
-                let pane = self.pane_by_reference(ot::clipping_target(&a.workgroup_id)?).ok_or_else(unknown)?;
-                let list = self.clips.get(&pane).map(|c| c.model.live.clone()).unwrap_or_default();
+                let (_, home, _) = self.orch_clippings_home(&a.workgroup_id)?;
+                let list = self.clips.get(&home).map(|c| c.model.live.clone()).unwrap_or_default();
                 Ok(done(ot::result_json("clippings", ot::clippings_value(&list, a.type_filter.as_deref()))))
             }
             "send_text" => {
@@ -404,7 +403,7 @@ impl App {
                 let pane = self.orch_resolve(&s.guid)?;
                 typeable(&s.guid, self.orch_pane_state(pane))?;
                 let text = ot::decode_escapes(&s.text)?;
-                let scope = ot::session_scope(&self.orch_stable(pane));
+                let scope = self.claim_scope_of(pane);
                 if let Some(o) = self.orch_claim(chat, call_id, &scope, name, args, None) {
                     return Ok(o);
                 }
@@ -414,7 +413,7 @@ impl App {
                 let guid = ot::parse_guid(args)?;
                 let pane = self.orch_resolve(&guid)?;
                 typeable(&guid, self.orch_pane_state(pane))?;
-                let scope = ot::session_scope(&self.orch_stable(pane));
+                let scope = self.claim_scope_of(pane);
                 if let Some(o) = self.orch_claim(chat, call_id, &scope, name, args, None) {
                     return Ok(o);
                 }
@@ -427,28 +426,57 @@ impl App {
             }
             "add_workgroup_clipping" => {
                 let a = ot::parse_add_workgroup_clipping(args)?;
-                let unknown = || OrchError::UnknownWorkgroup(a.workgroup_id.clone());
-                let pane = self.pane_by_reference(ot::clipping_target(&a.workgroup_id)?).ok_or_else(unknown)?;
-                let stable = self.orch_stable(pane);
-                if self.orch_pane_state(pane).exited {
+                let (target, home, scope) = self.orch_clippings_home(&a.workgroup_id)?;
+                let stable = self.orch_stable(target);
+                if self.orch_pane_state(target).exited {
                     return Err(OrchError::TargetGone(stable));
                 }
-                if let Some(o) = self.orch_claim(chat, call_id, &ot::session_scope(&stable), name, args, None) {
+                if let Some(o) = self.orch_claim(chat, call_id, &scope, name, args, None) {
                     return Ok(o);
                 }
-                self.clips.entry(pane).or_default().model.add(crate::clippings::Clipping { kind: a.kind, title: a.title, detail: a.detail });
+                if !self.clips.entry(home).or_default().model.add(crate::clippings::Clipping { kind: a.kind, title: a.title, detail: a.detail }) {
+                    self.banners.set("clippings", format!("This session has {} clippings; archive or remove some to add more.", crate::clippings::MAX_LIVE));
+                }
                 self.redraw();
                 Ok(done(ot::ack_json()))
             }
             "start_code_review" => {
-                // No workgroups before milestone 13: no session is the Code Review role, so the
-                // call can never act and asks nothing first.
+                // The session must be a Code Review member of a workgroup (`WorkgroupIntrospection`): the call
+                // runs a review on the workgroup's code review member. Any other session keeps the error.
                 let a = ot::parse_start_code_review(args)?;
+                let prompt = ot::review_prompt(&crate::code_review::prompts_of(&self.globals), &a)?;
                 let pane = self.orch_resolve(&a.guid)?;
                 if self.orch_pane_state(pane).exited {
                     return Err(OrchError::TargetGone(a.guid));
                 }
-                Err(OrchError::Unsupported(ot::not_code_review("default", &self.orch_name(pane))))
+                // A claim first, like send_text: a model starts a review only where the person let it act.
+                // The launch itself is the member's own restart (`workgroup_launch`), which runs only a
+                // command in the list the workgroup was entered with; nothing here is the person's answer.
+                if let Some(o) = self.orch_claim(chat, call_id, &self.claim_scope_of(pane), name, args, None) {
+                    return Ok(o);
+                }
+                let instance = self.workgroup_of(pane).map(|i| i.id.clone());
+                let is_review = self.member_config(pane).is_some_and(|(i, c)| self.workgroups.get(&i).and_then(|inst| inst.workgroup.session(&c)).is_some_and(|s| s.mode == crate::workgroup::Mode::CodeReview));
+                // With no prompt overlay up, the review restarts its program: only from idle (`DI:3177-3189`),
+                // so a model never kills a review under way.
+                if is_review {
+                    if let Some((i, c)) = self.member_config(pane) {
+                        let overlay = self.workgroups.get(&i).is_some_and(|inst| inst.review.overlays.contains_key(&c));
+                        let state = self.panes.get(&pane).map_or(crate::session_state::State::Unknown, |p| crate::session_state::state(&p.own().tab_status));
+                        if !overlay && state != crate::session_state::State::Idle {
+                            let inst = self.workgroups.get(&i);
+                            let role = inst.and_then(|x| x.workgroup.session(&c)).map(|s| if s.display_name.is_empty() { c.clone() } else { s.display_name.clone() }).unwrap_or_else(|| c.clone());
+                            let wg = inst.map(|x| if x.workgroup.name.is_empty() { x.id.clone() } else { x.workgroup.name.clone() }).unwrap_or_default();
+                            let (role, wg) = (crate::inert_files::shown_name(&role), crate::inert_files::shown_name(&wg));
+                            return Err(OrchError::Unsupported(ot::review_busy(&role, &wg, state.word())));
+                        }
+                    }
+                }
+                match instance.filter(|_| is_review) {
+                    Some(i) if self.request_review_with(&i, prompt) => Ok(done(ot::ack_json())),
+                    Some(_) => Err(OrchError::Unsupported("The code review session could not start a review now (it needs to be live and restartable).".to_string())),
+                    None => Err(OrchError::Unsupported(ot::not_code_review("default", &self.orch_name(pane)))),
+                }
             }
             "start_session" => self.orch_start_session(chat, call_id, args),
             "register_watch" | "register_timer" | "unregister_watch" | "list_watches" => Ok(self.orch_watch_call(chat, call_id, name, args)),
@@ -462,8 +490,8 @@ impl App {
         let stable = self.orch_stable(pane);
         let facts = self.orch_facts().into_iter().find(|f| f.stable_id == stable);
         let Some(f) = facts else { return json!({}) };
-        let g = orch::synthetic(&f);
-        let s = &g.sessions[0];
+        let groups = orch::all_workgroups(&self.orch_live_groups(), std::slice::from_ref(&f));
+        let Some((g, s)) = groups.iter().find_map(|g| g.sessions.iter().find(|s| s.session_guid == stable).map(|s| (g, s))) else { return json!({}) };
         let last = f.status.detail.clone().filter(|d| !d.trim().is_empty()).or_else(|| f.status.status.clone()).map(|t| crate::inert_files::shown_name(&t));
         let mut v = json!({"workgroup_id": g.workgroup_id, "workgroup_name": g.workgroup_name, "role_id": s.role_id, "role_name": s.role_name, "kind": s.kind, "status": s.status, "status_source": s.status_source});
         for (k, val) in [("screen_last_changed", &s.screen_last_changed), ("current_command", &s.current_command), ("last_message", &last), ("provenance", &s.provenance)] {
@@ -517,6 +545,25 @@ impl App {
         Ok(())
     }
 
+    /// (The pane named, the pane whose clippings a clipping tool reads or writes, the scope its claim
+    /// lives under): for a `wg-` id the live instance's group (the leader's, `workgroup_clippings`) and the
+    /// instance; for a `session:` id the session's group and its own scope. An id no live
+    /// session or instance has is `UnknownWorkgroup`.
+    fn orch_clippings_home(&self, workgroup_id: &str) -> Result<(PaneId, PaneId, String), OrchError> {
+        let unknown = || OrchError::UnknownWorkgroup(workgroup_id.to_string());
+        match ot::clipping_target(workgroup_id)? {
+            ot::ClippingTarget::Session(id) => {
+                let pane = self.pane_by_reference(id).ok_or_else(unknown)?;
+                Ok((pane, self.clip_home(pane), ot::session_scope(&self.orch_stable(pane))))
+            }
+            ot::ClippingTarget::Workgroup(id) => {
+                let home = self.workgroup_clippings(id).ok_or_else(unknown)?;
+                let inst = self.workgroups.get(id).ok_or_else(unknown)?;
+                Ok((inst.leader, home, inst.id.clone()))
+            }
+        }
+    }
+
     /// The claim a write needs (`ensureClaim`, `DI:1586-1660`): None when the chat holds the
     /// scope; else the call is denied (refused earlier in this chat) or parked on the claim
     /// bubble. `mirror_guid` makes the denial a mirror's plain text.
@@ -543,6 +590,9 @@ impl App {
 
     /// A scope's name for the person: the session's name, else the scope itself.
     pub(super) fn orch_scope_name(&self, scope: &str) -> String {
+        if let Some(inst) = self.workgroups.get(scope) {
+            return Some(crate::inert_files::shown_name(&inst.workgroup.name)).filter(|n| !n.is_empty()).unwrap_or_else(|| inst.id.clone());
+        }
         match scope.strip_prefix(orch::SYNTHETIC_PREFIX).and_then(|id| self.pane_by_reference(id)) {
             Some(pane) => self.orch_name(pane),
             None => scope.to_string(),
@@ -662,7 +712,8 @@ impl App {
         }
         for id in grants {
             let Some(pane) = crate::stable_id::canonical(id).and_then(|c| self.pane_by_reference(&c)) else { continue };
-            let scope = ot::session_scope(&self.orch_stable(pane));
+            // A bare pick of a workgroup member claims its instance (`claimScope(forMention:)`).
+            let Some(scope) = crate::mention::claim_scope(None, id, &|_| Some(self.claim_scope_of(pane))) else { continue };
             let mut added = false;
             self.chat_update(chat_id, |c| {
                 if !c.claimed_scopes.contains(&scope) {
@@ -676,7 +727,7 @@ impl App {
             if let Some(d) = self.orch_denied.get_mut(chat_id) {
                 d.retain(|s| *s != scope);
             }
-            let local = OrchLocal::Granted { scope: scope.clone(), name: self.orch_name(pane) };
+            let local = OrchLocal::Granted { scope: scope.clone(), name: self.orch_scope_name(&scope) };
             let m = Message::new(chat_id, Participant::Agent, Content::ClientLocal(ClientLocal::Other(local.to_value())), super::warnings_app::unix_now());
             let _ = self.chat_publish(chat_id, m, false);
         }
@@ -997,7 +1048,7 @@ impl App {
             if let Err(e) = typeable(&guid, self.orch_pane_state(pane)) {
                 return done(e.message());
             }
-            let scope = ot::session_scope(&self.orch_stable(pane));
+            let scope = self.claim_scope_of(pane);
             if let Some(o) = self.orch_claim(chat, call_id, &scope, name, args, Some(&guid)) {
                 return o;
             }
@@ -1415,5 +1466,57 @@ mod tests {
         assert_eq!(runs_verdict(&[Run::Done(Verdict::Allow), Run::Done(Verdict::Allow)]), Some(Verdict::Allow));
         assert_eq!(runs_verdict(&[Run::Done(Verdict::Allow), Run::Done(Verdict::Deny("d".into()))]), Some(Verdict::Deny("d".into())));
         assert!(matches!(runs_verdict(&[]), Some(Verdict::RequireApproval(_))));
+    }
+
+    /// `WorkgroupIntrospection.swift:366-389`: a `wg-` id names a live instance's group; the model's
+    /// actions on a workgroup go through the claim and the one command list, never the person's answer.
+    #[test]
+    fn workgroup_clippings_follow_iterm2() {
+        let wg = "wg-6F1C2A3B-0000-4000-8000-000000000002";
+        assert_eq!(ot::clipping_target(wg), Ok(ot::ClippingTarget::Workgroup(wg)));
+        assert_eq!(ot::clipping_target("session:ptys_0123456789ABW"), Ok(ot::ClippingTarget::Session("ptys_0123456789ABW")), "session: ids keep 12f's behavior");
+        assert_eq!(ot::clipping_target("wg-nope"), Err(OrchError::UnknownWorkgroup("wg-nope".into())));
+        let c = code();
+        // Both tools resolve through one function; its wg- arm asks the app for the live instance's group,
+        // and an id that names none is UnknownWorkgroup.
+        let home = body(c, "fn orch_clippings_home(");
+        assert!(home.contains("ot::ClippingTarget::Workgroup(id) =>") && home.contains("self.workgroup_clippings(id).ok_or_else(unknown)?"));
+        assert!(home.contains("ot::ClippingTarget::Session(id) =>") && home.contains("self.pane_by_reference(id).ok_or_else(unknown)?"));
+        let list = body(c, "\"list_workgroup_clippings\" => {");
+        assert!(list.contains("self.orch_clippings_home(&a.workgroup_id)?") && list.contains("ot::clippings_value(&list, a.type_filter.as_deref())"), "filtered by type_filter");
+        let add = body(c, "\"add_workgroup_clipping\" => {");
+        assert!(add.contains("self.orch_clippings_home(&a.workgroup_id)?") && add.contains("model.add("), "appends to the group's clippings");
+        assert!(add.find("self.orch_claim(").unwrap() < add.find("model.add(").unwrap(), "the claim comes first");
+        let app = include_str!("workgroup_app.rs");
+        let wc = body_of(app, "pub(super) fn workgroup_clippings(");
+        assert!(wc.contains("self.clip_home(inst.leader)") && wc.contains("self.workgroups.get(id)"), "the leader's group of a live instance");
+        // Claims by workgroup: a member's writes claim its instance.
+        for tool in ["\"send_text\" => {", "\"interrupt\" => {", "\"start_code_review\" => {"] {
+            assert!(body(c, tool).contains("self.claim_scope_of(pane)"), "{tool}");
+        }
+        assert!(body(c, "fn orch_mirror(").contains("self.claim_scope_of(pane)"));
+        // start_code_review needs the claim first, then only the member's own restart runs.
+        let review = body(c, "\"start_code_review\" => {");
+        assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review_with(").unwrap(), "a model starts a review only where the person let it act");
+        // Task 10 review Important 1: with no overlay up, a review member that is not idle is refused
+        // before anything restarts it (`DI:3177-3189`), after the claim.
+        let busy = review.find("ot::review_busy(").expect("the busy refusal");
+        assert!(review.find("self.orch_claim(").unwrap() < busy && busy < review.find("self.request_review_with(").unwrap(), "claim, then the idle check, then the restart");
+        assert!(review.contains("session_state::State::Idle") && review.contains("review.overlays.contains_key("), "idle unless the overlay is up");
+        // Task 10 review minor 1: the model's prompt choice is resolved before the claim (a bad name is
+        // malformed, as iTerm2) and is the one the review starts with.
+        assert!(review.find("ot::review_prompt(").unwrap() < review.find("self.orch_claim(").unwrap());
+        assert!(review.contains("self.request_review_with(&i, prompt)"), "{review}");
+        // Nothing an orchestration tool does can enter a workgroup, mark one trusted, or answer its question.
+        for banned in ["enter_workgroup", "workgroup_picked", "Approved::of", "Mechanism::", "enter_workgroup_now", "Trust", "restore_answered"] {
+            assert!(!c.contains(banned), "orchestration must not reach {banned}");
+        }
+        // The launch a review makes is the member's restart, which runs only a command in the list the
+        // workgroup was entered with.
+        assert!(app.contains("i.approved.allows(&template)"));
+    }
+
+    fn body_of(code: &'static str, f: &str) -> &'static str {
+        body(code, f)
     }
 }

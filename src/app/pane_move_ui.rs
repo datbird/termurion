@@ -311,9 +311,18 @@ impl App {
     }
 
     /// The pane may not be moved: Lock Layout of its window or the pane's own lock, a loaded
-    /// recording, or a tmux gateway pane (P17, `compatible` cannot see it).
+    /// recording, a tmux gateway pane (P17, `compatible` cannot see it), or a workgroup member.
     pub(super) fn pane_move_refused(&self, pane: PaneId) -> bool {
-        super::pane_lock_ui::move_refused(self.pane_window_forbids(pane, crate::winmodel::LayoutOp::MovePane), self.panes.get(&pane).is_some_and(|p| p.locked)) || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux.contains_key(&pane)
+        super::pane_lock_ui::move_refused(self.pane_window_forbids(pane, crate::winmodel::LayoutOp::MovePane), self.panes.get(&pane).is_some_and(|p| p.locked)) || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux.contains_key(&pane) || self.member_refuses_move(pane)
+    }
+
+    /// A workgroup member in no layout (a hidden peer) is never moved, swapped or broken out (13x2 seam
+    /// S4, one check for the terminal's menus and a page's context menu). A member in a layout moves like
+    /// any pane, as in iTerm2, which refuses only for Lock Layout and the session lock
+    /// (`MovePaneController.m:71-133`, `:315`); the peer swap follows the shown member wherever it now
+    /// sits (`swap_slot`, `PTYTab.m:5909-5940`).
+    pub(super) fn member_refuses_move(&self, pane: PaneId) -> bool {
+        self.workgroup_of(pane).is_some() && self.pane_window_id(pane).is_none()
     }
 
     /// The panes of `tabs` showing a live Instant Replay.
@@ -537,7 +546,7 @@ impl App {
             return false;
         }
         // Lock Layout of both windows (P5).
-        if self.pane_move_refused(source) || self.pane_window_forbids(target, crate::winmodel::LayoutOp::MovePane) {
+        if self.pane_move_refused(source) || self.pane_window_forbids(target, crate::winmodel::LayoutOp::MovePane) || (matches!(plan, pane_move::Drop::Swap) && self.member_refuses_move(target)) {
             find_ui::beep();
             return false;
         }

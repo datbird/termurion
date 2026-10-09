@@ -61,7 +61,7 @@ pub(super) struct BrowserView {
     pub(super) editing: bool,
     /// The key gate the view's accelerator handler asks (`browser_input_app`), and what it was built for.
     pub(super) gate: webhost::KeyGate,
-    pub(super) gate_sig: Option<(bool, Option<String>, bool, bool)>,
+    pub(super) gate_sig: Option<(bool, Option<String>, bool, bool, Vec<String>)>,
     /// Copy mode on this page (13x3 Task 8): iTerm2's page cursor is on and the keys are its. Gone with
     /// the view, and reset with the world's secret.
     pub(super) copy_mode: Option<crate::browser_copymode::Model>,

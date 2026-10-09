@@ -259,6 +259,8 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/web_popover_app.rs", 4),
     ("app/webhost_app.rs", 7),
     ("app/windows_ui.rs", 3),
+    ("app/workgroup_app.rs", 2),
+    ("app/workgroup_restore_app.rs", 3),
     ("globals.rs", 1),
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),
@@ -701,17 +703,11 @@ impl Write3 for Disk {
     }
 }
 
-/// Whether an existing log file is this user's own plain single-link file with the owner-only
-/// DACL `create_owner_only` makes (protected, one allow entry, for the user): a file with a wider
-/// inherited DACL may be read by others, so it is not appended to.
+/// Whether an existing log file is this user's own owner-only file (`localfs::is_owner_only`): a
+/// file with a wider inherited DACL may be read by others, so it is not appended to.
 #[cfg(windows)]
 fn is_ours(f: &std::fs::File) -> bool {
-    let Ok(st) = localfs::file_stat(f) else { return false };
-    let owner_only = |sid: &str| localfs::dacl_sddl_of(f).is_ok_and(|s| s.starts_with("D:P") && s.matches('(').count() == 1 && s.contains(sid));
-    st.is_file
-        && !st.is_reparse
-        && localfs::link_count(f).is_ok_and(|n| n == 1)
-        && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
+    localfs::is_owner_only(f)
 }
 
 /// What `prepare` found at the log's name.

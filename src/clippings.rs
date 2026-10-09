@@ -12,6 +12,29 @@ pub const DEFAULT_WIDTH: f32 = 300.0;
 pub const MIN_WIDTH: f32 = 225.0;
 pub const MAX_WIDTH: f32 = 1200.0;
 
+/// The bounds of a clipping (B7, P16): characters of a type and a title, bytes of a detail, live clippings.
+pub const MAX_TYPE: usize = 64;
+pub const MAX_TITLE: usize = 200;
+pub const MAX_DETAIL: usize = 64 * 1024;
+pub const MAX_LIVE: usize = 200;
+
+/// `s` without the characters no shown text keeps, cut to `max` characters.
+fn bounded(s: &str, max: usize) -> String {
+    crate::inert_files::display_text(s, max, false)
+}
+
+/// A detail: hidden characters removed but newlines and tabs kept, at most `max` bytes (at a character).
+fn bounded_bytes(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars().filter(|&c| c == '\n' || c == '\t' || !crate::inert_files::is_hidden(c)) {
+        if out.len() + c.len_utf8() > max {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Clipping {
     /// iTerm2's `type`: kept, never shown.
@@ -56,11 +79,18 @@ impl Clippings {
         }
     }
 
-    /// A new clipping: the view goes back to the live list and the panel shows.
-    pub fn add(&mut self, c: Clipping) {
-        self.live.push(c);
+    /// A new clipping: the view goes back to the live list and the panel shows. Every clipping from
+    /// outside (the API, a model, the panel) enters here, so the bounds are here (B7, P16): the type, title
+    /// and detail are cut and their hidden characters removed (newlines and tabs of a detail stay), and a
+    /// list of `MAX_LIVE` takes no more. False when the clipping was dropped.
+    pub fn add(&mut self, c: Clipping) -> bool {
+        if self.live.len() >= MAX_LIVE {
+            return false;
+        }
+        self.live.push(Clipping { kind: bounded(&c.kind, MAX_TYPE), title: bounded(&c.title, MAX_TITLE), detail: bounded_bytes(&c.detail, MAX_DETAIL) });
         self.view = None;
         self.visible = true;
+        true
     }
 
     /// Removes rows of the live list (nothing while an archive shows).
@@ -403,6 +433,26 @@ mod tests {
 
     fn c(title: &str, detail: &str) -> Clipping {
         Clipping { kind: String::new(), title: title.into(), detail: detail.into() }
+    }
+
+    /// B7/P16: `add` is the one entry point of a clipping from outside (the API, the model, the panel) and
+    /// bounds it: type 64 characters, title 200, detail 64 KiB, 200 live, display text with newlines kept.
+    #[test]
+    fn add_is_bounded() {
+        let mut k = Clippings::default();
+        let long = |n: usize| "x".repeat(n);
+        assert!(k.add(Clipping { kind: long(100), title: long(300), detail: long(70 * 1024) }));
+        let first = &k.live[0];
+        assert_eq!((first.kind.chars().count(), first.title.chars().count(), first.detail.len()), (MAX_TYPE, MAX_TITLE, MAX_DETAIL));
+        assert!(k.add(Clipping { kind: "k\u{202e}".into(), title: "t\u{7}\u{200b}".into(), detail: "line1\nline2\u{1b}[31m".into() }));
+        let cleaned = &k.live[1];
+        assert_eq!((cleaned.kind.as_str(), cleaned.title.as_str(), cleaned.detail.as_str()), ("k", "t", "line1\nline2[31m"), "hidden characters go, newlines stay");
+        for i in 2..MAX_LIVE {
+            assert!(k.add(c(&format!("n{i}"), "")), "{i}");
+        }
+        assert_eq!(k.live.len(), MAX_LIVE);
+        assert!(!k.add(c("one too many", "")), "the 201st is dropped");
+        assert_eq!(k.live.len(), MAX_LIVE);
     }
 
     #[test]

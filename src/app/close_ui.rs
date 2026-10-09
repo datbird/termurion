@@ -116,12 +116,13 @@ impl App {
             }
         };
         let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none() || !p.live_survivors().is_empty())).count();
-        let has_reason = !self.close_reasons(&panes).is_empty();
+        let group_note = self.workgroup_close_warning(&panes);
+        let has_reason = !self.close_reasons(&panes).is_empty() || group_note.is_some();
         if !close_rules::must_ask(kind, running, has_reason, self.globals.bool("OnlyWhenMoreTabs")) && pinned.is_empty() {
             return true;
         }
         let (names, notes) = self.job_names(&panes);
-        let notes: Vec<String> = pinned.into_iter().chain(notes).collect();
+        let notes: Vec<String> = pinned.into_iter().chain(notes).chain(group_note).collect();
         let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len(), panes.iter().any(|id| self.panes.get(id).is_some_and(|p| p.locked))), &close_rules::counted(&names)), &notes);
         confirm(self.hwnd(), &title, &body)
     }

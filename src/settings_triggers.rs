@@ -28,6 +28,25 @@ pub fn take_reveal() -> Option<String> {
     REVEAL.with(|r| r.borrow_mut().take())
 }
 
+thread_local! {
+    /// The workgroups the Enter Workgroup pop-up lists, (id, name), decoded from the stored value
+    /// the last time it changed (the Settings window draws every frame).
+    static WORKGROUPS: std::cell::RefCell<(String, Vec<(String, String)>)> = const { std::cell::RefCell::new((String::new(), Vec::new())) };
+}
+
+/// The configured workgroups as (id, name), from the stored "Workgroups" value (`EWT:availableWorkgroups`).
+/// A value that does not decode lists none, as the model does.
+pub fn workgroup_choices(raw: &str) -> Vec<(String, String)> {
+    WORKGROUPS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != raw {
+            let list = if raw.trim().is_empty() { Vec::new() } else { crate::workgroup::decode(raw).unwrap_or_default() };
+            *c = (raw.to_string(), list.into_iter().map(|w| (w.unique_identifier, w.name)).collect());
+        }
+        c.1.clone()
+    })
+}
+
 /// Most alerts one Import raises (a folder of broken files must not queue windows forever).
 const MAX_ALERTS: usize = 8;
 
@@ -156,6 +175,12 @@ fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &m
 /// iTerm2's list row: the name, then Instant, the job, `/regex/`, and the action with its
 /// parameter; disabled rows faint.
 pub fn row(t: &Trigger) -> Row {
+    row_with(t, &[])
+}
+
+/// `row`, with the configured workgroups so an Enter Workgroup trigger shows the workgroup's name
+/// (`EWT:description`) and not its id.
+pub fn row_with(t: &Trigger, workgroups: &[(String, String)]) -> Row {
     let mut detail = String::new();
     if t.instant {
         detail.push_str("Instant. ");
@@ -168,7 +193,11 @@ pub fn row(t: &Trigger) -> Row {
         Some(e) => detail.push_str(&format!("Event: {} {action}", event_label(e))),
         None => detail.push_str(&format!("/{}/ {action}", t.regex)),
     }
-    if !t.parameter.is_empty() {
+    if t.action == "iTermEnterWorkgroupTrigger" {
+        // The stored id is never shown: the label is the workgroup's name, "(unset)" or "(missing)".
+        detail.push(' ');
+        detail.push_str(&triggers::enter_workgroup_label(&t.parameter, workgroups));
+    } else if !t.parameter.is_empty() {
         detail.push(' ');
         detail.push_str(&t.parameter.replace('\u{1}', " "));
     }
@@ -237,8 +266,25 @@ fn optional_color(ui: &mut egui::Ui, label: &str, color: &mut Option<Rgb>, defau
 }
 
 /// The parameter widget for an action's kind. True when it changed.
-fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String) -> bool {
+fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String, workgroups: &[(String, String)]) -> bool {
     match info.kind {
+        Kind::Workgroup => {
+            // The pop-up of the configured workgroups by name; an empty parameter shows (and
+            // enters) the first, as the pop-up does (`EWT:effectiveID`).
+            let shown = triggers::enter_workgroup_label(value, workgroups);
+            let current = triggers::effective_workgroup(value, workgroups);
+            let mut changed = false;
+            egui::ComboBox::from_id_salt("trigger-workgroup").selected_text(shown).width(360.0).show_ui(ui, |ui| {
+                for (id, name) in triggers::sorted_workgroups(workgroups) {
+                    let label = crate::inert_files::display_text(if name.is_empty() { "Untitled" } else { &name }, 128, false);
+                    if ui.selectable_label(current.as_deref() == Some(id.as_str()), label).clicked() {
+                        *value = id;
+                        changed = true;
+                    }
+                }
+            });
+            changed
+        }
         Kind::None => {
             ui.weak("No parameter");
             false
@@ -469,7 +515,7 @@ fn import_button(profile: &mut Profile) -> bool {
 
 /// The Triggers editor: the list with + and -, and the selected trigger's fields. True when
 /// the profile's triggers changed.
-pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
+pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, String)]) -> bool {
     let mut list = profile.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default();
     let interpolated = profile.bool("Triggers Use Interpolated Strings");
     let sel_id = egui::Id::new("trigger-selected");
@@ -479,7 +525,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
     ui.label("Triggers act on output that matches a regular expression.");
     egui::ScrollArea::vertical().max_height(220.0).id_salt("trigger-list").show(ui, |ui| {
         for (i, t) in list.iter().enumerate() {
-            let r = row(t);
+            let r = row_with(t, workgroups);
             let text = egui::RichText::new(format!("{}  {}", if r.name.is_empty() { "(no name)" } else { &r.name }, r.detail));
             let text = if r.faint { text.weak() } else { text };
             let response = ui.selectable_label(selected == Some(i), text);
@@ -531,7 +577,8 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                         changed = true;
                     }
                     ui.separator();
-                    let mut all = crate::trigger_events::EventKind::ALL.to_vec();
+                    // The workgroup actions need a live session: Session Ended is not offered for them.
+                    let mut all = triggers::allowed_events(&t.action);
                     all.sort_by_key(|e| e.name());
                     for e in all {
                         if ui.selectable_label(event == Some(e), event_label(e)).clicked() {
@@ -563,8 +610,14 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                             t.action = a.class.to_string();
                             t.parameter = match a.kind {
                                 Kind::Popup(p) => p[0].1.to_string(),
+                                // The first workgroup by name: what the pop-up shows now.
+                                Kind::Workgroup => triggers::effective_workgroup("", workgroups).unwrap_or_default(),
                                 _ => String::new(),
                             };
+                            // A match the new action cannot use (Session Ended for a workgroup action) goes.
+                            if !triggers::allows_match_type(&t.action, t.match_type) {
+                                t.match_type = 0;
+                            }
                             changed = true;
                         }
                     }
@@ -572,10 +625,27 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                 ui.end_row();
                 ui.label("Parameters:");
                 match triggers::action_info(&t.action) {
-                    Some(info) => changed |= parameter(ui, info, &mut t.parameter),
+                    Some(info) => changed |= parameter(ui, info, &mut t.parameter, workgroups),
                     None => changed |= ui.text_edit_singleline(&mut t.parameter).changed(),
                 }
                 ui.end_row();
+                // Exit Workgroup's own option (`hasLeaderOnlyOption`): kept in the event params, only when on.
+                if triggers::action_info(&t.action).is_some_and(|a| a.leader_only_option) {
+                    ui.label("");
+                    let mut params = t.extra.get("eventParams").and_then(|v| v.as_table()).cloned().unwrap_or_default();
+                    let mut on = params.get(triggers::LEADER_ONLY_KEY).and_then(toml::Value::as_bool).unwrap_or(false);
+                    let r = ui.checkbox(&mut on, "Only on the workgroup leader").on_hover_text("When set, the trigger fires only for the workgroup leader (the session that originally entered the workgroup). Peers such as the Code Review and Diff sessions do not, so reloading or quitting one keeps the workgroup open.");
+                    if r.changed() {
+                        if on {
+                            params.insert(triggers::LEADER_ONLY_KEY.into(), toml::Value::Boolean(true));
+                        } else {
+                            params.remove(triggers::LEADER_ONLY_KEY);
+                        }
+                        t.extra.insert("eventParams".into(), toml::Value::Table(params));
+                        changed = true;
+                    }
+                    ui.end_row();
+                }
                 ui.label("");
                 ui.horizontal(|ui| {
                     changed |= ui.checkbox(&mut t.instant, "Instant").changed();
@@ -631,7 +701,10 @@ mod tests {
         assert!(r.faint, "disabled rows are faint");
         assert_eq!(row(&trig("", "x", "CaptureTrigger", "")).detail, "/x/ Capture Output");
         assert_eq!(row(&trig("", "x", "NoSuch", "")).detail, "/x/ NoSuch (not in Tandem)");
-        assert_eq!(action_label(crate::triggers::action_info("iTermEnterWorkgroupTrigger").unwrap()), "Enter Workgroup\u{2026} (later)");
+        assert_eq!(action_label(crate::triggers::action_info("iTermEnterWorkgroupTrigger").unwrap()), "Enter Workgroup\u{2026}");
+        let ew = trig("", "x", "iTermEnterWorkgroupTrigger", "gid");
+        assert_eq!(row_with(&ew, &[("gid".into(), "Chat".into())]).detail, "/x/ Enter Workgroup\u{2026} Chat", "the workgroup's name, never its id");
+        assert_eq!(row_with(&ew, &[]).detail, "/x/ Enter Workgroup\u{2026} (missing)");
         let mut ev = trig("", "", "BellTrigger", "");
         ev.match_type = 105;
         assert_eq!(row(&ev).detail, "Event: Idle (Silence) Ring Bell");
