@@ -65,8 +65,8 @@ Rulings that decide what you see (full list with costs in
 `docs/superpowers/rulings/m14d-rulings.txt`): every remote name passes the inert-file rule before the
 first fetch and every downloaded file is marked; a remote that sends more than it claimed fails the
 download; a size-less stream stops 1 GiB short of a full disk; a folder zip is checked by Tandem's
-own parser (the 11d Scripts import shares it) and extracted under a watch that kills tar.exe at the
-claimed total; in a pane with a framing conductor pane text never opens, runs or reveals on this PC
+own parser (the 11d Scripts import shares it) and extracted by that parser, each file exactly its
+claimed size (13y1 round 3: no tar.exe); in a pane with a framing conductor pane text never opens, runs or reveals on this PC
 and its remote folder is never saved into an arrangement; an upload alert closed is Cancel and
 Replace is never remembered; Download Files writes into a fresh `Tandem-<id>` folder; no transfers
 list or Stop (deferred, ruling 14d-2), no Favorites, no "Download using SSH Integration" item (ruling

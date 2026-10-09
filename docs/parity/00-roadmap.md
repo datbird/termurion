@@ -763,8 +763,8 @@ with Alt held asks, then uploads them over the conductor (a folder as `<name>.tg
 completes remote file and command names. Beyond iTerm2, for safety: every name from the remote passes
 the one inert-file rule before the first byte is fetched and every file is marked with the Mark of the
 Web (a drive that cannot hold the mark fails the download); a remote folder zip is checked by Tandem's
-own parser, extracted by tar.exe in a Job Object whose watch kills it at the claimed size or at 1 GiB
-free, and moved into place by a walk that never follows a link; a remote that sends more than it
+own parser and extracted by that same parser from the same bytes (never tar.exe since 13y1, each
+file exactly its claimed size, the claimed total checked against the free space first), and moved into place by a walk that never follows a link; a remote that sends more than it
 claimed fails the download; in a pane with a framing conductor, only web and mail links open (user-written
 triggers are exempt, G2); other text is never opened, run or revealed on this PC (Win-click, the
 context menu, Open Selection, porthole links, the status bar folder menu), it can only be downloaded, and the pane's remote folder is never saved into an arrangement; a closed
