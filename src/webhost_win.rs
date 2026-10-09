@@ -3536,6 +3536,10 @@ window.addEventListener('message', function (e) {
         p.eval(None, "(document.getElementById('iterm-copy-mode-cursor') || {style: {display: 'absent'}}).style.display").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
     }
 
+    /// The copy mode cursor's display value when it is shown (`copy-mode-cursor.js` sets 'block').
+    /// Asserted by value: "none", "absent" and "" (a failed read) all fail.
+    const CURSOR_SHOWN: &str = "block";
+
     fn selection(p: &mut Probe) -> String {
         p.eval(None, "window.getSelection().toString()").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
     }
@@ -3557,7 +3561,7 @@ window.addEventListener('message', function (e) {
         p.view().focus();
         assert_eq!(cursor_display(&mut p), "absent", "no cursor before copy mode");
         copy_on(&mut p, &secret);
-        assert_ne!(cursor_display(&mut p), "none", "the cursor is displayed");
+        assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "the cursor is displayed");
         let mut m = cm::Model::default();
         for c in ['v', 'w', 'w'] {
             copy_press(&mut p, &mut m, &secret, c);
@@ -3574,7 +3578,7 @@ window.addEventListener('message', function (e) {
         // Second enable, "q": the cursor hides, the selection stays, selecting stops.
         let keep = selection(&mut p);
         copy_on(&mut p, &secret);
-        assert_ne!(cursor_display(&mut p), "none");
+        assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "the cursor is displayed again");
         let mut m = cm::Model::default();
         let step = copy_press(&mut p, &mut m, &secret, 'q');
         assert_eq!(step, cm::Step::Leave { stop_selecting: true });
@@ -3659,8 +3663,15 @@ window.addEventListener('message', function (e) {
             p.view().focus();
             assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode"), Ok(json!("undefined")), "no copy mode script in the Tandem world");
             let _ = &secret;
+            // A state that differs if the page had started copy mode: the page's own keydown
+            // listener sees the key (copy mode would have swallowed it), no cursor exists and
+            // nothing is selected.
+            p.page_eval("window.__keys = 0; document.addEventListener('keydown', function () { window.__keys++; }); 1").expect("the page listens");
             real_key(&mut p, 'j');
             p.settle(500);
+            assert_eq!(p.page_eval("String(window.__keys)").as_deref(), Ok("\"1\""), "the key reached the page, so copy mode never started");
+            assert_eq!(cursor_display(&mut p), "absent", "no copy mode cursor was made");
+            assert_eq!(selection(&mut p), "", "nothing was selected");
             assert!(p.clients(cm::KEY_HANDLER).is_empty(), "no key listener, so nothing is reported");
             assert_eq!(p.page_eval("window.__leaks.length").as_deref(), Ok("0"), "the recorder was never called");
             p.finish();
@@ -3698,7 +3709,7 @@ window.addEventListener('message', function (e) {
         p.page_eval("const e = () => new KeyboardEvent('keydown', {key: 'y', bubbles: true}); document.dispatchEvent(e()); document.getElementById('f1').contentDocument.dispatchEvent(e()); document.getElementById('f1').contentWindow.dispatchEvent(e()); window.dispatchEvent(e()); 1").expect("the synthetic keys run");
         p.settle(500);
         assert_eq!(p.clients(cm::KEY_HANDLER).len(), n, "synthetic keys are not reported");
-        assert_ne!(cursor_display(&mut p), "none", "copy mode is still on");
+        assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "copy mode is still on");
         assert_eq!(selection(&mut p), "", "nothing was copied or selected");
         // An iframe added after copy mode started: its world takes keys once it is told.
         p.page_eval("const f = document.createElement('iframe'); f.id = 'f2'; f.srcdoc = '<body tabindex=0><p>late</p></body>'; document.body.appendChild(f); 1").expect("an iframe is added");
