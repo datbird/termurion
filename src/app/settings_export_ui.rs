@@ -486,6 +486,7 @@ mod tests {
         std::fs::write(appdata.join("profiles.toml"), "default = \"g\"\n").unwrap();
         std::fs::write(appdata.join("snippets.json"), "[]").unwrap();
         std::fs::write(appdata.join("host.log"), "log").unwrap();
+        std::fs::write(appdata.join(crate::workgroup_restore::KEY_FILE), [1u8; 32]).unwrap();
         let snap = user_defaults(&appdata);
         let out = root.join("Tandem State.tandemexport");
         let scripts = appdata.join("Scripts");
@@ -497,7 +498,7 @@ mod tests {
         for want in ["user-defaults/UserDefaults.toml", "app-support/snippets.json", "python-runtimes/PythonRuntimes.json", "scripts"] {
             assert!(names.contains(&want), "{want} in {names:?}");
         }
-        for never in ["app-support/host.log", "app-support/settings.toml", "app-support/profiles.toml", "app-support/Scripts"] {
+        for never in ["app-support/host.log", "app-support/settings.toml", "app-support/profiles.toml", "app-support/Scripts", "app-support/workgroup-approval-key"] {
             assert!(!names.contains(&never), "{never} in {names:?}");
         }
 
@@ -689,7 +690,7 @@ mod tests {
         let staging = se::staging_dir(&root, "K");
         let support = staging.join("app-support");
         std::fs::create_dir_all(support.join(r"state")).unwrap();
-        for name in ["python-api-consent", "settings.toml", "profiles.toml", ".hidden"] {
+        for name in ["python-api-consent", "settings.toml", "profiles.toml", ".hidden", crate::workgroup_restore::KEY_FILE] {
             std::fs::write(support.join(name), "from the archive").unwrap();
         }
         std::fs::write(support.join(r"state\s.json"), "{}").unwrap();
@@ -698,6 +699,7 @@ mod tests {
         assert!(!tandem.join("python-api-consent").exists());
         assert!(!tandem.join("settings.toml").exists());
         assert!(!tandem.join(".hidden").exists());
+        assert!(!tandem.join(crate::workgroup_restore::KEY_FILE).exists(), "an archive never brings the approval key");
         assert_eq!(std::fs::read_to_string(tandem.join("profiles.toml")).unwrap(), "");
         assert!(tandem.join(r"state\s.json").is_file());
         let _ = std::fs::remove_dir_all(&root);

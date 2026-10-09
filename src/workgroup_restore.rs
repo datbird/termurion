@@ -28,9 +28,29 @@ pub const FRAME: &str = "frame";
 pub const ARRANGEMENT: &str = "arrangement";
 pub const GUID: &str = "guid";
 pub const PENDING: &str = "pending";
-/// Not iTerm2's: the digest of the commands the person answered for at entry (`run::Approved`), so a
-/// restored import runs its commands only while they are still those (the trust ruling).
+/// Not iTerm2's: the person's answer for an import's commands, sealed to this install (`seal`): the
+/// HMAC, under the install's own key, of the workgroup id and the digest of the commands answered for
+/// (`run::Approved`). A restored import runs its commands only while they are still those, and only
+/// when the seal comes from Tandem's own launch state (the Task 9 review: a plain digest is computable
+/// by whoever holds the workgroup).
 pub const APPROVAL: &str = "approvalDigest";
+
+/// The install's approval key, beside the settings: made owner-only at first use, never exported,
+/// imported or synced (`settings_export::APP_SUPPORT_EXCLUDE`), never in a settings, profiles or
+/// arrangement file.
+pub const KEY_FILE: &str = "workgroup-approval-key";
+/// The key's length in bytes.
+pub const KEY_LEN: usize = 32;
+
+/// Where a restore read its descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Launch-time window restoration: the state Tandem itself wrote at quit.
+    Launch,
+    /// A saved arrangement by name. Arrangements travel through remote prefs and imports, so an
+    /// approval found there is never the person's answer: every import asks.
+    Named,
+}
 
 /// One buried member's saved state: its own session value and whether it still sat on its pre-launch
 /// overlay (never started: restored fresh, not adopted, `WR:44-50`).
@@ -349,11 +369,82 @@ pub fn adoption(d: &Descriptor, lookup: &dyn Fn(&str) -> Option<Workgroup>) -> R
     Ok(Adoption { active: d.anchor_id.clone(), leader: d.leader_id.clone(), git_base: d.git_base.clone(), peers, buried, restored, fresh, children, workgroup })
 }
 
-/// Whether adopting asks the person again: the person's own workgroup never; any import runs its
-/// commands only while the digest the person answered for at entry (kept in the descriptor) is still the
-/// digest of the commands it would run now (the trust ruling, `run::Approved`).
-pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup) -> bool {
-    !source.is_person() && d.approval.as_deref() != Some(crate::workgroup_run::Approved::of(w).digest())
+/// The approval a launch state carries for `workgroup_id` answered with `digest` (`run::Approved`):
+/// HMAC-SHA256 under the install's key over both, each length-prefixed, as lowercase hex. Only this
+/// install can make it, so no file from elsewhere can carry an answer the person never gave here.
+pub fn seal(key: &[u8], workgroup_id: &str, digest: &str) -> String {
+    let mut msg = b"tandem workgroup approval\0".to_vec();
+    for part in [workgroup_id, digest] {
+        msg.extend((part.len() as u64).to_le_bytes());
+        msg.extend(part.as_bytes());
+    }
+    crate::host_identity::hmac_sha256_hex(key, &msg)
+}
+
+/// Equal texts, compared in time that does not depend on where they differ.
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Whether adopting asks the person again: the person's own workgroup never; an import runs its
+/// commands unasked only from Tandem's own launch state (`Origin::Launch`) whose approval is this
+/// install's seal (`key`) of the commands it would run now. A named arrangement, a missing key, a
+/// plain digest or a seal from another install all ask (the trust ruling and the Task 9 review).
+pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup, origin: Origin, key: Option<&[u8]>) -> bool {
+    if source.is_person() {
+        return false;
+    }
+    let (Origin::Launch, Some(key), Some(approval)) = (origin, key, d.approval.as_deref()) else { return true };
+    !same(approval, &seal(key, &w.unique_identifier, crate::workgroup_run::Approved::of(w).digest()))
+}
+
+/// The install's approval key in `dir` (Tandem's settings folder), made when absent: random bytes in a
+/// new owner-only file, never written through a link. A file of another size is replaced (every
+/// earlier approval then asks again). None when the folder or file cannot be used: then nothing
+/// restores unasked.
+#[cfg(windows)]
+pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
+    use crate::localfs;
+    use std::io::{Read, Write};
+    let dir = localfs::LocalPath::judge(dir)?;
+    localfs::create_dir_all(&dir).ok()?;
+    let file = dir.unfollowed(KEY_FILE)?;
+    let read = |file: &localfs::Unfollowed| -> std::io::Result<Option<[u8; KEY_LEN]>> {
+        let mut f = localfs::open_unfollowed(file, |o| {
+            o.read(true);
+        })?;
+        let st = localfs::file_stat(&f)?;
+        if !st.is_file || st.is_reparse {
+            return Err(std::io::Error::other("not a plain file"));
+        }
+        let mut k = [0u8; KEY_LEN];
+        let mut rest = Vec::new();
+        if st.len != KEY_LEN as u64 || f.read_exact(&mut k).is_err() || f.take(1).read_to_end(&mut rest)? != 0 {
+            return Ok(None);
+        }
+        Ok(Some(k))
+    };
+    for _ in 0..2 {
+        match read(&file) {
+            Ok(Some(k)) => return Some(k),
+            Ok(None) => localfs::remove_unfollowed(&file).ok()?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+        let mut k = [0u8; KEY_LEN];
+        getrandom::fill(&mut k).ok()?;
+        match localfs::create_owner_only(&file) {
+            Ok(mut f) => {
+                f.write_all(&k).ok()?;
+                f.sync_all().ok()?;
+                return Some(k);
+            }
+            // Another copy of Tandem made it first: read that one.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -561,26 +652,74 @@ mod tests {
         assert!(adoption(&kids, &|_| Some(model())).unwrap().children.is_empty());
     }
 
-    /// The trust ruling: only the person's own workgroup restores without the stored approval.
+    /// The trust ruling: only the person's own workgroup restores without the stored approval, and an
+    /// import's approval stands only as this install's seal in its own launch state.
     #[test]
     fn restored_imports_need_their_stored_approval() {
         let w = model();
-        let digest = crate::workgroup_run::Approved::of(&w).digest().to_string();
+        let key = [7u8; KEY_LEN];
+        let sealed = seal(&key, &w.unique_identifier, crate::workgroup_run::Approved::of(&w).digest());
         let mut d = descriptor();
-        d.approval = Some(digest.clone());
-        assert!(!needs_question(Source::Person, &d, &w));
-        assert!(!needs_question(Source::Import, &d, &w), "the answer the person gave is still the one on file");
+        d.approval = Some(sealed.clone());
+        assert!(!needs_question(Source::Person, &d, &w, Origin::Named, None));
+        assert!(!needs_question(Source::Import, &d, &w, Origin::Launch, Some(&key)), "the answer the person gave is still the one on file");
         d.approval = None;
-        assert!(needs_question(Source::Import, &d, &w));
-        assert!(needs_question(Source::DynamicProfile, &d, &w));
+        assert!(needs_question(Source::Import, &d, &w, Origin::Launch, Some(&key)));
+        assert!(needs_question(Source::DynamicProfile, &d, &w, Origin::Launch, Some(&key)));
         d.approval = Some("0".repeat(64));
-        assert!(needs_question(Source::RemotePrefs, &d, &w), "a command changed since");
+        assert!(needs_question(Source::RemotePrefs, &d, &w, Origin::Launch, Some(&key)), "a command changed since");
         let mut changed = w.clone();
         changed.sessions[1].command.push_str(" --x");
-        d.approval = Some(digest);
-        assert!(needs_question(Source::Import, &d, &changed));
+        d.approval = Some(sealed.clone());
+        assert!(needs_question(Source::Import, &d, &changed, Origin::Launch, Some(&key)));
+        let mut renamed = w.clone();
+        renamed.unique_identifier = "other".into();
+        assert!(needs_question(Source::Import, &d, &renamed, Origin::Launch, Some(&key)), "a seal is for one workgroup");
         d.approval = None;
-        assert!(needs_question(Source::Stored, &d, &w), "an unknown mark fails closed");
+        assert!(needs_question(Source::Stored, &d, &w, Origin::Launch, Some(&key)), "an unknown mark fails closed");
+    }
+
+    /// Task 9 review C1: the plain digest of the commands is computable by anyone who holds the
+    /// workgroup, so a descriptor carrying it is no answer of the person's; nor is a seal under another
+    /// install's key, a launch with no key, or any approval in a named arrangement (remote prefs, Import
+    /// All and the API can all deliver one, and OpenArrangementAtStartup opens it by name).
+    #[test]
+    fn a_computable_digest_is_no_approval() {
+        let w = model();
+        let key = [7u8; KEY_LEN];
+        let digest = crate::workgroup_run::Approved::of(&w).digest().to_string();
+        let sealed = seal(&key, &w.unique_identifier, &digest);
+        let mut d = descriptor();
+        for source in [Source::Import, Source::RemotePrefs, Source::DynamicProfile, Source::Stored] {
+            d.approval = Some(digest.clone());
+            assert!(needs_question(source, &d, &w, Origin::Launch, Some(&key)), "{source:?}: a forged digest still asks");
+            assert!(needs_question(source, &d, &w, Origin::Named, Some(&key)), "{source:?}");
+            d.approval = Some(seal(&[8u8; KEY_LEN], &w.unique_identifier, &digest));
+            assert!(needs_question(source, &d, &w, Origin::Launch, Some(&key)), "{source:?}: another install's seal");
+            d.approval = Some(sealed.clone());
+            assert!(needs_question(source, &d, &w, Origin::Named, Some(&key)), "{source:?}: a named arrangement always asks");
+            assert!(needs_question(source, &d, &w, Origin::Launch, None), "{source:?}: no key, no approval");
+        }
+        assert_ne!(sealed, digest);
+        assert!(digest_ok(&sealed), "a seal reads back as an approval");
+    }
+
+    /// The key is made owner-only once and read back the same; a file of another size is replaced.
+    #[cfg(windows)]
+    #[test]
+    fn the_approval_key_is_made_once_and_owner_only() {
+        let dir = std::env::temp_dir().join(format!("tandem-wg-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = key_in(&dir).expect("made");
+        assert_eq!(key_in(&dir), Some(first), "read back, not made again");
+        let file = crate::localfs::LocalPath::judge(&dir).unwrap().unfollowed(KEY_FILE).unwrap();
+        let sddl = crate::localfs::dacl_sddl(&file).unwrap();
+        assert!(sddl.contains("D:P(A;;FA;;;S-") && sddl.matches("(A;").count() == 1, "{sddl}");
+        std::fs::write(dir.join(KEY_FILE), b"short").unwrap();
+        let again = key_in(&dir).expect("replaced");
+        assert_ne!(again, first);
+        assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap().len(), KEY_LEN);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The embedded members' shells are claimed by the restore's host plan, each by its own table.
@@ -616,6 +755,7 @@ mod tests {
             assert!(!prod.contains(banned), "{banned}");
         }
         assert!(prod.contains("needs_question("), "an import asks again unless its approval stands");
+        assert!(prod.contains("if m.launch { wr::Origin::Launch } else { wr::Origin::Named }"), "only the launch state's approval is read");
         assert!(prod.contains("crate::workgroup::restored_toggles("), "toggles come back only on adopted members");
         assert!(include_str!("app/restore_ui.rs").contains("workgroup_restore::embedded"), "embedded members take the host-key plan");
         assert!(include_str!("app/workgroup_app.rs").contains("self.is_restoring_session(pane)"), "a trigger checks the restoring flag when it fires");

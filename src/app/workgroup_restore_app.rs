@@ -32,6 +32,18 @@ const LOOK: Duration = Duration::from_millis(250);
 /// Toggles and declined entries remembered at most.
 const MAX_NOTES: usize = 64;
 
+/// This install's approval key (`wr::key_in`), read or made once per run. None: every import asks.
+#[cfg(windows)]
+fn approval_key() -> Option<&'static [u8; wr::KEY_LEN]> {
+    static KEY: std::sync::OnceLock<Option<[u8; wr::KEY_LEN]>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| crate::globals::default_path().parent().and_then(wr::key_in)).as_ref()
+}
+
+#[cfg(not(windows))]
+fn approval_key() -> Option<&'static [u8; wr::KEY_LEN]> {
+    None
+}
+
 /// One restored anchor, waiting for its window (`WRC.Pending`): what the restore knows of it, and the
 /// descriptor itself (taken whole when it is adopted or given up).
 pub(super) struct Pending {
@@ -169,7 +181,11 @@ impl App {
             member_guids.push(self.panes[&p].session_guid.clone());
         }
         let non_peer_children = inst.non_peers.iter().filter_map(|(c, p)| Some(wr::Child { config_id: c.clone(), guid: self.panes.get(p)?.session_guid.clone() })).collect();
+        // The answer the person gave is kept only in the launch state (the contents session restoration
+        // saves, never an arrangement or a file), sealed to this install (Task 9 review C1).
         let digest = inst.approved.digest();
+        let state = matches!(contents, Contents::Styled(_) | Contents::KeysOnly);
+        let approval = approval_key().filter(|_| state && !digest.is_empty()).map(|k| wr::seal(k, &w.unique_identifier, digest));
         Some(
             wr::Descriptor {
                 workgroup_id: w.unique_identifier.clone(),
@@ -181,7 +197,7 @@ impl App {
                 member_guids,
                 non_peer_children,
                 anchor_pending: pending(&anchor),
-                approval: (!digest.is_empty()).then(|| digest.to_string()),
+                approval,
             }
             .to_value(),
         )
@@ -343,7 +359,7 @@ impl App {
         let source = self.workgroup_model.source_of(&w.unique_identifier);
         let approved = match approved {
             Some(a) => a,
-            None if wr::needs_question(source, &descriptor, &w) => {
+            None if wr::needs_question(source, &descriptor, &w, if m.launch { wr::Origin::Launch } else { wr::Origin::Named }, approval_key().map(|k| &k[..])) => {
                 let Some((heading, body)) = run::ask_text(&w, Mechanism::Restore) else {
                     self.banners.set("workgroup", "A restored workgroup's commands are too long to show in full, so it was not rebuilt. Read them in Settings > Arrangements > Workgroups and trust it there.");
                     self.workgroups.restoring.release(&mut m);
@@ -507,6 +523,59 @@ mod tests {
         assert!(production.contains("if !(launch || named)"));
         let arrange = include_str!("arrange_ui.rs");
         assert!(arrange.contains("self.restored_descriptor(&session, launch, name.is_some())"));
+    }
+
+    /// The text of `f`'s body in `src` (from its signature to the first closing brace at its indent).
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let from = &src[src.find(sig).unwrap_or_else(|| panic!("{sig}"))..];
+        &from[..from.find("\n    }\n").unwrap()]
+    }
+
+    /// Task 9 review C1, path by path: an imported workgroup restored by any path but Tandem's own launch
+    /// state asks before anything runs, and the launch state's approval counts only as this install's
+    /// seal. Each path is pinned to the origin it builds with, then the decision is checked for what
+    /// that path can deliver: the plain digest (computable by whoever holds the workgroup) or another
+    /// install's seal.
+    #[test]
+    fn every_restore_path_asks_for_an_import_until_answered() {
+        let arrange = include_str!("arrange_ui.rs");
+        let mod_rs = include_str!("mod.rs");
+        let windows = include_str!("windows_ui.rs");
+        // OpenArrangementAtStartup: the default arrangement opens by name, never as the launch state.
+        assert!(mod_rs.contains(".or(default_arrangement.map(|(n, w)| (n, w, false)))"));
+        assert!(mod_rs.contains("if launch { windows_ui::NewWindow::Restored(w) } else { windows_ui::NewWindow::Arrangement(w, name.clone()) }"));
+        // Remote prefs and imports deliver Window Arrangements; Window > Arrangements, Open Quickly and
+        // the it2/API restore all open one by name: built with launch false.
+        let restore = body(arrange, "pub(super) fn restore_arrangement(");
+        assert!(restore.contains("self.build_tab(&t, Some(name), false,") && restore.contains("NewWindow::Arrangement(w, Some(name.to_string()))"), "{restore}");
+        assert!(windows.contains("NewWindow::Arrangement(w, name) => {\n                if let Err(e) = self.apply_arrangement_window(&w, name.as_deref(), false)"));
+        assert!(include_str!("api_requests.rs").contains("self.restore_arrangement(&name, w.is_some())"));
+        // An arrangement file (Open Arrangement, archives) is never read for a descriptor at all.
+        assert!(body(arrange, "pub(super) fn open_arrangement_windows(").contains("NewWindow::Arrangement(w, None)"));
+        // Only the saved state restores with launch true (the startup windows and hotkey windows).
+        assert_eq!(windows.matches("apply_arrangement_window(&w, None, true)").count(), 2);
+        assert_eq!(mod_rs.matches("apply_arrangement_window(&w, None, true)").count(), 1);
+        // Import All may bring a state file, never the key that seals its approvals.
+        assert!(crate::settings_export::excluded(wr::KEY_FILE));
+
+        let w = crate::workgroup::presets::coding_agent_plus_diff_plus_code_review(Some(("W", "MAIN", "DIFF", "REVIEW")), Some("Claude Code"));
+        let ours = [3u8; wr::KEY_LEN];
+        let digest = Approved::of(&w).digest().to_string();
+        let mut d = descriptor();
+        d.workgroup_id = w.unique_identifier.clone();
+        let delivered = [digest.clone(), wr::seal(&[4u8; wr::KEY_LEN], &w.unique_identifier, &digest)];
+        for (path, launch) in [("OpenArrangementAtStartup", false), ("remote prefs arrangement", false), ("Import All state file", true), ("it2/API restore", false)] {
+            for source in [crate::workgroup::Source::Import, crate::workgroup::Source::RemotePrefs] {
+                for a in &delivered {
+                    d.approval = Some(a.clone());
+                    let origin = if launch { wr::Origin::Launch } else { wr::Origin::Named };
+                    assert!(wr::needs_question(source, &d, &w, origin, Some(&ours)), "{path} {source:?}");
+                }
+                // Even this install's own seal, carried in a named arrangement, asks.
+                d.approval = Some(wr::seal(&ours, &w.unique_identifier, &digest));
+                assert_eq!(wr::needs_question(source, &d, &w, if launch { wr::Origin::Launch } else { wr::Origin::Named }, Some(&ours)), !launch, "{path}");
+            }
+        }
     }
 
     fn descriptor() -> wr::Descriptor {

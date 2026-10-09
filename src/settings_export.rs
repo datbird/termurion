@@ -57,9 +57,9 @@ pub const ENTITIES: [Entity; 4] = [Entity::PythonRuntimes, Entity::UserDefaults,
 /// exclusions, `IE:410-424`, for Tandem's files): the settings and profiles (the User Defaults
 /// entity carries them), their temporary and recovered copies, the Scripts folder (the Scripts
 /// entity), uv's runtimes (provisioned again on first launch), the Python API consent marker
-/// (only OK in "Enable Python API?" grants it), the host's log and an import waiting for the
-/// next start. Glob patterns on one name, at the top level only (`IE:1181`, `:1199`).
-pub const APP_SUPPORT_EXCLUDE: [&str; 9] = ["settings.toml", "profiles.toml", "*.tmp", "*.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending"];
+/// (only OK in "Enable Python API?" grants it), the host's log, an import waiting for the
+/// next start and the workgroup approval key (only this install may seal an approval, 13y1). Glob patterns on one name, at the top level only (`IE:1181`, `:1199`).
+pub const APP_SUPPORT_EXCLUDE: [&str; 10] = ["settings.toml", "profiles.toml", "*.tmp", "*.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending", crate::workgroup_restore::KEY_FILE];
 
 /// `fnmatch` on one name (`IE:1235-1241`): `*` any run, `?` one character; ASCII case is
 /// ignored, as Windows file names ignore it.
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(keys, ["python-runtimes", "user-defaults", "app-support", "scripts"]);
         let names: Vec<&str> = ENTITIES.iter().map(|e| e.display_name()).collect();
         assert_eq!(names, ["Python Runtimes", "User Defaults", "Application Support", "Python API Scripts"]);
-        for name in ["settings.toml", "profiles.toml", "settings.toml.tmp", "profiles.toml.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending"] {
+        for name in ["settings.toml", "profiles.toml", "settings.toml.tmp", "profiles.toml.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending", "workgroup-approval-key"] {
             assert!(excluded(name), "{name}");
         }
         for name in ["snippets.json", "notes.txt", "state", "shell_integration"] {
