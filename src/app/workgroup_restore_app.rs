@@ -442,13 +442,15 @@ impl App {
             git: super::workgroup_git_app::GitSide::for_workgroup(&w),
             review: Default::default(),
         };
-        // Splits and tabs the restore brought back as panes of their own, found by GUID; one that already
-        // belongs to a live instance is never taken (restored sessions keep their GUIDs).
+        // Splits and tabs the restore brought back as panes of their own, found by GUID in the anchor's
+        // window; one that already belongs to a live instance is never taken (restored sessions keep their
+        // GUIDs), nor a pane in another window whose GUID collides.
         let by_guid: HashMap<&str, &str> = plan.children.iter().map(|c| (c.guid.as_str(), c.config_id.as_str())).collect();
+        let anchor_window = self.pane_window_id(anchor);
         let mut found: HashMap<String, PaneId> = HashMap::new();
         for (pid, pane) in &self.panes {
             if pane.workgroup.is_none() && !panes.values().any(|m| m == pid) {
-                if let Some(config) = by_guid.get(pane.session_guid.as_str()) {
+                if let Some(config) = by_guid.get(pane.session_guid.as_str()).filter(|_| anchor_window.is_some() && self.pane_window_id(*pid) == anchor_window) {
                     found.entry(config.to_string()).or_insert(*pid);
                 }
             }
@@ -637,6 +639,16 @@ mod tests {
         assert!(!member.with(true) && member.with(false), "a buried Code Review or Diff member: the same");
         let plain = wr::Inhibit::of(Some(&d), Some(crate::workgroup::Mode::Regular), false);
         assert!(!plain.with(false) && !plain.with(true));
+    }
+
+    /// Task 9 review minor 6: a split or tab child is found only in the anchor's own window, so a plain
+    /// pane elsewhere whose GUID collides is never taken in (and torn down at Exit).
+    #[test]
+    fn children_are_found_in_the_anchor_window_only() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        let adopt = body(production, "    fn adopt_one(");
+        let search = &adopt[adopt.find("let by_guid").unwrap()..adopt.find("for step in run::spawn_plan").unwrap()];
+        assert!(search.contains("self.pane_window_id(*pid) == anchor_window"), "{search}");
     }
 
     fn descriptor() -> wr::Descriptor {
