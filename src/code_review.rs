@@ -269,6 +269,20 @@ pub fn review_argv(template: &str, prompt: &str, system_prompt_file: &Path, reso
     Ok(ReviewArgv { argv, cut })
 }
 
+/// The program a review command runs, from the template's first word: `claude` is claude.exe on the
+/// path and nothing else (12f-5); any other name is the file `resolve` finds; git (`refuse_git`, the
+/// rule a regular member takes: a review member has no repository verdict) and a batch file are refused.
+pub fn review_program(argv0: &str, resolve: &dyn Fn(&Path) -> Option<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
+    let stem = Path::new(argv0).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
+    let name = if stem.as_deref() == Some("claude") { "claude.exe" } else { argv0 };
+    let program = resolve(Path::new(name)).ok_or("The review program was not found, so the review did not start.")?;
+    crate::workgroup_run::refuse_git(Path::new(argv0), Some(&program))?;
+    if crate::semantic::is_batch(&program) {
+        return Err("The review program is a batch file, which Tandem does not run for a review.".to_string());
+    }
+    Ok(program)
+}
+
 /// Whether a whole command line fits CreateProcess (refused above, never truncated).
 pub fn line_fits(line: &str) -> bool {
     line.encode_utf16().count() <= MAX_LINE_UNITS
@@ -494,6 +508,28 @@ pub fn auto_job(text: &str) -> crate::paste::Job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review Important 1: a review member's program is never git (by name, any case, a full path,
+    /// a dashed git-<sub>, or a name that resolves to git): git runs only through `git_state::launch`.
+    #[test]
+    fn a_review_never_runs_git() {
+        use std::path::PathBuf;
+        let path_of = |name: &Path| -> Option<PathBuf> {
+            let n = name.to_string_lossy().to_ascii_lowercase();
+            Some(PathBuf::from(match n.as_str() {
+                "git" | "mygit" => r"C:\Git\cmd\git.exe".to_string(),
+                _ if n.contains('\\') => n.clone(),
+                _ if name.extension().is_some() => format!(r"C:\bin\{n}"),
+                _ => format!(r"C:\bin\{n}.exe"),
+            }))
+        };
+        for argv0 in ["git", "GIT.exe", r"C:\Program Files\Git\cmd\git.exe", "mygit", "Git-Log", r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe"] {
+            assert_eq!(review_program(argv0, &path_of), Err(crate::workgroup_run::GIT_ONLY_IN_DIFF.to_string()), "{argv0}");
+        }
+        assert_eq!(review_program("claude", &path_of), Ok(PathBuf::from(r"C:\bin\claude.exe")));
+        assert_eq!(review_program("codex", &path_of), Ok(PathBuf::from(r"C:\bin\codex.exe")));
+        assert!(review_program(r"C:\t\x.cmd", &path_of).is_err(), "a batch file");
+    }
     use crate::workgroup::Mode;
     use std::path::Path;
 

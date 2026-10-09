@@ -822,6 +822,50 @@ mod tests {
         assert!(line.find("launch_verdict(").unwrap() < line.find("gs::pane_line(").expect("the one rule"), "the verdict first");
     }
 
+    /// Final review Important 1 (class): every function in workgroup or code review code that turns a
+    /// template's program into something to run (`resolve_on_path(` of a name, `argv_line(`) takes git
+    /// through the one refusal (`refuse_git(`) or the one git rule (`pane_line(`), or goes through a function
+    /// that does (`member_line(`, `review_program(`). Only the built-in usage run resolves a fixed name.
+    #[test]
+    fn every_program_a_member_runs_is_checked_for_git() {
+        const CHECKED: [&str; 4] = ["refuse_git(", "pane_line(", "member_line(", "review_program("];
+        let fns = |live: &str| -> Vec<(String, String)> {
+            let mut out = Vec::new();
+            for (at, _) in live.match_indices("fn ") {
+                let head = &live[at..];
+                let Some(open) = head.find('{') else { continue };
+                let name = head[3..].split(['(', '<']).next().unwrap_or("").trim().to_string();
+                let mut depth = 0i32;
+                let mut end = head.len();
+                for (i, c) in head[open..].char_indices() {
+                    depth += match c { '{' => 1, '}' => -1, _ => 0 };
+                    if depth == 0 {
+                        end = open + i;
+                        break;
+                    }
+                }
+                out.push((name, head[..end].to_string()));
+            }
+            out
+        };
+        let mut seen = 0;
+        for (file, src) in workgroup_sources() {
+            let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+            for (name, body) in fns(live) {
+                let runs = body.contains("argv_line(") || body.contains("resolve_on_path(");
+                if !runs || name == "argv_line" || body.contains("resolve_on_path(std::path::Path::new(\"claude.exe\")") {
+                    continue;
+                }
+                seen += 1;
+                assert!(CHECKED.iter().any(|c| body.contains(c)), "{file}: fn {name} runs a program unchecked for git");
+            }
+        }
+        assert!(seen >= 3, "the scan found the runners ({seen})");
+        let review = include_str!("../code_review.rs");
+        let program = &review[review.find("pub fn review_program(").unwrap()..];
+        assert!(program[..program.find("\n}\n").unwrap()].contains("refuse_git("), "review_program refuses git");
+    }
+
     /// Items 2 and 3: the UI thread never vets a repository or looks for git; both come with the poller's
     /// worker answer, and Run Anyway and every launch need that verdict.
     #[test]

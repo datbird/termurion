@@ -412,6 +412,17 @@ pub fn command_plan(template: &str, git_base: &str) -> Result<Plan, String> {
 /// Why a member that is not a Diff member does not start git.
 pub const GIT_ONLY_IN_DIFF: &str = "A workgroup starts git only in a Diff member, where Tandem checks the repository first, so this member did not start.";
 
+/// THE refusal of git for a program a workgroup member starts outside `git_state::pane_line` (a
+/// regular member's command, a Code Review member's review command): git by the name as written (any
+/// case, a path, Git for Windows' dashed `git-<sub>`) or by the file the name resolves to. A git launch
+/// needs the repository's verdict (`git_state::launch`), which only a Diff member has.
+pub fn refuse_git(named: &std::path::Path, found: Option<&std::path::Path>) -> Result<(), String> {
+    if crate::git_state::is_git(named) || found.is_some_and(crate::git_state::is_git) {
+        return Err(GIT_ONLY_IN_DIFF.to_string());
+    }
+    Ok(())
+}
+
 /// A member's command line from its plan (not a Diff member: those run through `git_state::pane_line`).
 /// `resolve` finds a program on the PATH. git (by name, path, or a name that resolves to it), in a line or
 /// an argument vector, is refused: a git launch needs the repository's verdict (`git_state::launch`).
@@ -423,9 +434,7 @@ pub fn member_line(plan: Plan, resolve: &dyn Fn(&std::path::Path) -> Option<std:
     };
     let named = std::path::Path::new(&program);
     let found = resolve(named);
-    if crate::git_state::is_git(named) || found.as_deref().is_some_and(crate::git_state::is_git) {
-        return Err(GIT_ONLY_IN_DIFF.to_string());
-    }
+    refuse_git(named, found.as_deref())?;
     match plan {
         Plan::Profile => Ok(None),
         Plan::Line(l) => Ok(Some(l)),

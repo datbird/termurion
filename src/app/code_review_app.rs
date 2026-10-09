@@ -549,13 +549,8 @@ impl App {
         if made.cut {
             self.banners.set("workgroup", "The prompt was longer than 16 KiB, so only its first 16 KiB was used.");
         }
-        let stem = std::path::Path::new(&made.argv[0]).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase());
-        // `claude` is claude.exe on the path and nothing else (12f-5); any other program is resolved as written.
-        let name = if stem.as_deref() == Some("claude") { "claude.exe".to_string() } else { made.argv[0].clone() };
-        let program = crate::semantic::resolve_on_path(std::path::Path::new(&name), std::env::var_os("PATH").as_deref()).ok_or("The review program was not found, so the review did not start.")?;
-        if crate::semantic::is_batch(&program) {
-            return Err("The review program is a batch file, which Tandem does not run for a review.".to_string());
-        }
+        let path = std::env::var_os("PATH");
+        let program = cr::review_program(&made.argv[0], &|p| crate::semantic::resolve_on_path(p, path.as_deref()))?;
         let line = crate::workgroup_run::argv_line(&program, &made.argv[1..])?;
         if !cr::line_fits(&line) {
             return Err("The review command is too long for Windows, so the review did not start.".to_string());
@@ -849,7 +844,7 @@ mod tests {
     fn a_review_starts_from_an_argument_vector() {
         let live = THIS.split("\n#[cfg(test)]").next().unwrap();
         let f = &live[live.find("fn review_command(").unwrap()..live.find("/// The member's system prompt file").unwrap()];
-        for needed in ["cr::review_argv(", "argv_line(", "cr::line_fits(", "is_batch(", "claude.exe", "write_review_file("] {
+        for needed in ["cr::review_argv(", "argv_line(", "cr::line_fits(", "cr::review_program(", "write_review_file("] {
             assert!(f.contains(needed), "{needed}");
         }
         assert!(!live.contains("format!(\"claude"), "no hand-built command line");
