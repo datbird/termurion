@@ -62,7 +62,7 @@ impl App {
             switch: [self.globals.int("SwitchTabModifier"), self.globals.int("SwitchPaneModifier"), self.globals.int("SwitchWindowModifier")],
             bar: self.bars.get(&pane).and_then(|b| b.front()).cloned(),
             editing: bv.editing,
-            copy_mode: bv.copy_mode.is_some(),
+            copy_mode: bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world),
         })
     }
 
@@ -91,7 +91,7 @@ impl App {
             .iter()
             .filter(|(p, bv)| {
                 self.panes.contains_key(*p) && {
-                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, bv.copy_mode.is_some());
+                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world));
                     bv.gate_sig.as_ref() != Some(&sig)
                 }
             })

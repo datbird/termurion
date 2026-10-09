@@ -102,6 +102,16 @@ const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of c
             e.stopImmediatePropagation();
             post({ key: String(e.key).slice(0, 32), ctrl: e.ctrlKey === true, alt: e.altKey === true, shift: e.shiftKey === true });
         }, true);
+        // The release of a key copy mode took is kept from the page too, so it cannot see which
+        // keys were pressed. Same checks; a release is never reported.
+        window.addEventListener('keyup', function(e) {
+            if (!e.isTrusted) { return; }
+            if (!on) { return; }
+            if (e.metaKey) { return; }
+            if (e.isComposing || e.keyCode === 229) { return; }
+            e.preventDefault();
+            e.stopImmediatePropagation();
+        }, true);
         Object.defineProperty(window, '__tandemCopyModeKeys', {
             value: function(secret, value) {
                 if (secret !== SECRET) { return; }
@@ -292,6 +302,18 @@ mod tests {
         }
     }
 
+    /// 13x3 final wave (Task 8 minor 10): a huge count repeats MAX_REPEAT times, not 5000.
+    #[test]
+    fn a_count_is_capped_at_max_repeat() {
+        let mut m = Model::default();
+        for d in ["5", "0", "0", "0"] {
+            assert_eq!(m.key(d, "s"), Step::Nothing);
+        }
+        let j = script_of(m.key("j", "s"));
+        assert_eq!(j.matches("iTerm2CopyMode.moveDown('s')").count(), MAX_REPEAT);
+        assert_eq!(j.matches("scrollCursorIntoView('s')").count(), 1);
+    }
+
     #[test]
     fn browser_copy_steps_follow_iterm2() {
         let mut m = Model::default();
@@ -344,6 +366,11 @@ mod tests {
         assert!(listener.find("isTrusted").unwrap() < listener.find("preventDefault").unwrap() && listener.find("isTrusted").unwrap() < listener.find("post(").unwrap());
         assert!(listener.contains("e.metaKey") && listener.contains("stopImmediatePropagation") && listener.contains("true)"), "capture phase");
         assert!(keys.contains(KEY_HANDLER));
+        // The matching keyup is kept from the page too (Task 8 minor 5): same checks, never posts.
+        let up = &keys[keys.find("addEventListener('keyup'").expect("a keyup listener")..];
+        let up = &up[..up.find("}, true);").unwrap()];
+        assert!(up.find("isTrusted").unwrap() < up.find("preventDefault").unwrap() && up.contains("stopImmediatePropagation") && up.contains("e.metaKey") && up.contains("!on"));
+        assert!(!up.contains("post("), "a release is never reported");
         // A secret that is not plain letters and digits builds no script and no step.
         assert!(script("a'b").is_err() && user_script("").is_err() && keys_script("a b").is_err());
         assert_eq!(Model::default().key("j", "a'b"), Step::Nothing);

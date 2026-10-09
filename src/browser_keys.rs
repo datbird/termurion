@@ -225,6 +225,12 @@ pub fn modifier_vk(vk: u32) -> bool {
     matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0xA0..=0xA5)
 }
 
+/// Alt+F4 and F10 (and Shift+F10): the system's close and menu keys. Copy mode never takes them, so
+/// the host window keeps them as the terminal's copy mode does (13x3 final wave, Task 8 minor 1).
+pub fn system_key(vk: u32, mods: u8) -> bool {
+    (vk == 0x73 && mods & ALT != 0) || vk == 0x79
+}
+
 /// Ctrl+L, Alt+D and F6 (13x's `browser_page_key`).
 pub fn address_accelerator(vk: u32, mods: u8) -> bool {
     let (ctrl, alt, win) = (mods & CTRL != 0, mods & ALT != 0, mods & WIN != 0);
@@ -268,8 +274,9 @@ impl GateState {
         if mods & WIN != 0 {
             return Owner::Page;
         }
-        let copy = self.copy_mode && !modifier_vk(vk);
-        let Some(chord) = chord_of(vk, mods) else { return key_owner(None, false, copy, Owner::Page) };
+        let copy = self.copy_mode && !modifier_vk(vk) && !system_key(vk, mods);
+        let address = address_accelerator(vk, mods);
+        let Some(chord) = chord_of(vk, mods) else { return key_owner(None, address, copy, Owner::Page) };
         let bar = self.bar.as_ref().filter(|_| shortcut_mods(chord.alt, chord.ctrl, chord.shift, chord.cmd)).and_then(|b| match chord.key {
             ChordKey::Char(c) => b.shortcut(c),
             _ => None,
@@ -283,7 +290,7 @@ impl GateState {
             Route::LeaderOn => Owner::Leader,
             Route::Terminal => Owner::Page,
         };
-        key_owner(bar, address_accelerator(vk, mods), copy, mapped)
+        key_owner(bar, address, copy, mapped)
     }
 }
 
@@ -796,6 +803,19 @@ mod tests {
         assert_eq!(off.owner(0x4A, 0), Owner::Page);
         let bound = GateState { copy_mode: true, profile_map: table(&[("0x62-0x40000", 0)]), ..GateState::default() };
         assert_eq!(bound.owner(0x42, CTRL), Owner::Binding, "Ctrl+B bound by the person");
+    }
+
+    /// 13x3 final wave (Task 8 minor 1): the system keys are not copy mode's. Alt+F4 closes the
+    /// window and F10 opens the system menu bar even while copy mode is on, as the terminal's does.
+    #[test]
+    fn system_keys_are_never_copy_modes() {
+        let on = GateState { copy_mode: true, ..GateState::default() };
+        assert_eq!(on.owner(0x73, ALT), Owner::Page, "Alt+F4");
+        assert_eq!(on.owner(0x79, 0), Owner::Page, "F10");
+        assert_eq!(on.owner(0x79, SHIFT), Owner::Page, "Shift+F10");
+        assert_eq!(on.owner(0x73, 0), Owner::CopyMode, "F4 alone is an ordinary key");
+        assert_eq!(on.owner(0x73, CTRL), Owner::CopyMode, "Ctrl+F4 is not the system close");
+        assert_eq!(on.owner(0x75, 0), Owner::Address, "F6 stays the address key in every branch");
     }
 
     #[test]

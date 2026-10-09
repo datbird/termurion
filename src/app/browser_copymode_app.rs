@@ -228,10 +228,21 @@ mod tests {
     #[test]
     fn the_gate_carries_copy_mode() {
         let input = prod(include_str!("browser_input_app.rs"));
-        assert!(input.contains("copy_mode: bv.copy_mode.is_some()"));
+        assert!(input.contains("copy_mode: bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world)"), "no isolated world, no gate-held keys (nothing could turn it off)");
         let key = between(input, "pub(super) fn browser_accel_key(", "fn browser_bar_press");
         assert!(key.contains("Owner::CopyMode => self.browser_copy_mode_vk(pane, vk, mods)"));
         let sync = between(input, "pub(super) fn browser_gates_sync", "/// A key the page raised");
         assert!(sync.contains("bv.copy_mode.is_some()"), "turning copy mode on or off rebuilds the gate");
+    }
+
+    /// A lost or restarted world leaves no copy mode behind (Task 8 minor 2): the flag is cleared
+    /// where the world goes Unavailable and where it restarts, not only by a navigation.
+    #[test]
+    fn a_lost_world_clears_copy_mode() {
+        let sc = prod(include_str!("browser_scripts_app.rs"));
+        let restart = between(sc, "fn browser_world_restart", "/// Called as the view is shown");
+        assert!(restart.contains("bv.copy_mode = None"), "restart");
+        let lost = between(sc, "lost after a process failure", "let late =");
+        assert!(lost.contains("bv.copy_mode = None"), "lost after a process failure");
     }
 }

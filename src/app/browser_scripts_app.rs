@@ -417,6 +417,8 @@ impl App {
             bv.dom_secret = browser_js::new_secret();
             bv.contexts = Default::default();
             bv.client_world = ClientWorld::Setting;
+            // The old world's copy mode died with it (its switch and cursor lived there).
+            bv.copy_mode = None;
             bv.world.restarted = true;
             bv.world.verify_at = None;
         }
@@ -441,6 +443,7 @@ impl App {
                 self.browser_world_restart(pane);
             } else if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.client_world = ClientWorld::Unavailable("lost after a process failure".into());
+                bv.copy_mode = None;
             }
         }
         let late = self.browser_views.get(&pane).is_some_and(|b| b.world.timed_out(Instant::now()));
