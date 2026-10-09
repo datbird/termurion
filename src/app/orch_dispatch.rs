@@ -456,6 +456,21 @@ impl App {
                 }
                 let instance = self.workgroup_of(pane).map(|i| i.id.clone());
                 let is_review = self.member_config(pane).is_some_and(|(i, c)| self.workgroups.get(&i).and_then(|inst| inst.workgroup.session(&c)).is_some_and(|s| s.mode == crate::workgroup::Mode::CodeReview));
+                // With no prompt overlay up, the review restarts its program: only from idle (`DI:3177-3189`),
+                // so a model never kills a review under way.
+                if is_review {
+                    if let Some((i, c)) = self.member_config(pane) {
+                        let overlay = self.workgroups.get(&i).is_some_and(|inst| inst.review.overlays.contains_key(&c));
+                        let state = self.panes.get(&pane).map_or(crate::session_state::State::Unknown, |p| crate::session_state::state(&p.own().tab_status));
+                        if !overlay && state != crate::session_state::State::Idle {
+                            let inst = self.workgroups.get(&i);
+                            let role = inst.and_then(|x| x.workgroup.session(&c)).map(|s| if s.display_name.is_empty() { c.clone() } else { s.display_name.clone() }).unwrap_or_else(|| c.clone());
+                            let wg = inst.map(|x| if x.workgroup.name.is_empty() { x.id.clone() } else { x.workgroup.name.clone() }).unwrap_or_default();
+                            let (role, wg) = (crate::inert_files::shown_name(&role), crate::inert_files::shown_name(&wg));
+                            return Err(OrchError::Unsupported(ot::review_busy(&role, &wg, state.word())));
+                        }
+                    }
+                }
                 match instance.filter(|_| is_review) {
                     Some(i) if self.request_review(&i) => Ok(done(ot::ack_json())),
                     Some(_) => Err(OrchError::Unsupported("The code review session could not start a review now (it needs to be live and restartable).".to_string())),
@@ -1482,6 +1497,11 @@ mod tests {
         // start_code_review needs the claim first, then only the member's own restart runs.
         let review = body(c, "\"start_code_review\" => {");
         assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review(").unwrap(), "a model starts a review only where the person let it act");
+        // Task 10 review Important 1: with no overlay up, a review member that is not idle is refused
+        // before anything restarts it (`DI:3177-3189`), after the claim.
+        let busy = review.find("ot::review_busy(").expect("the busy refusal");
+        assert!(review.find("self.orch_claim(").unwrap() < busy && busy < review.find("self.request_review(").unwrap(), "claim, then the idle check, then the restart");
+        assert!(review.contains("session_state::State::Idle") && review.contains("review.overlays.contains_key("), "idle unless the overlay is up");
         // Nothing an orchestration tool does can enter a workgroup, mark one trusted, or answer its question.
         for banned in ["enter_workgroup", "workgroup_picked", "Approved::of", "Mechanism::", "enter_workgroup_now", "Trust", "restore_answered"] {
             assert!(!c.contains(banned), "orchestration must not reach {banned}");

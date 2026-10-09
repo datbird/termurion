@@ -607,6 +607,12 @@ pub fn not_code_review(role: &str, wg: &str) -> String {
     format!("Target {role} in {wg} is not the Code Review role. start_code_review only targets the Code Review role; use send_text if you want to type text into another role.")
 }
 
+/// start_code_review on a review session that is not idle while no prompt overlay is up
+/// (`DI:3184-3186`): restarting it would kill a review under way.
+pub fn review_busy(role: &str, wg: &str, state: &str) -> String {
+    format!("Target {role} in {wg} is busy (status: {state}). Wait until it returns to idle before starting a review.")
+}
+
 /// scroll_wheel without mouse reporting (`DI:1971-1975`).
 pub fn no_mouse_reporting(role: &str, wg: &str) -> String {
     format!("Mouse reporting is not enabled in {role} ({wg}), so the scroll wheel can't be used. If this is the primary screen, just ask get_screen_contents for more lines instead.")
@@ -807,6 +813,8 @@ mod tests {
             assert_eq!((e.code(), e.message()), (code, message.to_string()));
         }
         assert_eq!(ack_json(), "{\n  \"ack\": true\n}");
+        // Task 10 review Important 1 (`DI:3184-3186`).
+        assert_eq!(review_busy("Review", "Feature", "working"), "Target Review in Feature is busy (status: working). Wait until it returns to idle before starting a review.");
         assert_eq!(not_code_review("default", "vim"), "Target default in vim is not the Code Review role. start_code_review only targets the Code Review role; use send_text if you want to type text into another role.");
         assert_eq!(placement(Some("new")), "a new window");
         assert_eq!((placement(Some("tab")), placement(None)), ("a new tab in the current window", "a new tab in the current window"));
