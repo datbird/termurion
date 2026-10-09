@@ -629,13 +629,15 @@ pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
         }
         Ok(key)
     };
-    for _ in 0..8 {
+    // Another Tandem holding the file open for writing (32, a sharing violation) or removing it (5,
+    // delete-pending until its handle closes) is waited for, up to about a second.
+    let busy = |e: &std::io::Error| matches!(e.raw_os_error(), Some(32) | Some(5));
+    for _ in 0..50 {
         match read(&file) {
             Ok(Some(k)) => return Some(k),
             Ok(None) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            // Another Tandem holds it open for writing or removing: read again.
-            Err(e) if e.raw_os_error() == Some(32) => {
+            Err(e) if busy(&e) => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 continue;
             }
@@ -656,18 +658,32 @@ pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
             Ok(()) => return Some(k),
             // Another copy of Tandem named its key first: read that one.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // The name is still delete-pending under another Tandem's handle: try again.
+            Err(e) if busy(&e) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             Err(_) => return None,
         }
     }
     None
 }
 
-/// Marks the open file (opened with DELETE access) for removal when its handles close: the very
-/// file that was judged, whatever has the name by then.
+/// Removes the open file (opened with DELETE access): the very file that was judged, whatever has
+/// the name by then. POSIX semantics first, so the name is free at once (another Tandem starting now
+/// makes its key instead of meeting a delete-pending name); where the volume has none (FAT, older
+/// Windows), the classic mark that removes it when its handles close (`key_in` then waits).
 #[cfg(windows)]
 fn delete_open(f: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle};
+    // FILE_DISPOSITION_INFO_EX: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    // class FileDispositionInfoEx (21).
+    let ex: u32 = 0x1 | 0x2;
+    // SAFETY: an open handle and a structure of the size given.
+    if unsafe { SetFileInformationByHandle(f.as_raw_handle() as _, 21, &ex as *const _ as *const _, std::mem::size_of::<u32>() as u32) } != 0 {
+        return Ok(());
+    }
     let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
     // SAFETY: an open handle and a structure of the size given.
     let ok = unsafe { SetFileInformationByHandle(f.as_raw_handle() as _, FileDispositionInfo, &info as *const _ as *const _, std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32) };
@@ -993,6 +1009,35 @@ mod tests {
         assert_ne!(again, made, "a key file without the owner-only DACL is not read");
         let sddl = crate::localfs::dacl_sddl(&file).unwrap();
         assert!(sddl.contains("D:P(A;;FA;;;S-") && sddl.matches("(A;").count() == 1, "{sddl}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Task 9 re-review r2, new minor 1: a second Tandem that starts while another is removing a bad
+    /// key (the file is delete-pending until that one's handle closes) still gets a key for its run.
+    #[cfg(windows)]
+    #[test]
+    fn a_key_being_removed_by_another_tandem_is_waited_for() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("tandem-wg-key-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(KEY_FILE), b"not a key").unwrap();
+        // The other Tandem judged the file and marks it for removal through its handle (as `key_in`
+        // does, classic disposition), and holds the handle a moment.
+        let other = std::fs::OpenOptions::new().access_mode(windows_sys::Win32::Foundation::GENERIC_READ | 0x0001_0000).share_mode(1).open(dir.join(KEY_FILE)).unwrap();
+        let info = windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO { DeleteFile: 1 };
+        // SAFETY: an open handle and a structure of the size given.
+        let ok = unsafe { windows_sys::Win32::Storage::FileSystem::SetFileInformationByHandle(std::os::windows::io::AsRawHandle::as_raw_handle(&other) as _, windows_sys::Win32::Storage::FileSystem::FileDispositionInfo, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32) };
+        assert_ne!(ok, 0);
+        let got = std::thread::scope(|s| {
+            s.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                drop(other);
+            });
+            key_in(&dir)
+        });
+        assert!(got.is_some(), "no key for this run");
+        assert_eq!(key_in(&dir), got, "the key it made is the one on disk");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
