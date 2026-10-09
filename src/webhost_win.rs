@@ -3250,7 +3250,7 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived: {:?}", p.log.last());
         let routed: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Client && r.client().is_some_and(|(h, _)| h == crate::browser_find::HANDLER)).collect();
         let big = routed.iter().find(|r| r.client().is_some_and(|(_, b)| b["action"] == "resultsUpdated")).expect("resultsUpdated");
-        assert!(big.body.len() <= 49152 + 4096, "the message is {} bytes", big.body.len());
+        assert!(big.body.len() <= crate::browser_js::CAP_BUDGET, "the message is (decoded, within the escaped weight budget, so within ViewGate::admit)  {} bytes", big.body.len());
         let (_, b) = big.client().unwrap();
         assert_eq!(b["data"]["totalMatches"], 6000, "the count is kept whole");
         assert!(b["data"]["matchIdentifiers"].as_array().is_some_and(|a| !a.is_empty() && a.len() < 6000));
@@ -3329,7 +3329,8 @@ window.addEventListener('message', function (e) {
         for c in label.chars() {
             let (key, upper) = (c.to_string(), c.to_ascii_uppercase());
             for kind in ["keyDown", "keyUp"] {
-                let mut k = json!({"type": kind, "key": key, "code": format!("Key{upper}"), "windowsVirtualKeyCode": upper as u32});
+                let code = if c.is_ascii_digit() { format!("Digit{c}") } else { format!("Key{upper}") };
+                let mut k = json!({"type": kind, "key": key, "code": code, "windowsVirtualKeyCode": upper as u32});
                 if kind == "keyDown" {
                     k["text"] = json!(key);
                 }
