@@ -411,6 +411,14 @@ impl App {
     /// person's answer (or the person's own workgroup, or an approval that stands) allows.
     fn adopt_one(&mut self, p: Pending, plan: wr::Adoption, approved: Approved) {
         let Pending { mut m, descriptor } = p;
+        // The cap on running workgroups holds for a restore as for an entry: past it the anchor stays a
+        // plain session and the buried members' shells end.
+        if self.workgroups.len() >= super::workgroup_app::MAX_INSTANCES {
+            self.banners.set("workgroup", format!("{} workgroups are running, so a restored one was not rebuilt.", super::workgroup_app::MAX_INSTANCES));
+            self.workgroups.restoring.release(&mut m);
+            self.discard_members(descriptor, m.name.as_deref(), m.launch);
+            return;
+        }
         let anchor = m.anchor;
         let w = plan.workgroup.clone();
         let mut d = descriptor;
@@ -641,6 +649,18 @@ mod tests {
         assert!(r.add(1, "A1".into(), descriptor(), None, true));
         r.pending[0].m.asked = true;
         assert!(r.guids.contains_key("A1") && r.guids.contains_key("B1") && !r.pending[0].m.released);
+    }
+
+    /// Final review minor 12: a restore counts against the cap on running workgroups as an entry does;
+    /// past it the anchor stays a plain session and the buried members' shells end.
+    #[test]
+    fn a_restore_counts_against_the_cap() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        let adopt = body(production, "    fn adopt_one(");
+        let cap = adopt.find("self.workgroups.len() >= super::workgroup_app::MAX_INSTANCES").expect("the cap is checked");
+        assert!(cap < adopt.find("self.restore_member_pane(").unwrap(), "before anything is built");
+        let past = &adopt[cap..];
+        assert!(past[..past.find("return;").unwrap()].contains("self.discard_members("), "{past}");
     }
 
     /// Task 9 review minor 3: a Code Review or Diff session whose shell could not be taken back comes

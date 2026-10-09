@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 /// Live instances at most (a hostile host printing a trigger's text after every exit cannot fan
 /// out sessions without end, P3).
-const MAX_INSTANCES: usize = 8;
+pub(super) const MAX_INSTANCES: usize = 8;
 /// A trigger enters one workgroup per session this often at most (P3).
 const TRIGGER_GAP: Duration = Duration::from_secs(5);
 
