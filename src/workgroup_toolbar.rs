@@ -129,8 +129,11 @@ pub enum Owner {
     Menu,
 }
 
-/// The one order for keys in a workgroup member (P13): the global binding, a peer's custom
-/// shortcut, Alt+Shift+Win+digit, a toolbar item's shortcut, then the main menu.
+/// The order for keys in a workgroup member (P13): the global binding, a peer's custom shortcut,
+/// Alt+Shift+Win+digit, a toolbar item's shortcut, then the main menu. The order itself lives in two
+/// places (13x2 ruling 159 supersedes P13's one function): `route_press` for a terminal member and
+/// `browser_keys::key_owner` for a browser member; this function is the toolbar arm's check in
+/// `workgroup_toolbar_shortcut` and the order's tested statement.
 pub fn key_owner(global_bound: bool, peer_shortcut: bool, peer_digit: bool, toolbar_match: bool) -> Owner {
     if global_bound {
         Owner::Global

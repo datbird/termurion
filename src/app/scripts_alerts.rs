@@ -315,8 +315,8 @@ pub(super) enum Then {
     /// Browser (1) opens the link, Cancel nothing. Not capped.
     BrowserUpsell { url: String },
     /// "Enter the workgroup ...?" for an imported workgroup, a trigger, or more than eight members
-    /// (13y1): Enter (0) enters the very workgroup the question showed, Cancel nothing. A trigger
-    /// raises it, so then it is capped.
+    /// (13y1): Cancel (0, the default) nothing, Enter (1, `ASK_ENTER`) enters the very workgroup the
+    /// question showed. A trigger raises it, so then it is capped.
     EnterWorkgroup { workgroup: Box<crate::workgroup::Workgroup>, pane: crate::layout::PaneId, how: crate::workgroup_run::Mechanism, approved: crate::workgroup_run::Approved },
     /// A restored workgroup that is not the person's own, or whose commands changed since they were
     /// answered for (Task 9): `token` names the waiting restore.

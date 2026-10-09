@@ -118,9 +118,12 @@ struct Plan {
 }
 
 /// The shortcuts a toolbar item answers to (Reload, and Navigation's three).
-fn item_shortcuts(item: &ToolbarItem) -> Vec<&crate::workgroup::Shortcut> {
+fn item_shortcuts(item: &ToolbarItem, browser: bool) -> Vec<&crate::workgroup::Shortcut> {
     match item {
+        // A browser member's reload is the page's own (13x2 seam S3): no Reload key is taken from it.
+        ToolbarItem::Reload(Some(_)) if browser => Vec::new(),
         ToolbarItem::Reload(Some(s)) => vec![s],
+        ToolbarItem::Navigation(n) if browser => [&n.back, &n.forward].into_iter().flatten().collect(),
         ToolbarItem::Navigation(n) => [&n.back, &n.forward, &n.reload].into_iter().flatten().collect(),
         _ => Vec::new(),
     }
@@ -543,12 +546,13 @@ impl App {
     /// before the menu's chord (`WI:1696-1700`). True when a Reload shortcut took the key.
     pub(super) fn workgroup_toolbar_shortcut(&mut self, pane: PaneId, key: &crate::keystroke::Keystroke) -> bool {
         let Some(plan) = self.toolbar_plan(pane) else { return false };
+        let browser = self.is_browser_pane(pane);
         let is = |s: &Option<crate::workgroup::Shortcut>| s.as_ref().is_some_and(|s| peers::shortcut_matches(s, key));
         let act = plan.items.iter().find_map(|i| match i {
             ToolbarItem::Reload(s) if is(s) => Some(Nav::Reload),
             ToolbarItem::Navigation(n) if is(&n.back) => Some(Nav::Back),
             ToolbarItem::Navigation(n) if is(&n.forward) => Some(Nav::Forward),
-            ToolbarItem::Navigation(n) if is(&n.reload) => Some(Nav::Reload),
+            ToolbarItem::Navigation(n) if !browser && is(&n.reload) => Some(Nav::Reload),
             _ => None,
         });
         if wt::key_owner(false, false, false, act.is_some()) != Owner::Toolbar {
@@ -569,7 +573,7 @@ impl App {
         for inst in self.workgroups.values() {
             for cfg in &inst.workgroup.sessions {
                 for item in &cfg.toolbar_items {
-                    for s in item_shortcuts(item) {
+                    for s in item_shortcuts(item, false) {
                         if let Some(k) = crate::keystroke::parse(&s.serialized).filter(|k| k.flags & crate::keystroke::COMMAND != 0) {
                             keys.insert(k.legacy());
                             keys.insert(k.modified_key());
@@ -586,11 +590,16 @@ impl App {
     /// `workgroup_toolbar_shortcut` match. Win chords are the keyboard hook's and never reach a gate.
     pub(super) fn workgroup_gate_keys(&self, pane: PaneId) -> Vec<crate::workgroup::Shortcut> {
         let mut keys: Vec<crate::workgroup::Shortcut> = Vec::new();
+        // A hidden peer is in no layout: no key could act there, so its gate offers none.
+        if self.pane_window_id(pane).is_none() {
+            return keys;
+        }
+        let browser = self.is_browser_pane(pane);
         if let Some(inst) = self.peer_group_of(pane) {
             keys.extend(peers::members(&inst.workgroup).into_iter().filter_map(|(_, _, s)| s));
         }
         if let Some(plan) = self.workgroup_toolbar_member(pane).then(|| self.toolbar_plan(pane)).flatten() {
-            keys.extend(plan.items.iter().flat_map(item_shortcuts).cloned());
+            keys.extend(plan.items.iter().flat_map(|i| item_shortcuts(i, browser)).cloned());
         }
         keys
     }
@@ -864,4 +873,57 @@ mod tests {
         let ctx = include_str!("browser_ctx_app.rs");
         assert!(ctx.contains("a.start_pane_move(pane, false, event_loop)") && ctx.contains("a.move_session_to_tab()") && ctx.contains("a.move_session_to_window()"), "the page menu takes the terminal's paths");
     }
+
+    /// Merge review minors 1 and 2: a browser member's gate offers no Reload key (the page's own reload
+    /// runs there, as the Reload item is left out), Navigation's reload included; and a hidden peer's
+    /// gate offers nothing (it is in no layout, so no key could act).
+    #[test]
+    fn the_gate_offers_only_keys_that_act() {
+        let production = include_str!("workgroup_toolbar_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let gate = &production[production.find("pub(super) fn workgroup_gate_keys").unwrap()..];
+        let gate = &gate[..gate.find("\n    }\n").unwrap()];
+        assert!(gate.contains("if self.pane_window_id(pane).is_none()"), "{gate}");
+        assert!(gate.contains("item_shortcuts(i, browser)"), "{gate}");
+        let short = &production[production.find("pub(super) fn workgroup_toolbar_shortcut").unwrap()..];
+        assert!(short.contains("ToolbarItem::Navigation(n) if !browser && is(&n.reload)"));
+        let s = |k: &str| Some(crate::workgroup::Shortcut { serialized: k.into() });
+        use crate::workgroup::ToolbarItem;
+        let nav = ToolbarItem::Navigation(crate::workgroup::NavigationShortcuts { back: s("a"), forward: s("b"), reload: s("c") });
+        assert_eq!(super::item_shortcuts(&nav, false).len(), 3);
+        assert_eq!(super::item_shortcuts(&nav, true).len(), 2, "no reload key from a page");
+        assert!(super::item_shortcuts(&ToolbarItem::Reload(s("r")), true).is_empty());
+    }
+
+    /// 13x2 seam S7 (merge review minor 3): broadcast is built from the tabs' layouts, so a hidden peer
+    /// (in no layout) never sends or receives, and after a swap the shown peer is the one that does.
+    #[test]
+    fn broadcast_skips_hidden_peers() {
+        use crate::broadcast::{Broadcast, TabView, View};
+        assert!(include_str!("broadcast_ui.rs").contains("panes: t.layout.panes()"), "the view is the layouts");
+        let (leader, split, hidden) = (1, 2, 3);
+        let mut layout = crate::layout::Layout::new(leader);
+        layout.split(leader, crate::layout::Axis::Row, split);
+        let view = |l: &crate::layout::Layout| View { tabs: vec![TabView { broadcasting: false, panes: l.panes() }], current_tab: 0, current: split, exited: Default::default() };
+        let mut v = view(&layout);
+        let mut b = Broadcast::default();
+        b.current_tab(&mut v, &mut |_| true);
+        assert!(!b.receives(&v, hidden) && !b.sends(&v, hidden));
+        assert_eq!(b.targets(&v, split), vec![leader, split]);
+        assert!(!b.targets(&v, leader).contains(&hidden));
+    }
+
+    #[test]
+    fn broadcast_into_a_member_follows_the_visible_peer() {
+        use crate::broadcast::{Broadcast, TabView, View};
+        let (leader, split, peer) = (1, 2, 3);
+        let mut layout = crate::layout::Layout::new(leader);
+        layout.split(leader, crate::layout::Axis::Row, split);
+        assert!(layout.replace(leader, peer), "the swap puts the peer in the leader's slot");
+        let mut v = View { tabs: vec![TabView { broadcasting: false, panes: layout.panes() }], current_tab: 0, current: split, exited: Default::default() };
+        let mut b = Broadcast::default();
+        b.current_tab(&mut v, &mut |_| true);
+        assert_eq!(b.targets(&v, split), vec![split, peer]);
+        assert!(!b.receives(&v, leader), "the buried leader is out of the domain");
+    }
+
 }
