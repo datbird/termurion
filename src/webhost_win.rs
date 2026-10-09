@@ -2286,7 +2286,7 @@ mod probe {
 })();
 </script>"#;
 
-    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__fire=function(t,s){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:s,requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
+    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__types=function(){var d=window[Symbol.for('iTermGraphDiscovery')];return JSON.stringify({api:typeof(d&amp;&amp;d.evaluateInFrame&amp;&amp;d.evaluateInFrame('x','1',function(){})),global:typeof window.graphDiscoveryEvaluateInFrame})};window.__fire=function(t,s){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:s,requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
 
     fn hostile_page(body: &str, guess: &str) -> String {
         format!("<!doctype html><html><head><title>hostile</title>{}</head><body>{body}</body></html>", HOSTILE.replace("{{GUESS}}", guess))
@@ -2878,6 +2878,10 @@ mod probe {
         let r = p.page_eval(&format!("window.__forge4({as_js_string})")).expect("the forgery ran");
         let r: Value = serde_json::from_str::<String>(&r).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
         assert_eq!(r, json!({"api": "undefined", "global": "undefined"}), "the page world has no graph API");
+        // The same check from the child frame's page world (Task 3 review, minor 1).
+        let c = p.page_eval("window.frames[0].__types()").expect("the child's check ran");
+        let c: Value = serde_json::from_str::<String>(&c).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        assert_eq!(c, json!({"api": "undefined", "global": "undefined"}), "the child's page world has no graph API either");
         p.settle(1000);
         let forged = p.routed.iter().filter(|r| r.via == Via::Page && r.body.contains("EVAL_IN_FRAME")).count();
         assert!(forged > 0, "the page's forgeries reached the host (as the page's)");
@@ -2913,13 +2917,21 @@ mod probe {
         let main_id = ids.iter().find(|(f, _)| f.is_none()).expect("the main frame registered").1.clone();
         let child = ids.iter().find(|(f, _)| f.is_some()).expect("the iframe registered").clone();
         assert_eq!(p.graph.as_ref().unwrap().lookup(&child.1), Some(child.0), "the graph resolves the child's id to its frame");
+        assert_eq!(p.graph.as_ref().unwrap().lookup(&main_id), Some(None), "and the main frame's id to the main frame");
+        // Let the load's own discovery (the page's mutation observer) finish before this one starts.
+        p.settle(1000);
         let ask = "new Promise(function (res) { window[Symbol.for('iTermGraphDiscovery')].rediscover(res, 5000); })";
         let before = p.log.len();
+        let asked_before = p.clients(crate::browser_frames::HANDLER).into_iter().filter(|(_, b)| b["type"] == "REQUEST_REPORT").count();
         let g = p.eval(None, ask).expect("the rediscovery completes");
         assert_eq!(g["frameId"], json!(main_id), "{g}");
         assert_eq!(g["children"].as_array().map(Vec::len), Some(1), "{g}");
         assert_eq!(g["children"][0]["frameId"], json!(child.1), "the main frame's graph names the child by its registered id: {g}");
-        let evals: Vec<&String> = p.log[before..].iter().filter(|l| l.starts_with("Runtime.evaluate")).collect();
+        // Only this rediscovery's two phases: the lines that name its request id.
+        let asked: Vec<String> = p.clients(crate::browser_frames::HANDLER).into_iter().filter(|(_, b)| b["type"] == "REQUEST_REPORT").filter_map(|(_, b)| b["requestId"].as_str().map(str::to_string)).skip(asked_before).collect();
+        assert_eq!(asked.len(), 1, "exactly this call's report request: {asked:?}");
+        let rid = asked[0].clone();
+        let evals: Vec<&String> = p.log[before..].iter().filter(|l| l.starts_with("Runtime.evaluate") && l.contains(&rid)).collect();
         let phase = |name: &str| evals.iter().filter(|l| l.contains(name)).count();
         assert_eq!(phase("prepareForReport"), 2, "phase one reached both frames: {evals:?}");
         assert_eq!(phase(".report("), 2, "phase two reached both frames: {evals:?}");
@@ -3250,7 +3262,7 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived: {:?}", p.log.last());
         let routed: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Client && r.client().is_some_and(|(h, _)| h == crate::browser_find::HANDLER)).collect();
         let big = routed.iter().find(|r| r.client().is_some_and(|(_, b)| b["action"] == "resultsUpdated")).expect("resultsUpdated");
-        assert!(big.body.len() <= crate::browser_js::CAP_BUDGET, "the message is (decoded, within the escaped weight budget, so within ViewGate::admit)  {} bytes", big.body.len());
+        assert!(big.body.len() <= crate::browser_js::CAP_BUDGET, "the message is (decoded, within the escaped weight budget, so within ViewGate::admit) {} bytes", big.body.len());
         let (_, b) = big.client().unwrap();
         assert_eq!(b["data"]["totalMatches"], 6000, "the count is kept whole");
         assert!(b["data"]["matchIdentifiers"].as_array().is_some_and(|a| !a.is_empty() && a.len() < 6000));
@@ -3395,7 +3407,8 @@ window.addEventListener('message', function (e) {
         // 1. The page recorded every message it could see: none holds the secret or its field name.
         let report = p.page_eval("window.__report()").expect("the page report");
         assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
-        // 2. The pick asked for a window, and the host let none through: no NewWindow.
+        // 2. The synthetic key picked nothing (R13x3-2), so no window was asked for: no NewWindow. The
+        //    host's own user-gesture gate on a find-nav open is exercised only by the control below.
         assert!(p.new_windows.is_empty(), "a page-initiated window got through: {:?}", p.new_windows);
         let after: Vec<String> = p.clients(crate::browser_find::HANDLER).iter().skip(before).filter_map(|(_, b)| b["action"].as_str().map(str::to_string)).collect();
         assert!(after.iter().all(|a| a == "currentChanged" || a == "resultsUpdated"), "only find's own reports followed: {after:?}");
