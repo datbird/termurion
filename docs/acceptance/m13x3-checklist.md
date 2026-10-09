@@ -57,6 +57,8 @@ exists and nothing is selected, so it can fail; the probe does not read the clip
 - [ ] Open `frames.html`, find "the": matches appear in the outer text and in the srcdoc iframe; a match inside the cross-site frame is not required (recorded in the rulings).
 - [ ] Edit > Find > Clear Find clears the page; Jump to Selection scrolls the page's selection to the middle; Filter and Find Cursor do nothing on a browser pane (known, not greyed).
 - [ ] The status-bar Search Tool field gives the keyboard back and forth the same way.
+- [ ] Select text on the page, Edit > Find > Use Selection for Find: the find bar (open it) shows the selection; with a regex mode picked, the dots and stars in it are escaped (`BVC:778-791`).
+- [ ] With a search active, Edit > Find > Pick Result to Open shows letter bubbles over the visible matches and a typed letter opens the match's link; with no search it does nothing (`BVC:1429-1435`, `1322-1323`).
 
 ## C. Find URLs
 

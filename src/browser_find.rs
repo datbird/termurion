@@ -562,6 +562,10 @@ pub enum Route {
     Clear,
     Jump,
     FindUrls,
+    /// Use Selection for Find (`BVC:778-791`): the page's selection becomes the shared find string.
+    UseSelection,
+    /// Pick Result to Open (`BVC:1429-1435`): the open shortcuts over the current results.
+    PickResult,
     /// Find Globally is its own window (Task 6).
     Global,
     /// Disabled for a browser session, or a text-view action that never reaches a web view.
@@ -578,8 +582,10 @@ pub fn is_find_family(selector: &str) -> bool {
 }
 
 /// The find family on a browser pane. Filter and Find Cursor are disabled for a browser session
-/// (`PT:14162-14175`); Use Selection for Find, Select Matches, Zoom, Open Selection, Find All Smart
-/// Selection Matches and Pick Result to Open are text-view actions the web view never gets.
+/// (`PT:14162-14175`); Select Matches, Zoom, Open Selection and Find All Smart Selection Matches
+/// are text-view actions the web view never gets. Use Selection for Find and Pick Result to Open
+/// are the browser view controller's own (`BVC:778-791`, `BVC:1429-1435`; the plan's Resume note
+/// said otherwise and the source wins).
 pub fn route(selector: &str, label: &str) -> Route {
     match (selector, label) {
         ("performFindPanelAction:", "Find...") => Route::Open,
@@ -588,9 +594,20 @@ pub fn route(selector: &str, label: &str) -> Route {
         ("clearFindString:", _) => Route::Clear,
         ("jumpToSelection:", _) => Route::Jump,
         ("findUrls:", _) => Route::FindUrls,
+        ("performFindPanelAction:", "Use Selection for Find") => Route::UseSelection,
+        ("revealContentNavigationShortcuts:", _) => Route::PickResult,
         ("findGlobally:", _) => Route::Global,
         _ => Route::Nothing,
     }
+}
+
+/// The find string Use Selection for Find sets (`BVC:781-789`): the page's selection, escaped for
+/// a regex when the find mode is one. None for an empty selection (iTerm2 has no selection then).
+pub fn selection_query(raw: &str, regex_mode: bool) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+    Some(if regex_mode { regex::escape(raw) } else { raw.to_string() })
 }
 
 /// Return in the bar always searches forward in a browser, with or without Shift (`PS:9158-9160`,
@@ -1134,15 +1151,18 @@ mod tests {
         assert_eq!(route("jumpToSelection:", "Jump to Selection"), Route::Jump);
         assert_eq!(route("findUrls:", "Find URLs"), Route::FindUrls);
         assert_eq!(route("findGlobally:", "Find Globally..."), Route::Global);
+        assert_eq!(route("performFindPanelAction:", "Use Selection for Find"), Route::UseSelection, "BVC:778-791");
+        assert_eq!(route("revealContentNavigationShortcuts:", "Pick Result to Open"), Route::PickResult, "BVC:1429-1435");
         assert_eq!(route("filter:", "Filter"), Route::Nothing);
+        assert_eq!(selection_query("a.b*", false), Some("a.b*".to_string()));
+        assert_eq!(selection_query("a.b*", true), Some("a\\.b\\*".to_string()), "a regex mode escapes");
+        assert_eq!(selection_query("", true), None);
         for (s, l) in [
-            ("performFindPanelAction:", "Use Selection for Find"),
             ("performFindPanelAction:", "Select Matches"),
             ("zoomOnSelection:", ""),
             ("zoomOut:", ""),
             ("openSelection:", ""),
             ("smartSelectAllVisible:", ""),
-            ("revealContentNavigationShortcuts:", ""),
         ] {
             assert_eq!(route(s, l), Route::Nothing, "{s} {l}");
         }

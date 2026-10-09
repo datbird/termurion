@@ -293,7 +293,7 @@ impl App {
         }));
     }
 
-    fn browser_read_selection(&mut self, pane: PaneId, then: Box<dyn FnOnce(&mut App, PaneId, String)>) {
+    pub(super) fn browser_read_selection(&mut self, pane: PaneId, then: Box<dyn FnOnce(&mut App, PaneId, String)>) {
         self.browser_eval_in_frame(
             pane,
             None,

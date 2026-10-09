@@ -267,6 +267,42 @@ impl App {
         self.redraw();
     }
 
+    /// Use Selection for Find (`BVC:778-791`): the page's selection, read by the one capped reader in
+    /// Tandem's world, becomes the shared find string whatever the sync setting says.
+    pub(super) fn browser_use_selection(&mut self, pane: PaneId) {
+        self.browser_read_selection(
+            pane,
+            Box::new(|a, _, text| {
+                let regex_mode = matches!(a.find_mode(), crate::find::Mode::RegexSensitive | crate::find::Mode::RegexInsensitive);
+                if let Some(q) = browser_find::selection_query(&text, regex_mode) {
+                    a.set_find_pasteboard_always(&q, None);
+                    a.redraw();
+                }
+            }),
+        );
+    }
+
+    /// Pick Result to Open (`BVC:1429-1435`): while a search is active, the open shortcuts go over
+    /// its visible results and the page gets the keyboard. Nothing without a search
+    /// (`BVC:1322-1323`).
+    pub(super) fn browser_pick_result(&mut self, pane: PaneId) {
+        if !self.client_open(pane) {
+            return;
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        if bv.find.active_term().is_none() {
+            return;
+        }
+        let secret = bv.secret.clone();
+        let cmds = bv.find.navigation_shortcuts("open", &secret);
+        self.browser_find_send(pane, cmds);
+        if self.browser_page_may_focus(pane) {
+            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                v.focus();
+            }
+        }
+    }
+
     /// A Find Globally search reaches every browser pane (`GSEC:443-455`): a page with the find
     /// script (checked in the Tandem world, `FM:423-426`) clears and starts its global search; the
     /// others contribute nothing. An answer for an older search is dropped.
@@ -365,6 +401,8 @@ impl App {
             }
             Route::Jump => self.browser_jump_to_selection(id),
             Route::FindUrls => self.browser_find_urls(id),
+            Route::UseSelection => self.browser_use_selection(id),
+            Route::PickResult => self.browser_pick_result(id),
             Route::Global => return false,
             Route::Nothing => {}
         }
@@ -543,7 +581,7 @@ mod tests {
     #[test]
     fn a_bad_find_urls_pattern_does_not_focus_the_page() {
         let me = prod(include_str!("browser_find_app.rs"));
-        let f = between(me, "pub(super) fn browser_find_urls", "/// A Find Globally search reaches");
+        let f = between(me, "pub(super) fn browser_find_urls", "/// Use Selection for Find");
         let ok = between(f, "Ok(cmds) =>", "Err(banner)");
         assert!(ok.contains("self.browser_find_send(pane, cmds)") && ok.contains("browser_page_may_focus(pane)") && ok.contains(".focus()"));
         let err = &f[f.find("Err(banner)").unwrap()..];
@@ -726,6 +764,14 @@ mod tests {
         // Jump to Selection goes to the one owner; Filter and the text-view actions do nothing.
         assert!(me.contains("Route::Jump => self.browser_jump_to_selection(id)") && !me.contains("JUMP_JS"));
         assert!(me.contains("Route::Nothing => {}") && me.contains("Route::Global => return false"));
+        // Use Selection for Find and Pick Result to Open (final review I2): the one reader, the
+        // shared pasteboard path, and the shortcuts only with an active search.
+        assert!(me.contains("Route::UseSelection => self.browser_use_selection(id)") && me.contains("Route::PickResult => self.browser_pick_result(id)"));
+        let us = between(me, "pub(super) fn browser_use_selection", "pub(super) fn browser_pick_result");
+        assert!(us.contains("self.browser_read_selection(") && us.contains("selection_query(") && us.contains("set_find_pasteboard_always("));
+        let pick = between(me, "pub(super) fn browser_pick_result", "/// A Find Globally search reaches every");
+        assert!(pick.contains("active_term().is_none()") && pick.contains("navigation_shortcuts(\"open\"") && pick.contains("browser_page_may_focus(pane)") && pick.contains("self.client_open(pane)"));
+        assert!(prod(include_str!("browser_input_app.rs")).contains("pub(super) fn browser_read_selection"));
     }
 
     /// Find Globally on a browser pane (`GSEC:443-470`, `FM:414-450`): the search starts the page's
