@@ -1764,6 +1764,31 @@ mod tests {
         assert!(close > t.find("crate::dlog::stop_at_exit()").unwrap());
     }
 
+    /// 13x3 Task 1 review I2: the find probes can fail. The forged-message probe runs with new
+    /// windows on, turns navigation shortcuts on and keys at them, and passes a fixed wrong guess; the
+    /// forged-click probe posts from a cross-origin frame and checks the Tandem world for its marker.
+    #[test]
+    fn the_find_probes_can_fail() {
+        let this = include_str!("webhost_win.rs");
+        let body = |name: &str| {
+            let at = this.find(&format!("fn {name}()")).unwrap_or_else(|| panic!("the probe {name}"));
+            let rest = &this[at..];
+            rest[..rest.find("\n    }\n").unwrap()].to_string()
+        };
+        let f = body("find_messages_forged_by_a_page");
+        assert!(f.contains("Probe::start_with(") && f.contains("true)"), "new windows on");
+        assert!(f.contains("\"startNavigationShortcuts\"") && f.contains("\"selectionAction\": \"open\""), "shortcuts started");
+        assert!(f.contains("Input.dispatchKeyEvent"), "a real key is the control that opens a window");
+        assert!(f.contains("hostile_page(&body, \"g\")") && !f.contains("hostile_page(&body, &secret)"), "a fixed wrong guess");
+        let c = body("find_forged_click_cannot_reach_the_client");
+        assert!(c.contains("FORGING_CHILD") && c.contains("__pwned"), "from the child frame, with a marker");
+        assert!(this.contains("const FORGING_CHILD: &str = \"https://b.tandem-probe.invalid/") && this.contains("const PAGE: &str = \"https://probe.tandem-probe.invalid/\""), "the child is of another origin");
+        assert!(f.contains("FORGING_CHILD") && f.contains("frames[0].postMessage({forge: 'click'"), "the B7 forgeries come from the child too");
+        assert!(c.contains("p.eval(Some(k)") && c.contains("probePwned"), "the marker and the Client message are checked");
+        let s = include_str!("../scripts/probe-desktop.ps1");
+        assert!(s.contains("webhost_win::probe::"), "the default filter names the probes");
+    }
+
     #[test]
     fn view_setup_defaults_are_the_closed_ones() {
         let s = ViewSetup::default();
@@ -2261,7 +2286,7 @@ mod probe {
 })();
 </script>"#;
 
-    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__fire=function(t,s){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:s,requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
+    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__types=function(){var d=window[Symbol.for('iTermGraphDiscovery')];return JSON.stringify({api:typeof(d&amp;&amp;d.evaluateInFrame&amp;&amp;d.evaluateInFrame('x','1',function(){})),global:typeof window.graphDiscoveryEvaluateInFrame})};window.__fire=function(t,s){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:s,requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
 
     fn hostile_page(body: &str, guess: &str) -> String {
         format!("<!doctype html><html><head><title>hostile</title>{}</head><body>{body}</body></html>", HOSTILE.replace("{{GUESS}}", guess))
@@ -2344,11 +2369,21 @@ mod probe {
         graph_tokens: HashMap<u64, u64>,
         /// Evaluations the graph planned for a Page-world message (production plans none).
         page_graph_acts: usize,
+        /// Page-initiated windows the host let through (`Event::NewWindow`: user-initiated only).
+        new_windows: Vec<String>,
+        /// Every `Runtime.executionContextCreated` event, in order, with its session.
+        created_json: Vec<(Option<String>, String)>,
     }
 
     impl Probe {
         /// None (with a printed SKIPPED line) when the runtime is missing or this is session 0.
         fn start(pages: &[(&str, String)], sources: Vec<String>) -> Option<Probe> {
+            Probe::start_with(pages, sources, false)
+        }
+
+        /// `start`, with `new_windows` as the view's setup (the browser pane's is on): a page's
+        /// `window.open` then reaches the host's limiter, and an allowed one is `Event::NewWindow`.
+        fn start_with(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool) -> Option<Probe> {
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
                 return None;
@@ -2401,13 +2436,15 @@ mod probe {
                 graph: None,
                 graph_tokens: HashMap::new(),
                 page_graph_acts: 0,
+                new_windows: Vec::new(),
+                created_json: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
             Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
-            let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["*".into()], ..Default::default() };
+            let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, resource_filters: vec!["*".into()], ..Default::default() };
             let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 400, 300), setup, tx);
             p.env = Some(env);
             p.view = Some(view);
@@ -2442,17 +2479,29 @@ mod probe {
         }
 
         fn call_wait(&mut self, session: Option<&str>, method: &str, params: &Value) -> Result<String, String> {
+            self.call_wait_for(session, method, params, 10)
+        }
+
+        fn call_wait_for(&mut self, session: Option<&str>, method: &str, params: &Value, secs: u64) -> Result<String, String> {
             let t = self.call(session, method, params);
-            if !self.wait(10, |p| p.answers.contains_key(&t)) {
-                return Err(format!("{method}: no answer in 10 s"));
+            if !self.wait(secs, |p| p.answers.contains_key(&t)) {
+                return Err(format!("{method}: no answer in {secs} s"));
             }
             self.answers.remove(&t).unwrap()
         }
 
         /// `Runtime.evaluate` in a frame's Tandem world (None is the main frame).
         fn eval(&mut self, frame: Option<u64>, expr: &str) -> Result<Value, String> {
+            self.eval_for(frame, expr, 10)
+        }
+
+        /// `eval` with its own deadline: iTerm2's find engine highlights match by match, each walking
+        /// the segment's text nodes again (find-utils.js collectCurrentTextNodes), so its time grows
+        /// with the square of the matches (measured 2026-10-09 in Chromium: 500 in 2 s, 1000 in 6 s,
+        /// 6000 not done in 4 minutes). iTerm2 awaits the same command (`FM:230`).
+        fn eval_for(&mut self, frame: Option<u64>, expr: &str, secs: u64) -> Result<Value, String> {
             let (session, unique) = self.contexts.unique_for(frame).ok_or("no Tandem context for that frame")?;
-            let r = self.call_wait(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr))?;
+            let r = self.call_wait_for(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr), secs)?;
             browser_world::evaluate_result(&r)
         }
 
@@ -2528,6 +2577,7 @@ mod probe {
                     self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json });
                 }
                 Event::FrameCreated { frame, .. } => self.frames.push(frame),
+                Event::NewWindow { url, .. } => self.new_windows.push(url),
                 Event::FrameMessage { frame, json, source, .. } => {
                     self.graph_page(&json, Some(frame), &source);
                     self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json });
@@ -2603,6 +2653,7 @@ mod probe {
             let s = session.as_deref();
             match name {
                 "Runtime.executionContextCreated" => {
+                    self.created_json.push((session.clone(), json.to_string()));
                     self.contexts.created(s, json);
                 }
                 "Runtime.executionContextDestroyed" => self.contexts.destroyed(s, json),
@@ -2709,6 +2760,42 @@ mod probe {
     /// The text Task 5's `clear_script` will produce, written out here.
     fn clear_hover(secret: &str) -> String {
         format!("(function() {{window.iTermHoverLinkHandler?.clearHover('{secret}');}})();")
+    }
+
+    /// What the hostile page recorded (`__report()`, the JSON array of its `tag|self|args` records)
+    /// that shows the view secret reached it: any record holding the secret's value, or a message,
+    /// post or `sessionSecret` assignment the page received that names the field. Its `html`,
+    /// `attrs` and `globals` records hold the page's own source, and HOSTILE itself names
+    /// `sessionSecret` (its getter plant and its forgery), so the field name alone in those records
+    /// is the page reading itself (the 2026-10-09 run's page_cannot_hijack_copy_mode failure).
+    /// The offending record, cut to 300 characters, or None.
+    fn page_saw_secret(report: &str, secret: &str) -> Option<String> {
+        let decoded = serde_json::from_str::<String>(report).unwrap_or_else(|_| report.to_string());
+        let Ok(records) = serde_json::from_str::<Vec<String>>(&decoded) else {
+            return Some(format!("the report is not the page's record list: {}", decoded.chars().take(300).collect::<String>()));
+        };
+        let received = |r: &str| ["message|", "postMessage|", "sessionSecretSet|"].iter().any(|t| r.starts_with(t));
+        records.into_iter().find(|r| r.contains(secret) || (received(r) && r.contains("sessionSecret"))).map(|r| r.chars().take(300).collect())
+    }
+
+    /// The 2026-10-09 run: HOSTILE's own source names `sessionSecret` and its `html` recorder keeps
+    /// the page's outerHTML, so the old check (the field name anywhere in the report) failed on every
+    /// run whatever Tandem did. The check now tells the page reading itself from a leak. Pure.
+    #[test]
+    fn the_secret_check_tells_a_leak_from_the_page_itself() {
+        assert!(HOSTILE.contains("'sessionSecret'") && HOSTILE.contains("rec('html', null, [document.documentElement.outerHTML])"), "the page records its own source");
+        let own = serde_json::to_string(&vec![format!("html|null|{{0=<html>{HOSTILE}</html>;}}")]).unwrap();
+        assert!(own.contains("sessionSecret"), "the old check would fail here");
+        assert_eq!(page_saw_secret(&own, "0123abcd"), None, "the page's own source is not a leak");
+        let as_executed = serde_json::to_string(&own).unwrap();
+        assert_eq!(page_saw_secret(&as_executed, "0123abcd"), None, "ExecuteScript's quoted answer decodes first");
+        let msg = serde_json::to_string(&vec!["message|null|{0={sessionSecret=x;};}".to_string()]).unwrap();
+        assert!(page_saw_secret(&msg, "0123abcd").is_some(), "a received message naming the field");
+        let set = serde_json::to_string(&vec!["sessionSecretSet|null|{0=x;}".to_string()]).unwrap();
+        assert!(page_saw_secret(&set, "0123abcd").is_some(), "an assignment through the plant");
+        let value = serde_json::to_string(&vec!["attrs|null|{0=data-x=0123abcd;}".to_string()]).unwrap();
+        assert!(page_saw_secret(&value, "0123abcd").is_some(), "the value anywhere");
+        assert!(page_saw_secret("not json", "0123abcd").is_some(), "an unreadable report fails");
     }
 
     /// The 2026-10-07 desktop run (probe-fix-report.md): the hostile page's answers to the harness
@@ -2843,6 +2930,10 @@ mod probe {
         let r = p.page_eval(&format!("window.__forge4({as_js_string})")).expect("the forgery ran");
         let r: Value = serde_json::from_str::<String>(&r).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
         assert_eq!(r, json!({"api": "undefined", "global": "undefined"}), "the page world has no graph API");
+        // The same check from the child frame's page world (Task 3 review, minor 1).
+        let c = p.page_eval("window.frames[0].__types()").expect("the child's check ran");
+        let c: Value = serde_json::from_str::<String>(&c).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        assert_eq!(c, json!({"api": "undefined", "global": "undefined"}), "the child's page world has no graph API either");
         p.settle(1000);
         let forged = p.routed.iter().filter(|r| r.via == Via::Page && r.body.contains("EVAL_IN_FRAME")).count();
         assert!(forged > 0, "the page's forgeries reached the host (as the page's)");
@@ -2854,6 +2945,51 @@ mod probe {
         let ask = |target: &str| format!("new Promise(function (res) {{ window[Symbol.for('iTermGraphDiscovery')].evaluateInFrame({}, 'document.title', res, 5000); }})", crate::browser_js::js_string(target));
         assert_eq!(p.eval(Some(k), &ask(&main_id)), Ok(json!("hostile")), "the child's world asks the main frame");
         assert_eq!(p.eval(None, &ask(&child_id)), Ok(json!("child")), "the main world asks the child frame");
+        assert_eq!(p.page_graph_acts, 0);
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 3 (frame graph for find): a page with a `srcdoc` iframe registers both frames with the
+    /// production `Frames` within 5 s, and a rediscovery (`REQUEST_REPORT`) completes both phases:
+    /// `prepareForReport` then `report` in each frame, ending with the main frame's graph naming the
+    /// child by the id it registered. The forged-message half of the brief is
+    /// `probe_page_cannot_reach_evaluate_in_frame` (one test, one path). Needs the console session.
+    #[test]
+    #[ignore]
+    fn graph_reaches_a_srcdoc_iframe() {
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>top</title></head><body><iframe srcdoc=\"&lt;p&gt;x&lt;/p&gt;\"></iframe></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], client_sources(&secret, false)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.view().watch_frames();
+        p.load(PAGE);
+        assert!(p.wait(5, |p| p.graph_ids().len() == 2), "two frames registered within 5 s: {:?}", p.graph_ids());
+        let ids = p.graph_ids();
+        let main_id = ids.iter().find(|(f, _)| f.is_none()).expect("the main frame registered").1.clone();
+        let child = ids.iter().find(|(f, _)| f.is_some()).expect("the iframe registered").clone();
+        assert_eq!(p.graph.as_ref().unwrap().lookup(&child.1), Some(child.0), "the graph resolves the child's id to its frame");
+        assert_eq!(p.graph.as_ref().unwrap().lookup(&main_id), Some(None), "and the main frame's id to the main frame");
+        // Let the load's own discovery (the page's mutation observer) finish before this one starts.
+        p.settle(1000);
+        let ask = "new Promise(function (res) { window[Symbol.for('iTermGraphDiscovery')].rediscover(res, 5000); })";
+        let before = p.log.len();
+        let asked_before = p.clients(crate::browser_frames::HANDLER).into_iter().filter(|(_, b)| b["type"] == "REQUEST_REPORT").count();
+        let g = p.eval(None, ask).expect("the rediscovery completes");
+        assert_eq!(g["frameId"], json!(main_id), "{g}");
+        assert_eq!(g["children"].as_array().map(Vec::len), Some(1), "{g}");
+        assert_eq!(g["children"][0]["frameId"], json!(child.1), "the main frame's graph names the child by its registered id: {g}");
+        // Only this rediscovery's two phases: the lines that name its request id.
+        let asked: Vec<String> = p.clients(crate::browser_frames::HANDLER).into_iter().filter(|(_, b)| b["type"] == "REQUEST_REPORT").filter_map(|(_, b)| b["requestId"].as_str().map(str::to_string)).skip(asked_before).collect();
+        assert_eq!(asked.len(), 1, "exactly this call's report request: {asked:?}");
+        let rid = asked[0].clone();
+        let evals: Vec<&String> = p.log[before..].iter().filter(|l| l.starts_with("Runtime.evaluate") && l.contains(&rid)).collect();
+        let phase = |name: &str| evals.iter().filter(|l| l.contains(name)).count();
+        assert_eq!(phase("prepareForReport"), 2, "phase one reached both frames: {evals:?}");
+        assert_eq!(phase(".report("), 2, "phase two reached both frames: {evals:?}");
+        let last_prepare = evals.iter().rposition(|l| l.contains("prepareForReport")).unwrap();
+        let first_report = evals.iter().position(|l| l.contains(".report(")).unwrap();
+        assert!(last_prepare < first_report, "reports start after every frame prepared");
         assert_eq!(p.page_graph_acts, 0);
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
@@ -3111,6 +3247,629 @@ mod probe {
         let body = &p.clients(crate::browser_pointer::GATE_HANDLER)[0].1;
         assert_eq!(crate::browser_pointer::press_of(body), Some(crate::browser_pointer::Press::Down { button: 2, clicks: 1, mods: crate::pointer::Mods::default(), x: 20.0, y: 20.0 }));
         assert_eq!(p.page_eval("window.__saw.length"), Ok("0".into()), "the page never saw the taken press");
+        p.finish();
+    }
+
+    /// The Client sources of a find test: the always-present graph script (find-api talks to it) and
+    /// the find script itself, wrapped as the app registers it.
+    fn find_sources(secret: &str) -> Vec<String> {
+        let mut v = vec![wrapped(GRAPH)];
+        v.push(crate::browser_js::wrap(&crate::browser_find::user_script(secret).expect("the find script")));
+        v
+    }
+
+    fn find_start(p: &mut Probe, secret: &str, term: &str) -> Result<Value, String> {
+        find_command(p, secret, "startFind", json!({"searchTerm": term, "contextLength": 10, "searchMode": "caseInsensitive"}))
+    }
+
+    /// One find command as the app sends it (`COMMAND_JS` in the main frame's Tandem world).
+    fn find_command(p: &mut Probe, secret: &str, action: &str, extra: Value) -> Result<Value, String> {
+        find_command_for(p, secret, action, extra, 10)
+    }
+
+    /// `find_command` with its own deadline (`Probe::eval_for`: a page with hundreds of matches).
+    fn find_command_for(p: &mut Probe, secret: &str, action: &str, extra: Value, secs: u64) -> Result<Value, String> {
+        let cmd = crate::browser_find::command(action, extra, "main_probe", secret);
+        let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": cmd})).expect("the command");
+        p.eval_for(None, &expr, secs)
+    }
+
+    /// The cap probes' page sizes: enough matches that the cap cuts the identifiers (about 430 of
+    /// "word" with context 10, about 110 of the wide text with context 40, measured in Chromium), few
+    /// enough that iTerm2's quadratic highlighting ends well inside `CAP_FIND_SECS` (the 2026-10-09
+    /// run used 6000 and 3000: no answer in 10 s, and minutes in Chromium).
+    const CAP_WORDS: usize = 600;
+    const CAP_WIDE: usize = 600;
+    const CAP_FIND_SECS: u64 = 120;
+
+    /// How many navigation bubbles the main frame shows, read in the Tandem world.
+    fn bubbles(p: &mut Probe) -> usize {
+        p.eval(None, "document.querySelectorAll('[data-find-nav-bubble=\"true\"]').length").ok().and_then(|v| v.as_u64()).unwrap_or(0) as usize
+    }
+
+    /// Waits up to `secs` for the bubble count to satisfy `ok` (each read is an evaluation).
+    fn wait_bubbles(p: &mut Probe, secs: u64, ok: impl Fn(usize) -> bool) -> bool {
+        for _ in 0..secs * 4 {
+            if ok(bubbles(p)) {
+                return true;
+            }
+            p.settle(250);
+        }
+        ok(bubbles(p))
+    }
+
+    /// The cross-origin child of the find forgery probes: it posts what its parent tells it to as
+    /// find's own window messages, so the forgeries come from a frame of another origin.
+    const FORGING_CHILD: &str = "https://b.tandem-probe.invalid/child.html";
+    const FORGING_CHILD_HTML: &str = r#"<!doctype html><html><head><title>child</title></head><body><p>alpha in a child</p><script>
+window.addEventListener('message', function (e) {
+  const d = e.data;
+  if (!d || typeof d !== 'object') return;
+  if (d.forge === 'click') parent.postMessage({type: 'iTermGlobalClick', clickData: {offset: 0, textContent: 'alpha', coordinates: {x: d.x, y: 0}}}, '*');
+  if (d.forge === 'iframe') parent.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {coordinates: [0, 0]}, framePath: ['guess']}, '*');
+});
+</script></body></html>"#;
+
+    /// 13x3 Task 1 (B2): a long page's find result reaches the router whole in its count and within
+    /// the message limit, because the Client bridge cuts it. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_result_is_capped_in_the_bridge() {
+        let secret = hex32();
+        let body = "<p>".to_string() + &"word ".repeat(CAP_WORDS) + "</p>";
+        let sources = find_sources(&secret);
+        let size: usize = sources.iter().map(String::len).sum();
+        println!("find sources: {size} bytes (P15: one addScriptToEvaluateOnNewDocument per script)");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], sources) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "word", "contextLength": 10, "searchMode": "caseInsensitive"}), CAP_FIND_SECS).expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived: {:?}", p.log.last());
+        let routed: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Client && r.client().is_some_and(|(h, _)| h == crate::browser_find::HANDLER)).collect();
+        let big = routed.iter().find(|r| r.client().is_some_and(|(_, b)| b["action"] == "resultsUpdated")).expect("resultsUpdated");
+        assert!(big.body.len() <= crate::browser_js::CAP_BUDGET, "the message is (decoded, within the escaped weight budget, so within ViewGate::admit) {} bytes", big.body.len());
+        let (_, b) = big.client().unwrap();
+        assert_eq!(b["data"]["totalMatches"], CAP_WORDS, "the count is kept whole");
+        assert!(b["data"]["matchIdentifiers"].as_array().is_some_and(|a| !a.is_empty() && a.len() < CAP_WORDS), "the cap cut the identifiers: {:?}", b["data"]["matchIdentifiers"].as_array().map(Vec::len));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 4: the find engine highlights across frames. A page `<p>alpha beta Alpha</p>` with an
+    /// iframe `<p>alpha</p>`: "alpha" (case insensitive) reports 3 matches within 5 s and exactly one
+    /// current highlight; "Alpha" (case sensitive) reports 1 and one current highlight; `clearFind`
+    /// leaves no highlight. The highlight nodes are read in the page's world (they are page DOM, as
+    /// in iTerm2). Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_highlights_across_frames() {
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>t</title></head><body><p>alpha beta Alpha</p><iframe srcdoc=\"&lt;p&gt;alpha&lt;/p&gt;\"></iframe></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.view().watch_frames();
+        p.load(PAGE);
+        assert!(p.wait(5, |p| p.graph_ids().len() == 2), "both frames registered: {:?}", p.graph_ids());
+        let reports = |p: &Probe, total: u64| p.clients(crate::browser_find::HANDLER).iter().filter(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == total).count();
+        let count = |p: &mut Probe, sel: &str| p.page_eval(&format!("document.querySelectorAll('{sel}').length")).expect("a count");
+        find_command(&mut p, &secret, "startFind", json!({"searchTerm": "alpha", "contextLength": 0, "searchMode": "caseInsensitive"})).expect("startFind");
+        assert!(p.wait(5, |p| reports(p, 3) > 0), "three matches reported within 5 s: {:?}", p.clients(crate::browser_find::HANDLER));
+        assert_eq!(count(&mut p, ".iterm-find-highlight-current"), "1");
+        find_command(&mut p, &secret, "startFind", json!({"searchTerm": "Alpha", "contextLength": 0, "searchMode": "caseSensitive"})).expect("startFind");
+        assert!(p.wait(5, |p| reports(p, 1) > 0), "one match reported");
+        assert_eq!(count(&mut p, ".iterm-find-highlight-current"), "1");
+        find_command(&mut p, &secret, "clearFind", json!({})).expect("clearFind");
+        p.settle(500);
+        assert_eq!(count(&mut p, ".iterm-find-highlight"), "0", "clearFind leaves no highlight");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 5: Find URLs on a page. The temporary search for the default pattern (as
+    /// `browser_find::Model::temporary` sends it) is followed by the open shortcuts: a page with two
+    /// links as text holds two navigation bubbles within 5 s (`FN:192-218`, counted by their
+    /// attribute); with the pattern `(?i)https?://\S+`, which the page's RegExp rejects (M4), it
+    /// holds none. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_urls_show_bubbles() {
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>u</title></head><body><p>see https://a.example/x and https://a.example/y now</p></body></html>".to_string();
+        let default = "https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?";
+        let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        // The model's own commands, in order, each answered before the next.
+        let mut m = crate::browser_find::Model::new("probe", "probeglobal");
+        // Each run has its own instance id, so one run's reports are never read as the next's.
+        let run = |p: &mut Probe, pattern: &str, uuid: &str, m: &mut crate::browser_find::Model| {
+            let want = format!("main_{uuid}");
+            let cmds = m.temporary(pattern, &secret).expect("a pattern");
+            for c in cmds {
+                let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": c})).expect("the command");
+                p.eval(None, &expr).expect("the command runs");
+            }
+            assert!(p.wait(10, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["instanceId"] == want.as_str())), "the full result arrived");
+            for (_, b) in p.clients(crate::browser_find::HANDLER) {
+                m.on_message(&b, &secret);
+            }
+            m.shortcuts_after_complete(&secret)
+        };
+        let after = run(&mut p, default, "probe", &mut m).expect("something matched, so the shortcuts are owed");
+        for c in after {
+            let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": c})).expect("the command");
+            p.eval(None, &expr).expect("the shortcuts start");
+        }
+        assert!(wait_bubbles(&mut p, 5, |n| n == 2), "two navigation bubbles within 5 s: {}", bubbles(&mut p));
+        find_command(&mut p, &secret, "clearNavigationShortcuts", json!({})).expect("clear");
+        find_command(&mut p, &secret, "clearFind", json!({})).expect("clearFind");
+        p.settle(500);
+        // The inline flag: valid for 13s's validator, a SyntaxError for the page's RegExp, so literal text.
+        let mut m = crate::browser_find::Model::new("probe2", "probe2global");
+        let owed = run(&mut p, "(?i)https?://\\S+", "probe2", &mut m);
+        assert!(owed.is_none(), "nothing matched as literal text, so no shortcuts are owed");
+        // The state that differs if the page had run the pattern: its full result holds matches.
+        let want = "main_probe2";
+        let total = p.clients(crate::browser_find::HANDLER).iter().rev().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["instanceId"] == want).map(|(_, b)| b["data"]["totalMatches"].clone());
+        assert_eq!(total, Some(json!(0)), "the page found nothing for a pattern it cannot run");
+        // And ask for the open shortcuts anyway: over zero results the engine shows no bubble. (Had
+        // the pattern run, this is where the two links' bubbles would appear.)
+        for c in m.navigation_shortcuts("open", &secret) {
+            let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": c})).expect("the command");
+            p.eval(None, &expr).expect("the shortcuts command runs");
+        }
+        p.settle(1000);
+        assert_eq!(bubbles(&mut p), 0, "no bubbles for a pattern the page cannot run");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 1 review I3: Find Globally's context (40) on a CJK and accented page with
+    /// thousands of matches. The cap weighs the escaped DevTools event, so the result is admitted
+    /// (a UTF-8 weight let it reach about 100 KB raw and the gate dropped it whole). Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn find_result_is_capped_for_wide_text() {
+        let secret = hex32();
+        // Entities, so the page's bytes are ASCII whatever charset the response is read with.
+        let body = "<p>".to_string() + &"&#x691c;&#x7d22; &#xe9;&#x301;&#x8a9e;&#x1f600; ".repeat(CAP_WIDE) + "</p>";
+        let page = format!("<!doctype html><html><head><title>wide</title></head><body>{body}</body></html>");
+        let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "\u{691c}\u{7d22}", "contextLength": 40, "searchMode": "caseSensitive"}), CAP_FIND_SECS).expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == CAP_WIDE)), "the full result arrived, its count whole");
+        let (_, b) = p.clients(crate::browser_find::HANDLER).into_iter().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == CAP_WIDE).unwrap();
+        let ids = b["data"]["matchIdentifiers"].as_array().map_or(0, Vec::len);
+        let ctx = b["data"]["contexts"].as_array().map_or(0, Vec::len);
+        assert!(ids > 0 && ids < CAP_WIDE && ctx == ids, "a prefix of identifiers and contexts: {ids} and {ctx}");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 1 (B7, m13x2 B9 for the find scripts; made able to fail after the Task 1 review):
+    /// window messages a page forges or reads. The page and a cross-origin child forge
+    /// `iTermGlobalClick` and `iTermIframeClick`; neither carries the view secret. With new windows
+    /// on (as a browser pane has them) and navigation shortcuts on, a synthetic key at a bubble's
+    /// label is ignored by find-nav (R13x3-2: the bubbles stay and nothing opens); a real key, the
+    /// control, is user-initiated and does open a window through the host. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_messages_forged_by_a_page() {
+        let secret = hex32();
+        let body = format!("<p>https://x.invalid/one alpha</p><iframe src=\"{FORGING_CHILD}\"></iframe>");
+        let Some(mut p) = Probe::start_with(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret), true) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
+        find_start(&mut p, &secret, "https://x.invalid").expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
+        p.settle(1000);
+        let before = p.clients(crate::browser_find::HANDLER).len();
+        // Forged window messages, from the page itself and from the cross-origin child.
+        p.page_eval("window.postMessage({type: 'iTermGlobalClick', clickData: {offset: 1, textContent: 'alpha', coordinates: {x: 1, y: 1}}}, '*'); window.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {coordinates: [0, 0]}, framePath: ['guess']}, '*'); frames[0].postMessage({forge: 'click', x: 1}, '*'); frames[0].postMessage({forge: 'iframe'}, '*'); 1").expect("the forgery runs");
+        p.settle(500);
+        // Forged messages make the engine report nothing: its report count is unchanged.
+        assert_eq!(p.clients(crate::browser_find::HANDLER).len(), before, "a forged window message made the find engine report");
+        // Navigation shortcuts on, as the person's command turns them on.
+        find_command(&mut p, &secret, "startNavigationShortcuts", json!({"selectionAction": "open"})).expect("the shortcuts start");
+        assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show");
+        let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
+        let label = label.as_str().expect("a label").to_lowercase();
+        // Count the page-side window.open calls the Tandem world makes (find-engine opens a link with
+        // window.open): the host's limiter drops a non-user window silently, so `new_windows` alone
+        // could not tell an accepted synthetic key from an ignored one.
+        p.eval(None, "window.__opens = 0; (function () { const o = window.open; window.open = function () { window.__opens += 1; return o.apply(window, arguments); }; })(); 1").expect("the open counter");
+        // A synthetic key at the label: find-nav ignores it (R13x3-2), so the bubbles stay.
+        let keys = serde_json::to_string(&label.chars().map(String::from).collect::<Vec<_>>()).unwrap();
+        p.page_eval(&format!("for (const k of {keys}) {{ document.dispatchEvent(new KeyboardEvent('keydown', {{key: k, bubbles: true}})); }} 1")).expect("the synthetic keys run");
+        p.settle(1500);
+        assert!(bubbles(&mut p) > 0, "the synthetic key picked a bubble (find-nav took an untrusted key)");
+        // 1. The page recorded every message it could see: none holds the secret or its field name.
+        let report = p.page_eval("window.__report()").expect("the page report");
+        if let Some(leak) = page_saw_secret(&report, &secret) {
+            panic!("the view secret reached the page world: {leak}");
+        }
+        // 2. The synthetic key picked nothing (R13x3-2), so no window was asked for: no NewWindow. The
+        //    host's own user-gesture gate on a find-nav open is exercised only by the control below.
+        assert_eq!(p.eval(None, "window.__opens"), Ok(json!(0)), "find-nav took a synthetic key and tried to open a window");
+        assert!(p.new_windows.is_empty(), "a page-initiated window got through: {:?}", p.new_windows);
+        let after: Vec<String> = p.clients(crate::browser_find::HANDLER).iter().skip(before).filter_map(|(_, b)| b["action"].as_str().map(str::to_string)).collect();
+        assert!(after.iter().all(|a| a == "currentChanged" || a == "resultsUpdated"), "only find's own reports followed: {after:?}");
+        // 3. Control: the same pick by a real key is user-initiated, and that window does reach the host.
+        find_command(&mut p, &secret, "startNavigationShortcuts", json!({"selectionAction": "open"})).expect("the shortcuts start again");
+        assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show again");
+        let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
+        let label = label.as_str().expect("a label").to_lowercase();
+        p.view().focus();
+        for c in label.chars() {
+            let (key, upper) = (c.to_string(), c.to_ascii_uppercase());
+            for kind in ["keyDown", "keyUp"] {
+                let code = if c.is_ascii_digit() { format!("Digit{c}") } else { format!("Key{upper}") };
+                let mut k = json!({"type": kind, "key": key, "code": code, "windowsVirtualKeyCode": upper as u32});
+                if kind == "keyDown" {
+                    k["text"] = json!(key);
+                }
+                p.call_wait(None, "Input.dispatchKeyEvent", &k).expect("the real key");
+            }
+        }
+        assert!(p.wait(10, |p| !p.new_windows.is_empty()), "control: a real key's pick opens a window through the host");
+        assert!(p.eval(None, "window.__opens").ok().and_then(|v| v.as_i64()).is_some_and(|n| n >= 1), "control: the counter sees the real pick");
+        // 4. The engine still answers a real command after the forgeries.
+        find_command(&mut p, &secret, "findNext", json!({})).expect("findNext still runs");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 1 review C1 (R13x3-1): a cross-origin frame forges `iTermGlobalClick` with
+    /// coordinates that are script text. The main frame's find script stores it and, at the next
+    /// find, builds the script it has evaluated in that frame's Tandem world: the text must never
+    /// run there (no marker, no Client message, never in an evaluation). Control: a numeric forgery
+    /// does reach the frame as `handleClickInFrame(5, 0, ...)`. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_forged_click_cannot_reach_the_client() {
+        const PAYLOAD: &str = "0) || (globalThis.__pwned = 1, globalThis.__tandemClient && globalThis.__tandemClient(JSON.stringify({h: 'probePwned', b: {}})), 0) || (0";
+        let secret = hex32();
+        let body = format!("<p>alpha beta alpha</p><iframe src=\"{FORGING_CHILD}\"></iframe>");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
+        let k = p.contexts.frames()[0];
+        p.page_eval(&format!("frames[0].postMessage({{forge: 'click', x: {}}}, '*'); 1", crate::browser_js::js_string(PAYLOAD))).expect("the forgery runs");
+        p.settle(500);
+        find_start(&mut p, &secret, "alpha").expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
+        p.settle(1500);
+        assert!(p.clients("probePwned").is_empty(), "the forged text posted a Client message");
+        assert!(p.log.iter().filter(|l| l.starts_with("Runtime.evaluate")).all(|l| !l.contains("__pwned")), "the forged text was evaluated");
+        assert_eq!(p.eval(Some(k), "typeof globalThis.__pwned"), Ok(json!("undefined")), "the child's Tandem world has no marker");
+        assert_eq!(p.eval(None, "typeof globalThis.__pwned"), Ok(json!("undefined")), "the main Tandem world has no marker");
+        // Control: a numeric forgery is the path that is live, so the assertions above mean something.
+        p.page_eval("frames[0].postMessage({forge: 'click', x: 5}, '*'); 1").expect("the numeric forgery runs");
+        p.settle(500);
+        find_start(&mut p, &secret, "beta").expect("startFind runs again");
+        assert!(p.wait(20, |p| p.log.iter().any(|l| l.starts_with("Runtime.evaluate") && l.contains("handleClickInFrame(5, 0, "))), "control: a numeric click reaches the child's world");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    // --- 13x3 Task 9: copy mode on a real page ---
+
+    fn copy_sources(secret: &str) -> Vec<String> {
+        let mut v = vec![wrapped(GRAPH)];
+        v.push(crate::browser_js::wrap(&crate::browser_copymode::user_script(secret).expect("the copy mode script")));
+        v.push(crate::browser_js::wrap(&crate::browser_copymode::keys_script(secret).expect("the copy mode keys script")));
+        v
+    }
+
+    /// What `browser_copy_mode_set(pane, true)` does: the page's cursor on, then the key switch in
+    /// every live Tandem world (the main frame and each iframe's).
+    fn copy_on(p: &mut Probe, secret: &str) {
+        use crate::browser_copymode as cm;
+        p.eval(None, &cm::enable_js(secret)).expect("enable runs in the Tandem world");
+        copy_keys_switch(p, secret, true);
+    }
+
+    /// What `browser_world_update(pane, keys_on_js)` does: every live Tandem world gets the switch.
+    fn copy_keys_switch(p: &mut Probe, secret: &str, on: bool) {
+        let js = crate::browser_copymode::keys_on_js(secret, on);
+        p.eval(None, &js).expect("the switch in the main frame");
+        for f in p.contexts.frames() {
+            p.eval(Some(f), &js).expect("the switch in a frame");
+        }
+    }
+
+    /// What `browser_copy_mode_set(pane, false)` does.
+    fn copy_off(p: &mut Probe, secret: &str) {
+        p.eval(None, &crate::browser_copymode::disable_js(secret)).expect("disable runs");
+        copy_keys_switch(p, secret, false);
+    }
+
+    /// One real key from the browser (`Input.dispatchKeyEvent` is trusted).
+    fn real_key(p: &mut Probe, c: char) {
+        let (key, upper) = (c.to_string(), c.to_ascii_uppercase());
+        for kind in ["keyDown", "keyUp"] {
+            let mut k = json!({"type": kind, "key": key, "code": format!("Key{upper}"), "windowsVirtualKeyCode": upper as u32});
+            if kind == "keyDown" {
+                k["text"] = json!(key);
+            }
+            p.call_wait(None, "Input.dispatchKeyEvent", &k).expect("the real key");
+        }
+    }
+
+    /// A real key through the world's listener and the model, as `browser_copy_mode_key` and
+    /// `browser_copy_mode_apply` take it. The page-side steps run in the main frame's Tandem world;
+    /// Copy and Leave are returned for the test to finish, as the app finishes them natively.
+    fn copy_press(p: &mut Probe, m: &mut crate::browser_copymode::Model, secret: &str, c: char) -> crate::browser_copymode::Step {
+        use crate::browser_copymode as cm;
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(p, c);
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "key {c} reached the world's listener");
+        let (_, body) = p.clients(cm::KEY_HANDLER).pop().unwrap();
+        let (key, ctrl, alt) = cm::key_of(&body).expect("a typed key body");
+        let name = cm::key_name(&key, ctrl, alt).expect("a named key");
+        let step = m.key(&name, secret);
+        if let cm::Step::Script(js) = &step {
+            p.eval(None, js).expect("the step runs in the Tandem world");
+        }
+        step
+    }
+
+    fn cursor_display(p: &mut Probe) -> String {
+        p.eval(None, "(document.getElementById('iterm-copy-mode-cursor') || {style: {display: 'absent'}}).style.display").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    }
+
+    /// The copy mode cursor's display value when it is shown (`copy-mode-cursor.js` sets 'block').
+    /// Asserted by value: "none", "absent" and "" (a failed read) all fail.
+    const CURSOR_SHOWN: &str = "block";
+
+    fn selection(p: &mut Probe) -> String {
+        p.eval(None, "window.getSelection().toString()").ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+    }
+
+    /// 13x3 Task 9, Review Focus 8: copy mode follows iTerm2 on a page `<p>hello world</p>`. Enabling
+    /// shows the cursor (`CMC:37-48`); "v", "w", "w" select from "hello"; "y" is the Copy step (the
+    /// text the app's one reader, `browser_copy_selection`, puts on the clipboard) and leaving hides
+    /// the cursor; a second enable and "q" hides the cursor and keeps the selection (`CMI:75-88`).
+    /// The probe does not write the person's clipboard: the write is `set_clipboard_text`, pinned by
+    /// the app's source tests. Needs the console session.
+    #[test]
+    #[ignore]
+    fn browser_copy_mode_follows_iterm2() {
+        use crate::browser_copymode as cm;
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>c</title></head><body><p>hello world</p></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
+        p.load(PAGE);
+        p.view().focus();
+        assert_eq!(cursor_display(&mut p), "absent", "no cursor before copy mode");
+        copy_on(&mut p, &secret);
+        assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "the cursor is displayed");
+        let mut m = cm::Model::default();
+        for c in ['v', 'w', 'w'] {
+            copy_press(&mut p, &mut m, &secret, c);
+        }
+        let sel = selection(&mut p);
+        // As iTerm2 (macOS word movement): the first w stops at "world", the second finds no word
+        // after it and stays (the 2026-10-09 run selected "" before FORWARD_WORD_TYPED).
+        assert_eq!(sel, "hello ", "v w w selects from hello to the start of world");
+        assert!(m.selecting);
+        // y: the Copy step, reading what the app's reader reads, capped as it caps.
+        assert_eq!(copy_press(&mut p, &mut m, &secret, 'y'), cm::Step::Copy);
+        let copied = crate::browser_js::store_selection(&selection(&mut p));
+        assert!(copied.starts_with("hello"), "what the clipboard would hold: {copied:?}");
+        copy_off(&mut p, &secret);
+        assert_eq!(cursor_display(&mut p), "none", "the cursor is hidden after the copy");
+        // Second enable, "q": the cursor hides, the selection stays, selecting stops.
+        let keep = selection(&mut p);
+        copy_on(&mut p, &secret);
+        assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "the cursor is displayed again");
+        let mut m = cm::Model::default();
+        let step = copy_press(&mut p, &mut m, &secret, 'q');
+        assert_eq!(step, cm::Step::Leave { stop_selecting: true });
+        p.eval(None, cm::STOP_SELECTING_JS).expect("stop selecting");
+        copy_off(&mut p, &secret);
+        assert_eq!(cursor_display(&mut p), "none", "q hides the cursor");
+        assert_eq!(selection(&mut p), keep, "q keeps the selection");
+        // With the switch off a real key reaches the page, not copy mode.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(&mut p, 'j');
+        p.settle(500);
+        assert_eq!(p.clients(cm::KEY_HANDLER).len(), n, "the listener is silent while copy mode is off");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 final wave (Task 8 minor 1): one key is one line, and Esc leaves. On four one-line
+    /// paragraphs, a single trusted "j" moves the cursor to the next line and no further, and the listener reports it exactly once
+    /// (one new KEY_HANDLER message after a settle, so a doubled report fails). The gate's own
+    /// delivery path is the checklist's, not this probe's. A trusted Escape is reported by the listener as Leave. The gate's own path for Esc
+    /// (WebView2's AcceleratorKeyPressed) cannot be raised from DevTools: that half stays with
+    /// the person's check in the checklist. Needs the console session.
+    #[test]
+    #[ignore]
+    fn copy_mode_one_key_is_one_line_and_escape_leaves() {
+        use crate::browser_copymode as cm;
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>l</title></head><body><p>aaa</p><p>bbb</p><p>ccc</p><p>ddd</p></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
+        p.load(PAGE);
+        p.view().focus();
+        copy_on(&mut p, &secret);
+        // The index of the paragraph whose line the cursor is on (nearest top).
+        let line = |p: &mut Probe| -> i64 {
+            p.eval(None, "(function () { const t = parseFloat(document.getElementById('iterm-copy-mode-cursor').style.top) - window.scrollY; const ps = Array.from(document.querySelectorAll('p')); let best = 0; ps.forEach(function (e, i) { if (Math.abs(e.getBoundingClientRect().top - t) < Math.abs(ps[best].getBoundingClientRect().top - t)) { best = i; } }); return best; })()")
+                .ok()
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1)
+        };
+        let start = line(&mut p);
+        assert!(start >= 0 && start < 3, "the cursor starts on a line with a next one: {start}");
+        let mut m = cm::Model::default();
+        let before = p.clients(cm::KEY_HANDLER).len();
+        copy_press(&mut p, &mut m, &secret, 'j');
+        // A key the listener reported twice would add a second message; the probe applies one step
+        // per press, so the count (after a settle) is what shows a double delivery.
+        p.settle(300);
+        assert_eq!(p.clients(cm::KEY_HANDLER).len(), before + 1, "one trusted j is reported exactly once");
+        assert_eq!(line(&mut p), start + 1, "one j is one line");
+        copy_press(&mut p, &mut m, &secret, 'k');
+        assert_eq!(line(&mut p), start, "one k is one line back");
+        // Escape: the listener reports it and the model leaves.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        for kind in ["keyDown", "keyUp"] {
+            p.call_wait(None, "Input.dispatchKeyEvent", &json!({"type": kind, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})).expect("the real Escape");
+        }
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "Escape reached the world's listener");
+        let (_, body) = p.clients(cm::KEY_HANDLER).pop().unwrap();
+        let (key, ctrl, alt) = cm::key_of(&body).expect("a typed key body");
+        let name = cm::key_name(&key, ctrl, alt).expect("a named key");
+        assert_eq!(name, "Esc");
+        // Esc is Quit, as "q" is (iTermCopyModeKeyBindings.dict:30-31, `"\U001B" = ("Quit")`), and
+        // Quit stops selecting (iTermCopyModeHandler.m:437-440); ExitCopyMode (C-c, C-g) does not.
+        assert_eq!(cm::Model::default().key(&name, &secret), cm::Step::Leave { stop_selecting: true });
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 9 (R13x23-3, C1): a page cannot hijack copy mode. Its first script assigns
+    /// `window.iTerm2CopyMode` with a recorder for every method and a recording `selecting`, and
+    /// tries to flip every global that looks like a key switch; copy mode still drives the real
+    /// cursor, the recorder is never called, the page's recorders never hold the secret, and the
+    /// page's `window.iTerm2CopyMode` is its own. The same page with no copy mode script (a view
+    /// whose isolated world is unavailable gets none, `browser_user_scripts`): the recorder is never
+    /// called either. Needs the console session.
+    #[test]
+    #[ignore]
+    fn page_cannot_hijack_copy_mode() {
+        use crate::browser_copymode as cm;
+        const FIRST: &str = r#"<script>
+(function () {
+  window.__leaks = [];
+  const leak = function () { window.__leaks.push(Array.prototype.slice.call(arguments).join('|')); };
+  const names = ['enable', 'disable', 'moveBackwardWord', 'moveForwardWord', 'moveBackwardBigWord', 'moveForwardBigWord', 'moveLeft', 'moveRight', 'moveUp', 'moveDown', 'moveToStartOfNextLine', 'pageUp', 'pageDown', 'pageUpHalfScreen', 'pageDownHalfScreen', 'previousMark', 'nextMark', 'moveToStart', 'moveToEnd', 'moveToStartOfIndentation', 'moveToBottomOfVisibleArea', 'moveToMiddleOfVisibleArea', 'moveToTopOfVisibleArea', 'moveToStartOfLine', 'moveToEndOfLine', 'swap', 'scrollUp', 'scrollDown', 'scrollCursorIntoView', 'copySelection', 'getState'];
+  const mine = {};
+  for (const n of names) mine[n] = function (s) { leak(n, s); };
+  Object.defineProperty(mine, 'selecting', { get: function () { return false; }, set: function (v) { leak('selecting', v); } });
+  Object.defineProperty(mine, 'mode', { get: function () { return 0; }, set: function (v) { leak('mode', v); } });
+  window.iTerm2CopyMode = mine;
+  window.__mine = mine;
+  // Every global that looks like a key switch: replaced by a recorder, in the page's world.
+  for (const k of ['__tandemCopyModeKeys', 'tandemCopyModeKeys', 'copyModeKeys', 'iTerm2CopyModeKeys']) {
+    window[k] = function () { leak(k, Array.prototype.slice.call(arguments).join(',')); };
+  }
+  for (const k of Object.getOwnPropertyNames(window)) {
+    if (/key|copy|switch/i.test(k) && typeof window[k] === 'function' && k !== 'leak') {
+      try { const f = window[k]; window[k] = function () { leak(k, 'called'); return f.apply(this, arguments); }; } catch (e) {}
+    }
+  }
+})();
+</script>"#;
+        let page = format!("<!doctype html><html><head><title>h</title>{FIRST}{}</head><body><p>one two</p><p>three four</p></body></html>", HOSTILE.replace("{{GUESS}}", "g"));
+        // With the isolated world: the real cursor moves and copies.
+        {
+            let secret = hex32();
+            let Some(mut p) = Probe::start(&[(PAGE, page.clone())], copy_sources(&secret)) else { return };
+            p.load(PAGE);
+            p.view().focus();
+            copy_on(&mut p, &secret);
+            let top = |p: &mut Probe| p.eval(None, "parseFloat(document.getElementById('iterm-copy-mode-cursor').style.top) || 0").ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let before = top(&mut p);
+            let mut m = cm::Model::default();
+            copy_press(&mut p, &mut m, &secret, 'j');
+            assert!(top(&mut p) > before, "j moved the real cursor down: {before} -> {}", top(&mut p));
+            copy_press(&mut p, &mut m, &secret, 'v');
+            copy_press(&mut p, &mut m, &secret, 'l');
+            copy_press(&mut p, &mut m, &secret, 'l');
+            assert_eq!(copy_press(&mut p, &mut m, &secret, 'y'), cm::Step::Copy);
+            assert!(!selection(&mut p).is_empty(), "y has a selection to copy");
+            assert_eq!(p.page_eval("window.__leaks.length").as_deref(), Ok("0"), "the page's recorder was never called: {:?}", p.page_eval("window.__leaks.join(';')"));
+            assert_eq!(p.page_eval("String(window.iTerm2CopyMode === window.__mine)").as_deref(), Ok("\"true\""), "the page world holds the page's own object");
+            assert_eq!(p.eval(None, "String(window.iTerm2CopyMode === window.__mine)"), Ok(json!("false")), "the Tandem world holds Tandem's");
+            assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode.getState"), Ok(json!("function")));
+            let report = p.page_eval("window.__report()").expect("the page report");
+            if let Some(leak) = page_saw_secret(&report, &secret) {
+                panic!("the view secret reached the page world: {leak}");
+            }
+            assert_eq!(p.rejected_bindings, 0);
+            p.finish();
+        }
+        // No isolated world, so no copy mode script (and the menu item is off): nothing leaks.
+        {
+            let secret = hex32();
+            let Some(mut p) = Probe::start(&[(PAGE, page)], vec![wrapped(GRAPH)]) else { return };
+            p.load(PAGE);
+            p.view().focus();
+            assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode"), Ok(json!("undefined")), "no copy mode script in the Tandem world");
+            let _ = &secret;
+            // A state that differs if the page had started copy mode: the page's own keydown
+            // listener sees the key (copy mode would have swallowed it), no cursor exists and
+            // nothing is selected.
+            p.page_eval("window.__keys = 0; document.addEventListener('keydown', function () { window.__keys++; }); 1").expect("the page listens");
+            real_key(&mut p, 'j');
+            p.settle(500);
+            assert_eq!(p.page_eval("String(window.__keys)").as_deref(), Ok("\"1\""), "the key reached the page, so copy mode never started");
+            assert_eq!(cursor_display(&mut p), "absent", "no copy mode cursor was made");
+            assert_eq!(selection(&mut p), "", "nothing was selected");
+            assert!(p.clients(cm::KEY_HANDLER).is_empty(), "no key listener, so nothing is reported");
+            assert_eq!(p.page_eval("window.__leaks.length").as_deref(), Ok("0"), "the recorder was never called");
+            p.finish();
+        }
+    }
+
+    /// 13x3 Task 9 (I4): keys in iframes and untrusted ones. With focus inside a `srcdoc` iframe and
+    /// copy mode on, a trusted "j" is reported by the iframe's world (a frame message) and the
+    /// iframe page's own `keydown` listener sees nothing; a page's synthetic "y" in either frame
+    /// changes nothing; an iframe added after copy mode started captures keys too once the new
+    /// context is told, with the parameters `browser_copy_mode_new_context` composes (the shared
+    /// `new_context_params`; the app's wiring around it is source-pinned). Needs the console session.
+    #[test]
+    #[ignore]
+    fn copy_mode_keys_in_iframes_and_untrusted() {
+        use crate::browser_copymode as cm;
+        let secret = hex32();
+        const SRC: &str = "&lt;body tabindex=&quot;0&quot;&gt;&lt;p&gt;inside frame&lt;/p&gt;&lt;script&gt;window.__seen=0;document.addEventListener('keydown',function(){window.__seen++});window.addEventListener('keydown',function(){window.__seen++});&lt;/script&gt;&lt;/body&gt;";
+        let page = format!("<!doctype html><html><head><title>i</title></head><body><p>outer text</p><iframe id=\"f1\" srcdoc=\"{SRC}\"></iframe></body></html>");
+        let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
+        p.view().focus();
+        copy_on(&mut p, &secret);
+        p.page_eval("document.getElementById('f1').contentWindow.focus(); document.getElementById('f1').contentDocument.body.focus(); 1").expect("focus moves into the iframe");
+        // A trusted j with focus in the iframe: reported from the frame, the frame's page sees nothing.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(&mut p, 'j');
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "the iframe's world reported the key");
+        let (frame, body) = p.clients(cm::KEY_HANDLER).pop().unwrap();
+        assert!(frame.is_some(), "it came from the iframe's world");
+        assert_eq!(cm::key_of(&body).map(|k| k.0), Some("j".to_string()));
+        assert_eq!(p.page_eval("document.getElementById('f1').contentWindow.__seen").as_deref(), Ok("0"), "the iframe page's own listeners saw no key");
+        // A page's synthetic y, in the iframe and in the top frame: nothing is reported, copy mode stays on.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        p.page_eval("const e = () => new KeyboardEvent('keydown', {key: 'y', bubbles: true}); document.dispatchEvent(e()); document.getElementById('f1').contentDocument.dispatchEvent(e()); document.getElementById('f1').contentWindow.dispatchEvent(e()); window.dispatchEvent(e()); 1").expect("the synthetic keys run");
+        p.settle(500);
+        assert_eq!(p.clients(cm::KEY_HANDLER).len(), n, "synthetic keys are not reported");
+        assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "copy mode is still on");
+        assert_eq!(selection(&mut p), "", "nothing was copied or selected");
+        // An iframe added after copy mode started: its world takes keys once it is told.
+        let seen_before = p.created_json.len();
+        p.page_eval("const f = document.createElement('iframe'); f.id = 'f2'; f.srcdoc = '<body tabindex=0><p>late</p></body>'; document.body.appendChild(f); 1").expect("an iframe is added");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 2), "the new iframe has a Tandem world");
+        // The app's own composition (`browser_copy_mode_new_context` calls the same function) for each
+        // context the page made after copy mode started; the probe does not send keys_on_js itself.
+        let late: Vec<(Option<String>, serde_json::Value)> = p.created_json[seen_before..].iter().filter_map(|(s, j)| cm::new_context_params(&secret, j).map(|v| (s.clone(), v))).collect();
+        assert!(!late.is_empty(), "the late iframe's Tandem world was announced");
+        for (session, params) in &late {
+            p.call_wait(session.as_deref(), "Runtime.evaluate", params).expect("the new context is told");
+        }
+        p.page_eval("document.getElementById('f2').contentWindow.focus(); document.getElementById('f2').contentDocument.body.focus(); 1").expect("focus moves into the new iframe");
+        let n = p.clients(cm::KEY_HANDLER).len();
+        real_key(&mut p, 'j');
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "the late iframe reported the key");
+        assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
 }

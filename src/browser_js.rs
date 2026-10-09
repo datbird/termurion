@@ -32,6 +32,24 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "open-link-at-point.js" => include_str!("../resources/browser/open-link-at-point.js"),
         "select-text.js" => include_str!("../resources/browser/select-text.js"),
         "urls-at-point.js" => include_str!("../resources/browser/urls-at-point.js"),
+        "copy-mode.js" => include_str!("../resources/browser/copy-mode.js"),
+        "copy-mode-util.js" => include_str!("../resources/browser/copy-mode-util.js"),
+        "copy-mode-cursor.js" => include_str!("../resources/browser/copy-mode-cursor.js"),
+        "copy-mode-cursor-movement.js" => include_str!("../resources/browser/copy-mode-cursor-movement.js"),
+        "copy-mode-impl.js" => include_str!("../resources/browser/copy-mode-impl.js"),
+        "custom-find.js" => include_str!("../resources/browser/custom-find.js"),
+        "find-api.js" => include_str!("../resources/browser/find-api.js"),
+        "find-constants.js" => include_str!("../resources/browser/find-constants.js"),
+        "find-engine.js" => include_str!("../resources/browser/find-engine.js"),
+        "find-global-click.js" => include_str!("../resources/browser/find-global-click.js"),
+        "find-highlighter.js" => include_str!("../resources/browser/find-highlighter.js"),
+        "find-iframe-segment.js" => include_str!("../resources/browser/find-iframe-segment.js"),
+        "find-match.js" => include_str!("../resources/browser/find-match.js"),
+        "find-nav.js" => include_str!("../resources/browser/find-nav.js"),
+        "find-security.js" => include_str!("../resources/browser/find-security.js"),
+        "find-segment.js" => include_str!("../resources/browser/find-segment.js"),
+        "find-text-segment.js" => include_str!("../resources/browser/find-text-segment.js"),
+        "find-utils.js" => include_str!("../resources/browser/find-utils.js"),
         "graph-discovery-api.js" => include_str!("../resources/browser/graph-discovery-api.js"),
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
@@ -177,11 +195,26 @@ fn rewrite_bridge(code: &str) -> String {
 const PAGE_CAPTURE: &str = "const __tandemPost = (window.chrome && window.chrome.webview) ? window.chrome.webview.postMessage.bind(window.chrome.webview) : null;";
 const CLIENT_CAPTURE: &str = "const __tandemPost = globalThis.__tandemClient;";
 
+/// B2 (13x3): the find engine posts every match of a page in one message, which a long page pushes
+/// past the bridge's limits (the count would never update). For the find handler only, the Client
+/// bridge cuts each match text and context to 200 UTF-16 units (never inside a surrogate pair, a lone
+/// surrogate made well-formed, or serde_json would refuse the whole message) and keeps the first N
+/// entries of `matchIdentifiers` and `contexts`; `totalMatches` and `currentMatch` stay whole. N is
+/// found by weighing what `ViewGate::admit` weighs (13x3 Task 1 review I3): the payload as the escaped
+/// string inside the `Runtime.bindingCalled` event, a quote or backslash 2 bytes, a unit outside
+/// printable ASCII 6 (`\uXXXX`), the rest 1. That weight also bounds the decoded UTF-8 size. The
+/// copied find scripts are not edited.
+const CLIENT_CAP: &str = "function (name, body) { if (name !== 'iTermCustomFind' || !body || typeof body !== 'object' || !body.data || typeof body.data !== 'object') { return body; } const ids = Array.isArray(body.data.matchIdentifiers) ? body.data.matchIdentifiers : null; const ctx = Array.isArray(body.data.contexts) ? body.data.contexts : null; if (!ids && !ctx) { return body; } const cut = function (s) { if (typeof s !== 'string') { return s; } if (typeof s.toWellFormed === 'function') { s = s.toWellFormed(); } if (s.length <= 200) { return s; } const c = s.charCodeAt(199); return s.slice(0, c >= 0xD800 && c <= 0xDBFF ? 199 : 200); }; const build = function (n) { const data = Object.assign({}, body.data); if (ids) { data.matchIdentifiers = ids.slice(0, n).map(function (m) { return Object.assign({}, m, {text: cut(m && m.text)}); }); } if (ctx) { data.contexts = ctx.slice(0, n).map(function (c) { return Object.assign({}, c, {contextBefore: cut(c && c.contextBefore), contextAfter: cut(c && c.contextAfter)}); }); } return Object.assign({}, body, {data: data}); }; const weigh = function (o) { const s = JSON.stringify({h: name, b: o}); let w = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); w += (c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6; } return w; }; let n = Math.max(ids ? ids.length : 0, ctx ? ctx.length : 0); let out = build(n); let size = weigh(out); while (size > 60000 && n > 0) { const next = Math.floor(n * 60000 / size * 0.9); n = next < n ? next : n - 1; out = build(n); size = weigh(out); } return out; }";
+
+/// The find cap's budget, in the bytes the DevTools event spends on the payload (`CLIENT_CAP`): room
+/// under `MAX_MESSAGE + MAX_URL` (73728) for the event's own fields, and under `MAX_MESSAGE` decoded.
+pub const CAP_BUDGET: usize = 60000;
+
 /// The closure-local `webkit` object: a Proxy answering `{postMessage}` for any handler name.
-fn bridge_object(world: World) -> &'static str {
+fn bridge_object(world: World) -> String {
     match world {
-        World::Client => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };",
-        World::Page => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__tandemPost) { __tandemPost({h: name, b: body}); } } }; } }) };",
+        World::Client => "const __tandemCap = __CAP__;\nconst __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { body = __tandemCap(name, body); if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };".replace("__CAP__", CLIENT_CAP),
+        World::Page => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__tandemPost) { __tandemPost({h: name, b: body}); } } }; } }) };".to_string(),
     }
 }
 
@@ -204,7 +237,7 @@ pub fn wrap(script: &UserScript) -> String {
     if script.main_frame_only {
         s.push_str("if (window.top !== window) return;\n");
     }
-    s.push_str(bridge_object(script.world));
+    s.push_str(&bridge_object(script.world));
     s.push('\n');
     match script.inject {
         Inject::DocumentStart => {
@@ -695,6 +728,71 @@ mod tests {
         // Two wrapped scripts never collide when they share one global (each is its own function).
         assert_eq!(start.matches("(function () {").count(), 1);
         assert!(start.trim_end().ends_with("})();"));
+    }
+
+    /// B2: a find result is capped inside the Client bridge, before it is posted, so the copied find
+    /// engine stays unedited and a long page's result still fits `MAX_MESSAGE`.
+    #[test]
+    fn the_client_bridge_caps_find_results() {
+        let c = wrap(&script("window.webkit.messageHandlers.iTermCustomFind.postMessage({a: 1})", World::Client));
+        assert!(c.contains("const __tandemCap = function (name, body)"), "{c}");
+        assert!(c.contains("name !== 'iTermCustomFind'"), "only the find handler is capped: {c}");
+        assert!(c.contains("body = __tandemCap(name, body);"), "applied before the post: {c}");
+        assert!(c.contains(&format!("size > {CAP_BUDGET}")), "the byte budget: {c}");
+        assert!(!c.to_ascii_lowercase().contains("secret"), "the cap copies the body whole and names no secret");
+        // The page-world bridge (local pages) is not touched.
+        assert!(!wrap(&script("x", World::Page)).contains("__tandemCap"));
+        assert!(CAP_BUDGET + 4096 < crate::webhost::MAX_MESSAGE + crate::webhost::MAX_URL && CAP_BUDGET < crate::webhost::MAX_MESSAGE, "the budget leaves room for the event's own fields");
+        // A surrogate pair is never split at the cut, and a lone one is made well-formed.
+        assert!(c.contains("c >= 0xD800 && c <= 0xDBFF ? 199 : 200") && c.contains("s.toWellFormed()"), "{c}");
+    }
+
+    /// 13x3 Task 1 review I3: the find cap weighs what `ViewGate::admit` weighs, the escaped
+    /// `Runtime.bindingCalled` event, where the payload is a JSON string inside JSON: a quote or a
+    /// backslash costs 2 bytes and a UTF-16 unit outside printable ASCII 6 (`\uXXXX`). A payload of
+    /// CJK, accented or astral text right at the budget passes the gate and the decoded-size check.
+    #[test]
+    fn the_cap_budgets_the_escaped_event() {
+        assert!(CLIENT_CAP.contains("(c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6"), "the escaped weight per unit: {CLIENT_CAP}");
+        assert!(CLIENT_CAP.contains(&format!("> {CAP_BUDGET}")), "the budget: {CLIENT_CAP}");
+        assert!(!CLIENT_CAP.contains("TextEncoder"), "never the UTF-8 size");
+        fn weigh(s: &str) -> usize {
+            s.encode_utf16().map(|c| match c {
+                34 | 92 => 2,
+                32..=126 => 1,
+                _ => 6,
+            }).sum()
+        }
+        // The payload as the DevTools event writes it (the worst case: every unit outside ASCII escaped).
+        fn devtools_string(s: &str) -> String {
+            let mut o = String::from("\"");
+            for c in s.encode_utf16() {
+                match c {
+                    34 => o.push_str("\\\""),
+                    92 => o.push_str("\\\\"),
+                    32..=126 => o.push(c as u8 as char),
+                    _ => o.push_str(&format!("\\u{c:04x}")),
+                }
+            }
+            o.push('"');
+            o
+        }
+        let session = Some("0".repeat(64));
+        for unit in ["\u{691c}\u{7d22}\u{8a9e} ", "e\u{301}\u{e9}\u{e8}\"\\a", "\u{1f600}\u{4e2d}"] {
+            let payload = |n: usize| serde_json::json!({"h": "iTermCustomFind", "b": {"action": "resultsUpdated", "data": {"totalMatches": 6000, "contexts": [{"contextBefore": unit.repeat(n), "contextAfter": ""}]}}}).to_string();
+            let base = weigh(&payload(0));
+            let step = weigh(&payload(1)) - base;
+            let n = (CAP_BUDGET - base) / step;
+            let p = payload(n);
+            assert!(weigh(&p) <= CAP_BUDGET && weigh(&p) + step > CAP_BUDGET, "near the limit: {}", weigh(&p));
+            let event = format!("{{\"name\":\"{}\",\"payload\":{},\"executionContextId\":-2147483648}}", crate::browser_world::BINDING, devtools_string(&p));
+            assert_eq!(devtools_string(&p).len() - 2, weigh(&p), "the escaped payload is the weight");
+            let gate = crate::webhost::ViewGate::new();
+            let e = crate::webhost::Event::DevTools { view: 1, session: session.clone(), name: crate::webhost::BINDING_EVENT.into(), json: event };
+            assert!(gate.admit(&e).is_ok(), "a capped result is admitted ({unit:?}, {} bytes)", e.weight());
+            assert!(p.len() <= MAX_MESSAGE, "and its decoded size is within the message limit");
+            assert!(route(&p, World::Client, None, "o").is_some());
+        }
     }
 
     #[test]

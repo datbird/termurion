@@ -31,6 +31,12 @@ pub(super) enum PageNext {
 /// Text sent or pasted into a page is bounded (the page's own paste limit).
 const MAX_TEXT: usize = 1_048_576;
 
+/// The unique id of the Tandem world named by a `Runtime.executionContextCreated` event (never the
+/// numeric id, which is reused); None for any other context.
+pub(super) fn isolated_unique(json: &str) -> Option<String> {
+    crate::browser_world::isolated_unique(json)
+}
+
 impl App {
     /// The gate pane `pane`'s view asks.
     #[allow(dead_code)] // the pointer gate of Task 7 and 13y1's peers reach it too
@@ -54,6 +60,7 @@ impl App {
             bar: self.bars.get(&pane).and_then(|b| b.front()).cloned(),
             editing: bv.editing,
             workgroup_keys: self.workgroup_gate_keys(pane),
+            copy_mode: bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world),
         })
     }
 
@@ -66,9 +73,9 @@ impl App {
         }
     }
 
-    fn browser_gate_refresh(&mut self, pane: PaneId) {
+    pub(super) fn browser_gate_refresh(&mut self, pane: PaneId) {
         let Some(state) = self.browser_gate_state(pane) else { return };
-        let sig = (state.editing, state.bar.as_ref().map(|b| b.id.clone()), state.leader_on, state.workgroup_keys.iter().map(|k| k.serialized.clone()).collect());
+        let sig = (state.editing, state.bar.as_ref().map(|b| b.id.clone()), state.leader_on, state.copy_mode, state.workgroup_keys.iter().map(|k| k.serialized.clone()).collect());
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.gate_sig = Some(sig);
         // The closure holds copies only: it runs inside the COM handler, with no App borrow.
@@ -83,7 +90,7 @@ impl App {
             .filter(|(p, bv)| {
                 self.panes.contains_key(*p) && {
                     // A member's keys change with entering, peer swaps and edits (13y1 seam S3).
-                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, self.workgroup_gate_keys(**p).into_iter().map(|k| k.serialized).collect());
+                    let sig = (bv.editing, self.bars.get(*p).and_then(|b| b.front()).map(|b| b.id.clone()), self.leader_on, bv.copy_mode.is_some() && crate::browser_world::client_gate(&bv.client_world), self.workgroup_gate_keys(**p).into_iter().map(|k| k.serialized).collect());
                     bv.gate_sig.as_ref() != Some(&sig)
                 }
             })
@@ -136,6 +143,8 @@ impl App {
         match state.owner(vk, mods) {
             Owner::Bar(i) => self.browser_bar_press(pane, i, event_loop),
             Owner::Page | Owner::Address | Owner::Workgroup => {}
+            // Copy mode's keys (the gate took them, so the page never saw them).
+            Owner::CopyMode => self.browser_copy_mode_vk(pane, vk, mods),
             Owner::Binding | Owner::Number | Owner::Leader => {
                 let route = state.route(&chord);
                 // What the key types in the person's layout (Copy or Send's character, `BAP:171`).
@@ -294,7 +303,7 @@ impl App {
         }));
     }
 
-    fn browser_read_selection(&mut self, pane: PaneId, then: Box<dyn FnOnce(&mut App, PaneId, String)>) {
+    pub(super) fn browser_read_selection(&mut self, pane: PaneId, then: Box<dyn FnOnce(&mut App, PaneId, String)>) {
         self.browser_eval_in_frame(
             pane,
             None,
@@ -370,12 +379,9 @@ impl App {
         if !self.client_open(pane) {
             return;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
-        let c = &v["context"];
-        let named = c["name"].as_str() == Some(crate::browser_world::WORLD_NAME) && c.pointer("/auxData/type").and_then(|t| t.as_str()) == Some("isolated");
-        let Some(unique) = c["uniqueId"].as_str().filter(|_| named) else { return };
+        let Some(unique) = isolated_unique(json) else { return };
         let (keys, four, focus) = self.browser_pointer_table();
-        let params = crate::browser_world::evaluate_params(unique, &browser_pointer::gate_update(&keys, four, focus));
+        let params = crate::browser_world::evaluate_params(&unique, &browser_pointer::gate_update(&keys, four, focus));
         let session = session.map(str::to_string);
         self.devtools_send(pane, session.as_deref(), "Runtime.evaluate", &params, Box::new(|_, _, _| {}));
     }
@@ -595,8 +601,6 @@ impl App {
         }
     }
 
-    /// Key action 73 (copy mode): 13x3 Task 8 replaces this body.
-    pub(super) fn browser_copy_mode_commands(&mut self, _pane: PaneId, _keys: &str) {}
 }
 
 impl App {
@@ -738,7 +742,7 @@ mod tests {
         let send = &p[p.find("pub(super) fn browser_send_text").unwrap()..p.find("fn browser_insert_raw").unwrap()];
         assert!(send.contains("insert_script(text)") && send.contains("Bool(true)") && send.contains("browser_insert_raw"), "insert-text.js, then DevTools");
         assert!(!p.contains("send_to_focused") && !p.contains("execCommand"), "no pty, no execCommand");
-        let paste = &p[p.find("fn browser_paste_text").unwrap()..p.find("pub(super) fn browser_copy_mode_commands").unwrap()];
+        let paste = &p[p.find("fn browser_paste_text").unwrap()..p.find("// --- Pointer bindings (Task 7) ---").unwrap()];
         assert!(paste.contains("sanitize(&job, &prefs)") && paste.contains("flags &= !crate::paste::BRACKET"));
         let copy = &p[p.find("pub(super) fn browser_copy_selection").unwrap()..p.find("fn browser_read_selection").unwrap()];
         assert!(copy.contains("remember_paste") && copy.contains("set_clipboard_text"));
@@ -792,14 +796,14 @@ mod tests {
         // the tick opens through the funnel.
         let q = &p[at("fn browser_queue_open(")..at("pub(super) fn browser_next_tick")];
         assert!(q.contains("NavGate::Navigate(_) =>") && q.contains("NavGate::Open(_) => {}"), "a pointer click never opens a local file");
-        let tick = &p[at("pub(super) fn browser_next_tick")..at("/// Key action 73")];
+        let tick = &p[at("pub(super) fn browser_next_tick")..at("// --- Broadcast between browser panes (Task 8) ---")];
         assert!(tick.contains("self.browser_page_open(pane, &url, how, event_loop)") && tick.contains("self.browser_smart_action(") && tick.contains("run_pointer_action(&b, pane, (0, 0), event_loop)"));
         for banned in ["Command::new(", "execute_with(", "guard_open(", "shell_open(", "open_url_in_browser(", "navigate_tandem("] {
             assert!(!p.contains(banned), "{banned}");
         }
         // Jump to Selection scrolls the page (`BVC:295-311`); the find menu hands a browser pane to it.
         assert!(p.contains("window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight/2, behavior: 'smooth' })"));
-        assert!(include_str!("find_ui.rs").contains("(\"jumpToSelection:\", _) if self.is_browser_pane(id) => self.browser_jump_to_selection(id)"));
+        assert!(include_str!("browser_find_app.rs").contains("Route::Jump => self.browser_jump_to_selection(id)"));
         // The router acts on a press only through the one gate of Client handlers.
         let scripts = include_str!("browser_scripts_app.rs");
         let on = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];

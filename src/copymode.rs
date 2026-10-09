@@ -24,6 +24,147 @@ pub enum Outcome {
     Find,
 }
 
+/// iTerm2's `iTermCopyModeAction`: what a Copy Mode key does. The terminal and the browser
+/// pane share this one table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    None,
+    CopySelection,
+    ExitCopyMode,
+    MoveBackwardWord,
+    MoveBackwardBigWord,
+    MoveDown,
+    MoveForwardWord,
+    MoveForwardBigWord,
+    MoveLeft,
+    MoveRight,
+    MoveToBottomOfVisibleArea,
+    MoveToEnd,
+    MoveToEndOfLine,
+    MoveToMiddleOfVisibleArea,
+    MoveToStart,
+    MoveToStartOfIndentation,
+    MoveToStartOfLine,
+    /// "0": the line start, unless a count is being typed (the count rule runs first, `accrue`).
+    MoveToStartOfLineOrAccrue0,
+    /// "1" to "9": a count digit. `accrue` takes them before the table is read.
+    AccrueCount,
+    MoveToStartOfNextLine,
+    MoveToTopOfVisibleArea,
+    MoveUp,
+    NextMark,
+    PageDown,
+    PageUp,
+    PreviousMark,
+    Quit,
+    ShowFindPanel,
+    Swap,
+    ToggleBoxSelection,
+    ToggleCharacterSelection,
+    ToggleLineSelection,
+    PageDownHalfScreen,
+    PageUpHalfScreen,
+    ScrollUp,
+    ScrollDown,
+}
+
+impl Action {
+    /// iTerm2's name for the action.
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::None => "None",
+            Action::CopySelection => "CopySelection",
+            Action::ExitCopyMode => "ExitCopyMode",
+            Action::MoveBackwardWord => "MoveBackwardWord",
+            Action::MoveBackwardBigWord => "MoveBackwardBigWord",
+            Action::MoveDown => "MoveDown",
+            Action::MoveForwardWord => "MoveForwardWord",
+            Action::MoveForwardBigWord => "MoveForwardBigWord",
+            Action::MoveLeft => "MoveLeft",
+            Action::MoveRight => "MoveRight",
+            Action::MoveToBottomOfVisibleArea => "MoveToBottomOfVisibleArea",
+            Action::MoveToEnd => "MoveToEnd",
+            Action::MoveToEndOfLine => "MoveToEndOfLine",
+            Action::MoveToMiddleOfVisibleArea => "MoveToMiddleOfVisibleArea",
+            Action::MoveToStart => "MoveToStart",
+            Action::MoveToStartOfIndentation => "MoveToStartOfIndentation",
+            Action::MoveToStartOfLine => "MoveToStartOfLine",
+            Action::MoveToStartOfLineOrAccrue0 => "MoveToStartOfLineOrAccrue0",
+            Action::AccrueCount => "AccrueCount",
+            Action::MoveToStartOfNextLine => "MoveToStartOfNextLine",
+            Action::MoveToTopOfVisibleArea => "MoveToTopOfVisibleArea",
+            Action::MoveUp => "MoveUp",
+            Action::NextMark => "NextMark",
+            Action::PageDown => "PageDown",
+            Action::PageUp => "PageUp",
+            Action::PreviousMark => "PreviousMark",
+            Action::Quit => "Quit",
+            Action::ShowFindPanel => "ShowFindPanel",
+            Action::Swap => "Swap",
+            Action::ToggleBoxSelection => "ToggleBoxSelection",
+            Action::ToggleCharacterSelection => "ToggleCharacterSelection",
+            Action::ToggleLineSelection => "ToggleLineSelection",
+            Action::PageDownHalfScreen => "PageDownHalfScreen",
+            Action::PageUpHalfScreen => "PageUpHalfScreen",
+            Action::ScrollUp => "ScrollUp",
+            Action::ScrollDown => "ScrollDown",
+        }
+    }
+}
+
+/// The action a key is bound to (iTermCopyModeKeyBindings.dict); unbound keys are `None`.
+pub fn action_for(key: &str) -> Action {
+    match key {
+        "h" | "Left" => Action::MoveLeft,
+        "l" | "Right" => Action::MoveRight,
+        "k" | "Up" => Action::MoveUp,
+        "j" | "Down" => Action::MoveDown,
+        "w" => Action::MoveForwardWord,
+        "W" => Action::MoveForwardBigWord,
+        "b" => Action::MoveBackwardWord,
+        "B" => Action::MoveBackwardBigWord,
+        "0" => Action::MoveToStartOfLineOrAccrue0,
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => Action::AccrueCount,
+        "^" => Action::MoveToStartOfIndentation,
+        "$" => Action::MoveToEndOfLine,
+        "g" | "Home" => Action::MoveToStart,
+        "G" | "End" => Action::MoveToEnd,
+        "H" => Action::MoveToTopOfVisibleArea,
+        "M" => Action::MoveToMiddleOfVisibleArea,
+        "L" => Action::MoveToBottomOfVisibleArea,
+        "C-b" | "PageUp" => Action::PageUp,
+        "C-f" | "PageDown" => Action::PageDown,
+        "C-u" => Action::PageUpHalfScreen,
+        "C-d" => Action::PageDownHalfScreen,
+        "[" => Action::PreviousMark,
+        "]" => Action::NextMark,
+        "C-y" => Action::ScrollUp,
+        "C-e" => Action::ScrollDown,
+        // Ctrl+Space is the dict's `^\U0020`, ToggleCharacterSelection, not a box (13x3 final wave).
+        "v" | " " | "C-Space" => Action::ToggleCharacterSelection,
+        "V" => Action::ToggleLineSelection,
+        "C-v" => Action::ToggleBoxSelection,
+        "o" => Action::Swap,
+        "y" | "C-k" => Action::CopySelection,
+        "q" | "Esc" => Action::Quit,
+        "C-c" | "C-g" => Action::ExitCopyMode,
+        "/" => Action::ShowFindPanel,
+        _ => Action::None,
+    }
+}
+
+/// The count rule: 1-9 start a count, 0 continues one (else it is the line start), capped at
+/// 100000. True when the key was a count digit.
+pub fn accrue(count: &mut usize, key: &str) -> bool {
+    if let Some(d) = key.chars().next().filter(|_| key.len() == 1).and_then(|c| c.to_digit(10)) {
+        if d != 0 || *count > 0 {
+            *count = (*count * 10 + d as usize).min(100_000);
+            return true;
+        }
+    }
+    false
+}
+
 /// What the engine needs to know about the buffer. Rows count from the oldest line.
 pub struct Ctx<'a> {
     pub rows: usize,
@@ -69,12 +210,8 @@ impl State {
     /// One key: a character ("h", "$", " "), or a name ("Left", "Home", "PageUp", "Esc",
     /// "C-b" for Ctrl+B, "C-Space").
     pub fn key(&mut self, key: &str, ctx: &Ctx) -> Outcome {
-        // Counts: 1-9 start one, 0 continues one (else it is the line start).
-        if let Some(d) = key.chars().next().filter(|_| key.len() == 1).and_then(|c| c.to_digit(10)) {
-            if d != 0 || self.count > 0 {
-                self.count = (self.count * 10 + d as usize).min(100_000);
-                return Outcome::None;
-            }
+        if accrue(&mut self.count, key) {
+            return Outcome::None;
         }
         let n = std::mem::take(&mut self.count).max(1);
         let last_row = ctx.rows.saturating_sub(1);
@@ -84,60 +221,60 @@ impl State {
         let text_end = |row: usize| (ctx.line)(row).iter().rposition(|c| *c != ' ').unwrap_or(0);
         let text_start = |row: usize| (ctx.line)(row).iter().position(|c| *c != ' ').unwrap_or(0);
         let half = (ctx.view_rows / 2).max(1);
-        let to = match key {
-            "h" | "Left" => at(c.row, c.col.saturating_sub(n)),
-            "l" | "Right" => at(c.row, c.col + n),
-            "k" | "Up" => at(c.row.saturating_sub(n), c.col),
-            "j" | "Down" => at(c.row + n, c.col),
-            "w" | "W" | "b" | "B" => {
+        let to = match action_for(key) {
+            Action::MoveLeft => at(c.row, c.col.saturating_sub(n)),
+            Action::MoveRight => at(c.row, c.col + n),
+            Action::MoveUp => at(c.row.saturating_sub(n), c.col),
+            Action::MoveDown => at(c.row + n, c.col),
+            a @ (Action::MoveForwardWord | Action::MoveForwardBigWord | Action::MoveBackwardWord | Action::MoveBackwardBigWord) => {
                 let mut p = c;
                 for _ in 0..n {
-                    p = word_move(p, key, ctx);
+                    p = word_move(p, a, ctx);
                 }
                 p
             }
-            "0" => at(c.row, 0),
-            "^" => at(c.row, text_start(c.row)),
-            "$" => at(c.row, text_end(c.row)),
-            "g" | "Home" => at(0, 0),
-            "G" | "End" => at(last_row, 0),
-            "H" => at(ctx.view_top, c.col),
-            "M" => at(ctx.view_top + ctx.view_rows / 2, c.col),
-            "L" => at(ctx.view_top + ctx.view_rows.saturating_sub(1), c.col),
-            "C-b" | "PageUp" => at(c.row.saturating_sub(ctx.view_rows * n), c.col),
-            "C-f" | "PageDown" => at(c.row + ctx.view_rows * n, c.col),
-            "C-u" => at(c.row.saturating_sub(half * n), c.col),
-            "C-d" => at(c.row + half * n, c.col),
-            "[" => at(ctx.marks.iter().rev().find(|m| **m < c.row).copied().unwrap_or(c.row), 0),
-            "]" => at(ctx.marks.iter().find(|m| **m > c.row).copied().unwrap_or(c.row), 0),
-            "C-y" => return Outcome::Scroll(-(n as i32)),
-            "C-e" => return Outcome::Scroll(n as i32),
-            "v" | " " => {
+            Action::MoveToStartOfLine | Action::MoveToStartOfLineOrAccrue0 => at(c.row, 0),
+            Action::MoveToStartOfIndentation => at(c.row, text_start(c.row)),
+            Action::MoveToEndOfLine => at(c.row, text_end(c.row)),
+            Action::MoveToStart => at(0, 0),
+            Action::MoveToEnd => at(last_row, 0),
+            Action::MoveToTopOfVisibleArea => at(ctx.view_top, c.col),
+            Action::MoveToMiddleOfVisibleArea => at(ctx.view_top + ctx.view_rows / 2, c.col),
+            Action::MoveToBottomOfVisibleArea => at(ctx.view_top + ctx.view_rows.saturating_sub(1), c.col),
+            Action::PageUp => at(c.row.saturating_sub(ctx.view_rows * n), c.col),
+            Action::PageDown => at(c.row + ctx.view_rows * n, c.col),
+            Action::PageUpHalfScreen => at(c.row.saturating_sub(half * n), c.col),
+            Action::PageDownHalfScreen => at(c.row + half * n, c.col),
+            Action::PreviousMark => at(ctx.marks.iter().rev().find(|m| **m < c.row).copied().unwrap_or(c.row), 0),
+            Action::NextMark => at(ctx.marks.iter().find(|m| **m > c.row).copied().unwrap_or(c.row), 0),
+            Action::ScrollUp => return Outcome::Scroll(-(n as i32)),
+            Action::ScrollDown => return Outcome::Scroll(n as i32),
+            Action::ToggleCharacterSelection => {
                 self.toggle(Kind::Char);
                 return Outcome::Moved;
             }
-            "V" => {
+            Action::ToggleLineSelection => {
                 self.toggle(Kind::Line);
                 return Outcome::Moved;
             }
-            "C-v" | "C-Space" => {
+            Action::ToggleBoxSelection => {
                 self.toggle(Kind::Box);
                 return Outcome::Moved;
             }
-            "o" => {
+            Action::Swap => {
                 if let Some(a) = self.anchor.replace(self.cursor) {
                     self.cursor = a;
                 }
                 return Outcome::Moved;
             }
-            "y" | "C-k" => return Outcome::Copy,
-            "q" | "Esc" => {
+            Action::CopySelection => return Outcome::Copy,
+            Action::Quit => {
                 self.anchor = None;
                 return Outcome::Exit { clear: true };
             }
-            "C-c" | "C-g" => return Outcome::Exit { clear: false },
-            "/" => return Outcome::Find,
-            _ => return Outcome::None,
+            Action::ExitCopyMode => return Outcome::Exit { clear: false },
+            Action::ShowFindPanel => return Outcome::Find,
+            Action::None | Action::AccrueCount | Action::MoveToStartOfNextLine => return Outcome::None,
         };
         self.cursor = to;
         Outcome::Moved
@@ -200,8 +337,9 @@ fn class(c: char, big: bool) -> u8 {
 }
 
 /// One w, W, b, or B move, across rows (a row's end counts as blank).
-fn word_move(from: Pos, key: &str, ctx: &Ctx) -> Pos {
-    let big = key == "W" || key == "B";
+fn word_move(from: Pos, action: Action, ctx: &Ctx) -> Pos {
+    let big = matches!(action, Action::MoveForwardBigWord | Action::MoveBackwardBigWord);
+    let forward = matches!(action, Action::MoveForwardWord | Action::MoveForwardBigWord);
     let cols = ctx.cols.max(1);
     let total = ctx.rows * cols;
     if total == 0 {
@@ -214,7 +352,7 @@ fn word_move(from: Pos, key: &str, ctx: &Ctx) -> Pos {
         l.get(i % cols).copied().unwrap_or(' ')
     };
     let mut i = from.row * cols + from.col;
-    if key == "w" || key == "W" {
+    if forward {
         let start = class(ch(i), big);
         if start != 0 {
             while i + 1 < total && class(ch(i), big) == start {
@@ -328,6 +466,21 @@ mod tests {
         assert_eq!(s.cursor, at(1, 2));
     }
 
+    /// Ctrl+Space is iTerm2's ToggleCharacterSelection (the dict's `^\U0020`), not a box selection:
+    /// it selects by characters like `v`, and Ctrl+V stays the box.
+    #[test]
+    fn ctrl_space_selects_by_character() {
+        let b = buf(&["abc", "def"]);
+        let mut s = State::new(at(0, 0));
+        run(&mut s, &b, &["C-Space", "l"]);
+        assert_eq!(s.kind, Kind::Char);
+        assert!(s.anchor.is_some());
+        run(&mut s, &b, &["C-Space"]);
+        assert!(s.anchor.is_none(), "again turns selecting off");
+        run(&mut s, &b, &["C-v"]);
+        assert_eq!(s.kind, Kind::Box);
+    }
+
     #[test]
     fn v_shift_v_and_ctrl_v_select() {
         let b = buf(&["abc", "def"]);
@@ -383,5 +536,47 @@ mod tests {
         assert_eq!(parse_vim_keys("<Esc><Space><lt>").unwrap(), vec!["Esc", " ", "<"]);
         assert!(parse_vim_keys("<C-v").is_err());
         assert!(parse_vim_keys("a<b").is_err(), "a later > elsewhere does not close it");
+    }
+
+    #[test]
+    fn copy_actions_follow_iterm2() {
+        use Action::*;
+        let table: &[(&[&str], Action)] = &[
+            (&["h", "Left"], MoveLeft), (&["l", "Right"], MoveRight), (&["k", "Up"], MoveUp),
+            (&["j", "Down"], MoveDown), (&["w"], MoveForwardWord), (&["W"], MoveForwardBigWord),
+            (&["b"], MoveBackwardWord), (&["B"], MoveBackwardBigWord), (&["0"], MoveToStartOfLineOrAccrue0),
+            (&["1", "5", "9"], AccrueCount),
+            (&["^"], MoveToStartOfIndentation), (&["$"], MoveToEndOfLine),
+            (&["g", "Home"], MoveToStart), (&["G", "End"], MoveToEnd),
+            (&["H"], MoveToTopOfVisibleArea), (&["M"], MoveToMiddleOfVisibleArea),
+            (&["L"], MoveToBottomOfVisibleArea), (&["C-b", "PageUp"], PageUp),
+            (&["C-f", "PageDown"], PageDown), (&["C-u"], PageUpHalfScreen),
+            (&["C-d"], PageDownHalfScreen), (&["["], PreviousMark), (&["]"], NextMark),
+            (&["C-y"], ScrollUp), (&["C-e"], ScrollDown), (&["v", " ", "C-Space"], ToggleCharacterSelection),
+            (&["V"], ToggleLineSelection), (&["C-v"], ToggleBoxSelection), (&["o"], Swap),
+            (&["y", "C-k"], CopySelection), (&["q", "Esc"], Quit), (&["C-c", "C-g"], ExitCopyMode),
+            (&["/"], ShowFindPanel), (&["x"], None),
+        ];
+        for (keys, want) in table {
+            for k in *keys {
+                assert_eq!(action_for(k), *want, "key {k}");
+            }
+        }
+        assert_eq!(Action::MoveToStartOfIndentation.name(), "MoveToStartOfIndentation");
+        assert_eq!(Action::ScrollUp.name(), "ScrollUp");
+        assert_eq!(Action::MoveToTopOfVisibleArea.name(), "MoveToTopOfVisibleArea");
+        assert_eq!(Action::MoveToStartOfNextLine.name(), "MoveToStartOfNextLine");
+        // The dict's names for "0" and the digits (the count rule reads them first).
+        assert_eq!(action_for("0").name(), "MoveToStartOfLineOrAccrue0");
+        assert_eq!(action_for("7").name(), "AccrueCount");
+        let mut n = 0;
+        assert!(accrue(&mut n, "3"));
+        assert_eq!(n, 3);
+        assert!(accrue(&mut n, "0"));
+        assert_eq!(n, 30);
+        assert!(!accrue(&mut 0, "0"));
+        let mut n = 99_999;
+        accrue(&mut n, "9");
+        assert_eq!(n, 100_000);
     }
 }

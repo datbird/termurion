@@ -39,6 +39,11 @@ impl App {
             return false;
         }
         let Some(id) = self.focused_id() else { return true };
+        if self.is_browser_pane(id) {
+            // Copy mode of a web page (`PS:1569-1583`); the terminal's `copy_modes` stays terminal-only.
+            self.browser_copy_mode_toggle(id);
+            return true;
+        }
         if self.copy_modes.remove(&id).is_none() {
             self.enter_copy_mode(id);
         }
@@ -106,6 +111,9 @@ impl App {
     }
 
     pub(super) fn copy_mode_commands_in(&mut self, id: PaneId, keys: &str) {
+        if self.is_browser_pane(id) {
+            return self.browser_copy_mode_commands(id, keys);
+        }
         let keys = match copymode::parse_vim_keys(keys) {
             Ok(k) => k,
             Err(e) => return self.banners.set("action", e),

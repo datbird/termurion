@@ -846,7 +846,7 @@ mod tests {
         assert!(input.contains("workgroup_keys: self.workgroup_gate_keys(pane)"));
         assert!(input.contains("Some(Owner::Workgroup) if taken") && input.contains("a.peer_shortcut(pane, &stroke) || a.workgroup_toolbar_shortcut(pane, &stroke)"));
         let keys = include_str!("../browser_keys.rs");
-        assert!(keys.contains("key_owner(bar, address_accelerator(vk, mods), mapped, workgroup)"));
+        assert!(keys.contains("key_owner(bar, address, workgroup, copy, mapped)"));
         // S4, narrowed to iTerm2 (merge review I1, MovePaneController.m:71-133, :315): a move, swap or
         // break-out is refused only for Lock Layout and the session's own lock (and Tandem's recording
         // and tmux rules). A member in a layout moves like any pane; the one member guard is for a pane

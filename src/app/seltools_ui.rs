@@ -102,7 +102,7 @@ impl App {
             }
             "toggleLockSplitPaneWidth:" => self.width_lock_checked(),
             "toggleFullScreenTabBar:" => self.globals.bool("ShowFullScreenTabBar"),
-            "toggleCopyMode:" => self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id)),
+            "toggleCopyMode:" => self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id) || self.is_browser_copy_mode(id)),
             "toggleShowTimestamps:" => self.focused_id().is_some_and(|id| self.stamps_on(id)),
             "editSessionNote:" => self.focused_id().is_some_and(|id| self.note_win.as_ref().is_some_and(|(_, p, n)| *p == id && n.is_none())),
             "toggleCursorGuide:" => self.focused_id().is_some_and(|id| self.guide_on(id)),

@@ -245,7 +245,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/browser_app.rs", 3),
     ("app/browser_db_app.rs", 1),
     ("app/browser_overlay_app.rs", 1),
-    ("app/browser_scripts_app.rs", 4),
+    ("app/browser_scripts_app.rs", 5),
     ("app/chat_window_app.rs", 2),
     ("app/clipboard_ui.rs", 1),
     ("app/hotkey_ui.rs", 2),

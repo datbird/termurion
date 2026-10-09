@@ -640,6 +640,10 @@ impl App {
             let Some(item) = menus::items().iter().find(|i| i.selector == *selector) else { continue };
             if let Some(c) = bar.checks.get(item.label()) {
                 c.set_checked(self.is_checked(selector));
+                // A web page's copy mode needs the isolated world (13x3 Task 8).
+                if *selector == "toggleCopyMode:" {
+                    c.set_enabled(self.copy_mode_offered());
+                }
             }
         }
         for item in menus::shown_items().filter(|i| matches!(i.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:")) {
