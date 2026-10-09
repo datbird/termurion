@@ -1764,6 +1764,31 @@ mod tests {
         assert!(close > t.find("crate::dlog::stop_at_exit()").unwrap());
     }
 
+    /// 13x3 Task 1 review I2: the find probes can fail. The forged-message probe runs with new
+    /// windows on, turns navigation shortcuts on and keys at them, and passes a fixed wrong guess; the
+    /// forged-click probe posts from a cross-origin frame and checks the Tandem world for its marker.
+    #[test]
+    fn the_find_probes_can_fail() {
+        let this = include_str!("webhost_win.rs");
+        let body = |name: &str| {
+            let at = this.find(&format!("fn {name}()")).unwrap_or_else(|| panic!("the probe {name}"));
+            let rest = &this[at..];
+            rest[..rest.find("\n    }\n").unwrap()].to_string()
+        };
+        let f = body("find_messages_forged_by_a_page");
+        assert!(f.contains("Probe::start_with(") && f.contains("true)"), "new windows on");
+        assert!(f.contains("\"startNavigationShortcuts\"") && f.contains("\"selectionAction\": \"open\""), "shortcuts started");
+        assert!(f.contains("Input.dispatchKeyEvent"), "a real key is the control that opens a window");
+        assert!(f.contains("hostile_page(&body, \"g\")") && !f.contains("hostile_page(&body, &secret)"), "a fixed wrong guess");
+        let c = body("find_forged_click_cannot_reach_the_client");
+        assert!(c.contains("FORGING_CHILD") && c.contains("__pwned"), "from the child frame, with a marker");
+        assert!(this.contains("const FORGING_CHILD: &str = \"https://b.tandem-probe.invalid/") && this.contains("const PAGE: &str = \"https://probe.tandem-probe.invalid/\""), "the child is of another origin");
+        assert!(f.contains("FORGING_CHILD") && f.contains("frames[0].postMessage({forge: 'click'"), "the B7 forgeries come from the child too");
+        assert!(c.contains("p.eval(Some(k)") && c.contains("probePwned"), "the marker and the Client message are checked");
+        let s = include_str!("../scripts/probe-desktop.ps1");
+        assert!(s.contains("webhost_win::probe::"), "the default filter names the probes");
+    }
+
     #[test]
     fn view_setup_defaults_are_the_closed_ones() {
         let s = ViewSetup::default();
@@ -2351,6 +2376,12 @@ mod probe {
     impl Probe {
         /// None (with a printed SKIPPED line) when the runtime is missing or this is session 0.
         fn start(pages: &[(&str, String)], sources: Vec<String>) -> Option<Probe> {
+            Probe::start_with(pages, sources, false)
+        }
+
+        /// `start`, with `new_windows` as the view's setup (the browser pane's is on): a page's
+        /// `window.open` then reaches the host's limiter, and an allowed one is `Event::NewWindow`.
+        fn start_with(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool) -> Option<Probe> {
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
                 return None;
@@ -2410,7 +2441,7 @@ mod probe {
             Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
-            let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["*".into()], ..Default::default() };
+            let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, resource_filters: vec!["*".into()], ..Default::default() };
             let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 400, 300), setup, tx);
             p.env = Some(env);
             p.view = Some(view);
@@ -3127,10 +3158,43 @@ mod probe {
     }
 
     fn find_start(p: &mut Probe, secret: &str, term: &str) -> Result<Value, String> {
-        let cmd = crate::browser_find::command("startFind", json!({"searchTerm": term, "contextLength": 10, "searchMode": "caseInsensitive"}), "main_probe", secret);
+        find_command(p, secret, "startFind", json!({"searchTerm": term, "contextLength": 10, "searchMode": "caseInsensitive"}))
+    }
+
+    /// One find command as the app sends it (`COMMAND_JS` in the main frame's Tandem world).
+    fn find_command(p: &mut Probe, secret: &str, action: &str, extra: Value) -> Result<Value, String> {
+        let cmd = crate::browser_find::command(action, extra, "main_probe", secret);
         let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": cmd})).expect("the command");
         p.eval(None, &expr)
     }
+
+    /// How many navigation bubbles the main frame shows, read in the Tandem world.
+    fn bubbles(p: &mut Probe) -> usize {
+        p.eval(None, "document.querySelectorAll('[data-find-nav-bubble=\"true\"]').length").ok().and_then(|v| v.as_u64()).unwrap_or(0) as usize
+    }
+
+    /// Waits up to `secs` for the bubble count to satisfy `ok` (each read is an evaluation).
+    fn wait_bubbles(p: &mut Probe, secs: u64, ok: impl Fn(usize) -> bool) -> bool {
+        for _ in 0..secs * 4 {
+            if ok(bubbles(p)) {
+                return true;
+            }
+            p.settle(250);
+        }
+        ok(bubbles(p))
+    }
+
+    /// The cross-origin child of the find forgery probes: it posts what its parent tells it to as
+    /// find's own window messages, so the forgeries come from a frame of another origin.
+    const FORGING_CHILD: &str = "https://b.tandem-probe.invalid/child.html";
+    const FORGING_CHILD_HTML: &str = r#"<!doctype html><html><head><title>child</title></head><body><p>alpha in a child</p><script>
+window.addEventListener('message', function (e) {
+  const d = e.data;
+  if (!d || typeof d !== 'object') return;
+  if (d.forge === 'click') parent.postMessage({type: 'iTermGlobalClick', clickData: {offset: 0, textContent: 'alpha', coordinates: {x: d.x, y: 0}}}, '*');
+  if (d.forge === 'iframe') parent.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {coordinates: [0, 0]}, framePath: ['guess']}, '*');
+});
+</script></body></html>"#;
 
     /// 13x3 Task 1 (B2): a long page's find result reaches the router whole in its count and within
     /// the message limit, because the Client bridge cuts it. Needs the console session.
@@ -3157,38 +3221,97 @@ mod probe {
         p.finish();
     }
 
-    /// 13x3 Task 1 (B7, m13x2 B9 for the find scripts): window messages a page forges or reads. The
-    /// page sees the find scripts' `postMessage` traffic and can forge `iTermGlobalClick` and
-    /// `iTermIframeClick`; neither carries the view secret, and a forged one only moves where the
-    /// next match starts. Synthetic keys at `find-nav`'s listener open nothing: a page-initiated
-    /// window is host-gated to a person's action. Needs the console session.
+    /// 13x3 Task 1 (B7, m13x2 B9 for the find scripts; made able to fail after the Task 1 review):
+    /// window messages a page forges or reads. The page and a cross-origin child forge
+    /// `iTermGlobalClick` and `iTermIframeClick`; neither carries the view secret. With new windows
+    /// on (as a browser pane has them) and navigation shortcuts on, a synthetic key at a bubble's
+    /// label reaches find-nav (the bubbles go) and opens nothing, because the host lets only a
+    /// user-initiated window through; a real key, the control, does open one. Needs the console session.
     #[test]
     #[ignore]
     fn find_messages_forged_by_a_page() {
         let secret = hex32();
-        let child = "&lt;p&gt;alpha in a child&lt;/p&gt;&lt;a href=&quot;https://z.invalid/&quot;&gt;alpha link&lt;/a&gt;";
-        let body = format!("<p>alpha beta alpha</p><a href=\"https://x.invalid/\">alpha link</a><iframe srcdoc=\"{child}\"></iframe>");
-        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, &secret))], find_sources(&secret)) else { return };
+        let body = format!("<p>https://x.invalid/one alpha</p><iframe src=\"{FORGING_CHILD}\"></iframe>");
+        let Some(mut p) = Probe::start_with(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret), true) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        find_start(&mut p, &secret, "alpha").expect("startFind runs in the Tandem world");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
+        find_start(&mut p, &secret, "https://x.invalid").expect("startFind runs in the Tandem world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
         let before = p.clients(crate::browser_find::HANDLER).len();
-        // Forged window messages, in the main frame and in the child frame, then synthetic keys.
-        p.page_eval("window.postMessage({type: 'iTermGlobalClick', clickData: {offset: 1, textContent: 'alpha', coordinates: {x: 1, y: 1}}}, '*'); window.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {x: 1, y: 1}, framePath: ['guess']}, '*'); 1").expect("the forgery runs");
-        p.page_eval("for (const k of ['a', 'b', 'Enter', 'Escape']) { document.dispatchEvent(new KeyboardEvent('keydown', {key: k, bubbles: true})); } window.dispatchEvent(new KeyboardEvent('keydown', {key: 'a'})); 1").expect("the synthetic keys run");
+        // Forged window messages, from the page itself and from the cross-origin child.
+        p.page_eval("window.postMessage({type: 'iTermGlobalClick', clickData: {offset: 1, textContent: 'alpha', coordinates: {x: 1, y: 1}}}, '*'); window.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {coordinates: [0, 0]}, framePath: ['guess']}, '*'); frames[0].postMessage({forge: 'click', x: 1}, '*'); frames[0].postMessage({forge: 'iframe'}, '*'); 1").expect("the forgery runs");
+        p.settle(500);
+        // Navigation shortcuts on, as the person's command turns them on.
+        find_command(&mut p, &secret, "startNavigationShortcuts", json!({"selectionAction": "open"})).expect("the shortcuts start");
+        assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show");
+        let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
+        let label = label.as_str().expect("a label").to_lowercase();
+        // A synthetic key at the label: it reaches find-nav, which picks the bubble and clears them all.
+        let keys = serde_json::to_string(&label.chars().map(String::from).collect::<Vec<_>>()).unwrap();
+        p.page_eval(&format!("for (const k of {keys}) {{ document.dispatchEvent(new KeyboardEvent('keydown', {{key: k, bubbles: true}})); }} 1")).expect("the synthetic keys run");
+        assert!(wait_bubbles(&mut p, 5, |n| n == 0), "the synthetic key reached find-nav (it picked a bubble)");
         p.settle(1500);
         // 1. The page recorded every message it could see: none holds the secret or its field name.
         let report = p.page_eval("window.__report()").expect("the page report");
         assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
-        // 2. Nothing a page forged made a window open or a Client message other than find's own.
+        // 2. The pick asked for a window, and the host let none through: no NewWindow.
         assert!(p.new_windows.is_empty(), "a page-initiated window got through: {:?}", p.new_windows);
         let after: Vec<String> = p.clients(crate::browser_find::HANDLER).iter().skip(before).filter_map(|(_, b)| b["action"].as_str().map(str::to_string)).collect();
         assert!(after.iter().all(|a| a == "currentChanged" || a == "resultsUpdated"), "only find's own reports followed: {after:?}");
-        // 3. The engine still answers a real command after the forgeries.
-        let cmd = crate::browser_find::command("findNext", json!({}), "main_probe", &secret);
-        let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": cmd})).unwrap();
-        p.eval(None, &expr).expect("findNext still runs");
+        // 3. Control: the same pick by a real key is user-initiated, and that window does reach the host.
+        find_command(&mut p, &secret, "startNavigationShortcuts", json!({"selectionAction": "open"})).expect("the shortcuts start again");
+        assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show again");
+        let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
+        let label = label.as_str().expect("a label").to_lowercase();
+        p.view().focus();
+        for c in label.chars() {
+            let (key, upper) = (c.to_string(), c.to_ascii_uppercase());
+            for kind in ["keyDown", "keyUp"] {
+                let mut k = json!({"type": kind, "key": key, "code": format!("Key{upper}"), "windowsVirtualKeyCode": upper as u32});
+                if kind == "keyDown" {
+                    k["text"] = json!(key);
+                }
+                p.call_wait(None, "Input.dispatchKeyEvent", &k).expect("the real key");
+            }
+        }
+        assert!(p.wait(10, |p| !p.new_windows.is_empty()), "control: a real key's pick opens a window through the host");
+        // 4. The engine still answers a real command after the forgeries.
+        find_command(&mut p, &secret, "findNext", json!({})).expect("findNext still runs");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// 13x3 Task 1 review C1 (R13x3-1): a cross-origin frame forges `iTermGlobalClick` with
+    /// coordinates that are script text. The main frame's find script stores it and, at the next
+    /// find, builds the script it has evaluated in that frame's Tandem world: the text must never
+    /// run there (no marker, no Client message, never in an evaluation). Control: a numeric forgery
+    /// does reach the frame as `handleClickInFrame(5, 0, ...)`. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_forged_click_cannot_reach_the_client() {
+        const PAYLOAD: &str = "0) || (globalThis.__pwned = 1, globalThis.__tandemClient && globalThis.__tandemClient(JSON.stringify({h: 'probePwned', b: {}})), 0) || (0";
+        let secret = hex32();
+        let body = format!("<p>alpha beta alpha</p><iframe src=\"{FORGING_CHILD}\"></iframe>");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
+        let k = p.contexts.frames()[0];
+        p.page_eval(&format!("frames[0].postMessage({{forge: 'click', x: {}}}, '*'); 1", crate::browser_js::js_string(PAYLOAD))).expect("the forgery runs");
+        p.settle(500);
+        find_start(&mut p, &secret, "alpha").expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
+        p.settle(1500);
+        assert!(p.clients("probePwned").is_empty(), "the forged text posted a Client message");
+        assert!(p.log.iter().filter(|l| l.starts_with("Runtime.evaluate")).all(|l| !l.contains("__pwned")), "the forged text was evaluated");
+        assert_eq!(p.eval(Some(k), "typeof globalThis.__pwned"), Ok(json!("undefined")), "the child's Tandem world has no marker");
+        assert_eq!(p.eval(None, "typeof globalThis.__pwned"), Ok(json!("undefined")), "the main Tandem world has no marker");
+        // Control: a numeric forgery is the path that is live, so the assertions above mean something.
+        p.page_eval("frames[0].postMessage({forge: 'click', x: 5}, '*'); 1").expect("the numeric forgery runs");
+        p.settle(500);
+        find_start(&mut p, &secret, "beta").expect("startFind runs again");
+        assert!(p.wait(20, |p| p.log.iter().any(|l| l.starts_with("Runtime.evaluate") && l.contains("handleClickInFrame(5, 0, "))), "control: a numeric click reaches the child's world");
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
