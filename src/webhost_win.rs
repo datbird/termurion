@@ -3221,6 +3221,30 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// 13x3 Task 1 review I3: Find Globally's context (40) on a CJK and accented page with
+    /// thousands of matches. The cap weighs the escaped DevTools event, so the result is admitted
+    /// (a UTF-8 weight let it reach about 100 KB raw and the gate dropped it whole). Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn find_result_is_capped_for_wide_text() {
+        let secret = hex32();
+        // Entities, so the page's bytes are ASCII whatever charset the response is read with.
+        let body = "<p>".to_string() + &"&#x691c;&#x7d22; &#xe9;&#x301;&#x8a9e;&#x1f600; ".repeat(3000) + "</p>";
+        let page = format!("<!doctype html><html><head><title>wide</title></head><body>{body}</body></html>");
+        let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        find_command(&mut p, &secret, "startFind", json!({"searchTerm": "\u{691c}\u{7d22}", "contextLength": 40, "searchMode": "caseSensitive"})).expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == 3000)), "the full result arrived, its count whole");
+        let (_, b) = p.clients(crate::browser_find::HANDLER).into_iter().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == 3000).unwrap();
+        let ids = b["data"]["matchIdentifiers"].as_array().map_or(0, Vec::len);
+        let ctx = b["data"]["contexts"].as_array().map_or(0, Vec::len);
+        assert!(ids > 0 && ids < 3000 && ctx == ids, "a prefix of identifiers and contexts: {ids} and {ctx}");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
     /// 13x3 Task 1 (B7, m13x2 B9 for the find scripts; made able to fail after the Task 1 review):
     /// window messages a page forges or reads. The page and a cross-origin child forge
     /// `iTermGlobalClick` and `iTermIframeClick`; neither carries the view secret. With new windows
