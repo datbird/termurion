@@ -223,6 +223,7 @@ impl App {
             bv.find_out.reset();
             // And the old page's copy mode: its switch and cursor lived in the old world.
             bv.copy_mode = None;
+            bv.reader.reset();
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
         self.global_pane_gone(pane);
@@ -419,6 +420,7 @@ impl App {
             bv.client_world = ClientWorld::Setting;
             // The old world's copy mode died with it (its switch and cursor lived there).
             bv.copy_mode = None;
+            bv.reader.reset();
             bv.world.restarted = true;
             bv.world.verify_at = None;
         }
@@ -444,6 +446,7 @@ impl App {
             } else if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.client_world = ClientWorld::Unavailable("lost after a process failure".into());
                 bv.copy_mode = None;
+                bv.reader.reset();
             }
         }
         let late = self.browser_views.get(&pane).is_some_and(|b| b.world.timed_out(Instant::now()));
@@ -502,6 +505,10 @@ impl App {
             "Runtime.executionContextCreated" => {
                 // The pointer table goes only into a context the table accepted, once (final review I4).
                 let recorded = bv.contexts.created(session, json);
+                // A new Tandem context in the main frame has none of the reader's objects (B8).
+                if recorded && bv.contexts.is_main_context(json) {
+                    bv.reader.reset();
+                }
                 bv.frames = bv.contexts.frames();
                 self.browser_world_pump(pane);
                 if recorded {
@@ -757,6 +764,8 @@ impl App {
                     bv.selection = None;
                     bv.selection_gate.reset();
                     bv.graph.will_navigate();
+                    // `RMM:216-221`: a new page has no reader and no cached text.
+                    bv.reader.reset();
                 }
                 // `BM:1254`: a navigation that starts turns copy mode off (the page's cursor is gone).
                 self.browser_copy_mode_set(pane, false);
@@ -797,6 +806,7 @@ impl App {
             h if h == crate::browser_frames::HANDLER => self.browser_graph_message(pane, &r),
             h if h == crate::browser_find::HANDLER => self.browser_find_message(pane, &r),
             h if h == crate::browser_copymode::KEY_HANDLER => self.browser_copy_mode_key(pane, &r),
+            h if h == crate::browser_reader::HANDLER => self.browser_reader_message(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -991,7 +1001,7 @@ mod tests {
     /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
     /// router or is a listed Client handler that asks `client_open` before it acts.
     fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
-        let known = ["browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key"];
+        let known = ["browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
         let mut out = Vec::new();
         for (file, src) in files {

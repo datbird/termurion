@@ -599,6 +599,15 @@ impl Contexts {
         !known
     }
 
+    /// Whether a `Runtime.executionContextCreated` is the main frame's (no session, the main frame id).
+    pub fn is_main_context(&self, json: &str) -> bool {
+        let Ok(v) = serde_json::from_str::<Value>(json) else { return false };
+        match (self.main.as_deref(), v.pointer("/context/auxData/frameId").and_then(Value::as_str)) {
+            (Some(main), Some(frame)) => main == frame,
+            _ => false,
+        }
+    }
+
     pub fn destroyed(&mut self, session: Option<&str>, json: &str) {
         let Ok(v) = serde_json::from_str::<Value>(json) else { return };
         let key = |id: i64| (session.map(str::to_string), id);
@@ -783,6 +792,17 @@ mod tests {
 
     fn created(id: i64, name: &str, kind: &str, frame: &str, origin: &str) -> String {
         json!({"context": {"id": id, "origin": origin, "name": name, "uniqueId": format!("u{id}"), "auxData": {"frameId": frame, "isDefault": false, "type": kind}}}).to_string()
+    }
+
+    /// B8: the reader resets on the main frame's new Tandem context, not on a child frame's.
+    #[test]
+    fn main_context_is_the_main_frames() {
+        let mut c = Contexts::default();
+        assert!(!c.is_main_context(&created(3, "tandem-client", "isolated", "M", "https://a.invalid")), "no main frame known");
+        c.set_main_frame("M");
+        assert!(c.is_main_context(&created(3, "tandem-client", "isolated", "M", "https://a.invalid")));
+        assert!(!c.is_main_context(&created(4, "tandem-client", "isolated", "C", "https://a.invalid")));
+        assert!(!c.is_main_context("not json"));
     }
 
     #[test]

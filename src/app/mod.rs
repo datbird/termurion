@@ -160,6 +160,7 @@ mod browser_find_app;
 mod browser_copymode_app;
 mod adblock_app;
 mod browser_db_app;
+mod browser_reader_app;
 mod browser_scripts_app;
 mod browser_ctx_app;
 mod browser_smart_app;

@@ -3222,6 +3222,98 @@ mod probe {
         p.finish();
     }
 
+    /// A page Readability accepts: a title, and enough paragraphs to pass its character threshold.
+    fn article_page(title: &str, extra_body: &str) -> String {
+        let para = "Tandem reads the article text of a page and shows it alone, in a quiet column, so that a person can read it without the clutter around it. ";
+        let body: String = (0..12).map(|i| format!("<p>Paragraph {i}. {para}{para}</p>")).collect();
+        format!("<!doctype html><html><head><title>{title}</title></head><body><nav>menu</nav><article>{body}{extra_body}</article><footer>footer</footer></body></html>")
+    }
+
+    /// What `App::browser_js_call` does with a body: the isolated-world runner's expression.
+    fn reader_run(p: &mut Probe, body: &str) -> Result<Value, String> {
+        let expr = crate::browser_js::call_js(body, &Value::Null)?;
+        p.eval(None, &expr)
+    }
+
+    fn reader_load(p: &mut Probe) {
+        for b in crate::browser_reader::loader_bodies().expect("the loaders assemble") {
+            assert_eq!(reader_run(p, &b), Ok(json!(true)), "a loader answers true");
+        }
+    }
+
+    fn reader_actions(p: &Probe) -> Vec<String> {
+        p.clients(crate::browser_reader::HANDLER).iter().filter_map(|(_, b)| b["action"].as_str().map(str::to_string)).collect()
+    }
+
+    /// 13x4 Task 1 (Review Focus 1, B6, B7): the loaders run in the isolated world, Reader Mode enters
+    /// and posts "entered" as a Client message, a page's synthetic Escape does not leave it, a real
+    /// Escape does and posts "exited"; Remove Distractions loads, enters and exits. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn reader_mode_runs_in_a_page() {
+        let Some(mut p) = Probe::start(&[(PAGE, article_page("An article", ""))], Vec::new()) else { return };
+        p.load(PAGE);
+        reader_load(&mut p);
+        assert_eq!(p.page_eval("typeof window.iTermReaderMode + typeof window.Readability"), Ok("\"undefinedundefined\"".into()), "the reader objects exist only in the isolated world");
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::enter_reader_body()), Ok(json!(true)));
+        assert_eq!(p.page_eval("document.body.classList.contains('reader-mode-active')"), Ok("true".into()));
+        assert!(p.wait(10, |p| reader_actions(p).contains(&"entered".to_string())), "entered arrives as a Client message");
+        // A page's synthetic Escape leaves nothing (B6), whoever the target is.
+        p.page_eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))").expect("the page's Escape");
+        p.settle(300);
+        assert_eq!(p.page_eval("document.body.classList.contains('reader-mode-active')"), Ok("true".into()), "synthetic Escape is ignored");
+        assert!(!reader_actions(&p).contains(&"exited".to_string()));
+        for kind in ["rawKeyDown", "keyUp"] {
+            p.call_wait(None, "Input.dispatchKeyEvent", &json!({"type": kind, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})).expect("the real Escape");
+        }
+        assert!(p.wait(10, |p| reader_actions(p).contains(&"exited".to_string())), "a real Escape leaves and posts exited");
+        assert_eq!(p.page_eval("document.body.classList.contains('reader-mode-active')"), Ok("false".into()));
+        // Enter and exit through the bodies.
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::enter_reader_body()), Ok(json!(true)));
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::exit_reader_body()), Ok(json!(true)));
+        // Distraction removal.
+        let [load, enter] = crate::browser_reader::distraction_bodies();
+        assert_eq!(reader_run(&mut p, &load), Ok(json!(true)));
+        assert_eq!(reader_run(&mut p, &enter), Ok(json!(true)));
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::exit_distraction_body()), Ok(json!(true)));
+        p.finish();
+    }
+
+    /// 13x4 Task 1 (B9): Readability keeps event-handler attributes, and the title goes in as markup;
+    /// both run in the PAGE world. From there the reader's objects, the Tandem bridge and the view's
+    /// secrets are out of reach, and no Client message results. Needs the console session.
+    #[test]
+    #[ignore]
+    fn reader_article_handlers_stay_in_the_page_world() {
+        let probe = "window.__hits = (window.__hits || []).concat([[typeof window.iTermReaderMode, typeof window.Readability, typeof window.__tandemClient, (window.chrome && window.chrome.webview) ? (() => { try { window.chrome.webview.postMessage({handler: 'readerMode', body: {action: 'distractionRemovalEntered'}}); } catch (e) {} return 'webview'; })() : 'none']])";
+        let handler = probe.replace('"', "&quot;");
+        let img = format!("<p><img src=\"x\" onerror=\"{handler}\"><a href=\"javascript:{handler}\">link</a></p>");
+        let title = format!("&lt;img src=x onerror=&quot;{handler}&quot;&gt;");
+        let Some(mut p) = Probe::start(&[(PAGE, article_page(&title, &img))], Vec::new()) else { return };
+        p.load(PAGE);
+        reader_load(&mut p);
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::enter_reader_body()), Ok(json!(true)));
+        let mut ran = false;
+        for _ in 0..20 {
+            if p.page_eval("(window.__hits || []).length").is_ok_and(|n| n != "0") {
+                ran = true;
+                break;
+            }
+            p.settle(250);
+        }
+        assert!(ran, "the article's handler ran");
+        let hits = p.page_eval("JSON.stringify(window.__hits)").expect("the hits");
+        let hits: Vec<Vec<String>> = serde_json::from_str(&serde_json::from_str::<String>(&hits).unwrap()).unwrap();
+        for h in &hits {
+            assert_eq!(&h[..3], &["undefined", "undefined", "undefined"], "a handler sees no reader object, no Readability, no client binding");
+        }
+        p.settle(500);
+        assert_eq!(reader_actions(&p), vec!["entered".to_string()], "a page-world post is no Client message: nothing but the reader's own");
+        assert!(p.routed.iter().filter(|r| r.via == Via::Client).all(|r| r.client().map_or(true, |(h, _)| h == crate::browser_reader::HANDLER)));
+        p.finish();
+    }
+
     /// Main bug from the 13x3 probe review: Chromium's Windows editing behavior extends forward by
     /// word to the start of the next word, so the iTerm2 script selected "hello " (trailing space).
     /// The assembled script (`browser_keys::extend_script`, load-time patch) selects "hello", then
