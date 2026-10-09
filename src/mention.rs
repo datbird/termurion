@@ -285,10 +285,10 @@ pub fn resolve(world: &World, mention: &Mention) -> Option<PaneId> {
 }
 
 /// A workgroup mention's name: the workgroup's, "Untitled workgroup" when it has none, `DEFUNCT`
-/// when no live instance has that id (`OrchestrationMentionRenderer.swift:257-268`). The id's case
-/// is not significant (a mention folds only its prefix).
+/// when no live instance has exactly that id (`OrchestrationMentionRenderer.swift:257-268`), as the
+/// clipping tools match it.
 pub fn workgroup_label(workgroups: &[cockpit_rows::WorkgroupFact], id: &str) -> String {
-    match workgroups.iter().find(|w| w.id.eq_ignore_ascii_case(id)) {
+    match workgroups.iter().find(|w| w.id == id) {
         Some(w) => Some(crate::inert_files::shown_name(&w.name)).filter(|n| !n.is_empty()).unwrap_or_else(|| UNTITLED_WORKGROUP.to_string()),
         None => DEFUNCT.to_string(),
     }
@@ -576,7 +576,8 @@ mod tests {
             WorkgroupFact { id: "wg-6F1C2A3B-0000-4000-8000-000000000003".into(), name: String::new(), members: Vec::new() },
         ];
         assert_eq!(workgroup_label(&groups, live), "Claude Code");
-        assert_eq!(workgroup_label(&groups, &live.to_ascii_lowercase()), "Claude Code", "the case of an id is not significant");
+        // Task 10 review minor 4: the id matches exactly, as iTerm2's resolveWorkgroup and the clipping tools.
+        assert_eq!(workgroup_label(&groups, &live.to_ascii_lowercase()), DEFUNCT, "an id in another case names no instance");
         assert_eq!(workgroup_label(&groups, "wg-6F1C2A3B-0000-4000-8000-000000000003"), "Untitled workgroup");
         assert_eq!(workgroup_label(&groups, "wg-6F1C2A3B-0000-4000-8000-0000000000FF"), DEFUNCT, "a gone instance");
         // A member session reads "<role>: <title>", the role alone with no title.
