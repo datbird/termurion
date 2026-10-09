@@ -33,7 +33,7 @@ desktop. Mark each line pass or fail.
 | 19 | The Cockpit (Alt+Win+Shift+C) with Workgroup grouping shows the workgroup with members titled "Diff: ..." and "Code Review: ..."; double-clicking the workgroup row reveals the Chat session. | |
 | 20 | An orchestration chat's `@wg-` mention shows the workgroup's name; add_workgroup_clipping on the workgroup id lands in the Chat session's clippings. Orchestration cannot enter a workgroup, and start_code_review on a busy review refuses. | |
 | 21 | A workgroup whose Tab member uses a Browser profile with a URL opens that URL. | |
-| 22 | In a cmd.exe leader a Diff file named `50%.txt` cannot be picked (a banner says why); a PowerShell leader quotes it and the diff shows. | |
+| 22 | A Diff file named `50%.txt` is picked and diffed in any leader (cmd.exe or PowerShell): the name goes to git as one argument, no shell quotes it. A workgroup whose per-file command runs a `.cmd` or `.bat` refuses that name with a banner. | |
 | 23 | A repository whose .git/config names a program (diff.external, core.pager, core.fsmonitor, a gpg.program): the Diff peer refuses to start git with a banner and runs no program from the config. | |
 | 23 | The Imported mark: Settings > Arrangements > Workgroups shows an imported workgroup as imported; editing it keeps the mark; only Trust this workgroup clears it. | |
 | 25 | Uninstall Claude Code Integration removes the workgroup and the two triggers (asking Keep or Remove if the workgroup was edited). | |
