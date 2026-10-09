@@ -55,7 +55,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > Undo Close | Shift+Cmd+T | Reopens the most recently closed session. (milestone 7) | have, milestone 7b |
 | Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. | have |
 | Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. | have | Milestone 13q: the panes hold the saved text with no shell; Restart starts one. A pane that was archived stays archived through session restoration (it never starts the archive's profile at launch). Only Restore Archive asks about an unmarked file that opens several windows. |
-| Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | have | Milestone 13y1: Shell > Workgroups lists the saved workgroups above the separator (a dynamic submenu); Exit Workgroup restores the leader's title and group and closes the other members. |
+| Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. | have | Milestone 13y1: Shell > Workgroups lists the saved workgroups above the separator (a dynamic submenu); Exit Workgroup restores the leader's title and group and closes the other members. |
 | Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+Shift+I | Turns off input broadcasting, typing goes only to the active pane. | have, milestone 7f |
 | Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+Shift+I | Sends typed input to every pane in every tab of the window. | have, milestone 7f |
 | Shell > Broadcast Input > Broadcast Input to All Panes in Current Tab | Opt+Cmd+I | Sends typed input to every pane in the current tab. | have, milestone 7f |
@@ -287,8 +287,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Split Pane > Select Split Pane > Select Pane Right | Opt+Cmd+Right | Moves focus to the pane to the right. | have |
 | Window > Split Pane > Select Split Pane > Next Pane | Cmd+] | Moves focus to the next pane in tab order. | have |
 | Window > Split Pane > Select Split Pane > Previous Pane | Cmd+[ | Moves focus to the previous pane in tab order. | have |
-| Window > Split Pane > Select Split Pane > Previous Peer | Opt+Cmd+[ | Moves focus to the previous peer session in a workgroup. (milestone 7) | have | Milestone 13y1: Alt+Win+[ swaps the shown peer in place; an unstarted peer is skipped. |
-| Window > Split Pane > Select Split Pane > Next Peer | Opt+Cmd+] | Moves focus to the next peer session in a workgroup. (milestone 7) | have | Milestone 13y1: Alt+Win+] swaps the shown peer in place; an unstarted peer is skipped. |
+| Window > Split Pane > Select Split Pane > Previous Peer | Opt+Cmd+[ | Moves focus to the previous peer session in a workgroup. | have | Milestone 13y1: Alt+Win+[ swaps the shown peer in place; an unstarted peer is skipped. |
+| Window > Split Pane > Select Split Pane > Next Peer | Opt+Cmd+] | Moves focus to the next peer session in a workgroup. | have | Milestone 13y1: Alt+Win+] swaps the shown peer in place; an unstarted peer is skipped. |
 | Window > Split Pane > Resize Split Pane > Move Divider Up | Ctrl+Cmd+Up | Resizes the pane by nudging its divider up via keyboard. | have |
 | Window > Split Pane > Resize Split Pane > Move Divider Down | Ctrl+Cmd+Down | Resizes the pane by nudging its divider down via keyboard. | have |
 | Window > Split Pane > Resize Split Pane > Move Divider Left | Ctrl+Cmd+Left | Resizes the pane by nudging its divider left via keyboard. | have |
