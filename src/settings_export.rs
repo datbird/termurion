@@ -209,11 +209,6 @@ pub fn staging_dir(temp: &Path, uuid: &str) -> PathBuf {
     temp.join(format!("{STAGING_PREFIX}{uuid}"))
 }
 
-/// tar.exe's arguments extracting the archive `file` into `to`.
-pub fn extract_args(file: &Path, to: &Path) -> Vec<String> {
-    vec!["-xzf".to_string(), file.to_string_lossy().into_owned(), "-C".to_string(), to.to_string_lossy().into_owned()]
-}
-
 /// What the marker asks of this start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pending {
@@ -423,7 +418,6 @@ mod tests {
         assert_eq!(pending(Some(r"C:\T\.tandem-import-U"), &|_| false), Pending::Stale, "the folder is gone");
         assert_eq!(pending(Some(""), &that), Pending::Stale);
         assert_eq!(staging_dir(Path::new(r"C:\T"), "U"), staged);
-        assert_eq!(extract_args(Path::new(r"C:\a b.tandemexport"), Path::new(r"C:\T\x")), ["-xzf", r"C:\a b.tandemexport", "-C", r"C:\T\x"]);
         // Beyond the plan: a trailing newline is ignored, and a marker naming a folder that is
         // not a staging folder, or a network path, is never applied (the folder is removed
         // afterwards).

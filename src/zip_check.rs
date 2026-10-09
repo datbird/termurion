@@ -1,9 +1,10 @@
-//! An archive's safety check before tar.exe extracts it, the one rule every extraction in
-//! Tandem uses: a zip (its first bytes a local header or an empty archive's end record, every
-//! entry of its central directory) or a gzip tar (every header, `check_tgz`) must name only
-//! plain files and folders inside the folder it is extracted into, refused whole otherwise.
-//! Pure: it reads bytes only, so the Scripts import (milestone 11d), SSH file transfers and
-//! Import All share it.
+//! An archive's safety check and the parse that extracts it: the one rule every extraction in
+//! Tandem uses. A zip (its first bytes a local header or an empty archive's end record, every
+//! entry of its central directory) or a gzip tar (every header, `check_tgz`) must name only plain
+//! files and folders inside the folder it is extracted into, refused whole otherwise. The walk
+//! that checks an archive is the walk `extract` writes from (final findings r2: one parser over
+//! one set of bytes; no other program reads the archive). Pure: it reads bytes only, so the
+//! Scripts import (milestone 11d), SSH file transfers and Import All share it.
 
 /// Why an archive was refused.
 pub fn refused(reason: &str) -> String {
@@ -192,9 +193,48 @@ pub fn check_with(b: &[u8], limits: Limits) -> Result<(), String> {
     check_total(b, limits).map(|_| ())
 }
 
-/// `check_with`, giving the total uncompressed size the directory claims. Nothing trusts that
-/// size alone: the extraction is watched against it (`ssh_local::watchdog`).
+/// `check_with`, giving the total uncompressed size the directory claims. The extraction
+/// (`walk_zip` with a visitor) writes exactly that size per entry, or fails.
 pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
+    walk_zip(b, limits, None)
+}
+
+/// What a walk hands its visitor for each checked entry: the name (a folder's ends in "/"), the
+/// data for a file (None for a folder) and the size the entry claims.
+pub type Visit<'a> = &'a mut dyn FnMut(&str, Option<&mut dyn std::io::Read>, u64) -> Result<(), String>;
+
+/// A file's data, read only to exactly its claimed size with its CRC-32: any other length or sum
+/// fails the read.
+struct Exact<R> {
+    inner: R,
+    want: u64,
+    got: u64,
+    crc: flate2::Crc,
+    want_crc: u32,
+}
+
+impl<R: std::io::Read> std::io::Read for Exact<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 {
+            if self.got != self.want || self.crc.sum() != self.want_crc {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "an entry's data is not what its directory says"));
+            }
+            return Ok(0);
+        }
+        self.got += n as u64;
+        if self.got > self.want {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "an entry expands past its size"));
+        }
+        self.crc.update(&buf[..n]);
+        Ok(n)
+    }
+}
+
+/// THE zip walk: `check_total`'s every rule, and with `visit`, each checked entry handed over in
+/// directory order (stored or deflated data only, never encrypted). Nothing is visited until the
+/// whole directory passed.
+pub fn walk_zip(b: &[u8], limits: Limits, visit: Option<Visit>) -> Result<u64, String> {
     let first = u32_at(b, 0);
     if first != Some(LOCAL) && first != Some(END) {
         return Err(refused("it is not a zip archive"));
@@ -206,11 +246,15 @@ pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
     let mut at = offset;
     let mut seen = 0u64;
     let mut total = 0u64;
+    // (name, folder, data offset, compressed size, size, method, crc)
+    let mut found: Vec<(String, bool, usize, usize, u64, u16, u32)> = Vec::new();
     while at < offset + size {
         if u32_at(b, at) != Some(CENTRAL) {
             return Err(corrupt());
         }
         let made_by = u16_at(b, at + 4).ok_or_else(corrupt)?;
+        let method = u16_at(b, at + 10).ok_or_else(corrupt)?;
+        let crc = u32_at(b, at + 16).ok_or_else(corrupt)?;
         let usize32 = u32_at(b, at + 24).ok_or_else(corrupt)?;
         let csize32 = u32_at(b, at + 20).ok_or_else(corrupt)?;
         let name_len = usize::from(u16_at(b, at + 28).ok_or_else(corrupt)?);
@@ -242,16 +286,23 @@ pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
         } else if external & DOS_REPARSE != 0 {
             return Err(refused(&format!("\u{201c}{text}\u{201d} is a link")));
         }
+        if flags & 1 != 0 {
+            return Err(refused(&format!("\u{201c}{}\u{201d} is encrypted", text.escape_debug())));
+        }
+        if method != 0 && method != 8 {
+            return Err(refused(&format!("\u{201c}{}\u{201d} is compressed in a way Tandem does not read", text.escape_debug())));
+        }
         let fields = check_extra(extra)?;
-        // The local header's offset, from the ZIP64 field when it overflowed (its values come
-        // in order: sizes first, each only when its 32-bit field overflowed).
+        // The ZIP64 field's values come in order, each only when its 32-bit field overflowed: the
+        // size, the compressed size, the local header's offset.
+        let zip64 = || fields.iter().find(|(id, _)| *id == EXTRA_ZIP64).map(|(_, d)| *d).ok_or_else(corrupt);
+        let (big_size, big_csize) = (usize32 == 0xffff_ffff, csize32 == 0xffff_ffff);
+        let claimed = if big_size { u64_at(zip64()?, 0).ok_or_else(corrupt)? } else { u64::from(usize32) };
+        let csize = if big_csize { u64_at(zip64()?, 8 * usize::from(big_size)).ok_or_else(corrupt)? } else { u64::from(csize32) };
         let mut local = u64::from(local32);
         if local32 == 0xffff_ffff {
-            let data = fields.iter().find(|(id, _)| *id == EXTRA_ZIP64).map(|(_, d)| *d).ok_or_else(corrupt)?;
-            let skip = 8 * (usize::from(usize32 == 0xffff_ffff) + usize::from(csize32 == 0xffff_ffff));
-            local = u64_at(data, skip).ok_or_else(corrupt)?;
+            local = u64_at(zip64()?, 8 * (usize::from(big_size) + usize::from(big_csize))).ok_or_else(corrupt)?;
         }
-        let claimed = if usize32 == 0xffff_ffff { fields.iter().find(|(id, _)| *id == EXTRA_ZIP64).and_then(|(_, d)| u64_at(d, 0)).ok_or_else(corrupt)? } else { u64::from(usize32) };
         total = total.saturating_add(claimed);
         if total > limits.bytes {
             return Err(refused("it would expand to too much data"));
@@ -266,11 +317,33 @@ pub fn check_total(b: &[u8], limits: Limits) -> Result<u64, String> {
             return Err(refused(&format!("\u{201c}{text}\u{201d} has another name in its local header")));
         }
         check_extra(b.get(local + 30 + local_name_len..local + 30 + local_name_len + local_extra_len).ok_or_else(corrupt)?)?;
+        let data = local + 30 + local_name_len + local_extra_len;
+        let csize = usize::try_from(csize).map_err(|_| corrupt())?;
+        if data.checked_add(csize).is_none_or(|e| e > b.len()) {
+            return Err(corrupt());
+        }
+        let folder = text.ends_with('/');
+        if (folder && claimed != 0) || (method == 0 && csize as u64 != claimed) {
+            return Err(refused(&format!("\u{201c}{}\u{201d} has data that does not fit its entry", text.escape_debug())));
+        }
+        found.push((text.to_string(), folder, data, csize, claimed, method, crc));
         seen += 1;
         at += 46 + name_len + extra_len + comment_len;
     }
     if seen != count {
         return Err(corrupt());
+    }
+    if let Some(visit) = visit {
+        for (name, folder, data, csize, claimed, method, crc) in found {
+            let raw = &b[data..data + csize];
+            if folder {
+                visit(&name, None, 0)?;
+                continue;
+            }
+            let inner: Box<dyn std::io::Read + '_> = if method == 0 { Box::new(raw) } else { Box::new(std::io::Read::take(flate2::read::DeflateDecoder::new(raw), claimed + 1)) };
+            let mut data = Exact { inner, want: claimed, got: 0, crc: flate2::Crc::new(), want_crc: crc };
+            visit(&name, Some(&mut data), claimed)?;
+        }
     }
     Ok(total)
 }
@@ -283,15 +356,32 @@ const PAX_KEYS: [&str; 9] = ["path", "mtime", "atime", "ctime", "uid", "gid", "u
 /// The most a long name or pax header may hold.
 const MAX_META: u64 = 64 << 10;
 
-/// Checks the gzip tar read from `r` before tar.exe extracts it (Task 9 findings r3; Windows'
-/// bsdtar refuses no hard link, R14de-1): every header is ustar or GNU with a good checksum and
-/// is a regular file, a folder (no data), a pax header or a GNU long name; no entry links
-/// anywhere (no link name, no `linkpath`); every name (pax `path`, else the long name, else the
-/// header's, never two) passes the one name rule (`check_name`, with `more` for the caller's own
-/// parts); every header is where both readers put it (the gzip members are all read, no pax
-/// `size`, a folder carries no data, a file's name does not end in "/"); and the entry count
-/// and the total size stay within `limits`. The total size when accepted.
+/// Whether a header's number field is plain octal as both readers of the format agree on it
+/// (libarchive's `validate_number_field`, stricter): optional leading spaces, octal digits, then only
+/// spaces and NULs. No sign, no other white space, no base-256 (final findings r2 1a: the tar crate
+/// trims "+" and "\n", libarchive reads them as 0). `digits` when the field may not be empty.
+fn plain_octal(field: &[u8], digits: bool) -> bool {
+    let start = field.iter().position(|&b| b != b' ').unwrap_or(field.len());
+    let end = start + field[start..].iter().position(|b| !(b'0'..=b'7').contains(b)).unwrap_or(field.len() - start);
+    (!digits || end > start) && field[end..].iter().all(|&b| b == b' ' || b == 0)
+}
+
+/// Checks the gzip tar read from `r` (Task 9 findings r3; Windows' bsdtar refuses no hard link,
+/// R14de-1): every header is ustar or GNU with a good checksum and plain octal numbers and is a
+/// regular file, a folder (no data), a pax header or a GNU long name; no entry links anywhere (no
+/// link name, no `linkpath`); every name (pax `path`, else the long name, else the header's, never
+/// two) passes the one name rule (`check_name`, with `more` for the caller's own parts); every
+/// header is where every reader puts it (the gzip members are all read, no pax `size`, a folder
+/// carries no data, a file's name does not end in "/"); and the entry count and the total size stay
+/// within `limits`. The total size when accepted.
 pub fn check_tgz(r: impl std::io::Read, limits: Limits, more: &dyn Fn(&str) -> bool) -> Result<u64, String> {
+    walk_tgz(r, limits, more, &mut |_, _, _| Ok(()))
+}
+
+/// THE gzip tar walk: `check_tgz`'s every rule, each accepted entry handed to `visit` as it is read
+/// (gzip only, never another filter guessed; the tar crate's parse only). An extraction walks the
+/// same bytes twice, checking first (`extract`), so nothing is written from an archive that fails.
+pub fn walk_tgz(r: impl std::io::Read, limits: Limits, more: &dyn Fn(&str) -> bool, visit: Visit) -> Result<u64, String> {
     use std::io::Read;
     let bad = || refused("it is not a gzip tar or it is damaged");
     let mut archive = tar::Archive::new(flate2::read::MultiGzDecoder::new(r));
@@ -303,6 +393,11 @@ pub fn check_tgz(r: impl std::io::Read, limits: Limits, more: &dyn Fn(&str) -> b
         let h = entry.header().clone();
         if h.as_ustar().is_none() && h.as_gnu().is_none() {
             return Err(refused("a header is neither ustar nor GNU"));
+        }
+        let raw = h.as_bytes();
+        let numbers = [(100..108, false), (108..116, false), (116..124, false), (124..136, true), (136..148, false), (148..156, true)];
+        if !numbers.into_iter().all(|(at, digits)| plain_octal(&raw[at], digits)) {
+            return Err(refused("a header holds a number that is not plain octal"));
         }
         let size = h.entry_size().map_err(|_| bad())?;
         let kind = h.entry_type();
@@ -357,7 +452,8 @@ pub fn check_tgz(r: impl std::io::Read, limits: Limits, more: &dyn Fn(&str) -> b
             return Err(refused(&format!("\u{201c}{}\u{201d} is a link or a special file", text.escape_debug())));
         }
         check_name(text, more)?;
-        if (kind == tar::EntryType::Directory && size != 0) || (kind == tar::EntryType::Regular && text.ends_with('/')) {
+        let folder = kind == tar::EntryType::Directory;
+        if (folder && size != 0) || (!folder && text.ends_with('/')) {
             return Err(refused(&format!("\u{201c}{}\u{201d} is a folder and a file at once", text.escape_debug())));
         }
         seen += 1;
@@ -368,6 +464,9 @@ pub fn check_tgz(r: impl std::io::Read, limits: Limits, more: &dyn Fn(&str) -> b
         if total > limits.bytes {
             return Err(refused("it would expand to too much data"));
         }
+        // A folder's name ends in "/" for the visitor, whatever the header wrote.
+        let shown = if folder && !text.ends_with('/') { format!("{text}/") } else { text.to_string() };
+        visit(&shown, (!folder).then_some(&mut entry as &mut dyn Read), size)?;
     }
     if pax || path.is_some() || long.is_some() {
         return Err(refused("a header describes an entry that never comes"));
@@ -636,7 +735,9 @@ pub(crate) mod tests {
         assert!(check(&zip(&[big, Entry { claimed: Some(0x7000_0000), ..file("d/big2", "x") }])).is_err(), "about 3.5 GiB claimed");
         let extra: Vec<u8> = [EXTRA_ZIP64.to_le_bytes(), 8u16.to_le_bytes()].concat().into_iter().chain((3u64 << 30).to_le_bytes()).collect();
         assert!(check(&zip(&[Entry { claimed: Some(0xffff_ffff), extra, ..file("d/z", "x") }])).is_err(), "3 GiB in the ZIP64 field");
-        assert_eq!(check(&zip(&[Entry { claimed: Some(0x1000_0000), ..file("d/ok", "x") }])), Ok(()));
+        // A claim under the cap passes the cap; a stored entry whose data is not that size is
+        // refused for its data (the extraction writes exactly the claim, final findings r2).
+        assert!(check(&zip(&[Entry { claimed: Some(0x1000_0000), ..file("d/ok", "x") }])).unwrap_err().contains("does not fit its entry"));
     }
 
     #[test]
@@ -718,7 +819,7 @@ pub(crate) mod tests {
         let mut sum = tar_entry("d/a", b'0', b"x", "");
         sum[0] = b'e';
         assert!(ok(&sum).is_err());
-        // A second gzip member is read too (tar.exe reads them all).
+        // A second gzip member is read too (every gzip reader takes them all).
         let mut two = {
             use std::io::Write;
             let mut first = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -734,6 +835,37 @@ pub(crate) mod tests {
         // The caps.
         assert!(check_tgz(&tgz(&base)[..], Limits { entries: 2, bytes: 1 << 20 }, &none).is_err());
         assert!(check_tgz(&tgz(&base)[..], Limits { entries: 3, bytes: 4 }, &none).is_err());
+    }
+
+    /// Final findings r2 1(a): a number field the tar crate reads and libarchive reads as 0 (a "+",
+    /// a leading newline or other white space past the space, base-256) is refused, in the size, the
+    /// checksum and every other number; plain octal with space or NUL padding passes.
+    #[test]
+    fn tgz_numbers_are_plain_octal() {
+        let none = |_: &str| false;
+        let seal = |b: &mut Vec<u8>, sum: &dyn Fn(u32) -> String| {
+            b[148..156].copy_from_slice(b"        ");
+            let total: u32 = b[..512].iter().map(|&x| u32::from(x)).sum();
+            let text = sum(total);
+            b[148..156].fill(0);
+            b[148..148 + text.len()].copy_from_slice(text.as_bytes());
+        };
+        let plain = |s: u32| format!("{s:06o}\0 ");
+        let with = |at: std::ops::Range<usize>, field: &[u8], sum: &dyn Fn(u32) -> String| {
+            let mut b = tar_entry("d/a", b'0', &[b'x'; 512], "");
+            b[at].copy_from_slice(field);
+            seal(&mut b, sum);
+            check_tgz(&tgz(&[tar_entry("d/", b'5', b"", ""), b].concat())[..], Limits::DEFAULT, &none)
+        };
+        assert_eq!(with(124..136, b"00000001000\0", &plain), Ok(512));
+        assert_eq!(with(124..136, b"   1000    \0", &plain), Ok(512), "leading spaces, space padding");
+        for size in [&b"+0000001000\0"[..], b"\n0000001000\0", b"\x0b0000001000\0", b"\t0000001000\0", b"0000001000x\0", b"\x80\0\0\0\0\0\0\0\0\0\x02\0", b"\0\0\0\0\0\0\0\0\0\0\0\0"] {
+            assert!(with(124..136, size, &plain).is_err(), "size {size:?}");
+        }
+        assert!(with(124..136, b"00000001000\0", &|s| format!("+0{s:05o}\0")).is_err(), "a signed checksum");
+        assert!(with(124..136, b"00000001000\0", &|s| format!("\n{s:06o}\0")).is_err(), "a checksum after a newline");
+        assert!(with(100..108, b"+000644\0", &plain).is_err(), "a signed mode");
+        assert!(with(136..148, b"\r0000000000\0", &plain).is_err(), "an mtime after a carriage return");
     }
 
     /// libarchive replaces an entry's name with the Info-ZIP Unicode Path field (0x7075) when its

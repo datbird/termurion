@@ -584,17 +584,6 @@ pub const STOPPED: &str = "stopped by the watch";
 
 #[cfg(windows)]
 impl RealRunner {
-    /// `Runner::extract`, with `watch` polled while tar.exe runs: when it says true the
-    /// program's whole job is killed and the run fails with `STOPPED`.
-    pub fn extract_watched(&mut self, zip: &Path, to: &Path, watch: &dyn Fn() -> bool) -> Result<(), String> {
-        std::fs::create_dir_all(to).map_err(|e| format!("Could not create {}: {e}", to.display()))?;
-        let args = vec!["-xf".to_string(), zip.to_string_lossy().into_owned(), "-C".to_string(), to.to_string_lossy().into_owned()];
-        self.run_watched(&Step { program: Self::system_tool("tar.exe")?, args, env: Vec::new() }, Some(watch)).map(|_| ())
-    }
-}
-
-#[cfg(windows)]
-impl RealRunner {
     /// `run`, polling `watch` while the program runs: when it says true the job is killed and
     /// the run fails with `STOPPED`.
     fn run_watched(&mut self, step: &Step, watch: Option<&dyn Fn() -> bool>) -> Result<String, String> {

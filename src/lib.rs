@@ -97,6 +97,7 @@ pub mod workgroup_run;
 pub mod workgroup_toolbar;
 pub mod netpath;
 pub mod localfs;
+pub mod extract;
 pub mod sh_context;
 pub mod copymode;
 pub mod fold;
