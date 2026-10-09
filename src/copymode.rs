@@ -45,6 +45,10 @@ pub enum Action {
     MoveToStart,
     MoveToStartOfIndentation,
     MoveToStartOfLine,
+    /// "0": the line start, unless a count is being typed (the count rule runs first, `accrue`).
+    MoveToStartOfLineOrAccrue0,
+    /// "1" to "9": a count digit. `accrue` takes them before the table is read.
+    AccrueCount,
     MoveToStartOfNextLine,
     MoveToTopOfVisibleArea,
     MoveUp,
@@ -85,6 +89,8 @@ impl Action {
             Action::MoveToStart => "MoveToStart",
             Action::MoveToStartOfIndentation => "MoveToStartOfIndentation",
             Action::MoveToStartOfLine => "MoveToStartOfLine",
+            Action::MoveToStartOfLineOrAccrue0 => "MoveToStartOfLineOrAccrue0",
+            Action::AccrueCount => "AccrueCount",
             Action::MoveToStartOfNextLine => "MoveToStartOfNextLine",
             Action::MoveToTopOfVisibleArea => "MoveToTopOfVisibleArea",
             Action::MoveUp => "MoveUp",
@@ -117,7 +123,8 @@ pub fn action_for(key: &str) -> Action {
         "W" => Action::MoveForwardBigWord,
         "b" => Action::MoveBackwardWord,
         "B" => Action::MoveBackwardBigWord,
-        "0" => Action::MoveToStartOfLine,
+        "0" => Action::MoveToStartOfLineOrAccrue0,
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => Action::AccrueCount,
         "^" => Action::MoveToStartOfIndentation,
         "$" => Action::MoveToEndOfLine,
         "g" | "Home" => Action::MoveToStart,
@@ -133,9 +140,10 @@ pub fn action_for(key: &str) -> Action {
         "]" => Action::NextMark,
         "C-y" => Action::ScrollUp,
         "C-e" => Action::ScrollDown,
-        "v" | " " => Action::ToggleCharacterSelection,
+        // Ctrl+Space is the dict's `^\U0020`, ToggleCharacterSelection, not a box (13x3 final wave).
+        "v" | " " | "C-Space" => Action::ToggleCharacterSelection,
         "V" => Action::ToggleLineSelection,
-        "C-v" | "C-Space" => Action::ToggleBoxSelection,
+        "C-v" => Action::ToggleBoxSelection,
         "o" => Action::Swap,
         "y" | "C-k" => Action::CopySelection,
         "q" | "Esc" => Action::Quit,
@@ -218,17 +226,14 @@ impl State {
             Action::MoveRight => at(c.row, c.col + n),
             Action::MoveUp => at(c.row.saturating_sub(n), c.col),
             Action::MoveDown => at(c.row + n, c.col),
-            Action::MoveForwardWord
-            | Action::MoveForwardBigWord
-            | Action::MoveBackwardWord
-            | Action::MoveBackwardBigWord => {
+            a @ (Action::MoveForwardWord | Action::MoveForwardBigWord | Action::MoveBackwardWord | Action::MoveBackwardBigWord) => {
                 let mut p = c;
                 for _ in 0..n {
-                    p = word_move(p, key, ctx);
+                    p = word_move(p, a, ctx);
                 }
                 p
             }
-            Action::MoveToStartOfLine => at(c.row, 0),
+            Action::MoveToStartOfLine | Action::MoveToStartOfLineOrAccrue0 => at(c.row, 0),
             Action::MoveToStartOfIndentation => at(c.row, text_start(c.row)),
             Action::MoveToEndOfLine => at(c.row, text_end(c.row)),
             Action::MoveToStart => at(0, 0),
@@ -269,7 +274,7 @@ impl State {
             }
             Action::ExitCopyMode => return Outcome::Exit { clear: false },
             Action::ShowFindPanel => return Outcome::Find,
-            Action::None | Action::MoveToStartOfNextLine => return Outcome::None,
+            Action::None | Action::AccrueCount | Action::MoveToStartOfNextLine => return Outcome::None,
         };
         self.cursor = to;
         Outcome::Moved
@@ -332,8 +337,9 @@ fn class(c: char, big: bool) -> u8 {
 }
 
 /// One w, W, b, or B move, across rows (a row's end counts as blank).
-fn word_move(from: Pos, key: &str, ctx: &Ctx) -> Pos {
-    let big = key == "W" || key == "B";
+fn word_move(from: Pos, action: Action, ctx: &Ctx) -> Pos {
+    let big = matches!(action, Action::MoveForwardBigWord | Action::MoveBackwardBigWord);
+    let forward = matches!(action, Action::MoveForwardWord | Action::MoveForwardBigWord);
     let cols = ctx.cols.max(1);
     let total = ctx.rows * cols;
     if total == 0 {
@@ -346,7 +352,7 @@ fn word_move(from: Pos, key: &str, ctx: &Ctx) -> Pos {
         l.get(i % cols).copied().unwrap_or(' ')
     };
     let mut i = from.row * cols + from.col;
-    if key == "w" || key == "W" {
+    if forward {
         let start = class(ch(i), big);
         if start != 0 {
             while i + 1 < total && class(ch(i), big) == start {
@@ -460,6 +466,21 @@ mod tests {
         assert_eq!(s.cursor, at(1, 2));
     }
 
+    /// Ctrl+Space is iTerm2's ToggleCharacterSelection (the dict's `^\U0020`), not a box selection:
+    /// it selects by characters like `v`, and Ctrl+V stays the box.
+    #[test]
+    fn ctrl_space_selects_by_character() {
+        let b = buf(&["abc", "def"]);
+        let mut s = State::new(at(0, 0));
+        run(&mut s, &b, &["C-Space", "l"]);
+        assert_eq!(s.kind, Kind::Char);
+        assert!(s.anchor.is_some());
+        run(&mut s, &b, &["C-Space"]);
+        assert!(s.anchor.is_none(), "again turns selecting off");
+        run(&mut s, &b, &["C-v"]);
+        assert_eq!(s.kind, Kind::Box);
+    }
+
     #[test]
     fn v_shift_v_and_ctrl_v_select() {
         let b = buf(&["abc", "def"]);
@@ -523,15 +544,16 @@ mod tests {
         let table: &[(&[&str], Action)] = &[
             (&["h", "Left"], MoveLeft), (&["l", "Right"], MoveRight), (&["k", "Up"], MoveUp),
             (&["j", "Down"], MoveDown), (&["w"], MoveForwardWord), (&["W"], MoveForwardBigWord),
-            (&["b"], MoveBackwardWord), (&["B"], MoveBackwardBigWord), (&["0"], MoveToStartOfLine),
+            (&["b"], MoveBackwardWord), (&["B"], MoveBackwardBigWord), (&["0"], MoveToStartOfLineOrAccrue0),
+            (&["1", "5", "9"], AccrueCount),
             (&["^"], MoveToStartOfIndentation), (&["$"], MoveToEndOfLine),
             (&["g", "Home"], MoveToStart), (&["G", "End"], MoveToEnd),
             (&["H"], MoveToTopOfVisibleArea), (&["M"], MoveToMiddleOfVisibleArea),
             (&["L"], MoveToBottomOfVisibleArea), (&["C-b", "PageUp"], PageUp),
             (&["C-f", "PageDown"], PageDown), (&["C-u"], PageUpHalfScreen),
             (&["C-d"], PageDownHalfScreen), (&["["], PreviousMark), (&["]"], NextMark),
-            (&["C-y"], ScrollUp), (&["C-e"], ScrollDown), (&["v", " "], ToggleCharacterSelection),
-            (&["V"], ToggleLineSelection), (&["C-v", "C-Space"], ToggleBoxSelection), (&["o"], Swap),
+            (&["C-y"], ScrollUp), (&["C-e"], ScrollDown), (&["v", " ", "C-Space"], ToggleCharacterSelection),
+            (&["V"], ToggleLineSelection), (&["C-v"], ToggleBoxSelection), (&["o"], Swap),
             (&["y", "C-k"], CopySelection), (&["q", "Esc"], Quit), (&["C-c", "C-g"], ExitCopyMode),
             (&["/"], ShowFindPanel), (&["x"], None),
         ];
@@ -544,6 +566,9 @@ mod tests {
         assert_eq!(Action::ScrollUp.name(), "ScrollUp");
         assert_eq!(Action::MoveToTopOfVisibleArea.name(), "MoveToTopOfVisibleArea");
         assert_eq!(Action::MoveToStartOfNextLine.name(), "MoveToStartOfNextLine");
+        // The dict's names for "0" and the digits (the count rule reads them first).
+        assert_eq!(action_for("0").name(), "MoveToStartOfLineOrAccrue0");
+        assert_eq!(action_for("7").name(), "AccrueCount");
         let mut n = 0;
         assert!(accrue(&mut n, "3"));
         assert_eq!(n, 3);

@@ -234,7 +234,7 @@ pub fn method(a: Action) -> Option<&'static str> {
         Action::MoveToBottomOfVisibleArea => "moveToBottomOfVisibleArea",
         Action::MoveToMiddleOfVisibleArea => "moveToMiddleOfVisibleArea",
         Action::MoveToTopOfVisibleArea => "moveToTopOfVisibleArea",
-        Action::MoveToStartOfLine => "moveToStartOfLine",
+        Action::MoveToStartOfLine | Action::MoveToStartOfLineOrAccrue0 => "moveToStartOfLine",
         Action::MoveToEndOfLine => "moveToEndOfLine",
         Action::Swap => "swap",
         Action::ScrollUp => "scrollUp",
