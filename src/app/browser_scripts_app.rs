@@ -760,6 +760,8 @@ impl App {
                 }
                 // `BM:1254`: a navigation that starts turns copy mode off (the page's cursor is gone).
                 self.browser_copy_mode_set(pane, false);
+                // The rows Find Globally holds for this pane are the old page's text.
+                self.global_pane_gone(pane);
                 let dones: Vec<JsDone> = match self.browser_views.get_mut(&pane) {
                     // The setup's own calls and checks are not a page's: they are kept.
                     Some(bv) if bv.world.setup.is_none() => {

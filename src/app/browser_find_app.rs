@@ -767,6 +767,9 @@ mod tests {
         assert!(between(me, "pub(super) fn global_pane_gone", "pub(super) fn global_closed").contains("drop_pane_rows") && between(me, "pub(super) fn global_closed", "pub(super) fn browser_global_reveal").contains("self.global_error = None"));
         let scripts = prod(include_str!("browser_scripts_app.rs"));
         assert!(between(scripts, "pub(super) fn browser_reset_world", "// --- Setup ---").contains("self.global_pane_gone(pane)"));
+        // A plain main-frame navigation drops them too (final review I1).
+        let nav = between(scripts, "// A main-frame navigation began: every call still waiting is over", "self.browser_tip_clear(pane)");
+        assert!(nav.contains("self.global_pane_gone(pane)"), "a navigated page keeps no Find Globally rows");
         let m = prod(include_str!("mod.rs"));
         assert!(between(m, "fn close_pane(&mut self", "self.single_use_ended(id)").contains("self.global_pane_gone(id)") && m.contains("global_generation: 1,"));
         assert!(ev.contains("GlobalEvent::Close => self.global_closed()") && f.contains("CloseRequested => self.global_closed()"));
