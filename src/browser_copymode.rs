@@ -6,6 +6,7 @@
 use serde_json::Value;
 
 use crate::browser_js::{self, Inject, UserScript, World};
+use crate::browser_world;
 use crate::copymode::{self, Action};
 
 /// The user script's identifier (`BM:347`).
@@ -138,6 +139,19 @@ pub fn keys_on_js(secret: &str, on: bool) -> String {
         return String::new();
     }
     format!("window.__tandemCopyModeKeys && window.__tandemCopyModeKeys('{secret}', {on});")
+}
+
+/// The `Runtime.evaluate` parameters that tell a Tandem world made mid-session that copy mode is on
+/// (`Runtime.executionContextCreated`'s JSON): the one composition the app sends for a late iframe
+/// and the probe sends for the same event. None for a context that is not Tandem's isolated world
+/// or a secret that is not plain.
+pub fn new_context_params(secret: &str, context_json: &str) -> Option<serde_json::Value> {
+    let js = keys_on_js(secret, true);
+    if js.is_empty() {
+        return None;
+    }
+    let unique = browser_world::isolated_unique(context_json)?;
+    Some(browser_world::evaluate_params(&unique, &js))
 }
 
 /// `BCH:31-39`.
@@ -300,6 +314,20 @@ mod tests {
             Step::Script(t) => t,
             other => panic!("not a script: {other:?}"),
         }
+    }
+
+    /// The late-iframe switch (final wave): Tandem's isolated context gets the keys-on script by
+    /// unique id; any other context, or a secret that is not plain, gets nothing.
+    #[test]
+    fn a_late_world_is_told_by_its_unique_id() {
+        let ev = |name: &str, kind: &str| format!(r#"{{"context":{{"id":7,"name":"{name}","uniqueId":"u-9","auxData":{{"type":"{kind}"}}}}}}"#);
+        let p = new_context_params("abc", &ev(browser_world::WORLD_NAME, "isolated")).expect("Tandem's world");
+        assert_eq!(p["uniqueContextId"], "u-9");
+        assert_eq!(p["expression"], keys_on_js("abc", true));
+        assert!(new_context_params("abc", &ev("page", "default")).is_none(), "a page context");
+        assert!(new_context_params("abc", &ev(browser_world::WORLD_NAME, "default")).is_none(), "named like Tandem's but not isolated");
+        assert!(new_context_params("a'b", &ev(browser_world::WORLD_NAME, "isolated")).is_none(), "a secret that is not plain");
+        assert!(new_context_params("abc", "not json").is_none());
     }
 
     /// 13x3 final wave (Task 8 minor 10): a huge count repeats MAX_REPEAT times, not 5000.

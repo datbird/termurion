@@ -75,8 +75,8 @@ impl App {
         if !self.is_browser_copy_mode(pane) || !self.client_open(pane) {
             return;
         }
-        let (Some(secret), Some(unique)) = (self.browser_view_secret(pane).map(str::to_string), super::browser_input_app::isolated_unique(json)) else { return };
-        let params = crate::browser_world::evaluate_params(&unique, &cm::keys_on_js(&secret, true));
+        let Some(secret) = self.browser_view_secret(pane).map(str::to_string) else { return };
+        let Some(params) = cm::new_context_params(&secret, json) else { return };
         self.devtools_send(pane, session, "Runtime.evaluate", &params, Box::new(|_, _, _| {}));
     }
 
@@ -182,7 +182,7 @@ mod tests {
         assert!(apply.contains("Step::Leave { stop_selecting }") && apply.contains("STOP_SELECTING_JS") && apply.contains("self.browser_find_command(pane, \"performFindPanelAction:\", \"Find...\")"));
         // A new world mid-session gets the switch; the unique id, never the numeric one.
         let ctx = between(me, "pub(super) fn browser_copy_mode_new_context", "/// One `KEY_HANDLER` message");
-        assert!(ctx.contains("isolated_unique(json)") && ctx.contains("self.client_open(pane)") && ctx.contains("\"Runtime.evaluate\""));
+        assert!(ctx.contains("cm::new_context_params(&secret, json)") && ctx.contains("self.client_open(pane)") && ctx.contains("\"Runtime.evaluate\""));
         // The menu: toggling, the check and the enable.
         let cm = prod(include_str!("copymode_ui.rs"));
         let run = between(cm, "pub(super) fn run_copymode_command", "pub(super) fn leave_copy_mode");

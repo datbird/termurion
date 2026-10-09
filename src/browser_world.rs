@@ -72,6 +72,15 @@ pub fn evaluate_params(unique_context_id: &str, expression: &str) -> Value {
     json!({"expression": expression, "uniqueContextId": unique_context_id, "awaitPromise": true, "returnByValue": true, "userGesture": false})
 }
 
+/// The unique id of a `Runtime.executionContextCreated` event's context when it is Tandem's own
+/// isolated world (named so and of type "isolated"); None for any other context.
+pub fn isolated_unique(json: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(json).ok()?;
+    let c = &v["context"];
+    let named = c["name"].as_str() == Some(WORLD_NAME) && c.pointer("/auxData/type").and_then(|t| t.as_str()) == Some("isolated");
+    c["uniqueId"].as_str().filter(|_| named).map(str::to_string)
+}
+
 /// The value of a `Runtime.evaluate` answer; `undefined` is null, an exception is the error text.
 pub fn evaluate_result(json: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_str(json).map_err(|_| "the answer is not JSON".to_string())?;

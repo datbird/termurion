@@ -34,10 +34,7 @@ const MAX_TEXT: usize = 1_048_576;
 /// The unique id of the Tandem world named by a `Runtime.executionContextCreated` event (never the
 /// numeric id, which is reused); None for any other context.
 pub(super) fn isolated_unique(json: &str) -> Option<String> {
-    let v = serde_json::from_str::<serde_json::Value>(json).ok()?;
-    let c = &v["context"];
-    let named = c["name"].as_str() == Some(crate::browser_world::WORLD_NAME) && c.pointer("/auxData/type").and_then(|t| t.as_str()) == Some("isolated");
-    c["uniqueId"].as_str().filter(|_| named).map(str::to_string)
+    crate::browser_world::isolated_unique(json)
 }
 
 impl App {

@@ -2371,6 +2371,8 @@ mod probe {
         page_graph_acts: usize,
         /// Page-initiated windows the host let through (`Event::NewWindow`: user-initiated only).
         new_windows: Vec<String>,
+        /// Every `Runtime.executionContextCreated` event, in order, with its session.
+        created_json: Vec<(Option<String>, String)>,
     }
 
     impl Probe {
@@ -2435,6 +2437,7 @@ mod probe {
                 graph_tokens: HashMap::new(),
                 page_graph_acts: 0,
                 new_windows: Vec::new(),
+                created_json: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -2638,6 +2641,7 @@ mod probe {
             let s = session.as_deref();
             match name {
                 "Runtime.executionContextCreated" => {
+                    self.created_json.push((session.clone(), json.to_string()));
                     self.contexts.created(s, json);
                 }
                 "Runtime.executionContextDestroyed" => self.contexts.destroyed(s, json),
@@ -3343,6 +3347,16 @@ window.addEventListener('message', function (e) {
         let mut m = crate::browser_find::Model::new("probe2", "probe2global");
         let owed = run(&mut p, "(?i)https?://\\S+", "probe2", &mut m);
         assert!(owed.is_none(), "nothing matched as literal text, so no shortcuts are owed");
+        // The state that differs if the page had run the pattern: its full result holds matches.
+        let want = "main_probe2";
+        let total = p.clients(crate::browser_find::HANDLER).iter().rev().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["instanceId"] == want).map(|(_, b)| b["data"]["totalMatches"].clone());
+        assert_eq!(total, Some(json!(0)), "the page found nothing for a pattern it cannot run");
+        // And ask for the open shortcuts anyway: over zero results the engine shows no bubble. (Had
+        // the pattern run, this is where the two links' bubbles would appear.)
+        for c in m.navigation_shortcuts("open", &secret) {
+            let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": c})).expect("the command");
+            p.eval(None, &expr).expect("the shortcuts command runs");
+        }
         p.settle(1000);
         assert_eq!(bubbles(&mut p), 0, "no bubbles for a pattern the page cannot run");
         assert_eq!(p.rejected_bindings, 0);
@@ -3390,15 +3404,22 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
         find_start(&mut p, &secret, "https://x.invalid").expect("startFind runs in the Tandem world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
+        p.settle(1000);
         let before = p.clients(crate::browser_find::HANDLER).len();
         // Forged window messages, from the page itself and from the cross-origin child.
         p.page_eval("window.postMessage({type: 'iTermGlobalClick', clickData: {offset: 1, textContent: 'alpha', coordinates: {x: 1, y: 1}}}, '*'); window.postMessage({type: 'iTermIframeClick', frameId: 'guess', clickLocation: {coordinates: [0, 0]}, framePath: ['guess']}, '*'); frames[0].postMessage({forge: 'click', x: 1}, '*'); frames[0].postMessage({forge: 'iframe'}, '*'); 1").expect("the forgery runs");
         p.settle(500);
+        // Forged messages make the engine report nothing: its report count is unchanged.
+        assert_eq!(p.clients(crate::browser_find::HANDLER).len(), before, "a forged window message made the find engine report");
         // Navigation shortcuts on, as the person's command turns them on.
         find_command(&mut p, &secret, "startNavigationShortcuts", json!({"selectionAction": "open"})).expect("the shortcuts start");
         assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show");
         let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
         let label = label.as_str().expect("a label").to_lowercase();
+        // Count the page-side window.open calls the Tandem world makes (find-engine opens a link with
+        // window.open): the host's limiter drops a non-user window silently, so `new_windows` alone
+        // could not tell an accepted synthetic key from an ignored one.
+        p.eval(None, "window.__opens = 0; (function () { const o = window.open; window.open = function () { window.__opens += 1; return o.apply(window, arguments); }; })(); 1").expect("the open counter");
         // A synthetic key at the label: find-nav ignores it (R13x3-2), so the bubbles stay.
         let keys = serde_json::to_string(&label.chars().map(String::from).collect::<Vec<_>>()).unwrap();
         p.page_eval(&format!("for (const k of {keys}) {{ document.dispatchEvent(new KeyboardEvent('keydown', {{key: k, bubbles: true}})); }} 1")).expect("the synthetic keys run");
@@ -3409,6 +3430,7 @@ window.addEventListener('message', function (e) {
         assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
         // 2. The synthetic key picked nothing (R13x3-2), so no window was asked for: no NewWindow. The
         //    host's own user-gesture gate on a find-nav open is exercised only by the control below.
+        assert_eq!(p.eval(None, "window.__opens"), Ok(json!(0)), "find-nav took a synthetic key and tried to open a window");
         assert!(p.new_windows.is_empty(), "a page-initiated window got through: {:?}", p.new_windows);
         let after: Vec<String> = p.clients(crate::browser_find::HANDLER).iter().skip(before).filter_map(|(_, b)| b["action"].as_str().map(str::to_string)).collect();
         assert!(after.iter().all(|a| a == "currentChanged" || a == "resultsUpdated"), "only find's own reports followed: {after:?}");
@@ -3430,6 +3452,7 @@ window.addEventListener('message', function (e) {
             }
         }
         assert!(p.wait(10, |p| !p.new_windows.is_empty()), "control: a real key's pick opens a window through the host");
+        assert!(p.eval(None, "window.__opens").ok().and_then(|v| v.as_i64()).is_some_and(|n| n >= 1), "control: the counter sees the real pick");
         // 4. The engine still answers a real command after the forgeries.
         find_command(&mut p, &secret, "findNext", json!({})).expect("findNext still runs");
         assert_eq!(p.rejected_bindings, 0);
@@ -3727,7 +3750,8 @@ window.addEventListener('message', function (e) {
     /// copy mode on, a trusted "j" is reported by the iframe's world (a frame message) and the
     /// iframe page's own `keydown` listener sees nothing; a page's synthetic "y" in either frame
     /// changes nothing; an iframe added after copy mode started captures keys too once the new
-    /// context is told (`browser_copy_mode_new_context`). Needs the console session.
+    /// context is told, with the parameters `browser_copy_mode_new_context` composes (the shared
+    /// `new_context_params`; the app's wiring around it is source-pinned). Needs the console session.
     #[test]
     #[ignore]
     fn copy_mode_keys_in_iframes_and_untrusted() {
@@ -3757,11 +3781,15 @@ window.addEventListener('message', function (e) {
         assert_eq!(cursor_display(&mut p), CURSOR_SHOWN, "copy mode is still on");
         assert_eq!(selection(&mut p), "", "nothing was copied or selected");
         // An iframe added after copy mode started: its world takes keys once it is told.
+        let seen_before = p.created_json.len();
         p.page_eval("const f = document.createElement('iframe'); f.id = 'f2'; f.srcdoc = '<body tabindex=0><p>late</p></body>'; document.body.appendChild(f); 1").expect("an iframe is added");
         assert!(p.wait(10, |p| p.contexts.frames().len() == 2), "the new iframe has a Tandem world");
-        let js = cm::keys_on_js(&secret, true);
-        for f in p.contexts.frames() {
-            p.eval(Some(f), &js).expect("the new context is told");
+        // The app's own composition (`browser_copy_mode_new_context` calls the same function) for each
+        // context the page made after copy mode started; the probe does not send keys_on_js itself.
+        let late: Vec<(Option<String>, serde_json::Value)> = p.created_json[seen_before..].iter().filter_map(|(s, j)| cm::new_context_params(&secret, j).map(|v| (s.clone(), v))).collect();
+        assert!(!late.is_empty(), "the late iframe's Tandem world was announced");
+        for (session, params) in &late {
+            p.call_wait(session.as_deref(), "Runtime.evaluate", params).expect("the new context is told");
         }
         p.page_eval("document.getElementById('f2').contentWindow.focus(); document.getElementById('f2').contentDocument.body.focus(); 1").expect("focus moves into the new iframe");
         let n = p.clients(cm::KEY_HANDLER).len();
