@@ -277,6 +277,29 @@ pub fn inhibit_relaunch(d: &Descriptor, anchor_mode: Mode, had_program: bool) ->
     !program && mode_inhibits(anchor_mode)
 }
 
+/// Whether a restored session starts no program, worked out before its attach is tried and asked
+/// again after it (Task 9 review minor 3): an attach that fails leaves the session with no program,
+/// so a Code Review or Diff session then comes back idle too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Inhibit {
+    /// A buried Code Review or Diff member is being built (`inhibit_next`).
+    member: bool,
+    /// The anchor's mode, when its workgroup still exists, and whether it was on its overlay.
+    anchor: Option<(Mode, bool)>,
+}
+
+impl Inhibit {
+    pub fn of(d: Option<&Descriptor>, anchor_mode: Option<Mode>, member: bool) -> Inhibit {
+        Inhibit { member, anchor: d.zip(anchor_mode).map(|(d, m)| (m, d.anchor_pending)) }
+    }
+
+    /// The answer for a session that has a program from the session host (`had_program`) or not.
+    pub fn with(self, had_program: bool) -> bool {
+        let anchor = self.anchor.is_some_and(|(mode, pending)| !(had_program && !pending) && mode_inhibits(mode));
+        (self.member && !had_program) || anchor
+    }
+}
+
 /// The instance id a restored instance takes (`WC:adopt`): the saved one, unless it is taken or not
 /// one Tandem mints (the file's word), then a fresh one.
 pub fn resolve_instance_id(saved: &str, taken: &dyn Fn(&str) -> bool) -> String {

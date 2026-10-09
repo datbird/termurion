@@ -654,7 +654,8 @@ impl App {
             // member with no program to take back is an idle session, never a stray shell.
             let attach = super::restore_ui::attach_key(&session);
             let descriptor = if archive { None } else { self.restored_descriptor(&session, launch, name.is_some()) };
-            let inhibited = self.restore_inhibits(descriptor.as_ref(), attach.is_some()) && !archive;
+            let inhibit = self.restore_inhibits(descriptor.as_ref());
+            let inhibited = inhibit.with(attach.is_some()) && !archive;
             let id = if archive {
                 launched = false;
                 self.archived_pane(area, guid.as_deref())
@@ -666,11 +667,13 @@ impl App {
                         Some(id)
                     }
                     Err(e) => {
-                        self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
-                        if inhibited {
+                        // No program came back after all: a Code Review or Diff session is idle.
+                        if inhibit.with(false) {
+                            self.banners.set("reattach", format!("A running shell could not be taken back ({e})."));
                             launched = false;
                             self.start_idle_pane(area, guid.as_deref())
                         } else {
+                            self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
                             self.start_pane(area, guid.as_deref())
                         }
                     }

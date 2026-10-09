@@ -219,13 +219,14 @@ impl App {
         wr::Descriptor::from_value(session.get(crate::arrangement::WORKGROUP_KEY)?)
     }
 
-    /// Whether the restored anchor starts no program of its own (`shouldInhibitRelaunch`): its workgroup
-    /// still exists, its mode is Code Review or Diff and no program came back from the session host.
-    /// The next session built for a buried member asks the same through `inhibit_next`.
-    pub(super) fn restore_inhibits(&mut self, d: Option<&wr::Descriptor>, had_program: bool) -> bool {
+    /// Whether the restored session starts no program of its own (`shouldInhibitRelaunch`): the anchor
+    /// when its workgroup still exists, its mode is Code Review or Diff and no program came back from the
+    /// session host; a buried member through `inhibit_next`. Asked with or without a program, so a
+    /// failed attach is answered too.
+    pub(super) fn restore_inhibits(&mut self, d: Option<&wr::Descriptor>) -> wr::Inhibit {
         let member = std::mem::take(&mut self.workgroups.restoring.inhibit_next);
-        let anchor = d.and_then(|d| Some((d, self.workgroup_model.get(&d.workgroup_id)?.session(&d.anchor_id)?.mode))).is_some_and(|(d, mode)| wr::inhibit_relaunch(d, mode, had_program));
-        (member && !had_program) || anchor
+        let mode = d.and_then(|d| Some(self.workgroup_model.get(&d.workgroup_id)?.session(&d.anchor_id)?.mode));
+        wr::Inhibit::of(d, mode, member)
     }
 
     /// Notes what a restored session saved of the two toolbar toggles until it is adopted (P9).
@@ -613,6 +614,24 @@ mod tests {
         assert!(r.add(1, "A1".into(), descriptor(), None, true));
         r.pending[0].m.asked = true;
         assert!(r.guids.contains_key("A1") && r.guids.contains_key("B1") && !r.pending[0].m.released);
+    }
+
+    /// Task 9 review minor 3: a Code Review or Diff session whose shell could not be taken back comes
+    /// back idle, not with a stray shell: the failed attach asks again with no program.
+    #[test]
+    fn a_failed_reattach_of_a_review_or_diff_member_is_idle() {
+        let arrange = include_str!("arrange_ui.rs");
+        let tab = body(arrange, "    pub(super) fn build_tab(");
+        let failed = &tab[tab.find("Err(e) => {").unwrap()..];
+        let failed = &failed[..failed.find("None if").unwrap()];
+        assert!(failed.contains("if inhibit.with(false)"), "{failed}");
+        let d = descriptor();
+        let anchor = wr::Inhibit::of(Some(&d), Some(crate::workgroup::Mode::Diff), false);
+        assert!(!anchor.with(true) && anchor.with(false), "a Diff anchor: idle unless a program came back");
+        let member = wr::Inhibit::of(None, None, true);
+        assert!(!member.with(true) && member.with(false), "a buried Code Review or Diff member: the same");
+        let plain = wr::Inhibit::of(Some(&d), Some(crate::workgroup::Mode::Regular), false);
+        assert!(!plain.with(false) && !plain.with(true));
     }
 
     fn descriptor() -> wr::Descriptor {
