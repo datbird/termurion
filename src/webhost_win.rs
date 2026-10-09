@@ -2894,6 +2894,43 @@ mod probe {
         p.finish();
     }
 
+    /// 13x3 Task 3 (frame graph for find): a page with a `srcdoc` iframe registers both frames with the
+    /// production `Frames` within 5 s, and a rediscovery (`REQUEST_REPORT`) completes both phases:
+    /// `prepareForReport` then `report` in each frame, ending with the main frame's graph naming the
+    /// child by the id it registered. The forged-message half of the brief is
+    /// `probe_page_cannot_reach_evaluate_in_frame` (one test, one path). Needs the console session.
+    #[test]
+    #[ignore]
+    fn graph_reaches_a_srcdoc_iframe() {
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>top</title></head><body><iframe srcdoc=\"&lt;p&gt;x&lt;/p&gt;\"></iframe></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], client_sources(&secret, false)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.view().watch_frames();
+        p.load(PAGE);
+        assert!(p.wait(5, |p| p.graph_ids().len() == 2), "two frames registered within 5 s: {:?}", p.graph_ids());
+        let ids = p.graph_ids();
+        let main_id = ids.iter().find(|(f, _)| f.is_none()).expect("the main frame registered").1.clone();
+        let child = ids.iter().find(|(f, _)| f.is_some()).expect("the iframe registered").clone();
+        assert_eq!(p.graph.as_ref().unwrap().lookup(&child.1), Some(child.0), "the graph resolves the child's id to its frame");
+        let ask = "new Promise(function (res) { window[Symbol.for('iTermGraphDiscovery')].rediscover(res, 5000); })";
+        let before = p.log.len();
+        let g = p.eval(None, ask).expect("the rediscovery completes");
+        assert_eq!(g["frameId"], json!(main_id), "{g}");
+        assert_eq!(g["children"].as_array().map(Vec::len), Some(1), "{g}");
+        assert_eq!(g["children"][0]["frameId"], json!(child.1), "the main frame's graph names the child by its registered id: {g}");
+        let evals: Vec<&String> = p.log[before..].iter().filter(|l| l.starts_with("Runtime.evaluate")).collect();
+        let phase = |name: &str| evals.iter().filter(|l| l.contains(name)).count();
+        assert_eq!(phase("prepareForReport"), 2, "phase one reached both frames: {evals:?}");
+        assert_eq!(phase(".report("), 2, "phase two reached both frames: {evals:?}");
+        let last_prepare = evals.iter().rposition(|l| l.contains("prepareForReport")).unwrap();
+        let first_report = evals.iter().position(|l| l.contains(".report(")).unwrap();
+        assert!(last_prepare < first_report, "reports start after every frame prepared");
+        assert_eq!(p.page_graph_acts, 0);
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
     #[test]
     #[ignore]
     fn probe_world_reaches_every_frame() {

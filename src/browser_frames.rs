@@ -110,9 +110,11 @@ pub struct Frames {
 }
 
 impl Frames {
+    /// An id belongs to the frame that registered it until that frame is gone (13x3 Task 3): another
+    /// frame naming a taken id is refused, so no frame can take over another's id.
     pub fn register(&mut self, id: &str, frame: Option<u64>) {
-        if let Some(e) = self.order.iter_mut().find(|(k, _)| k == id) {
-            e.1 = frame;
+        if self.order.iter().any(|(k, _)| k == id) {
+            // Known: nothing moves.
         } else if self.order.len() < MAX_FRAMES {
             self.order.push((id.to_string(), frame));
         }
@@ -195,7 +197,9 @@ impl Frames {
                 acts
             }
             Msg::Eval { request, target, sender, code } => {
-                let Some(sender_frame) = self.lookup(&sender) else { return Vec::new() };
+                // The sender is the frame the message came from (the host knows it); a body naming
+                // another frame's id as its own is dropped (13x3 Task 3).
+                let Some(sender_frame) = self.lookup(&sender).filter(|f| *f == r.frame) else { return Vec::new() };
                 match self.lookup(&target) {
                     None => vec![self.loose_act(sender_frame, eval_wrapper(&eval_response_js(&request, None)))],
                     Some(target_frame) => {
@@ -311,7 +315,7 @@ mod tests {
         assert_eq!(g.lookup("f0"), Some(Some(0)));
         assert_eq!(g.lookup("f599"), None, "past 512 a frame is not registered");
         g.register("f0", Some(5));
-        assert_eq!(g.lookup("f0"), Some(Some(5)), "a known id may change its frame");
+        assert_eq!(g.lookup("f0"), Some(Some(0)), "a known id stays with its frame");
     }
 
     /// The whole flow, with no web view: what each message makes Tandem evaluate, and where.
@@ -347,7 +351,7 @@ mod tests {
         assert!(next[0].code.contains("handleEvalResponse(\"q\", \"T\")"));
         // An unknown target answers the sender at once with null; an unknown sender is dropped.
         let none = json!({"type": "EVAL_IN_FRAME", "target": "zz", "sender": "a", "requestID": "q2", "code": "1"});
-        let acts = g.handle(&routed(World::Client, None, none), true, &mut f);
+        let acts = g.handle(&routed(World::Client, Some(7), none), true, &mut f);
         assert_eq!(acts.len(), 1);
         assert_eq!(acts[0].frame, Some(7));
         assert!(acts[0].code.contains("handleEvalResponse(\"q2\", null)"));
@@ -366,6 +370,43 @@ mod tests {
         g.will_navigate();
         let (_, next) = g.answered(acts[0].token, &Ok(json!(null)));
         assert!(next.is_empty());
+    }
+
+    /// 13x3 Task 3: a frame graph built from messages must not let one frame name or take another
+    /// frame's id. The frame of a Client message comes from the host, never the body: an id stays
+    /// with the frame that registered it, and an evaluation is answered only for the frame whose
+    /// message it came in.
+    #[test]
+    fn graph_ids_cannot_be_spoofed() {
+        let mut g = Frames::default();
+        let mut f = fresh();
+        let reg = |id: &str| json!({"type": "REGISTER_FRAME", "frameId": id});
+        g.handle(&routed(World::Client, None, reg("m")), true, &mut f);
+        g.handle(&routed(World::Client, Some(7), reg("a")), true, &mut f);
+        // Another frame registering a taken id does not move it; the owner may repeat itself.
+        g.handle(&routed(World::Client, Some(9), reg("a")), true, &mut f);
+        assert_eq!(g.lookup("a"), Some(Some(7)), "a taken id stays with its frame");
+        g.handle(&routed(World::Client, Some(9), reg("m")), true, &mut f);
+        assert_eq!(g.lookup("m"), Some(None), "the main frame's id cannot be taken");
+        g.handle(&routed(World::Client, Some(7), reg("a")), true, &mut f);
+        assert_eq!(g.lookup("a"), Some(Some(7)));
+        // Frame 9 is unregistered under its own id; it cannot send as "a" or "m".
+        let as_sender = |s: &str| json!({"type": "EVAL_IN_FRAME", "target": "m", "sender": s, "requestID": "q", "code": "1"});
+        assert!(g.handle(&routed(World::Client, Some(9), as_sender("a")), true, &mut f).is_empty(), "frame 9 is not frame a");
+        assert!(g.handle(&routed(World::Client, Some(9), as_sender("m")), true, &mut f).is_empty());
+        assert!(g.handle(&routed(World::Client, Some(7), as_sender("m")), true, &mut f).is_empty(), "nor frame 7 the main frame");
+        // The real sender still works.
+        assert_eq!(g.handle(&routed(World::Client, Some(7), as_sender("a")), true, &mut f).len(), 1);
+        // A page-world message cannot take or name an id either.
+        g.handle(&routed(World::Page, Some(9), reg("a")), true, &mut f);
+        assert_eq!(g.lookup("a"), Some(Some(7)));
+        assert!(g.handle(&routed(World::Page, Some(7), as_sender("a")), true, &mut f).is_empty());
+        // Ids that look like script are data: they are only compared, and JSON-encoded when composed.
+        let evil = "a\"); alert(1); (\"";
+        g.handle(&routed(World::Client, Some(9), reg(evil)), true, &mut f);
+        let acts = g.handle(&routed(World::Client, Some(9), json!({"type": "EVAL_IN_FRAME", "target": "zz", "sender": evil, "requestID": evil, "code": "1"})), true, &mut f);
+        assert_eq!(acts.len(), 1);
+        assert!(acts[0].code.contains(&browser_js::js_string(evil)) && !acts[0].code.contains(&format!("({evil}")), "{}", acts[0].code);
     }
 
     /// R13x23-2, C2: a page-world message, or any message while the world is not ready, makes
