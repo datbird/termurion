@@ -3595,6 +3595,51 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// 13x3 final wave (Task 8 minor 1): one key is one line, and Esc leaves. On four one-line
+    /// paragraphs, a single trusted "j" moves the cursor to the next line and no further (a key
+    /// delivered twice, once to the listener and once through the DOM, would skip one), and a
+    /// trusted Escape is reported by the listener as Leave. The gate's own path for Esc
+    /// (WebView2's AcceleratorKeyPressed) cannot be raised from DevTools: that half stays with
+    /// the person's check in the checklist. Needs the console session.
+    #[test]
+    #[ignore]
+    fn copy_mode_one_key_is_one_line_and_escape_leaves() {
+        use crate::browser_copymode as cm;
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>l</title></head><body><p>aaa</p><p>bbb</p><p>ccc</p><p>ddd</p></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
+        p.load(PAGE);
+        p.view().focus();
+        copy_on(&mut p, &secret);
+        // The index of the paragraph whose line the cursor is on (nearest top).
+        let line = |p: &mut Probe| -> i64 {
+            p.eval(None, "(function () { const t = parseFloat(document.getElementById('iterm-copy-mode-cursor').style.top) - window.scrollY; const ps = Array.from(document.querySelectorAll('p')); let best = 0; ps.forEach(function (e, i) { if (Math.abs(e.getBoundingClientRect().top - t) < Math.abs(ps[best].getBoundingClientRect().top - t)) { best = i; } }); return best; })()")
+                .ok()
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1)
+        };
+        let start = line(&mut p);
+        assert!(start >= 0 && start < 3, "the cursor starts on a line with a next one: {start}");
+        let mut m = cm::Model::default();
+        copy_press(&mut p, &mut m, &secret, 'j');
+        assert_eq!(line(&mut p), start + 1, "one j is one line");
+        copy_press(&mut p, &mut m, &secret, 'k');
+        assert_eq!(line(&mut p), start, "one k is one line back");
+        // Escape: the listener reports it and the model leaves.
+        let n = p.clients(cm::KEY_HANDLER).len();
+        for kind in ["keyDown", "keyUp"] {
+            p.call_wait(None, "Input.dispatchKeyEvent", &json!({"type": kind, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})).expect("the real Escape");
+        }
+        assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "Escape reached the world's listener");
+        let (_, body) = p.clients(cm::KEY_HANDLER).pop().unwrap();
+        let (key, ctrl, alt) = cm::key_of(&body).expect("a typed key body");
+        let name = cm::key_name(&key, ctrl, alt).expect("a named key");
+        assert_eq!(name, "Esc");
+        assert_eq!(cm::Model::default().key(&name, &secret), cm::Step::Leave { stop_selecting: false });
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
     /// 13x3 Task 9 (R13x23-3, C1): a page cannot hijack copy mode. Its first script assigns
     /// `window.iTerm2CopyMode` with a recorder for every method and a recording `selecting`, and
     /// tries to flip every global that looks like a key switch; copy mode still drives the real

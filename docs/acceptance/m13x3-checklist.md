@@ -25,7 +25,7 @@ word "the" many times, words "The" and "there", and links; `frames.html`:
 ## A. The desktop probe (the controller runs it with Robert's yes)
 
 Command: `scripts/probe-desktop.ps1` (default filters `webhost_win::probe::` and
-`webhost_win::tests::menu_gets_our_items`: 21 probe tests and the menu test, 22). The ten new
+`webhost_win::tests::menu_gets_our_items`: 22 probe tests and the menu test, 23). The eleven new
 tests are:
 
 - [ ] `graph_reaches_a_srcdoc_iframe`
@@ -38,12 +38,13 @@ tests are:
 - [ ] `browser_copy_mode_follows_iterm2`
 - [ ] `page_cannot_hijack_copy_mode`
 - [ ] `copy_mode_keys_in_iframes_and_untrusted`
+- [ ] `copy_mode_one_key_is_one_line_and_escape_leaves`
 
 Notes: the Client bridge cap's JavaScript arithmetic has no in-tree runtime test (browser_js::tests
 pins its text and that a payload at CAP_BUDGET passes the gate); only `find_result_is_capped_in_the_bridge`
 and `find_result_is_capped_for_wide_text` run the script itself. The second block of
-`page_cannot_hijack_copy_mode` (no copy scripts) cannot fail by construction, and the probe does not
-read the clipboard. Record the output beside `probe-run-2026-10-07c.txt`.
+`page_cannot_hijack_copy_mode` (no copy scripts) now asserts the page received the key, no cursor
+exists and nothing is selected, so it can fail; the probe does not read the clipboard. Record the output beside `probe-run-2026-10-07c.txt`.
 
 ## B. Find bar on a real page
 
@@ -83,10 +84,10 @@ read the clipboard. Record the output beside `probe-run-2026-10-07c.txt`.
 
 ## F. Keys Tandem must not swallow in copy mode
 
-- [ ] With copy mode on, Alt+F4 closes the window and F10 reaches the host as it does for a terminal pane (Task 8 minor 1). If either is swallowed, record it; the fix is in `GateState::owner`.
+- [ ] With copy mode on, Alt+F4 closes the window and F10 reaches the host as it does for a terminal pane (Task 8 minor 1). `GateState::owner` excludes them (`system_key`, final wave); if either is still swallowed, record it.
 - [ ] A person's key binding on Ctrl+B/F/U/D wins over that copy-mode key on a page (the ruled order); a binding on a plain letter does not (known, WebView2 raises no accelerator event).
 - [ ] Keys with no copy-mode meaning (Tab, Enter, F5) do nothing while copy mode is on (known).
-- [ ] Copy mode left on after a crash of the page process or a world restart: the page gets its keyboard back. If it does not, that is Task 8 minor 2 (copy mode stuck on until the next navigation).
+- [ ] Copy mode left on after a crash of the page process or a world restart: the page gets its keyboard back. The gate holds copy mode only while the world is open and both world transitions clear it (final wave, Task 8 minor 2); if the keyboard stays dead, that is a regression.
 
 ## G. A page cannot start or steer copy mode
 
