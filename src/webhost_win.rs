@@ -3619,9 +3619,9 @@ window.addEventListener('message', function (e) {
     }
 
     /// 13x3 final wave (Task 8 minor 1): one key is one line, and Esc leaves. On four one-line
-    /// paragraphs, a single trusted "j" moves the cursor to the next line and no further (a key
-    /// delivered twice, once to the listener and once through the DOM, would skip one), and a
-    /// trusted Escape is reported by the listener as Leave. The gate's own path for Esc
+    /// paragraphs, a single trusted "j" moves the cursor to the next line and no further, and the listener reports it exactly once
+    /// (one new KEY_HANDLER message after a settle, so a doubled report fails). The gate's own
+    /// delivery path is the checklist's, not this probe's. A trusted Escape is reported by the listener as Leave. The gate's own path for Esc
     /// (WebView2's AcceleratorKeyPressed) cannot be raised from DevTools: that half stays with
     /// the person's check in the checklist. Needs the console session.
     #[test]
@@ -3644,7 +3644,12 @@ window.addEventListener('message', function (e) {
         let start = line(&mut p);
         assert!(start >= 0 && start < 3, "the cursor starts on a line with a next one: {start}");
         let mut m = cm::Model::default();
+        let before = p.clients(cm::KEY_HANDLER).len();
         copy_press(&mut p, &mut m, &secret, 'j');
+        // A key the listener reported twice would add a second message; the probe applies one step
+        // per press, so the count (after a settle) is what shows a double delivery.
+        p.settle(300);
+        assert_eq!(p.clients(cm::KEY_HANDLER).len(), before + 1, "one trusted j is reported exactly once");
         assert_eq!(line(&mut p), start + 1, "one j is one line");
         copy_press(&mut p, &mut m, &secret, 'k');
         assert_eq!(line(&mut p), start, "one k is one line back");
