@@ -82,9 +82,10 @@ fn final_name(p: &Path) -> Option<String> {
 /// Whether the archive's entry `name` may be copied to `dest`: never a name Import keeps out
 /// (`se::kept_from_import`: hidden, excluded, or one Windows reads as another entry), and never
 /// onto an existing entry whose real name is another (an alias the rule did not foresee) or is
-/// itself kept out (Task 9 findings r2).
+/// itself kept out (Task 9 findings r2), and never onto an existing link, junction or other reparse
+/// point, which the copy would follow (Task 9 re-review r2).
 fn importable(name: &str, dest: &Path, top: bool) -> bool {
-    if se::kept_from_import(name, top) {
+    if se::kept_from_import(name, top) || is_reparse(dest) {
         return false;
     }
     match final_name(dest) {
@@ -889,6 +890,28 @@ mod tests {
             let refused = got.as_ref().err().is_some_and(|e| e.starts_with("The archive is not safe to extract") && e.contains("is a link"));
             assert!(after == "ours" && refused && *left == 0 && !marker, "{target} (a file follows: {follow}): canary {after:?}, {got:?}, left {left}; all: {seen:?}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 9 re-review r2, new minor 2: an existing entry of `%APPDATA%\Tandem` that is itself a
+    /// link or junction is never written through: the import skips it.
+    #[test]
+    fn import_never_writes_through_a_link_at_the_destination() {
+        let root = temp("destlink");
+        let (to, outside) = (root.join("Tandem"), root.join("Outside"));
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let made = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"]).arg(to.join("notes")).arg(&outside).output().unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let staging = se::staging_dir(&root, "D");
+        std::fs::create_dir_all(staging.join(r"app-support\notes")).unwrap();
+        std::fs::write(staging.join(r"app-support\notes\x.txt"), "from the archive").unwrap();
+        std::fs::write(staging.join(r"app-support\kept.txt"), "kept").unwrap();
+        std::fs::write(to.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&to).is_empty());
+        assert!(!outside.join("x.txt").exists(), "written through the junction");
+        assert_eq!(std::fs::read_to_string(to.join("kept.txt")).unwrap(), "kept", "the rest is imported");
+        let _ = std::fs::remove_dir(to.join("notes"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
