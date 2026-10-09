@@ -1,0 +1,529 @@
+//! The find bar and the find menu on a browser pane (milestone 13x3, Task 4). The bar is Tandem's
+//! own (`find_ui::FindState`, drawn in a strip above the page); the search is iTerm2's JS engine in
+//! the isolated world, reached through `browser_js_call`, one command at a time. Everything a page
+//! says arrives as a Client-world message and only the model reads it.
+
+use super::find_ui::{FindState, Outcome};
+use super::*;
+use crate::browser_find::{self, Model, Update};
+use crate::browser_js::{Routed, World};
+use serde_json::{Value, json};
+
+/// What the bar's key outcome does on a browser pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BarAct {
+    Nothing,
+    /// Find Next (`true`) or Find Previous: Return and Shift+Return are always forward here.
+    Step { forward: bool },
+    Close,
+}
+
+/// The bar's outcome for a browser pane: Tab (grow the match) and Alt+Return (paste the match) are
+/// terminal text actions and do nothing; Return searches forward with or without Shift (`PS:9158`).
+pub(super) fn bar_act(o: Outcome) -> BarAct {
+    match o {
+        Outcome::Step { .. } => BarAct::Step { forward: browser_find::enter_forward() },
+        Outcome::Close => BarAct::Close,
+        _ => BarAct::Nothing,
+    }
+}
+
+/// The menu's Find Next and Find Previous after `SwapFindNextPrevious` (`PT:15329-15343`,
+/// `FD:648-668`): true is `findNext`. It is the terminal's rule (`step_direction`), read the other
+/// way: the terminal's "up" is the browser's `searchPrevious`.
+pub(super) fn menu_forward(previous: bool, swap: bool) -> bool {
+    !find_ui::step_direction(previous, swap)
+}
+
+/// The commands the bar's query starts: a new query is forced (`PB:480-487`), an empty one clears,
+/// the owed global hide goes first.
+pub(super) fn search_commands(model: &mut Model, query: &str, mode: crate::find::Mode, force: bool, secret: &str) -> Vec<Value> {
+    model.start(query, browser_find::browser_mode(mode, query), force, secret)
+}
+
+/// Find Next or Previous: the owed hide first, the step only while a search is active.
+pub(super) fn step_commands(model: &mut Model, forward: bool, secret: &str) -> Vec<Value> {
+    if forward { model.next(secret) } else { model.previous(secret) }
+}
+
+/// Closing the bar clears the page (`PS:8856-8862`, `BVC:247-249`).
+pub(super) fn close_commands(model: &mut Model, secret: &str) -> Vec<Value> {
+    vec![model.clear(secret)]
+}
+
+/// Opening Find with typing: the bar has the keyboard, the address field lets go.
+pub(super) fn find_takes_keyboard(address_keys: &mut bool, f: &mut FindState) {
+    *address_keys = false;
+    f.typing = true;
+}
+
+/// The address field takes the keyboard: the find bar stops typing.
+pub(super) fn address_takes_keyboard(address_keys: &mut bool, f: Option<&mut FindState>) {
+    *address_keys = true;
+    if let Some(f) = f {
+        f.typing = false;
+    }
+}
+
+/// The page took the keyboard back (a click, `Event::Focus(view, true)`): neither field types.
+pub(super) fn page_takes_keyboard(address_keys: &mut bool, f: Option<&mut FindState>) {
+    *address_keys = false;
+    if let Some(f) = f {
+        f.typing = false;
+    }
+}
+
+/// Whether a focus change may hand the keyboard to the page: only when no Tandem field has it.
+pub(super) fn page_may_focus(address_keys: bool, find_typing: bool) -> bool {
+    !address_keys && !find_typing
+}
+
+impl App {
+    /// Whether pane `pane`'s find bar has the keyboard (a bar that is open and typing).
+    pub(super) fn browser_find_typing(&self, pane: PaneId) -> bool {
+        self.finds.get(&pane).is_some_and(|f| f.open && f.typing)
+    }
+
+    /// Whether the page may be given the keyboard now (no Tandem field has it).
+    pub(super) fn browser_page_may_focus(&self, pane: PaneId) -> bool {
+        page_may_focus(self.browser_views.get(&pane).is_some_and(|b| b.bar.keys), self.browser_find_typing(pane))
+    }
+
+    /// Opening the bar with typing (Find..., or the status bar Search Tool's field): the bar and not
+    /// the page has the keyboard. `focus_window` (the one `SetFocus` the address field also uses)
+    /// takes Win32 keyboard focus from the web view's child window; winit's `focus_window` only
+    /// activates the top-level window (I3), so it is used first when the window is not in front.
+    /// The page no longer holds the keyboard (`FocusStep::ReturnFromChild`'s bookkeeping).
+    pub(super) fn browser_find_take_keyboard(&mut self, pane: PaneId) {
+        if let (Some(bv), Some(f)) = (self.browser_views.get_mut(&pane), self.finds.get_mut(&pane)) {
+            find_takes_keyboard(&mut bv.bar.keys, f);
+            bv.bar.suggestions.clear();
+            bv.bar.call = None;
+        }
+        let Some(hwnd) = self.hwnd() else { return };
+        if crate::webhost_win::foreground_root() != Some(hwnd) {
+            if let Some(g) = self.gpu.as_ref() {
+                g.window.focus_window();
+            }
+        }
+        crate::webhost_win::focus_window(hwnd);
+        if self.web_focus_held.is_some() && self.web_focus_held == self.current_window() {
+            self.web_focus_held = None;
+            self.sync_web_keyboard();
+        }
+    }
+
+    /// The address field takes the keyboard (`focus_url_bar`): the find bar stops typing.
+    pub(super) fn browser_find_yield_to_address(&mut self, pane: PaneId) {
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            address_takes_keyboard(&mut bv.bar.keys, self.finds.get_mut(&pane));
+        }
+    }
+
+    /// The page has the keyboard (`Event::Focus(view, true)`).
+    pub(super) fn browser_page_took_keyboard(&mut self, pane: PaneId) {
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            page_takes_keyboard(&mut bv.bar.keys, self.finds.get_mut(&pane));
+            bv.bar.suggestions.clear();
+            bv.bar.call = None;
+        }
+    }
+
+    /// The bar's query as a search: a fresh query is forced (`PB:480-487`). The page answers through
+    /// `browser_find_message`; the bar's count comes from the model.
+    pub(super) fn browser_find_search(&mut self, pane: PaneId, force: bool) {
+        let mode = self.find_mode();
+        let Some(query) = self.finds.get(&pane).map(|f| f.query.clone()) else { return };
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        let cmds = search_commands(&mut bv.find, &query, mode, force, &secret);
+        self.browser_find_send(pane, cmds);
+        self.redraw();
+    }
+
+    /// Find Next (`forward`) or Find Previous. A search the delay still holds, or a remembered query
+    /// with nothing active on the page (the bar was closed), is started instead.
+    pub(super) fn browser_find_step(&mut self, pane: PaneId, forward: bool) {
+        let pending = self.finds.get_mut(&pane).is_some_and(|f| std::mem::take(&mut f.pending));
+        let remembered = self.finds.get(&pane).is_some_and(|f| !f.query.is_empty()) && self.browser_views.get(&pane).is_some_and(|b| b.find.active_term().is_none());
+        if pending || remembered {
+            return self.browser_find_search(pane, true);
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        let cmds = step_commands(&mut bv.find, forward, &secret);
+        self.browser_find_send(pane, cmds);
+    }
+
+    /// Clears the page's highlights (the bar closed, or Clear): `clearFind`.
+    pub(super) fn browser_find_clear(&mut self, pane: PaneId) {
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        let cmds = close_commands(&mut bv.find, &secret);
+        self.browser_find_send(pane, cmds);
+    }
+
+    /// The bar closed (Esc, or the Search Tool's close glyph): the page is cleared and gets the
+    /// keyboard back (`takeFocus`, `PS:8850-8853`), unless the address field has it.
+    pub(super) fn browser_find_closed(&mut self, pane: PaneId) {
+        self.browser_find_clear(pane);
+        if self.browser_page_may_focus(pane) {
+            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                v.focus();
+            }
+        }
+        self.redraw();
+    }
+
+    /// Queues `commands` for the page, in order; each goes out when the one before it was answered
+    /// (iTerm2's mutex, `FM:270`).
+    pub(super) fn browser_find_send(&mut self, pane: PaneId, commands: Vec<Value>) {
+        let first = match self.browser_views.get_mut(&pane) {
+            Some(bv) => bv.find_out.push(commands),
+            None => return,
+        };
+        if let Some(c) = first {
+            self.browser_find_go(pane, c);
+        }
+    }
+
+    /// One command, as data: the command is an argument of the call, never part of the script.
+    fn browser_find_go(&mut self, pane: PaneId, command: Value) {
+        self.browser_js_call(
+            pane,
+            browser_find::COMMAND_JS,
+            json!({ "command": command }),
+            Box::new(|app, pane, _answer| {
+                let next = app.browser_views.get_mut(&pane).and_then(|bv| bv.find_out.answered());
+                if let Some(c) = next {
+                    app.browser_find_go(pane, c);
+                }
+            }),
+        );
+    }
+
+    /// The find family from the menu on browser pane `id` (`browser_find::route`). False for Find
+    /// Globally, which is its own window; every other command is taken.
+    pub(super) fn browser_find_command(&mut self, id: PaneId, selector: &str, label: &str) -> bool {
+        use browser_find::Route;
+        let swap = self.globals.bool("SwapFindNextPrevious");
+        match browser_find::route(selector, label) {
+            Route::Open => {
+                self.belt_yield_keys();
+                self.finds.entry(id).or_default().open();
+                self.load_find_pasteboard(id);
+                if let Some(f) = self.finds.get_mut(&id).filter(|f| !f.query.is_empty()) {
+                    f.set_query(&f.query.clone(), Instant::now());
+                }
+                self.browser_find_take_keyboard(id);
+            }
+            Route::Next => self.browser_find_step(id, menu_forward(false, swap)),
+            Route::Previous => self.browser_find_step(id, menu_forward(true, swap)),
+            Route::Clear => {
+                if let Some(f) = self.finds.get_mut(&id) {
+                    f.set_query("", Instant::now());
+                    f.pending = false;
+                }
+                self.share_query(id);
+                self.browser_find_clear(id);
+            }
+            Route::Jump => self.browser_jump_to_selection(id),
+            // Find URLs is Task 5's.
+            Route::FindUrls => {}
+            Route::Global => return false,
+            Route::Nothing => {}
+        }
+        self.redraw();
+        true
+    }
+
+    /// One message of the find script (`FM:550-571`). Only the isolated world's, and only when that
+    /// world was proven: a page-world message is dropped before it is read.
+    pub(super) fn browser_find_message(&mut self, pane: PaneId, r: &Routed) {
+        if r.world != World::Client || !self.client_open(pane) {
+            return;
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        match bv.find.on_message(&r.body, &secret) {
+            Update::Ignored => {}
+            Update::Counts => self.redraw(),
+            Update::Default { .. } => {
+                bv.find.continue_find();
+                self.redraw();
+            }
+            // Find Globally takes the one batch of the global stream (Task 6).
+            Update::Global(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser_find::{FindMode, Outbox};
+    use crate::find::Mode;
+    use find_ui::{BarKey, BarRoute};
+    use std::time::{Duration, Instant};
+
+    const SECRET: &str = "00112233445566778899aabbccddeeff";
+
+    fn actions(cmds: &[Value]) -> Vec<String> {
+        cmds.iter().map(|c| c["action"].as_str().unwrap_or("?").to_string()).collect()
+    }
+
+    fn model() -> Model {
+        Model::new("11112222333344445555666677778888", "99990000aaaabbbbccccddddeeeeffff")
+    }
+
+    /// A bar on a browser pane, driven as the app drives it: keys through `route_key`, the bar's own
+    /// state, and the model, with every command recorded as `browser_find_send` would take it.
+    struct Sim {
+        f: FindState,
+        m: Model,
+        out: Outbox,
+        sent: Vec<Value>,
+        t: Instant,
+    }
+
+    impl Sim {
+        fn new() -> Sim {
+            let mut f = FindState::default();
+            f.open();
+            f.typing = true;
+            Sim { f, m: model(), out: Outbox::default(), sent: Vec::new(), t: Instant::now() }
+        }
+
+        fn send(&mut self, cmds: Vec<Value>) {
+            // The page answers each command at once here.
+            let mut next = self.out.push(cmds);
+            while let Some(c) = next {
+                self.sent.push(c);
+                next = self.out.answered();
+            }
+        }
+
+        fn key(&mut self, k: BarKey, swap: bool) {
+            let o = self.f.key(k, self.t);
+            match bar_act(o) {
+                BarAct::Nothing => {}
+                BarAct::Step { forward } => {
+                    let cmds = step_commands(&mut self.m, forward, SECRET);
+                    self.send(cmds);
+                }
+                BarAct::Close => {
+                    let cmds = close_commands(&mut self.m, SECRET);
+                    self.send(cmds);
+                }
+            }
+            let _ = swap;
+        }
+
+        /// The delay elapsed: the due search runs.
+        fn due(&mut self, mode: Mode) {
+            let later = self.t + Duration::from_secs(5);
+            if let Some(fresh) = self.f.take_due(later, Duration::from_secs(1)) {
+                let q = self.f.query.clone();
+                let cmds = search_commands(&mut self.m, &q, mode, fresh, SECRET);
+                self.send(cmds);
+            }
+        }
+
+        fn return_key(&mut self, shift: bool) {
+            let mods = crate::mouse::Mods { shift, ..Default::default() };
+            let BarRoute::Key(k) = find_ui::route_key(&winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter), None, mods) else { panic!("Return is a bar key") };
+            self.key(k, false);
+        }
+    }
+
+    /// Review Focus 5: the bar on a browser pane follows iTerm2.
+    #[test]
+    fn browser_find_uses_the_bar() {
+        let mut s = Sim::new();
+        s.key(BarKey::Text("A".into()), false);
+        s.key(BarKey::Text("b".into()), false);
+        assert!(s.sent.is_empty(), "nothing before the delay");
+        s.due(Mode::SmartCase);
+        assert_eq!(actions(&s.sent), ["startFind"]);
+        assert_eq!(s.sent[0]["searchMode"], FindMode::CaseSensitive.raw(), "an uppercase letter makes smart case sensitive");
+        assert_eq!(s.sent[0]["searchTerm"], "Ab");
+        // The same query again, unforced, queues nothing.
+        s.sent.clear();
+        search_and_send(&mut s, false);
+        assert!(s.sent.is_empty());
+        // Return and Shift+Return both go forward (the browser rule).
+        s.return_key(false);
+        s.return_key(true);
+        assert_eq!(actions(&s.sent), ["findNext", "findNext"]);
+        // Tab and Alt+Return queue nothing.
+        s.sent.clear();
+        s.key(BarKey::Grow, false);
+        s.key(BarKey::PasteMatch, false);
+        assert!(s.sent.is_empty());
+        // The menu: the swap key decides, as for terminals.
+        assert_eq!(menu_forward(false, false), true, "Find Next, swap off: findNext");
+        assert_eq!(menu_forward(false, true), false, "Find Next, swap on: findPrevious");
+        assert_eq!(menu_forward(true, false), false, "Find Previous, swap off: findPrevious");
+        assert_eq!(menu_forward(true, true), true, "Find Previous, swap on: findNext");
+        let up = find_ui::step_direction(false, true);
+        assert_eq!(!up, menu_forward(false, true), "the same rule the terminal's step uses");
+        let cmds = step_commands(&mut s.m, menu_forward(false, true), SECRET);
+        assert_eq!(actions(&cmds), ["findPrevious"]);
+        let cmds = step_commands(&mut s.m, menu_forward(false, false), SECRET);
+        assert_eq!(actions(&cmds), ["findNext"]);
+        // Esc clears the page's highlights and closes the bar.
+        s.sent.clear();
+        s.key(BarKey::Close, false);
+        assert_eq!(actions(&s.sent), ["clearFind"]);
+        assert!(!s.f.open && !s.f.typing);
+        // Nothing is active any more: a step queues nothing.
+        assert!(step_commands(&mut s.m, true, SECRET).is_empty());
+    }
+
+    fn search_and_send(s: &mut Sim, force: bool) {
+        let q = s.f.query.clone();
+        let cmds = search_commands(&mut s.m, &q, Mode::SmartCase, force, SECRET);
+        s.send(cmds);
+    }
+
+    #[test]
+    fn modes_and_empty_queries() {
+        let mut m = model();
+        let c = search_commands(&mut m, "ab", Mode::SmartCase, true, SECRET);
+        assert_eq!(c[0]["searchMode"], "caseInsensitive");
+        let c = search_commands(&mut m, "ab", Mode::RegexSensitive, true, SECRET);
+        assert_eq!(c[0]["searchMode"], "caseSensitiveRegex");
+        // An empty query clears instead of searching.
+        let c = search_commands(&mut m, "", Mode::SmartCase, true, SECRET);
+        assert_eq!(actions(&c), ["clearFind"]);
+    }
+
+    /// B6: the address field, the find bar and the page never type together.
+    #[test]
+    fn keyboard_has_one_owner() {
+        let mut f = FindState::default();
+        f.open();
+        let mut keys = true;
+        // Opening Find takes the keyboard from the address field.
+        find_takes_keyboard(&mut keys, &mut f);
+        assert!(f.typing && !keys);
+        assert!(!page_may_focus(keys, f.typing), "a focus change must not steal the bar's keys");
+        // Focusing the address field stops the bar typing.
+        address_takes_keyboard(&mut keys, Some(&mut f));
+        assert!(keys && !f.typing);
+        assert!(!page_may_focus(keys, f.typing));
+        // The same with no bar for the pane.
+        address_takes_keyboard(&mut keys, None);
+        assert!(keys);
+        // A click in the page ends both.
+        find_takes_keyboard(&mut keys, &mut f);
+        page_takes_keyboard(&mut keys, Some(&mut f));
+        assert!(!keys && !f.typing && f.open, "the bar stays open, typing stops");
+        assert!(page_may_focus(keys, f.typing));
+        // Never both at once, from any start.
+        for (k0, t0) in [(false, false), (true, false), (false, true), (true, true)] {
+            for step in 0..3 {
+                let mut f = FindState::default();
+                f.open();
+                f.typing = t0;
+                let mut keys = k0;
+                match step {
+                    0 => find_takes_keyboard(&mut keys, &mut f),
+                    1 => address_takes_keyboard(&mut keys, Some(&mut f)),
+                    _ => page_takes_keyboard(&mut keys, Some(&mut f)),
+                }
+                assert!(!(keys && f.typing), "step {step} from {k0} {t0}");
+            }
+        }
+    }
+
+    fn prod(src: &str) -> &str {
+        &src[..src.find("#[cfg(test)]").unwrap()]
+    }
+
+    fn between<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+        let a = src.find(from).unwrap_or_else(|| panic!("missing {from}"));
+        let b = a + src[a..].find(to).unwrap_or_else(|| panic!("missing {to}"));
+        &src[a..b]
+    }
+
+    /// B1: the find strip is cut inside the one layout owner, below the announcement bar; the scene
+    /// draws the bar at the rectangle that function gives, the placed view and the hover anchor both
+    /// take the view rectangle from `browser_web_rect`, so while the bar is open they agree.
+    #[test]
+    fn find_strip_has_one_owner() {
+        let overlay = include_str!("browser_overlay_app.rs");
+        let overlay = prod(overlay);
+        let split = between(overlay, "pub(super) fn browser_split", "pub(super) fn browser_web_rect");
+        assert!(split.find("below_bar(").unwrap() < split.find("browser_find::strip(").unwrap(), "the announcement bar first, then the find row");
+        assert!(split.contains("browser_find_strip_open(id)") && !split.contains("pane_chrome("));
+        let web = between(overlay, "pub(super) fn browser_web_rect", "pub(super) fn browser_find_strip_open");
+        assert!(web.contains("self.browser_split(id, r).1"));
+        let shown = between(overlay, "fn browser_shown_rect", "// --- The hovered link");
+        assert!(shown.contains("self.browser_web_rect(pane, r)"), "the hover anchor reads the placed view's rectangle");
+        let app = prod(include_str!("browser_app.rs"));
+        let place = between(app, "pub(super) fn place_browser_views", "fn show_browser_view");
+        assert!(place.contains("self.browser_web_rect(id, r)"), "the view is placed in the same rectangle");
+        let m = prod(include_str!("mod.rs"));
+        assert!(m.contains("self.browser_split(id, rect).0") && m.contains("scene::find_strip(&mut frame, row)") && m.contains("scene::find_bar(&mut frame, &bar, row, self.pane_cell(id))"), "the scene draws the bar at the strip row");
+        assert!(m.contains("&& !self.is_browser_pane(tab.focused)"), "the terminal's bar block skips a browser pane");
+        // Only the strip's own call sites cut it: the status bar's Search Tool needs none.
+        assert!(overlay.contains("self.bar_find_host(id).is_none()"));
+    }
+
+    /// B6: one hand-over for the keyboard. The bar takes it with the address field's own
+    /// `focus_window` (never a second `SetFocus`), the page is not given focus while a Tandem field
+    /// has it, and every path that gives a field the keyboard uses the exclusion functions.
+    #[test]
+    fn keyboard_hand_over_has_one_path() {
+        let me = prod(include_str!("browser_find_app.rs"));
+        let take = between(me, "pub(super) fn browser_find_take_keyboard", "pub(super) fn browser_find_yield_to_address");
+        assert!(take.contains("crate::webhost_win::focus_window(hwnd)") && take.contains("find_takes_keyboard(&mut bv.bar.keys, f)"));
+        assert!(take.contains("g.window.focus_window()"), "the window is activated first when it is not in front");
+        assert!(take.contains("self.web_focus_held = None") && take.contains("self.sync_web_keyboard()"), "ReturnFromChild's bookkeeping");
+        assert!(!me.contains("windows_sys") && !me.contains("SetFocus("), "no second SetFocus");
+        let app = prod(include_str!("browser_app.rs"));
+        let place = between(app, "pub(super) fn place_browser_views", "fn show_browser_view");
+        assert!(place.contains("self.browser_page_may_focus(*p)") && !place.contains("b.bar.keys"), "a focus change never steals the bar's keys");
+        assert!(app.contains("self.browser_page_may_focus(pane)"), "nor does a view made now");
+        let focus = between(app, "Event::Focus(_, true) => {", "Event::NewWindow");
+        assert!(focus.contains("self.browser_page_took_keyboard(pane)"));
+        let url = between(app, "pub(super) fn focus_url_bar", "fn blur_url_bar");
+        assert!(url.contains("self.browser_find_yield_to_address(pane)") && !url.contains("bar.keys = true"));
+        let f = prod(include_str!("find_ui.rs"));
+        let fieldf = between(f, "pub(super) fn bar_field_focus", "pub(super) fn bar_field_close");
+        assert!(fieldf.contains("self.browser_find_take_keyboard(pane)"), "the Search Tool's field hands over too");
+        let fieldc = between(f, "pub(super) fn bar_field_close", "pub(super) fn open_global_find");
+        assert!(fieldc.contains("self.browser_find_closed(pane)"));
+    }
+
+    /// The bar, the menu and the page's answers reach the engine one way: data arguments to the main
+    /// frame's Tandem world, a Client message read only by the model, nothing built into a script.
+    #[test]
+    fn find_wiring_follows_iterm2() {
+        let me = prod(include_str!("browser_find_app.rs"));
+        assert!(!me.contains("format!(") && !me.contains("execute_script") && !me.contains("browser_eval("), "no script text is built here");
+        let go = between(me, "fn browser_find_go", "pub(super) fn browser_find_command");
+        assert!(go.contains("self.browser_js_call(") && go.contains("browser_find::COMMAND_JS") && go.contains("json!({ \"command\": command })"));
+        assert!(go.contains("find_out.answered()"), "the next goes when the previous answered");
+        let msg = &me[me.find("pub(super) fn browser_find_message").unwrap()..];
+        assert!(msg.find("World::Client").unwrap() < msg.find("on_message(").unwrap() && msg.contains("self.client_open(pane)"), "a page-world message is dropped before it is read");
+        let router = prod(include_str!("browser_scripts_app.rs"));
+        assert!(router.contains("h if h == crate::browser_find::HANDLER => self.browser_find_message(pane, &r)"));
+        let reset = between(router, "pub(super) fn browser_reset_world", "// --- Setup ---");
+        assert!(reset.contains("bv.find = crate::browser_find::fresh_model()") && reset.contains("bv.find_out.reset()"), "a new secret is a new search");
+        // The bar's paths: terminal search and step become the browser's; Return is forward.
+        let f = prod(include_str!("find_ui.rs"));
+        let key = between(f, "pub(super) fn find_key", "pub(super) fn find_type_text");
+        assert!(key.contains("if self.is_browser_pane(id)") && key.contains("bar_act(outcome)") && key.contains("self.browser_find_closed(id)"));
+        let search = between(f, "fn search_as", "fn refilter");
+        assert!(search.contains("self.browser_find_search(id, fresh)"));
+        let step = between(f, "pub(super) fn find_step", "fn find_grow");
+        assert!(step.contains("self.browser_find_step(id, !up)"));
+        let cmd = between(f, "pub(super) fn run_find_command", "match (selector, label)");
+        assert!(cmd.contains("is_find_family(selector)") && cmd.contains("self.browser_find_command(id, selector, label)"));
+        // Jump to Selection goes to the one owner; Filter and the text-view actions do nothing.
+        assert!(me.contains("Route::Jump => self.browser_jump_to_selection(id)") && !me.contains("JUMP_JS"));
+        assert!(me.contains("Route::Nothing => {}") && me.contains("Route::Global => return false"));
+    }
+}

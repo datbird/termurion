@@ -26,14 +26,36 @@ pub(super) enum TipAsk {
 }
 
 impl App {
-    /// Where pane `id`'s web view goes: `r`, the pane's `visible()` rectangle (already below Tandem's
-    /// chrome and the toolbar strip: cut once, never again), and below the front announcement bar
-    /// when one covers the top of it (P21; the scene draws the bar at the top of `r`).
+    /// The top of pane `id`'s `visible()` rectangle `r` split in one place (the one owner of the
+    /// layout, 13x3 B1): the find bar's row (None while no bar is open above the page) and the web
+    /// view's rectangle. `r` is already below Tandem's chrome and the toolbar strip (cut once, never
+    /// again). Both strips want the top of `r`: the front announcement bar first (the scene draws it
+    /// at the top of `r`, P21), then the find bar's row below it, then the page.
+    pub(super) fn browser_split(&self, id: PaneId, r: Rect) -> (Option<Rect>, Rect) {
+        let below = match self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)) {
+            Some(bar) => {
+                let bottom = r.y + crate::infobar::layout(bar, r, self.pane_cell(id)).bar.h;
+                let (y, h) = browser_tip::below_bar(r.y, r.h, bottom);
+                Rect { y, h, ..r }
+            }
+            None => r,
+        };
+        if !self.browser_find_strip_open(id) {
+            return (None, below);
+        }
+        let (bar, view) = crate::browser_find::strip(below, self.pane_cell(id).1 + 8.0);
+        (Some(bar), view)
+    }
+
+    /// Where pane `id`'s web view goes: `r` below the announcement bar and the find bar's row.
     pub(super) fn browser_web_rect(&self, id: PaneId, r: Rect) -> Rect {
-        let Some(bar) = self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)) else { return r };
-        let bottom = r.y + crate::infobar::layout(bar, r, self.pane_cell(id)).bar.h;
-        let (y, h) = browser_tip::below_bar(r.y, r.h, bottom);
-        Rect { y, h, ..r }
+        self.browser_split(id, r).1
+    }
+
+    /// Whether browser pane `id` has a find bar open above its page: open, and not shown by a status
+    /// bar's Search Tool (which needs no strip).
+    pub(super) fn browser_find_strip_open(&self, id: PaneId) -> bool {
+        self.is_browser_pane(id) && self.finds.get(&id).is_some_and(|f| f.open) && self.bar_find_host(id).is_none()
     }
 
     /// The toolbar strip of browser pane `id`, cut once from the pane's FULL rectangle (`visible()`

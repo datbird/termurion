@@ -156,6 +156,7 @@ mod git_ui;
 mod toolbelt_ui;
 mod tool_web_ui;
 mod browser_app;
+mod browser_find_app;
 mod adblock_app;
 mod browser_db_app;
 mod browser_scripts_app;
@@ -6250,6 +6251,8 @@ impl App {
         let mut porthole_hits = Vec::new();
         let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
         let mut held_updates: Vec<(PaneId, Option<crate::flicker::Held>, Option<Instant>)> = Vec::new();
+        // The focused browser pane's find bar and its mode label, when drawn above the page.
+        let mut browser_find_drawn: Option<(Rect, Rect)> = None;
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
@@ -6264,6 +6267,20 @@ impl App {
                     }
                     // An announcement bar covers the top of the page (the web view gives way below it).
                     overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id)).map(|r| (mouse::Overlay::InfoBar, r)));
+                    // The find bar sits in its own row above the page, below the announcement bar: the
+                    // one rectangle `browser_split` also gives the web view (13x3 B1).
+                    if let (Some(row), Some(f)) = (self.browser_split(id, rect).0, self.finds.get(&id)) {
+                        let swap = self.globals.bool("SwapFindNextPrevious");
+                        let count = self.browser_views.get(&id).map_or_else(String::new, |b| crate::browser_find::label(b.find.total(), b.find.current(), swap));
+                        let selection = self.panes.get(&id).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
+                        let bar = scene::FindBar { query: &f.query, count: &count, mode: self.find_mode().label(), error: false, notice: None, progress: None, selection };
+                        scene::find_strip(&mut frame, row);
+                        let first_quad = frame.quads.len();
+                        let mode_rect = scene::find_bar(&mut frame, &bar, row, self.pane_cell(id));
+                        if id == tab.focused {
+                            browser_find_drawn = frame.quads.get(first_quad).map(|q| (q.rect, mode_rect));
+                        }
+                    }
                     continue;
                 }
                 // Everything a pane's iteration draws lays out in its own cell and shapes in its own
@@ -6440,10 +6457,11 @@ impl App {
             if tab.zoomed.is_none() {
                 scene::dividers(&mut frame, &tab.layout.dividers(area, self.gap()), self.divider_color());
             }
-            self.find_bar_rect = None;
-            self.find_mode_rect = None;
-            // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar.
-            let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none());
+            self.find_bar_rect = browser_find_drawn.map(|d| d.0);
+            self.find_mode_rect = browser_find_drawn.map(|d| d.1);
+            // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar; a
+            // browser pane's was drawn above its page.
+            let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none() && !self.is_browser_pane(tab.focused));
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
                 let count = if f.filter { "Filter".to_string() } else { f.results.label(self.globals.bool("SwapFindNextPrevious")) };
                 let mode = self.find_mode();

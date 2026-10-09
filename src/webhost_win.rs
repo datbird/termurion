@@ -3258,6 +3258,36 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// 13x3 Task 4: the find engine highlights across frames. A page `<p>alpha beta Alpha</p>` with an
+    /// iframe `<p>alpha</p>`: "alpha" (case insensitive) reports 3 matches within 5 s and exactly one
+    /// current highlight; "Alpha" (case sensitive) reports 1 and one current highlight; `clearFind`
+    /// leaves no highlight. The highlight nodes are read in the page's world (they are page DOM, as
+    /// in iTerm2). Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_highlights_across_frames() {
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>t</title></head><body><p>alpha beta Alpha</p><iframe srcdoc=\"&lt;p&gt;alpha&lt;/p&gt;\"></iframe></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.view().watch_frames();
+        p.load(PAGE);
+        assert!(p.wait(5, |p| p.graph_ids().len() == 2), "both frames registered: {:?}", p.graph_ids());
+        let reports = |p: &Probe, total: u64| p.clients(crate::browser_find::HANDLER).iter().filter(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == total).count();
+        let count = |p: &mut Probe, sel: &str| p.page_eval(&format!("document.querySelectorAll('{sel}').length")).expect("a count");
+        find_command(&mut p, &secret, "startFind", json!({"searchTerm": "alpha", "contextLength": 0, "searchMode": "caseInsensitive"})).expect("startFind");
+        assert!(p.wait(5, |p| reports(p, 3) > 0), "three matches reported within 5 s: {:?}", p.clients(crate::browser_find::HANDLER));
+        assert_eq!(count(&mut p, ".iterm-find-highlight-current"), "1");
+        find_command(&mut p, &secret, "startFind", json!({"searchTerm": "Alpha", "contextLength": 0, "searchMode": "caseSensitive"})).expect("startFind");
+        assert!(p.wait(5, |p| reports(p, 1) > 0), "one match reported");
+        assert_eq!(count(&mut p, ".iterm-find-highlight-current"), "1");
+        find_command(&mut p, &secret, "clearFind", json!({})).expect("clearFind");
+        p.settle(500);
+        assert_eq!(count(&mut p, ".iterm-find-highlight"), "0", "clearFind leaves no highlight");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
     /// 13x3 Task 1 review I3: Find Globally's context (40) on a CJK and accented page with
     /// thousands of matches. The cap weighs the escaped DevTools event, so the result is admitted
     /// (a UTF-8 weight let it reach about 100 KB raw and the gate dropped it whole). Needs the

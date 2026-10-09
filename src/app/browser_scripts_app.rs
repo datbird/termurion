@@ -211,6 +211,9 @@ impl App {
             bv.receiving_broadcast = 0;
             bv.receiving_since = None;
             bv.echo = Default::default();
+            // The new secret makes the old search and its queued commands the old page's.
+            bv.find = crate::browser_find::fresh_model();
+            bv.find_out.reset();
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
         for done in dones {
@@ -774,6 +777,7 @@ impl App {
                 self.local_page_message(pane, &r.source, &json);
             }
             h if h == crate::browser_frames::HANDLER => self.browser_graph_message(pane, &r),
+            h if h == crate::browser_find::HANDLER => self.browser_find_message(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -968,7 +972,7 @@ mod tests {
     /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
     /// router or is a listed Client handler that asks `client_open` before it acts.
     fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
-        let known = ["browser_graph_message", "browser_always_on"];
+        let known = ["browser_graph_message", "browser_always_on", "browser_find_message"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
         let mut out = Vec::new();
         for (file, src) in files {

@@ -509,6 +509,16 @@ impl App {
         if outcome == Outcome::Nothing {
             self.share_query(id);
         }
+        // A browser pane: Return searches forward, Esc clears the page, Tab and Alt+Return do nothing.
+        if self.is_browser_pane(id) {
+            match super::browser_find_app::bar_act(outcome) {
+                super::browser_find_app::BarAct::Nothing => {}
+                super::browser_find_app::BarAct::Step { forward } => self.browser_find_step(id, forward),
+                super::browser_find_app::BarAct::Close => self.browser_find_closed(id),
+            }
+            self.redraw();
+            return true;
+        }
         match outcome {
             Outcome::Nothing => {}
             Outcome::Close => {
@@ -545,7 +555,7 @@ impl App {
     }
 
     /// Puts bar `id`'s query on the shared query after the person edited it (not a Filter bar's).
-    fn share_query(&mut self, id: PaneId) {
+    pub(super) fn share_query(&mut self, id: PaneId) {
         let Some(q) = self.finds.get(&id).filter(|f| !f.filter).map(|f| f.query.clone()) else { return };
         self.set_find_pasteboard(&q, Some(id));
     }
@@ -645,6 +655,10 @@ impl App {
     /// `search`; `quiet` fills the results and highlights but selects nothing and scrolls nowhere
     /// (B5: a query that came from the shared query or a selection must not move that selection).
     fn search_as(&mut self, id: PaneId, fresh: bool, quiet: bool) {
+        // A browser pane's page is searched by the page's own engine; a fresh query is forced.
+        if self.is_browser_pane(id) {
+            return self.browser_find_search(id, fresh);
+        }
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
         search_pane(p, f, mode, fresh, quiet);
@@ -690,6 +704,10 @@ impl App {
 
     /// Find Next (`up`) or Find Previous, with the pane's query, opening nothing.
     pub(super) fn find_step(&mut self, id: PaneId, up: bool) {
+        // The terminal's "up" is the browser's Find Previous.
+        if self.is_browser_pane(id) {
+            return self.browser_find_step(id, !up);
+        }
         let pre = self.finds.get(&id).map_or(PreStep::Fresh, FindState::before_step);
         if let Some(f) = self.finds.get_mut(&id) {
             f.pending = false;
@@ -752,6 +770,11 @@ impl App {
             return true;
         }
         let Some(id) = self.focused_id() else { return true };
+        // The find family on a browser pane is the browser's (`browser_find::route`); the terminal's
+        // arms below read a screen it does not have.
+        if self.is_browser_pane(id) && crate::browser_find::is_find_family(selector) {
+            return self.browser_find_command(id, selector, label);
+        }
         let now = Instant::now();
         match (selector, label) {
             ("performFindPanelAction:", "Find...") => {
@@ -812,7 +835,6 @@ impl App {
             ("findUrls:", _) => self.reveal_shortcuts("urls"),
             ("smartSelectAllVisible:", _) => self.reveal_shortcuts("smart"),
             ("revealContentNavigationShortcuts:", _) => self.reveal_shortcuts("pick"),
-            ("jumpToSelection:", _) if self.is_browser_pane(id) => self.browser_jump_to_selection(id),
             ("jumpToSelection:", _) => {
                 if let Some(p) = self.panes.get_mut(&id) {
                     let term = p.screen.term();
@@ -956,9 +978,11 @@ impl App {
     pub(super) fn bar_field_focus(&mut self, pane: PaneId, kind: crate::statusbar_components::Kind) {
         use crate::statusbar_components::Kind;
         let filter = kind == Kind::FilterTool;
+        let mut was_open = false;
         match self.finds.get_mut(&pane) {
             Some(f) if f.open && f.filter == filter => {
                 f.typing = true;
+                was_open = true;
                 self.belt_yield_keys();
             }
             _ if filter => {
@@ -967,6 +991,10 @@ impl App {
             _ => {
                 self.run_find_command("performFindPanelAction:", "Find...");
             }
+        }
+        // On a browser pane the bar (now typing) takes the keyboard from the address field and the page.
+        if was_open && self.is_browser_pane(pane) {
+            self.browser_find_take_keyboard(pane);
         }
         self.redraw();
     }
@@ -980,6 +1008,9 @@ impl App {
             _ => {
                 if let Some(f) = self.finds.get_mut(&pane).filter(|f| !f.filter) {
                     f.close();
+                    if self.is_browser_pane(pane) {
+                        self.browser_find_closed(pane);
+                    }
                 }
             }
         }

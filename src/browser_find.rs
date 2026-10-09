@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::browser_js::{self, Inject, UserScript, World};
 use crate::find::Mode;
+use crate::layout::Rect;
 
 /// The message handler the find script posts to (`FM:68`).
 pub const HANDLER: &str = "iTermCustomFind";
@@ -280,6 +281,11 @@ fn results_of(data: &Value) -> Option<Vec<FindResult>> {
     Some(out)
 }
 
+/// A model for a new view: its two instance ids carry fresh UUIDs (`FM:339-340`).
+pub fn fresh_model() -> Model {
+    Model::new(&uuid::Uuid::new_v4().simple().to_string(), &uuid::Uuid::new_v4().simple().to_string())
+}
+
 impl Model {
     /// The two instance ids carry the given UUIDs (`FM:339-340`).
     pub fn new(uuid_default: &str, uuid_global: &str) -> Model {
@@ -487,6 +493,98 @@ pub fn snippet(r: &FindResult) -> (String, std::ops::Range<usize>) {
     let start = before.len();
     (format!("{before}{text}{}", flat(&r.after)), start..start + text.len())
 }
+
+// --- The find bar and the menu on a browser pane (13x3 Task 4) ---
+
+/// What a find-family menu command does on a browser pane (`PT:15326-15348`, `PT:14162-14175`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    Open,
+    Next,
+    Previous,
+    Clear,
+    Jump,
+    FindUrls,
+    /// Find Globally is its own window (Task 6).
+    Global,
+    /// Disabled for a browser session, or a text-view action that never reaches a web view.
+    Nothing,
+}
+
+/// The selectors of the find family: the commands `route` rules on. Anything else is not the find
+/// bar's business.
+pub fn is_find_family(selector: &str) -> bool {
+    matches!(
+        selector,
+        "performFindPanelAction:" | "findNext:" | "findPrevious:" | "clearFindString:" | "filter:" | "jumpToSelection:" | "findUrls:" | "findGlobally:" | "zoomOnSelection:" | "zoomOut:" | "openSelection:" | "smartSelectAllVisible:" | "revealContentNavigationShortcuts:"
+    )
+}
+
+/// The find family on a browser pane. Filter and Find Cursor are disabled for a browser session
+/// (`PT:14162-14175`); Use Selection for Find, Select Matches, Zoom, Open Selection, Find All Smart
+/// Selection Matches and Pick Result to Open are text-view actions the web view never gets.
+pub fn route(selector: &str, label: &str) -> Route {
+    match (selector, label) {
+        ("performFindPanelAction:", "Find...") => Route::Open,
+        ("findNext:", _) => Route::Next,
+        ("findPrevious:", _) => Route::Previous,
+        ("clearFindString:", _) => Route::Clear,
+        ("jumpToSelection:", _) => Route::Jump,
+        ("findUrls:", _) => Route::FindUrls,
+        ("findGlobally:", _) => Route::Global,
+        _ => Route::Nothing,
+    }
+}
+
+/// Return in the bar always searches forward in a browser, with or without Shift (`PS:9158-9160`,
+/// `FD:671-675`).
+pub fn enter_forward() -> bool {
+    true
+}
+
+/// The pane's web area cut into the bar's row and the view below it. A bar taller than the area
+/// leaves a view of height 0, never negative; the row is cut to what there is.
+pub fn strip(web: Rect, bar_h: f32) -> (Rect, Rect) {
+    let bar = bar_h.max(0.0).min(web.h.max(0.0));
+    (Rect { h: bar, ..web }, Rect { y: web.y + bar, h: (web.h - bar).max(0.0), ..web })
+}
+
+/// iTerm2's one-at-a-time command mutex (`FM:270`): commands wait here, the next goes out when the
+/// previous was answered.
+#[derive(Clone, Debug, Default)]
+pub struct Outbox {
+    queue: std::collections::VecDeque<Value>,
+    busy: bool,
+}
+
+impl Outbox {
+    /// Queues `commands` in order; the one to send now, if nothing is in flight.
+    pub fn push(&mut self, commands: Vec<Value>) -> Option<Value> {
+        self.queue.extend(commands);
+        self.next_out()
+    }
+
+    /// The answer to the command in flight came: the next one to send, if any.
+    pub fn answered(&mut self) -> Option<Value> {
+        self.busy = false;
+        self.next_out()
+    }
+
+    fn next_out(&mut self) -> Option<Value> {
+        if self.busy {
+            return None;
+        }
+        let c = self.queue.pop_front()?;
+        self.busy = true;
+        Some(c)
+    }
+
+    /// A new world (the secret changed): nothing queued or in flight is the new page's.
+    pub fn reset(&mut self) {
+        *self = Outbox::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -892,5 +990,60 @@ mod tests {
         assert_eq!(snippet(&r("hit", None, None)), ("hit".to_string(), 0..3));
         let none = FindResult { index: 0, identifier: json!({}), text: None, before: Some("x".into()), after: None };
         assert_eq!(snippet(&none), ("x".to_string(), 1..1));
+    }
+
+    #[test]
+    fn browser_find_routes_follow_iterm2() {
+        assert_eq!(route("performFindPanelAction:", "Find..."), Route::Open);
+        assert_eq!(route("findNext:", "Find Next"), Route::Next);
+        assert_eq!(route("findPrevious:", "Find Previous"), Route::Previous);
+        assert_eq!(route("clearFindString:", "Clear"), Route::Clear);
+        assert_eq!(route("jumpToSelection:", "Jump to Selection"), Route::Jump);
+        assert_eq!(route("findUrls:", "Find URLs"), Route::FindUrls);
+        assert_eq!(route("findGlobally:", "Find Globally..."), Route::Global);
+        assert_eq!(route("filter:", "Filter"), Route::Nothing);
+        for (s, l) in [
+            ("performFindPanelAction:", "Use Selection for Find"),
+            ("performFindPanelAction:", "Select Matches"),
+            ("zoomOnSelection:", ""),
+            ("zoomOut:", ""),
+            ("openSelection:", ""),
+            ("smartSelectAllVisible:", ""),
+            ("revealContentNavigationShortcuts:", ""),
+        ] {
+            assert_eq!(route(s, l), Route::Nothing, "{s} {l}");
+        }
+        assert!(enter_forward());
+        // Every selector the table rules on is in the family, so nothing falls through to the terminal.
+        for s in ["performFindPanelAction:", "findNext:", "findPrevious:", "clearFindString:", "filter:", "jumpToSelection:", "findUrls:", "zoomOnSelection:", "openSelection:", "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:"] {
+            assert!(is_find_family(s), "{s}");
+        }
+        assert!(!is_find_family("copy:") && !is_find_family("findCursor:"));
+    }
+
+    #[test]
+    fn find_strip_follows_windows() {
+        let web = Rect { x: 0.0, y: 32.0, w: 800.0, h: 600.0 };
+        let (bar, view) = strip(web, 24.0);
+        assert_eq!(bar, Rect { x: 0.0, y: 32.0, w: 800.0, h: 24.0 });
+        assert_eq!(view, Rect { x: 0.0, y: 56.0, w: 800.0, h: 576.0 });
+        let (bar, view) = strip(Rect { x: 0.0, y: 32.0, w: 800.0, h: 10.0 }, 24.0);
+        assert_eq!((bar.h, view.h), (10.0, 0.0), "a bar taller than the area leaves no view, never a negative one");
+        assert!(view.y >= 32.0);
+    }
+
+    /// iTerm2's mutex (`FM:270`): the second command waits for the first's answer.
+    #[test]
+    fn commands_go_out_one_at_a_time() {
+        let mut o = Outbox::default();
+        assert_eq!(o.push(vec![json!(1), json!(2)]), Some(json!(1)));
+        assert_eq!(o.push(vec![json!(3)]), None, "one is in flight");
+        assert_eq!(o.answered(), Some(json!(2)));
+        assert_eq!(o.answered(), Some(json!(3)));
+        assert_eq!(o.answered(), None);
+        assert_eq!(o.push(vec![json!(4)]), Some(json!(4)), "idle again");
+        o.push(vec![json!(5)]);
+        o.reset();
+        assert_eq!(o.answered(), None, "a new world has nothing queued");
     }
 }

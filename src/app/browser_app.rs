@@ -82,6 +82,9 @@ pub(super) struct BrowserView {
     pub(super) menu: Option<(u64, crate::browser_ctx::Ctx, Vec<Option<crate::browser_ctx::Item>>)>,
     /// The announcements waiting for an answer, by bar identifier: the buttons and what answers (13x2 Task 5).
     pub(super) bars: HashMap<String, (Vec<String>, super::browser_overlay_app::BarDone)>,
+    /// The find bar's search state on this page (13x3 Task 4), and the commands waiting to go out.
+    pub(super) find: crate::browser_find::Model,
+    pub(super) find_out: crate::browser_find::Outbox,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -101,7 +104,7 @@ pub(super) struct BarState {
     pub(super) selected: Option<usize>,
     pub(super) cache: browser::OpenSearchCache,
     /// The suggestion request in flight and the query it asks about.
-    call: Option<(Box<dyn crate::ai_transport::Call>, String)>,
+    pub(super) call: Option<(Box<dyn crate::ai_transport::Call>, String)>,
     pub(super) press: Option<BarPress>,
     pub(super) nav: browser::NavList,
     /// How the next history row's visit began (`BrowserTransitionType`); None is "other".
@@ -220,7 +223,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), gate: Default::default(), gate_sig: None, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), gate: Default::default(), gate_sig: None, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         true
     }
 
@@ -244,7 +247,7 @@ impl App {
         for pane in panes {
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
             match rect {
-                Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front),
+                Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front && self.browser_page_may_focus(pane)),
                 None => {
                     // Its link tip goes with it (hidden, another tab, buried, zoomed away).
                     self.browser_tip_clear(pane);
@@ -267,7 +270,7 @@ impl App {
         if let Some(seen) = step {
             let prev = seen.filter(|p| mine.contains(p));
             self.browser_focus_moved(prev, focused);
-            if let Some(next) = focused.filter(|p| self.is_browser_pane(*p) && !self.browser_views.get(p).is_some_and(|b| b.bar.keys)) {
+            if let Some(next) = focused.filter(|p| self.is_browser_pane(*p) && self.browser_page_may_focus(*p)) {
                 if let Some(v) = self.browser_views.get(&next).and_then(|b| b.view.as_ref()) {
                     v.focus();
                 }
@@ -542,12 +545,8 @@ impl App {
             Event::Focus(_, false) => self.web_focus_recheck(),
             // The page has the keyboard: its pane is the active one (iTerm2's session change).
             Event::Focus(_, true) => {
-                // The keyboard is in the page now: the address field lets go.
-                if let Some(bv) = self.browser_views.get_mut(&pane) {
-                    bv.bar.keys = false;
-                    bv.bar.suggestions.clear();
-                    bv.bar.call = None;
-                }
+                // The keyboard is in the page now: the address field and the find bar let go.
+                self.browser_page_took_keyboard(pane);
                 self.in_pane_window(pane, |a| {
                     if let Some(t) = a.tabs.iter_mut().find(|t| t.layout.panes().contains(&pane)) {
                         t.focused = pane;
@@ -1095,8 +1094,8 @@ impl App {
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.focused = pane;
         }
+        self.browser_find_yield_to_address(pane);
         if let Some(bv) = self.browser_views.get_mut(&pane) {
-            bv.bar.keys = true;
             bv.bar.edit.load(&url);
             bv.bar.edit.anchor = Some(0);
             bv.bar.suggestions.clear();

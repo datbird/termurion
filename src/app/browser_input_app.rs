@@ -786,7 +786,7 @@ mod tests {
         }
         // Jump to Selection scrolls the page (`BVC:295-311`); the find menu hands a browser pane to it.
         assert!(p.contains("window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight/2, behavior: 'smooth' })"));
-        assert!(include_str!("find_ui.rs").contains("(\"jumpToSelection:\", _) if self.is_browser_pane(id) => self.browser_jump_to_selection(id)"));
+        assert!(include_str!("browser_find_app.rs").contains("Route::Jump => self.browser_jump_to_selection(id)"));
         // The router acts on a press only through the one gate of Client handlers.
         let scripts = include_str!("browser_scripts_app.rs");
         let on = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];

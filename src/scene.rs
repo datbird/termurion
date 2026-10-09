@@ -632,6 +632,12 @@ pub fn ime_cell(screen: &Screen) -> (usize, usize) {
     }
 }
 
+/// The find bar's row above a browser page: the bar's colour across the whole row, so the page's
+/// edge is clean left of the (right-aligned) bar.
+pub fn find_strip(frame: &mut Frame, row: Rect) {
+    frame.quads.push(Quad { rect: row, color: rgba(FIND_BAR, 1.0) });
+}
+
 /// Draws the find bar at the top right of `pane`, over the text. Returns the mode label's
 /// rectangle, which opens the mode menu when clicked.
 pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) -> Rect {
