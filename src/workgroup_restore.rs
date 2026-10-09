@@ -506,6 +506,14 @@ pub fn next_step(f: &Facts) -> Step {
         return Step::Discard(Why::Unfit);
     }
     match (f.answer, f.question) {
+        // A yes while the anchor is in no window waits for it (the restore keeps the answer): the split
+        // and tab children are found only in the anchor's window. `age` counts from the answer.
+        (Some(true), _) if !f.in_window => {
+            if f.age >= GIVE_UP {
+                return Step::Discard(Why::GaveUp);
+            }
+            Step::Wait { release: f.age >= RELEASE_AFTER }
+        }
         (Some(true), _) | (None, Question::None) => Step::Adopt,
         (Some(false), _) => Step::Discard(Why::Declined),
         (None, Question::Showable) => Step::Ask,
@@ -1058,8 +1066,13 @@ mod tests {
         assert!(Step::Wait { release: false }.keeps_claims() && !Step::Wait { release: true }.keeps_claims());
         assert_eq!(step(&|f| (f.in_window, f.age) = (false, RELEASE_AFTER)), Step::Wait { release: true });
         assert_eq!(step(&|f| (f.in_window, f.age) = (false, GIVE_UP)), Step::Discard(Why::GaveUp));
-        // An answer is taken where the window stands now.
-        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer) = (false, true, Some(true))), Step::Adopt);
+        // A yes while the anchor is in no window is kept on the restore until the anchor is back in a
+        // window (the children are found only there), then adopted; the wait counts from the answer.
+        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer) = (false, true, Some(true))), Step::Wait { release: false });
+        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer, f.age) = (false, true, Some(true), RELEASE_AFTER)), Step::Wait { release: true });
+        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer, f.age) = (false, true, Some(true), GIVE_UP)), Step::Discard(Why::GaveUp));
+        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer, f.in_workgroup) = (false, true, Some(true), true)), Step::Discard(Why::Taken));
+        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer) = (false, true, Some(false))), Step::Discard(Why::Declined), "a no needs no window");
         for done in [Step::Adopt, Step::Discard(Why::Taken), Step::Discard(Why::Declined)] {
             assert!(!done.keeps_claims(), "{done:?}");
         }

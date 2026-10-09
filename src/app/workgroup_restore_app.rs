@@ -68,6 +68,9 @@ struct Meta {
     released: bool,
     /// The person was asked again; the answer decides (`restore_answered`).
     asked: bool,
+    /// A yes given while the anchor was in no window: kept here, with the workgroup the question showed,
+    /// until the anchor is back in a window and the children can be found (the wait counts from it).
+    answer: Option<(Workgroup, Approved)>,
 }
 
 /// What a restore holds: the anchors, the GUIDs they block, the toggles the sessions saved and the
@@ -116,7 +119,7 @@ impl Restoring {
         }
         self.next_token += 1;
         let token = self.next_token;
-        self.pending.push(Pending { m: Meta { token, anchor, name: name.map(str::to_string), launch, guids, since: Instant::now(), released: false, asked: false }, descriptor: d });
+        self.pending.push(Pending { m: Meta { token, anchor, name: name.map(str::to_string), launch, guids, since: Instant::now(), released: false, asked: false, answer: None }, descriptor: d });
         true
     }
 
@@ -264,10 +267,14 @@ impl App {
             return Some(now + LOOK);
         }
         let mut waiting = false;
-        for p in std::mem::take(&mut self.workgroups.restoring.pending) {
-            let look = self.look(&p, now, None);
+        for mut p in std::mem::take(&mut self.workgroups.restoring.pending) {
+            // A kept yes is checked again against the workgroup as it is now (as `restore_answered` does).
+            let kept = p.m.answer.take();
+            let answer = kept.as_ref().map(|(w, approved)| run::to_enter(approved, w, self.workgroup_model.get(&w.unique_identifier)).is_ok());
+            let look = self.look(&p, now, answer);
             waiting |= matches!(look.step, wr::Step::Wait { .. });
-            self.take_step(p, look, None);
+            p.m.answer = kept.clone().filter(|_| matches!(look.step, wr::Step::Wait { .. }));
+            self.take_step(p, look, kept.map(|(_, a)| a));
         }
         waiting.then(|| now + LOOK)
     }
@@ -286,7 +293,15 @@ impl App {
                 false
             }
         };
-        let look = self.look(&p, Instant::now(), Some(ok));
+        let mut p = p;
+        let now = Instant::now();
+        if ok {
+            p.m.since = now;
+        }
+        let look = self.look(&p, now, Some(ok));
+        if ok && matches!(look.step, wr::Step::Wait { .. }) {
+            p.m.answer = Some((workgroup, approved.clone()));
+        }
         self.take_step(p, look, Some(approved));
     }
 
@@ -615,7 +630,12 @@ mod tests {
         let end = body(production, "    fn end_restore(");
         assert!(end.contains("self.workgroups.restoring.release(&mut p.m)") && end.contains("self.discard_members(p.descriptor"), "{end}");
         let answered = body(production, "    pub(super) fn restore_answered(");
-        assert!(!answered.contains("release") && answered.contains("self.look(&p, Instant::now(), Some(ok))"), "{answered}");
+        assert!(!answered.contains("release") && answered.contains("self.look(&p, now, Some(ok))"), "{answered}");
+        // A yes while the anchor is in no window stays on the restore (wr::next_step waits), and every
+        // later look takes it, checked again against the workgroup as it is now (final wave).
+        assert!(answered.contains("p.m.answer = Some((workgroup, approved.clone()))"), "{answered}");
+        let adopt = body(production, "    pub(super) fn adopt_workgroups(");
+        assert!(adopt.contains("p.m.answer.take()") && adopt.contains("run::to_enter(approved, w,") && adopt.contains("self.look(&p, now, answer)"), "{adopt}");
         assert!(body(production, "    fn look(").contains("wr::next_step(&facts)"));
         // A Restoring entry that is being asked still claims its sessions.
         let mut r = Restoring::default();
