@@ -2479,17 +2479,29 @@ mod probe {
         }
 
         fn call_wait(&mut self, session: Option<&str>, method: &str, params: &Value) -> Result<String, String> {
+            self.call_wait_for(session, method, params, 10)
+        }
+
+        fn call_wait_for(&mut self, session: Option<&str>, method: &str, params: &Value, secs: u64) -> Result<String, String> {
             let t = self.call(session, method, params);
-            if !self.wait(10, |p| p.answers.contains_key(&t)) {
-                return Err(format!("{method}: no answer in 10 s"));
+            if !self.wait(secs, |p| p.answers.contains_key(&t)) {
+                return Err(format!("{method}: no answer in {secs} s"));
             }
             self.answers.remove(&t).unwrap()
         }
 
         /// `Runtime.evaluate` in a frame's Tandem world (None is the main frame).
         fn eval(&mut self, frame: Option<u64>, expr: &str) -> Result<Value, String> {
+            self.eval_for(frame, expr, 10)
+        }
+
+        /// `eval` with its own deadline: iTerm2's find engine highlights match by match, each walking
+        /// the segment's text nodes again (find-utils.js collectCurrentTextNodes), so its time grows
+        /// with the square of the matches (measured 2026-10-09 in Chromium: 500 in 2 s, 1000 in 6 s,
+        /// 6000 not done in 4 minutes). iTerm2 awaits the same command (`FM:230`).
+        fn eval_for(&mut self, frame: Option<u64>, expr: &str, secs: u64) -> Result<Value, String> {
             let (session, unique) = self.contexts.unique_for(frame).ok_or("no Tandem context for that frame")?;
-            let r = self.call_wait(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr))?;
+            let r = self.call_wait_for(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr), secs)?;
             browser_world::evaluate_result(&r)
         }
 
@@ -2748,6 +2760,42 @@ mod probe {
     /// The text Task 5's `clear_script` will produce, written out here.
     fn clear_hover(secret: &str) -> String {
         format!("(function() {{window.iTermHoverLinkHandler?.clearHover('{secret}');}})();")
+    }
+
+    /// What the hostile page recorded (`__report()`, the JSON array of its `tag|self|args` records)
+    /// that shows the view secret reached it: any record holding the secret's value, or a message,
+    /// post or `sessionSecret` assignment the page received that names the field. Its `html`,
+    /// `attrs` and `globals` records hold the page's own source, and HOSTILE itself names
+    /// `sessionSecret` (its getter plant and its forgery), so the field name alone in those records
+    /// is the page reading itself (the 2026-10-09 run's page_cannot_hijack_copy_mode failure).
+    /// The offending record, cut to 300 characters, or None.
+    fn page_saw_secret(report: &str, secret: &str) -> Option<String> {
+        let decoded = serde_json::from_str::<String>(report).unwrap_or_else(|_| report.to_string());
+        let Ok(records) = serde_json::from_str::<Vec<String>>(&decoded) else {
+            return Some(format!("the report is not the page's record list: {}", decoded.chars().take(300).collect::<String>()));
+        };
+        let received = |r: &str| ["message|", "postMessage|", "sessionSecretSet|"].iter().any(|t| r.starts_with(t));
+        records.into_iter().find(|r| r.contains(secret) || (received(r) && r.contains("sessionSecret"))).map(|r| r.chars().take(300).collect())
+    }
+
+    /// The 2026-10-09 run: HOSTILE's own source names `sessionSecret` and its `html` recorder keeps
+    /// the page's outerHTML, so the old check (the field name anywhere in the report) failed on every
+    /// run whatever Tandem did. The check now tells the page reading itself from a leak. Pure.
+    #[test]
+    fn the_secret_check_tells_a_leak_from_the_page_itself() {
+        assert!(HOSTILE.contains("'sessionSecret'") && HOSTILE.contains("rec('html', null, [document.documentElement.outerHTML])"), "the page records its own source");
+        let own = serde_json::to_string(&vec![format!("html|null|{{0=<html>{HOSTILE}</html>;}}")]).unwrap();
+        assert!(own.contains("sessionSecret"), "the old check would fail here");
+        assert_eq!(page_saw_secret(&own, "0123abcd"), None, "the page's own source is not a leak");
+        let as_executed = serde_json::to_string(&own).unwrap();
+        assert_eq!(page_saw_secret(&as_executed, "0123abcd"), None, "ExecuteScript's quoted answer decodes first");
+        let msg = serde_json::to_string(&vec!["message|null|{0={sessionSecret=x;};}".to_string()]).unwrap();
+        assert!(page_saw_secret(&msg, "0123abcd").is_some(), "a received message naming the field");
+        let set = serde_json::to_string(&vec!["sessionSecretSet|null|{0=x;}".to_string()]).unwrap();
+        assert!(page_saw_secret(&set, "0123abcd").is_some(), "an assignment through the plant");
+        let value = serde_json::to_string(&vec!["attrs|null|{0=data-x=0123abcd;}".to_string()]).unwrap();
+        assert!(page_saw_secret(&value, "0123abcd").is_some(), "the value anywhere");
+        assert!(page_saw_secret("not json", "0123abcd").is_some(), "an unreadable report fails");
     }
 
     /// The 2026-10-07 desktop run (probe-fix-report.md): the hostile page's answers to the harness
@@ -3216,10 +3264,23 @@ mod probe {
 
     /// One find command as the app sends it (`COMMAND_JS` in the main frame's Tandem world).
     fn find_command(p: &mut Probe, secret: &str, action: &str, extra: Value) -> Result<Value, String> {
+        find_command_for(p, secret, action, extra, 10)
+    }
+
+    /// `find_command` with its own deadline (`Probe::eval_for`: a page with hundreds of matches).
+    fn find_command_for(p: &mut Probe, secret: &str, action: &str, extra: Value, secs: u64) -> Result<Value, String> {
         let cmd = crate::browser_find::command(action, extra, "main_probe", secret);
         let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": cmd})).expect("the command");
-        p.eval(None, &expr)
+        p.eval_for(None, &expr, secs)
     }
+
+    /// The cap probes' page sizes: enough matches that the cap cuts the identifiers (about 430 of
+    /// "word" with context 10, about 110 of the wide text with context 40, measured in Chromium), few
+    /// enough that iTerm2's quadratic highlighting ends well inside `CAP_FIND_SECS` (the 2026-10-09
+    /// run used 6000 and 3000: no answer in 10 s, and minutes in Chromium).
+    const CAP_WORDS: usize = 600;
+    const CAP_WIDE: usize = 600;
+    const CAP_FIND_SECS: u64 = 120;
 
     /// How many navigation bubbles the main frame shows, read in the Tandem world.
     fn bubbles(p: &mut Probe) -> usize {
@@ -3255,21 +3316,21 @@ window.addEventListener('message', function (e) {
     #[ignore]
     fn find_result_is_capped_in_the_bridge() {
         let secret = hex32();
-        let body = "<p>".to_string() + &"word ".repeat(6000) + "</p>";
+        let body = "<p>".to_string() + &"word ".repeat(CAP_WORDS) + "</p>";
         let sources = find_sources(&secret);
         let size: usize = sources.iter().map(String::len).sum();
         println!("find sources: {size} bytes (P15: one addScriptToEvaluateOnNewDocument per script)");
         let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], sources) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        find_start(&mut p, &secret, "word").expect("startFind runs in the Tandem world");
+        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "word", "contextLength": 10, "searchMode": "caseInsensitive"}), CAP_FIND_SECS).expect("startFind runs in the Tandem world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived: {:?}", p.log.last());
         let routed: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Client && r.client().is_some_and(|(h, _)| h == crate::browser_find::HANDLER)).collect();
         let big = routed.iter().find(|r| r.client().is_some_and(|(_, b)| b["action"] == "resultsUpdated")).expect("resultsUpdated");
         assert!(big.body.len() <= crate::browser_js::CAP_BUDGET, "the message is (decoded, within the escaped weight budget, so within ViewGate::admit) {} bytes", big.body.len());
         let (_, b) = big.client().unwrap();
-        assert_eq!(b["data"]["totalMatches"], 6000, "the count is kept whole");
-        assert!(b["data"]["matchIdentifiers"].as_array().is_some_and(|a| !a.is_empty() && a.len() < 6000));
+        assert_eq!(b["data"]["totalMatches"], CAP_WORDS, "the count is kept whole");
+        assert!(b["data"]["matchIdentifiers"].as_array().is_some_and(|a| !a.is_empty() && a.len() < CAP_WORDS), "the cap cut the identifiers: {:?}", b["data"]["matchIdentifiers"].as_array().map(Vec::len));
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
@@ -3372,17 +3433,17 @@ window.addEventListener('message', function (e) {
     fn find_result_is_capped_for_wide_text() {
         let secret = hex32();
         // Entities, so the page's bytes are ASCII whatever charset the response is read with.
-        let body = "<p>".to_string() + &"&#x691c;&#x7d22; &#xe9;&#x301;&#x8a9e;&#x1f600; ".repeat(3000) + "</p>";
+        let body = "<p>".to_string() + &"&#x691c;&#x7d22; &#xe9;&#x301;&#x8a9e;&#x1f600; ".repeat(CAP_WIDE) + "</p>";
         let page = format!("<!doctype html><html><head><title>wide</title></head><body>{body}</body></html>");
         let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        find_command(&mut p, &secret, "startFind", json!({"searchTerm": "\u{691c}\u{7d22}", "contextLength": 40, "searchMode": "caseSensitive"})).expect("startFind runs in the Tandem world");
-        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == 3000)), "the full result arrived, its count whole");
-        let (_, b) = p.clients(crate::browser_find::HANDLER).into_iter().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == 3000).unwrap();
+        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "\u{691c}\u{7d22}", "contextLength": 40, "searchMode": "caseSensitive"}), CAP_FIND_SECS).expect("startFind runs in the Tandem world");
+        assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == CAP_WIDE)), "the full result arrived, its count whole");
+        let (_, b) = p.clients(crate::browser_find::HANDLER).into_iter().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == CAP_WIDE).unwrap();
         let ids = b["data"]["matchIdentifiers"].as_array().map_or(0, Vec::len);
         let ctx = b["data"]["contexts"].as_array().map_or(0, Vec::len);
-        assert!(ids > 0 && ids < 3000 && ctx == ids, "a prefix of identifiers and contexts: {ids} and {ctx}");
+        assert!(ids > 0 && ids < CAP_WIDE && ctx == ids, "a prefix of identifiers and contexts: {ids} and {ctx}");
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
@@ -3427,7 +3488,9 @@ window.addEventListener('message', function (e) {
         assert!(bubbles(&mut p) > 0, "the synthetic key picked a bubble (find-nav took an untrusted key)");
         // 1. The page recorded every message it could see: none holds the secret or its field name.
         let report = p.page_eval("window.__report()").expect("the page report");
-        assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
+        if let Some(leak) = page_saw_secret(&report, &secret) {
+            panic!("the view secret reached the page world: {leak}");
+        }
         // 2. The synthetic key picked nothing (R13x3-2), so no window was asked for: no NewWindow. The
         //    host's own user-gesture gate on a find-nav open is exercised only by the control below.
         assert_eq!(p.eval(None, "window.__opens"), Ok(json!(0)), "find-nav took a synthetic key and tried to open a window");
@@ -3590,7 +3653,9 @@ window.addEventListener('message', function (e) {
             copy_press(&mut p, &mut m, &secret, c);
         }
         let sel = selection(&mut p);
-        assert!(sel.starts_with("hello") && !sel.is_empty(), "the selection starts at hello: {sel:?}");
+        // As iTerm2 (macOS word movement): the first w stops at "world", the second finds no word
+        // after it and stays (the 2026-10-09 run selected "" before FORWARD_WORD_TYPED).
+        assert_eq!(sel, "hello ", "v w w selects from hello to the start of world");
         assert!(m.selecting);
         // y: the Copy step, reading what the app's reader reads, capped as it caps.
         assert_eq!(copy_press(&mut p, &mut m, &secret, 'y'), cm::Step::Copy);
@@ -3663,7 +3728,9 @@ window.addEventListener('message', function (e) {
         let (key, ctrl, alt) = cm::key_of(&body).expect("a typed key body");
         let name = cm::key_name(&key, ctrl, alt).expect("a named key");
         assert_eq!(name, "Esc");
-        assert_eq!(cm::Model::default().key(&name, &secret), cm::Step::Leave { stop_selecting: false });
+        // Esc is Quit, as "q" is (iTermCopyModeKeyBindings.dict:30-31, `"\U001B" = ("Quit")`), and
+        // Quit stops selecting (iTermCopyModeHandler.m:437-440); ExitCopyMode (C-c, C-g) does not.
+        assert_eq!(cm::Model::default().key(&name, &secret), cm::Step::Leave { stop_selecting: true });
         assert_eq!(p.rejected_bindings, 0);
         p.finish();
     }
@@ -3724,7 +3791,9 @@ window.addEventListener('message', function (e) {
             assert_eq!(p.eval(None, "String(window.iTerm2CopyMode === window.__mine)"), Ok(json!("false")), "the Tandem world holds Tandem's");
             assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode.getState"), Ok(json!("function")));
             let report = p.page_eval("window.__report()").expect("the page report");
-            assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");
+            if let Some(leak) = page_saw_secret(&report, &secret) {
+                panic!("the view secret reached the page world: {leak}");
+            }
             assert_eq!(p.rejected_bindings, 0);
             p.finish();
         }

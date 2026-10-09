@@ -96,7 +96,7 @@ pub fn find_script(secret: &str) -> Result<String, String> {
     let script = browser_js::fill_template(src, &[("SECRET", secret), ("SCROLL_BEHAVIOR", "smooth"), ("TEST_FUNCTIONS", ""), ("TEST_IMPLS", ""), ("TEST_FREEZE", "")]);
     match missing_include(&script) {
         Some(name) => Err(format!("find script include not found: {name}")),
-        None => type_global_click(&script).and_then(|s| type_nav_keys(&s)),
+        None => type_global_click(&script).and_then(|s| type_nav_keys(&s)).and_then(|s| type_nav_engine(&s)),
     }
 }
 
@@ -132,6 +132,24 @@ fn type_nav_keys(script: &str) -> Result<String, String> {
     match script.matches(NAV_RAW).count() {
         1 => Ok(script.replacen(NAV_RAW, NAV_TYPED, 1)),
         n => Err(format!("the find script's navigation key text is there {n} times, not once")),
+    }
+}
+
+/// Probe run 2026-10-09: find-nav's bubble script (`FN:419-567`), which evaluateInAll runs in each
+/// frame's Tandem world, reached the engine with `eval('getEngine')`. `getEngine` is local to
+/// custom-find.js's IIFE, so from a script evaluated at the world's global scope it threw "getEngine
+/// is not defined" and no bubble was made (iTerm2's copy has the same text). The frame's own
+/// `window.iTermCustomFind` (find-api.js exposes `getEngine`) is the engine of the same IIFE. Same
+/// load-time rule: exactly once, or no find script.
+const NAV_ENGINE_RAW: &str = "engine = eval('getEngine')(instanceId);";
+const NAV_ENGINE_TYPED: &str = "engine = window.iTermCustomFind.getEngine(instanceId);";
+
+/// The find script with find-nav's engine lookup reachable (`NAV_ENGINE_TYPED`); an error unless
+/// `NAV_ENGINE_RAW` is in it exactly once.
+fn type_nav_engine(script: &str) -> Result<String, String> {
+    match script.matches(NAV_ENGINE_RAW).count() {
+        1 => Ok(script.replacen(NAV_ENGINE_RAW, NAV_ENGINE_TYPED, 1)),
+        n => Err(format!("the find script's navigation engine text is there {n} times, not once")),
     }
 }
 
@@ -708,12 +726,13 @@ mod tests {
     ];
 
     /// A file's text as it sits in the script: its two slots filled, and find-engine's global click
-    /// typed (R13x3-1) and find-nav's keys guarded (R13x3-2).
+    /// typed (R13x3-1), find-nav's keys guarded (R13x3-2) and its engine lookup reachable (probe run
+    /// 2026-10-09).
     fn filled(name: &str, secret: &str) -> String {
         let t = browser_js::resource(name).unwrap().replace("{{SECRET}}", secret).replace("{{SCROLL_BEHAVIOR}}", "smooth");
         match name {
             "find-engine.js" => type_global_click(&t).unwrap(),
-            "find-nav.js" => type_nav_keys(&t).unwrap(),
+            "find-nav.js" => type_nav_keys(&t).and_then(|t| type_nav_engine(&t)).unwrap(),
             _ => t,
         }
     }
@@ -851,6 +870,22 @@ mod tests {
 
     /// Find URLs puts bubbles on the page and the person's keys pick one: find-nav ignores a key
     /// that is not trusted (the copied file is not edited; the assembled script is).
+    /// Probe run 2026-10-09 (find_urls_show_bubbles: 0 bubbles): find-nav's bubble script, run in
+    /// each frame's Tandem world by evaluateInAll, reached the engine with `eval('getEngine')`, a
+    /// name local to custom-find.js's IIFE, so it threw "getEngine is not defined" and no bubble was
+    /// made. The assembled script reaches it through the frame's own `window.iTermCustomFind`.
+    #[test]
+    fn find_nav_bubbles_reach_the_engine() {
+        let s = find_script("abc").expect("the script assembles");
+        assert!(!s.contains("eval('getEngine')"), "the IIFE-local name is not reachable from evaluateInAll");
+        assert_eq!(s.matches("engine = window.iTermCustomFind.getEngine(instanceId);").count(), 1);
+        assert!(browser_js::resource("find-api.js").unwrap().contains("\n    getEngine\n};"), "the frame's API exposes getEngine");
+        assert_eq!(browser_js::resource("find-nav.js").unwrap().matches(NAV_ENGINE_RAW).count(), 1, "the copy is unchanged");
+        assert!(type_nav_engine("no target here").is_err());
+        assert!(type_nav_engine(&format!("{NAV_ENGINE_RAW}{NAV_ENGINE_RAW}")).is_err());
+        assert_eq!(type_nav_engine(&format!("a{NAV_ENGINE_RAW}b")), Ok(format!("a{NAV_ENGINE_TYPED}b")));
+    }
+
     #[test]
     fn find_nav_ignores_untrusted_keys() {
         let s = find_script("abc").expect("the script assembles");

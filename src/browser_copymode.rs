@@ -60,7 +60,25 @@ pub fn script(secret: &str) -> Result<String, String> {
     let out = browser_js::fill_template(src, &[("SECRET", secret)]);
     match out.find("{{") {
         Some(at) => Err(format!("copy mode script has an unfilled slot: {}", out[at..].chars().take(40).collect::<String>())),
-        None => Ok(out),
+        None => type_forward_word(&out),
+    }
+}
+
+/// Probe run 2026-10-09: Chromium's Windows editing behavior moves `selection.modify('move',
+/// 'forward', 'word')` to the START of the next word, past the space (macOS, iTerm2's platform, stops
+/// at the end of the current word). iTerm2's skipForwardWord (`CCM:452-511`) then took the landing
+/// for "still in a word" and scanned through the whole next word, so "w" skipped a word, and at the
+/// last word found no boundary and did not move at all. The assembled script takes a landing that
+/// follows a non-word character as the boundary; on macOS behavior that landing never happens, so
+/// the result there is unchanged (checked against Chromium with both behaviors). The copied file is
+/// not edited; the text must be found exactly once, or there is no copy mode script.
+const FORWARD_WORD_RAW: &str = "                // If we're still in a word, scan forward to find the actual boundary\n";
+const FORWARD_WORD_TYPED: &str = "                // Tandem (Windows): Chromium's Windows editing behavior moves forward by word to the\n                // start of the NEXT word, past the space between; macOS stops at the end of the current\n                // word (taken above). A landing after a character that is not a word character has\n                // already left the current word: it is the boundary, not a word to scan through.\n                if ((newNode !== textNode || newOffset > offset) && (newOffset === 0 ? newNode !== textNode : this.classifyCharacter(newNode.textContent[newOffset - 1], false) !== 'word')) {\n                    return { textNode: newNode, characterOffset: newOffset };\n                }\n\n                // If we're still in a word, scan forward to find the actual boundary\n";
+
+fn type_forward_word(script: &str) -> Result<String, String> {
+    match script.matches(FORWARD_WORD_RAW).count() {
+        1 => Ok(script.replacen(FORWARD_WORD_RAW, FORWARD_WORD_TYPED, 1)),
+        n => Err(format!("the copy mode script's forward word text is there {n} times, not once")),
     }
 }
 
@@ -330,6 +348,23 @@ mod tests {
         assert!(new_context_params("abc", &ev(browser_world::WORLD_NAME, "default")).is_none(), "named like Tandem's but not isolated");
         assert!(new_context_params("a'b", &ev(browser_world::WORLD_NAME, "isolated")).is_none(), "a secret that is not plain");
         assert!(new_context_params("abc", "not json").is_none());
+    }
+
+    /// Probe run 2026-10-09 (browser_copy_mode_follows_iterm2: "v w w" selected ""): Chromium's
+    /// Windows editing behavior moves `selection.modify('move', 'forward', 'word')` to the START of
+    /// the next word (macOS: the end of the current one), and iTerm2's skipForwardWord then scanned
+    /// through that whole next word and, at the last word, found no boundary and moved nothing. The
+    /// assembled script takes a landing that follows a non-word character as the boundary.
+    #[test]
+    fn forward_word_follows_iterm2_on_windows() {
+        let s = script("abc").expect("the script assembles");
+        assert_eq!(s.matches("// Tandem (Windows): Chromium's Windows editing behavior moves forward by word").count(), 1);
+        assert!(s.contains("this.classifyCharacter(newNode.textContent[newOffset - 1], false) !== 'word'"));
+        assert_eq!(s.matches(FORWARD_WORD_TYPED).count(), 1);
+        assert_eq!(browser_js::resource("copy-mode-cursor-movement.js").unwrap().matches(FORWARD_WORD_RAW).count(), 1, "the copy is unchanged");
+        assert!(type_forward_word("no target here").is_err());
+        assert!(type_forward_word(&format!("{FORWARD_WORD_RAW}{FORWARD_WORD_RAW}")).is_err());
+        assert_eq!(type_forward_word(&format!("a{FORWARD_WORD_RAW}b")), Ok(format!("a{FORWARD_WORD_TYPED}b")));
     }
 
     /// 13x3 final wave (Task 8 minor 10): a huge count repeats MAX_REPEAT times, not 5000.
