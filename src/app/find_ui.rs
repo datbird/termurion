@@ -1038,10 +1038,10 @@ impl App {
             return false;
         }
         match event {
-            winit::event::WindowEvent::CloseRequested => self.global_find = None,
+            winit::event::WindowEvent::CloseRequested => self.global_closed(),
             winit::event::WindowEvent::RedrawRequested => match w.redraw() {
                 GlobalEvent::None => {}
-                GlobalEvent::Close => self.global_find = None,
+                GlobalEvent::Close => self.global_closed(),
                 GlobalEvent::Search(q) => {
                     let pattern = find::pattern(&q, self.find_mode());
                     let mut hits = Vec::new();

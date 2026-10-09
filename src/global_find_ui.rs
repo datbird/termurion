@@ -20,6 +20,12 @@ pub struct Hit {
     pub web: Option<serde_json::Value>,
 }
 
+/// A pane that closed or whose page was replaced: its delivered rows go (both lists).
+pub fn drop_pane_rows(hits: &mut Vec<Hit>, web: &mut Vec<Hit>, pane: u64) {
+    hits.retain(|h| h.pane != pane);
+    web.retain(|h| h.pane != pane);
+}
+
 /// Longest snippet shown, in characters on each side of the match.
 const CONTEXT: usize = 40;
 
@@ -205,6 +211,15 @@ mod tests {
         assert_eq!((s.as_str(), r), ("a needle b", 2..8));
         let (s, r) = snippet("\u{4e2d}\u{6587}needle", 6..12);
         assert_eq!(&s[r], "needle");
+    }
+
+    #[test]
+    fn a_gone_pane_loses_its_rows() {
+        let hit = |pane: u64| Hit { pane, title: String::new(), m: Match { start: Pos::default(), end: Pos::default() }, snippet: String::new(), mark: 0..0, web: None };
+        let (mut hits, mut web) = (vec![hit(1), hit(2)], vec![hit(2), hit(3)]);
+        drop_pane_rows(&mut hits, &mut web, 2);
+        assert_eq!(hits.iter().map(|h| h.pane).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(web.iter().map(|h| h.pane).collect::<Vec<_>>(), vec![3]);
     }
 
     fn result(before: &str, text: &str, after: &str) -> crate::browser_find::FindResult {

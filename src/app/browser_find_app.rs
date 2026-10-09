@@ -304,6 +304,26 @@ impl App {
         self.global_show();
     }
 
+    /// A closed pane or a replaced page: its delivered Find Globally rows go and its stream
+    /// no longer answers the current search; the window is shown again.
+    pub(super) fn global_pane_gone(&mut self, pane: PaneId) {
+        crate::global_find_ui::drop_pane_rows(&mut self.global_hits, &mut self.global_web, pane as u64);
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.global_gen = 0;
+        }
+        if self.global_find.is_some() {
+            self.global_show();
+        }
+    }
+
+    /// The Find Globally window closed: nothing of its last search stays.
+    pub(super) fn global_closed(&mut self) {
+        self.global_find = None;
+        self.global_hits.clear();
+        self.global_web.clear();
+        self.global_error = None;
+    }
+
     /// A picked browser match: the page shows its global results when the last search was the
     /// bar's, then reveals the match (`FM:438-450`).
     pub(super) fn browser_global_reveal(&mut self, pane: PaneId, identifier: &Value) {
@@ -729,6 +749,13 @@ mod tests {
         assert!(ev.contains("self.global_generation += 1") && ev.contains("self.browser_global_start(&q)") && ev.contains("GlobalEvent::PickWeb(id, identifier)"));
         let web = between(ev, "GlobalEvent::PickWeb(id, identifier)", "GlobalEvent::Pick(id, m)");
         assert!(web.contains("self.global_focus_pane(id)") && web.contains("self.browser_global_reveal(id, &identifier)"));
+        // A closed pane or replaced page drops its rows; a closed window drops them all; the counter starts at 1.
+        assert!(between(me, "pub(super) fn global_pane_gone", "pub(super) fn global_closed").contains("drop_pane_rows") && between(me, "pub(super) fn global_closed", "pub(super) fn browser_global_reveal").contains("self.global_error = None"));
+        let scripts = prod(include_str!("browser_scripts_app.rs"));
+        assert!(between(scripts, "pub(super) fn browser_reset_world", "// --- Setup ---").contains("self.global_pane_gone(pane)"));
+        let m = prod(include_str!("mod.rs"));
+        assert!(between(m, "fn close_pane(&mut self", "self.single_use_ended(id)").contains("self.global_pane_gone(id)") && m.contains("global_generation: 1,"));
+        assert!(ev.contains("GlobalEvent::Close => self.global_closed()") && f.contains("CloseRequested => self.global_closed()"));
         assert!(me.contains("Update::Global(results) => self.browser_global_results(pane, results)"));
     }
 }

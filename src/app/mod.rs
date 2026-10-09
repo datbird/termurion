@@ -2219,7 +2219,7 @@ pub fn run() {
         global_hits: Vec::new(),
         global_web: Vec::new(),
         global_error: None,
-        global_generation: 0,
+        global_generation: 1,
         api,
         shell: default_shell(),
         gpu: None,
@@ -4845,6 +4845,8 @@ impl App {
             self.codecierge.remove(&guid);
         }
         self.ai_annotations.retain(|_, (pane, _)| *pane != id);
+        // Its Find Globally rows go with it.
+        self.global_pane_gone(id);
         // A git command's window closed any way ends its command, as does Manage
         // Dependencies' pip command.
         self.single_use_ended(id);

@@ -216,6 +216,7 @@ impl App {
             bv.find_out.reset();
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
         }
+        self.global_pane_gone(pane);
         for done in dones {
             done(self, pane, Err("view closed".into()));
         }
