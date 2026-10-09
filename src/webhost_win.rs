@@ -3288,6 +3288,55 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// 13x3 Task 5: Find URLs on a page. The temporary search for the default pattern (as
+    /// `browser_find::Model::temporary` sends it) is followed by the open shortcuts: a page with two
+    /// links as text holds two navigation bubbles within 5 s (`FN:192-218`, counted by their
+    /// attribute); with the pattern `(?i)https?://\S+`, which the page's RegExp rejects (M4), it
+    /// holds none. Needs the console session.
+    #[test]
+    #[ignore]
+    fn find_urls_show_bubbles() {
+        let secret = hex32();
+        let page = "<!doctype html><html><head><title>u</title></head><body><p>see https://a.example/x and https://a.example/y now</p></body></html>".to_string();
+        let default = "https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?";
+        let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.load(PAGE);
+        // The model's own commands, in order, each answered before the next.
+        let mut m = crate::browser_find::Model::new("probe", "probeglobal");
+        // Each run has its own instance id, so one run's reports are never read as the next's.
+        let run = |p: &mut Probe, pattern: &str, uuid: &str, m: &mut crate::browser_find::Model| {
+            let want = format!("main_{uuid}");
+            let cmds = m.temporary(pattern, &secret).expect("a pattern");
+            for c in cmds {
+                let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": c})).expect("the command");
+                p.eval(None, &expr).expect("the command runs");
+            }
+            assert!(p.wait(10, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["instanceId"] == want.as_str())), "the full result arrived");
+            for (_, b) in p.clients(crate::browser_find::HANDLER) {
+                m.on_message(&b, &secret);
+            }
+            m.shortcuts_after_complete(&secret)
+        };
+        let after = run(&mut p, default, "probe", &mut m).expect("something matched, so the shortcuts are owed");
+        for c in after {
+            let expr = crate::browser_js::call_js(crate::browser_find::COMMAND_JS, &json!({"command": c})).expect("the command");
+            p.eval(None, &expr).expect("the shortcuts start");
+        }
+        assert!(wait_bubbles(&mut p, 5, |n| n == 2), "two navigation bubbles within 5 s: {}", bubbles(&mut p));
+        find_command(&mut p, &secret, "clearNavigationShortcuts", json!({})).expect("clear");
+        find_command(&mut p, &secret, "clearFind", json!({})).expect("clearFind");
+        p.settle(500);
+        // The inline flag: valid for 13s's validator, a SyntaxError for the page's RegExp, so literal text.
+        let mut m = crate::browser_find::Model::new("probe2", "probe2global");
+        let owed = run(&mut p, "(?i)https?://\\S+", "probe2", &mut m);
+        assert!(owed.is_none(), "nothing matched as literal text, so no shortcuts are owed");
+        p.settle(1000);
+        assert_eq!(bubbles(&mut p), 0, "no bubbles for a pattern the page cannot run");
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
     /// 13x3 Task 1 review I3: Find Globally's context (40) on a CJK and accented page with
     /// thousands of matches. The cap weighs the escaped DevTools event, so the result is admitted
     /// (a UTF-8 weight let it reach about 100 KB raw and the gate dropped it whole). Needs the
@@ -3338,11 +3387,11 @@ window.addEventListener('message', function (e) {
         assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show");
         let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
         let label = label.as_str().expect("a label").to_lowercase();
-        // A synthetic key at the label: it reaches find-nav, which picks the bubble and clears them all.
+        // A synthetic key at the label: find-nav ignores it (R13x3-2), so the bubbles stay.
         let keys = serde_json::to_string(&label.chars().map(String::from).collect::<Vec<_>>()).unwrap();
         p.page_eval(&format!("for (const k of {keys}) {{ document.dispatchEvent(new KeyboardEvent('keydown', {{key: k, bubbles: true}})); }} 1")).expect("the synthetic keys run");
-        assert!(wait_bubbles(&mut p, 5, |n| n == 0), "the synthetic key reached find-nav (it picked a bubble)");
         p.settle(1500);
+        assert!(bubbles(&mut p) > 0, "the synthetic key picked a bubble (find-nav took an untrusted key)");
         // 1. The page recorded every message it could see: none holds the secret or its field name.
         let report = p.page_eval("window.__report()").expect("the page report");
         assert!(!report.contains(&secret) && !report.contains("sessionSecret"), "the view secret reached the page world");

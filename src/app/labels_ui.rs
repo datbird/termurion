@@ -126,6 +126,13 @@ impl App {
     /// on the focused pane's results on screen.
     pub(super) fn reveal_shortcuts(&mut self, kind: &str) {
         let Some(id) = self.focused_id() else { return };
+        // A browser pane has no cells: Find URLs asks the page, and the text-view pickers do nothing.
+        if self.is_browser_pane(id) {
+            if kind == "urls" {
+                self.browser_find_urls(id);
+            }
+            return;
+        }
         let Some(p) = self.panes.get(&id) else { return };
         let lines = visible_url_lines(&p.screen);
         let rows = find::visible_rows(&p.screen);

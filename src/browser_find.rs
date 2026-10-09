@@ -96,7 +96,7 @@ pub fn find_script(secret: &str) -> Result<String, String> {
     let script = browser_js::fill_template(src, &[("SECRET", secret), ("SCROLL_BEHAVIOR", "smooth"), ("TEST_FUNCTIONS", ""), ("TEST_IMPLS", ""), ("TEST_FREEZE", "")]);
     match missing_include(&script) {
         Some(name) => Err(format!("find script include not found: {name}")),
-        None => type_global_click(&script),
+        None => type_global_click(&script).and_then(|s| type_nav_keys(&s)),
     }
 }
 
@@ -115,6 +115,23 @@ fn type_global_click(script: &str) -> Result<String, String> {
     match script.matches(CLICK_RAW).count() {
         1 => Ok(script.replacen(CLICK_RAW, CLICK_TYPED, 1)),
         n => Err(format!("the find script's global click text is there {n} times, not once")),
+    }
+}
+
+/// R13x3-2 (Find URLs): a page's own `keydown` events must not pick a navigation bubble. find-nav's
+/// document listener has no `isTrusted` check (it is iTerm2's, copied unchanged), so the assembled
+/// script gets one, with the same load-time rule as `CLICK_RAW`: the text must be found exactly once
+/// or there is no find script. Keys from the person (and DevTools input, which Chromium marks
+/// trusted) still pick.
+const NAV_RAW: &str = "            keyListener = (event) => {\n                if (handleKeyEvent(event)) {";
+const NAV_TYPED: &str = "            keyListener = (event) => {\n                if (!event.isTrusted) {\n                    return;\n                }\n                if (handleKeyEvent(event)) {";
+
+/// The find script with find-nav's key listener guarded (`NAV_TYPED`); an error unless `NAV_RAW` is
+/// in it exactly once.
+fn type_nav_keys(script: &str) -> Result<String, String> {
+    match script.matches(NAV_RAW).count() {
+        1 => Ok(script.replacen(NAV_RAW, NAV_TYPED, 1)),
+        n => Err(format!("the find script's navigation key text is there {n} times, not once")),
     }
 }
 
@@ -146,6 +163,8 @@ pub fn global_instance(uuid: &str) -> String {
     format!("global_{uuid}")
 }
 
+/// The longest pattern or term the page takes (`MAX_SEARCH_TERM_LENGTH`, `FC:8`), in characters.
+pub const MAX_TERM: usize = 1000;
 /// Longest match text or context kept, in characters (`MAX_CONTEXT_LENGTH`, `FC`).
 pub const MAX_TEXT: usize = 500;
 /// Largest match identifier kept, serialized: it goes back to the page for a reveal.
@@ -237,6 +256,8 @@ pub struct Model {
     in_progress: bool,
     /// A `hideResults` for the global instance is owed before the next local command (`FM:452-459`).
     owed_hide: bool,
+    /// Find URLs' temporary search is the default search and its shortcuts are still owed.
+    urls_pending: bool,
 }
 
 /// Page text as shown: control, bidirectional and zero-width characters out (a newline kept for
@@ -289,7 +310,7 @@ pub fn fresh_model() -> Model {
 impl Model {
     /// The two instance ids carry the given UUIDs (`FM:339-340`).
     pub fn new(uuid_default: &str, uuid_global: &str) -> Model {
-        Model { default: State::new(default_instance(uuid_default)), global: State::new(global_instance(uuid_global)), last_global: false, in_progress: false, owed_hide: false }
+        Model { default: State::new(default_instance(uuid_default)), global: State::new(global_instance(uuid_global)), last_global: false, in_progress: false, owed_hide: false, urls_pending: false }
     }
 
     /// `hideGlobalSearchResultsIfNeeded` (`FM:452-459`): the hide is owed, not sent here.
@@ -313,6 +334,7 @@ impl Model {
             return out;
         }
         self.in_progress = true;
+        self.urls_pending = false;
         out.push(self.default.start(term, mode, 0, secret));
         out
     }
@@ -338,6 +360,7 @@ impl Model {
 
     /// `clearFind` (`FM:489-497`) on the bar's search.
     pub fn clear(&mut self, secret: &str) -> Value {
+        self.urls_pending = false;
         self.default.clear(secret)
     }
 
@@ -345,6 +368,7 @@ impl Model {
     /// instance, start it with 40 characters of context. An empty query only clears.
     pub fn global_start(&mut self, query: &str, mode: FindMode, secret: &str) -> Vec<Value> {
         let mut out = Vec::new();
+        self.urls_pending = false;
         if !self.last_global {
             out.push(self.default.clear(secret));
         }
@@ -387,6 +411,38 @@ impl Model {
         let mut out: Vec<Value> = self.hide_command(secret).into_iter().collect();
         out.push(self.default.command("startNavigationShortcuts", json!({"selectionAction": action}), secret));
         out
+    }
+
+    /// Find URLs' search (`closeViewAndDoTemporarySearchForString`, `PT:3880-3883`): a forced
+    /// case-sensitive regex `startFind` that the bar's own query never sees, the owed global hide
+    /// first. `pattern` is the person's setting and goes to the page as text, so it is bounded
+    /// (`MAX_SEARCH_TERM_LENGTH`, `FC:8`); `None` for an empty or over-long one. The shortcuts follow
+    /// through `shortcuts_after_complete`.
+    pub fn temporary(&mut self, pattern: &str, secret: &str) -> Option<Vec<Value>> {
+        if pattern.is_empty() || pattern.chars().count() > MAX_TERM {
+            return None;
+        }
+        self.owe_hide();
+        let mut out: Vec<Value> = self.hide_command(secret).into_iter().collect();
+        self.in_progress = true;
+        out.push(self.default.start(pattern, FindMode::CaseSensitiveRegex, 0, secret));
+        self.urls_pending = true;
+        Some(out)
+    }
+
+    /// The open shortcuts once the temporary search's full result is in (`PT:3884-3890`); nothing
+    /// when it found nothing (the engine would answer "No matches to navigate", `FE:1873-1875`), when
+    /// the result is not in yet, when they were already asked for, or when a search of the person's
+    /// own replaced the temporary one.
+    pub fn shortcuts_after_complete(&mut self, secret: &str) -> Option<Vec<Value>> {
+        if !self.urls_pending || !self.default.active || !self.default.complete {
+            return None;
+        }
+        self.urls_pending = false;
+        if self.default.total == 0 {
+            return None;
+        }
+        Some(self.navigation_shortcuts("open", secret))
     }
 
     /// `handleMessage` (`FM:550-571`) and `handleResultsUpdate` (`FM:126-176`). A full update (one
@@ -606,10 +662,14 @@ mod tests {
     ];
 
     /// A file's text as it sits in the script: its two slots filled, and find-engine's global click
-    /// typed (R13x3-1).
+    /// typed (R13x3-1) and find-nav's keys guarded (R13x3-2).
     fn filled(name: &str, secret: &str) -> String {
         let t = browser_js::resource(name).unwrap().replace("{{SECRET}}", secret).replace("{{SCROLL_BEHAVIOR}}", "smooth");
-        if name == "find-engine.js" { type_global_click(&t).unwrap() } else { t }
+        match name {
+            "find-engine.js" => type_global_click(&t).unwrap(),
+            "find-nav.js" => type_nav_keys(&t).unwrap(),
+            _ => t,
+        }
     }
 
     #[test]
@@ -699,6 +759,54 @@ mod tests {
         assert!(type_global_click("no target here").is_err(), "a missing target is an error");
         assert!(type_global_click(&format!("{CLICK_RAW}\n{CLICK_RAW}")).is_err(), "a doubled target is an error");
         assert_eq!(type_global_click(&format!("a{CLICK_RAW}b")), Ok(format!("a{CLICK_TYPED}b")));
+    }
+
+
+    /// Find URLs (`PT:3872-3905`): a forced case-sensitive regex search that the bar does not
+    /// know, then the open shortcuts once, only when something matched.
+    #[test]
+    fn find_urls_follow_iterm2() {
+        let mut m = Model::new("U", "V");
+        let c = m.temporary("https?://\\S+", "s").expect("a pattern is searched");
+        assert_eq!(c, vec![command("startFind", json!({"searchTerm": "https?://\\S+", "contextLength": 0, "searchMode": "caseSensitiveRegex"}), "main_U", "s")]);
+        assert!(m.shortcuts_after_complete("s").is_none(), "nothing before the result");
+        assert!(m.on_message(&full("main_U", 2, 1, vec![ident(0, "a"), ident(1, "b")], None), "s") != Update::Ignored);
+        let c = m.shortcuts_after_complete("s").expect("shortcuts after the full result");
+        assert_eq!(c, vec![command("startNavigationShortcuts", json!({"selectionAction": "open"}), "main_U", "s")]);
+        assert!(m.shortcuts_after_complete("s").is_none(), "once");
+        // No match: nothing shows (the engine would answer "No matches to navigate").
+        m.temporary("zzz", "s").unwrap();
+        m.on_message(&full("main_U", 0, 0, vec![], None), "s");
+        assert!(m.shortcuts_after_complete("s").is_none());
+        // A global hide owed goes first.
+        let mut m = Model::new("U", "V");
+        m.global_start("q", FindMode::CaseInsensitive, "s");
+        let c = m.temporary("u", "s").unwrap();
+        assert_eq!(c.iter().map(cmd).collect::<Vec<_>>(), [("hideResults", "global_V"), ("startFind", "main_U")]);
+        // A search the person starts after it takes the shortcuts away.
+        let mut m = Model::new("U", "V");
+        m.temporary("u", "s").unwrap();
+        m.start("typed", FindMode::CaseSensitive, false, "s");
+        m.on_message(&full("main_U", 1, 1, vec![ident(0, "a")], None), "s");
+        assert!(m.shortcuts_after_complete("s").is_none(), "the person's own search is not Find URLs");
+        // The pattern is page-bound: empty and over-long ones are refused.
+        assert!(m.temporary("", "s").is_none());
+        assert!(m.temporary(&"a".repeat(1001), "s").is_none());
+        assert!(m.temporary(&"a".repeat(1000), "s").is_some());
+    }
+
+    /// Find URLs puts bubbles on the page and the person's keys pick one: find-nav ignores a key
+    /// that is not trusted (the copied file is not edited; the assembled script is).
+    #[test]
+    fn find_nav_ignores_untrusted_keys() {
+        let s = find_script("abc").expect("the script assembles");
+        assert_eq!(s.matches(NAV_TYPED).count(), 1);
+        assert!(s.contains("if (!event.isTrusted) {"));
+        assert!(!s.contains(NAV_RAW), "the raw listener is gone");
+        assert_eq!(browser_js::resource("find-nav.js").unwrap().matches(NAV_RAW).count(), 1, "the copy is unchanged");
+        assert!(type_nav_keys("no target here").is_err());
+        assert!(type_nav_keys(&format!("{NAV_RAW}{NAV_RAW}")).is_err());
+        assert_eq!(type_nav_keys(&format!("a{NAV_RAW}b")), Ok(format!("a{NAV_TYPED}b")));
     }
 
     #[test]

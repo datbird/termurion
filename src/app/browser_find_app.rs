@@ -78,6 +78,19 @@ pub(super) fn page_may_focus(address_keys: bool, find_typing: bool) -> bool {
     !address_keys && !find_typing
 }
 
+/// Find URLs' banner for a pattern the search cannot take (13s's text).
+pub(super) const BAD_URLS_PATTERN: &str = "Find URLs: invalid regular expression";
+
+/// Find URLs on a page: the commands of the temporary search for `FindUrlsRegex`, or the banner.
+/// The text goes to the page as it is (it runs it as a JavaScript RegExp); 13s's validator
+/// (`find_urls_regex`) decides whether it is a pattern at all, and the model bounds its length.
+pub(super) fn urls_commands(g: &Globals, model: &mut Model, secret: &str) -> Result<Vec<Value>, &'static str> {
+    if super::labels_ui::find_urls_regex(g).is_none() {
+        return Err(BAD_URLS_PATTERN);
+    }
+    model.temporary(&g.string("FindUrlsRegex"), secret).ok_or(BAD_URLS_PATTERN)
+}
+
 impl App {
     /// Whether pane `pane`'s find bar has the keyboard (a bar that is open and typing).
     pub(super) fn browser_find_typing(&self, pane: PaneId) -> bool {
@@ -202,6 +215,38 @@ impl App {
         );
     }
 
+    /// Find URLs on a browser pane (`PT:3872-3905`): the bar closes (its query stays), a temporary
+    /// case-sensitive search for `FindUrlsRegex` runs, and when its full result is in the page shows
+    /// the open shortcuts (`browser_find_message`). The page has the keyboard so find-nav's own key
+    /// handler takes the letters and Esc. A shortcut's open is the page's `window.open`, which only
+    /// 13x's gated `Event::NewWindow` path can turn into a tab: nothing here opens a URL.
+    pub(super) fn browser_find_urls(&mut self, pane: PaneId) {
+        if !self.client_open(pane) {
+            self.banners.set("action", "Nothing to pick on screen.");
+            return self.redraw();
+        }
+        if self.finds.get(&pane).is_some_and(|f| f.open) {
+            if let Some(f) = self.finds.get_mut(&pane) {
+                f.close();
+            }
+            self.browser_find_closed(pane);
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        match urls_commands(&self.globals, &mut bv.find, &secret) {
+            Ok(cmds) => self.browser_find_send(pane, cmds),
+            Err(banner) => {
+                self.banners.set("action", banner);
+            }
+        }
+        if self.browser_page_may_focus(pane) {
+            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                v.focus();
+            }
+        }
+        self.redraw();
+    }
+
     /// The find family from the menu on browser pane `id` (`browser_find::route`). False for Find
     /// Globally, which is its own window; every other command is taken.
     pub(super) fn browser_find_command(&mut self, id: PaneId, selector: &str, label: &str) -> bool {
@@ -228,8 +273,7 @@ impl App {
                 self.browser_find_clear(id);
             }
             Route::Jump => self.browser_jump_to_selection(id),
-            // Find URLs is Task 5's.
-            Route::FindUrls => {}
+            Route::FindUrls => self.browser_find_urls(id),
             Route::Global => return false,
             Route::Nothing => {}
         }
@@ -250,6 +294,11 @@ impl App {
             Update::Counts => self.redraw(),
             Update::Default { .. } => {
                 bv.find.continue_find();
+                // Find URLs: the full result of its temporary search brings the shortcuts.
+                let shortcuts = bv.find.shortcuts_after_complete(&secret);
+                if let Some(cmds) = shortcuts {
+                    self.browser_find_send(pane, cmds);
+                }
                 self.redraw();
             }
             // Find Globally takes the one batch of the global stream (Task 6).
@@ -445,6 +494,55 @@ mod tests {
         let a = src.find(from).unwrap_or_else(|| panic!("missing {from}"));
         let b = a + src[a..].find(to).unwrap_or_else(|| panic!("missing {to}"));
         &src[a..b]
+    }
+
+
+    /// Find URLs on a page (`PT:3872-3905`): the setting's text goes to the page as it is (the page
+    /// runs it as a JavaScript RegExp), an invalid one sends nothing and shows 13s's banner, and
+    /// `(?i)` is valid for the validator and sent all the same (it then finds nothing there, M4).
+    #[test]
+    fn find_urls_use_the_setting() {
+        let mut g = Globals::empty(std::path::Path::new("unused.toml"));
+        let default = "https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?";
+        assert_eq!(g.string("FindUrlsRegex"), default, "AS:414-416, the literal &amp; kept");
+        let mut m = model();
+        let c = urls_commands(&g, &mut m, SECRET).expect("the default pattern searches");
+        assert_eq!(c.len(), 1);
+        assert_eq!((c[0]["action"].as_str(), c[0]["searchMode"].as_str(), c[0]["searchTerm"].as_str()), (Some("startFind"), Some("caseSensitiveRegex"), Some(default)));
+        assert_eq!(c[0]["contextLength"], 0);
+        for bad in ["(unclosed", ""] {
+            g.set("FindUrlsRegex", toml::Value::String(bad.into()));
+            let mut m = model();
+            assert_eq!(urls_commands(&g, &mut m, SECRET), Err(BAD_URLS_PATTERN), "{bad:?}");
+            assert!(m.active_term().is_none(), "nothing was started");
+        }
+        g.set("FindUrlsRegex", toml::Value::String("(?i)https?://\\S+".into()));
+        let mut m = model();
+        let c = urls_commands(&g, &mut m, SECRET).expect("the validator accepts the inline flag");
+        assert_eq!(c[0]["searchTerm"], "(?i)https?://\\S+");
+        // A pattern longer than the engine takes is refused here, not by the page.
+        g.set("FindUrlsRegex", toml::Value::String(format!("a{}", "b?".repeat(600))));
+        assert_eq!(urls_commands(&g, &mut model(), SECRET), Err(BAD_URLS_PATTERN));
+    }
+
+    /// Find URLs reaches the page one way, and opening a link is the page's `window.open`, which
+    /// 13x's gated `Event::NewWindow` path handles: nothing here opens a URL or a window.
+    #[test]
+    fn find_urls_wiring_opens_nothing() {
+        let me = prod(include_str!("browser_find_app.rs"));
+        let urls = between(me, "pub(super) fn browser_find_urls", "/// The find family from the menu");
+        for banned in ["open_url", "ShellExecute", "NewWindow", "open_browser", "new_tab", "execute_script", "format!("] {
+            assert!(!urls.contains(banned), "Find URLs must not use {banned}");
+        }
+        assert!(urls.contains("urls_commands(") && urls.contains("self.browser_find_send(") && urls.contains("self.client_open(pane)"));
+        assert!(urls.contains("self.browser_find_closed(pane)"), "the bar closes first, as iTerm2's does");
+        let route = between(me, "Route::FindUrls =>", "Route::Global");
+        assert!(route.contains("self.browser_find_urls(id)"));
+        let msg = &me[me.find("pub(super) fn browser_find_message").unwrap()..];
+        assert!(msg.contains("shortcuts_after_complete(") && msg.contains("self.browser_find_send("), "the shortcuts follow the complete result");
+        let labels = prod(include_str!("labels_ui.rs"));
+        let reveal = between(labels, "pub(super) fn reveal_shortcuts", "let Some(p) = self.panes.get(&id)");
+        assert!(reveal.contains("self.is_browser_pane(id)") && reveal.contains("self.browser_find_urls(id)"), "a browser pane's request goes to the page");
     }
 
     /// B1: the find strip is cut inside the one layout owner, below the announcement bar; the scene
