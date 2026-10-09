@@ -163,7 +163,8 @@ pub fn global_instance(uuid: &str) -> String {
     format!("global_{uuid}")
 }
 
-/// The longest pattern or term the page takes (`MAX_SEARCH_TERM_LENGTH`, `FC:8`), in characters.
+/// The longest pattern or term the page takes (`MAX_SEARCH_TERM_LENGTH`, `FC:8`), in UTF-16 units
+/// (the page slices strings by them).
 pub const MAX_TERM: usize = 1000;
 /// Longest match text or context kept, in characters (`MAX_CONTEXT_LENGTH`, `FC`).
 pub const MAX_TEXT: usize = 500;
@@ -419,7 +420,7 @@ impl Model {
     /// (`MAX_SEARCH_TERM_LENGTH`, `FC:8`); `None` for an empty or over-long one. The shortcuts follow
     /// through `shortcuts_after_complete`.
     pub fn temporary(&mut self, pattern: &str, secret: &str) -> Option<Vec<Value>> {
-        if pattern.is_empty() || pattern.chars().count() > MAX_TERM {
+        if pattern.is_empty() || pattern.encode_utf16().count() > MAX_TERM {
             return None;
         }
         self.owe_hide();
@@ -605,7 +606,6 @@ pub fn strip(web: Rect, bar_h: f32) -> (Rect, Rect) {
     (Rect { h: bar, ..web }, Rect { y: web.y + bar, h: (web.h - bar).max(0.0), ..web })
 }
 
-/// iTerm2's one-at-a-time command mutex (`FM:270`): commands wait here, the next goes out when the
 /// A browser pane's whole top split in one place (13x3 B1): the front announcement bar first (its
 /// bottom edge, when one is up), then the find bar's row of `find_h` below it (when one is open),
 /// then the page. The find row is None while no bar is open. The app's `browser_split` calls this
@@ -627,6 +627,7 @@ pub fn split(r: Rect, announcement_bottom: Option<f32>, find_h: Option<f32>) -> 
     }
 }
 
+/// iTerm2's one-at-a-time command mutex (`FM:270`): commands wait here, the next goes out when the
 /// previous was answered.
 #[derive(Clone, Debug, Default)]
 pub struct Outbox {
@@ -814,6 +815,9 @@ mod tests {
         assert!(m.temporary("", "s").is_none());
         assert!(m.temporary(&"a".repeat(1001), "s").is_none());
         assert!(m.temporary(&"a".repeat(1000), "s").is_some());
+        // The page counts UTF-16 units (`sanitizeString` slices them): 501 astral characters are 1002.
+        assert!(m.temporary(&"\u{1F600}".repeat(501), "s").is_none());
+        assert!(m.temporary(&"\u{1F600}".repeat(500), "s").is_some());
     }
 
     /// Find URLs puts bubbles on the page and the person's keys pick one: find-nav ignores a key
@@ -1161,10 +1165,6 @@ mod tests {
         assert!(view.y >= 32.0);
     }
 
-    /// iTerm2's mutex (`FM:270`): the second command waits for the first's answer.
-    #[test]
-    fn commands_go_out_one_at_a_time() {
-        let mut o = Outbox::default();
     /// 13x3 B1, made behavioural (Task 4 review): the announcement bar, the find row and the page
     /// stack in that order from one function, so the placed view (this rectangle) is the one the
     /// hover anchor and the scene read; the rows never overlap and never leave the area.
@@ -1192,6 +1192,10 @@ mod tests {
         assert_eq!((find.map(|f| f.h), view.h), (Some(0.0), 0.0));
     }
 
+    /// iTerm2's mutex (`FM:270`): the second command waits for the first's answer.
+    #[test]
+    fn commands_go_out_one_at_a_time() {
+        let mut o = Outbox::default();
         assert_eq!(o.push(vec![json!(1), json!(2)]), Some(json!(1)));
         assert_eq!(o.push(vec![json!(3)]), None, "one is in flight");
         assert_eq!(o.answered(), Some(json!(2)));

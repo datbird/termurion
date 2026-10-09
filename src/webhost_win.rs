@@ -3377,8 +3377,8 @@ window.addEventListener('message', function (e) {
     /// window messages a page forges or reads. The page and a cross-origin child forge
     /// `iTermGlobalClick` and `iTermIframeClick`; neither carries the view secret. With new windows
     /// on (as a browser pane has them) and navigation shortcuts on, a synthetic key at a bubble's
-    /// label reaches find-nav (the bubbles go) and opens nothing, because the host lets only a
-    /// user-initiated window through; a real key, the control, does open one. Needs the console session.
+    /// label is ignored by find-nav (R13x3-2: the bubbles stay and nothing opens); a real key, the
+    /// control, is user-initiated and does open a window through the host. Needs the console session.
     #[test]
     #[ignore]
     fn find_messages_forged_by_a_page() {

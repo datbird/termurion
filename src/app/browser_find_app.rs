@@ -252,14 +252,16 @@ impl App {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let secret = bv.secret.clone();
         match urls_commands(&self.globals, &mut bv.find, &secret) {
-            Ok(cmds) => self.browser_find_send(pane, cmds),
+            Ok(cmds) => {
+                self.browser_find_send(pane, cmds);
+                if self.browser_page_may_focus(pane) {
+                    if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                        v.focus();
+                    }
+                }
+            }
             Err(banner) => {
                 self.banners.set("action", banner);
-            }
-        }
-        if self.browser_page_may_focus(pane) {
-            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                v.focus();
             }
         }
         self.redraw();
@@ -536,6 +538,18 @@ mod tests {
         assert_eq!(actions(&c), ["clearFind"]);
     }
 
+    /// Task 5 review: a bad Find URLs pattern shows its banner and does not hand the keyboard to the
+    /// page; the focus follows only the commands that were sent.
+    #[test]
+    fn a_bad_find_urls_pattern_does_not_focus_the_page() {
+        let me = prod(include_str!("browser_find_app.rs"));
+        let f = between(me, "pub(super) fn browser_find_urls", "/// A Find Globally search reaches");
+        let ok = between(f, "Ok(cmds) =>", "Err(banner)");
+        assert!(ok.contains("self.browser_find_send(pane, cmds)") && ok.contains("browser_page_may_focus(pane)") && ok.contains(".focus()"));
+        let err = &f[f.find("Err(banner)").unwrap()..];
+        assert!(err.contains("self.banners.set(\"action\", banner)") && !err.contains(".focus()"), "no focus after the banner");
+    }
+
     /// B6: the address field, the find bar and the page never type together.
     #[test]
     fn keyboard_has_one_owner() {
@@ -758,7 +772,6 @@ mod tests {
         assert!(ev.contains("GlobalEvent::Close => self.global_closed()") && f.contains("CloseRequested => self.global_closed()"));
         assert!(me.contains("Update::Global(results) => self.browser_global_results(pane, results)"));
     }
-}
 
     /// 13x3 Task 9: a find for "world", then "/" from copy mode opens the find bar with the query
     /// kept (`CPH:480-483`, ShowFindPanel). The copy-mode key is the shared table's, the step is the
@@ -794,3 +807,4 @@ mod tests {
         assert_eq!(actions(&s.sent), ["startFind"]);
         assert_eq!(s.sent[0]["searchTerm"], "world");
     }
+}
