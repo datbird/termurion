@@ -736,7 +736,7 @@ impl App {
     // --- Peers (Task 4): `PSPP` `PTYSessionPeerPort.swift`, `WPP` `iTermWorkgroupPeerPort.swift` ---
 
     /// The instance `pane` is the shown member of: the only pane the peer commands act on.
-    fn peer_group_of(&self, pane: PaneId) -> Option<&Instance> {
+    pub(super) fn peer_group_of(&self, pane: PaneId) -> Option<&Instance> {
         self.workgroup_of(pane).filter(|i| i.shown_pane() == Some(pane))
     }
 

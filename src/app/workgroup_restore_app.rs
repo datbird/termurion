@@ -233,6 +233,11 @@ impl App {
             return None;
         }
         let now = Instant::now();
+        // The launch is still applying saved windows (13x2 seam S5): members are rebuilt after it, so
+        // a browser member's page takes the same deferred load as every restored page.
+        if self.browser_restoring() {
+            return Some(now + LOOK);
+        }
         let mut waiting = false;
         for mut p in std::mem::take(&mut self.workgroups.restoring.pending) {
             if !self.panes.contains_key(&p.m.anchor) {

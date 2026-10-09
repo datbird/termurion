@@ -311,9 +311,16 @@ impl App {
     }
 
     /// The pane may not be moved: Lock Layout of its window or the pane's own lock, a loaded
-    /// recording, or a tmux gateway pane (P17, `compatible` cannot see it).
+    /// recording, a tmux gateway pane (P17, `compatible` cannot see it), or a workgroup member.
     pub(super) fn pane_move_refused(&self, pane: PaneId) -> bool {
-        super::pane_lock_ui::move_refused(self.pane_window_forbids(pane, crate::winmodel::LayoutOp::MovePane), self.panes.get(&pane).is_some_and(|p| p.locked)) || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux.contains_key(&pane)
+        super::pane_lock_ui::move_refused(self.pane_window_forbids(pane, crate::winmodel::LayoutOp::MovePane), self.panes.get(&pane).is_some_and(|p| p.locked)) || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux.contains_key(&pane) || self.member_refuses_move(pane)
+    }
+
+    /// A workgroup member's slot belongs to its instance (13y1 P5, 13x2 seam S4): no move, swap or
+    /// break-out takes a member out of it, from the terminal's menus or a page's context menu (one
+    /// check for both paths).
+    pub(super) fn member_refuses_move(&self, pane: PaneId) -> bool {
+        self.workgroup_of(pane).is_some()
     }
 
     /// The panes of `tabs` showing a live Instant Replay.
@@ -537,7 +544,7 @@ impl App {
             return false;
         }
         // Lock Layout of both windows (P5).
-        if self.pane_move_refused(source) || self.pane_window_forbids(target, crate::winmodel::LayoutOp::MovePane) {
+        if self.pane_move_refused(source) || self.pane_window_forbids(target, crate::winmodel::LayoutOp::MovePane) || (matches!(plan, pane_move::Drop::Swap) && self.member_refuses_move(target)) {
             find_ui::beep();
             return false;
         }

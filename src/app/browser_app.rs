@@ -61,7 +61,7 @@ pub(super) struct BrowserView {
     pub(super) editing: bool,
     /// The key gate the view's accelerator handler asks (`browser_input_app`), and what it was built for.
     pub(super) gate: webhost::KeyGate,
-    pub(super) gate_sig: Option<(bool, Option<String>, bool)>,
+    pub(super) gate_sig: Option<(bool, Option<String>, bool, Vec<String>)>,
     /// The pointer table last given to the page (`browser_input_app`), and the press of a bound
     /// button that is down (button, clicks): its release runs the binding.
     pub(super) pointer_sig: Option<(Vec<String>, bool)>,

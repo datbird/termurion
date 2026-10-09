@@ -1416,8 +1416,8 @@ impl App {
     pub(super) fn move_session_to_window(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
         // A loaded recording and a locked pane are not moved (`PT:13883-13893`; the menu item
-        // is static here, so the refusal beeps).
-        if self.pane_locked(pane) {
+        // is static here, so the refusal beeps), nor a workgroup member (seam S4).
+        if self.pane_locked(pane) || self.member_refuses_move(pane) {
             return find_ui::beep();
         }
         if self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux_break(pane, false, None, None) {
@@ -1444,7 +1444,7 @@ impl App {
     /// new tab of this window (only when the tab has other panes).
     pub(super) fn move_session_to_tab(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
-        if self.pane_locked(pane) {
+        if self.pane_locked(pane) || self.member_refuses_move(pane) {
             return find_ui::beep();
         }
         if self.tmux_break(pane, true, None, None) {
@@ -1475,7 +1475,7 @@ impl App {
         let _ = event_loop;
         let Some(source) = self.current_window() else { return };
         let Some(from) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return };
-        if self.pane_locked(pane) || self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
+        if self.pane_locked(pane) || self.member_refuses_move(pane) || self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
             return;
         }
         if window != source && self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.window.id() == window) && s.locks().forbids(crate::winmodel::LayoutOp::AddTab)) {
@@ -1538,7 +1538,7 @@ impl App {
     pub(super) fn move_session_to_window_at(&mut self, pane: PaneId, origin: (i32, i32), event_loop: &ActiveEventLoop) {
         let Some(source) = self.current_window() else { return };
         let Some(from) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return };
-        if self.pane_locked(pane) || self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
+        if self.pane_locked(pane) || self.member_refuses_move(pane) || self.tabs[from].layout.panes().len() < 2 || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) {
             return;
         }
         if self.tmux_break(pane, false, Some(origin), None) {

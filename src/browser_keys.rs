@@ -194,6 +194,9 @@ pub enum Owner {
     /// A window, pane or tab number shortcut.
     Number,
     Leader,
+    /// A workgroup member's peer shortcut or session toolbar shortcut (13y1, seam S3): after the
+    /// global bindings, before the menu's keys (`workgroup_toolbar::key_owner`, P13).
+    Workgroup,
     Page,
 }
 
@@ -204,12 +207,14 @@ impl Owner {
 }
 
 /// The one order: a bar's button, then a binding the person made (it beats the default address
-/// accelerators, as a mapping beats a menu key in iTerm2, `IA:527-548`), then the address
-/// accelerators, then the rest of what the key maps say.
-pub fn key_owner(bar: Option<usize>, address: bool, mapped: Owner) -> Owner {
+/// accelerators, as a mapping beats a menu key in iTerm2, `IA:527-548`), then a workgroup member's
+/// own keys for a key no mapping routes (13y1: after the global bindings, before the menu, as in a
+/// terminal member), then the address accelerators, then the rest of what the key maps say.
+pub fn key_owner(bar: Option<usize>, address: bool, mapped: Owner, workgroup: bool) -> Owner {
     match bar {
         Some(i) => Owner::Bar(i),
         None if mapped == Owner::Binding => Owner::Binding,
+        None if workgroup && mapped == Owner::Page => Owner::Workgroup,
         None if address => Owner::Address,
         None => mapped,
     }
@@ -233,6 +238,8 @@ pub struct GateState {
     pub switch: [i64; 3],
     pub bar: Option<Bar>,
     pub editing: bool,
+    /// A workgroup member's peer and toolbar shortcuts (13y1), as stored; empty for other panes.
+    pub workgroup_keys: Vec<crate::workgroup::Shortcut>,
 }
 
 impl GateState {
@@ -261,7 +268,13 @@ impl GateState {
             ChordKey::Char(c) => b.shortcut(c),
             _ => None,
         });
-        let mapped = match self.route(&chord) {
+        let route = self.route(&chord);
+        // Only a key no mapping routes reaches a member's keys, as `route_press` does (Route::Terminal).
+        let workgroup = matches!(route, Route::Terminal) && !self.workgroup_keys.is_empty() && {
+            let stroke = keyroute::press_from_chord(&chord).stroke;
+            self.workgroup_keys.iter().any(|s| crate::workgroup_peers::shortcut_matches(s, &stroke))
+        };
+        let mapped = match route {
             // Bypass is not actionable (`KBA:617-622`): its key goes on to the page.
             Route::Binding(b) if b.action == 74 => Owner::Page,
             Route::Binding(b) if editing_blocks(&b, &chord.key, self.editing) => Owner::Page,
@@ -270,7 +283,7 @@ impl GateState {
             Route::LeaderOn => Owner::Leader,
             Route::Terminal => Owner::Page,
         };
-        key_owner(bar, address_accelerator(vk, mods), mapped)
+        key_owner(bar, address_accelerator(vk, mods), mapped, workgroup)
     }
 }
 
@@ -751,12 +764,30 @@ mod tests {
 
     #[test]
     fn the_owner_order_is_one_function() {
-        assert_eq!(key_owner(Some(2), true, Owner::Binding), Owner::Bar(2));
-        assert_eq!(key_owner(None, true, Owner::Binding), Owner::Binding, "a person's own binding beats the default address keys");
-        assert_eq!(key_owner(None, true, Owner::Page), Owner::Address);
-        assert_eq!(key_owner(None, false, Owner::Binding), Owner::Binding);
-        assert!(Owner::Binding.taken() && Owner::Bar(0).taken() && Owner::Address.taken() && Owner::Number.taken() && Owner::Leader.taken());
+        assert_eq!(key_owner(Some(2), true, Owner::Binding, false), Owner::Bar(2));
+        assert_eq!(key_owner(None, true, Owner::Binding, false), Owner::Binding, "a person's own binding beats the default address keys");
+        assert_eq!(key_owner(None, true, Owner::Page, false), Owner::Address);
+        assert_eq!(key_owner(None, false, Owner::Binding, false), Owner::Binding);
+        // 13y1 (S3): a member's own key after the bindings and the bar, before the address keys.
+        assert_eq!(key_owner(None, true, Owner::Page, true), Owner::Workgroup);
+        assert_eq!(key_owner(None, false, Owner::Binding, true), Owner::Binding, "a global binding wins (P13)");
+        assert_eq!(key_owner(Some(1), false, Owner::Page, true), Owner::Bar(1));
+        assert_eq!(key_owner(None, false, Owner::Number, true), Owner::Number, "a number route never reaches the member's keys");
+        assert!(Owner::Binding.taken() && Owner::Bar(0).taken() && Owner::Address.taken() && Owner::Number.taken() && Owner::Leader.taken() && Owner::Workgroup.taken());
         assert!(!Owner::Page.taken());
+    }
+
+    #[test]
+    fn the_gate_offers_a_members_own_keys() {
+        // 13y1 seam S3: a member's peer or toolbar shortcut is Tandem's, not the page's.
+        let ctrl_m = keyroute::press_from_chord(&chord_of(0x4D, CTRL).unwrap()).stroke.serialized();
+        let peer = crate::workgroup::Shortcut { serialized: ctrl_m };
+        let mut g = GateState { profile_map: table(&[("0x6a-0x40000", 0)]), ..GateState::default() };
+        assert_eq!(g.owner(0x4D, CTRL), Owner::Page, "not a member: the page's");
+        g.workgroup_keys = vec![peer];
+        assert_eq!(g.owner(0x4D, CTRL), Owner::Workgroup);
+        assert_eq!(g.owner(0x4E, CTRL), Owner::Page, "another key stays the page's");
+        assert_eq!(g.owner(0x4A, CTRL), Owner::Binding, "a mapping still wins");
     }
 
     #[test]

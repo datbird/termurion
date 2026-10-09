@@ -117,6 +117,15 @@ struct Plan {
     name: String,
 }
 
+/// The shortcuts a toolbar item answers to (Reload, and Navigation's three).
+fn item_shortcuts(item: &ToolbarItem) -> Vec<&crate::workgroup::Shortcut> {
+    match item {
+        ToolbarItem::Reload(Some(s)) => vec![s],
+        ToolbarItem::Navigation(n) => [&n.back, &n.forward, &n.reload].into_iter().flatten().collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn rgb_mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
     Rgb { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b) }
@@ -560,12 +569,7 @@ impl App {
         for inst in self.workgroups.values() {
             for cfg in &inst.workgroup.sessions {
                 for item in &cfg.toolbar_items {
-                    let shortcuts: Vec<&crate::workgroup::Shortcut> = match item {
-                        ToolbarItem::Reload(Some(s)) => vec![s],
-                        ToolbarItem::Navigation(n) => [&n.back, &n.forward, &n.reload].into_iter().flatten().collect(),
-                        _ => Vec::new(),
-                    };
-                    for s in shortcuts {
+                    for s in item_shortcuts(item) {
                         if let Some(k) = crate::keystroke::parse(&s.serialized).filter(|k| k.flags & crate::keystroke::COMMAND != 0) {
                             keys.insert(k.legacy());
                             keys.insert(k.modified_key());
@@ -573,6 +577,20 @@ impl App {
                     }
                 }
             }
+        }
+        keys
+    }
+
+    /// The keys a browser member's key gate hands to Tandem (13x2 seam S3): the custom shortcuts of the
+    /// peer group `pane` shows, then its toolbar's own, the lists `peer_shortcut` and
+    /// `workgroup_toolbar_shortcut` match. Win chords are the keyboard hook's and never reach a gate.
+    pub(super) fn workgroup_gate_keys(&self, pane: PaneId) -> Vec<crate::workgroup::Shortcut> {
+        let mut keys: Vec<crate::workgroup::Shortcut> = Vec::new();
+        if let Some(inst) = self.peer_group_of(pane) {
+            keys.extend(peers::members(&inst.workgroup).into_iter().filter_map(|(_, _, s)| s));
+        }
+        if let Some(plan) = self.workgroup_toolbar_member(pane).then(|| self.toolbar_plan(pane)).flatten() {
+            keys.extend(plan.items.iter().flat_map(item_shortcuts).cloned());
         }
         keys
     }
@@ -802,5 +820,29 @@ mod tests {
         assert!(prod.contains("USAGE_OUTPUT_CAP") && prod.contains("USAGE_TIMEOUT"));
         assert!(prod.contains("semantic::cmd_args"), "a custom command runs through cmd.exe as written");
         assert!(prod.contains("resolve_on_path"), "the built-in finds claude.exe only");
+    }
+
+    /// The 13x2 seams the merge checks (preflight S2-S4): the press order over the two strips, a
+    /// browser member's key gate offering the member's keys through the one browser owner order, and
+    /// one move refusal shared by the terminal and the page's context menu.
+    #[test]
+    fn the_13x2_seams_hold() {
+        // S2: the toolbar strip takes a press before the browser toolbar, and both come from pane_chrome.
+        let press = MOD.find("self.workgroup_toolbar_press(pane, x, y, event_loop)").expect("toolbar press");
+        assert!(press < MOD.find("self.browser_bar_at(x, y)").expect("browser bar press"));
+        // S3: the gate reads the member's keys and the shared browser_keys::key_owner places them.
+        let input = include_str!("browser_input_app.rs");
+        assert!(input.contains("workgroup_keys: self.workgroup_gate_keys(pane)"));
+        assert!(input.contains("Some(Owner::Workgroup) if taken") && input.contains("a.peer_shortcut(pane, &stroke) || a.workgroup_toolbar_shortcut(pane, &stroke)"));
+        let keys = include_str!("../browser_keys.rs");
+        assert!(keys.contains("key_owner(bar, address_accelerator(vk, mods), mapped, workgroup)"));
+        // S4: the one refusal, in the pick, the drop target and every break-out.
+        let mv = include_str!("pane_move_ui.rs");
+        let refused = &mv[mv.find("pub(super) fn pane_move_refused").unwrap()..];
+        assert!(refused[..refused.find('}').unwrap()].contains("self.member_refuses_move(pane)"));
+        let win = include_str!("windows_ui.rs");
+        assert_eq!(win.matches("self.member_refuses_move(pane)").count(), 4, "to window, to tab, to a new tab, to a window at a point");
+        let ctx = include_str!("browser_ctx_app.rs");
+        assert!(ctx.contains("a.start_pane_move(pane, false, event_loop)") && ctx.contains("a.move_session_to_tab()") && ctx.contains("a.move_session_to_window()"), "the page menu takes the terminal's paths");
     }
 }
