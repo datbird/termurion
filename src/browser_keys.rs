@@ -129,7 +129,26 @@ pub fn extend_script_name(unit: i64) -> Option<&'static str> {
 pub fn extend_script(start: bool, forward: bool, unit: i64) -> Option<String> {
     let file = format!("{}.js", extend_script_name(unit)?);
     let (s, f) = (if start { "true" } else { "false" }, if forward { "true" } else { "false" });
-    Some(fill_template(resource(&file)?, &[("START", s), ("FORWARD", f)]))
+    let text = resource(&file)?;
+    if unit == 1 {
+        return type_forward_extension(text).ok().map(|t| fill_template(&t, &[("START", s), ("FORWARD", f)]));
+    }
+    Some(fill_template(text, &[("START", s), ("FORWARD", f)]))
+}
+
+/// Chromium's Windows editing behavior extends a selection forward by word to the START of the next
+/// word, so the extension takes the trailing space ("hello " for "hello"; macOS, iTerm2's platform,
+/// stops at the end of the word). The assembled script trims whitespace the extension ended on,
+/// never past the selection's anchor (a selection that is only whitespace is left alone). The copied
+/// file is not edited; the target must be found exactly once, or there is no word extension.
+const FORWARD_EXTEND_RAW: &str = "            newOffset = modifiedRange.endOffset;\n";
+const FORWARD_EXTEND_TYPED: &str = "            newOffset = modifiedRange.endOffset;\n            // Tandem (Windows): Chromium's Windows editing behavior extends forward by word to the start\n            // of the next word, past the space; macOS stops at the end of the word. Trim whitespace the\n            // extension ended on, never back to the anchor.\n            if (newContainer.nodeType === 3) {\n                var floor = newContainer === modifiedRange.startContainer ? modifiedRange.startOffset : 0;\n                var trimmed = newOffset;\n                while (trimmed > floor && /\\s/.test(newContainer.textContent.charAt(trimmed - 1))) trimmed--;\n                if (trimmed > floor) newOffset = trimmed;\n            }\n";
+
+fn type_forward_extension(script: &str) -> Result<String, String> {
+    match script.matches(FORWARD_EXTEND_RAW).count() {
+        1 => Ok(script.replacen(FORWARD_EXTEND_RAW, FORWARD_EXTEND_TYPED, 1)),
+        n => Err(format!("the word extension script's forward text is there {n} times, not once")),
+    }
 }
 
 /// The chord of a key the gate saw.
@@ -709,6 +728,23 @@ mod tests {
         let e = extend_script(true, false, 1).unwrap();
         assert!(e.contains("var isStart = true;") && e.contains("var isForward = false;") && !e.contains("{{"));
         assert!(extend_script(true, true, 4).is_none());
+    }
+
+    /// Main bug found in the 13x3 probe review: Chromium's Windows editing behavior extends forward by
+    /// word to the next word's start, so "hello" selected as "hello ". The assembled script trims it.
+    #[test]
+    fn forward_word_extension_stops_before_the_space_on_windows() {
+        let f = extend_script(false, true, 1).expect("the script assembles");
+        assert_eq!(f.matches("// Tandem (Windows): Chromium's Windows editing behavior extends forward by word").count(), 1);
+        assert!(f.contains("trimmed--") && !f.contains("{{"));
+        assert_eq!(f.matches(FORWARD_EXTEND_TYPED).count(), 1);
+        assert_eq!(resource("extend-selection-word.js").unwrap().matches(FORWARD_EXTEND_RAW).count(), 1, "the copy is unchanged");
+        assert!(type_forward_extension("no target here").is_err());
+        assert!(type_forward_extension(&format!("{FORWARD_EXTEND_RAW}{FORWARD_EXTEND_RAW}")).is_err());
+        assert_eq!(type_forward_extension(&format!("a{FORWARD_EXTEND_RAW}b")), Ok(format!("a{FORWARD_EXTEND_TYPED}b")));
+        let b = extend_script(true, false, 1).unwrap();
+        assert!(b.contains("var isForward = false;"), "backward is the same patched file, guarded by isForward");
+        assert!(!extend_script(true, true, 0).unwrap().contains("Tandem (Windows)"), "other units are untouched");
     }
 
     #[test]

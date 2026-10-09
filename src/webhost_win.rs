@@ -3222,6 +3222,26 @@ mod probe {
         p.finish();
     }
 
+    /// Main bug from the 13x3 probe review: Chromium's Windows editing behavior extends forward by
+    /// word to the start of the next word, so the iTerm2 script selected "hello " (trailing space).
+    /// The assembled script (`browser_keys::extend_script`, load-time patch) selects "hello", then
+    /// "hello world" by a second extension, and a backward extension is unchanged. Needs the console
+    /// session.
+    #[test]
+    #[ignore]
+    fn extend_word_forward_stops_before_the_space() {
+        let page_html = "<!doctype html><html><body><p id=p>hello world again</p></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        p.page_eval("(() => { const t = document.getElementById('p').firstChild; const r = document.createRange(); r.setStart(t, 0); r.setEnd(t, 0); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); })()").expect("the caret");
+        let forward = crate::browser_keys::extend_script(false, true, 1).expect("the script assembles");
+        p.eval(None, &crate::browser_js::make_safe(&forward)).expect("the first extension");
+        assert_eq!(p.page_eval("window.getSelection().toString()"), Ok("\"hello\"".into()), "no trailing space");
+        p.eval(None, &crate::browser_js::make_safe(&forward)).expect("the second extension");
+        assert_eq!(p.page_eval("window.getSelection().toString()"), Ok("\"hello world\"".into()));
+        p.finish();
+    }
+
     /// Task 7 (I7): a page's synthetic press, release and auxclick run no binding; a real middle press
     /// through `Input.dispatchMouseEvent` (trusted) reaches the router once as down and once as up, and
     /// the page never sees it. Needs the console session.
