@@ -175,6 +175,10 @@ impl App {
             if let Some(url) = crate::browser::arrangement_url(&io.url) {
                 t.insert(crate::browser::URL_KEY.into(), Value::String(url));
             }
+            // The link target (`PS:7340`), bounded and clean; no cookies, form data or page color.
+            if let Some(target) = io.target.as_deref().and_then(crate::browser_restore::target_text) {
+                t.insert(crate::browser_restore::TARGET_KEY.into(), Value::String(target));
+            }
         }
         if let Some(t) = v.as_table_mut() {
             // PS:1920: every session saves its lock.
@@ -682,6 +686,7 @@ impl App {
             self.browser_url_override = None;
             match id {
                 Some(id) => {
+                    self.browser_target_restored(id, &session);
                     // Launch-time restoration: the pane takes the reference it saved, unless a
                     // live pane already holds it (PTYSession.m:2403-2420).
                     let saved = arrangement::reference_for(&session, launch, &|g| self.panes.values().any(|p| p.session_guid == g));

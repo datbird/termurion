@@ -22,10 +22,15 @@ impl App {
 
     /// The current window as the broadcast model sees it.
     pub(super) fn broadcast_view(&self) -> View {
+        self.broadcast_view_in(false)
+    }
+
+    /// The same, with browser panes counted as members (browser input goes between browsers, Task 8).
+    pub(super) fn broadcast_view_in(&self, with_browsers: bool) -> View {
         let tabs = self.tabs.iter().map(|t| TabView { broadcasting: self.broadcast_tabs.contains(&t.id), panes: t.layout.panes() }).collect();
         let current = self.tabs.get(self.active).map_or(0, |t| t.focused);
-        // A browser pane takes no typing: it is never a broadcast target.
-        let exited = self.panes.iter().filter(|(_, p)| p.exited.is_some() || p.browser_io().is_some()).map(|(id, _)| *id).collect();
+        // A terminal's typing never goes to a browser pane; browser input has its own path (`browser_broadcast`).
+        let exited = self.panes.iter().filter(|(_, p)| p.exited.is_some() || (!with_browsers && p.browser_io().is_some())).map(|(id, _)| *id).collect();
         View { tabs, current_tab: self.active, current, exited }
     }
 

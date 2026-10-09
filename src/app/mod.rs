@@ -158,6 +158,13 @@ mod tool_web_ui;
 mod browser_app;
 mod adblock_app;
 mod browser_db_app;
+mod browser_scripts_app;
+mod browser_ctx_app;
+mod browser_smart_app;
+mod browser_overlay_app;
+mod browser_input_app;
+mod browser_frames_app;
+mod browser_restore_app;
 mod web_popover_app;
 mod web_replay_app;
 mod toolbelt_tools_ui;
@@ -1620,6 +1627,12 @@ pub struct App {
     text_popover: Option<(PaneId, crate::status_popover_ui::TextPopover)>,
     /// The HTML popover or Quick Look open now (app-wide, one at a time) and the session whose scope its bridge runs in (13x Task 3).
     web_popover: Option<(Option<PaneId>, crate::web_popover::WebPopover)>,
+    /// The hovered link or toast above a browser page (13x2 Task 5): one small popup, app-wide.
+    browser_tip: Option<crate::browser_tip::TipWindow>,
+    /// The newest hover or toast waiting for the next `web_tick` (it needs the event loop).
+    browser_tip_next: Option<browser_overlay_app::TipAsk>,
+    /// The tip window's life: made once, hidden and reused, rate-limited.
+    browser_tip_life: crate::browser_tip::Lifecycle,
     /// The browser Instant Replay playback window (one at a time, app-wide like the popovers) and the
     /// movie save in flight.
     web_replay: Option<crate::web_replay_ui::PlaybackWindow>,
@@ -1691,12 +1704,21 @@ pub struct App {
     /// The web view of every browser pane (13x Task 5). App-wide: keyed by pane, and a view is
     /// re-parented when its pane changes windows.
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
+    /// Commands a person confirmed from a page's Smart Selection action, each run in a single-use
+    /// window by the next tick (the answer has no event loop). App-wide: pane ids are.
+    browser_runs: Vec<(PaneId, String)>,
+    /// What a page pointer press or its answer asks that needs the event loop (opens, Smart Selection
+    /// actions, the session's own pointer actions), run by the next tick. App-wide.
+    browser_next: Vec<browser_input_app::PageNext>,
     /// The ad blocker: rules, the list download and its schedule (13x Task 8; app-wide).
     adblock: adblock_app::Adblock,
     /// The pane that was focused at the last placement, to tell a pane change from none.
     focus_seen: crate::browser::FocusSeen<WindowId>,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
     browser_url_override: Option<String>,
+    /// The launch is applying the saved windows: a browser pane makes its view but loads its page
+    /// only when this ends (`browser_restoration_done`). Not per window: no `swap_live` entry.
+    restoring_windows: bool,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -2633,6 +2655,9 @@ pub fn run() {
         script_titles: HashMap::new(),
         text_popover: None,
         web_popover: None,
+        browser_tip: None,
+        browser_tip_next: None,
+        browser_tip_life: Default::default(),
         web_replay: None,
         web_replay_pane: None,
         web_replay_save: None,
@@ -2668,9 +2693,12 @@ pub fn run() {
         tool_view_ids: HashMap::new(),
         tool_restarts: HashMap::new(),
         browser_views: HashMap::new(),
+        browser_runs: Vec::new(),
+        browser_next: Vec::new(),
         adblock: adblock_app::Adblock::default(),
         focus_seen: Default::default(),
         browser_url_override: None,
+        restoring_windows: false,
     };
     // Debug logging at launch starts before the first window (`AD:1356-1358`).
     app.start_debug_logging_automatically();
@@ -4048,6 +4076,7 @@ impl App {
         if self.web_popover.as_ref().is_some_and(|(p, _)| *p == Some(id)) {
             self.web_popover = None;
         }
+        self.browser_tip_drop(id);
         self.close_browser_view(id);
     }
 
@@ -5288,6 +5317,7 @@ impl App {
         // Every focus, tab, window and profile change comes through here (B6): Edit Session
         // follows the active session.
         self.follow_edit_session();
+        self.browser_gates_refresh();
     }
 
     /// Saves a custom scripts folder typed in the open Settings window and not yet applied,
@@ -6322,9 +6352,11 @@ impl App {
                     if let Some(p) = self.panes.get(&id) {
                         frame.quads.push(scene::Quad { rect, color: scene::rgba(p.screen.palette.bg, 1.0) });
                     }
-                    if let Some(bar) = self.pane_chrome(tab, id, rect).browser_bar {
+                    if let Some(bar) = self.browser_strip(tab, id) {
                         self.draw_browser_bar(&mut frame, id, bar, rect, self.cell());
                     }
+                    // An announcement bar covers the top of the page (the web view gives way below it).
+                    overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id)).map(|r| (mouse::Overlay::InfoBar, r)));
                     continue;
                 }
                 // Everything a pane's iteration draws lays out in its own cell and shapes in its own
@@ -6920,6 +6952,8 @@ impl ApplicationHandler<UserEvent> for App {
         // The saved state's windows are the launch's own restoration (`launch` true); a default
         // arrangement is an arrangement like any other.
         let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w, true)).or(default_arrangement.map(|(n, w)| (n, w, false))) };
+        // The launch's own restoration (saved windows, hotkey windows) holds browser loads back.
+        self.restoring_windows = matches!(&startup_arrangement, Some((_, _, true))) || !hotkey_saved.is_empty();
         let mut arranged = false;
         match startup_arrangement {
             Some((name, mut windows, launch)) => {
@@ -7003,6 +7037,11 @@ impl ApplicationHandler<UserEvent> for App {
         // After the first window and the launch's own requests: the second launch's question.
         self.update_start();
         self.tips_launch();
+        // Nothing queued: the restoration ended with the first window.
+        if self.restoring_windows && self.pending_windows.is_empty() {
+            self.restoring_windows = false;
+            self.browser_restoration_done();
+        }
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -7044,6 +7083,11 @@ impl ApplicationHandler<UserEvent> for App {
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();
+        }
+        // After the last saved window: the restored pages load.
+        if self.restoring_windows {
+            self.restoring_windows = false;
+            self.browser_restoration_done();
         }
         self.api_tmux_tabs_opened();
         self.tmux_auto_bury();
@@ -7162,6 +7206,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.browser_runs_tick(event_loop);
+        self.browser_next_tick(event_loop);
         self.open_locale_asks(event_loop);
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
@@ -7348,7 +7394,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;
@@ -7887,6 +7933,10 @@ impl App {
                     self.web_focus_held = None;
                 }
             }
+        }
+        if !f && step == crate::webhost::FocusStep::Normal {
+            // The app is no longer in front: no link tip stays over another program.
+            self.browser_tip_clear_all();
         }
         self.apply_focus(step, f, id);
         self.sync_web_keyboard();

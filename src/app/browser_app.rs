@@ -35,6 +35,53 @@ pub(super) struct BrowserView {
     pub(super) bar: BarState,
     /// Browser Instant Replay: this pane's frames and the state of the capture round trip.
     pub(super) replay: super::web_replay_app::Recorder,
+    /// The view's own secret (13x2): filled only into Client scripts and world-side expressions; new
+    /// for every view made (`browser_reset_world`).
+    pub(super) secret: String,
+    /// A second per-view value that the page is assumed to read (a DOM message from a copied script's
+    /// child frame): never the view secret, only "this came from Tandem's detector".
+    pub(super) dom_secret: String,
+    /// Calls waiting for an answer, by token (`browser_scripts_app::JsDone`).
+    pub(super) pending_js: HashMap<u64, super::browser_scripts_app::JsDone>,
+    /// The frame keys that have a Tandem world, main frame excluded (`Contexts::frames`).
+    pub(super) frames: Vec<u64>,
+    /// WebView2's own frames, for page-world messages only.
+    pub(super) page_frames: Vec<u64>,
+    /// Tokens of page-world `execute_script` calls whose answer is the result itself.
+    pub(super) eval_waiting: std::collections::HashSet<u64>,
+    pub(super) client_world: crate::browser_world::ClientWorld,
+    pub(super) contexts: crate::browser_world::Contexts,
+    /// The `identifier`s `Page.addScriptToEvaluateOnNewDocument` answered.
+    pub(super) world_scripts: Vec<String>,
+    /// The next token of a call Tandem makes on this view.
+    pub(super) next_token: u64,
+    /// The world's setup, checks, sessions (`browser_scripts_app::WorldState`).
+    pub(super) world: super::browser_scripts_app::WorldState,
+    /// A text field has the focus in the page (iTerm2's `isEditingText`, `BWV:73`).
+    pub(super) editing: bool,
+    /// The key gate the view's accelerator handler asks (`browser_input_app`), and what it was built for.
+    pub(super) gate: webhost::KeyGate,
+    pub(super) gate_sig: Option<(bool, Option<String>, bool)>,
+    /// The pointer table last given to the page (`browser_input_app`), and the press of a bound
+    /// button that is down (button, clicks): its release runs the binding.
+    pub(super) pointer_sig: Option<(Vec<String>, bool)>,
+    pub(super) pointer_down: Option<(u8, u8)>,
+    /// Replays of broadcast input in flight to this view (iTerm2's `receivingBroadcast`, `BM:882-899`),
+    /// since when; the page's own events while it is above 0 are dropped natively, so nothing ping-pongs.
+    pub(super) receiving_broadcast: u32,
+    pub(super) receiving_since: Option<Instant>,
+    /// The inputs a replay sent this view, so its own report of one is dropped (Task 8 review I1).
+    pub(super) echo: crate::browser_keys::EchoGuard,
+    /// The page's selection (iTerm2's `currentSelection`, `BWV:75-84`).
+    pub(super) selection: Option<String>,
+    /// When that selection may be copied (B10).
+    pub(super) selection_gate: crate::browser_js::SelectionGate,
+    /// The frame graph (`browser_frames_app`).
+    pub(super) graph: crate::browser_frames::Frames,
+    /// The page menu last shown: its token, the context and the items (`browser_ctx_app`).
+    pub(super) menu: Option<(u64, crate::browser_ctx::Ctx, Vec<Option<crate::browser_ctx::Item>>)>,
+    /// The announcements waiting for an answer, by bar identifier: the buttons and what answers (13x2 Task 5).
+    pub(super) bars: HashMap<String, (Vec<String>, super::browser_overlay_app::BarDone)>,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -59,6 +106,9 @@ pub(super) struct BarState {
     pub(super) nav: browser::NavList,
     /// How the next history row's visit began (`BrowserTransitionType`); None is "other".
     pub(super) transition: Option<i64>,
+    /// How navigations began, for `transition` (`BrowserNavigationState`), and the page color's rate limit.
+    pub(super) nav_state: crate::browser_restore::NavState,
+    pub(super) color: crate::browser_restore::ColorLimit,
     /// The favicon decoded: a key for the texture, RGBA and its size.
     favicon: Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u32))>,
 }
@@ -66,6 +116,9 @@ pub(super) struct BarState {
 /// The id prefixes of the toolbar's menus.
 const MENU_ID: &str = "browser-menu:";
 const HISTORY_ID: &str = "browser-hist:";
+/// The cells a Back or Forward menu line gives a URL (a native menu widens to its longest line, so
+/// this is the width the line is drawn at; the one shortener fits the URL to it).
+const HISTORY_MENU_CELLS: usize = 80;
 
 /// A color between two (`t` of the way to `b`).
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
@@ -101,7 +154,7 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 /// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
 /// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
 /// (`browser_pages::route`). No host objects.
-pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
+pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<String>) -> ViewSetup {
     // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
     // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
     let mut filters = vec!["iterm2-about:*".to_string()];
@@ -116,9 +169,10 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool) -> ViewSetup {
         in_private: dev_null,
         web_message: true,
         // The Instant Replay sensitive mark runs in every frame of every browser page (final review I1).
-        scripts: vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()],
+        scripts: page_scripts.into_iter().chain([crate::web_replay::sensitive_script()]).collect(),
         resource_filters: filters,
         favicon: true,
+        context_menu: true,
         ..Default::default()
     }
 }
@@ -143,7 +197,9 @@ impl App {
     /// Starts browser pane `id` at `rect` for profile `p`. False (with a banner) when there is no
     /// WebView2 Runtime: the pane is not made.
     pub(super) fn start_browser_pane(&mut self, id: PaneId, rect: Rect, p: &Profile) -> bool {
-        let restored = self.browser_url_override.take();
+        // A restored (or opened) URL is judged by the one navigation gate again at load time: a stored
+        // file: or javascript: URL never loads, the pane starts at the profile's Initial URL.
+        let restored = self.browser_url_override.take().and_then(|u| crate::browser_restore::load_gate(&u));
         let url = match browser::start_plan(&p.string("Custom Command"), self.globals.bool("BrowserProfiles"), &p.string("Initial URL"), restored.as_deref()) {
             Start::Browser(u) => u,
             Start::Terminal => return false,
@@ -164,7 +220,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), gate: Default::default(), gate_sig: None, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         true
     }
 
@@ -177,7 +233,7 @@ impl App {
         }
         let Some(hwnd) = self.hwnd() else { return };
         let shown: Vec<(PaneId, Rect)> = match self.tabs.get(self.active) {
-            Some(tab) => self.visible(tab).into_iter().map(|(id, r)| (id, self.pane_chrome(tab, id, r).rest)).collect(),
+            Some(tab) => self.visible(tab).into_iter().map(|(id, r)| (id, self.browser_web_rect(id, r))).collect(),
             None => Vec::new(),
         };
         let mine: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
@@ -190,6 +246,8 @@ impl App {
             match rect {
                 Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front),
                 None => {
+                    // Its link tip goes with it (hidden, another tab, buried, zoomed away).
+                    self.browser_tip_clear(pane);
                     // Not shown: hidden when it is this window's pane (another tab, buried, zoomed
                     // away) or sits in this window's handle with no pane (an Undo Close stash).
                     if let Some(bv) = self.browser_views.get(&pane) {
@@ -234,21 +292,30 @@ impl App {
             // A fresh id per view made (final review Minor 5): an event of the view this one
             // replaces, still queued, names an id no pane owns and is dropped, never applied here.
             let id = self.next_view_id();
+            // A view made now starts with a new world: new secrets, no contexts, no pending call.
+            self.browser_reset_world(pane);
+            let (page_scripts, _) = self.browser_wrapped_scripts(pane);
             let Some(env) = self.web_env(browser::store_of(io.dev_null)) else { return };
-            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock), sink);
-            view.navigate_tandem(&url);
+            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock, page_scripts), sink);
             view.set_zoom(if io.zoom > 0.0 { io.zoom / 100.0 } else { 1.0 });
             if focus_now {
                 view.focus();
             }
+            if let Some(bv) = self.browser_views.get(&pane) {
+                view.set_key_gate(bv.gate.clone());
+            }
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.view = Some(view);
+                bv.gate_sig = None;
                 bv.id = id;
                 bv.pending_url = None;
                 bv.parent = hwnd;
                 bv.settled = false;
             }
+            // The page loads only when the world's setup and checks are over (B4).
+            self.browser_world_start(pane, Some(url));
         }
+        self.browser_world_tick(pane);
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         if let Some(v) = &bv.view {
             if bv.parent != hwnd {
@@ -328,6 +395,8 @@ impl App {
         let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+        self.browser_reset_world(pane);
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.replay.shown = false;
         bv.pending_url = url;
         bv.parent = 0;
@@ -338,6 +407,8 @@ impl App {
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
+        self.browser_bars_end(pane);
+        self.browser_reset_world(pane);
         if let Some(bv) = self.browser_views.remove(&pane) {
             let (had, id, parent) = (bv.view.is_some(), bv.id, bv.parent);
             drop(bv);
@@ -357,7 +428,7 @@ impl App {
     }
 
     /// Runs `f` with the window of `pane` current, then goes back.
-    fn in_pane_window(&mut self, pane: PaneId, f: impl FnOnce(&mut App)) -> bool {
+    pub(super) fn in_pane_window(&mut self, pane: PaneId, f: impl FnOnce(&mut App)) -> bool {
         let Some(target) = self.pane_window_id(pane) else { return false };
         let back = self.current_window();
         if !self.enter(target) {
@@ -380,7 +451,13 @@ impl App {
     /// One event of pane `pane`'s view. What a page says is bounded and cleaned before it is kept
     /// (the host already capped its size); nothing here runs a page's text.
     pub(super) fn browser_event(&mut self, pane: PaneId, e: &Event, event_loop: &ActiveEventLoop) {
+        // The page lost the keyboard: its link tip goes (and the page is told).
+        if matches!(e, Event::Focus(_, false)) {
+            self.browser_tip_clear(pane);
+        }
         match e {
+            // The world's own about:blank navigation (the isolation check) is not the page.
+            Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}
             Event::Source(_, url) => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.url = url.clone();
@@ -428,6 +505,8 @@ impl App {
                 }
                 self.redraw();
             }
+            // The navigation of the world's isolation check: it answers the check and is nothing else.
+            Event::Navigated { ok, nav, .. } if self.browser_world_navigated(pane, *ok, *nav) => {}
             Event::Navigated { ok, .. } => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.failed = !*ok;
@@ -442,8 +521,13 @@ impl App {
                     if let Some(bv) = self.browser_views.get_mut(&pane) {
                         bv.restarts.succeeded();
                     }
+                    // The check's about:blank is not a page to go back to (review I1).
+                    if self.browser_views.get_mut(&pane).is_some_and(|b| b.world.history.loaded()) {
+                        self.browser_devtools(pane, crate::browser_world::RESET_HISTORY, serde_json::json!({}), Box::new(|_, _, _| {}));
+                    }
                     self.browser_record_visit(pane);
                     self.adblock_inject(pane);
+                    self.browser_color_read(pane);
                 }
                 self.browser_name(pane);
             }
@@ -473,7 +557,10 @@ impl App {
             }
             Event::NewWindow { url, .. } => {
                 // Only a person's click (the host filters) and only a page's own kind of URL (P20).
-                if let Some(url) = browser::saved_url(url) {
+                if let Some(url) = match crate::browser_js::nav_gate_tab(url) {
+                    crate::browser_js::NavGate::Navigate(u) => browser::saved_url(&u),
+                    _ => None,
+                } {
                     let guid = self.panes.get(&pane).map(|p| p.profile.clone());
                     self.browser_url_override = Some(url);
                     let opened = self.in_pane_window(pane, |a| a.new_tab(guid.as_deref()));
@@ -485,10 +572,11 @@ impl App {
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
-            Event::Key { vk, mods, .. } => self.browser_page_key(pane, *vk, *mods, event_loop),
+            Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
             // A good start resets the remake budget (final review I5).
             Event::Created(_) => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    bv.world.controller_ready(Instant::now());
                     bv.restarts.succeeded();
                 }
             }
@@ -506,9 +594,19 @@ impl App {
             // A local page's message and the request for a local page (Task 7): the one route judges
             // the source and the closed set; everything else a page posts is dropped there.
             Event::ScriptDone { token, json, .. } if matches!(*token, crate::web_replay::PROBE_TOKEN | crate::web_replay::CAPTURE_TOKEN) => self.web_replay_script_done(pane, *token, json),
-            Event::Message { json, source, .. } => self.local_page_message(pane, source, json),
             Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url),
-            _ => {}
+            // The page's right-click menu and a pick from it (Task 3).
+            Event::ContextMenu { token, target, .. } => self.browser_context_menu(pane, *token, target.clone()),
+            Event::ContextMenuPicked { token, id, .. } => self.browser_ctx_event(pane, *token, *id, event_loop),
+            // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
+            Event::Starting { url, kind, user, redirect, .. } => {
+                self.browser_nav_starting(pane, url, *kind, *user, *redirect);
+                self.browser_script_event(pane, e);
+            }
+            // Everything a page's script says, the world's events and the calls' answers: the router.
+            _ => {
+                self.browser_script_event(pane, e);
+            }
         }
     }
 
@@ -527,6 +625,8 @@ impl App {
                 if let Some(v) = &bv.view {
                     v.reload();
                 }
+                // Its world is checked in a few seconds (whether the DevTools state survives is not known).
+                self.browser_world_expect(pane);
                 return;
             }
             webhost::PaneStep::Remake => {}
@@ -537,6 +637,8 @@ impl App {
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+        self.browser_reset_world(pane);
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.pending_url = url;
         bv.parent = 0;
         bv.replay.shown = false;
@@ -580,7 +682,7 @@ impl App {
     fn browser_bar_rects(&self, pane: PaneId) -> Option<(Rect, Rect)> {
         let tab = self.tabs.get(self.active)?;
         let (_, rect) = self.visible(tab).into_iter().find(|(id, _)| *id == pane)?;
-        Some((self.pane_chrome(tab, pane, rect).browser_bar?, rect))
+        Some((self.browser_strip(tab, pane)?, rect))
     }
 
     /// The rows of the suggestions list of `pane`, as rectangles (empty when it is not open).
@@ -599,7 +701,7 @@ impl App {
     pub(super) fn browser_bar_at(&self, x: f32, y: f32) -> Option<PaneId> {
         let tab = self.tabs.get(self.active)?;
         self.visible(tab).into_iter().filter(|(id, _)| self.is_browser_pane(*id)).find_map(|(id, rect)| {
-            let bar = self.pane_chrome(tab, id, rect).browser_bar?;
+            let bar = self.browser_strip(tab, id)?;
             (bar.contains(x, y) || self.browser_suggest_rects(id, bar, rect).iter().any(|r| r.contains(x, y))).then_some(id)
         })
     }
@@ -666,7 +768,7 @@ impl App {
         let pad = 2.0 * scale;
         let text_y = g.text.y + (g.text.h - ch) / 2.0;
         let keys = bv.bar.keys;
-        let shown = if keys { bv.bar.edit.text.clone() } else { browser::fit_address(&browser::display_url(&io.url), ((g.text.w - 2.0 * pad) / cw).floor().max(1.0) as usize) };
+        let shown = if keys { bv.bar.edit.text.clone() } else { browser::fit_address(&browser::display_url(&io.url), ((g.text.w - 2.0 * pad) / cw).floor().max(0.0) as usize) };
         let caret_x = if keys { text_w(&shown[..bv.bar.edit.caret.min(shown.len())], cw) } else { 0.0 };
         let scroll = (caret_x + cw - (g.text.w - 2.0 * pad)).max(0.0);
         let x0 = g.text.x + pad - scroll;
@@ -693,8 +795,12 @@ impl App {
                 let y = r.y + (r.h - ch) / 2.0;
                 let main = Rect { w: r.w * 0.62, ..*r };
                 let detail = Rect { x: r.x + r.w * 0.64, w: r.w * 0.35, ..*r };
-                frame.rows.push(row(r.x + 6.0 * scale, y, vec![span(s.text.clone(), fg, false)], main));
-                frame.rows.push(row(detail.x, y, vec![span(s.detail.clone(), dim, false)], detail));
+                // A URL in a row keeps its host whatever the row's width (the one shortener, given the
+        // cells the row draws in, so the row's clip never cuts what it returns).
+                let text = browser::fit_address(&s.text, ((main.w - 6.0 * scale) / cw).floor().max(0.0) as usize);
+                let detail_text = browser::fit_address(&s.detail, (detail.w / cw).floor().max(0.0) as usize);
+                frame.rows.push(row(r.x + 6.0 * scale, y, vec![span(text, fg, false)], main));
+                frame.rows.push(row(detail.x, y, vec![span(detail_text, dim, false)], detail));
             }
         }
     }
@@ -796,6 +902,10 @@ impl App {
 
     /// What a toolbar button does.
     fn browser_button(&mut self, pane: PaneId, b: Button, menu_at: (f32, f32)) {
+        // The world is being set up: there is no page to go back from or reload (review I2).
+        if matches!(b, Button::Back | Button::Forward | Button::Reload | Button::Stop) && self.browser_views.get(&pane).is_some_and(|bv| bv.world.setup.is_some()) {
+            return;
+        }
         match b {
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -877,7 +987,7 @@ impl App {
             return;
         }
         let pairs: Vec<(String, String)> = items.iter().map(|(t, u, _)| (t.clone(), u.clone())).collect();
-        let labels = browser::history_menu(&pairs);
+        let labels = browser::history_menu(&pairs, HISTORY_MENU_CELLS);
         let menu = muda::Menu::new();
         for ((_, _, steps), label) in items.iter().zip(labels) {
             let _ = menu.append(&muda::MenuItem::with_id(format!("{HISTORY_ID}{pane}:{steps}"), label.replace('&', "&&"), true, None));
@@ -913,8 +1023,8 @@ impl App {
             "History" => Some("iterm2-about:history"),
             _ => None,
         };
-        if let (Some(url), Some(v)) = (target, self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {
-            v.navigate_tandem(url);
+        if let Some(url) = target {
+            self.browser_navigate(pane, url);
         }
         true
     }
@@ -944,6 +1054,9 @@ impl App {
                 }
             }
             self.browser_poll_suggest(pane);
+            if let Some(at) = self.browser_color_tick(pane) {
+                due = Some(due.map_or(at, |d| d.min(at)));
+            }
         }
         let ad_due = self.adblock_tick();
         let replay_due = self.web_replay_tick();
@@ -1051,6 +1164,13 @@ impl App {
     pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
+            bv.bar.nav_state.will_load(url);
+            // A person's own load ends the wait of a restored page.
+            bv.world.restore_load = None;
+            // While the world is being set up nothing loads (review I2): the URL waits.
+            if bv.view.is_some() && bv.world.defer_load(url) {
+                return;
+            }
             match &bv.view {
                 Some(v) => v.navigate_tandem(url),
                 None => {
@@ -1208,21 +1328,22 @@ impl App {
 
     /// A key the page reported (`Event::Key`): a Win chord Tandem has a command for runs, and the
     /// accelerators that focus the address field. The page keeps every other key.
-    fn browser_page_key(&mut self, pane: PaneId, vk: u32, mods: u8, event_loop: &ActiveEventLoop) {
+    pub(super) fn browser_page_key(&mut self, pane: PaneId, vk: u32, mods: u8, event_loop: &ActiveEventLoop) -> bool {
         let (shift, ctrl, alt, win) = (mods & 1 != 0, mods & 2 != 0, mods & 4 != 0, mods & 8 != 0);
         if (ctrl && !alt && !win && vk == 0x4C) || (alt && !ctrl && !win && vk == 0x44) || vk == 0x75 {
             self.focus_url_bar(pane);
-            return;
+            return true;
         }
         if !win {
-            return;
+            return false;
         }
-        let Some(key) = crate::winkeys::vk_to_key(vk as u16) else { return };
+        let Some(key) = crate::winkeys::vk_to_key(vk as u16) else { return false };
         let chord = crate::menus::Chord { key, cmd: true, alt, shift, ctrl };
         let bound = crate::keyroute::win_chord_bound(&self.route_snapshot.read().unwrap_or_else(|e| e.into_inner()), &chord);
         if bound {
             self.in_pane_window(pane, |a| a.run_chord(&chord, event_loop));
         }
+        bound
     }
 
     /// The menu commands that act on a browser pane (View > Make Text Bigger, Smaller, Normal Size,
@@ -1471,8 +1592,8 @@ mod tests {
         assert_eq!(browser::window_cells(0, 5000), (1, 1250));
         assert_eq!(browser::store_of(true), webhost::Store::BrowserDevNull);
         // The views are made in the Dev Null store InPrivate, and never with a bridge or host objects.
-        assert!(browser_setup(true, false).in_private && !browser_setup(false, false).in_private);
-        let s = browser_setup(false, false);
+        assert!(browser_setup(true, false, vec![]).in_private && !browser_setup(false, false, vec![]).in_private);
+        let s = browser_setup(false, false, vec![]);
         assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
     }
 
@@ -1518,14 +1639,18 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(!prod.contains("navigate_to_string") && !prod.contains("HostObject"));
         for dev_null in [false, true] {
-            let s = browser_setup(dev_null, false);
+            // 13x2: the Page-world scripts of `browser_user_scripts` (today the wrapped local-page
+            // bridge, which does nothing off an `iterm2-about:` page) come first, then the Instant
+            // Replay sensitive mark (final review I1), which talks only to its own top frame
+            // (window.top.postMessage), never to the host. Client scripts never go here.
+            let page = vec![crate::browser_pages::shim_js()];
+            let s = browser_setup(dev_null, false, page.clone());
             assert!(s.web_message, "the local pages post messages; the host judges each by its source");
-            // The shim and the Instant Replay sensitive mark (final review I1), which talks only to
-            // its own top frame (window.top.postMessage), never to the host.
-            assert_eq!(s.scripts, vec![crate::browser_pages::SHIM_JS.to_string(), crate::web_replay::sensitive_script()], "the shim and the sensitive mark are the only injected scripts");
+            assert_eq!(s.scripts, vec![page[0].clone(), crate::web_replay::sensitive_script()], "the bridge and the sensitive mark are the only injected scripts");
+            assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__tandemClient"), "a Page script never holds the Client binding");
             assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
             assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
-            let on = browser_setup(dev_null, true);
+            let on = browser_setup(dev_null, true, vec![]);
             assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
         }
     }

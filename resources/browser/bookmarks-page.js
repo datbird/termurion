@@ -134,7 +134,7 @@ function createBookmarkElement(bookmark) {
                 <div class="entry-title">${escapeHtml(title)}</div>
             </div>
             <div class="entry-url" data-url="${escapeAttr(url)}" title="Click to navigate to this URL">
-                ${escapeHtml(url)}
+                ${escapeHtml(bookmark.displayUrl)}
             </div>
             ${tagsHtml ? `<div class="bookmark-meta"><div class="bookmark-tags">${tagsHtml}</div></div>` : ''}
         </div>

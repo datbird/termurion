@@ -88,6 +88,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::TriggerImportMarked(_) => Answer::Button(1),
         // Cancel: a closed window opens no link and downloads nothing.
         Then::OpenLink { .. } | Then::BrowserUpsell { .. } => Answer::Button(2),
+        // Cancel: a closed window runs nothing and opens nothing a page's text named.
+        Then::BrowserRun { .. } | Then::BrowserOpenFile { .. } => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -322,6 +324,13 @@ pub(super) enum Then {
     /// The AI Usage item's report alert (13y1 Task 5): Cancel (0, the default), Report Bug (1) copies
     /// the report and opens the issue form.
     UsageReport { title: String, text: String },
+    /// "Run command?" for a Smart Selection action from a page (`PSB:300-317`): OK (0) queues the
+    /// command, built already by the one cmd.exe builder, to run in a single-use window; Cancel (1)
+    /// nothing. The person's own pick, so not capped.
+    BrowserRun { pane: crate::layout::PaneId, command: String },
+    /// "Open file?" for a Smart Selection action from a page (`PSB:335-346`): OK (0) opens it as
+    /// `open_file_run` plans (a program is revealed, never run); Cancel (1) nothing.
+    BrowserOpenFile { pane: crate::layout::PaneId, file: String },
 }
 
 impl Then {
@@ -548,6 +557,16 @@ impl App {
             }
             Then::OpenLink { url, style, background, pane, file } => self.open_link_answered(&url, style, background, pane, file, index),
             Then::BrowserUpsell { url } => self.upsell_answered(&url, index),
+            Then::BrowserRun { pane, command } => {
+                if index == 0 {
+                    self.browser_run_confirmed(pane, command);
+                }
+            }
+            Then::BrowserOpenFile { pane, file } => {
+                if index == 0 {
+                    self.browser_open_file_confirmed(pane, &file);
+                }
+            }
             Then::DebugLogStart => self.debug_log_start_answered(),
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed | Then::ShortLived | Then::LogProblem | Then::Acknowledged => {}
             Then::CreateLogFolder { pane, path, append, style } => self.log_folder_answered(pane, path, append, style, index),

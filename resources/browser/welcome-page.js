@@ -57,11 +57,11 @@
         card.innerHTML = `
             <div class="site-favicon">
                 <img src="${escapeAttr(faviconUrl)}" alt="">
-                <div class="site-favicon-fallback" style="display:none;">${escapeHtml(getInitial(site.title || site.hostname))}</div>
+                <div class="site-favicon-fallback" style="display:none;">${escapeHtml(getInitial(site.title || site.displayHost))}</div>
             </div>
             <div class="site-info">
-                <div class="site-title">${escapeHtml(site.title || site.hostname)}</div>
-                <div class="site-url">${escapeHtml(site.hostname)}</div>
+                <div class="site-title${site.title ? '' : ' host'}">${escapeHtml(site.title || site.displayHost)}</div>
+                <div class="site-url">${escapeHtml(site.displayHost)}</div>
                 <div class="site-visits">${Number(site.visitCount) || 0} ${site.visitCount === 1 ? 'visit' : 'visits'}</div>
             </div>
         `;

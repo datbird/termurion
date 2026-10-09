@@ -194,6 +194,9 @@ pub struct PaletteRow {
     pub swatch: Option<([u8; 3], [u8; 3])>,
     pub title: String,
     pub title_bold: Vec<usize>,
+    /// The title is a URL: fitted to the title width by the one shortener (`open_quickly::url_title_fit`),
+    /// never cut at its tail.
+    pub title_url: bool,
     pub detail: String,
     pub detail_bold: Vec<Range<usize>>,
 }
@@ -222,6 +225,9 @@ fn icons() -> egui::FontFamily {
     egui::FontFamily::Name("icons".into())
 }
 
+/// The width a row's title and detail lines are laid out in (points).
+const TITLE_WIDTH: f32 = 412.0;
+
 fn bold() -> egui::FontFamily {
     egui::FontFamily::Name("bold".into())
 }
@@ -247,7 +253,7 @@ fn system_fonts() -> &'static Vec<(&'static str, Vec<u8>)> {
     })
 }
 
-fn install_fonts(ctx: &egui::Context) {
+pub(crate) fn install_fonts(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
     let base = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
     let mut have = |face: &str| -> Option<String> {
@@ -594,9 +600,20 @@ impl OpenQuicklyWindow {
                                 ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, row.icon, egui::FontId::new(24.0, icons()), title_color);
                             }
                         }
-                        let title_bold: Vec<Range<usize>> = row.title_bold.iter().map(|&c| c..c + 1).collect();
-                        let title = runs_job(&row.title, &title_bold, 13.0, title_color, 412.0);
-                        let detail = runs_job(&row.detail, &row.detail_bold, 11.0, detail_color, 412.0);
+                        // A URL title is fitted to the title width by the one shortener, measured in
+                        // the row's own runs, so the tail truncation below never cuts its host.
+                        let (title_text, title_idx) = if row.title_url {
+                            let measure = |t: &str| {
+                                let runs: Vec<Range<usize>> = if t == row.title { row.title_bold.iter().map(|&c| c..c + 1).collect() } else { Vec::new() };
+                                ui.painter().layout_job(runs_job(t, &runs, 13.0, title_color, f32::INFINITY)).size().x
+                            };
+                            crate::open_quickly::url_title_fit(&row.title, &row.title_bold, TITLE_WIDTH, &measure)
+                        } else {
+                            (row.title.clone(), row.title_bold.clone())
+                        };
+                        let title_bold: Vec<Range<usize>> = title_idx.iter().map(|&c| c..c + 1).collect();
+                        let title = runs_job(&title_text, &title_bold, 13.0, title_color, TITLE_WIDTH);
+                        let detail = runs_job(&row.detail, &row.detail_bold, 11.0, detail_color, TITLE_WIDTH);
                         let title = ui.painter().layout_job(title);
                         let detail = ui.painter().layout_job(detail);
                         ui.painter().galley(egui::pos2(cell.min.x + 56.0, cell.min.y + 5.0), title, title_color);

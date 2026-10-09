@@ -67,8 +67,18 @@ pub mod webhost;
 pub mod webhost_win;
 pub mod svg_icon;
 pub mod browser;
+pub mod browser_world;
+pub mod browser_js;
+pub mod browser_ctx;
+pub mod ctx_help;
+pub mod browser_smart;
+pub mod browser_tip;
+pub mod browser_keys;
+pub mod browser_pointer;
+pub mod browser_frames;
 pub mod browser_db;
 pub mod browser_pages;
+pub mod browser_restore;
 pub mod adblock;
 #[cfg(windows)]
 pub mod svg_raster_win;

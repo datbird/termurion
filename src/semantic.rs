@@ -817,6 +817,11 @@ pub fn web_link(target: &str) -> bool {
 /// links open: a target with no scheme (a path, a drive path, a network path) is refused (B1),
 /// a network path first of all, and a file: link is a local path through `file_open`.
 pub fn guard_open(target: &str, has_code: bool) -> Run {
+    // The one network rule, shared with the browser's gate (R13x23 fix pass item 3): percent-encoded
+    // and host forms of a network `file:` link are refused here too, before anything else.
+    if let Some(why) = crate::browser_js::gate_refusal(target) {
+        return Run::Blocked(why);
+    }
     if crate::scripts::is_network_path(target) {
         return Run::Blocked(format!("Tandem does not open network paths: {target}"));
     }
@@ -1702,6 +1707,18 @@ mod tests {
             assert!(matches!(plan(&Target::Link(t.into()), &best, &Around::default(), false), Some(Run::Blocked(_))), "{t}");
         }
         assert!(matches!(guard_open("file://evil/s/x", false), Run::Blocked(_)));
+    }
+
+    /// R13x23 fix pass item 3 (the terminal half): every network target is refused by the one gate
+    /// first, whatever its spelling, and the local long-path form is not one.
+    #[test]
+    fn guard_open_passes_the_gate() {
+        for t in ["file:////host/share/x", "file://host/share/x", "file:///%5C%5Chost%5Cshare%5Cx", r"\\host\share\x", "//host/share/x", r"\\?\UNC\host\share\x", "  //host/share/x"] {
+            assert!(matches!(guard_open(t, false), Run::Blocked(_)), "{t}");
+            assert_eq!(guard_open(t, false), Run::Blocked(crate::browser_js::gate_refusal(t).unwrap()), "{t}: the gate's own text");
+        }
+        assert!(crate::browser_js::gate_refusal(r"\\?\D:\s").is_none());
+        assert!(matches!(guard_open("file:///C:/a/b.txt", false), Run::OpenLocal { .. }));
     }
 
     #[test]

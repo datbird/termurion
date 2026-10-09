@@ -1423,11 +1423,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
         assert_eq!(s.path(), Some(path.as_path()));
 
-        let mut s = FileSink::open(&temp_path("fresh").with_file_name("made.log"), true);
+        // The temp folder is named by process id, which Windows reuses: a file left by an earlier
+        // run would be appended to, so it goes first.
+        let made = temp_path("fresh").with_file_name("made.log");
+        let _ = std::fs::remove_file(&made);
+        let mut s = FileSink::open(&made, true);
         s.wait_ready(Duration::from_secs(5)).unwrap();
         s.write(b"x").unwrap();
         s.finish_for_test();
-        assert_eq!(std::fs::read_to_string(temp_path("fresh").with_file_name("made.log")).unwrap(), "x");
+        assert_eq!(std::fs::read_to_string(&made).unwrap(), "x");
     }
 
     /// A log has no timer: the writer wakes the app when a write fails, and only then.

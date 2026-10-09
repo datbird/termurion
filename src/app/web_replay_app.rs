@@ -345,9 +345,9 @@ mod tests {
         assert!(done.contains("web_replay::backoff(r.wait, interval,"), "{done}");
         assert!(done.contains("let fresh = r.ring.push(at, bytes);"));
         // I1: every browser view carries the sensitive mark script in every frame.
-        let setup = crate::app::browser_app::browser_setup(false, false);
+        let setup = crate::app::browser_app::browser_setup(false, false, vec![]);
         assert!(setup.scripts.contains(&web_replay::sensitive_script()));
-        assert!(crate::app::browser_app::browser_setup(true, true).scripts.contains(&web_replay::sensitive_script()));
+        assert!(crate::app::browser_app::browser_setup(true, true, vec![]).scripts.contains(&web_replay::sensitive_script()));
         // M3: Clear closes the playback window of that pane (no saveable copy is left).
         let clear = &prod[prod.find("pub(super) fn web_replay_clear").unwrap()..prod.find("pub(super) fn web_replay_event").unwrap()];
         assert!(clear.contains("self.web_replay_pane == Some(pane)") && clear.contains("self.web_replay = None;"), "{clear}");

@@ -1080,6 +1080,13 @@ pub fn sends_text(action: i64) -> bool {
     matches!(action, 10 | 11 | 12 | 16 | 17 | 35 | 38 | 41 | 42 | 63 | 64 | 65 | 69 | 70 | 76)
 }
 
+/// `sendsText` of a whole binding: a Sequence (66) sends text when any of its steps does
+/// (`iTermKeyBindingAction.m:607-612` recurses). A sequence never runs a nested sequence
+/// (`run_key_action`), so only its own steps count.
+pub fn binding_sends_text(b: &crate::keyaction::Binding) -> bool {
+    sends_text(b.action) || (b.action == 66 && crate::keyaction::sequence(&b.text).iter().any(|s| s.action != 66 && sends_text(s.action)))
+}
+
 /// A composer Win chord (`CTV:610-638`, `PS:24608-24625`, `LCVC:361-377`), from the chord's
 /// key and exact modifiers (`c` the key's unshifted character, or an arrow).
 #[derive(Clone, Copy, Debug, PartialEq)]

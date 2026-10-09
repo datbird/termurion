@@ -141,9 +141,13 @@
             color: var(--secondary-text);
             font-size: 0.9em;
             margin-bottom: 4px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        
+        .site-title.host {
+            white-space: normal;
+            overflow-wrap: anywhere;
         }
         
         .site-visits {

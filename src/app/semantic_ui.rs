@@ -1148,6 +1148,8 @@ mod tests {
         "self.open_link(",
         "self.open_link_system(",
         "self.open_url_in_browser(",
+        // The one funnel for a URL a page supplied (13x2): its callers are audited too.
+        "self.browser_page_open(",
         "self.open_link_answered(",
         "self.upsell_answered(",
         "smart_action_run(",
@@ -1178,6 +1180,13 @@ mod tests {
         ("app/browser_app.rs", "open_link", "takes a Run::Open from guard_open or a web_link; its callers (execute_with, open_selection_url, open_link_split) are checked"),
         ("app/browser_app.rs", "open_link_answered", "the answer to the ask open_link raised for a link it had settled"),
         ("app/browser_app.rs", "upsell_answered", "the answer to the upsell open_link raised; opens the fixed plugin page or the link it settled"),
+        ("app/browser_ctx_app.rs", "browser_ctx_picked", "Search with opens a URL built from the person's own selection through browser_page_open (nav_gate first); no other item opens anything"),
+        ("app/browser_smart_app.rs", "browser_smart_action", "a page's Smart Selection action, from the person's own menu pick: the one parameter builder (smartsel::parameter, the 13p-r refusals), a URL only through browser_page_open, a file and a command only after the ask that shows the whole text"),
+        ("app/browser_input_app.rs", "browser_next_tick", "opens a page-supplied URL only through browser_page_open (queued only when nav_gate said Navigate), a Smart Selection action only through browser_smart_action (its ask), and the session's own pointer actions"),
+        ("app/browser_smart_app.rs", "browser_open_file_confirmed", "the answer to the Open file? ask: open_file_run's plan (a program is revealed, never run) through the sink"),
+        ("app/browser_smart_app.rs", "browser_runs_tick", "runs the commands the person confirmed, each built by the one cmd.exe builder before the ask, in a single-use window"),
+        ("app/browser_scripts_app.rs", "browser_page_open", "the one gate for URLs a page, page text or an arrangement supplied: nav_gate, then guard_open, never a path"),
+        ("browser_js.rs", "nav_gate", "builds a NavGate and opens nothing; its caller is checked"),
         ("app/web_popover_app.rs", "quick_look_url", "only an http or https URL with a host (web_popover::quick_look_target) is shown or opened, the one kind a remote pane's link may open (P10)"),
         ("app/web_popover_app.rs", "web_popover_event", "opens the page the popover shows, only when its scheme is http or https (quick_look_scheme_ok)"),
         ("app/web_popover_app.rs", "web_popover_view_event", "an external protocol a popover's page asked for goes through external_uri_run (guard_open), only for a person's gesture"),
@@ -1357,7 +1366,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);

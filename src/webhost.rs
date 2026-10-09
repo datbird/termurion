@@ -14,6 +14,29 @@ use crate::layout::Rect;
 
 pub type ViewId = u64;
 
+/// The key gate's table (13x2 Task 6): `take(vk, mods)` says whether Tandem takes a key the page
+/// raised. Read synchronously on the UI thread inside the COM handler, so it holds no App borrow; the
+/// app replaces `take` whenever the maps, the editing state or the bar change.
+pub struct KeyTable {
+    pub take: Box<dyn Fn(u32, u8) -> bool>,
+}
+
+impl Default for KeyTable {
+    fn default() -> Self {
+        KeyTable { take: Box::new(|_, _| false) }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct KeyGate(pub std::rc::Rc<std::cell::RefCell<KeyTable>>);
+
+impl KeyGate {
+    /// The answer for one key (false while the table is being replaced).
+    pub fn takes(&self, vk: u32, mods: u8) -> bool {
+        self.0.try_borrow().is_ok_and(|t| (t.take)(vk, mods))
+    }
+}
+
 /// Whether a WebView2 runtime exists: its version string, or no runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runtime {
@@ -159,6 +182,67 @@ pub fn user_agent(setting: &str, engine_default: &str) -> String {
     if setting.is_empty() { format!("{engine_default} Tandem") } else { setting.to_string() }
 }
 
+/// What a right-click landed on (WebView2's `ICoreWebView2ContextMenuTarget` and the location, in
+/// physical pixels of the view). Everything a page chose is capped by `MenuTarget::capped` before it
+/// is queued.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuTarget {
+    /// `COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND`: page 0, image 1, selected text 2, audio 3, video 4.
+    pub kind: i32,
+    pub editable: bool,
+    pub main_frame: bool,
+    pub page_uri: String,
+    pub frame_uri: String,
+    pub link: Option<String>,
+    pub link_text: Option<String>,
+    pub source: Option<String>,
+    pub selection: Option<String>,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// The longest selection a menu target carries, in characters (iTerm2's helpers stop at 1,000,000).
+pub const MAX_MENU_SELECTION: usize = 1_000_000;
+/// The longest link text a menu target carries, in characters.
+pub const MAX_MENU_LINK_TEXT: usize = 1024;
+/// Menus waiting for an answer in one view (a further request shows WebView2's own menu).
+pub const MAX_PENDING_MENUS: usize = 4;
+
+impl MenuTarget {
+    /// The target with every page-chosen string bounded: URLs cut by `cap_url` (a cut URL is dropped,
+    /// never used whole), the selection and the link text cut at a character boundary.
+    pub fn capped(mut self) -> MenuTarget {
+        let url = |u: &str| {
+            let (c, cut) = cap_url(u);
+            if cut { String::new() } else { c }
+        };
+        let text = |s: &str, max: usize| match s.char_indices().nth(max) {
+            Some((at, _)) => s[..at].to_string(),
+            None => s.to_string(),
+        };
+        self.page_uri = url(&self.page_uri);
+        self.frame_uri = url(&self.frame_uri);
+        self.link = self.link.map(|l| url(&l)).filter(|l| !l.is_empty());
+        self.source = self.source.map(|l| url(&l)).filter(|l| !l.is_empty());
+        self.link_text = self.link_text.map(|t| text(&t, MAX_MENU_LINK_TEXT));
+        self.selection = self.selection.map(|t| text(&t, MAX_MENU_SELECTION));
+        self
+    }
+}
+
+/// One entry of the menu the app answers a `ContextMenu` event with (`WebView::answer_context_menu`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuEntry {
+    /// A Tandem item; `icon_png` is an optional PNG (the color swatch).
+    Custom { id: u32, label: String, enabled: bool, icon_png: Option<Vec<u8>> },
+    Separator,
+    /// Where WebView2's own items go.
+    Native,
+}
+
+/// WebView2's own items Tandem replaces (their `Name`): iTerm2's menu has its own Save Page As and Print.
+pub const REMOVED_NATIVE: &[&str] = &["saveAs", "print"];
+
 /// What a view tells the app. Open for extension: every consumer's `match` ends in `_ =>`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -178,7 +262,9 @@ pub enum Event {
     Message { view: ViewId, json: String, source: String },
     ScriptDone { view: ViewId, token: u64, json: Result<String, String> },
     NewWindow { view: ViewId, url: String },
-    Key { view: ViewId, vk: u32, mods: u8 },
+    /// A key the page raised; `taken` is the key gate's synchronous answer (Tandem took it and the
+    /// page never saw it).
+    Key { view: ViewId, vk: u32, mods: u8, taken: bool },
     Focus(ViewId, bool),
     History { view: ViewId, back: bool, forward: bool },
     Loading(ViewId, bool),
@@ -189,6 +275,28 @@ pub enum Event {
     /// A top-level navigation the view refused after a person's click (`refused_click`): the app
     /// judges the URL itself (a popover link goes through `guard_open`).
     Refused { view: ViewId, url: String, user: bool },
+    /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
+    /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
+    /// `browser_world::Contexts` decides what a context is.
+    DevTools { view: ViewId, session: Option<String>, name: String, json: String },
+    /// The view's `browser_world::EventFilter` holds lifecycle events: the app takes them with
+    /// `WebView::take_devtools_held` (one is queued at a time; final review I4).
+    DevToolsHeld { view: ViewId },
+    /// An iframe of the page appeared (the page world's view of it: WebView2's frame id, the
+    /// `name` attribute, bounded). Posted only for a view that asked (`WebView::watch_frames`).
+    FrameCreated { view: ViewId, frame: u64, name: String },
+    FrameGone { view: ViewId, frame: u64 },
+    /// A Page-world `postMessage` from an iframe; `source` is the posting document's URL.
+    FrameMessage { view: ViewId, frame: u64, json: String, source: String },
+    /// A main-frame navigation began (and the one verdict let it go): the single page-load-start
+    /// event. `kind` is `COREWEBVIEW2_NAVIGATION_KIND`; a consumer that wants iTerm2's
+    /// `didStartProvisionalNavigation` ignores `redirect == true`, which fires once per navigation.
+    Starting { view: ViewId, url: String, kind: i32, user: bool, redirect: bool, nav: u64 },
+    /// A right-click on the page: the view holds the menu back (a deferral) until the app answers with
+    /// `answer_context_menu(token, ..)`. Never dropped; its strings are capped by `MenuTarget::capped`.
+    ContextMenu { view: ViewId, token: u64, target: MenuTarget },
+    /// A custom item of the answered menu was chosen: `id` is the `MenuEntry::Custom` id.
+    ContextMenuPicked { view: ViewId, token: u64, id: u32 },
 }
 
 impl Event {
@@ -205,14 +313,44 @@ impl Event {
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
-            | Event::ProcessFailed { view, .. } => *view,
+            | Event::ProcessFailed { view, .. }
+            | Event::DevTools { view, .. }
+            | Event::DevToolsHeld { view }
+            | Event::FrameCreated { view, .. }
+            | Event::FrameGone { view, .. }
+            | Event::FrameMessage { view, .. }
+            | Event::Starting { view, .. }
+            | Event::ContextMenu { view, .. }
+            | Event::ContextMenuPicked { view, .. } => *view,
+        }
+    }
+
+    /// A console line (`iTerm2ConsoleLog`) from the page world (`Message`, `FrameMessage`) or the
+    /// isolated world (a binding call, whose payload is a JSON string inside the event). Only a
+    /// shape check: a message that merely looks like one is held to the stricter console budget.
+    pub fn is_console(&self) -> bool {
+        let handler = crate::browser_js::CONSOLE_HANDLER;
+        match self {
+            Event::Message { json, .. } | Event::FrameMessage { json, .. } => json.get(..json.len().min(48)).is_some_and(|head| head.contains(&format!("\"h\":\"{handler}\""))),
+            Event::DevTools { name, json, .. } if name == BINDING_EVENT => json.contains(&format!("{{\\\"h\\\":\\\"{handler}\\\"")),
+            _ => false,
         }
     }
 
     /// An event the queue may drop when a page floods it. Lifecycle, navigation results, focus,
     /// script results and requests (each holds a COM deferral) are never dropped.
     pub fn droppable(&self) -> bool {
-        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { .. } | Event::History { .. } | Event::Loading(..))
+        // Only a binding call (a page can make them at will) is droppable. A context or target
+        // lifecycle event never is: a lost Destroyed would leave a stale context in the table, and an
+        // attached child waits until it is resumed (B12, fix round 1). The host drops the ones the
+        // app ignores before they are queued and holds the rest behind one `DevToolsHeld` wake
+        // (`browser_world::EventFilter`, final review I4), which is never dropped either.
+        if let Event::DevTools { name, .. } = self {
+            return name == BINDING_EVENT;
+        }
+        // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
+        // lose the press to both (final review minor 6). Only a person's key makes one.
+        matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { taken: false, .. } | Event::History { .. } | Event::Loading(..))
     }
 
     /// The bytes an event holds that a page chose.
@@ -220,13 +358,25 @@ impl Event {
         match self {
             Event::Failed(_, s) | Event::Source(_, s) | Event::Title(_, s) => s.len(),
             Event::Favicon(_, b) => b.len(),
-            Event::Message { json, source, .. } => json.len() + source.len(),
+            Event::Message { json, source, .. } | Event::FrameMessage { json, source, .. } => json.len() + source.len(),
+            Event::FrameCreated { name, .. } => name.len(),
+            Event::Starting { url, .. } => url.len(),
+            Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
+            Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             _ => 0,
         }
     }
+}
+
+/// The one DevTools event a page can raise at will.
+pub const BINDING_EVENT: &str = "Runtime.bindingCalled";
+
+/// The largest DevTools event body the host queues (a binding payload and a URL).
+pub const fn devtools_json_cap() -> usize {
+    MAX_MESSAGE + MAX_URL
 }
 
 /// `COREWEBVIEW2_PROCESS_FAILED_KIND` values (the WebView2 headers).
@@ -477,6 +627,9 @@ pub type Sink = std::sync::mpsc::Sender<Posted>;
 pub const MAX_MESSAGE: usize = 64 * 1024;
 /// Messages of one view that may sit in the queue.
 pub const MAX_QUEUED_MESSAGES: usize = 50;
+/// Console lines (either world) of one view that may sit in the queue: their own budget, so heavy
+/// logging never takes room from the isolated world's real messages (Task 2 review I2).
+pub const MAX_QUEUED_CONSOLE: usize = 20;
 /// A title, in characters.
 pub const MAX_TITLE: usize = 1024;
 /// A URL, in bytes.
@@ -560,6 +713,7 @@ pub struct ViewGate {
     events: AtomicUsize,
     bytes: AtomicUsize,
     messages: AtomicUsize,
+    console: AtomicUsize,
     new_windows: AtomicUsize,
     dropped: AtomicUsize,
 }
@@ -571,6 +725,7 @@ pub struct Charge {
     gate: Arc<ViewGate>,
     bytes: usize,
     message: bool,
+    console: bool,
     new_window: bool,
 }
 
@@ -580,6 +735,9 @@ impl Drop for Charge {
         self.gate.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
         if self.message {
             self.gate.messages.fetch_sub(1, Ordering::AcqRel);
+        }
+        if self.console {
+            self.gate.console.fetch_sub(1, Ordering::AcqRel);
         }
         if self.new_window {
             self.gate.new_windows.fetch_sub(1, Ordering::AcqRel);
@@ -597,12 +755,15 @@ impl ViewGate {
     /// admitted. The Charge returned is released on drop.
     pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
         let weight = event.weight();
-        let message = matches!(event, Event::Message { .. });
+        let console = event.is_console();
+        let message = !console && (matches!(event, Event::Message { .. } | Event::FrameMessage { .. }) || matches!(event, Event::DevTools { name, .. } if name == BINDING_EVENT));
         let new_window = matches!(event, Event::NewWindow { .. });
         if event.droppable() {
             let over = self.events.load(Ordering::Acquire) >= MAX_QUEUED_EVENTS
                 || self.bytes.load(Ordering::Acquire) + weight > MAX_QUEUED_BYTES
                 || (message && self.messages.load(Ordering::Acquire) >= MAX_QUEUED_MESSAGES)
+                || (console && self.console.load(Ordering::Acquire) >= MAX_QUEUED_CONSOLE)
+                || (console && weight > MAX_MESSAGE + MAX_URL)
                 || (message && weight > MAX_MESSAGE + MAX_URL)
                 || (new_window && self.new_windows.load(Ordering::Acquire) >= MAX_PENDING_NEW_WINDOWS);
             if over {
@@ -615,10 +776,13 @@ impl ViewGate {
         if message {
             self.messages.fetch_add(1, Ordering::AcqRel);
         }
+        if console {
+            self.console.fetch_add(1, Ordering::AcqRel);
+        }
         if new_window {
             self.new_windows.fetch_add(1, Ordering::AcqRel);
         }
-        Ok(Charge { gate: self.clone(), bytes: weight, message, new_window })
+        Ok(Charge { gate: self.clone(), bytes: weight, message, console, new_window })
     }
 
     /// New-window requests queued now.
@@ -629,6 +793,11 @@ impl ViewGate {
     /// Events queued now.
     pub fn queued(&self) -> usize {
         self.events.load(Ordering::Acquire)
+    }
+
+    /// Counts one event the handler refused before queueing it.
+    pub fn note_dropped(&self) {
+        self.dropped.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Events dropped since the last call.
@@ -1404,6 +1573,123 @@ mod tests {
         assert!(!Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.droppable());
         assert!(!Event::ScriptDone { view: 1, token: 1, json: Ok("2".into()) }.droppable());
         assert!(Event::Message { view: 1, json: String::new(), source: String::new() }.droppable());
+        // Final review minor 6: a key Tandem took (`SetHandled(true)`: the page never sees it) is
+        // never dropped, or the press would be lost to both; a key the page kept may be.
+        assert!(!Event::Key { view: 1, vk: 0x4a, mods: 3, taken: true }.droppable());
+        assert!(Event::Key { view: 1, vk: 0x4a, mods: 0, taken: false }.droppable());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..(MAX_QUEUED_EVENTS + 10) {
+            held.push(gate.admit(&Event::Key { view: 1, vk: 0x4a, mods: 3, taken: true }).expect("a taken key is never refused"));
+        }
+        drop(held);
+    }
+
+    /// Fix round 1, item 1 (B12): only a binding call is droppable (and counts as a message); every
+    /// context and target lifecycle event is admitted over any cap.
+    #[test]
+    fn devtools_events_follow_the_caps() {
+        let ev = |name: &str, json: &str| Event::DevTools { view: 1, session: None, name: name.into(), json: json.into() };
+        for lifecycle in ["Runtime.executionContextCreated", "Runtime.executionContextDestroyed", "Runtime.executionContextsCleared", "Page.frameNavigated", "Target.attachedToTarget", "Target.detachedFromTarget"] {
+            assert!(!ev(lifecycle, "{}").droppable(), "{lifecycle}");
+        }
+        assert!(ev("Runtime.bindingCalled", "{}").droppable());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            held.push(gate.admit(&ev("Runtime.bindingCalled", "{}")).expect("room"));
+        }
+        assert!(gate.admit(&ev("Runtime.bindingCalled", "{}")).is_err(), "a binding call counts against the message cap");
+        for _ in 0..(MAX_QUEUED_EVENTS + 10) {
+            held.push(gate.admit(&ev("Runtime.executionContextDestroyed", "{}")).expect("lifecycle is never refused"));
+        }
+        assert!(gate.admit(&Event::Message { view: 1, json: "{}".into(), source: String::new() }).is_err());
+        assert!(gate.admit(&ev("Runtime.bindingCalled", &"x".repeat(MAX_MESSAGE + MAX_URL + 1))).is_err());
+        assert_eq!(devtools_json_cap(), MAX_MESSAGE + MAX_URL);
+        drop(held);
+    }
+
+    /// Task 2 review I2: console lines (either world) have their own small queue, so a page that logs
+    /// heavily never makes the host drop the isolated world's real messages.
+    #[test]
+    fn console_lines_do_not_starve_real_messages() {
+        let console_page = || Event::Message { view: 1, json: r#"{"h":"iTerm2ConsoleLog","b":{"msg":"x","level":"log"}}"#.into(), source: String::new() };
+        let console_client = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"tandemBinding","payload":"{\"h\":\"iTerm2ConsoleLog\",\"b\":{\"msg\":\"x\",\"level\":\"debug\"}}","executionContextId":3}"#.into() };
+        let register = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"tandemBinding","payload":"{\"h\":\"iTerm2GraphDiscovery\",\"b\":{\"type\":\"REGISTER_FRAME\"}}","executionContextId":3}"#.into() };
+        let page_message = || Event::Message { view: 1, json: r#"{"h":"x","b":1}"#.into(), source: String::new() };
+        assert!(console_page().is_console() && console_client().is_console());
+        assert!(!register().is_console() && !page_message().is_console());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        let mut admitted = 0;
+        for i in 0..200 {
+            let ev = if i % 2 == 0 { console_page() } else { console_client() };
+            if let Ok(c) = gate.admit(&ev) {
+                admitted += 1;
+                held.push(c);
+            }
+        }
+        assert_eq!(admitted, MAX_QUEUED_CONSOLE, "console lines stop at their own cap");
+        assert!(gate.admit(&register()).is_ok(), "a frame registration is still admitted after 200 console lines");
+        assert!(gate.admit(&page_message()).is_ok());
+        // The ordinary message cap is untouched by the console lines.
+        let mut real = Vec::new();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            real.push(gate.admit(&register()).expect("room"));
+        }
+        assert!(gate.admit(&register()).is_err());
+        drop((held, real));
+        assert!(gate.admit(&console_page()).is_ok(), "room comes back");
+    }
+
+    /// 13x2 Task 3 (B12): a menu request is never dropped (it holds a deferral), a pick is not
+    /// either, and the target's strings are bounded before the event is queued.
+    #[test]
+    fn menu_events_follow_the_caps() {
+        let target = MenuTarget { selection: Some("a".repeat(MAX_MENU_SELECTION + 5)), link: Some(format!("https://x/{}", "y".repeat(MAX_URL))), source: Some("https://i/p.png".into()), link_text: Some("t".repeat(MAX_MENU_LINK_TEXT + 9)), page_uri: "https://p/".into(), ..MenuTarget::default() };
+        let capped = target.capped();
+        assert_eq!(capped.selection.as_ref().unwrap().chars().count(), MAX_MENU_SELECTION);
+        assert_eq!(capped.link, None, "a cut URL is dropped, never used whole");
+        assert_eq!(capped.link_text.as_ref().unwrap().chars().count(), MAX_MENU_LINK_TEXT);
+        assert_eq!(capped.source.as_deref(), Some("https://i/p.png"));
+        let ask = Event::ContextMenu { view: 3, token: 1, target: capped };
+        let pick = Event::ContextMenuPicked { view: 3, token: 1, id: 2 };
+        assert_eq!((ask.view(), pick.view()), (3, 3));
+        assert!(!ask.droppable() && !pick.droppable());
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..(MAX_QUEUED_EVENTS + 2) {
+            held.push(gate.admit(&ask).expect("a menu request is admitted over any cap"));
+        }
+        drop(held);
+        // Multi-byte text is cut on a character boundary.
+        let t = MenuTarget { selection: Some("\u{e9}".repeat(MAX_MENU_SELECTION + 1)), ..MenuTarget::default() }.capped();
+        assert_eq!(t.selection.unwrap().chars().count(), MAX_MENU_SELECTION);
+        assert_eq!(REMOVED_NATIVE, &["saveAs", "print"]);
+    }
+
+    /// 13x2 Task 1: the new events know their view; a frame message is capped like a message, a
+    /// navigation start is never dropped.
+    #[test]
+    fn frame_and_starting_events_follow_the_caps() {
+        let msg = |json: &str| Event::FrameMessage { view: 4, frame: 9, json: json.into(), source: "https://a/".into() };
+        assert_eq!(msg("{}").view(), 4);
+        assert!(msg("{}").droppable());
+        assert_eq!(msg("ab").weight(), 2 + "https://a/".len());
+        let starting = Event::Starting { view: 5, url: "https://a/".into(), kind: 2, user: true, redirect: false, nav: 7 };
+        assert_eq!(starting.view(), 5);
+        assert!(!starting.droppable());
+        assert_eq!(starting.weight(), 10);
+        assert_eq!(Event::FrameCreated { view: 6, frame: 1, name: "n".into() }.view(), 6);
+        assert_eq!(Event::FrameGone { view: 6, frame: 1 }.view(), 6);
+        let gate = ViewGate::new();
+        let mut held = Vec::new();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            held.push(gate.admit(&msg("{}")).expect("room"));
+        }
+        assert!(gate.admit(&msg("{}")).is_err(), "frame messages share the message cap");
+        assert!(gate.admit(&Event::Message { view: 4, json: "{}".into(), source: String::new() }).is_err());
+        held.push(gate.admit(&starting).expect("a start is always admitted"));
     }
 
     /// Review Focus 11: a focus loss into this window's own child is not a window focus loss.

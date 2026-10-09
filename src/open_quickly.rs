@@ -946,10 +946,19 @@ fn add_menu_items(items: &mut Vec<Item>, query: &str, s: &Sources) {
     }
 }
 
+/// A URL title as it fits the row's title width (`room` points, measured by `measure`): the one
+/// shortener through `browser_tip::fit_measured`, so the row's own tail truncation never cuts it
+/// (final residual 1). Highlights are dropped when the text changed.
+pub fn url_title_fit(title: &str, bold: &[usize], room: f32, measure: &dyn Fn(&str) -> f32) -> (String, Vec<usize>) {
+    let fit = crate::browser_tip::fit_measured(title, room, measure);
+    if fit == title { (fit, bold.to_vec()) } else { (fit, Vec::new()) }
+}
+
 /// Bookmarks, then visited sites, then a typed https URL (`addBookmarkToItems:`, `addURLToItems:`,
 /// `OQM:532-615`): only with the browser allowed, never for a query starting with a slash, a URL
 /// at most once. The words shown are cleaned of what a page chose (P11: hidden characters gone,
-/// a look-alike host in punycode); the item keeps the stored URL and activation judges it again.
+/// a look-alike host in punycode); the item keeps the stored URL and activation judges it again. A URL title
+/// is the whole display URL; the palette fits it to the row (`url_title_fit`).
 fn add_browser_items(items: &mut Vec<Item>, query: &str, s: &Sources, sup: &Supports) {
     let Some(browser) = &s.browser else { return };
     if query.starts_with('/') {
@@ -1091,6 +1100,27 @@ mod tests {
         assert!(!items("/b https://x.y", &s).iter().any(|i| matches!(i.kind, ItemKind::Url(_))));
         assert!(!items("/f rust", &s).iter().any(|i| matches!(i.kind, ItemKind::Bookmark(_))));
         assert!((BOOKMARK_MULT, URL_MULT) == (0.097, 6.0));
+    }
+
+    /// A long subdomain chain cannot push the registrable host out of an Open Quickly row (round 2).
+    #[test]
+    fn open_quickly_urls_keep_the_host() {
+        let chain = vec!["accounts-google-com".to_string(); 10].join(".");
+        let url = format!("https://{chain}.evil.test/");
+        let s = Sources { browser: Some(BrowserSources { bookmarks: vec![(String::new(), url.clone())], visited: vec![] }), ..Default::default() };
+        let r = items("evil", &s);
+        let i = r.iter().find(|i| matches!(i.kind, ItemKind::Bookmark(_))).expect("matched");
+        assert_eq!(i.title, crate::browser::display_url(&url), "the whole display URL; the palette fits it to the row");
+        assert!(i.title_bold.iter().all(|b| *b < i.title.chars().count()), "no highlight past the cut");
+        assert_eq!(i.kind, ItemKind::Bookmark(url.clone()), "the item keeps the stored URL");
+        let typed = items(&url, &Sources { browser: Some(BrowserSources { bookmarks: vec![], visited: vec![] }), ..Default::default() });
+        let u = typed.iter().find(|i| matches!(i.kind, ItemKind::Url(_))).expect("the typed URL");
+        assert_eq!(u.title, crate::browser::display_url(&url));
+        // The row fits it to its measured width: the registrable host stays, highlights go when cut.
+        let measure = |t: &str| t.chars().count() as f32 * 7.0;
+        let (fit, bold) = url_title_fit(&i.title, &i.title_bold, 30.0 * 7.0, &measure);
+        assert!(fit.contains("evil.test") && fit.chars().count() <= 30 && bold.is_empty(), "{fit}");
+        assert_eq!(url_title_fit(&i.title, &i.title_bold, 1000.0 * 7.0, &measure), (i.title.clone(), i.title_bold.clone()));
     }
 
     #[test]

@@ -196,7 +196,12 @@ mod tests {
         // The browser pane's event handler passes the view's reported source, never anything from the JSON.
         let app = include_str!("browser_app.rs");
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
-        assert!(app.contains("Event::Message { json, source, .. } => self.local_page_message(pane, source, json)"));
+        // 13x2: the router rebuilds `{handler, body}` from the routed parts and `local_page_ok` guards it.
+        let scripts = include_str!("browser_scripts_app.rs");
+        let scripts = &scripts[..scripts.find("#[cfg(test)]").unwrap()];
+        assert!(!app.contains("self.local_page_message("), "browser_app hands messages to the router, never to a page handler");
+        let router = &scripts[scripts.find("pub(super) fn browser_message").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];
+        assert!(router.contains("local_page_ok(&r)") && router.contains("self.local_page_message(pane, &r.source, &json)"));
         assert!(app.contains("Event::Request { token, url, context, top_url, .. } => self.browser_local_request(pane, *token, url, *context, top_url)"));
     }
 

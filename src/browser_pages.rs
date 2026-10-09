@@ -25,16 +25,13 @@ fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// Makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call it) post
-/// `{handler, body}` to the host, on `iterm2-about:` pages only. It holds no secret: the host
-/// decides by the message's source, not by anything in here.
-pub const SHIM_JS: &str = "(function () {
-  if (location.protocol !== 'iterm2-about:') { return; }
-  var handlers = new Proxy({}, { get: function (_t, name) {
-    return { postMessage: function (body) { window.chrome.webview.postMessage({ handler: String(name), body: body }); } };
-  } });
-  Object.defineProperty(window, 'webkit', { value: { messageHandlers: handlers }, configurable: false });
-})();";
+/// The script that makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call
+/// it) post to the host, on `iterm2-about:` pages only: `browser_js::local_page_script` through
+/// `browser_js::wrap`, the one bridge text every script uses. It holds no secret: the host decides by
+/// the message's source (`browser_js::local_page_ok`), not by anything in here.
+pub fn shim_js() -> String {
+    crate::browser_js::wrap(&crate::browser_js::local_page_script())
+}
 
 pub const MAX_MESSAGE: usize = 64 * 1024;
 pub const MAX_STRING: usize = 8192;
@@ -42,6 +39,8 @@ pub const MAX_STRING: usize = 8192;
 pub const CONTEXT_DOCUMENT: i32 = 1;
 const MAX_OFFSET: i64 = 100_000;
 const MAX_PAGE: i64 = 100;
+/// The cells a local page's URL line gets from the one shortener (the page wraps it, never clips).
+const PAGE_URL_CELLS: usize = 160;
 const SCHEME_PREFIX: &str = "iterm2-about:";
 
 /// What a message asks the app to do.
@@ -66,18 +65,19 @@ pub fn page_name(url: &str) -> Option<&str> {
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
-/// does (`iTermBrowserTemplateLoader`). Served from the binary, never from disk.
+/// does (`browser_js::fill_template`, the one path). Served from the binary, never from disk.
 pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
     const HTML: &str = "text/html; charset=utf-8";
-    let page = |html: &str, slot: &str, script: &str| html.replace("{{NONCE}}", nonce).replace("{{COMMON_CSS}}", COMMON_CSS).replace(slot, script);
+    use crate::browser_js::{fill_template, resource};
+    let page = |html: &str, slot: &str, script: &str| fill_template(html, &[("NONCE", nonce), (slot, script)]);
     Some(match name {
         "welcome" => {
             // iTerm2 puts a per-run secret into this script; here the host decides by the source.
-            let script = include_str!("../resources/browser/welcome-page.js").replace("{{SECRET}}", "");
-            (page(include_str!("../resources/browser/welcome-page.html"), "{{WELCOME_SCRIPT}}", &script), HTML)
+            let script = fill_template(resource("welcome-page.js")?, &[("SECRET", "")]);
+            (page(resource("welcome-page.html")?, "WELCOME_SCRIPT", &script), HTML)
         }
-        "history" => (page(include_str!("../resources/browser/history-page.html"), "{{HISTORY_SCRIPT}}", include_str!("../resources/browser/history-page.js")), HTML),
-        "bookmarks" => (page(include_str!("../resources/browser/bookmarks-page.html"), "{{BOOKMARKS_SCRIPT}}", include_str!("../resources/browser/bookmarks-page.js")), HTML),
+        "history" => (page(resource("history-page.html")?, "HISTORY_SCRIPT", resource("history-page.js")?), HTML),
+        "bookmarks" => (page(resource("bookmarks-page.html")?, "BOOKMARKS_SCRIPT", resource("bookmarks-page.js")?), HTML),
         "iterm-browser-common.css" => (COMMON_CSS.to_string(), "text/css; charset=utf-8"),
         _ => return None,
     })
@@ -179,6 +179,12 @@ pub fn route(db: &Db, json: &str, source: &str) -> Vec<Reply> {
     out.unwrap_or_default()
 }
 
+/// A URL as a local page draws it: the one display and the one shortener at PAGE_URL_CELLS (the
+/// page's CSS wraps the line, so nothing clips it; final residual 1).
+fn page_url(url: &str) -> String {
+    browser::fit_address(&browser::display_url(url), PAGE_URL_CELLS)
+}
+
 fn history(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
     match body.get("action")?.as_str()? {
         "loadEntries" => {
@@ -189,7 +195,7 @@ fn history(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>>
             // One more than asked, to know whether there is more (`BHVH:99-111`).
             let rows = if query.trim().is_empty() { db.recent_history(offset, limit + 1) } else { db.search_history(&query, offset, limit + 1) };
             let more = rows.len() > limit;
-            let entries: Vec<Value> = rows.into_iter().take(limit).map(|r| json!({"id": r.id, "url": r.url, "title": r.title.unwrap_or_default(), "visitDate": r.visit_date, "transitionType": r.transition})).collect();
+            let entries: Vec<Value> = rows.into_iter().take(limit).map(|r| json!({"id": r.id, "displayUrl": page_url(&r.url), "url": r.url, "title": r.title.unwrap_or_default(), "visitDate": r.visit_date, "transitionType": r.transition})).collect();
             Some(script(page, &call("onHistoryEntriesLoaded", &json!({"entries": entries, "hasMore": more}))))
         }
         "deleteEntry" => {
@@ -238,7 +244,7 @@ fn bookmarks(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply
                 db.search_bookmarks(&query, offset, limit + 1)
             };
             let more = rows.len() > limit;
-            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| json!({"url": url, "title": title.unwrap_or_default(), "dateAdded": added})).collect();
+            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| json!({"displayUrl": page_url(&url), "url": url, "title": title.unwrap_or_default(), "dateAdded": added})).collect();
             Some(script(page, &call("onBookmarksLoaded", &json!({"bookmarks": list, "hasMore": more}))))
         }
         "loadTags" => {
@@ -273,7 +279,7 @@ fn welcome(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>>
                 .top_sites(5)
                 .into_iter()
                 .filter(|s| navigable(&s.url))
-                .map(|s| json!({"url": s.url, "title": s.title.filter(|t| !t.is_empty()).unwrap_or_else(|| s.hostname.clone()), "hostname": s.hostname, "visitCount": s.visits}))
+                .map(|s| json!({"displayHost": browser::display_host(&s.url), "url": s.url, "title": s.title.filter(|t| !t.is_empty()).unwrap_or_default(), "hostname": s.hostname, "visitCount": s.visits}))
                 .collect();
             Some(script(page, &call("handleTopSitesResponse", &Value::Array(sites))))
         }
@@ -456,6 +462,38 @@ mod tests {
         assert_eq!(b.matches("data-url=\"${escapeAttr(url)}\"").count(), 2);
     }
 
+    /// Final residual 1 (the URL display class): the history, bookmarks and welcome pages draw a URL
+    /// or a host from the one display (`displayUrl`: display_url through fit_address at PAGE_URL_CELLS;
+    /// `displayHost`: the display host), and their CSS wraps it: no line of theirs clips a URL's end.
+    #[test]
+    fn local_pages_never_clip_a_url() {
+        let db = Db::open_in_memory();
+        let url = format!("https://accounts.google.com.paypal.com.co/{}", "p".repeat(400));
+        db.record_visit(&url, None, None, None, 0, 100);
+        db.add_bookmark(&url, None, 300);
+        let want = browser::fit_address(&browser::display_url(&url), PAGE_URL_CELLS);
+        assert!(want.contains("paypal.com.co/") && want.chars().count() <= PAGE_URL_CELLS, "{want}");
+        let want = serde_json::to_string(&want).unwrap();
+        let h = route(&db, &msg("iterm2-about:history", serde_json::json!({"action": "loadEntries", "offset": 0, "limit": 50, "searchQuery": ""})), "iterm2-about:history");
+        assert!(scripts(&h)[0].contains(&format!("\"displayUrl\":{want}")), "history: {}", scripts(&h)[0]);
+        for q in ["", "paypal"] {
+            let b = route(&db, &msg("iterm2-about:bookmarks", serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": q})), "iterm2-about:bookmarks");
+            assert!(scripts(&b)[0].contains(&format!("\"displayUrl\":{want}")), "bookmarks {q:?}: {}", scripts(&b)[0]);
+        }
+        let w = route(&db, &msg("iterm2-about:welcome", serde_json::json!({"action": "loadTopSites", "sessionSecret": ""})), "iterm2-about:welcome");
+        assert!(scripts(&w)[0].contains("\"displayHost\":\"accounts.google.com.paypal.com.co\""), "welcome: {}", scripts(&w)[0]);
+        // The pages draw those, and wrap them.
+        assert!(include_str!("../resources/browser/history-page.js").contains("${escapeHtml(entry.displayUrl)}"));
+        assert!(include_str!("../resources/browser/bookmarks-page.js").contains("${escapeHtml(bookmark.displayUrl)}"));
+        let welcome = include_str!("../resources/browser/welcome-page.js");
+        assert!(welcome.contains("${escapeHtml(site.displayHost)}") && !welcome.contains("escapeHtml(site.hostname)") && !welcome.contains("getInitial(site.title || site.hostname)"));
+        let rule = |css: &str, sel: &str| css[css.find(&format!("{sel} {{")).unwrap()..].split('}').next().unwrap().to_string();
+        for (css, sel) in [(COMMON_CSS, ".entry-url"), (include_str!("../resources/browser/welcome-page.html"), ".site-url"), (include_str!("../resources/browser/welcome-page.html"), ".site-title.host")] {
+            let r = rule(css, sel);
+            assert!(!r.contains("nowrap") && !r.contains("ellipsis") && r.contains("overflow-wrap: anywhere"), "{sel}: {r}");
+        }
+    }
+
     #[test]
     fn the_license_copy_matches_the_one_in_resources() {
         assert_eq!(include_bytes!("../resources/browser/LICENSE-iTerm2").as_slice(), include_bytes!("../resources/LICENSE-iTerm2").as_slice());
@@ -587,8 +625,14 @@ mod tests {
 
     #[test]
     fn the_shim_does_nothing_off_a_local_page_and_holds_no_secret() {
-        assert!(SHIM_JS.contains("location.protocol") && SHIM_JS.contains("'iterm2-about:'") && SHIM_JS.contains("window.chrome.webview.postMessage"));
-        assert!(SHIM_JS.contains("messageHandlers") && SHIM_JS.contains("handler"));
-        assert!(!SHIM_JS.to_ascii_lowercase().contains("secret") && !SHIM_JS.contains("uuid"));
+        let shim = shim_js();
+        assert!(shim.contains("location.protocol === 'iterm2-about:'") && shim.contains("window.chrome.webview.postMessage"));
+        assert!(shim.contains("messageHandlers") && shim.contains("{h: name, b: body}"));
+        assert!(!shim.to_ascii_lowercase().contains("secret") && !shim.contains("uuid"));
+        // The page's own text only becomes `window.webkit` behind the protocol test.
+        assert!(shim.find("location.protocol").unwrap() < shim.find("Object.defineProperty(window, 'webkit'").unwrap());
+        // One path: the document is filled by the template loader, nonce and slots included.
+        let (html, _) = document("history", "N0NCE").unwrap();
+        assert!(html.contains("nonce=\"N0NCE\"") && !html.contains("{{"), "every slot is filled");
     }
 }

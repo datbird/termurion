@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
@@ -30,6 +30,7 @@ use webview2_com::{
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
+use crate::browser_world;
 use crate::webhost::{self, Answer, EnvOptions, Event, Posted, Sink, Store, ViewGate, ViewId};
 
 /// Runs the body of a COM callback. A panic must never unwind into COM (that aborts Tandem with
@@ -440,6 +441,9 @@ pub struct ViewSetup {
     /// The page's favicon is posted as `Event::Favicon` (browser panes): WebView2's own fetch,
     /// bounded and judged by `webhost::favicon_ok` before it is queued.
     pub favicon: bool,
+    /// The page's right-click menu is the app's to decorate: `ContextMenuRequested` posts
+    /// `Event::ContextMenu` and waits for `answer_context_menu` (browser panes).
+    pub context_menu: bool,
 }
 
 #[derive(Clone)]
@@ -451,6 +455,12 @@ struct Core {
 struct Pending {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2WebResourceRequestedEventArgs,
+}
+
+/// A context menu held back until the app answers (`answer_context_menu`).
+struct PendingMenu {
+    deferral: ICoreWebView2Deferral,
+    args: ICoreWebView2ContextMenuRequestedEventArgs,
 }
 
 /// What a handler posts through: the view's id, the shared sink and the view's gate.
@@ -497,6 +507,20 @@ struct Inner {
     next_token: u64,
     last_bounds: Option<(i32, i32, i32, i32)>,
     visible: Option<bool>,
+    /// One DevTools event receiver per event name (`devtools_subscribe`), with its handler's token.
+    devtools: HashMap<String, (ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+    /// What the app is told of the DevTools events (final review I4): only what it acts on, the
+    /// lifecycle held behind one wake.
+    devtools_filter: browser_world::EventFilter,
+    /// The page world's iframes while `watch_frames` is on (at most `MAX_FRAMES`), by WebView2's
+    /// frame id; the COM pointer lives only here and goes on `Destroyed`.
+    frames: HashMap<u64, ICoreWebView2Frame2>,
+    /// The view's `FrameCreated` registration, removed in `shut`.
+    frame_watch: Option<(ICoreWebView2_4, i64)>,
+    /// Menus waiting for an answer, by token (at most `webhost::MAX_PENDING_MENUS`).
+    menus: HashMap<u64, PendingMenu>,
+    /// Asked inside `AcceleratorKeyPressed` (Task 6).
+    key_gate: webhost::KeyGate,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
@@ -506,6 +530,8 @@ pub struct WebView {
 
 const MAX_NAV_URIS: usize = 64;
 const MAX_PENDING_REQUESTS: usize = 256;
+/// Page-world frames tracked at once (a page that makes frames without end cannot grow the table).
+const MAX_FRAMES: usize = 512;
 
 fn local_judge(p: &Path) -> bool {
     crate::localfs::LocalPath::judge(p).is_some()
@@ -534,6 +560,12 @@ impl WebView {
             next_token: 1,
             last_bounds: None,
             visible: None,
+            devtools: HashMap::new(),
+            devtools_filter: Default::default(),
+            frames: HashMap::new(),
+            frame_watch: None,
+            menus: HashMap::new(),
+            key_gate: webhost::KeyGate::default(),
         }));
         let weak = Rc::downgrade(&inner);
         // Every view is known to the process teardown (`close_all`), whatever owns it.
@@ -650,6 +682,11 @@ impl WebView {
         });
     }
 
+    /// The table the accelerator handler asks before it marks a key handled.
+    pub fn set_key_gate(&self, gate: webhost::KeyGate) {
+        self.inner.borrow_mut().key_gate = gate;
+    }
+
     pub fn focus(&self) {
         self.with(|c| {
             let _ = unsafe { c.ctrl.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) };
@@ -671,6 +708,154 @@ impl WebView {
                 Ok(())
             })));
             if let Err(e) = unsafe { c.view.ExecuteScript(PCWSTR(w.as_ptr()), &handler) } {
+                poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
+            }
+        });
+    }
+
+    /// `ICoreWebView2::CallDevToolsProtocolMethod`: `Event::ScriptDone { token, .. }` carries the
+    /// result JSON or the error text. The DevTools protocol is reached only from Rust (no debugging port).
+    pub fn devtools_call(&self, method: &str, params_json: &str, token: u64) {
+        self.devtools_call_in(None, method, params_json, token);
+    }
+
+    /// `ICoreWebView2_11::CallDevToolsProtocolMethodForSession`: the same, in a child session
+    /// (a cross-site frame attached with `Target.setAutoAttach`).
+    pub fn devtools_call_for_session(&self, session: &str, method: &str, params_json: &str, token: u64) {
+        self.devtools_call_in(Some(session.to_string()), method, params_json, token);
+    }
+
+    fn devtools_call_in(&self, session: Option<String>, method: &str, params_json: &str, token: u64) {
+        // The one DevTools sender: a closed set of methods (P22).
+        if !browser_world::method_allowed(method) {
+            let i = self.inner.borrow();
+            i.poster.post(Event::ScriptDone { view: i.id, token, json: Err("that DevTools method is not allowed".into()) });
+            return;
+        }
+        let (wm, wp) = (wide(method), wide(params_json));
+        let ws = session.as_deref().map(wide);
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        self.with(move |c| {
+            let p = poster.clone();
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |hr, json| guard(|| {
+                let json = hr.map(|_| json).map_err(|e| e.to_string());
+                p.post(Event::ScriptDone { view: id, token, json });
+                Ok(())
+            })));
+            let started = match &ws {
+                None => unsafe { c.view.CallDevToolsProtocolMethod(PCWSTR(wm.as_ptr()), PCWSTR(wp.as_ptr()), &handler) },
+                Some(ws) => match c.view.cast::<ICoreWebView2_11>() {
+                    Ok(v11) => unsafe { v11.CallDevToolsProtocolMethodForSession(PCWSTR(ws.as_ptr()), PCWSTR(wm.as_ptr()), PCWSTR(wp.as_ptr()), &handler) },
+                    Err(e) => Err(e),
+                },
+            };
+            if let Err(e) = started {
+                poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
+            }
+        });
+    }
+
+    /// The lifecycle events the view's filter holds, oldest first (after an `Event::DevToolsHeld`,
+    /// and before a binding call is routed, so a context is known before its first call).
+    pub fn take_devtools_held(&self) -> Vec<(Option<String>, String, String)> {
+        self.inner.borrow_mut().devtools_filter.take()
+    }
+
+    /// Posts `Event::DevTools` for every `event` the page's target (and its attached children)
+    /// raises that the app acts on (`browser_world::EventFilter`: a binding call as it is, the
+    /// lifecycle behind one `Event::DevToolsHeld`). One receiver per event name per view; it is
+    /// dropped with the view.
+    pub fn devtools_subscribe(&self, event: &str) {
+        if self.inner.borrow().devtools.contains_key(event) {
+            return;
+        }
+        let name = event.to_string();
+        let wname = wide(event);
+        let weak = Rc::downgrade(&self.inner);
+        self.with(move |c| {
+            let Some(inner) = weak.upgrade() else { return };
+            let Ok(receiver) = (unsafe { c.view.GetDevToolsProtocolEventReceiver(PCWSTR(wname.as_ptr())) }) else { return };
+            let (weak2, ev_name) = (Rc::downgrade(&inner), name.clone());
+            let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+                let (Some(inner), Some(args)) = (weak2.upgrade(), args) else { return Ok(()) };
+                let Some(json) = pwstr_out(|p| unsafe { args.ParameterObjectAsJson(p) }) else { return Ok(()) };
+                if json.len() > webhost::devtools_json_cap() {
+                    inner.borrow().poster.gate.note_dropped();
+                    return Ok(());
+                }
+                // An empty session id means the view's own target.
+                let session = args.cast::<ICoreWebView2DevToolsProtocolEventReceivedEventArgs2>().ok().and_then(|a| pwstr_out(|p| unsafe { a.SessionId(p) })).filter(|s| !s.is_empty());
+                // Only what the app acts on reaches the queue; the lifecycle waits behind one wake.
+                let offer = inner.borrow_mut().devtools_filter.offer(session.as_deref(), &ev_name, &json);
+                let i = inner.borrow();
+                match offer {
+                    browser_world::Offer::Post => i.poster.post(Event::DevTools { view: i.id, session, name: ev_name.clone(), json }),
+                    browser_world::Offer::Wake => i.poster.post(Event::DevToolsHeld { view: i.id }),
+                    browser_world::Offer::Hold => {}
+                    browser_world::Offer::Drop => i.poster.gate.note_dropped(),
+                }
+                Ok(())
+            })));
+            let mut token = 0i64;
+            if unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }.is_ok() {
+                inner.borrow_mut().devtools.insert(name, (receiver, token));
+            }
+        });
+    }
+
+    /// Tracks the page world's iframes: `Event::FrameCreated` and `FrameGone` for every frame (nested
+    /// ones too), `Event::FrameMessage` for what each posts, and `execute_script_in_frame` for each.
+    /// Asked for only by a consumer of the page-world frames (nothing in Task 1 needs it, P24); twice
+    /// is safe. A runtime without `ICoreWebView2_4` leaves the view with no frame events.
+    pub fn watch_frames(&self) {
+        if self.inner.borrow().frame_watch.is_some() {
+            return;
+        }
+        let weak = Rc::downgrade(&self.inner);
+        self.with(move |c| {
+            let Some(inner) = weak.upgrade() else { return };
+            if inner.borrow().frame_watch.is_some() {
+                return;
+            }
+            let Ok(v4) = c.view.cast::<ICoreWebView2_4>() else { return };
+            let weak2 = Rc::downgrade(&inner);
+            let created = FrameCreatedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+                let (Some(inner), Some(args)) = (weak2.upgrade(), args) else { return Ok(()) };
+                if let Ok(f) = unsafe { args.Frame() } {
+                    track_frame(&inner, f);
+                }
+                Ok(())
+            })));
+            let mut token = 0i64;
+            if unsafe { v4.add_FrameCreated(&created, &mut token) }.is_ok() {
+                inner.borrow_mut().frame_watch = Some((v4, token));
+            }
+        });
+    }
+
+    /// Runs `js` in the PAGE world of one frame (`ICoreWebView2Frame2::ExecuteScript`);
+    /// `Event::ScriptDone { token, .. }` answers. Never the Tandem world.
+    pub fn execute_script_in_frame(&self, frame: u64, js: &str, token: u64) {
+        let w = wide(js);
+        let (poster, id, weak) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id, Rc::downgrade(&self.inner))
+        };
+        self.with(move |_c| {
+            let f2 = weak.upgrade().and_then(|i| i.borrow().frames.get(&frame).cloned());
+            let Some(f2) = f2 else {
+                return poster.post(Event::ScriptDone { view: id, token, json: Err("no such frame".into()) });
+            };
+            let p = poster.clone();
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |hr, json| guard(|| {
+                let json = hr.map(|_| json).map_err(|e| e.to_string());
+                p.post(Event::ScriptDone { view: id, token, json });
+                Ok(())
+            })));
+            if let Err(e) = unsafe { f2.ExecuteScript(PCWSTR(w.as_ptr()), &handler) } {
                 poster.post(Event::ScriptDone { view: id, token, json: Err(e.to_string()) });
             }
         });
@@ -792,6 +977,34 @@ impl WebView {
         let _ = unsafe { p.deferral.Complete() };
     }
 
+    /// The system print dialog for the page (iTerm2's print panel).
+    pub fn print_ui(&self) {
+        self.with(|c| {
+            if let Ok(v16) = c.view.cast::<ICoreWebView2_16>() {
+                let _ = unsafe { v16.ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM) };
+            }
+        });
+    }
+
+    /// Completes the deferral taken when `Event::ContextMenu { token, .. }` was posted: WebView2's own
+    /// items minus `REMOVED_NATIVE`, the entries before `Native` in front of them and the rest behind
+    /// (no `Native` entry: all in front). An empty list shows the native menu unchanged. A chosen
+    /// custom item posts `Event::ContextMenuPicked`. Separators the removal leaves at an end or in a
+    /// pair are taken out.
+    pub fn answer_context_menu(&self, token: u64, entries: Vec<webhost::MenuEntry>) {
+        let (pending, env, poster, id) = {
+            let mut i = self.inner.borrow_mut();
+            (i.menus.remove(&token), i.env.clone(), i.poster.clone(), i.id)
+        };
+        let Some(p) = pending else { return };
+        if !entries.is_empty() {
+            let _ = decorate_menu(&p.args, &env, &poster, id, token, &entries);
+        }
+        #[cfg(test)]
+        LAST_MENU.with(|m| *m.borrow_mut() = menu_labels(&p.args));
+        let _ = unsafe { p.deferral.Complete() };
+    }
+
     /// Closes the view (the same as dropping it).
     pub fn close(self) {}
 }
@@ -811,8 +1024,21 @@ thread_local! {
 /// process lets go of the user data folder). Twice is safe: the second finds nothing.
 fn shut(inner: &Rc<RefCell<Inner>>) {
     let Ok(mut i) = inner.try_borrow_mut() else { return };
-    let (pending, core) = (std::mem::take(&mut i.pending), i.core.take());
+    let (pending, core, receivers) = (std::mem::take(&mut i.pending), i.core.take(), std::mem::take(&mut i.devtools));
+    let (frames, watch) = (std::mem::take(&mut i.frames), i.frame_watch.take());
+    let menus = std::mem::take(&mut i.menus);
     drop(i);
+    // A menu still waiting shows WebView2's own.
+    for (_, m) in menus {
+        let _ = unsafe { m.deferral.Complete() };
+    }
+    drop(frames);
+    if let Some((v4, token)) = watch {
+        let _ = unsafe { v4.remove_FrameCreated(token) };
+    }
+    for (_, (receiver, token)) in receivers {
+        let _ = unsafe { receiver.remove_DevToolsProtocolEventReceived(token) };
+    }
     for (_, p) in pending {
         let _ = unsafe { p.deferral.Complete() };
     }
@@ -887,10 +1113,170 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     register_page_events(inner, view, &mut token).map_err(|x| e("page events", x))?;
     register_policy(inner, view, &mut token).map_err(|x| e("policy", x))?;
     register_controller_events(inner, ctrl, &mut token).map_err(|x| e("focus", x))?;
+    if setup.context_menu {
+        register_context_menu(inner, view, &mut token).map_err(|x| e("context menu", x))?;
+    }
     if !setup.resource_filters.is_empty() {
         register_requests(inner, view, &setup.resource_filters, &mut token).map_err(|x| e("requests", x))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The last answered menu's items for the ignored runtime test: "---" for a separator, else
+    /// "name:label" (WebView2 names a custom item by its label), or the label when there is no name.
+    static LAST_MENU: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn menu_labels(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> Vec<String> {
+    let Ok(list) = (unsafe { args.MenuItems() }) else { return Vec::new() };
+    let mut n = 0u32;
+    let _ = unsafe { list.Count(&mut n) };
+    (0..n)
+        .filter_map(|i| unsafe { list.GetValueAtIndex(i) }.ok())
+        .map(|it| {
+            let (kind, name) = menu_item_info(&it);
+            if kind == COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR {
+                "---".to_string()
+            } else {
+                let label = pwstr_out(|p| unsafe { it.Label(p) }).unwrap_or_default();
+                if name.is_empty() { label } else { format!("{name}:{label}") }
+            }
+        })
+        .collect()
+}
+
+/// The kind of an item of WebView2's menu, and its `Name`.
+fn menu_item_info(item: &ICoreWebView2ContextMenuItem) -> (COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND, String) {
+    let mut kind = COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND;
+    let _ = unsafe { item.Kind(&mut kind) };
+    (kind, pwstr_out(|p| unsafe { item.Name(p) }).unwrap_or_default())
+}
+
+/// Builds one custom item (or separator) for `decorate_menu`.
+fn make_menu_item(env9: &ICoreWebView2Environment9, entry: &webhost::MenuEntry, poster: &Poster, view: ViewId, token: u64) -> Option<ICoreWebView2ContextMenuItem> {
+    use windows::Win32::System::Com::IStream;
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+    match entry {
+        webhost::MenuEntry::Separator => {
+            let empty = wide("");
+            unsafe { env9.CreateContextMenuItem(PCWSTR(empty.as_ptr()), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR) }.ok()
+        }
+        webhost::MenuEntry::Custom { id, label, enabled, icon_png } => {
+            let w = wide(label);
+            let icon = icon_png.as_ref().and_then(|b| unsafe { SHCreateMemStream(Some(b)) });
+            let item = unsafe { env9.CreateContextMenuItem(PCWSTR(w.as_ptr()), icon.as_ref(), COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND) }.ok()?;
+            if !*enabled {
+                let _ = unsafe { item.SetIsEnabled(false) };
+            }
+            let (poster, id) = (poster.clone(), *id);
+            let handler = webview2_com::CustomItemSelectedEventHandler::create(Box::new(move |_sender, _| guard(|| {
+                poster.post(Event::ContextMenuPicked { view, token, id });
+                Ok(())
+            })));
+            let mut t = 0i64;
+            let _ = unsafe { item.add_CustomItemSelected(&handler, &mut t) };
+            Some(item)
+        }
+        webhost::MenuEntry::Native => None,
+    }
+}
+
+/// Edits the menu of `args` in place (see `WebView::answer_context_menu`).
+fn decorate_menu(args: &ICoreWebView2ContextMenuRequestedEventArgs, env: &Env, poster: &Poster, view: ViewId, token: u64, entries: &[webhost::MenuEntry]) -> windows::core::Result<()> {
+    let env9 = env.env.cast::<ICoreWebView2Environment9>()?;
+    let list = unsafe { args.MenuItems() }?;
+    // WebView2's own items without the ones Tandem replaces, then without stray separators.
+    let count = |l: &ICoreWebView2ContextMenuItemCollection| {
+        let mut n = 0u32;
+        let _ = unsafe { l.Count(&mut n) };
+        n
+    };
+    let mut at = count(&list);
+    while at > 0 {
+        at -= 1;
+        if let Ok(item) = unsafe { list.GetValueAtIndex(at) } {
+            if webhost::REMOVED_NATIVE.contains(&menu_item_info(&item).1.as_str()) {
+                let _ = unsafe { list.RemoveValueAtIndex(at) };
+            }
+        }
+    }
+    let mut at = count(&list);
+    while at > 0 {
+        at -= 1;
+        let sep = |i: u32| unsafe { list.GetValueAtIndex(i) }.ok().is_some_and(|it| menu_item_info(&it).0 == COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR);
+        let n = count(&list);
+        if sep(at) && (at == 0 || at + 1 == n || sep(at - 1)) {
+            let _ = unsafe { list.RemoveValueAtIndex(at) };
+        }
+    }
+    let split = entries.iter().position(|e| matches!(e, webhost::MenuEntry::Native)).unwrap_or(entries.len());
+    let (front, back) = entries.split_at(split);
+    let mut index = 0u32;
+    for e in front {
+        if let Some(item) = make_menu_item(&env9, e, poster, view, token) {
+            unsafe { list.InsertValueAtIndex(index, &item) }?;
+            index += 1;
+        }
+    }
+    for e in back.iter().skip(1) {
+        if let Some(item) = make_menu_item(&env9, e, poster, view, token) {
+            let n = count(&list);
+            unsafe { list.InsertValueAtIndex(n, &item) }?;
+        }
+    }
+    Ok(())
+}
+
+/// The menu target of `args`, read once (`MenuTarget::capped` bounds it before it is queued).
+fn menu_target(args: &ICoreWebView2ContextMenuRequestedEventArgs) -> Option<webhost::MenuTarget> {
+    let t = unsafe { args.ContextMenuTarget() }.ok()?;
+    let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE;
+    let _ = unsafe { t.Kind(&mut kind) };
+    let opt = |has: unsafe fn(&ICoreWebView2ContextMenuTarget, *mut BOOL) -> windows::core::Result<()>, get: &dyn Fn() -> Option<String>| {
+        let mut b = BOOL(0);
+        if unsafe { has(&t, &mut b) }.is_ok() && b.as_bool() { get() } else { None }
+    };
+    let mut at = windows::Win32::Foundation::POINT::default();
+    let _ = unsafe { args.Location(&mut at) };
+    Some(webhost::MenuTarget {
+        kind: kind.0,
+        editable: bool_out(|b| unsafe { t.IsEditable(b) }),
+        main_frame: bool_out(|b| unsafe { t.IsRequestedForMainFrame(b) }),
+        page_uri: pwstr_out(|p| unsafe { t.PageUri(p) }).unwrap_or_default(),
+        frame_uri: pwstr_out(|p| unsafe { t.FrameUri(p) }).unwrap_or_default(),
+        link: opt(ICoreWebView2ContextMenuTarget::HasLinkUri, &|| pwstr_out(|p| unsafe { t.LinkUri(p) })),
+        link_text: opt(ICoreWebView2ContextMenuTarget::HasLinkText, &|| pwstr_out(|p| unsafe { t.LinkText(p) })),
+        source: opt(ICoreWebView2ContextMenuTarget::HasSourceUri, &|| pwstr_out(|p| unsafe { t.SourceUri(p) })),
+        selection: opt(ICoreWebView2ContextMenuTarget::HasSelection, &|| pwstr_out(|p| unsafe { t.SelectionText(p) })),
+        x: at.x,
+        y: at.y,
+    })
+}
+
+/// `ContextMenuRequested` (browser panes): takes a deferral, posts the target and returns at once; the
+/// app answers through `answer_context_menu`. Over `MAX_PENDING_MENUS` waiting, WebView2's own menu shows.
+fn register_context_menu(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let v11 = view.cast::<ICoreWebView2_11>()?;
+    let weak = Rc::downgrade(inner);
+    let handler = webview2_com::ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        if inner.borrow().menus.len() >= webhost::MAX_PENDING_MENUS {
+            return Ok(());
+        }
+        let Some(target) = menu_target(&args) else { return Ok(()) };
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
+        let mut i = inner.borrow_mut();
+        let t = i.next_token;
+        i.next_token += 1;
+        i.menus.insert(t, PendingMenu { deferral, args });
+        let id = i.id;
+        i.poster.post(Event::ContextMenu { view: id, token: t, target: target.capped() });
+        Ok(())
+    })));
+    unsafe { v11.add_ContextMenuRequested(&handler, token) }
 }
 
 fn source_of(view: &ICoreWebView2) -> Option<String> {
@@ -938,6 +1324,12 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
             return Ok(());
         }
         let i = inner.borrow();
+        // The single page-load-start event (ruling Q2): the kind needs a newer runtime (-1 without).
+        let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
+        if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
+            let _ = unsafe { a3.NavigationKind(&mut kind) };
+        }
+        i.poster.post(Event::Starting { view: i.id, url: webhost::cap_url(&uri).0, kind: kind.0, user, redirect, nav });
         i.poster.post(Event::Loading(i.id, true));
         Ok(())
     })));
@@ -1003,19 +1395,82 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
     Ok(())
 }
 
+/// The one reader of a posted web message (a view's or a frame's): size-capped before it is
+/// queued, its source reported (the posting document's URL, capped).
+fn message_post(inner: &Rc<RefCell<Inner>>, frame: Option<u64>, args: &ICoreWebView2WebMessageReceivedEventArgs) {
+    let Some(json) = pwstr_out(|p| unsafe { args.WebMessageAsJson(p) }) else { return };
+    if json.len() > webhost::MAX_MESSAGE {
+        inner.borrow().poster.gate.note_dropped();
+        return;
+    }
+    let source = pwstr_out(|p| unsafe { args.Source(p) }).map(|s| webhost::cap_url(&s).0).unwrap_or_default();
+    let i = inner.borrow();
+    match frame {
+        None => i.poster.post(Event::Message { view: i.id, json, source }),
+        Some(frame) => i.poster.post(Event::FrameMessage { view: i.id, frame, json, source }),
+    }
+}
+
+/// Starts tracking `frame` (and, through `ICoreWebView2Frame7`, its children): its id, its messages and
+/// its end. Bounded by `MAX_FRAMES`; the pointer is kept only until `Destroyed`.
+fn track_frame(inner: &Rc<RefCell<Inner>>, frame: ICoreWebView2Frame) {
+    let mut id = 0u32;
+    let Ok(f5) = frame.cast::<ICoreWebView2Frame5>() else { return };
+    if unsafe { f5.FrameId(&mut id) }.is_err() {
+        return;
+    }
+    let id = u64::from(id);
+    if inner.borrow().frames.len() >= MAX_FRAMES && !inner.borrow().frames.contains_key(&id) {
+        return;
+    }
+    let name = pwstr_out(|p| unsafe { frame.Name(p) }).unwrap_or_default();
+    let name: String = crate::inert_files::display_text(&name, 256, false);
+    let mut token = 0i64;
+    if let Ok(f2) = frame.cast::<ICoreWebView2Frame2>() {
+        let weak = Rc::downgrade(inner);
+        let message = FrameWebMessageReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+            let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+            message_post(&inner, Some(id), &args);
+            Ok(())
+        })));
+        let _ = unsafe { f2.add_WebMessageReceived(&message, &mut token) };
+        inner.borrow_mut().frames.insert(id, f2);
+    }
+    let weak = Rc::downgrade(inner);
+    let gone = FrameDestroyedEventHandler::create(Box::new(move |_sender, _| guard(|| {
+        let Some(inner) = weak.upgrade() else { return Ok(()) };
+        let existed = inner.borrow_mut().frames.remove(&id).is_some();
+        if existed {
+            let i = inner.borrow();
+            i.poster.post(Event::FrameGone { view: i.id, frame: id });
+        }
+        Ok(())
+    })));
+    let _ = unsafe { frame.add_Destroyed(&gone, &mut token) };
+    // Nested frames: a frame's own children are announced on the frame (`ICoreWebView2Frame7`).
+    if let Ok(f7) = frame.cast::<ICoreWebView2Frame7>() {
+        let weak = Rc::downgrade(inner);
+        let child = FrameChildFrameCreatedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+            let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+            if let Ok(f) = unsafe { args.Frame() } {
+                track_frame(&inner, f);
+            }
+            Ok(())
+        })));
+        let _ = unsafe { f7.add_FrameCreated(&child, &mut token) };
+    }
+    let i = inner.borrow();
+    i.poster.post(Event::FrameCreated { view: i.id, frame: id, name });
+}
+
 fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
-    // ONE WebMessageReceived handler. A page's message is untrusted: size-capped here, its source
+    // The view's WebMessageReceived handler (the frames' is `watch_frames`'; both read a message only
+    // through `message_post`). A page's message is untrusted: size-capped there, its source
     // reported, its shape judged by the consumer (`webhost::invoke_request`, `logger_message`).
     let weak = Rc::downgrade(inner);
     let message = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
-        let Some(json) = pwstr_out(|p| unsafe { args.WebMessageAsJson(p) }) else { return Ok(()) };
-        if json.len() > webhost::MAX_MESSAGE {
-            return Ok(());
-        }
-        let source = pwstr_out(|p| unsafe { args.Source(p) }).map(|s| webhost::cap_url(&s).0).unwrap_or_default();
-        let i = inner.borrow();
-        i.poster.post(Event::Message { view: i.id, json, source });
+        message_post(&inner, None, &args);
         Ok(())
     })));
     unsafe { view.add_WebMessageReceived(&message, token) }?;
@@ -1168,8 +1623,18 @@ fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Co
         }
         let mut vk = 0u32;
         let _ = unsafe { args.VirtualKey(&mut vk) };
-        let i = inner.borrow();
-        i.poster.post(Event::Key { view: i.id, vk, mods: modifier_bits() });
+        let (poster, id, gate) = {
+            let i = inner.borrow();
+            (i.poster.clone(), i.id, i.key_gate.clone())
+        };
+        let mods = modifier_bits();
+        // The gate is read here, synchronously, and holds no App borrow: a key Tandem takes never
+        // reaches the page.
+        let taken = gate.takes(vk, mods);
+        if taken {
+            let _ = unsafe { args.SetHandled(true) };
+        }
+        poster.post(Event::Key { view: id, vk, mods, taken });
         Ok(())
     })));
     unsafe { ctrl.add_AcceleratorKeyPressed(&keys, token) }
@@ -1318,9 +1783,12 @@ mod tests {
         for banned in ["DownloadStarting", "SetCancel(true)).and", "IsDefaultDownloadDialog", "DownloadOperation"] {
             assert!(!code.contains(banned), "{banned}");
         }
-        // The one NavigationStarting and one WebMessageReceived handler.
+        // The one NavigationStarting handler, and two message constructors (the view's and the frames',
+        // 13x2 B8a) that both read a message only through `message_post`.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
-        assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 1);
+        assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 2);
+        assert_eq!(code.matches("args.WebMessageAsJson(").count(), 1, "one reader: message_post");
+        assert_eq!(code.matches("message_post(&inner").count(), 2);
     }
 
     /// Final review Minor 3: no `NavigateToString` and no "the next data: navigation is Tandem's"
@@ -1603,5 +2071,1046 @@ mod tests {
         if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
             let _ = crate::localfs::remove_dir_all(&lp);
         }
+    }
+
+    /// 13x2 Task 3: a right-click's menu gets Tandem's items in order, and `saveAs` and `print` are
+    /// gone. A right click is synthesized with DevTools input; when WebView2 raises no
+    /// `ContextMenuRequested` for synthesized input, the test prints that and passes. Run in a console
+    /// session (see the probe module); never shown.
+    #[test]
+    #[ignore]
+    fn menu_gets_our_items() {
+        if runtime_version(None).is_err() {
+            println!("WebView2 Runtime not installed; skipped");
+            return;
+        }
+        let mut session = 0u32;
+        // SAFETY: plain out parameter.
+        unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut session) };
+        if session == 0 {
+            println!("session 0 cannot host WebView2 windows; skipped");
+            return;
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+        let class = windows::core::w!("TandemMenuTest");
+        let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
+        unsafe { RegisterClassW(&wc) };
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-menu-test"), WS_OVERLAPPEDWINDOW, 0, 0, 300, 300, None, None, None, None) }.expect("a window");
+        let folder = std::env::temp_dir().join(format!("tandem-wv2-menu-{}", std::process::id()));
+        let (tx, rx) = mpsc::channel::<Posted>();
+        let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
+        let cell = env_cell.clone();
+        Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *cell.borrow_mut() = Some(r)));
+        let end = Instant::now() + Duration::from_secs(20);
+        while env_cell.borrow().is_none() && Instant::now() < end {
+            pump_until(&rx, 1, |_| false);
+        }
+        let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
+        let setup = ViewSetup { guard_local_schemes: true, context_menu: true, resource_filters: vec!["https://tandem.invalid/*".into()], ..Default::default() };
+        let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 300, 300), setup, tx.clone());
+        assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
+        view.navigate_tandem("https://tandem.invalid/m");
+        let Some(Event::Request { token, .. }) = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 1, .. })) else { panic!("a request for the page") };
+        view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<body style='margin:0'>hello</body>".to_vec(), headers: vec![] });
+        assert!(pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. })).is_some());
+        for kind in ["mousePressed", "mouseReleased"] {
+            view.devtools_call("Input.dispatchMouseEvent", &format!(r#"{{"type":"{kind}","x":20,"y":20,"button":"right","clickCount":1}}"#), 50);
+        }
+        match pump_until(&rx, 5, |e| matches!(e, Event::ContextMenu { .. })) {
+            None => println!("WebView2 raised no ContextMenuRequested for synthesized input; nothing to check"),
+            Some(Event::ContextMenu { token, .. }) => {
+                use webhost::MenuEntry::*;
+                view.answer_context_menu(token, vec![Custom { id: 1, label: "First".into(), enabled: true, icon_png: None }, Separator, Native, Separator, Custom { id: 4, label: "Last".into(), enabled: true, icon_png: None }]);
+                let labels = LAST_MENU.with(|m| m.borrow().clone());
+                println!("menu: {labels:?}");
+                // WebView2 names a custom item by its label (the 2026-10-07 run), so it reads "name:label".
+                assert_eq!(labels.first().map(String::as_str), Some("First:First"));
+                assert_eq!(labels.last().map(String::as_str), Some("Last:Last"));
+                assert!(!labels.iter().any(|l| l.starts_with("saveAs:") || l.starts_with("print:")), "{labels:?}");
+                assert!(labels.windows(2).all(|w| w[0] != "---" || w[1] != "---"), "{labels:?}");
+            }
+            Some(other) => panic!("{other:?}"),
+        }
+        drop(view);
+        drop(env);
+        let _ = unsafe { DestroyWindow(hwnd) };
+        if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
+            let _ = crate::localfs::remove_dir_all(&lp);
+        }
+    }
+}
+
+/// Task 0 of 13x2: the isolated-world probe. Windows only, `#[ignore]`d, and run in a console
+/// session (a session 0 process cannot host WebView2): every test makes one never-shown window,
+/// one view on a fresh environment in a temporary folder, serves every page from memory (hosts
+/// under `.invalid`) and fails on any request it did not serve. A skip is printed as such and is
+/// never a pass.
+#[cfg(test)]
+mod probe {
+    use super::*;
+    use crate::browser_world::{self, ClientWorld, Contexts, Setup};
+    use serde_json::{Value, json};
+    use std::sync::mpsc;
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, TranslateMessage, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW};
+
+    const HOVER: &str = include_str!("../resources/browser/hover-link-detector.js");
+    const GRAPH: &str = include_str!("../resources/browser/graph-discovery.js");
+
+    /// The hostile page's first script: saves what it needs, then replaces the builtins a Client
+    /// script might use with recorders, plants `toJSON` and a secret getter on `Object.prototype`,
+    /// records the page's view of its own window, and holds the forgery functions the tests call.
+    const HOSTILE: &str = r#"<script>
+(function () {
+  const keys = Object.keys, names = Object.getOwnPropertyNames, syms = Object.getOwnPropertySymbols;
+  const origStringify = JSON.stringify, push = Array.prototype.push;
+  const post = window.chrome.webview.postMessage.bind(window.chrome.webview);
+  // `counts` has no prototype: 'toString' and 'toJSON' are counted, not read from Object.prototype.
+  const R = [], seen = new Set(), counts = Object.create(null), ids = [];
+  let busy = false;
+  // The page's own answers to the harness, serialized with its `toJSON` plant lifted for the call:
+  // the plant is on `Object.prototype`, so it would answer for the page's own objects too and every
+  // answer would read {"hacked":true} (the 2026-10-07 desktop run).
+  function out(x) {
+    const d = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+    if (d) delete Object.prototype.toJSON;
+    try { return origStringify(x); } finally { if (d) Object.defineProperty(Object.prototype, 'toJSON', d); }
+  }
+  function ser(x, d) {
+    const t = typeof x;
+    if (t === 'string') return x;
+    if (t !== 'object' || x === null) { try { return t + ':' + x; } catch (e) { return t; } }
+    if (d > 3) return '[deep]';
+    let s = '{', ks;
+    try { ks = keys(x); } catch (e) { return '[opaque]'; }
+    for (let i = 0; i < ks.length && i < 200; i++) { let v; try { v = x[ks[i]]; } catch (e) { v = 'throws'; } s += ks[i] + '=' + ser(v, d + 1) + ';'; }
+    return s + '}';
+  }
+  function rec(tag, self, args) {
+    counts[tag] = (counts[tag] || 0) + 1;
+    const s = tag + '|' + ser(self, 0) + '|' + ser(args, 0);
+    if (!seen.has(s) && R.length < 2000) { seen.add(s); push.call(R, s); }
+  }
+  function wrap(o, n) {
+    const orig = o[n];
+    o[n] = function (...a) {
+      if (busy) return orig.apply(this, a);
+      busy = true;
+      try { rec(n, this, a); } catch (e) {} finally { busy = false; }
+      return orig.apply(this, a);
+    };
+  }
+  wrap(Array.prototype, 'slice'); wrap(Array.prototype, 'join'); wrap(Promise.prototype, 'then');
+  wrap(JSON, 'stringify'); wrap(Function.prototype, 'toString'); wrap(String.prototype, 'indexOf');
+  Object.defineProperty(Object.prototype, 'toJSON', { value: function () { counts.toJSON = (counts.toJSON || 0) + 1; return { hacked: true }; }, configurable: true, writable: true });
+  Object.defineProperty(Object.prototype, 'sessionSecret', { get: function () { counts.getter = (counts.getter || 0) + 1; return undefined; }, set: function (v) { counts.setter = (counts.setter || 0) + 1; rec('sessionSecretSet', null, [v]); }, configurable: true });
+  try { window.chrome.webview.postMessage = function (m) { rec('postMessage', null, [m]); return post(m); }; } catch (e) {}
+  window.addEventListener('message', function (e) {
+    rec('message', null, [e.data]);
+    try { const f = e.data && e.data.payload && e.data.payload.graph && e.data.payload.graph.frameId; if (typeof f === 'string') push.call(ids, f); } catch (x) {}
+  }, true);
+  setInterval(function () {
+    let a = '', n = names(window);
+    for (let i = 0; i < n.length; i++) a += n[i] + ',';
+    rec('globals', null, [a]);
+    let b = '', sy = syms(window);
+    for (let i = 0; i < sy.length; i++) b += String(sy[i]) + ',';
+    rec('symbols', null, [b]);
+    rec('html', null, [document.documentElement.outerHTML]);
+    let c = '', all = document.getElementsByTagName('*');
+    for (let i = 0; i < all.length; i++) { const at = all[i].attributes; for (let j = 0; j < at.length; j++) c += at[j].name + '=' + at[j].value + ';'; }
+    rec('attrs', null, [c]);
+  }, 50);
+  window.__report = function () { return out(R); };
+  window.__counts = function () {
+    const o = {}, n = ['slice', 'join', 'then', 'stringify', 'toString', 'indexOf', 'toJSON', 'getter', 'setter'];
+    for (let i = 0; i < n.length; i++) o[n[i]] = counts[n[i]] || 0;
+    return out(o);
+  };
+  window.__forge = function () {
+    post({ h: 'probeEcho', b: { v: 2, sessionSecret: '{{GUESS}}' } });
+    post({ h: 'iTermSelectionMonitor', b: { selection: 'x', sessionSecret: '{{GUESS}}' } });
+    post({ handler: 'iterm2-about:history', body: { action: 'clearAllHistory' } });
+    const r = {};
+    try { r.client = typeof window.__tandemClient; } catch (e) { r.client = 'threw'; }
+    try { r.webkit = typeof (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.probeEcho && window.webkit.messageHandlers.probeEcho.postMessage({})); } catch (e) { r.webkit = 'threw'; }
+    window.postMessage({ namespace: 'IFRAME_GRAPH_DISCOVERY', type: 'CHILD_REPORT', requestId: 'r', payload: { graph: {} } }, '*');
+    return out(r);
+  };
+  window.__forge4 = function (extra) {
+    const r = {};
+    try { const d = window[Symbol.for('iTermGraphDiscovery')]; r.api = typeof (d && d.evaluateInFrame && d.evaluateInFrame('x', "document.title='pwned'", function () {})); } catch (e) { r.api = 'threw'; }
+    r.global = typeof window.graphDiscoveryEvaluateInFrame;
+    // Every pair of ids the page has or was handed (the world's own graph ids among them), as target
+    // and as sender, from the page and from its child frame.
+    const targets = ids.concat(['x', 'guess'], JSON.parse(extra));
+    for (let i = 0; i < targets.length; i++) {
+      for (let j = 0; j < targets.length; j++) {
+        post({ h: 'iTermGraphDiscovery', b: { type: 'EVAL_IN_FRAME', target: targets[i], sender: targets[j], requestID: 'r', code: "document.title='pwned'" } });
+        try { window.frames[0].__fire(targets[i], targets[j]); } catch (e) {}
+      }
+    }
+    return out(r);
+  };
+})();
+</script>"#;
+
+    const CHILD_SRCDOC: &str = "&lt;title&gt;child&lt;/title&gt;&lt;p&gt;c&lt;/p&gt;&lt;script&gt;window.__fire=function(t,s){try{chrome.webview.postMessage({h:'iTermGraphDiscovery',b:{type:'EVAL_IN_FRAME',target:t,sender:s,requestID:'r',code:&quot;document.title='pwned'&quot;}})}catch(e){}}&lt;/script&gt;";
+
+    fn hostile_page(body: &str, guess: &str) -> String {
+        format!("<!doctype html><html><head><title>hostile</title>{}</head><body>{body}</body></html>", HOSTILE.replace("{{GUESS}}", guess))
+    }
+
+    fn hex32() -> String {
+        let mut b = [0u8; 16];
+        getrandom::fill(&mut b).expect("random");
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// A Client script as Task 1's `wrap` injects it: the binding captured in a closure before the
+    /// body, `window.webkit.messageHandlers.<h>.postMessage(b)` posting `{h, b}` through it.
+    fn wrapped(code: &str) -> String {
+        crate::browser_js::wrap(&crate::browser_js::UserScript { id: "probe", code: code.to_string(), inject: crate::browser_js::Inject::DocumentStart, main_frame_only: false, world: crate::browser_js::World::Client })
+    }
+
+    fn client_sources(secret: &str, load_echo: bool) -> Vec<String> {
+        let mut v = vec![wrapped(&HOVER.replace("{{SECRET}}", secret)), wrapped(GRAPH)];
+        if load_echo {
+            v.push(wrapped("window.webkit.messageHandlers.probeEcho.postMessage({where: location.href});"));
+        }
+        v
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Via {
+        Client,
+        Page,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Routed {
+        via: Via,
+        frame: Option<u64>,
+        /// The posting document's URL (Page) or the context's origin (Client).
+        from: String,
+        body: String,
+    }
+
+    impl Routed {
+        /// A Client message is `{h, b}` as the probe's wrapper makes it.
+        fn client(&self) -> Option<(String, Value)> {
+            let v: Value = serde_json::from_str(&self.body).ok()?;
+            Some((v.get("h")?.as_str()?.to_string(), v.get("b")?.clone()))
+        }
+    }
+
+    struct Probe {
+        hwnd: HWND,
+        folder: PathBuf,
+        view: Option<WebView>,
+        env: Option<Env>,
+        rx: mpsc::Receiver<Posted>,
+        pages: HashMap<String, String>,
+        not_served: Vec<String>,
+        contexts: Contexts,
+        setup: Setup,
+        sources: Vec<String>,
+        next_token: u64,
+        setup_token: Option<u64>,
+        sessions: HashMap<String, VecDeque<(&'static str, Value)>>,
+        session_tokens: HashMap<u64, String>,
+        answers: HashMap<u64, Result<String, String>>,
+        /// Every DevTools call and every ExecuteScript the harness issued, with its text.
+        log: Vec<String>,
+        routed: Vec<Routed>,
+        /// `Runtime.bindingCalled` events `Contexts` did not accept as Tandem's.
+        rejected_bindings: usize,
+        attached: Vec<(String, String)>,
+        navigated: Vec<(String, bool)>,
+        failed: Vec<String>,
+        created: bool,
+        /// WebView2's own frame ids (`watch_frames`).
+        frames: Vec<u64>,
+        /// The production frame graph (`browser_frames::Frames`), when a test turns it on: every
+        /// message goes through the app's own rule, Client from the binding and Page from the page.
+        graph: Option<crate::browser_frames::Frames>,
+        /// A graph evaluation's DevTools token, and the graph's own token for it.
+        graph_tokens: HashMap<u64, u64>,
+        /// Evaluations the graph planned for a Page-world message (production plans none).
+        page_graph_acts: usize,
+    }
+
+    impl Probe {
+        /// None (with a printed SKIPPED line) when the runtime is missing or this is session 0.
+        fn start(pages: &[(&str, String)], sources: Vec<String>) -> Option<Probe> {
+            if runtime_version(None).is_err() {
+                println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
+                return None;
+            }
+            let mut session = 0u32;
+            // SAFETY: plain out parameter.
+            unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut session) };
+            println!("probe: process session {session}");
+            if session == 0 {
+                println!("SKIPPED (not a pass): session 0 cannot host WebView2; skipped");
+                return None;
+            }
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            }
+            unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+                unsafe { DefWindowProcW(h, m, w, l) }
+            }
+            let class = windows::core::w!("TandemWorldProbe");
+            let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
+            unsafe { RegisterClassW(&wc) };
+            // Created, never shown: nothing appears on the desktop.
+            let hwnd = unsafe { CreateWindowExW(WS_EX_TOOLWINDOW, class, windows::core::w!("tandem-world-probe"), WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, None, None, None, None) }.expect("a window");
+            let folder = std::env::temp_dir().join(format!("tandem-probe-{}-{}", std::process::id(), hex32()));
+            let (tx, rx) = mpsc::channel::<Posted>();
+            let mut p = Probe {
+                hwnd,
+                folder: folder.clone(),
+                view: None,
+                env: None,
+                rx,
+                pages: pages.iter().map(|(u, b)| (u.to_string(), b.clone())).collect(),
+                not_served: Vec::new(),
+                contexts: Contexts::default(),
+                setup: Setup::unchecked(&sources),
+                sources,
+                next_token: 1,
+                setup_token: None,
+                sessions: HashMap::new(),
+                session_tokens: HashMap::new(),
+                answers: HashMap::new(),
+                log: Vec::new(),
+                routed: Vec::new(),
+                rejected_bindings: 0,
+                attached: Vec::new(),
+                navigated: Vec::new(),
+                failed: Vec::new(),
+                created: false,
+                frames: Vec::new(),
+                graph: None,
+                graph_tokens: HashMap::new(),
+                page_graph_acts: 0,
+            };
+            let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
+            let c2 = cell.clone();
+            Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *c2.borrow_mut() = Some(r)));
+            assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
+            let env = cell.borrow_mut().take().unwrap().expect("the environment");
+            let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["*".into()], ..Default::default() };
+            let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 400, 300), setup, tx);
+            p.env = Some(env);
+            p.view = Some(view);
+            assert!(p.wait(20, |p| p.created), "Created within 20 s");
+            for name in browser_world::EVENTS {
+                p.view.as_ref().unwrap().devtools_subscribe(name);
+            }
+            p.step_setup();
+            assert!(p.wait(15, |p| *p.setup.state() != ClientWorld::Setting), "the setup finished within 15 s: {:?}", p.log.iter().map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>());
+            assert_eq!(*p.setup.state(), ClientWorld::Ready, "the isolated world is unavailable: {:?}", p.setup.state());
+            Some(p)
+        }
+
+        fn view(&self) -> &WebView {
+            self.view.as_ref().expect("the view")
+        }
+
+        fn token(&mut self) -> u64 {
+            self.next_token += 1;
+            self.next_token
+        }
+
+        /// One DevTools call; its answer arrives as `Event::ScriptDone` with the returned token.
+        fn call(&mut self, session: Option<&str>, method: &str, params: &Value) -> u64 {
+            let (t, ps) = (self.token(), params.to_string());
+            self.log.push(format!("{method} {}{ps}", session.map(|s| format!("[{s}] ")).unwrap_or_default()));
+            match session {
+                None => self.view().devtools_call(method, &ps, t),
+                Some(s) => self.view().devtools_call_for_session(s, method, &ps, t),
+            }
+            t
+        }
+
+        fn call_wait(&mut self, session: Option<&str>, method: &str, params: &Value) -> Result<String, String> {
+            let t = self.call(session, method, params);
+            if !self.wait(10, |p| p.answers.contains_key(&t)) {
+                return Err(format!("{method}: no answer in 10 s"));
+            }
+            self.answers.remove(&t).unwrap()
+        }
+
+        /// `Runtime.evaluate` in a frame's Tandem world (None is the main frame).
+        fn eval(&mut self, frame: Option<u64>, expr: &str) -> Result<Value, String> {
+            let (session, unique) = self.contexts.unique_for(frame).ok_or("no Tandem context for that frame")?;
+            let r = self.call_wait(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr))?;
+            browser_world::evaluate_result(&r)
+        }
+
+        /// A script in the page's own world (`ExecuteScript`); the answer is the result's JSON.
+        fn page_eval(&mut self, js: &str) -> Result<String, String> {
+            let t = self.token();
+            self.log.push(format!("ExecuteScript {js}"));
+            self.view().execute_script(js, t);
+            if !self.wait(10, |p| p.answers.contains_key(&t)) {
+                return Err("ExecuteScript: no answer in 10 s".into());
+            }
+            self.answers.remove(&t).unwrap()
+        }
+
+        fn load(&mut self, url: &str) {
+            let n = self.navigated.len();
+            self.view().navigate_tandem(url);
+            assert!(self.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s");
+            assert!(self.navigated[n].1, "the navigation to {url} failed");
+            assert!(self.wait(5, |p| browser_world::world_usable(p.setup.state(), &p.contexts)), "the main frame has a Tandem context after loading {url}");
+        }
+
+        fn step_setup(&mut self) {
+            if let Some((m, params)) = self.setup.next_call() {
+                let t = self.call(None, m, &params);
+                self.setup_token = Some(t);
+            }
+        }
+
+        fn step_session(&mut self, sid: &str) {
+            let next = self.sessions.get_mut(sid).and_then(|q| q.pop_front());
+            match next {
+                Some((m, params)) => {
+                    let t = self.call(Some(sid), m, &params);
+                    self.session_tokens.insert(t, sid.to_string());
+                }
+                None => {
+                    self.sessions.remove(sid);
+                }
+            }
+        }
+
+        fn attach(&mut self, sid: &str, ty: &str) {
+            self.attached.push((sid.to_string(), ty.to_string()));
+            // An iframe gets the world; any other target is only resumed (it would wait for ever).
+            let frame = matches!(browser_world::attached(&json!({"sessionId": sid, "targetInfo": {"type": ty}}).to_string(), self.sessions.len()), browser_world::Attach::Frame { .. });
+            let q: VecDeque<_> = if frame { browser_world::session_calls(&self.sources).into() } else { vec![("Runtime.runIfWaitingForDebugger", json!({}))].into() };
+            self.sessions.insert(sid.to_string(), q);
+            self.step_session(sid);
+        }
+
+        fn handle(&mut self, e: Event) {
+            match e {
+                Event::Created(_) => self.created = true,
+                Event::Failed(_, why) => self.failed.push(why),
+                Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
+                Event::Navigated { ok, url, .. } => self.navigated.push((url, ok)),
+                Event::Request { token, url, .. } => {
+                    let key = url.split(['#', '?']).next().unwrap_or("").to_string();
+                    let answer = match self.pages.get(&key) {
+                        Some(body) => Answer::Respond { status: 200, mime: "text/html".into(), body: body.clone().into_bytes(), headers: vec![] },
+                        None => {
+                            if !key.ends_with("/favicon.ico") {
+                                self.not_served.push(url);
+                            }
+                            Answer::Respond { status: 404, mime: "text/plain".into(), body: b"not found".to_vec(), headers: vec![] }
+                        }
+                    };
+                    self.view().answer_request(token, answer);
+                }
+                Event::Message { json, source, .. } => {
+                    self.graph_page(&json, None, &source);
+                    self.routed.push(Routed { via: Via::Page, frame: None, from: source, body: json });
+                }
+                Event::FrameCreated { frame, .. } => self.frames.push(frame),
+                Event::FrameMessage { frame, json, source, .. } => {
+                    self.graph_page(&json, Some(frame), &source);
+                    self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json });
+                }
+                Event::ScriptDone { token, json, .. } => {
+                    if self.setup_token == Some(token) {
+                        self.setup_token = None;
+                        self.setup.answered(json);
+                        if let Some(m) = self.setup.main_frame() {
+                            self.contexts.set_main_frame(m);
+                        }
+                        self.step_setup();
+                    } else if let Some(g) = self.graph_tokens.remove(&token) {
+                        let value = json.and_then(|t| browser_world::evaluate_result(&t));
+                        let acts = self.graph.as_mut().map(|graph| graph.answered(g, &value).1).unwrap_or_default();
+                        self.graph_run(acts);
+                    } else if let Some(sid) = self.session_tokens.remove(&token) {
+                        if json.is_err() {
+                            // The frame then has no Tandem world, but it is still resumed.
+                            if let Some(q) = self.sessions.get_mut(&sid) {
+                                let last = q.pop_back();
+                                q.clear();
+                                q.extend(last);
+                            }
+                        }
+                        self.step_session(&sid);
+                    } else {
+                        self.answers.insert(token, json);
+                    }
+                }
+                Event::DevTools { session, name, json, .. } => {
+                    self.devtools_held();
+                    self.devtools(session, &name, &json);
+                }
+                Event::DevToolsHeld { .. } => self.devtools_held(),
+                _ => {}
+            }
+        }
+
+        /// A Page-world message as the app routes it (`browser_script_event`): Page, to the same graph.
+        fn graph_page(&mut self, json: &str, frame: Option<u64>, source: &str) {
+            let Some(routed) = crate::browser_js::route(json, crate::browser_js::World::Page, frame, source) else { return };
+            if routed.handler != crate::browser_frames::HANDLER {
+                return;
+            }
+            let acts = self.graph.as_mut().map(|g| g.handle(&routed, true, &mut crate::browser_js::new_secret)).unwrap_or_default();
+            self.page_graph_acts += acts.len();
+            self.graph_run(acts);
+        }
+
+        /// What the graph planned, evaluated as the app does (`graph_run`): in the Tandem world of the
+        /// frame it names, the answer back to the graph. A frame with no Tandem context gets nothing.
+        fn graph_run(&mut self, acts: Vec<crate::browser_frames::Act>) {
+            for act in acts {
+                let Some((session, unique)) = self.contexts.unique_for(act.frame) else { continue };
+                let t = self.call(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, &crate::browser_js::make_safe(&act.code)));
+                self.graph_tokens.insert(t, act.token);
+            }
+        }
+
+        /// The graph ids the world's `REGISTER_FRAME` messages named, with the frame each came from.
+        fn graph_ids(&self) -> Vec<(Option<u64>, String)> {
+            self.clients(crate::browser_frames::HANDLER).into_iter().filter(|(_, b)| b["type"] == "REGISTER_FRAME").filter_map(|(f, b)| b["frameId"].as_str().map(|id| (f, id.to_string()))).collect()
+        }
+
+        fn devtools_held(&mut self) {
+            for (session, name, json) in self.view().take_devtools_held() {
+                self.devtools(session, &name, &json);
+            }
+        }
+
+        fn devtools(&mut self, session: Option<String>, name: &str, json: &str) {
+            let s = session.as_deref();
+            match name {
+                "Runtime.executionContextCreated" => {
+                    self.contexts.created(s, json);
+                }
+                "Runtime.executionContextDestroyed" => self.contexts.destroyed(s, json),
+                "Runtime.executionContextsCleared" => self.contexts.cleared(s),
+                "Page.frameNavigated" => self.contexts.navigated(s, json),
+                "Runtime.bindingCalled" => match self.contexts.binding_called(s, json) {
+                    Some((frame, origin, payload)) => {
+                        // As the app routes it (`browser_devtools_event`): Client, and the graph's
+                        // messages to the production `Frames`.
+                        if let Some(routed) = crate::browser_js::route(&payload, crate::browser_js::World::Client, frame, &origin) {
+                            if routed.handler == crate::browser_frames::HANDLER {
+                                let acts = self.graph.as_mut().map(|g| g.handle(&routed, true, &mut crate::browser_js::new_secret)).unwrap_or_default();
+                                self.graph_run(acts);
+                            }
+                        }
+                        self.routed.push(Routed { via: Via::Client, frame, from: origin, body: payload });
+                    }
+                    None => self.rejected_bindings += 1,
+                },
+                "Target.attachedToTarget" => {
+                    if let Ok(v) = serde_json::from_str::<Value>(json) {
+                        let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
+                        let ty = v.pointer("/targetInfo/type").and_then(Value::as_str).unwrap_or("").to_string();
+                        if !sid.is_empty() {
+                            self.attach(&sid, &ty);
+                        }
+                    }
+                }
+                "Target.detachedFromTarget" => {
+                    if let Some(sid) = serde_json::from_str::<Value>(json).ok().and_then(|v| v.get("sessionId").and_then(Value::as_str).map(str::to_string)) {
+                        self.contexts.detached(&sid);
+                        self.sessions.remove(&sid);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        /// Pumps the thread's messages and the view's events until `cond` holds or `secs` pass.
+        fn wait(&mut self, secs: u64, mut cond: impl FnMut(&Probe) -> bool) -> bool {
+            let end = Instant::now() + Duration::from_secs(secs);
+            loop {
+                let mut msg = MSG::default();
+                unsafe {
+                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                while let Ok(p) = self.rx.try_recv() {
+                    if let Some(e) = p.event {
+                        self.handle(e);
+                    }
+                }
+                assert!(self.failed.is_empty(), "the view failed: {:?}", self.failed);
+                if cond(self) {
+                    return true;
+                }
+                if Instant::now() >= end {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        /// Lets the page and the world run for `ms` (a bounded pump, never an open wait).
+        fn settle(&mut self, ms: u64) {
+            let end = Instant::now() + Duration::from_millis(ms);
+            self.wait(ms / 1000 + 1, |_| Instant::now() >= end);
+        }
+
+        fn clients(&self, handler: &str) -> Vec<(Option<u64>, Value)> {
+            self.routed.iter().filter(|r| r.via == Via::Client).filter_map(|r| r.client().filter(|(h, _)| h == handler).map(|(_, b)| (r.frame, b))).collect()
+        }
+
+        /// What every test ends with: every request was answered from memory and the world never
+        /// had a binding call from a context it does not know.
+        fn finish(&self) {
+            assert!(self.not_served.is_empty(), "requests not served from memory: {:?}", self.not_served);
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.view.take();
+            self.env.take();
+            let _ = unsafe { DestroyWindow(self.hwnd) };
+            // Best effort: the browser process may still hold the folder for a moment.
+            if let Some(lp) = crate::localfs::LocalPath::judge(&self.folder) {
+                let _ = crate::localfs::remove_dir_all(&lp);
+            }
+        }
+    }
+
+    const PAGE: &str = "https://probe.tandem-probe.invalid/";
+
+    /// The echo as the app evaluates a posting body in the Tandem world (`browser_js_call`, `call_js`):
+    /// the world has no global `window.webkit` (Task 1's bridge is closure-local, so the page can never
+    /// replace it), and `call_js` gives the body the same rewrite and binding capture `wrap` does.
+    fn echo(secret: &str) -> String {
+        crate::browser_js::call_js(&format!("window.webkit.messageHandlers.probeEcho.postMessage({{v: 1, sessionSecret: {}}});", crate::browser_js::js_string(secret)), &Value::Null).expect("the echo")
+    }
+
+    /// The text Task 5's `clear_script` will produce, written out here.
+    fn clear_hover(secret: &str) -> String {
+        format!("(function() {{window.iTermHoverLinkHandler?.clearHover('{secret}');}})();")
+    }
+
+    /// The 2026-10-07 desktop run (probe-fix-report.md): the hostile page's answers to the harness
+    /// are its own data, never its `toJSON` plant's `{"hacked":true}`, and its counters cannot read
+    /// `Object.prototype`; the echo is evaluated as the app evaluates a posting body (the world has
+    /// no global `window.webkit`). Pure: no view is made.
+    #[test]
+    fn probe_page_answers_and_echo_are_real() {
+        assert_eq!(HOSTILE.matches("origStringify(").count(), 1, "called only by out(), {} answers called it directly", HOSTILE.matches("return origStringify(").count());
+        assert!(HOSTILE.contains("try { return origStringify(x); } finally {"), "out() lifts the plant for its own call");
+        for f in ["window.__report = function () { return out(R); };", "    return out(o);\n"] {
+            assert!(HOSTILE.contains(f), "{f}");
+        }
+        assert_eq!(HOSTILE.matches("    return out(r);\n").count(), 2, "both forgeries answer through out()");
+        assert!(HOSTILE.contains("counts = Object.create(null)"));
+        let e = echo("abc");
+        assert!(!e.contains("window.webkit") && e.contains("const __tandemPost = globalThis.__tandemClient;"), "{e}");
+        assert!(e.contains("__tandemWebkit.messageHandlers.probeEcho.postMessage({v: 1, sessionSecret: \"abc\"});"), "{e}");
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_cannot_read_the_secret() {
+        let secret = hex32();
+        // P9: a child frame is part of the page, so the parent's page world, with its capture-phase
+        // `message` recorder, sees every DOM message the world's scripts post to a parent. The secret
+        // must be in none of them (the view secret never goes through `postMessage`).
+        let body = "<a href=\"https://x.invalid/\">link</a><iframe srcdoc=\"&lt;p&gt;child&lt;/p&gt;&lt;a href=&quot;https://y.invalid/&quot;&gt;l&lt;/a&gt;\"></iframe>";
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(body, "g"))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child frame has a world, so its reports are posted");
+        assert_eq!(p.eval(None, "typeof globalThis.__tandemClient"), Ok(json!("function")), "the world is live: the binding");
+        assert_eq!(p.eval(None, "typeof window.iTermHoverLinkHandler"), Ok(json!("object")), "the world is live: hover");
+        assert_eq!(p.eval(None, "typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok(json!("object")), "the world is live: graph discovery");
+        p.eval(None, &clear_hover(&secret)).expect("clearHover");
+        p.eval(None, &echo(&secret)).expect("the echo");
+        assert!(p.wait(5, |p| !p.clients("probeEcho").is_empty()), "the echo reaches the router");
+        // The page's own world sees none of it.
+        assert_eq!(p.page_eval("typeof window.__tandemClient"), Ok("\"undefined\"".into()));
+        assert_eq!(p.page_eval("typeof window.iTermHoverLinkHandler"), Ok("\"undefined\"".into()));
+        assert_eq!(p.page_eval("typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok("\"undefined\"".into()));
+        p.settle(500);
+        let report = p.page_eval("window.__report()").expect("the report");
+        assert!(report.len() > 100, "the page recorded something: {}", report.len());
+        assert!(!report.contains(&secret), "the secret reached the page");
+        assert!(p.routed.iter().filter(|r| r.via == Via::Page).all(|r| !r.body.contains(&secret)));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_builtins_do_not_reach_the_world() {
+        let secret = hex32();
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page("<p>x</p>", "g"))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        // Control: the recorders are live in the page's own world.
+        let c0 = p.page_eval("window.__counts()").unwrap();
+        p.page_eval("[1, 2, 3].slice(1).join(',') + JSON.stringify({a: 1})").unwrap();
+        let c1 = p.page_eval("window.__counts()").unwrap();
+        assert_ne!(c0, c1, "the recorders count the page's own calls");
+        p.settle(300);
+        let before = p.page_eval("window.__counts()").unwrap();
+        p.eval(None, &clear_hover(&secret)).expect("clearHover");
+        p.eval(None, &echo(&secret)).expect("the echo");
+        let got = p.eval(None, "(async () => { const a = 21; return await Promise.resolve(a).then(x => x * 2); })()");
+        assert_eq!(got, Ok(json!(42)), "the world's own Promise, JSON and Object are intact");
+        assert!(p.wait(5, |p| !p.clients("probeEcho").is_empty()));
+        p.settle(300);
+        let after = p.page_eval("window.__counts()").unwrap();
+        assert_eq!(before, after, "the world's calls reached the page's builtins");
+        let echoes = p.clients("probeEcho");
+        assert_eq!(echoes.len(), 1);
+        assert_eq!(echoes[0].1, json!({"v": 1, "sessionSecret": secret}), "the page's toJSON had no effect");
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_page_cannot_fake_a_client_message() {
+        let secret = hex32();
+        let guess = hex32();
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page("<p>x</p>", &guess))], client_sources(&secret, false)) else { return };
+        p.load(PAGE);
+        p.eval(None, &echo(&secret)).expect("the echo");
+        let forged = p.page_eval("window.__forge()").expect("the forgery ran");
+        // ExecuteScript answers with JSON: a string result arrives quoted, so decode it first.
+        let forged = serde_json::from_str::<String>(&forged).unwrap_or(forged);
+        assert!(forged.contains("\"client\":\"undefined\""), "the binding does not exist in the page world: {forged}");
+        assert!(!forged.contains("threw"), "{forged}");
+        p.settle(1000);
+        let pages: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Page).collect();
+        assert!(pages.len() >= 3, "the page's three messages arrived: {pages:?}");
+        assert!(pages.iter().all(|r| r.from.starts_with(PAGE)), "every page message names the page as its source: {pages:?}");
+        for r in p.routed.iter().filter(|r| r.via == Via::Client) {
+            let (h, b) = r.client().expect("a client message is {h, b}");
+            assert!(h == "probeEcho" || h == "iTermGraphDiscovery", "a client message from the page: {h}");
+            assert!(!r.body.contains(&guess), "the page's guess reached the world's channel");
+            if h == "probeEcho" {
+                assert_eq!(b, json!({"v": 1, "sessionSecret": secret}), "only the world's own echo");
+            }
+        }
+        assert_eq!(p.clients("probeEcho").len(), 1);
+        assert_eq!(p.rejected_bindings, 0, "no binding call came from a context the table does not know");
+        p.finish();
+    }
+
+    /// The page cannot make Tandem evaluate anything in any frame. The harness runs the app's own
+    /// rule: the production `Frames` gets every Client message from the binding and every Page message
+    /// from the page, and evaluates what it plans in the Tandem world. The page forges `EVAL_IN_FRAME`
+    /// from itself and from its child frame with every pair of ids it has, the world's real graph ids
+    /// among them; nothing is planned for a Page message and no forged code is evaluated. The control:
+    /// the world's own `evaluateInFrame` still answers, across frames, through the same path.
+    #[test]
+    #[ignore]
+    fn probe_page_cannot_reach_evaluate_in_frame() {
+        let secret = hex32();
+        let body = format!("<iframe srcdoc=\"{CHILD_SRCDOC}\"></iframe>");
+        let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], client_sources(&secret, false)) else { return };
+        p.graph = Some(crate::browser_frames::Frames::default());
+        p.view().watch_frames();
+        p.load(PAGE);
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
+        let k = p.contexts.frames()[0];
+        assert!(p.wait(10, |p| p.graph_ids().iter().any(|(f, _)| f.is_none()) && p.graph_ids().iter().any(|(f, _)| *f == Some(k))), "both frames registered with the graph: {:?}", p.graph_ids());
+        let graph_ids: Vec<String> = p.graph_ids().into_iter().map(|(_, id)| id).collect();
+        let main_id = p.graph_ids().into_iter().find(|(f, _)| f.is_none()).unwrap().1;
+        let child_id = p.graph_ids().into_iter().find(|(f, _)| *f == Some(k)).unwrap().1;
+        let mut extra = p.call_wait(None, "Page.getFrameTree", &json!({})).ok().and_then(|t| browser_world::frame_ids(&t)).map(|(_, all)| all).unwrap_or_default();
+        extra.extend(graph_ids);
+        let as_js_string = serde_json::to_string(&serde_json::to_string(&extra).unwrap()).unwrap();
+        let r = p.page_eval(&format!("window.__forge4({as_js_string})")).expect("the forgery ran");
+        let r: Value = serde_json::from_str::<String>(&r).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        assert_eq!(r, json!({"api": "undefined", "global": "undefined"}), "the page world has no graph API");
+        p.settle(1000);
+        let forged = p.routed.iter().filter(|r| r.via == Via::Page && r.body.contains("EVAL_IN_FRAME")).count();
+        assert!(forged > 0, "the page's forgeries reached the host (as the page's)");
+        assert_eq!(p.page_graph_acts, 0, "the graph planned nothing for a Page message");
+        assert_eq!(p.eval(Some(k), "document.title"), Ok(json!("child")), "the iframe's title");
+        assert_eq!(p.page_eval("document.title"), Ok("\"hostile\"".into()), "the page's title");
+        assert!(p.log.iter().filter(|l| l.starts_with("Runtime.evaluate") || l.starts_with("ExecuteScript")).all(|l| !l.contains("pwned")), "a forged EVAL_IN_FRAME was evaluated");
+        // Control: the path is live for the world itself, both ways across frames.
+        let ask = |target: &str| format!("new Promise(function (res) {{ window[Symbol.for('iTermGraphDiscovery')].evaluateInFrame({}, 'document.title', res, 5000); }})", crate::browser_js::js_string(target));
+        assert_eq!(p.eval(Some(k), &ask(&main_id)), Ok(json!("hostile")), "the child's world asks the main frame");
+        assert_eq!(p.eval(None, &ask(&child_id)), Ok(json!("child")), "the main world asks the child frame");
+        assert_eq!(p.page_graph_acts, 0);
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_world_reaches_every_frame() {
+        let secret = hex32();
+        let (top, child) = ("https://a.tandem-probe.invalid/", "https://b.tandem-probe.invalid/child.html");
+        let nested = "&lt;iframe srcdoc=&quot;&amp;lt;p&amp;gt;nested&amp;lt;/p&amp;gt;&quot;&gt;&lt;/iframe&gt;&lt;p&gt;mid&lt;/p&gt;";
+        let top_page = format!(
+            "<!doctype html><html><head><title>top</title></head><body><iframe srcdoc=\"{nested}\"></iframe><iframe src=\"{child}\"></iframe><script>\n\
+             window.__worker = 'pending'; try {{ const w = new Worker(URL.createObjectURL(new Blob(['postMessage(\"ran\")'], {{ type: 'text/javascript' }}))); w.onmessage = function (m) {{ window.__worker = m.data; }}; w.onerror = function () {{ window.__worker = 'error'; }}; }} catch (x) {{ window.__worker = 'threw'; }}\n\
+             const e = new Error('x'); Object.defineProperty(e, 'stack', {{ get() {{ window.__stackRead = true; return ''; }} }}); console.debug(e);\n\
+             setTimeout(function () {{ const f = document.createElement('iframe'); f.srcdoc = '<p>late</p>'; document.body.appendChild(f); }}, 300);\n\
+             </script></body></html>"
+        );
+        let Some(mut p) = Probe::start(&[(top, top_page), (child, "<!doctype html><title>child</title><p>b</p>".to_string())], client_sources(&secret, true)) else { return };
+        p.load(top);
+        // B11: a worker is auto-attached and waits for a debugger; the host resumes it, so it runs.
+        let mut worker_ran = false;
+        for _ in 0..30 {
+            if p.page_eval("String(window.__worker)").is_ok_and(|v| v.contains("ran")) {
+                worker_ran = true;
+                break;
+            }
+            p.settle(500);
+        }
+        assert!(worker_ran, "a page's worker runs: {:?}", p.page_eval("String(window.__worker)"));
+        let frames_ok = p.wait(15, |p| p.contexts.frames().len() == 4);
+        let seen = format!("attached {:?}; frames {:?}; rejected {}", p.attached, p.contexts.frames(), p.rejected_bindings);
+        assert!(frames_ok, "every frame has a Tandem world: {seen}");
+        assert!(p.wait(10, |p| {
+            let mut f: Vec<Option<u64>> = p.clients("probeEcho").into_iter().map(|(f, _)| f).collect();
+            f.sort();
+            f.dedup();
+            f.len() == 5
+        }), "each of the five frames posted its echo through the binding: {seen}");
+        let mut hrefs = Vec::new();
+        let mut cross_on_session = false;
+        let mut keys: Vec<Option<u64>> = vec![None];
+        keys.extend(p.contexts.frames().into_iter().map(Some));
+        for k in keys {
+            let h = p.eval(k, "location.href").expect("location.href in a frame's world");
+            let h = h.as_str().unwrap_or("").to_string();
+            if h == child {
+                cross_on_session = p.contexts.context_for(k).is_some_and(|(s, _)| s.is_some());
+            }
+            hrefs.push(h);
+        }
+        hrefs.sort();
+        let mut want = vec!["about:srcdoc", "about:srcdoc", "about:srcdoc", child, top];
+        want.sort();
+        assert_eq!(hrefs, want, "{hrefs:?}");
+        // The runtime may keep a cross-site frame in-process (the 2026-10-07 console run attached no
+        // iframe target for *.invalid hosts). The world reaching it is asserted above by its href;
+        // when the frame IS out of process, its world must be on the child session.
+        if p.attached.iter().any(|(_, kind)| kind == "iframe") {
+            assert!(cross_on_session, "the cross-site frame's world is on its child session: {seen}");
+        } else {
+            eprintln!("probe: the cross-site frame ran in-process; its world was reached ({seen})");
+        }
+        p.settle(500);
+        let stack = p.page_eval("String(window.__stackRead === true)").unwrap_or_default();
+        println!("Runtime.enable detectable: {}", if stack.contains("true") { "yes" } else { "no" });
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// Task 5: a pointer move over a link raises the hover script's `iTermHoverLink` message in
+    /// the Tandem world, routed as Client with the link's URL; both hosts are under `.invalid` so no
+    /// preconnect can leave the machine. Needs the console session (skipped elsewhere, never a pass).
+    #[test]
+    #[ignore]
+    fn hover_reaches_the_router() {
+        let secret = hex32();
+        let url = "https://hover.invalid/x";
+        let page_html = format!("<!doctype html><html><body style=\"margin:0\"><a href=\"{url}\" style=\"display:block;width:200px;height:50px\">link</a><a href=\"#a\">frag</a></body></html>");
+        let Some(mut p) = Probe::start(&[(PAGE, page_html)], vec![wrapped(&HOVER.replace("{{SECRET}}", &secret))]) else { return };
+        p.load(PAGE);
+        p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": "mouseMoved", "x": 20, "y": 20})).expect("the move");
+        assert!(p.wait(10, |p| !p.clients("iTermHoverLink").is_empty()), "the move over the link reaches the router");
+        let (_, body) = p.clients("iTermHoverLink").into_iter().next().unwrap();
+        let hover = crate::browser_tip::hover_of(&body).expect("a hover message");
+        match hover {
+            crate::browser_tip::Hover::Show { url: u, rect } => {
+                assert_eq!(u, url);
+                assert!(rect.2 >= 100.0 && rect.3 >= 20.0, "the link's rectangle: {rect:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(body.get("sessionSecret").and_then(Value::as_str), Some(secret.as_str()));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// Review Focus 1 (I3, I8, M11): a copied script's `window.webkit` post reaches the router as the
+    /// Tandem world's, a page's own post as the page's, in every frame; a page that replaces
+    /// `window.chrome.webview.postMessage` sees nothing of the world's traffic; `window.webkit` is
+    /// undefined for an https page; a local page's form from a web source is not a local page's; a
+    /// call into the world answers. (An `iterm2-about:` page needs the registered scheme: the
+    /// desktop run of the app covers it.)
+    #[test]
+    #[ignore]
+    fn bridge_round_trip() {
+        let nested = "&lt;iframe srcdoc=&quot;&amp;lt;p&amp;gt;nested&amp;lt;/p&amp;gt;&quot;&gt;&lt;/iframe&gt;&lt;p&gt;mid&lt;/p&gt;";
+        let page_html = format!(
+            "<!doctype html><html><head><title>rt</title></head><body><script>\n\
+             window.chrome.webview.postMessage({{h: 'x', b: 1}});\n\
+             window.chrome.webview.postMessage({{handler: 'iterm2-about:history', body: {{action: 'clearAllHistory'}}}});\n\
+             window.chrome.webview.postMessage = function () {{ window.__saw = true; }};\n\
+             setTimeout(function () {{ const f = document.createElement('iframe'); f.srcdoc = '<p>late</p>'; document.body.appendChild(f); }}, 300);\n\
+             </script><iframe srcdoc=\"{nested}\"></iframe></body></html>"
+        );
+        let url = "https://a.tandem-probe.invalid/";
+        let sources = vec![wrapped("window.addEventListener('load', function () { window.webkit.messageHandlers.x.postMessage({a: 1}); });")];
+        let Some(mut p) = Probe::start(&[(url, page_html)], sources) else { return };
+        p.view().watch_frames();
+        p.load(url);
+        // The Tandem world's message, from every frame, as the world's; the page's, as the page's.
+        assert!(p.wait(15, |p| p.clients("x").len() >= 4), "the world posted from the page and its three frames: {:?}", p.clients("x"));
+        for (_, body) in p.clients("x") {
+            assert_eq!(body, json!({"a": 1}));
+        }
+        let mut keys: Vec<Option<u64>> = p.clients("x").into_iter().map(|(f, _)| f).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 4, "one per frame, each with its own key: {keys:?}");
+        let page: Vec<crate::browser_js::Routed> = p.routed.iter().filter(|r| r.via == Via::Page && r.frame.is_none()).filter_map(|r| crate::browser_js::route(&r.body, crate::browser_js::World::Page, r.frame, &r.from)).collect();
+        assert!(page.iter().any(|r| r.handler == "x" && r.world == crate::browser_js::World::Page && r.body == json!(1)), "{page:?}");
+        let local = page.iter().find(|r| r.handler == "iterm2-about:history").expect("the local-page form arrived");
+        assert!(!crate::browser_js::local_page_ok(local), "from a web source it is not a local page's");
+        assert_eq!(p.page_eval("String(window.__saw === true)"), Ok("\"false\"".into()), "the page's replacement saw none of the world's traffic");
+        assert_eq!(p.page_eval("typeof window.webkit"), Ok("\"undefined\"".into()));
+        assert!(p.wait(10, |p| p.frames.len() >= 3), "FrameCreated for each frame, the nested one and the late one included: {:?}", p.frames);
+        let expr = crate::browser_js::call_js("return a * 2;", &json!({"a": 21})).unwrap();
+        assert_eq!(p.eval(None, &expr), Ok(json!(42)));
+        assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    /// Task 6: `insert-text.js` types into a focused field and a `contenteditable`, answers false with
+    /// nothing focused, and the DevTools fallback then changes nothing. Needs the console session.
+    #[test]
+    #[ignore]
+    fn send_text_reaches_a_field() {
+        let page_html = "<!doctype html><html><body><textarea id=t autofocus></textarea><div id=c contenteditable=true></div></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let focused = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            p.page_eval("document.activeElement.id") == Ok("\"t\"".into())
+        });
+        assert!(focused, "the field has the focus");
+        assert_eq!(p.page_eval(&crate::browser_keys::insert_script("hi\n")), Ok("true".into()));
+        assert_eq!(p.page_eval("document.getElementById('t').value"), Ok("\"hi\\n\"".into()));
+        p.page_eval("document.getElementById('c').focus()").unwrap();
+        assert_eq!(p.page_eval(&crate::browser_keys::insert_script("yo")), Ok("true".into()));
+        assert_eq!(p.page_eval("document.getElementById('c').textContent"), Ok("\"yo\"".into()));
+        // Nothing focused and no caret: a blurred contenteditable keeps the page's selection, and
+        // Chromium's `Input.insertText` types at that caret (the 2026-10-07 run: "yono"; see the rulings).
+        p.page_eval("document.activeElement.blur(); window.getSelection().removeAllRanges()").unwrap();
+        assert_eq!(p.page_eval("document.activeElement === document.body && window.getSelection().rangeCount === 0"), Ok("true".into()), "nothing focused, no caret");
+        assert_eq!(p.page_eval(&crate::browser_keys::insert_script("no")), Ok("false".into()), "nothing focused: the script says so");
+        p.call_wait(None, "Input.insertText", &json!({"text": "no"})).expect("the fallback runs");
+        assert_eq!(p.page_eval("document.getElementById('t').value + document.getElementById('c').textContent"), Ok("\"hi\\nyo\"".into()), "the page is unchanged");
+        p.finish();
+    }
+
+    /// Task 8 (review I1, I2, I3): a receiving view takes a replay. Its focused field gets the text once
+    /// and one line break from Enter; a masked field, a password field and a focus on the host of a
+    /// closed shadow root are refused by the receiving guard, so nothing is replayed there. (One
+    /// probe view is the receiver; the sender's side is `browser_keys`' pure model.) Needs the
+    /// console session; `Emulation.setFocusEmulationEnabled` is not used: if an unfocused target
+    /// drops the input, this test shows it and the decision is revisited (m13x2-rulings.txt).
+    #[test]
+    #[ignore]
+    fn broadcast_types_into_a_second_view() {
+        let page_html = "<!doctype html><html><body><textarea id=t autofocus></textarea><input id=m type=text style=\"-webkit-text-security:disc\"><input id=p type=password><div id=h></div><script>const r=document.getElementById('h').attachShadow({mode:'closed'});const i=document.createElement('input');r.appendChild(i);window.__ci=i;</script></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let focused = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            p.page_eval("document.activeElement.id") == Ok("\"t\"".into())
+        });
+        assert!(focused, "the field has the focus");
+        let guard = crate::browser_js::iife(&crate::browser_keys::guard_body());
+        assert_eq!(p.eval(None, &guard), Ok(json!(false)), "a plain textarea may receive");
+        let text = crate::browser_keys::BroadcastEvent::Insert("hi".into());
+        let enter = crate::browser_keys::BroadcastEvent::Key { key: "Enter".into(), code: "Enter".into(), key_code: 13, mods: 0 };
+        for e in [&text, &enter] {
+            for (method, params) in crate::browser_keys::replay_calls(e) {
+                p.call_wait(None, method, &params).expect("the replay call runs");
+            }
+        }
+        assert_eq!(p.page_eval("document.getElementById('t').value"), Ok("\"hi\\n\"".into()), "the text once, one line break");
+        // Fields that must refuse.
+        for focus in ["document.getElementById('m').focus()", "document.getElementById('p').focus()", "window.__ci.focus()"] {
+            p.page_eval(focus).unwrap();
+            assert_eq!(p.eval(None, &guard), Ok(json!(true)), "{focus}");
+        }
+        p.finish();
+    }
+
+    /// Task 7: the page's Smart Selection scripts in Tandem's world: the text around a point, the
+    /// matcher's counts, and the selection `select-text.js` makes. (`browser_smart_select` is these
+    /// calls in order; the App has no test constructor.) Needs the console session.
+    #[test]
+    #[ignore]
+    fn smart_selection_selects_in_a_page() {
+        let page_html = "<!doctype html><html><body style=\"margin:0\"><p id=p>write to <span id=m>bob@example.com</span> today</p></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let center = p.eval(None, "(() => { const r = document.getElementById('m').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()").expect("the center");
+        let (x, y) = (center[0].as_f64().unwrap(), center[1].as_f64().unwrap());
+        let fill = |name: &str, extra: &[(&str, String)]| {
+            let (xs, ys) = (crate::browser_pointer::num(x), crate::browser_pointer::num(y));
+            let mut subs: Vec<(&str, &str)> = vec![("X", &xs), ("Y", &ys)];
+            subs.extend(extra.iter().map(|(k, v)| (*k, v.as_str())));
+            crate::browser_js::fill_template(crate::browser_js::resource(name).unwrap(), &subs)
+        };
+        let text = p.eval(None, &crate::browser_js::make_safe(&fill("extract-text-at-point.js", &[("RADIUS", "2".into())]))).expect("the text");
+        let (before, after) = (text["before"].as_str().unwrap().to_string(), text["after"].as_str().unwrap().to_string());
+        let rule = crate::smartsel::Rule { regex: r"\S+@\S+".into(), precision: 1000.0, notes: String::new(), actions: Vec::new() };
+        let m = crate::browser_smart::first_match(&before, &after, &[rule], false).expect("the address matches");
+        let select = fill("select-text.js", &[("BEFORE_COUNT", m.before.to_string()), ("AFTER_COUNT", m.after.to_string())]);
+        p.eval(None, &crate::browser_js::make_safe(&select)).expect("the selection");
+        assert_eq!(p.page_eval("window.getSelection().toString()"), Ok("\"bob@example.com\"".into()));
+        p.finish();
+    }
+
+    /// Task 7 (I7): a page's synthetic press, release and auxclick run no binding; a real middle press
+    /// through `Input.dispatchMouseEvent` (trusted) reaches the router once as down and once as up, and
+    /// the page never sees it. Needs the console session.
+    #[test]
+    #[ignore]
+    fn synthetic_click_runs_nothing() {
+        let secret = hex32();
+        let page_html = "<!doctype html><html><body style=\"margin:0\"><div id=t style=\"width:300px;height:200px\"></div><script>window.__saw = []; for (const n of ['mousedown','mouseup','auxclick']) { window.addEventListener(n, e => window.__saw.push([n, e.isTrusted]), true); }</script></body></html>";
+        let code = crate::browser_pointer::user_script(&secret, &["Button,2,1,,".to_string()], true, false).code;
+        let Some(mut p) = Probe::start(&[(PAGE, page_html.to_string())], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        p.page_eval("(() => { const el = document.getElementById('t'); for (const n of ['mousedown','mouseup','auxclick']) { el.dispatchEvent(new MouseEvent(n, {button: 1, bubbles: true, detail: 1})); } })()").expect("the page dispatches");
+        p.settle(500);
+        assert!(p.clients(crate::browser_pointer::GATE_HANDLER).is_empty(), "a synthetic press reaches nothing");
+        assert_eq!(p.page_eval("window.__saw.length"), Ok("3".into()), "the page saw its own events");
+        p.page_eval("window.__saw = []").unwrap();
+        for kind in ["mousePressed", "mouseReleased"] {
+            p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": 20, "y": 20, "button": "middle", "clickCount": 1})).expect("the real press");
+        }
+        assert!(p.wait(10, |p| p.clients(crate::browser_pointer::GATE_HANDLER).len() >= 2), "the real press reaches the router");
+        let kinds: Vec<String> = p.clients(crate::browser_pointer::GATE_HANDLER).iter().map(|(_, b)| b["type"].as_str().unwrap_or("").to_string()).collect();
+        assert_eq!(kinds, vec!["down".to_string(), "up".to_string()]);
+        let body = &p.clients(crate::browser_pointer::GATE_HANDLER)[0].1;
+        assert_eq!(crate::browser_pointer::press_of(body), Some(crate::browser_pointer::Press::Down { button: 2, clicks: 1, mods: crate::pointer::Mods::default(), x: 20.0, y: 20.0 }));
+        assert_eq!(p.page_eval("window.__saw.length"), Ok("0".into()), "the page never saw the taken press");
+        p.finish();
     }
 }

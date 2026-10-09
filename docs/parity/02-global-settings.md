@@ -283,7 +283,7 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Global key binding table | n/a (table; per-row storage, not a single key) | The list of custom global keystroke-to-action bindings shown in this tab; each row picks a key chord and one of the action types listed further below. | have |  |
+| Global key binding table | n/a (table; per-row storage, not a single key) | The list of custom global keystroke-to-action bindings shown in this tab; each row picks a key chord and one of the action types listed further below. | have | Milestone 13x2: bindings work in browser panes too. A page yields only the presses a binding claims; bindings on unmodified character keys do not reach a focused page (WebView2 raises accelerator keys only for Ctrl and Alt chords and non-character keys, m10); a send-text binding never types into a field the person is typing in; a binding the person made beats Ctrl+L, Alt+D and F6. The editing rule needs Tandem's isolated world and is partial until the desktop probe passes. |
 | Leader key | n/a (iTermShortcutInputView) | A configurable prefix keystroke; binding an action to a Leader sequence requires pressing the leader chord first, tmux-prefix style. | have |  |
 | Interpret key bindings based on physical key, ignoring input language | LanguageAgnosticKeyBindings | Matches key bindings by physical keyboard position (like a game's WASD binding) instead of by the character the current input language produces. | have |  |
 | Repair Broken Bindings | n/a (button, runs a repair routine) | One-shot action that fixes key bindings left in a broken state by a prior iTerm2 bug or migration. | have | Nothing to repair: Tandem never wrote the broken form iTerm2 repairs. |
@@ -449,7 +449,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Option-Click moves cursor | OptionClickMovesCursor | Lets Option-click reposition the cursor on the current line, for apps that support cursor-repositioning reports. | have | Option is Alt. |
 | Three-finger tap emulates middle click | ThreeFingerEmulates | Maps a three-finger trackpad tap to a middle-click (paste). | missing | macOS trackpad gesture; Windows keeps three-finger gestures for itself. |
 | Focus follows mouse | FocusFollowsMouse | Moves keyboard focus to whichever pane/window the mouse is over, without clicking. | have | Milestone 13j: Tandem windows become key under the pointer while Tandem is active (iTerm2's non-steal path); StealKeyFocus and AggressiveFocusFollowsMouse extend it (see Advanced > Mouse). Never acts from a title bar, status bar or any overlay. |
-| Focus window after right or middle click | FocusOnRightOrMiddleClick | Also focuses the window on a right- or middle-click, not just a left-click. | have |  |
+| Focus window after right or middle click | FocusOnRightOrMiddleClick | Also focuses the window on a right- or middle-click, not just a left-click. | have | Milestone 13x2: in a browser page too, for every non-left button, before a bound press's action runs (iTerm2's rightMouseDown and otherMouseDown). |
 | Mouse reporting supports horizontal scrolling | ReportHorizontalScrollEvents | Includes horizontal wheel/trackpad scroll in the mouse-reporting events sent to the running program. | have |  |
 
 Five more keys declared in the Pointer section of iTermPreferences.h are actually shown on the General > Selection sub-tab, not here: Triple-click selects entire wrapped lines, Double-click performs smart selection, Automatically enter copy mode on Shift+Arrow with selection, Clicking on a command selects it, and Wrap dropped filenames in quotes when pasting. See the General > Selection table above.
@@ -469,9 +469,9 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | have |  |
 | Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | have |  |
 | Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | partial | Asks the app not to take the focus; a browser may still come to the front. |
-| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | have |  |
-| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | have |  |
-| Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | have |  |
+| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | have | Milestone 13x2: pages too (four clicks select the match, Win-click runs the best rule's first action if it has one; the rules run on the page text around the click, at most 8,192 UTF-16 units a side and 256 rules, in Tandem's isolated world). Partial in a page until the desktop probe passes. |
+| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | have | Milestone 13x2: pages too, under the same bounds as Smart Selection. |
+| Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | have | Milestone 13x2: in a page the right button's own binding is WebView2's menu with Tandem's items; another button or Ctrl-click sends a trusted right click. A page yields only the presses a binding claims (main frame only; iframes keep their clicks). Pointer bindings in a page are partial until the desktop probe passes. |
 | Next Tab | kNextTabPointerAction | Switches to the next tab. | have |  |
 | Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | have |  |
 | Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | have | Milestone 13j: runs the Next Window key action. |

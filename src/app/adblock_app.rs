@@ -321,6 +321,7 @@ impl App {
             let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone());
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 let (had, id, parent) = (bv.view.take().is_some(), bv.id, bv.parent);
+                self.browser_reset_world(pane);
                 if had {
                     // Final review I7: a view that had the keyboard hands it back to its window.
                     self.web_view_dropped(id, parent);
