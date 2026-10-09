@@ -369,6 +369,108 @@ pub fn adoption(d: &Descriptor, lookup: &dyn Fn(&str) -> Option<Workgroup>) -> R
     Ok(Adoption { active: d.anchor_id.clone(), leader: d.leader_id.clone(), git_base: d.git_base.clone(), peers, buried, restored, fresh, children, workgroup })
 }
 
+/// An anchor not in a window this long stops blocking Enter Workgroup (`pendingReconstructionTimeout`,
+/// a soft limit: the entry is kept), and is given up on after `GIVE_UP`.
+pub const RELEASE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+pub const GIVE_UP: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Whether rebuilding asks the person first, and whether the question can show every command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Question {
+    None,
+    Showable,
+    TooLong,
+}
+
+/// Why a restore is not adopted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// The anchor closed before the rebuild.
+    AnchorGone,
+    /// The anchor never reached a window.
+    GaveUp,
+    /// The anchor entered a workgroup meanwhile (another pass, a manual entry, a trigger).
+    Taken,
+    /// The workgroup is gone or the descriptor does not fit it (`adoption`).
+    Unfit,
+    /// The commands are too long to show in full, so they cannot be asked about.
+    TooLong,
+    /// The person said no, or the commands changed since the question.
+    Declined,
+}
+
+/// What a waiting restore does next (`WRC.reconstruct`, with the restore question in between).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The anchor's window is not up: look again. `release` lets Enter Workgroup in again (soft limit).
+    Wait { release: bool },
+    /// The question is up: wait for the answer.
+    Hold,
+    /// Ask the person now.
+    Ask,
+    /// Rebuild the instance, then release the claims.
+    Adopt,
+    /// Not adopted: release the claims and end the buried members' shells.
+    Discard(Why),
+}
+
+impl Step {
+    /// Whether the restore still claims its anchor and sessions after this step: the Enter Workgroup
+    /// trigger and a manual entry stay out of them.
+    pub fn keeps_claims(self) -> bool {
+        matches!(self, Step::Ask | Step::Hold | Step::Wait { release: false })
+    }
+}
+
+/// What the app knows of one waiting restore when it looks at it.
+#[derive(Clone, Copy, Debug)]
+pub struct Facts {
+    pub anchor_alive: bool,
+    pub in_window: bool,
+    /// The anchor belongs to an instance already.
+    pub in_workgroup: bool,
+    /// The restore question is up.
+    pub asked: bool,
+    pub age: std::time::Duration,
+    /// The person's answer, when this look comes from it (false also when the commands changed since).
+    pub answer: Option<bool>,
+    /// `adoption` found a plan.
+    pub fits: bool,
+    pub question: Question,
+}
+
+/// The next step for one restore. The order matters: a closed anchor ends everything; an unanswered
+/// question holds; an anchor that entered a workgroup meanwhile is never adopted twice and its buried
+/// members' shells end, answered or not.
+pub fn next_step(f: &Facts) -> Step {
+    if !f.anchor_alive {
+        return Step::Discard(Why::AnchorGone);
+    }
+    if f.answer.is_none() {
+        if f.asked {
+            return Step::Hold;
+        }
+        if !f.in_window {
+            if f.age >= GIVE_UP {
+                return Step::Discard(Why::GaveUp);
+            }
+            return Step::Wait { release: f.age >= RELEASE_AFTER };
+        }
+    }
+    if f.in_workgroup {
+        return Step::Discard(Why::Taken);
+    }
+    if !f.fits {
+        return Step::Discard(Why::Unfit);
+    }
+    match (f.answer, f.question) {
+        (Some(true), _) | (None, Question::None) => Step::Adopt,
+        (Some(false), _) => Step::Discard(Why::Declined),
+        (None, Question::Showable) => Step::Ask,
+        (None, Question::TooLong) => Step::Discard(Why::TooLong),
+    }
+}
+
 /// The approval a launch state carries for `workgroup_id` answered with `digest` (`run::Approved`):
 /// HMAC-SHA256 under the install's key over both, each length-prefixed, as lowercase hex. Only this
 /// install can make it, so no file from elsewhere can carry an answer the person never gave here.
@@ -722,6 +824,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Task 9 review I2: the decision steps for one restore, in order, and where the claims are kept.
+    #[test]
+    fn restore_steps_keep_the_claims_through_the_question() {
+        use std::time::Duration;
+        let base = Facts { anchor_alive: true, in_window: true, in_workgroup: false, asked: false, age: Duration::ZERO, answer: None, fits: true, question: Question::None };
+        let step = |f: &dyn Fn(&mut Facts)| {
+            let mut x = base;
+            f(&mut x);
+            next_step(&x)
+        };
+        assert_eq!(step(&|_| {}), Step::Adopt, "the person's own, or an approval that stands");
+        // The question: asked once, and the claims stay until the answer.
+        assert_eq!(step(&|f| f.question = Question::Showable), Step::Ask);
+        assert!(Step::Ask.keeps_claims() && Step::Hold.keeps_claims(), "nothing enters the anchor while the person reads");
+        assert_eq!(step(&|f| (f.question, f.asked) = (Question::Showable, true)), Step::Hold);
+        assert_eq!(step(&|f| (f.question, f.asked, f.in_workgroup) = (Question::Showable, true, true)), Step::Hold, "nothing is decided before the answer");
+        assert_eq!(step(&|f| f.question = Question::TooLong), Step::Discard(Why::TooLong));
+        // The answer.
+        assert_eq!(step(&|f| (f.question, f.asked, f.answer) = (Question::Showable, true, Some(true))), Step::Adopt);
+        assert_eq!(step(&|f| (f.question, f.asked, f.answer) = (Question::Showable, true, Some(false))), Step::Discard(Why::Declined));
+        // The session entered a workgroup while the question was up, then Restore: the hidden members'
+        // shells end (Discard), nothing is adopted twice and nothing is orphaned.
+        assert_eq!(step(&|f| (f.question, f.asked, f.answer, f.in_workgroup) = (Question::Showable, true, Some(true), true)), Step::Discard(Why::Taken));
+        assert_eq!(step(&|f| f.in_workgroup = true), Step::Discard(Why::Taken), "another pass rebuilt it: the members' shells still end");
+        // The anchor closed, answered or not.
+        assert_eq!(step(&|f| (f.anchor_alive, f.asked) = (false, true)), Step::Discard(Why::AnchorGone));
+        assert_eq!(step(&|f| (f.anchor_alive, f.answer) = (false, Some(true))), Step::Discard(Why::AnchorGone));
+        // A config gone or not fitting.
+        assert_eq!(step(&|f| f.fits = false), Step::Discard(Why::Unfit));
+        assert_eq!(step(&|f| (f.fits, f.answer) = (false, Some(true))), Step::Discard(Why::Unfit));
+        // Waiting for the window: a soft release, then giving up.
+        assert_eq!(step(&|f| f.in_window = false), Step::Wait { release: false });
+        assert!(Step::Wait { release: false }.keeps_claims() && !Step::Wait { release: true }.keeps_claims());
+        assert_eq!(step(&|f| (f.in_window, f.age) = (false, RELEASE_AFTER)), Step::Wait { release: true });
+        assert_eq!(step(&|f| (f.in_window, f.age) = (false, GIVE_UP)), Step::Discard(Why::GaveUp));
+        // An answer is taken where the window stands now.
+        assert_eq!(step(&|f| (f.in_window, f.asked, f.answer) = (false, true, Some(true))), Step::Adopt);
+        for done in [Step::Adopt, Step::Discard(Why::Taken), Step::Discard(Why::Declined)] {
+            assert!(!done.keeps_claims(), "{done:?}");
+        }
+    }
+
     /// The embedded members' shells are claimed by the restore's host plan, each by its own table.
     #[test]
     fn embedded_members_are_reachable_for_the_host_plan() {
@@ -755,7 +899,7 @@ mod tests {
             assert!(!prod.contains(banned), "{banned}");
         }
         assert!(prod.contains("needs_question("), "an import asks again unless its approval stands");
-        assert!(prod.contains("if m.launch { wr::Origin::Launch } else { wr::Origin::Named }"), "only the launch state's approval is read");
+        assert!(prod.contains("if p.m.launch { wr::Origin::Launch } else { wr::Origin::Named }"), "only the launch state's approval is read");
         assert!(prod.contains("crate::workgroup::restored_toggles("), "toggles come back only on adopted members");
         assert!(include_str!("app/restore_ui.rs").contains("workgroup_restore::embedded"), "embedded members take the host-key plan");
         assert!(include_str!("app/workgroup_app.rs").contains("self.is_restoring_session(pane)"), "a trigger checks the restoring flag when it fires");

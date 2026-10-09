@@ -23,10 +23,6 @@ use std::collections::{HashMap, HashSet};
 
 /// Restored anchors waiting at most (a file cannot queue work without end).
 const MAX_PENDING: usize = 16;
-/// An anchor not in a window this long stops blocking Enter Workgroup (`pendingReconstructionTimeout`,
-/// a soft limit: the entry is kept), and is given up on after `GIVE_UP`.
-const RELEASE_AFTER: Duration = Duration::from_secs(30);
-const GIVE_UP: Duration = Duration::from_secs(120);
 /// How soon the next look comes while anchors wait for their window.
 const LOOK: Duration = Duration::from_millis(250);
 /// Toggles and declined entries remembered at most.
@@ -42,6 +38,13 @@ fn approval_key() -> Option<&'static [u8; wr::KEY_LEN]> {
 #[cfg(not(windows))]
 fn approval_key() -> Option<&'static [u8; wr::KEY_LEN]> {
     None
+}
+
+/// One look at a waiting restore: the step, and what Ask and Adopt need.
+struct Look {
+    step: wr::Step,
+    plan: Option<wr::Adoption>,
+    ask: Option<(String, String)>,
 }
 
 /// One restored anchor, waiting for its window (`WRC.Pending`): what the restore knows of it, and the
@@ -243,7 +246,7 @@ impl App {
     }
 
     /// Rebuilds the instances whose anchors are in a window now (`reconstructReadyAnchors`). Idempotent:
-    /// an anchor that already belongs to an instance is skipped. When to look again.
+    /// an anchor that already belongs to an instance is not adopted again. When to look again.
     pub(super) fn adopt_workgroups(&mut self) -> Option<Instant> {
         if self.workgroups.restoring.pending.is_empty() {
             return None;
@@ -255,58 +258,106 @@ impl App {
             return Some(now + LOOK);
         }
         let mut waiting = false;
-        for mut p in std::mem::take(&mut self.workgroups.restoring.pending) {
-            if !self.panes.contains_key(&p.m.anchor) {
-                // The anchor closed before the rebuild: its buried members' shells still end.
-                self.workgroups.restoring.release(&mut p.m);
-                self.discard_members(p.descriptor, p.m.name.as_deref(), p.m.launch);
-                continue;
-            }
-            if p.m.asked {
-                self.workgroups.restoring.pending.push(p);
-                continue;
-            }
-            if self.pane_window_id(p.m.anchor).is_none() {
-                let age = now.saturating_duration_since(p.m.since);
-                if age >= GIVE_UP {
-                    self.workgroups.restoring.release(&mut p.m);
-                    self.discard_members(p.descriptor, p.m.name.as_deref(), p.m.launch);
-                    continue;
-                }
-                if age >= RELEASE_AFTER {
-                    self.workgroups.restoring.release(&mut p.m);
-                }
-                waiting = true;
-                self.workgroups.restoring.pending.push(p);
-                continue;
-            }
-            if let Some(kept) = self.adopt_one(p, None) {
-                self.workgroups.restoring.pending.push(kept);
-            }
+        for p in std::mem::take(&mut self.workgroups.restoring.pending) {
+            let look = self.look(&p, now, None);
+            waiting |= matches!(look.step, wr::Step::Wait { .. });
+            self.take_step(p, look, None);
         }
         waiting.then(|| now + LOOK)
     }
 
     /// The answer to the restore question (`Then::RestoreWorkgroup`): yes rebuilds with the commands
     /// the question showed, no leaves the anchor a plain session and ends the buried members' shells.
+    /// The restore kept its claims while the question was up (Task 9 review I2).
     pub(super) fn restore_answered(&mut self, token: u64, workgroup: Workgroup, approved: Approved, yes: bool) {
         let Some(at) = self.workgroups.restoring.pending.iter().position(|p| p.m.token == token) else { return };
-        let mut p = self.workgroups.restoring.pending.remove(at);
-        self.workgroups.restoring.release(&mut p.m);
+        let p = self.workgroups.restoring.pending.remove(at);
         let current = self.workgroup_model.get(&workgroup.unique_identifier).cloned();
-        let ok = yes && self.panes.contains_key(&p.m.anchor) && match run::to_enter(&approved, &workgroup, current.as_ref()) {
+        let ok = yes && match run::to_enter(&approved, &workgroup, current.as_ref()) {
             Ok(_) => true,
             Err(why) => {
                 self.banners.set("workgroup", why);
                 false
             }
         };
-        if ok {
-            p.m.asked = false;
-            self.adopt_one(p, Some(approved));
-        } else {
-            self.discard_members(p.descriptor, p.m.name.as_deref(), p.m.launch);
+        let look = self.look(&p, Instant::now(), Some(ok));
+        self.take_step(p, look, Some(approved));
+    }
+
+    /// What one waiting restore does next (`wr::next_step`), with the plan and the question text it
+    /// needs. The plan and the trust check are worked out only when the step can depend on them.
+    fn look(&self, p: &Pending, now: Instant, answer: Option<bool>) -> Look {
+        let anchor = p.m.anchor;
+        let anchor_alive = self.panes.contains_key(&anchor);
+        let in_window = self.pane_window_id(anchor).is_some();
+        let mut look = Look { step: wr::Step::Hold, plan: None, ask: None };
+        let mut question = wr::Question::None;
+        if anchor_alive && (answer.is_some() || (!p.m.asked && in_window)) {
+            match wr::adoption(&p.descriptor, &|id| self.workgroup_model.get(id).cloned()) {
+                Ok(plan) => {
+                    let w = &plan.workgroup;
+                    let origin = if p.m.launch { wr::Origin::Launch } else { wr::Origin::Named };
+                    if answer.is_none() && wr::needs_question(self.workgroup_model.source_of(&w.unique_identifier), &p.descriptor, w, origin, approval_key().map(|k| &k[..])) {
+                        look.ask = run::ask_text(w, Mechanism::Restore);
+                        question = if look.ask.is_some() { wr::Question::Showable } else { wr::Question::TooLong };
+                    }
+                    look.plan = Some(plan);
+                }
+                // The config is gone or does not fit: the anchor stays a plain session (WRC).
+                Err(why) => crate::rlog!("workgroup restore skipped: {}", crate::dlog::name(&format!("{why:?}"))),
+            }
         }
+        let facts = wr::Facts {
+            anchor_alive,
+            in_window,
+            in_workgroup: self.panes.get(&anchor).is_some_and(|a| a.workgroup.is_some()),
+            asked: p.m.asked,
+            age: now.saturating_duration_since(p.m.since),
+            answer,
+            fits: look.plan.is_some(),
+            question,
+        };
+        look.step = wr::next_step(&facts);
+        look
+    }
+
+    /// Takes the step `look` decided for `p`. Only Adopt and Discard end a restore; the claims are
+    /// released where the step says (`Step::keeps_claims`).
+    fn take_step(&mut self, mut p: Pending, look: Look, answered: Option<Approved>) {
+        match look.step {
+            wr::Step::Wait { release } => {
+                if release {
+                    self.workgroups.restoring.release(&mut p.m);
+                }
+                self.workgroups.restoring.pending.push(p);
+            }
+            wr::Step::Hold => self.workgroups.restoring.pending.push(p),
+            wr::Step::Ask => {
+                let (Some(plan), Some((heading, body))) = (look.plan, look.ask) else { return self.end_restore(p, wr::Why::Unfit) };
+                let w = plan.workgroup;
+                p.m.asked = true;
+                let then = scripts_alerts::Then::RestoreWorkgroup { token: p.m.token, approved: Approved::of(&w), workgroup: Box::new(w) };
+                self.workgroups.restoring.pending.push(p);
+                self.ask_scripts(scripts_alerts::ask(&heading, &body, &run::RESTORE_LABELS, None, crate::warnings::Kind::Persistent, then));
+            }
+            wr::Step::Adopt => match look.plan {
+                Some(plan) => {
+                    let approved = answered.unwrap_or_else(|| Approved::of(&plan.workgroup));
+                    self.adopt_one(p, plan, approved);
+                }
+                None => self.end_restore(p, wr::Why::Unfit),
+            },
+            wr::Step::Discard(why) => self.end_restore(p, why),
+        }
+    }
+
+    /// A restore that is not adopted: its claims go and the buried members' shells end.
+    fn end_restore(&mut self, mut p: Pending, why: wr::Why) {
+        if why == wr::Why::TooLong {
+            self.banners.set("workgroup", "A restored workgroup's commands are too long to show in full, so it was not rebuilt. Read them in Settings > Arrangements > Workgroups and trust it there.");
+        }
+        self.workgroups.restoring.release(&mut p.m);
+        self.discard_members(p.descriptor, p.m.name.as_deref(), p.m.launch);
     }
 
     /// Ends the sessions a restore took back for buried members that will not be adopted (a workgroup
@@ -335,54 +386,19 @@ impl App {
         built.ok()?.layout.panes().first().copied()
     }
 
-    /// Rebuilds one instance (`WRC.reconstruct`, `WI.adopt`). Returns the entry when the person is being
-    /// asked and the answer decides.
-    fn adopt_one(&mut self, p: Pending, approved: Option<Approved>) -> Option<Pending> {
+    /// Rebuilds one instance (`WRC.reconstruct`, `WI.adopt`) from its plan, with the commands the
+    /// person's answer (or the person's own workgroup, or an approval that stands) allows.
+    fn adopt_one(&mut self, p: Pending, plan: wr::Adoption, approved: Approved) {
         let Pending { mut m, descriptor } = p;
         let anchor = m.anchor;
-        // Idempotent: another pass rebuilt this anchor.
-        if self.panes.get(&anchor).is_some_and(|a| a.workgroup.is_some()) {
-            self.workgroups.restoring.release(&mut m);
-            return None;
-        }
-        let plan = match wr::adoption(&descriptor, &|id| self.workgroup_model.get(id).cloned()) {
-            Ok(plan) => plan,
-            Err(why) => {
-                // The config is gone or does not fit: the anchor stays a plain session (WRC).
-                crate::rlog!("workgroup restore skipped: {}", crate::dlog::name(&format!("{why:?}")));
-                self.workgroups.restoring.release(&mut m);
-                self.discard_members(descriptor, m.name.as_deref(), m.launch);
-                return None;
-            }
-        };
         let w = plan.workgroup.clone();
-        let source = self.workgroup_model.source_of(&w.unique_identifier);
-        let approved = match approved {
-            Some(a) => a,
-            None if wr::needs_question(source, &descriptor, &w, if m.launch { wr::Origin::Launch } else { wr::Origin::Named }, approval_key().map(|k| &k[..])) => {
-                let Some((heading, body)) = run::ask_text(&w, Mechanism::Restore) else {
-                    self.banners.set("workgroup", "A restored workgroup's commands are too long to show in full, so it was not rebuilt. Read them in Settings > Arrangements > Workgroups and trust it there.");
-                    self.workgroups.restoring.release(&mut m);
-                    self.discard_members(descriptor, m.name.as_deref(), m.launch);
-                    return None;
-                };
-                let token = m.token;
-                self.workgroups.restoring.release(&mut m);
-                m.asked = true;
-                let then = scripts_alerts::Then::RestoreWorkgroup { token, workgroup: Box::new(w.clone()), approved: Approved::of(&w) };
-                self.ask_scripts(scripts_alerts::ask(&heading, &body, &run::RESTORE_LABELS, None, crate::warnings::Kind::Persistent, then));
-                return Some(Pending { m, descriptor });
-            }
-            None => Approved::of(&w),
-        };
-        let d = descriptor;
+        let mut d = descriptor;
         let (name, launch) = (m.name.clone(), m.launch);
         let anchor_config = d.anchor_id.clone();
         // The buried members that were running come back from their saved sessions; one that was on its
         // pre-launch overlay, or that cannot be restored, comes back fresh below.
         let mut panes: HashMap<String, PaneId> = HashMap::from([(anchor_config.clone(), anchor)]);
         let mut built: Vec<PaneId> = Vec::new();
-        let mut d = d;
         for config in &plan.restored {
             let Some(m) = d.members.iter_mut().find(|m| &m.config_id == config) else { continue };
             let inhibit = w.session(config).is_some_and(|s| wr::mode_inhibits(s.mode));
@@ -400,7 +416,7 @@ impl App {
             }
             self.discard_members(d, name.as_deref(), launch);
             self.workgroups.restoring.release(&mut m);
-            return None;
+            return;
         };
         let id = wr::resolve_instance_id(&d.instance_id, &|i| self.workgroups.contains(i));
         let mut inst = Instance {
@@ -490,7 +506,6 @@ impl App {
         self.workgroups.restoring.release(&mut m);
         self.menus_dirty = true;
         self.redraw();
-        None
     }
 }
 
@@ -576,6 +591,28 @@ mod tests {
                 assert_eq!(wr::needs_question(source, &d, &w, if launch { wr::Origin::Launch } else { wr::Origin::Named }, Some(&ours)), !launch, "{path}");
             }
         }
+    }
+
+    /// Task 9 review I2: the steps are taken as `wr::next_step` decides them. Ask keeps the claims (no
+    /// release on that path), every Discard ends the buried members' shells, and the answer is looked at
+    /// again, so an anchor that entered a workgroup during the question is discarded, not dropped.
+    #[test]
+    fn the_steps_are_taken_as_decided() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        let take = body(production, "    fn take_step(");
+        let ask = &take[take.find("wr::Step::Ask =>").unwrap()..take.find("wr::Step::Adopt =>").unwrap()];
+        assert!(!ask.contains("release"), "the question keeps the claims: {ask}");
+        assert!(take.contains("wr::Step::Discard(why) => self.end_restore(p, why)"));
+        let end = body(production, "    fn end_restore(");
+        assert!(end.contains("self.workgroups.restoring.release(&mut p.m)") && end.contains("self.discard_members(p.descriptor"), "{end}");
+        let answered = body(production, "    pub(super) fn restore_answered(");
+        assert!(!answered.contains("release") && answered.contains("self.look(&p, Instant::now(), Some(ok))"), "{answered}");
+        assert!(body(production, "    fn look(").contains("wr::next_step(&facts)"));
+        // A Restoring entry that is being asked still claims its sessions.
+        let mut r = Restoring::default();
+        assert!(r.add(1, "A1".into(), descriptor(), None, true));
+        r.pending[0].m.asked = true;
+        assert!(r.guids.contains_key("A1") && r.guids.contains_key("B1") && !r.pending[0].m.released);
     }
 
     fn descriptor() -> wr::Descriptor {
