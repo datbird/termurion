@@ -19,7 +19,7 @@ use crate::arrangement::Value;
 use crate::workgroup::{Mode, Workgroup};
 use crate::workgroup_restore as wr;
 use crate::workgroup_run::{self as run, Approved, Mechanism, SpawnStep};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 
 /// Restored anchors waiting at most (a file cannot queue work without end).
 const MAX_PENDING: usize = 16;
@@ -83,7 +83,8 @@ pub(super) struct Restoring {
     /// The next restored session starts with no program (a buried Code Review or Diff member).
     inhibit_next: bool,
     /// An Enter Workgroup question a person cancelled: not asked again for this session and workgroup.
-    declined: HashSet<(PaneId, String)>,
+    /// Oldest first; past `MAX_NOTES` the oldest is forgotten.
+    declined: VecDeque<(PaneId, String)>,
 }
 
 impl Restoring {
@@ -127,13 +128,17 @@ impl Restoring {
 
     /// Remembers that the person said no to this entry.
     pub(super) fn decline(&mut self, pane: PaneId, workgroup: &str) {
-        if self.declined.len() < MAX_NOTES {
-            self.declined.insert((pane, workgroup.to_string()));
+        if self.declined(pane, workgroup) {
+            return;
         }
+        if self.declined.len() >= MAX_NOTES {
+            self.declined.pop_front();
+        }
+        self.declined.push_back((pane, workgroup.to_string()));
     }
 
     pub(super) fn declined(&self, pane: PaneId, workgroup: &str) -> bool {
-        self.declined.contains(&(pane, workgroup.to_string()))
+        self.declined.iter().any(|(p, w)| *p == pane && w == workgroup)
     }
 }
 
@@ -683,6 +688,11 @@ mod tests {
             r.decline(i, "w");
         }
         assert!(r.declined.len() <= MAX_NOTES);
+        // Past the limit the oldest is forgotten, never the newest (Task 9 review minor 4).
+        assert!(r.declined(199, "w") && r.declined(200 - MAX_NOTES as u64, "w"), "the latest Cancel is remembered");
+        assert!(!r.declined(0, "w"));
+        r.decline(199, "w");
+        assert_eq!(r.declined.len(), MAX_NOTES, "a repeat is not counted twice");
     }
 
     /// The Enter Workgroup trigger samples the restoring flag when it fires and asks once per match; the
