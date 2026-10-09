@@ -201,19 +201,11 @@ impl Descriptor {
         let anchor_id = id_of(t, ANCHOR_ID)?;
         let instance_id = text_of(t, INSTANCE_ID).filter(|s| crate::workgroup_run::valid_instance_id(s)).unwrap_or_default().to_string();
         let git_base = text_of(t, GIT_BASE).filter(|b| crate::workgroup_git::base_ok(b)).unwrap_or(crate::workgroup_git::DEFAULT_BASE).to_string();
-        let mut total = 0usize;
+        let all = t.get(MEMBERS).and_then(Value::as_array);
         let mut members = Vec::new();
-        for m in t.get(MEMBERS).and_then(Value::as_array).into_iter().flatten() {
-            if members.len() >= max {
-                break;
-            }
-            let Some(m) = m.as_table() else { continue };
+        for i in kept_members(t) {
+            let Some(m) = all.and_then(|a| a.get(i)).and_then(Value::as_table) else { continue };
             let (Some(config_id), Some(arrangement)) = (id_of(m, CONFIG_ID), m.get(ARRANGEMENT)) else { continue };
-            let Some(size) = arrangement_size(arrangement) else { continue };
-            total = total.saturating_add(size);
-            if total > MAX_ARRANGEMENT_BYTES {
-                break;
-            }
             let display_name = text_of(m, DISPLAY_NAME).map(|n| crate::inert_files::display_text(n, MAX_NAME, false)).unwrap_or_default();
             let frame = text_of(m, FRAME).filter(|f| f.len() <= MAX_TEXT).unwrap_or_default().to_string();
             let pending = m.get(PENDING).and_then(Value::as_bool).unwrap_or(false);
@@ -246,18 +238,45 @@ impl Descriptor {
     }
 }
 
-/// The saved sessions embedded in a session table's descriptor, in `members` order (raw: not yet judged
-/// by `Descriptor::from_value`), at most `MAX_SESSIONS`. The restore's host plan claims the shells
-/// they kept, so none comes back as an orphan tab.
+/// The indices in a descriptor table's `members` that `Descriptor::from_value` reads: a table with a
+/// usable config id and an arrangement within the limits, at most `MAX_SESSIONS`, until the total byte
+/// cap. One predicate for the read and the host plan (Task 9 review minor 2).
+fn kept_members(t: &Table) -> Vec<usize> {
+    let mut total = 0usize;
+    let mut kept = Vec::new();
+    for (i, m) in t.get(MEMBERS).and_then(Value::as_array).into_iter().flatten().enumerate() {
+        if kept.len() >= crate::workgroup::MAX_SESSIONS {
+            break;
+        }
+        let Some(m) = m.as_table() else { continue };
+        let (Some(_), Some(arrangement)) = (id_of(m, CONFIG_ID), m.get(ARRANGEMENT)) else { continue };
+        let Some(size) = arrangement_size(arrangement) else { continue };
+        total = total.saturating_add(size);
+        if total > MAX_ARRANGEMENT_BYTES {
+            break;
+        }
+        kept.push(i);
+    }
+    kept
+}
+
+/// The saved sessions embedded in a session table's descriptor, in `members` order: exactly the members
+/// `Descriptor::from_value` reads (`kept_members`). The restore's host plan claims the shells they
+/// kept, so none comes back as an orphan tab, and none is claimed that the restore never reads.
 pub fn embedded(session: &Table) -> Vec<&Table> {
-    let members = session.get(crate::arrangement::WORKGROUP_KEY).and_then(|d| d.get(MEMBERS)).and_then(Value::as_array);
-    members.into_iter().flatten().take(crate::workgroup::MAX_SESSIONS).filter_map(|m| m.get(ARRANGEMENT)).filter_map(Value::as_table).collect()
+    let Some(d) = session.get(crate::arrangement::WORKGROUP_KEY).and_then(Value::as_table) else { return Vec::new() };
+    let Some(members) = d.get(MEMBERS).and_then(Value::as_array) else { return Vec::new() };
+    kept_members(d).into_iter().filter_map(|i| members.get(i)?.get(ARRANGEMENT)?.as_table()).collect()
 }
 
 /// `embedded`, writable: each member's session table, disjoint.
 pub fn embedded_mut(session: &mut Table) -> Vec<&mut Table> {
+    let kept = match session.get(crate::arrangement::WORKGROUP_KEY).and_then(Value::as_table) {
+        Some(d) => kept_members(d),
+        None => return Vec::new(),
+    };
     let members = session.get_mut(crate::arrangement::WORKGROUP_KEY).and_then(|d| d.get_mut(MEMBERS)).and_then(Value::as_array_mut);
-    members.into_iter().flatten().take(crate::workgroup::MAX_SESSIONS).filter_map(|m| m.get_mut(ARRANGEMENT)).filter_map(Value::as_table_mut).collect()
+    members.into_iter().flatten().enumerate().filter(|(i, _)| kept.contains(i)).filter_map(|(_, m)| m.get_mut(ARRANGEMENT)).filter_map(Value::as_table_mut).collect()
 }
 
 /// The modes whose restored session must not start a replacement program (`WR:modeInhibitsRelaunch`,
@@ -907,6 +926,24 @@ mod tests {
         let mut broken = Table::new();
         broken.insert(crate::arrangement::WORKGROUP_KEY.into(), Value::Boolean(true));
         assert!(embedded(&broken).is_empty() && embedded_mut(&mut broken).is_empty());
+    }
+
+    /// Task 9 review minor 2: the host plan claims exactly the members a restore reads, so a member
+    /// `from_value` skips never has its shell claimed and left running.
+    #[test]
+    fn embedded_members_are_the_ones_read() {
+        let mut anchor = Table::new();
+        let mut v = descriptor().to_value();
+        let members = v.get_mut(MEMBERS).and_then(Value::as_array_mut).unwrap();
+        let mut bad = members[0].as_table().unwrap().clone();
+        bad.insert(CONFIG_ID.into(), Value::String("bad id with spaces".into()));
+        members.insert(0, Value::Table(bad));
+        anchor.insert(crate::arrangement::WORKGROUP_KEY.into(), v);
+        let read = Descriptor::from_value(anchor.get(crate::arrangement::WORKGROUP_KEY).unwrap()).unwrap();
+        assert_eq!(read.members.len(), 2);
+        assert_eq!(embedded(&anchor).len(), read.members.len(), "a skipped member is not claimed");
+        assert_eq!(embedded_mut(&mut anchor).len(), read.members.len());
+        assert_eq!(embedded(&anchor)[0].get("Name").and_then(Value::as_str), Some("chat"));
     }
 
     /// The anchor's session value carries the descriptor and the app wires it, saving and restoring.
