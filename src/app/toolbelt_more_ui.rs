@@ -760,6 +760,9 @@ impl App {
         let patterns = self.status_patterns();
         let (tab_tag, pane_tag) = (self.globals.int("SwitchTabModifier"), self.globals.int("SwitchPaneModifier"));
         let mut rows = Vec::new();
+        // The focused session's peer group: its peers show their peer-switch shortcut, which wins over a
+        // pane or tab shortcut (`ToolStatus.shortcutString`, ToolStatus.swift:955-990).
+        let focus_group = self.focused_pane_id().and_then(|f| self.peer_group_of(f));
         for (ti, t) in self.tabs.iter().enumerate() {
             let panes = t.layout.panes();
             let ordered = self.ordered_panes(t);
@@ -775,7 +778,9 @@ impl App {
                 let Some(p) = self.panes.get(&id) else { continue };
                 let st = &p.own().tab_status;
                 let generation = p.own().tab_status_gen;
-                let ordinal = crate::pane_title::ordinal_of(&ordered, id) as usize;
+                // A hidden peer is reached through the member shown in its slot (its pane or tab shortcut).
+                let visible = if panes.contains(&id) { id } else { self.workgroup_of(id).and_then(|i| i.shown_pane()).unwrap_or(id) };
+                let ordinal = crate::pane_title::ordinal_of(&ordered, visible) as usize;
                 rows.push(StatusRow {
                     pane: id,
                     snoozed: self.belt.snoozed.get(&id) == Some(&generation),
@@ -784,7 +789,7 @@ impl App {
                     name: self.session_label(id).0,
                     status: st.status.as_deref().filter(|s| !s.is_empty()).map(status_tool::display_status),
                     detail: st.detail.clone().filter(|d| !d.is_empty()),
-                    shortcut: status_tool::shortcut_label(ti + 1, ti == self.active, ordinal, panes.len(), tab_tag, pane_tag),
+                    shortcut: focus_group.and_then(|g| g.switch_label_of(id)).or_else(|| status_tool::shortcut_label(ti + 1, ti == self.active, ordinal, panes.len(), tab_tag, pane_tag)),
                 });
             }
         }

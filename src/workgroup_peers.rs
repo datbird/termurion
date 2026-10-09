@@ -77,6 +77,18 @@ pub fn segment_label(label: &str, custom: Option<&str>, position: usize, count: 
     }
 }
 
+/// The peer-switch shortcut of member `config` (`ToolStatus.peerSwitchShortcutLabel`, the mode
+/// switcher's own rule): its custom shortcut, else the digit of positions 1 to 8, else 9 for the last of
+/// nine or more; None for any other member or one that is no peer.
+pub fn switch_label(w: &Workgroup, config: &str) -> Option<String> {
+    let all = members(w);
+    let (i, (_, _, shortcut)) = all.iter().enumerate().find(|(_, (c, _, _))| c == config)?;
+    if let Some(custom) = shortcut.as_ref().and_then(custom_label).filter(|c| !c.is_empty()) {
+        return Some(custom);
+    }
+    digit_label(i + 1).or_else(|| (i + 1 == all.len() && i + 1 > 8).then(|| format!("{DIGIT_PREFIX}9")))
+}
+
 /// The digit of an Alt+Shift+Win+digit chord (1 to 9); Alt+Win+digit selects a window and takes no part.
 pub fn chord_digit(c: &Chord) -> Option<u32> {
     if !(c.alt && c.shift && c.cmd && !c.ctrl) {

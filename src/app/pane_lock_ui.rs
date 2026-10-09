@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn status_tool_uses_the_title_ordinals() {
         let tool = include_str!("toolbelt_more_ui.rs");
-        assert!(tool.contains("pane_title::ordinal_of(&ordered, id)"), "the Status tool shares the title bar helper");
+        assert!(tool.contains("pane_title::ordinal_of(&ordered, visible)"), "the Status tool shares the title bar helper");
         let titles = include_str!("pane_title_ui.rs");
         assert!(titles.contains("pane_title::ordinal_of(&panes, id)"), "so do the title bars");
         assert!(tool.contains("self.ordered_panes(t).hash(h)"), "the Status hash follows the pane order");

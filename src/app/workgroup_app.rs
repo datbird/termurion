@@ -80,6 +80,12 @@ impl Instance {
         self.peers.iter().any(|(k, p)| k == config && p.is_some()) || self.non_peers.iter().any(|(k, _)| k == config)
     }
 
+    /// The peer-switch shortcut of the peer `pane` is (Session Status, `ToolStatus.peerSwitchShortcutLabel`);
+    /// None for a pane that is no peer of this group, or a peer with no shortcut.
+    pub fn switch_label_of(&self, pane: PaneId) -> Option<String> {
+        peers::switch_label(&self.workgroup, self.config_of(pane)?)
+    }
+
     /// The pane shown in the group's slot now.
     pub fn shown_pane(&self) -> Option<PaneId> {
         self.pane_of(&self.active)
@@ -1072,6 +1078,21 @@ mod tests {
         // Restoring an instance again gives it a later place.
         all.add(inst("wg-Z", 40));
         assert_eq!(all.in_order().last().map(|i| i.id.as_str()), Some("wg-Z"));
+    }
+
+    /// Final review 3a: Session Status labels a peer of the focused session's group with its peer-switch
+    /// shortcut (`ToolStatus.shortcutString`, `peerSwitchShortcutLabel`), and any other hidden peer with the
+    /// shortcut of the member shown in its slot, never with a tab or pane of its own.
+    #[test]
+    fn a_hidden_peers_status_row_names_its_own_shortcut() {
+        let i = inst("wg-A", 10);
+        assert_eq!(i.switch_label_of(10).as_deref(), peers::digit_label(1).as_deref(), "the leader is peer 1");
+        assert_eq!(i.switch_label_of(11).as_deref(), peers::digit_label(2).as_deref(), "Diff is peer 2");
+        assert_eq!(i.switch_label_of(12), None, "a tab is no peer");
+        let ui = include_str!("toolbelt_more_ui.rs");
+        let rows = &ui[ui.find("pub(super) fn status_rows(").unwrap()..ui.find("/// What Session Status shows").unwrap()];
+        assert!(rows.contains("focus_group.and_then(|g| g.switch_label_of(id))"), "the focused group's peers show their peer label: {rows}");
+        assert!(rows.contains("ordinal_of(&ordered, visible)"), "a hidden peer takes the shown member's place: {rows}");
     }
 
     /// Final review 3b: the base is iTerm2's built-in session variable gitBase on the leader, read from
