@@ -542,53 +542,145 @@ pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup, origin: Ori
     !same(approval, &seal(key, &w.unique_identifier, crate::workgroup_run::Approved::of(w).digest()))
 }
 
-/// The install's approval key in `dir` (Tandem's settings folder), made when absent: random bytes in a
-/// new owner-only file, never written through a link. A file of another size is replaced (every
-/// earlier approval then asks again). None when the folder or file cannot be used: then nothing
-/// restores unasked.
+/// The entropy the key is protected with: DPAPI unprotects it only with these bytes too, so a blob
+/// another program protected for this user is no key either.
+#[cfg(windows)]
+const KEY_ENTROPY: &[u8] = b"tandem workgroup approval key\0v1";
+
+/// DPAPI (`CryptProtectData`, this user's scope, no UI) over `data` with `KEY_ENTROPY`, or the
+/// reverse. None on any failure.
+#[cfg(windows)]
+fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData};
+    let input = CRYPT_INTEGER_BLOB { cbData: u32::try_from(data.len()).ok()?, pbData: data.as_ptr() as *mut u8 };
+    let entropy = CRYPT_INTEGER_BLOB { cbData: KEY_ENTROPY.len() as u32, pbData: KEY_ENTROPY.as_ptr() as *mut u8 };
+    let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // SAFETY: the blobs point at live buffers of the lengths given (DPAPI only reads them); the
+    // output is copied out and freed once.
+    unsafe {
+        let ok = if protect {
+            CryptProtectData(&input, std::ptr::null(), &entropy, std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+        } else {
+            CryptUnprotectData(&input, std::ptr::null_mut(), &entropy, std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+        };
+        if ok == 0 || out.pbData.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+        if !protect {
+            std::ptr::write_bytes(out.pbData, 0, out.cbData as usize);
+        }
+        LocalFree(out.pbData as HLOCAL);
+        Some(bytes)
+    }
+}
+
+/// The key as the key file holds it: protected for this user (`dpapi`).
+#[cfg(windows)]
+pub fn protect_key(key: &[u8; KEY_LEN]) -> Option<Vec<u8>> {
+    dpapi(key, true)
+}
+
+/// The key a key file's bytes hold, when this user's DPAPI unprotects them with Tandem's entropy
+/// into exactly a key. Plain bytes, another user's or another install's blob: None.
+#[cfg(windows)]
+pub fn unprotect_key(blob: &[u8]) -> Option<[u8; KEY_LEN]> {
+    let plain = dpapi(blob, false)?;
+    plain.as_slice().try_into().ok()
+}
+
+/// The install's approval key in `dir` (Tandem's settings folder), made when absent. The file holds
+/// the key protected with DPAPI for this user (`protect_key`) and is read only when it is this
+/// user's own owner-only file (`localfs::is_owner_only`), never through a link. So no file copied
+/// in (an archive's, through any name) can be a key: one that is not owner-only or does not
+/// unprotect is removed (through the handle that judged it, never a file another Tandem put there
+/// since) and a fresh key made, so every earlier approval asks again (Task 9 findings r2). A new
+/// key is written whole to an owner-only temporary file and then given the name only if no other
+/// Tandem gave it one first (then that key is read), so no reader ever sees half a key. None when
+/// the folder or file cannot be used: then nothing restores unasked.
 #[cfg(windows)]
 pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
     use crate::localfs;
     use std::io::{Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
     let dir = localfs::LocalPath::judge(dir)?;
     localfs::create_dir_all(&dir).ok()?;
     let file = dir.unfollowed(KEY_FILE)?;
+    // A file at the name: its key, or None after removing it.
     let read = |file: &localfs::Unfollowed| -> std::io::Result<Option<[u8; KEY_LEN]>> {
+        const DELETE: u32 = 0x0001_0000;
+        const READ_CONTROL: u32 = 0x0002_0000;
         let mut f = localfs::open_unfollowed(file, |o| {
-            o.read(true);
+            o.access_mode(windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL | DELETE).share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
         })?;
-        let st = localfs::file_stat(&f)?;
-        if !st.is_file || st.is_reparse {
-            return Err(std::io::Error::other("not a plain file"));
+        let mut blob = Vec::new();
+        let key = if localfs::is_owner_only(&f) && (&mut f).take(4096).read_to_end(&mut blob).is_ok() { unprotect_key(&blob) } else { None };
+        if key.is_none() {
+            delete_open(&f)?;
         }
-        let mut k = [0u8; KEY_LEN];
-        let mut rest = Vec::new();
-        if st.len != KEY_LEN as u64 || f.read_exact(&mut k).is_err() || f.take(1).read_to_end(&mut rest)? != 0 {
-            return Ok(None);
-        }
-        Ok(Some(k))
+        Ok(key)
     };
-    for _ in 0..2 {
+    for _ in 0..8 {
         match read(&file) {
             Ok(Some(k)) => return Some(k),
-            Ok(None) => localfs::remove_unfollowed(&file).ok()?,
+            Ok(None) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // Another Tandem holds it open for writing or removing: read again.
+            Err(e) if e.raw_os_error() == Some(32) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
             Err(_) => return None,
         }
         let mut k = [0u8; KEY_LEN];
         getrandom::fill(&mut k).ok()?;
-        match localfs::create_owner_only(&file) {
-            Ok(mut f) => {
-                f.write_all(&k).ok()?;
-                f.sync_all().ok()?;
-                return Some(k);
-            }
-            // Another copy of Tandem made it first: read that one.
+        let blob = protect_key(&k)?;
+        let temp = dir.unfollowed(format!("{KEY_FILE}.{}.tmp", uuid::Uuid::new_v4()))?;
+        let written = localfs::create_owner_only(&temp).and_then(|mut f| f.write_all(&blob).and_then(|()| f.sync_all()));
+        if written.is_err() {
+            let _ = localfs::remove_unfollowed(&temp);
+            return None;
+        }
+        let named = rename_new(&temp, &file);
+        let _ = localfs::remove_unfollowed(&temp);
+        match named {
+            Ok(()) => return Some(k),
+            // Another copy of Tandem named its key first: read that one.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => return None,
         }
     }
     None
+}
+
+/// Marks the open file (opened with DELETE access) for removal when its handles close: the very
+/// file that was judged, whatever has the name by then.
+#[cfg(windows)]
+fn delete_open(f: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle};
+    let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    // SAFETY: an open handle and a structure of the size given.
+    let ok = unsafe { SetFileInformationByHandle(f.as_raw_handle() as _, FileDispositionInfo, &info as *const _ as *const _, std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32) };
+    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// `from` renamed to `to` only when nothing has that name (`MoveFileExW` without
+/// `MOVEFILE_REPLACE_EXISTING`): AlreadyExists otherwise. The file keeps its own DACL.
+#[cfg(windows)]
+fn rename_new(from: &crate::localfs::Unfollowed, to: &crate::localfs::Unfollowed) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let (a, b) = (wide(from.path()), wide(to.path()));
+    // SAFETY: both NUL-terminated and live across the call.
+    let ok = unsafe { windows_sys::Win32::Storage::FileSystem::MoveFileExW(a.as_ptr(), b.as_ptr(), 0) };
+    if ok != 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    // ERROR_ALREADY_EXISTS (183) / ERROR_FILE_EXISTS (80).
+    if matches!(e.raw_os_error(), Some(183) | Some(80)) { Err(std::io::ErrorKind::AlreadyExists.into()) } else { Err(e) }
 }
 
 #[cfg(test)]
@@ -848,7 +940,7 @@ mod tests {
         assert!(digest_ok(&sealed), "a seal reads back as an approval");
     }
 
-    /// The key is made owner-only once and read back the same; a file of another size is replaced.
+    /// The key is made owner-only once and read back the same; a file that does not unprotect is replaced.
     #[cfg(windows)]
     #[test]
     fn the_approval_key_is_made_once_and_owner_only() {
@@ -862,8 +954,73 @@ mod tests {
         std::fs::write(dir.join(KEY_FILE), b"short").unwrap();
         let again = key_in(&dir).expect("replaced");
         assert_ne!(again, first);
-        assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap().len(), KEY_LEN);
+        assert_eq!(unprotect_key(&std::fs::read(dir.join(KEY_FILE)).unwrap()), Some(again), "the file holds the key protected");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Task 9 findings r2 (Critical): a key file that came from anywhere but this install's own
+    /// protect call is no key. Plain bytes (an archive's, an older Tandem's) do not unprotect, and
+    /// the install's own protected bytes in a file without the owner-only DACL (copied in) are not
+    /// read: each time a fresh owner-only key replaces the file, so every earlier approval asks.
+    #[cfg(windows)]
+    #[test]
+    fn a_key_file_copied_in_is_no_key() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("tandem-wg-key-copied-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = crate::localfs::LocalPath::judge(&dir).unwrap().unfollowed(KEY_FILE).unwrap();
+        // Planted plain bytes, even in an owner-only file.
+        let planted = [9u8; KEY_LEN];
+        crate::localfs::create_owner_only(&file).unwrap().write_all(&planted).unwrap();
+        let made = key_in(&dir).expect("a fresh key");
+        assert_ne!(made, planted, "plain bytes in the key file are never the key");
+        assert_eq!(key_in(&dir), Some(made), "the fresh key reads back");
+        // The install's own protected bytes, but in a file with an inherited DACL.
+        let bytes = std::fs::read(dir.join(KEY_FILE)).unwrap();
+        assert_ne!(bytes.len(), KEY_LEN, "the file holds the protected key, not the key");
+        std::fs::remove_file(dir.join(KEY_FILE)).unwrap();
+        std::fs::write(dir.join(KEY_FILE), &bytes).unwrap();
+        let again = key_in(&dir).expect("a fresh key");
+        assert_ne!(again, made, "a key file without the owner-only DACL is not read");
+        let sddl = crate::localfs::dacl_sddl(&file).unwrap();
+        assert!(sddl.contains("D:P(A;;FA;;;S-") && sddl.matches("(A;").count() == 1, "{sddl}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Task 9 findings r2 (minor): copies of Tandem starting together all end with the one key on
+    /// disk: a key is named only whole and only when no other has the name.
+    #[cfg(windows)]
+    #[test]
+    fn tandems_starting_together_share_one_key() {
+        for round in 0..10 {
+            let dir = std::env::temp_dir().join(format!("tandem-wg-key-race-{}-{round}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let got: Vec<Option<[u8; KEY_LEN]>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..6).map(|_| s.spawn(|| key_in(&dir))).collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let on_disk = key_in(&dir).expect("a key");
+            assert!(got.iter().all(|k| *k == Some(on_disk)), "round {round}: {got:?}");
+            let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            assert_eq!(names, [KEY_FILE], "no temporary file is left");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Task 9 findings r2 (Critical): the key is DPAPI-protected for this user with Tandem's own
+    /// entropy, so the same bytes protected without it (or by anyone else) do not unprotect.
+    #[cfg(windows)]
+    #[test]
+    fn the_key_unprotects_only_with_its_entropy() {
+        let key = [5u8; KEY_LEN];
+        let blob = protect_key(&key).expect("protected");
+        assert_eq!(unprotect_key(&blob), Some(key));
+        assert_eq!(unprotect_key(&key), None, "plain bytes");
+        let mut bent = blob.clone();
+        let last = bent.len() - 1;
+        bent[last] ^= 1;
+        assert_eq!(unprotect_key(&bent), None, "a changed blob");
     }
 
     /// Task 9 review I2: the decision steps for one restore, in order, and where the claims are kept.

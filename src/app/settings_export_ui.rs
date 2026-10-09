@@ -61,13 +61,46 @@ fn is_reparse(p: &Path) -> bool {
     p.symlink_metadata().is_ok_and(|m| m.file_attributes() & 0x400 != 0)
 }
 
+/// The name the existing entry at `p` really has (its final path's last part, the reparse point
+/// itself never followed); None when there is none.
+fn final_name(p: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, GetFinalPathNameByHandleW};
+    let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(p).ok()?;
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: an open handle and a buffer of the length given.
+    let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]));
+    Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Whether the archive's entry `name` may be copied to `dest`: never a name Import keeps out
+/// (`se::kept_from_import`: hidden, excluded, or one Windows reads as another entry), and never
+/// onto an existing entry whose real name is another (an alias the rule did not foresee) or is
+/// itself kept out (Task 9 findings r2).
+fn importable(name: &str, dest: &Path, top: bool) -> bool {
+    if se::kept_from_import(name, top) {
+        return false;
+    }
+    match final_name(dest) {
+        Some(real) => real.eq_ignore_ascii_case(name) && !se::kept_from_import(&real, top),
+        None => !dest.exists() && dest.symlink_metadata().is_err(),
+    }
+}
+
 /// `deepCopyContentsOfDirectory` (`IE:1163-1208`): every entry of `src` but the hidden ones
-/// into `dst`, folders recursively; at the top level the excluded names stay out too. Links and
-/// junctions are not followed (Decision: nothing outside the folder is copied).
+/// into `dst`, folders recursively; at the top level the excluded names stay out too, and at
+/// every level a name that is (or reaches) another entry (`importable`). Links and junctions are
+/// not followed (Decision: nothing outside the folder is copied).
 fn copy_contents(src: &Path, dst: &Path, top: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for (name, path) in entries(src) {
-        if name.starts_with('.') || (top && se::excluded(&name)) || is_reparse(&path) {
+        if !importable(&name, &dst.join(&name), top) || is_reparse(&path) {
             continue;
         }
         if path.is_dir() {
@@ -163,10 +196,32 @@ fn appdata_tandem() -> PathBuf {
 /// (11d's rule for script zips, `sa::unsafe_entry`), so nothing the import reads or copies can
 /// reach outside the staging folder or onto a network path.
 fn staged_links(staging: &Path) -> Result<(), String> {
+    if let Some(entry) = alias_entry(staging) {
+        let shown = entry.strip_prefix(staging).unwrap_or(&entry).display().to_string();
+        return Err(crate::zip_check::refused(&format!("\u{201c}{shown}\u{201d} has a name Windows reads as another item")));
+    }
     match crate::script_archive::unsafe_entry(staging, &super::scripts_app::stage_entries) {
         Some(entry) => Err(crate::script_archive::unsafe_entry_text(entry.strip_prefix(staging).unwrap_or(&entry))),
         None => Ok(()),
     }
+}
+
+/// The first entry under `dir` whose name Windows may read as another entry (`se::aliased`: a
+/// trailing dot or space, a stream, a device name, an 8.3 short name), walked without following
+/// anything (Task 9 findings r2: such a name could reach a protected file of `%APPDATA%\Tandem`).
+fn alias_entry(dir: &Path) -> Option<PathBuf> {
+    for (name, stat) in super::scripts_app::stage_entries(dir) {
+        let path = dir.join(&name);
+        if se::aliased(&name) {
+            return Some(path);
+        }
+        if stat == crate::script_archive::Stat::Dir {
+            if let Some(found) = alias_entry(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` extracted into a fresh
@@ -703,6 +758,94 @@ mod tests {
         assert_eq!(std::fs::read_to_string(tandem.join("profiles.toml")).unwrap(), "");
         assert!(tandem.join(r"state\s.json").is_file());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 9 findings r2 (Critical), on the real file system: an archive's Application Support
+    /// entry that Windows reads as a protected entry (a trailing dot or space beside the excluded
+    /// name itself, an 8.3 short name, a case Windows folds) never replaces or enters it. Each
+    /// alias is its own archive, so one cannot hide another's short name.
+    #[test]
+    fn import_never_reaches_a_protected_entry_through_an_alias() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let verbatim = |p: &Path| PathBuf::from(format!(r"\\?\{}", p.display()));
+        let short_name = |p: &Path| -> Option<String> {
+            let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: a NUL-terminated path and a buffer of the length given.
+            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+            let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n.min(buf.len())]));
+            let name = short.file_name()?.to_string_lossy().into_owned();
+            (n > 0 && name != p.file_name()?.to_string_lossy()).then_some(name)
+        };
+        let root = temp("alias");
+        let tandem = root.join("Tandem");
+        std::fs::create_dir_all(&tandem).unwrap();
+        let files = [crate::workgroup_restore::KEY_FILE, "python-api-consent", "settings.toml", "profiles.toml", "host.log"];
+        let dirs = ["Scripts", "uv", IMPORT_SCRIPTS_DIR];
+        for f in files {
+            std::fs::write(tandem.join(f), format!("ours: {f}")).unwrap();
+        }
+        for d in dirs {
+            std::fs::create_dir_all(tandem.join(d)).unwrap();
+        }
+        // (the staged name, whether it is a folder, whether the archive also holds the excluded name itself)
+        let mut cases: Vec<(String, bool, bool)> = Vec::new();
+        for f in files {
+            for tail in [".", " ", ". ", " ."] {
+                cases.push((format!("{f}{tail}"), false, true));
+            }
+            match short_name(&tandem.join(f)) {
+                Some(s) => {
+                    // The final-path check sees through the alias by itself too.
+                    assert_eq!(final_name(&tandem.join(&s)).as_deref(), Some(f), "{s}");
+                    assert!(!importable("anything", &tandem.join(&s), false), "{s}");
+                    cases.push((s, false, false));
+                }
+                None => eprintln!("no 8.3 name for {f} on this volume"),
+            }
+        }
+        for d in dirs {
+            cases.push((format!("{d}."), true, false));
+            cases.push((format!("{d} "), true, false));
+            if let Some(s) = short_name(&tandem.join(d)) {
+                cases.push((s, true, false));
+            }
+        }
+        cases.push(("\u{17f}cripts".into(), true, false));
+        let before = entries(&tandem).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert!(cases.iter().any(|(n, _, _)| n.contains('~')), "8.3 names are on for this volume: {cases:?}");
+        for (i, (name, dir, literal)) in cases.iter().enumerate() {
+            let staging = se::staging_dir(&root, &format!("A{i}"));
+            let support = staging.join("app-support");
+            std::fs::create_dir_all(&support).unwrap();
+            if *dir {
+                std::fs::create_dir_all(verbatim(&support.join(name))).unwrap();
+                std::fs::write(verbatim(&support.join(name).join("evil.py")), "from the archive").unwrap();
+            } else {
+                std::fs::write(verbatim(&support.join(name)), "from the archive").unwrap();
+            }
+            if *literal {
+                let plain = name.trim_end_matches(['.', ' ']);
+                std::fs::write(support.join(plain), "from the archive").unwrap();
+            }
+            std::fs::write(support.join("notes.txt"), "kept").unwrap();
+            std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+            assert!(finish_import(&tandem).is_empty());
+            for f in files {
+                assert_eq!(std::fs::read_to_string(tandem.join(f)).unwrap(), format!("ours: {f}"), "{name:?} reached {f}");
+            }
+            for d in dirs {
+                assert!(entries(&tandem.join(d)).is_empty(), "{name:?} reached {d}");
+            }
+            if se::aliased(name) {
+                assert!(!tandem.join("notes.txt").exists(), "{name:?}: an archive holding an alias is refused whole");
+            } else {
+                assert_eq!(std::fs::read_to_string(tandem.join("notes.txt")).unwrap(), "kept", "{name:?}: the rest is still imported");
+                std::fs::remove_file(tandem.join("notes.txt")).unwrap();
+            }
+            assert_eq!(entries(&tandem).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), before, "{name:?} made a new entry");
+        }
+        let _ = std::fs::remove_dir_all(verbatim(&root));
     }
 
     #[test]

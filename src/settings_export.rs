@@ -91,6 +91,33 @@ pub fn excluded(name: &str) -> bool {
     APP_SUPPORT_EXCLUDE.iter().any(|p| glob_match(name, p))
 }
 
+/// Whether Import All never writes the entry `name` of the archive's Application Support (`top`:
+/// a direct entry of `%APPDATA%\Tandem`). At every level: a hidden name, and any name Windows
+/// reads as another entry (`zip_check::bad_part`: a trailing dot or space, a ":" stream, a device
+/// name, a control character; or an 8.3 short name's "~" and digit), so no alias reaches a
+/// protected entry whatever the volume. At the top, the excluded names too, matched on the name
+/// with its case folded as NTFS folds it (one character for one: a long s is an S, a Kelvin sign
+/// a K), not only ASCII's (Task 9 findings r2).
+pub fn kept_from_import(name: &str, top: bool) -> bool {
+    let folded = |up: bool| -> String {
+        name.chars()
+            .map(|c| {
+                let mut one = if up { c.to_uppercase().collect::<Vec<_>>() } else { c.to_lowercase().collect::<Vec<_>>() };
+                if one.len() == 1 { one.remove(0) } else { c }
+            })
+            .collect()
+    };
+    name.starts_with('.') || aliased(name) || (top && [name.to_string(), folded(true), folded(false)].iter().any(|n| excluded(n)))
+}
+
+/// Whether Windows may read the entry name `name` as another entry: `zip_check::bad_part` (a
+/// trailing dot or space, a ":" stream, a device name, a control character, empty) or the "~" and
+/// digit of an 8.3 short name. An export never holds one (`kept_from_import`), so an archive that
+/// does is refused whole.
+pub fn aliased(name: &str) -> bool {
+    crate::zip_check::bad_part(name).is_some() || name.as_bytes().windows(2).any(|w| w[0] == b'~' && w[1].is_ascii_digit())
+}
+
 /// The User Defaults entity's file: the syncable settings and the profiles (iTerm2's
 /// `UserDefaults.plist`, `IE:829-835`).
 pub const USER_DEFAULTS_FILE: &str = "UserDefaults.toml";
@@ -305,6 +332,42 @@ mod tests {
         assert!(!glob_match("a.tmpx", "*.tmp"));
         assert!(glob_match("a.b.c", "*.*.*"));
         assert!(!excluded("Scripts2"));
+    }
+
+    /// Task 9 findings r2 (Critical): Import All never writes a name Windows reads as another
+    /// entry (a trailing dot or space, an alternate data stream, an 8.3 short name, a device
+    /// name), at any level, so no alias reaches a protected entry; at the top the excluded and
+    /// hidden names stay out as before, whatever their ASCII case.
+    #[test]
+    fn import_refuses_every_name_windows_aliases() {
+        for name in [
+            "workgroup-approval-key.",
+            "workgroup-approval-key ",
+            "workgroup-approval-key. .",
+            "workgroup-approval-key:x",
+            "workgroup-approval-key::$DATA",
+            "WORKGR~1",
+            "SETTIN~1.TOM",
+            "python-api-consent.",
+            "Scripts.",
+            "SCRIPT~1",
+            "uv ",
+            "CON",
+            "nul.txt",
+            "a\u{1}b",
+            "",
+        ] {
+            assert!(kept_from_import(name, true), "top: {name:?}");
+            assert!(kept_from_import(name, false), "inside: {name:?}");
+        }
+        // Case folded as NTFS folds it, past ASCII: a long s is an S, a Kelvin sign a K.
+        for name in ["WORKGROUP-APPROVAL-KEY", "Settings.Toml", ".import-scripts", "IMPORT-PENDING", "\u{17f}cripts", "wor\u{212a}group-approval-key"] {
+            assert!(kept_from_import(name, true), "{name}");
+        }
+        for name in ["state", "snippets.json", "notes~.txt", "a~b", "shell_integration", "x.y"] {
+            assert!(!kept_from_import(name, true), "{name}");
+        }
+        assert!(!kept_from_import("settings.toml", false), "excluded names are top-level only");
     }
 
     #[test]

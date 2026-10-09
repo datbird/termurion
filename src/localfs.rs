@@ -161,6 +161,19 @@ pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
     }
 }
 
+/// Whether the open file is this user's own plain single-link file with the owner-only DACL
+/// `create_owner_only` makes: owned by the user's SID, protected, one allow entry (full access)
+/// for that SID. The handle was opened with read access.
+#[cfg(windows)]
+pub fn is_owner_only(f: &File) -> bool {
+    let Ok(st) = file_stat(f) else { return false };
+    let owner_only = |sid: &str| dacl_sddl_of(f).is_ok_and(|s| s == format!("D:P(A;;FA;;;{sid})"));
+    st.is_file
+        && !st.is_reparse
+        && link_count(f).is_ok_and(|n| n == 1)
+        && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
+}
+
 /// Opens the SQLite database at a judged path (created when absent, no URI parsing, no shared
 /// mutex). The gate's one database opener: a path from outside reaches SQLite only as a `LocalPath`.
 pub fn open_database(p: &LocalPath) -> rusqlite::Result<rusqlite::Connection> {
@@ -771,6 +784,8 @@ mod tests {
         ("app/settings_export_ui.rs", "entries", 1, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "export_entity", 3, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "export_into", 3, "Tandem's own settings folders and its export and import staging folders"),
+        ("app/settings_export_ui.rs", "final_name", 1, "Tandem's own settings folders and its export and import staging folders"),
+        ("app/settings_export_ui.rs", "importable", 2, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "finish_import", 6, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "is_reparse", 1, "Tandem's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "restored_scripts_done", 1, "Tandem's own settings folders and its export and import staging folders"),
