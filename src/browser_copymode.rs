@@ -99,6 +99,7 @@ const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of c
             if (!on) { return; }
             if (e.metaKey) { return; }
             if (e.isComposing || e.keyCode === 229) { return; }
+            if (e.key === 'F10' || (e.altKey && e.key === 'F4')) { return; }
             e.preventDefault();
             e.stopImmediatePropagation();
             post({ key: String(e.key).slice(0, 32), ctrl: e.ctrlKey === true, alt: e.altKey === true, shift: e.shiftKey === true });
@@ -110,6 +111,7 @@ const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of c
             if (!on) { return; }
             if (e.metaKey) { return; }
             if (e.isComposing || e.keyCode === 229) { return; }
+            if (e.key === 'F10' || (e.altKey && e.key === 'F4')) { return; }
             e.preventDefault();
             e.stopImmediatePropagation();
         }, true);
@@ -399,6 +401,9 @@ mod tests {
         let up = &up[..up.find("}, true);").unwrap()];
         assert!(up.find("isTrusted").unwrap() < up.find("preventDefault").unwrap() && up.contains("stopImmediatePropagation") && up.contains("e.metaKey") && up.contains("!on"));
         assert!(!up.contains("post("), "a release is never reported");
+        // Alt+F4 and F10 are the host's (the gate lets them through): neither listener touches them.
+        let sys = "e.key === 'F10' || (e.altKey && e.key === 'F4')";
+        assert!(listener.find(sys).unwrap() < listener.find("preventDefault").unwrap() && up.find(sys).unwrap() < up.find("preventDefault").unwrap());
         // A secret that is not plain letters and digits builds no script and no step.
         assert!(script("a'b").is_err() && user_script("").is_err() && keys_script("a b").is_err());
         assert_eq!(Model::default().key("j", "a'b"), Step::Nothing);
