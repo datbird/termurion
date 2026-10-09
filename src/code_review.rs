@@ -613,7 +613,7 @@ mod tests {
         }
         assert!(is_review_file(&a) && !is_review_file("notes.txt") && !is_review_file("code-review-system-prompt-.txt.exe"));
         assert_eq!(cap_system_prompt(&"x".repeat(70_000)).len(), SYSTEM_PROMPT_CAP);
-        assert_eq!(cap_system_prompt("été").len(), "été".len());
+        assert_eq!(cap_system_prompt("\u{e9}t\u{e9}").len(), "\u{e9}t\u{e9}".len());
     }
 
     #[cfg(windows)]

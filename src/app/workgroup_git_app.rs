@@ -820,6 +820,16 @@ mod tests {
         assert!(line.find("launch_verdict(").unwrap() < line.find("gs::pane_line(").expect("the one rule"), "the verdict first");
     }
 
+    /// Final review minor 7 (invariant 6): no workgroup or code review source holds a raw non-ASCII
+    /// character; one in code is a \u{...} escape.
+    #[test]
+    fn workgroup_sources_are_ascii() {
+        for (name, src) in workgroup_sources() {
+            let bad: Vec<(usize, char)> = src.lines().enumerate().flat_map(|(i, l)| l.chars().filter(|c| !c.is_ascii()).map(move |c| (i + 1, c))).collect();
+            assert!(bad.is_empty(), "{name}: {bad:?}");
+        }
+    }
+
     /// Final review Important 1 (class): every function in workgroup or code review code that turns a
     /// template's program into something to run (`resolve_on_path(` of a name, `argv_line(`) takes git
     /// through the one refusal (`refuse_git(`) or the one git rule (`pane_line(`), or goes through a function
