@@ -523,7 +523,9 @@ mod tests {
                 _ => format!(r"C:\bin\{n}.exe"),
             }))
         };
-        for argv0 in ["git", "GIT.exe", r"C:\Program Files\Git\cmd\git.exe", "mygit", "Git-Log", r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe"] {
+        // Final findings r2 3: every name Windows reads as git.exe (trailing dots and spaces, a stream)
+        // or as another item (an 8.3 short name).
+        for argv0 in ["git", "GIT.exe", r"C:\Program Files\Git\cmd\git.exe", "mygit", "Git-Log", r"C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe", "git.exe.", "git.exe..", "git.exe ", "git. .", r"C:\Git\cmd\git.exe.", "git.exe::$DATA", "GIT~1.EXE"] {
             assert_eq!(review_program(argv0, &path_of), Err(crate::workgroup_run::GIT_ONLY_IN_DIFF.to_string()), "{argv0}");
         }
         assert_eq!(review_program("claude", &path_of), Ok(PathBuf::from(r"C:\bin\claude.exe")));

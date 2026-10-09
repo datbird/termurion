@@ -563,21 +563,30 @@ pub fn launch(git: &Path, vet: &Vetted, args: &[&str]) -> Result<(String, Vec<St
     Ok((line, launch_env()))
 }
 
-/// Whether `program` is git: its file name, without `.exe`, is `git` or Git for Windows' dashed form
-/// `git-<name>` (libexec's `git-diff.exe` is `git diff`), in any case.
+/// Whether `program` is git: its file name as Windows reads it, without `.exe`, is `git` or Git for
+/// Windows' dashed form `git-<name>` (libexec's `git-diff.exe` is `git diff`), in any case; or its name
+/// is one Windows reads as another item (`settings_export::aliased`, the one alias rule: a trailing dot
+/// or space, a stream, a device, an 8.3 short name), which could be git (final findings r2 3).
 pub fn is_git(program: &Path) -> bool {
-    dashed(program).is_some()
+    dashed(program).is_some() || program.file_name().and_then(|n| n.to_str()).is_some_and(crate::settings_export::aliased)
 }
 
 /// The subcommand a git program's name carries: Some("") for `git`, Some("diff") for `git-diff`
 /// (lowercased: Windows names are not case-sensitive, git's subcommands are), None for any other program.
+/// The name is the one Windows opens: a stream suffix cut, then trailing dots and spaces (`git.exe.`
+/// and `git.exe::$DATA` are git.exe).
 fn dashed(program: &Path) -> Option<String> {
-    let stem = program.file_stem()?.to_str()?.to_ascii_lowercase();
+    let name = program.file_name()?.to_str()?;
+    let name = name.split(':').next().unwrap_or(name).trim_end_matches(['.', ' ']);
+    let stem = Path::new(name).file_stem()?.to_str()?.to_ascii_lowercase();
     if stem == "git" {
         return Some(String::new());
     }
     stem.strip_prefix("git-").filter(|s| !s.is_empty()).map(str::to_string)
 }
+
+/// Why a diff program whose name Windows reads as another item does not start.
+pub const ALIASED_PROGRAM: &str = "The diff program's name is one Windows reads as another file, so it did not start.";
 
 /// THE rule for a program a workgroup starts in a pane from a template's tokens: git (named git, or a
 /// name that resolves to a file that is git) runs only through `launch`, with the vetted `git`; any other
@@ -590,6 +599,10 @@ pub fn pane_line(git: &Path, vet: &Vetted, tokens: &[String], resolve: &dyn Fn(&
     if let Some(sub) = dashed(Path::new(program)).or_else(|| found.as_deref().and_then(dashed)) {
         let args: Vec<&str> = (!sub.is_empty()).then_some(sub.as_str()).into_iter().chain(rest).collect();
         return launch(git, vet, &args);
+    }
+    // A name Windows reads as another item may be git under a name the check cannot read.
+    if is_git(Path::new(program)) || found.as_deref().is_some_and(is_git) {
+        return Err(ALIASED_PROGRAM.into());
     }
     let found = found.ok_or("The diff program was not found, so it did not start.")?;
     Ok((crate::workgroup_run::argv_line(&found, &tokens[1..])?, Vec::new()))
@@ -3076,6 +3089,14 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
         for (tokens, resolved) in [(words(&["git-credential-manager", "get"]), r"C:\Git\mingw64\bin\git-credential-manager.exe"), (words(&["git-upload-pack", "."]), r"C:\Git\mingw64\bin\git-upload-pack.exe")] {
             assert!(pane_line(git, &vet, &tokens, &to(resolved)).is_err(), "{tokens:?}");
         }
+        // Final findings r2 3: a name Windows reads as git.exe (trailing dots or spaces, a stream) is git,
+        // through the launch; a name Windows reads as another item it cannot read (an 8.3 short name)
+        // is refused.
+        for (tokens, resolved) in [(words(&["git.exe.", "diff"]), r"C:\Git\cmd\git.exe."), (words(&["git.exe ..", "diff"]), r"C:\Git\cmd\git.exe .."), (words(&["git.exe::$DATA", "diff"]), r"C:\Git\cmd\git.exe::$DATA"), (words(&["d", "diff"]), r"C:\Git\cmd\git.exe.")] {
+            let (line, _) = pane_line(git, &vet, &tokens, &to(resolved)).expect("a launch");
+            assert!(line.starts_with(r"C:\Git\cmd\git.exe "), "{tokens:?}: the vetted git, {line}");
+        }
+        assert_eq!(pane_line(git, &vet, &words(&["GIT~1.EXE", "diff"]), &to(r"C:\Git\cmd\GIT~1.EXE")), Err(ALIASED_PROGRAM.to_string()));
         let (line, env) = pane_line(git, &vet, &words(&["delta", "x"]), &to(r"C:\d\delta.exe")).unwrap();
         assert_eq!((line.as_str(), env.len()), (r"C:\d\delta.exe x", 0), "any other program as it resolves");
         assert!(pane_line(git, &vet, &words(&["nope"]), &|_: &Path| None).is_err());

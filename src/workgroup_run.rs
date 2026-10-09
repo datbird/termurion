@@ -560,6 +560,13 @@ mod tests {
             // Git for Windows' dashed programs are git too (round 4).
             Plan::Line(r#""C:\Program Files\Git\mingw64\libexec\git-core\git-diff.exe" HEAD"#.into()),
             Plan::Argv(vec!["Git-Log".into()]),
+            // Final findings r2 3: names Windows reads as git.exe or as another item.
+            Plan::Line("git.exe. log".into()),
+            Plan::Line("git.exe.. log".into()),
+            Plan::Line(r#""git.exe " log"#.into()),
+            Plan::Line(r#""C:\Git\cmd\git.exe." log"#.into()),
+            Plan::Argv(vec!["git.exe::$DATA".into()]),
+            Plan::Argv(vec!["GIT~1.EXE".into()]),
         ] {
             assert!(member_line(plan.clone(), &path_of).is_err(), "{plan:?}");
         }
