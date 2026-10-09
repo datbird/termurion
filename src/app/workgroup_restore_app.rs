@@ -516,7 +516,6 @@ impl App {
                 (pane.auto_send_clippings, pane.auto_request_review) = crate::workgroup::restored_toggles(|k| if k == crate::workgroup::AUTO_SEND_KEY { saved.0 } else { k == crate::workgroup::AUTO_REQUEST_KEY && saved.1 }, true);
             }
         }
-        let _ = self.api_vars.set_user(crate::api_vars::Scope::Session, &leader.to_string(), "user.gitBase", serde_json::json!(inst.git_base));
         // The leader takes the root's display name (`nameLeader`, no revert snapshot: its saved profile
         // already carries the workgroup's name).
         if let Some(root) = w.root().filter(|r| !r.display_name.is_empty()) {

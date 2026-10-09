@@ -346,8 +346,6 @@ impl App {
             return;
         }
         inst.git_base = base.clone();
-        let leader = inst.leader;
-        let _ = self.api_vars.set_user(crate::api_vars::Scope::Session, &leader.to_string(), "user.gitBase", serde_json::json!(base));
         // The recents are the person's own list in the stored globals.
         let saved: Vec<String> = self.globals.get(wgit::RECENTS_KEY).and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default();
         let list = wgit::recents(&saved, &base, wgit::MAX_RECENTS);

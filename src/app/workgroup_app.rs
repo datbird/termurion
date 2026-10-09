@@ -148,6 +148,11 @@ impl Instances {
         self.map.contains_key(id)
     }
 
+    /// The base of the instance `pane` leads: iTerm2's session variable gitBase, on the leader only.
+    pub fn git_base_of_leader(&self, pane: PaneId) -> Option<&str> {
+        self.map.values().find(|i| i.leader == pane).map(|i| i.git_base.as_str())
+    }
+
     /// Registers an instance a restore rebuilt (its id was resolved against the live ones).
     pub fn add(&mut self, mut inst: Instance) {
         self.entered += 1;
@@ -303,7 +308,6 @@ impl App {
         let Some(root) = w.root().cloned() else { return false };
         let Some(entry_tab) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return false };
         let instance_id = run::mint_instance_id();
-        let _ = self.api_vars.set_user(crate::api_vars::Scope::Session, &pane.to_string(), "user.gitBase", serde_json::json!("HEAD"));
         let mut inst = Instance {
             id: instance_id.clone(),
             workgroup: w.clone(),
@@ -1068,6 +1072,30 @@ mod tests {
         // Restoring an instance again gives it a later place.
         all.add(inst("wg-Z", 40));
         assert_eq!(all.in_order().last().map(|i| i.id.as_str()), Some("wg-Z"));
+    }
+
+    /// Final review 3b: the base is iTerm2's built-in session variable gitBase on the leader, read from
+    /// the live instance (so it is gone when the instance is, and a failed entry leaves none); no user
+    /// variable is written for it.
+    #[test]
+    fn the_base_is_the_leaders_git_base_variable() {
+        let mut all = Instances::default();
+        let mut i = inst("wg-A", 10);
+        i.git_base = "main".into();
+        all.add(i);
+        assert_eq!(all.git_base_of_leader(10), Some("main"));
+        assert_eq!(all.git_base_of_leader(11), None, "only the leader carries it");
+        assert_eq!(all.git_base_of_leader(99), None);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for dir in [root.clone(), root.join("app")] {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+                let live = text.split("#[cfg(test)]").next().unwrap();
+                assert!(!live.contains("\"user.gitBase\""), "{}", e.path().display());
+            }
+        }
+        let vars = include_str!("prompted_ui.rs");
+        assert!(vars.contains("if let Some(base) = self.workgroups.git_base_of_leader(pane) {\n            v.session.insert(\"gitBase\", base.to_string());"), "the session variable comes from the live instance");
     }
 
     /// The facts the Cockpit, the snapshot and the clipping tools read come from one place.
