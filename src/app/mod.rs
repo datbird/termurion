@@ -510,6 +510,12 @@ pub struct App {
     ctx_pending: Option<semantic_ui::CtxPending>,
     /// The Find Globally window.
     global_find: Option<crate::global_find_ui::GlobalFindWindow>,
+    /// Find Globally's terminal hits for the current query, and the browser panes' hits that have
+    /// arrived (13x3 Task 6); `global_generation` counts the searches, so an answer to an older one is dropped.
+    global_hits: Vec<crate::global_find_ui::Hit>,
+    global_web: Vec<crate::global_find_ui::Hit>,
+    global_error: Option<String>,
+    global_generation: u64,
     /// The Set Named Mark window, and the pane it names a mark in.
     /// The Set Named Mark prompt, its pane, and the mark it renames (the toolbelt's Edit).
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId, Option<u32>)>,
@@ -2210,6 +2216,10 @@ pub fn run() {
         dnd_dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
         global_find: None,
+        global_hits: Vec::new(),
+        global_web: Vec::new(),
+        global_error: None,
+        global_generation: 0,
         api,
         shell: default_shell(),
         gpu: None,

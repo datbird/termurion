@@ -51,6 +51,24 @@ pub(super) fn close_commands(model: &mut Model, secret: &str) -> Vec<Value> {
     vec![model.clear(secret)]
 }
 
+/// The check a page answers before its global search starts (`FM:423-426`): no find script, no part.
+pub(super) const GLOBAL_PROBE_JS: &str = "return typeof window.iTermCustomFind;";
+
+/// True when the probe says the find script is there (`undefined` is a page without it).
+pub(super) fn global_script_present(answer: &Result<Value, String>) -> bool {
+    matches!(answer, Ok(Value::String(s)) if s == "object" || s == "function")
+}
+
+/// The commands a Find Globally search sends one page, the owed hide first (`FM:414-436`).
+pub(super) fn global_commands(model: &mut Model, query: &str, mode: crate::find::Mode, secret: &str) -> Vec<Value> {
+    model.global_start(query, browser_find::browser_mode(mode, query), secret)
+}
+
+/// Commands that reveal a picked match; nothing for an identifier the model would not hand back.
+pub(super) fn reveal_commands(model: &mut Model, identifier: &Value, secret: &str) -> Vec<Value> {
+    model.global_reveal(identifier, secret)
+}
+
 /// Opening Find with typing: the bar has the keyboard, the address field lets go.
 pub(super) fn find_takes_keyboard(address_keys: &mut bool, f: &mut FindState) {
     *address_keys = false;
@@ -247,6 +265,57 @@ impl App {
         self.redraw();
     }
 
+    /// A Find Globally search reaches every browser pane (`GSEC:443-455`): a page with the find
+    /// script (checked in the Tandem world, `FM:423-426`) clears and starts its global search; the
+    /// others contribute nothing. An answer for an older search is dropped.
+    pub(super) fn browser_global_start(&mut self, query: &str) {
+        let generation = self.global_generation;
+        let mode = self.find_mode();
+        let panes: Vec<PaneId> = self.all_tab_panes().into_iter().flat_map(|(_, _, p)| p).filter(|p| self.is_browser_pane(*p) && self.client_open(*p)).collect();
+        for pane in panes {
+            let query = query.to_string();
+            self.browser_js_call(
+                pane,
+                GLOBAL_PROBE_JS,
+                json!({}),
+                Box::new(move |app, pane, answer| {
+                    if generation != app.global_generation || !global_script_present(&answer) {
+                        return;
+                    }
+                    let Some(bv) = app.browser_views.get_mut(&pane) else { return };
+                    bv.global_gen = generation;
+                    let secret = bv.secret.clone();
+                    let cmds = global_commands(&mut bv.find, &query, mode, &secret);
+                    app.browser_find_send(pane, cmds);
+                }),
+            );
+        }
+    }
+
+    /// The one batch of a page's global stream (`GSEC:457-470`): its rows join the list and the
+    /// window is shown again. A batch for an older search, or with the window closed, is dropped.
+    pub(super) fn browser_global_results(&mut self, pane: PaneId, results: Vec<browser_find::FindResult>) {
+        if self.global_find.is_none() || self.browser_views.get(&pane).is_none_or(|b| b.global_gen != self.global_generation) {
+            return;
+        }
+        let Some(title) = self.global_title(pane) else { return };
+        self.global_web.retain(|h| h.pane != pane as u64);
+        self.global_web.extend(results.iter().map(|r| crate::global_find_ui::web_hit(pane as u64, &title, r)));
+        self.global_show();
+    }
+
+    /// A picked browser match: the page shows its global results when the last search was the
+    /// bar's, then reveals the match (`FM:438-450`).
+    pub(super) fn browser_global_reveal(&mut self, pane: PaneId, identifier: &Value) {
+        if !self.is_browser_pane(pane) || !self.client_open(pane) {
+            return;
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let secret = bv.secret.clone();
+        let cmds = reveal_commands(&mut bv.find, identifier, &secret);
+        self.browser_find_send(pane, cmds);
+    }
+
     /// The find family from the menu on browser pane `id` (`browser_find::route`). False for Find
     /// Globally, which is its own window; every other command is taken.
     pub(super) fn browser_find_command(&mut self, id: PaneId, selector: &str, label: &str) -> bool {
@@ -302,7 +371,7 @@ impl App {
                 self.redraw();
             }
             // Find Globally takes the one batch of the global stream (Task 6).
-            Update::Global(_) => {}
+            Update::Global(results) => self.browser_global_results(pane, results),
         }
     }
 }
@@ -623,5 +692,43 @@ mod tests {
         // Jump to Selection goes to the one owner; Filter and the text-view actions do nothing.
         assert!(me.contains("Route::Jump => self.browser_jump_to_selection(id)") && !me.contains("JUMP_JS"));
         assert!(me.contains("Route::Nothing => {}") && me.contains("Route::Global => return false"));
+    }
+
+    /// Find Globally on a browser pane (`GSEC:443-470`, `FM:414-450`): the search starts the page's
+    /// global stream, an older answer is dropped, a pick shows the global results once and reveals.
+    #[test]
+    fn global_reveal_follows_iterm2() {
+        // A page answers the probe: only a find script takes part.
+        assert!(global_script_present(&Ok(json!("object"))) && global_script_present(&Ok(json!("function"))));
+        assert!(!global_script_present(&Ok(json!("undefined"))) && !global_script_present(&Err("no".into())) && !global_script_present(&Ok(Value::Null)));
+        // Search("rust") with the bar's search active: clear it, clear the global, start with 40 characters of context.
+        let mut m = model();
+        let cmds = global_commands(&mut m, "rust", Mode::default(), SECRET);
+        assert_eq!(actions(&cmds), vec!["clearFind", "clearFind", "startFind"]);
+        assert_eq!(cmds[0]["instanceId"], "main_11112222333344445555666677778888");
+        assert_eq!(cmds[1]["instanceId"], "global_99990000aaaabbbbccccddddeeeeffff");
+        assert_eq!(cmds[2]["searchTerm"], "rust");
+        assert_eq!(cmds[2]["contextLength"], 40);
+        assert!(cmds.iter().all(|c| c["sessionSecret"] == SECRET));
+        // The second search of the stream does not clear the bar again.
+        assert_eq!(actions(&global_commands(&mut m, "rusty", Mode::default(), SECRET)), vec!["clearFind", "startFind"]);
+        // A pick when the last search was global sends the reveal alone; after a local search, showResults first.
+        let id = json!({"index": 2});
+        assert_eq!(actions(&reveal_commands(&mut m, &id, SECRET)), vec!["reveal"]);
+        m.start("local", browser_find::FindMode::CaseInsensitive, true, SECRET);
+        assert_eq!(actions(&reveal_commands(&mut m, &id, SECRET)), vec!["showResults", "reveal"]);
+        assert_eq!(reveal_commands(&mut m, &json!("not an object"), SECRET).len(), 0, "a bad identifier sends nothing");
+        // The wiring: generation guards, the window must be open, the pane is focused, no script text is built.
+        let me = prod(include_str!("browser_find_app.rs"));
+        let start = between(me, "pub(super) fn browser_global_start", "pub(super) fn browser_global_results");
+        assert!(start.contains("generation != app.global_generation") && start.contains("global_script_present(&answer)") && start.contains("GLOBAL_PROBE_JS") && start.contains("self.client_open(*p)"));
+        let results = between(me, "pub(super) fn browser_global_results", "pub(super) fn browser_global_reveal");
+        assert!(results.contains("b.global_gen != self.global_generation") && results.contains("self.global_find.is_none()") && results.contains("web_hit("));
+        let f = prod(include_str!("find_ui.rs"));
+        let ev = between(f, "pub(super) fn global_find_event", "fn global_focus_pane");
+        assert!(ev.contains("self.global_generation += 1") && ev.contains("self.browser_global_start(&q)") && ev.contains("GlobalEvent::PickWeb(id, identifier)"));
+        let web = between(ev, "GlobalEvent::PickWeb(id, identifier)", "GlobalEvent::Pick(id, m)");
+        assert!(web.contains("self.global_focus_pane(id)") && web.contains("self.browser_global_reveal(id, &identifier)"));
+        assert!(me.contains("Update::Global(results) => self.browser_global_results(pane, results)"));
     }
 }

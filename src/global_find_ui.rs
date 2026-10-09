@@ -5,7 +5,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
-use crate::find::Match;
+use crate::find::{Match, Pos};
 
 /// One match in one session: where it is, and a snippet of its line with the match marked.
 #[derive(Clone, Debug, PartialEq)]
@@ -16,6 +16,8 @@ pub struct Hit {
     pub snippet: String,
     /// The match's byte range in `snippet`.
     pub mark: std::ops::Range<usize>,
+    /// A browser pane's match: the page's identifier, handed back to reveal it. `m` is a placeholder.
+    pub web: Option<serde_json::Value>,
 }
 
 /// Longest snippet shown, in characters on each side of the match.
@@ -49,12 +51,43 @@ pub fn group(hits: Vec<Hit>) -> Vec<(u64, String, Vec<Hit>)> {
     out
 }
 
+/// The row handler: a browser hit reveals through its identifier, a terminal hit through its match.
+pub fn pick_of(h: &Hit) -> GlobalEvent {
+    match &h.web {
+        Some(identifier) => GlobalEvent::PickWeb(h.pane, identifier.clone()),
+        None => GlobalEvent::Pick(h.pane, h.m),
+    }
+}
+
+/// Longest page string kept in a row, in characters (the model's own bound, `browser_find::MAX_TEXT`).
+const SHOWN: usize = crate::browser_find::MAX_TEXT;
+
+/// A browser pane's result as a row (`GSEC:457-470`): the snippet from the match's context
+/// (`browser_find::snippet`), every page string made inert first (`inert_files::display_text`:
+/// the egui window shows page text). The identifier goes back to the page unchanged.
+pub fn web_hit(pane: u64, title: &str, r: &crate::browser_find::FindResult) -> Hit {
+    let inert = |s: &Option<String>| s.as_deref().map(|s| crate::inert_files::display_text(s, SHOWN, true));
+    let safe = crate::browser_find::FindResult { index: r.index, identifier: r.identifier.clone(), text: inert(&r.text), before: inert(&r.before), after: inert(&r.after) };
+    let (snippet, mark) = crate::browser_find::snippet(&safe);
+    Hit { pane, title: crate::inert_files::display_text(title, 200, false), m: Match { start: Pos::default(), end: Pos::default() }, snippet, mark, web: Some(r.identifier.clone()) }
+}
+
+/// Terminal hits then browser hits grouped by session, at most `MAX_HITS`; the text says so when
+/// the list was cut.
+pub fn merge(term: &[Hit], web: &[Hit]) -> (Vec<(u64, String, Vec<Hit>)>, Option<String>) {
+    let cut = term.len() + web.len() > MAX_HITS;
+    let all: Vec<Hit> = term.iter().chain(web).take(MAX_HITS).cloned().collect();
+    (group(all), cut.then(|| format!("Showing the first {MAX_HITS} matches.")))
+}
+
 pub enum GlobalEvent {
     None,
     /// The query or the mode changed.
     Search(String),
     /// A result was clicked: its session and match.
     Pick(u64, Match),
+    /// A browser pane's result was clicked: its pane and the page's match identifier.
+    PickWeb(u64, serde_json::Value),
     Close,
 }
 
@@ -133,7 +166,7 @@ impl GlobalFindWindow {
                                 job.append(&h.snippet[h.mark.clone()], 0.0, marked);
                                 job.append(&h.snippet[h.mark.end..], 0.0, plain);
                                 if ui.add(egui::Button::new(job).frame(false)).clicked() {
-                                    out = GlobalEvent::Pick(h.pane, h.m);
+                                    out = pick_of(h);
                                 }
                             }
                         });
@@ -152,7 +185,7 @@ mod tests {
 
     fn hit(pane: u64, row: usize) -> Hit {
         let m = Match { start: Pos { row, col: 0 }, end: Pos { row, col: 1 } };
-        Hit { pane, title: format!("s{pane}"), m, snippet: "ab".into(), mark: 0..2 }
+        Hit { pane, title: format!("s{pane}"), m, snippet: "ab".into(), mark: 0..2, web: None }
     }
 
     #[test]
@@ -172,6 +205,38 @@ mod tests {
         assert_eq!((s.as_str(), r), ("a needle b", 2..8));
         let (s, r) = snippet("\u{4e2d}\u{6587}needle", 6..12);
         assert_eq!(&s[r], "needle");
+    }
+
+    fn result(before: &str, text: &str, after: &str) -> crate::browser_find::FindResult {
+        crate::browser_find::FindResult { index: 3, identifier: serde_json::json!({"index": 3}), text: Some(text.into()), before: Some(before.into()), after: Some(after.into()) }
+    }
+
+    /// Review Focus 6: a page match is a row with iTerm2's snippet and a way back to the page.
+    #[test]
+    fn global_hits_follow_iterm2() {
+        let h = web_hit(7, "Tab 1: Web", &result("see ", "rust", " now"));
+        assert_eq!((h.pane, h.title.as_str(), h.snippet.as_str(), h.mark.clone()), (7, "Tab 1: Web", "see rust now", 4..8));
+        assert_eq!(h.web, Some(serde_json::json!({"index": 3})));
+        // Page strings are inert: bidi and control characters are gone, the mark still fits.
+        let h = web_hit(7, "T\u{202e}itle\u{7}", &result("a\u{202e}b\n", "r\u{200b}ust", "\u{1b}c"));
+        assert_eq!(h.title, "Title");
+        assert_eq!(h.snippet, "ab rustc");
+        assert_eq!(&h.snippet[h.mark.clone()], "rust");
+        // Merge: sessions in the order given, terminal first.
+        let g = merge(&[hit(1, 0), hit(1, 4)], &[web_hit(7, "w", &result("", "x", ""))]);
+        let shape: Vec<(u64, usize)> = g.0.iter().map(|(p, _, h)| (*p, h.len())).collect();
+        assert_eq!(shape, vec![(1, 2), (7, 1)]);
+        assert_eq!(g.1, None);
+        // The cap, with iTerm2's text.
+        let many: Vec<Hit> = (0..MAX_HITS + 1).map(|i| hit(1, i)).collect();
+        let (g, text) = merge(&many, &[]);
+        assert_eq!(g.iter().map(|(_, _, h)| h.len()).sum::<usize>(), MAX_HITS);
+        assert_eq!(text, Some(format!("Showing the first {MAX_HITS} matches.")));
+        let (g, text) = merge(&many[..MAX_HITS - 1], &[web_hit(7, "w", &result("", "x", ""))]);
+        assert_eq!((g.iter().map(|(_, _, h)| h.len()).sum::<usize>(), text), (MAX_HITS, None), "exactly the cap is not cut");
+        // The row handler.
+        assert!(matches!(pick_of(&web_hit(7, "w", &result("", "x", ""))), GlobalEvent::PickWeb(7, v) if v == serde_json::json!({"index": 3})));
+        assert!(matches!(pick_of(&hit(2, 5)), GlobalEvent::Pick(2, m) if m.start.row == 5));
     }
 
     #[test]

@@ -1032,7 +1032,7 @@ impl App {
 
     /// Handles an event for the Find Globally window. False when `window` is not it.
     pub(super) fn global_find_event(&mut self, window: winit::window::WindowId, event: &winit::event::WindowEvent) -> bool {
-        use crate::global_find_ui::{GlobalEvent, Hit, group, snippet};
+        use crate::global_find_ui::{GlobalEvent, Hit, snippet};
         let Some(w) = self.global_find.as_mut() else { return false };
         if w.id() != window {
             return false;
@@ -1046,43 +1046,44 @@ impl App {
                     let pattern = find::pattern(&q, self.find_mode());
                     let mut hits = Vec::new();
                     let mut error = None;
-                    // Every window's sessions, window by window.
+                    // Every window's sessions, window by window. A browser pane has no screen: its
+                    // page answers below (`browser_global_start`).
                     let windows = self.registry.order().len();
                     'panes: for (win, n, panes) in self.all_tab_panes() {
                         for id in panes {
-                            if hits.len() >= crate::global_find_ui::MAX_HITS {
+                            if hits.len() > crate::global_find_ui::MAX_HITS {
                                 break 'panes;
                             }
                             let Some(p) = self.panes.get(&id) else { continue };
+                            if p.browser_io().is_some() {
+                                continue;
+                            }
                             let name = p.own().title().unwrap_or("Shell");
-                            let title = if windows > 1 { format!("Window {}, Tab {}: {name}", win + 1, n + 1) } else { format!("Tab {}: {name}", n + 1) };
+                            let title = global_row_title(windows, win, n, name);
                             match find::find_hits(&p.screen, &pattern) {
                                 Ok(found) => hits.extend(found.into_iter().map(|(m, line, r)| {
                                     let (snippet, mark) = snippet(&line, r);
-                                    Hit { pane: id, title: title.clone(), m, snippet, mark }
+                                    Hit { pane: id, title: title.clone(), m, snippet, mark, web: None }
                                 })),
                                 Err(e) => error = Some(e),
                             }
                         }
                     }
-                    if hits.len() >= crate::global_find_ui::MAX_HITS {
-                        hits.truncate(crate::global_find_ui::MAX_HITS);
-                        error = error.or(Some(format!("Showing the first {} matches.", crate::global_find_ui::MAX_HITS)));
-                    }
-                    if let Some(w) = self.global_find.as_mut() {
-                        w.set_results(group(hits), error);
-                    }
+                    self.global_hits = hits;
+                    self.global_web.clear();
+                    self.global_error = error;
+                    self.global_generation += 1;
+                    self.global_show();
+                    self.browser_global_start(&q);
+                }
+                GlobalEvent::PickWeb(id, identifier) => {
+                    self.global_focus_pane(id);
+                    self.browser_global_reveal(id, &identifier);
+                    self.bring_forward();
+                    self.relayout();
                 }
                 GlobalEvent::Pick(id, m) => {
-                    self.enter_pane_window(id);
-                    if let Some(w) = self.current_window() {
-                        self.last_window = Some(w);
-                    }
-                    if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
-                        self.select_tab(t);
-                        self.tabs[t].focused = id;
-                        self.tabs[t].zoomed = None;
-                    }
+                    self.global_focus_pane(id);
                     if let Some(p) = self.panes.get_mut(&id) {
                         reveal(p, &m);
                     }
@@ -1097,6 +1098,36 @@ impl App {
         true
     }
 
+    /// The row title of pane `pane` in Find Globally, as the terminal rows have it.
+    pub(super) fn global_title(&self, pane: PaneId) -> Option<String> {
+        let windows = self.registry.order().len();
+        let (win, n, _) = self.all_tab_panes().into_iter().find(|(_, _, panes)| panes.contains(&pane))?;
+        Some(global_row_title(windows, win, n, self.panes.get(&pane)?.own().title().unwrap_or("Shell")))
+    }
+
+    /// Brings pane `id` to the front and focuses it, as a Find Globally pick does (the terminal's
+    /// reveal and the browser's both follow).
+    fn global_focus_pane(&mut self, id: PaneId) {
+        self.enter_pane_window(id);
+        if let Some(w) = self.current_window() {
+            self.last_window = Some(w);
+        }
+        if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
+            self.select_tab(t);
+            self.tabs[t].focused = id;
+            self.tabs[t].zoomed = None;
+        }
+    }
+
+    /// The Find Globally list: the terminal hits and the browser hits that have arrived, capped.
+    pub(super) fn global_show(&mut self) {
+        let (groups, cut) = crate::global_find_ui::merge(&self.global_hits, &self.global_web);
+        let error = self.global_error.clone().or(cut);
+        if let Some(w) = self.global_find.as_mut() {
+            w.set_results(groups, error);
+        }
+    }
+
     /// Select Matches (`TVA:2801-2823`): one selection per match, none copied (iTerm2 does not),
     /// the first one scrolled into view.
     fn select_matches(&mut self, id: PaneId) {
@@ -1108,6 +1139,11 @@ impl App {
             self.banners.set("select-matches", format!("Selected the first {} matches", crate::seltext::MAX_SUBS));
         }
     }
+}
+
+/// A Find Globally row title: "Tab 2: name", with the window number when there are several.
+fn global_row_title(windows: usize, win: usize, tab: usize, name: &str) -> String {
+    if windows > 1 { format!("Window {}, Tab {}: {name}", win + 1, tab + 1) } else { format!("Tab {}: {name}", tab + 1) }
 }
 
 #[cfg(test)]
