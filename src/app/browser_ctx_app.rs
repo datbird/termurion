@@ -9,9 +9,9 @@ use crate::browser_ctx::{self, Built, Ctx, Item};
 use crate::webhost::MenuTarget;
 
 impl App {
-    /// Which items exist: 13x2 builds Print; later plans set theirs.
+    /// Which items exist: 13x2 builds Print; 13x4 adds Remove Element; later plans set theirs.
     pub(super) fn browser_ctx_built(&self) -> Built {
-        Built { print: true, ..Built::default() }
+        Built { print: true, remove_element: true, ..Built::default() }
     }
 
     /// A right-click on pane `pane`'s page: the pane becomes the focused one (iTerm2's menu acts on
@@ -114,8 +114,11 @@ impl App {
                         a.browser_smart_action(pane, &pick.action, &pick.captures, event_loop);
                     }
                 }
+                // The click point is already in page coordinates (`ctx_of` divided by the monitor
+                // scale and the page scale): passed through, never divided again.
+                Item::RemoveElement => a.remove_element(pane, ctx.x, ctx.y),
                 // The later plans' items.
-                Item::AddNamedMark | Item::SavePageAs | Item::ViewSource | Item::RemoveElement | Item::Native => {}
+                Item::AddNamedMark | Item::SavePageAs | Item::ViewSource | Item::Native => {}
             }
         });
     }
@@ -151,5 +154,21 @@ mod tests {
         let p = prod();
         let ev = &p[p.find("pub(super) fn browser_ctx_event").unwrap()..p.find("pub(super) fn browser_ctx_picked").unwrap()];
         assert!(ev.contains("*t == token") && ev.contains("checked_sub(1)"));
+    }
+
+    /// Remove Element reaches the isolated-world runner with the context's own coordinates (no second
+    /// division by the zoom) and the built menu offers it.
+    #[test]
+    fn remove_element_is_picked() {
+        let p = prod();
+        let run = &p[p.find("pub(super) fn browser_ctx_picked").unwrap()..];
+        assert!(run.contains("Item::RemoveElement => a.remove_element(pane, ctx.x, ctx.y),"));
+        assert!(!run.contains("ctx.x /") && !run.contains("zoom"));
+        let built = &p[p.find("fn browser_ctx_built").unwrap()..p.find("/// A right-click").unwrap()];
+        assert!(built.contains("remove_element: true"));
+        let rea = include_str!("browser_reader_app.rs");
+        let rea = &rea[..rea.find("#[cfg(test)]").unwrap()];
+        let f = &rea[rea.find("pub(super) fn remove_element").unwrap()..];
+        assert!(f.contains("self.browser_js_call(pane, &reader::remove_element_body(x, y)") && !f.contains("browser_page_call"));
     }
 }

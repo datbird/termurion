@@ -83,9 +83,9 @@ pub fn exit_distraction_body() -> String {
     expression_body(file("exit-distraction-removal.js"))
 }
 
-/// A coordinate as the template writes it (a non-finite one is 0).
+/// A coordinate as Swift prints a `CGFloat`: `{:?}`, so 12 is "12.0" (a non-finite one is 0.0).
 fn coordinate(v: f64) -> String {
-    format!("{}", if v.is_finite() { v } else { 0.0 })
+    format!("{:?}", if v.is_finite() { v } else { 0.0 })
 }
 
 /// Remove Element (`RMM:109-123`): the overlay under a page point, without the backdrop sweep.
@@ -109,7 +109,7 @@ pub fn offers_reader(plain: Option<&str>) -> bool {
     plain.is_some_and(|t| t.chars().count() > 10)
 }
 
-/// What failed, for the log lines of `RMM` (`:93`, `:105`, `:152`, `:164`, `:200`).
+/// What failed, for the log lines of `RMM` (`:93`, `:105`, `:121`, `:152`, `:164`, `:200`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     Enter,
@@ -117,6 +117,7 @@ pub enum Failure {
     EnterDistraction,
     ExitDistraction,
     Inject,
+    RemoveElement,
 }
 
 /// The log line for a failure; `e` is the runner's error kind, never page text.
@@ -127,6 +128,7 @@ pub fn failure_line(f: Failure, e: &str) -> String {
         Failure::EnterDistraction => "entering distraction removal mode",
         Failure::ExitDistraction => "exiting distraction removal mode",
         Failure::Inject => "injecting reader mode scripts",
+        Failure::RemoveElement => return format!("Error in removeElement: {e}"),
     };
     format!("Error {what}: {e}")
 }
@@ -203,6 +205,7 @@ mod tests {
         assert_eq!(failure_line(Failure::EnterDistraction, "boom"), "Error entering distraction removal mode: boom");
         assert_eq!(failure_line(Failure::ExitDistraction, "boom"), "Error exiting distraction removal mode: boom");
         assert_eq!(failure_line(Failure::Inject, "boom"), "Error injecting reader mode scripts: boom");
+        assert_eq!(failure_line(Failure::RemoveElement, "boom"), "Error in removeElement: boom");
         assert!(answered_true(&serde_json::json!(true)));
         for no in [serde_json::json!(false), serde_json::json!("true"), serde_json::json!(1), serde_json::Value::Null] {
             assert!(!answered_true(&no), "{no}");
@@ -273,10 +276,14 @@ mod tests {
     }
 
     #[test]
-    fn remove_element_body_fills_the_point() {
-        let b = remove_element_body(12.5, f64::NAN);
-        assert!(b.contains("const point = { x: 12.5, y: 0 };") && !b.contains("{{") && b.ends_with("return true;"));
-        assert!(b.contains("function detectMainContainer"), "the helpers are included");
+    fn remove_element_follows_iterm2() {
+        let b = remove_element_body(12.0, 30.5);
+        assert!(b.contains("const point = { x: 12.0, y: 30.5 };"), "{b}");
+        assert!(b.contains("function removeElementAtPoint("), "the helpers were included");
+        assert!(b.contains("removeElementAtPoint(point.x, point.y, mainContainer, removed, true);"), "no backdrop sweep");
+        assert!(!b.contains("{{") && b.ends_with("return true;"));
+        assert!(remove_element_body(f64::NAN, 1.0).contains("x: 0.0"));
+        assert!(remove_element_body(f64::INFINITY, f64::NEG_INFINITY).contains("{ x: 0.0, y: 0.0 }"));
     }
 
     #[test]

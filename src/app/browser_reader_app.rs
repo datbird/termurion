@@ -170,6 +170,18 @@ impl App {
         }));
     }
 
+    /// Remove Element at a page point (`RMM:109-123`): the overlay under the right-click goes, in the
+    /// isolated world (the DOM is shared with the page). The point is the context's, already in page
+    /// coordinates, and reaches the script only through `remove_element_body`'s number formatting.
+    /// The body posts nothing and needs no reader script; an error is logged and nothing is shown.
+    pub(super) fn remove_element(&mut self, pane: PaneId, x: f64, y: f64) {
+        self.browser_js_call(pane, &reader::remove_element_body(x, y), json!({}), Box::new(|_, _, r| {
+            if let Err(e) = r {
+                log_failure(Failure::RemoveElement, &e);
+            }
+        }));
+    }
+
     /// The Menu button (`BT:306-345`): the offer needs the page's plain text, so the menu opens after
     /// it is known. A second press while waiting is ignored; a pane gone meanwhile shows nothing.
     pub(super) fn browser_menu_press(&mut self, pane: PaneId, at: (f32, f32)) {
