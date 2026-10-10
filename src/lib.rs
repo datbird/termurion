@@ -39,6 +39,8 @@ pub mod power;
 pub mod osc;
 pub mod osc1337;
 pub mod marks;
+pub mod mime_ext;
+pub mod page_saver;
 pub mod captured;
 pub mod find;
 pub mod smartsel;
