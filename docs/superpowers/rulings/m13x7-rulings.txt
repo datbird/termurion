@@ -1,0 +1,9 @@
+m13x7 rulings (browser autofill and passwords)
+
+Task 3 review I1: the native autofill question answers Fill only to a pointer click. Every keyboard event except Escape (Cancel) and every input-method event is dropped for the whole life of that window (pwm_app autofill_key_dropped), so Tab never reaches Fill and Space or Enter never press it. The question text says so. Cost: a keyboard-only person cannot fill from this question (they can cancel).
+
+Task 3 review M1 (residual): the target field is not re-validated at write time. "Visible fields only" holds at collection; after the person confirms, the page can move the requested id or name onto a hidden element. Not an escalation: only the approved types go, to the approved origin, which owns that DOM.
+
+Task 3 review M2: the scripted-click probe step now dispatches untrusted clicks at the element under the button and at every element, so it does exercise the isTrusted check.
+
+Task 4: the browser scope is a separate store (Scope::Browser: Tandem-Browser/ targets, untagged 1Password items minus iTerm2-tagged, LastPass groups outside the terminal groups, adapter mode "browser", own source key). Scope code lists names only and never reads a secret. Matching an entry to a page (exact normalized origin, https only) is not in this task: account names from imported or synced sources are untrusted text and must be matched by the later origin task, never by substring or suffix.

@@ -3449,7 +3449,10 @@ mod probe {
         p.settle(2600);
         // The page can see no button and click none: they live in a closed shadow root of the world.
         assert_eq!(p.page_eval("document.querySelectorAll('[data-iterm-autofill]').length"), Ok("0".into()));
-        p.page_eval("document.querySelector('[data-iterm-autofill]') && document.querySelector('[data-iterm-autofill]').click(); 0").expect("a scripted click");
+        // Then a scripted click that does land: untrusted click events dispatched at the element under the
+        // button's spot (its closed root's host, ADJ:172-201: 5 px inside the input's right edge) and at
+        // every element of the page. Nothing may be requested.
+        p.page_eval("(() => { const fire = (el) => el && el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, cancelable: true })); for (const id of ['fn', 'em']) { const r = document.getElementById(id).getBoundingClientRect(); const at = document.elementFromPoint(r.right - 8, r.top + r.height / 2); fire(at); at && at.click(); } document.querySelectorAll('*').forEach(fire); return 0; })()").expect("a scripted click");
         p.settle(2000);
         assert!(p.clients(ba::HANDLER).is_empty(), "a scripted click requests nothing");
         let vals = |p: &mut Probe| p.page_eval("[document.getElementById('fn').value, document.getElementById('em').value].join('|')");

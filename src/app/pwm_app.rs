@@ -1495,7 +1495,8 @@ impl App {
         let Some(i) = self.pwm.confirms.iter().position(|c| c.window.as_ref().is_some_and(|w| w.id() == id)) else { return false };
         // THE call site of the native-window input guard for a question a page can raise (the same
         // 500 ms rule as 13x5's mark windows; it becomes the one shared guard when 13x6 merges).
-        let guarded = matches!(self.pwm.confirms[i].kind, ConfirmKind::Autofill(..)) && native_input_guarded(self.pwm.confirms[i].opened, event);
+        let autofill = matches!(self.pwm.confirms[i].kind, ConfirmKind::Autofill(..));
+        let guarded = autofill && (native_input_guarded(self.pwm.confirms[i].opened, event) || autofill_key_dropped(event));
         let Some(w) = self.pwm.confirms[i].window.as_mut() else { return false };
         let answer = match event {
             WindowEvent::CloseRequested => ConfirmResult::Cancel,
@@ -1607,6 +1608,21 @@ impl App {
 /// meant for the page must not answer a question a page raised).
 fn native_input_guarded(opened: Option<Instant>, event: &WindowEvent) -> bool {
     matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && opened.is_some_and(|t| crate::browser_marks::input_ignored(t, Instant::now()))
+}
+
+/// Whether the autofill question lets a key through: Escape (Cancel) only. Tab never moves focus
+/// to Fill and Space or Enter never press it, so only a pointer click answers Fill.
+fn autofill_key_allowed(key: &winit::keyboard::Key) -> bool {
+    matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))
+}
+
+/// Whether the autofill question drops a keyboard or input-method event.
+fn autofill_key_dropped(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::KeyboardInput { event, .. } => !autofill_key_allowed(&event.logical_key),
+        WindowEvent::Ime(_) => true,
+        _ => false,
+    }
 }
 
 /// An `iTermWarning` with no heading of its own (`iTermWarning.m:329`).
@@ -2353,6 +2369,20 @@ mod tests {
         assert!(!c.same_source(&picked), "an account changed in Settings rebuilds the 1Password source");
         assert!(!c.same_source(&Config { cli: "C:\\op.exe".into(), ..c.clone() }));
         assert!(!c.same_source(&Config { kind: Kind::LastPass, ..c.clone() }));
+    }
+
+    #[test]
+    fn autofill_fill_answers_only_a_pointer_click() {
+        use winit::keyboard::{Key, NamedKey};
+        assert!(autofill_key_allowed(&Key::Named(NamedKey::Escape)));
+        for k in [Key::Named(NamedKey::Tab), Key::Named(NamedKey::Space), Key::Named(NamedKey::Enter), Key::Character(" ".into()), Key::Character("f".into())] {
+            assert!(!autofill_key_allowed(&k), "{k:?} must not reach the question");
+        }
+        assert!(!autofill_key_dropped(&WindowEvent::Focused(true)), "pointer and focus events pass");
+        assert!(autofill_key_dropped(&WindowEvent::Ime(winit::event::Ime::Enabled)));
+        // The call site routes every keyboard event of an Autofill question through the rule.
+        let src = include_str!("pwm_app.rs");
+        assert!(src.contains("autofill && (native_input_guarded(self.pwm.confirms[i].opened, event) || autofill_key_dropped(event))"));
     }
 
     #[test]

@@ -530,7 +530,7 @@ pub fn kind_label(kind: &str) -> &'static str {
 pub fn confirm_text(origin: &str, kinds: &[&str]) -> String {
     let shown = crate::inert_files::display_text(&crate::browser::display_url(origin), 300, false);
     let list: Vec<&str> = kinds.iter().map(|k| kind_label(k)).collect();
-    format!("A page on {shown} asked to fill its form from your contact card.\n\nFields to fill: {}.\n\nPress Fill only if you asked for this and trust that site. Enter does not fill.", list.join(", "))
+    format!("A page on {shown} asked to fill its form from your contact card.\n\nFields to fill: {}.\n\nClick Fill only if you asked for this and trust that site. Only a mouse click fills; the keyboard can only cancel (Escape).", list.join(", "))
 }
 
 /// Whether a fill asked on `origin` in navigation `epoch` may still run on the page at `url` in
