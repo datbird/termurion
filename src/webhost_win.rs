@@ -5057,6 +5057,24 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// Task 5 fix (revoke = reset confirmed, then reload): once the reset's `PermissionWritten`
+    /// came back, a reload sees the default state; the app reloads only then.
+    #[test]
+    #[ignore]
+    fn a_reload_after_the_confirmed_reset_sees_the_default() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.view().set_permission_state(41, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(41, true))));
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()));
+        p.view().set_permission_state(42, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(42, true))), "the reset is confirmed first");
+        p.view().reload();
+        assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the reloaded page has no grant");
+        p.finish();
+    }
+
     /// Task 5 (P-sweep): the revocation sweep script, run as the app runs it (isolated world,
     /// `return (...)`), reads the frames' and resources' origins of a hostile page: a cross-origin
     /// iframe, 5000 resource entries and a page that overrides `performance.getEntriesByType`.

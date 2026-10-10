@@ -368,6 +368,21 @@ pub(super) fn effects(op: &Op, origin: &str) -> Effects {
     Effects { states, reload: !matches!(op, Op::Reset(_)) }
 }
 
+/// How an `Op` runs through the store's write queue: its profile writes, a reload queued behind
+/// them (it runs only once they came back), or a reload at once when there is nothing to write
+/// (media is never mirrored, so its pages reload with no wait).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Steps {
+    pub states: Vec<(i32, String, i32)>,
+    pub reload_after: Option<String>,
+    pub reload_now: bool,
+}
+
+pub(super) fn steps(fx: Effects, origin: &str) -> Steps {
+    let reload_after = (fx.reload && !fx.states.is_empty()).then(|| origin.to_string());
+    Steps { reload_now: fx.reload && fx.states.is_empty(), states: fx.states, reload_after }
+}
+
 /// How a pane is brought up to date after a revoke: a main origin that matches reloads at once,
 /// every other pane runs the sweep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -686,11 +701,14 @@ impl App {
         self.perm_pump(dev_null);
     }
 
+    /// A revoke or reset: a new generation in the store's queue, its resets, and the reload of
+    /// the pages using the origin only once those resets came back (a page reloaded earlier could
+    /// read the old state and keep it).
     fn apply_op(&mut self, dev_null: bool, origin: &str, op: Op) {
-        let fx = effects(&op, origin);
-        self.perm_queue(dev_null).revoke(fx.states, None);
+        let st = steps(effects(&op, origin), origin);
+        self.perm_queue(dev_null).revoke(st.states, st.reload_after);
         self.perm_pump(dev_null);
-        if fx.reload {
+        if st.reload_now {
             self.reload_panes_using(dev_null, origin);
         }
     }
@@ -1171,7 +1189,7 @@ mod tests {
         assert_eq!(prod.matches(concat!(".set_permission_", "state(")).count(), 1, "one place issues writes: the queue's output");
         assert_eq!(prod.matches(concat!(".read_permission_", "states()")).count(), 1, "one place issues reads: the queue's output");
         let op = &prod[prod.find("fn apply_op(").unwrap()..];
-        assert!(op[..400].contains(".revoke(fx.states"), "revoke and reset write through the queue with a new generation");
+        assert!(op[..900].contains(".revoke(st.states"), "revoke and reset write through the queue with a new generation");
         assert!(prod.contains(".mirror_then_answer(kind, &origin, pane, token, epoch, answer)"), "a grant is mirrored, then answered");
         let ev = include_str!("browser_app.rs");
         assert!(ev.contains("Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok)"));
@@ -1212,5 +1230,21 @@ mod tests {
         assert!(nav.contains("let synced = self.perm_synced(pane);") && nav.find("if !synced").unwrap() < nav.find("navigate_tandem").unwrap(), "a typed page waits too");
         let me = include_str!("browser_perms_app.rs");
         assert!(me.contains("Out::Synced => self.browser_release_waiting_loads(Some(dev_null))"), "the sync's end loads what waits");
+    }
+
+    #[test]
+    fn a_revoke_reloads_only_after_its_reset_landed() {
+        let o = "https://a.b";
+        let st = steps(effects(&Op::Revoke(Notification), o), o);
+        assert_eq!(st, Steps { states: vec![(4, o.into(), 0)], reload_after: Some(o.into()), reload_now: false }, "the reset first, the reload behind it");
+        let st = steps(effects(&Op::RevokeAll(vec![Notification, Geolocation]), o), o);
+        assert_eq!((st.states.len(), st.reload_after.as_deref(), st.reload_now), (2, Some(o), false), "behind the last reset");
+        let st = steps(effects(&Op::Revoke(Camera), o), o);
+        assert_eq!(st, Steps { states: vec![], reload_after: None, reload_now: true }, "nothing to write: reload at once");
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let op = &prod[prod.find("fn apply_op(").unwrap()..prod.find("pub(super) fn revoke_permission(").unwrap()];
+        assert!(op.contains("steps(effects(&op, origin), origin)") && op.contains(".revoke(st.states, st.reload_after)"), "the queue runs the reload after the writes");
+        assert!(op.find("if st.reload_now").is_some() && !op.contains("if fx.reload"), "no reload races the reset");
     }
 }
