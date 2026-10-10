@@ -668,9 +668,8 @@ impl App {
         match webhost::pane_step(kind, &mut bv.restarts, now) {
             webhost::PaneStep::Nothing => return,
             webhost::PaneStep::Reload => {
-                if let Some(v) = &bv.view {
-                    v.reload();
-                }
+                // Through the permission sync gate like every reload (13x6).
+                self.reload_browser_view(pane);
                 // Its world is checked in a few seconds (whether the DevTools state survives is not known).
                 self.browser_world_expect(pane);
                 return;
@@ -953,6 +952,7 @@ impl App {
             return;
         }
         match b {
+            Button::Back | Button::Forward if !self.browser_history_step_allowed(pane) => {}
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.expect(-1);
@@ -981,9 +981,7 @@ impl App {
                         self.redraw();
                     }
                 }
-                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                    v.reload();
-                }
+                self.reload_browser_view(pane);
             }
             Button::Stop => {
                 if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {

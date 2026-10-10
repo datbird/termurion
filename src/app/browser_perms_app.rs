@@ -415,15 +415,13 @@ pub(super) fn page_may_load(restoring: bool, synced: bool) -> bool {
     !restoring && synced
 }
 
-/// After an INCOMPLETE read, resets for the non-default entries of the kinds the sync never mirrors
-/// (0 and 5 to 12): the host denies those kinds whatever the profile says, and resetting them
-/// shrinks a profile over the read's cap (`MAX_PERMISSION_STATES`, legacy entries from before
-/// 13x6) so a later read can be complete and the store's pages may load. A complete read never
-/// touches them.
-pub(super) fn shrink_for(states: &[(i32, String, i32)], complete: bool) -> Vec<(i32, String, i32)> {
-    if complete {
-        return Vec::new();
-    }
+/// After EVERY profile read (complete or not), resets for the non-default entries of the kinds the
+/// sync never mirrors (0 and 5 to 12): the host denies those kinds whatever the profile says, so a
+/// legacy grant from before 13x6 (clipboard read, MIDI, file access, window management) must not
+/// stand in the profile where a stored Allow could be honored with no request. It also shrinks a
+/// profile over the read's cap (`MAX_PERMISSION_STATES`) so a later read can be complete and the
+/// store's pages may load. The Tandem table holds none of those kinds as Granted.
+pub(super) fn shrink_for(states: &[(i32, String, i32)]) -> Vec<(i32, String, i32)> {
     let mut out: Vec<(i32, String, i32)> = Vec::new();
     for (kind, origin, state) in states {
         let reset = (*kind, origin.clone(), bp::STATE_DEFAULT);
@@ -722,7 +720,7 @@ impl App {
         let dev_null = self.pane_dev_null(pane);
         let rows: Option<Vec<_>> = self.browser_db(dev_null).map(|db| db.all_permissions().into_iter().map(|r| (r.origin, r.kind, r.decision)).collect());
         let mut plan = sync_for(states, rows.as_deref());
-        plan.extend(shrink_for(states, complete));
+        plan.extend(shrink_for(states));
         let Some(outs) = self.perm_queue(dev_null).read_answer(view, plan, complete) else { return };
         if !complete {
             crate::dlog!("webhost: the profile read was incomplete ({} states); read again", states.len());
@@ -812,10 +810,45 @@ impl App {
         }
     }
 
-    fn reload_browser_view(&self, pane: PaneId) {
-        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-            v.reload();
+    /// Every reload of a browser pane (a revoke's, the toolbar's, a recovery's) goes through the
+    /// sync gate, like a first navigation: while the store's profile may disagree with the Tandem
+    /// table (`page_may_load`), the page does not reload into a stale grant. It is parked and the
+    /// pane goes blank until the sync lands (`Out::Synced` loads it); a sync that gives up leaves it
+    /// blank with the banner (fail closed).
+    pub(super) fn reload_browser_view(&mut self, pane: PaneId) {
+        if page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
+            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                v.reload();
+            }
+            return;
         }
+        self.browser_park_page(pane);
+    }
+
+    /// Back and Forward are gated the same way: the target is the page's history entry, which
+    /// cannot be held back, so while the store is unsynced the pane is parked on its current URL.
+    pub(super) fn browser_history_step_allowed(&mut self, pane: PaneId) -> bool {
+        if page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
+            return true;
+        }
+        self.browser_park_page(pane);
+        false
+    }
+
+    /// Blanks the pane and keeps its URL for the sync's end (`browser_release_waiting_loads`).
+    fn browser_park_page(&mut self, pane: PaneId) {
+        let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).filter(|u| !u.is_empty());
+        if let (Some(url), Some(bv)) = (url, self.browser_views.get_mut(&pane)) {
+            if bv.world.restore_load.is_none() {
+                bv.world.restore_load = Some(url);
+            }
+            if let Some(v) = &bv.view {
+                v.navigate_tandem("about:blank");
+            }
+        }
+        // A sync that gave up starts over.
+        let dev_null = self.pane_dev_null(pane);
+        self.sync_permission_states(dev_null);
     }
 
     /// A browser pane is closing: its requests are forgotten.
@@ -1300,12 +1333,15 @@ mod tests {
         let rows = [("https://c.d".to_string(), Notification, Decision::Denied)];
         let states = [(4, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
         assert_eq!(sync_for(&states, Some(&rows)), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 2)]);
-        // An incomplete read also resets the other kinds it saw (the host denies them all anyway),
-        // so a profile over the read's cap shrinks and the next read can be complete.
+        // Every read (complete too) resets the other kinds it saw (the host denies them all anyway):
+        // a legacy grant never stands, and a profile over the read's cap shrinks.
         let legacy = [(6, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
-        assert_eq!(shrink_for(&legacy, false), vec![(6, "https://a.b".to_string(), 0)]);
-        assert!(shrink_for(&legacy, true).is_empty(), "a complete read never touches them");
-        assert!(shrink_for(&[(6, "https://a.b".to_string(), 0)], false).is_empty());
+        assert_eq!(shrink_for(&legacy), vec![(6, "https://a.b".to_string(), 0)]);
+        assert!(shrink_for(&[(6, "https://a.b".to_string(), 0)]).is_empty());
+        // A legacy clipboard-read, MIDI and file grant is reset on a complete read too.
+        let kinds: Vec<_> = [0, 5, 6, 7, 8, 9, 10, 11, 12].iter().map(|k| (*k, "https://a.b".to_string(), 1)).collect();
+        assert_eq!(shrink_for(&kinds).len(), 9, "every other kind that is not default");
+        assert!(shrink_for(&[(1, "https://a.b".to_string(), 1), (4, "https://a.b".to_string(), 2)]).is_empty(), "kinds 1 to 4 are the table's");
         // An unreadable table wants nothing: no Allow of kinds 1 to 4 survives.
         assert_eq!(sync_for(&states, None), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 0)]);
         // Newest-first rows: the newest wins.
@@ -1430,5 +1466,22 @@ mod tests {
         let call = f.find("self.browser_navigation_starting(pane, url, redirect)").unwrap();
         assert!(guard < call, "the isolated world's own navigations never reach the audio state (B8)");
         assert!(ev.matches("Event::Starting {").count() >= 1 && !ev.contains("browser_navigation_starting"), "one Starting dispatch");
+    }
+
+    /// Review r1 New 1: every reload of a browser pane goes through the sync gate.
+    #[test]
+    fn every_reload_goes_through_the_sync_gate() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let f = &prod[prod.find("pub(super) fn reload_browser_view").unwrap()..prod.find("pub(super) fn browser_history_step_allowed").unwrap()];
+        assert!(f.contains("page_may_load(self.browser_restoring(), self.perm_synced(pane))") && f.find("page_may_load").unwrap() < f.find("v.reload()").unwrap());
+        assert!(f.contains("browser_park_page(pane)"));
+        let park = &prod[prod.find("fn browser_park_page").unwrap()..];
+        assert!(park.contains("restore_load = Some(url)") && park.contains("about:blank") && park.contains("sync_permission_states"), "blank, kept for the sync's end, sync started");
+        let app = include_str!("browser_app.rs");
+        let app = app.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(!app.contains("v.reload()"), "the toolbar and the recovery reload through the gate");
+        assert!(app.contains("Button::Back | Button::Forward if !self.browser_history_step_allowed(pane)"));
+        assert!(app.matches("self.reload_browser_view(pane)").count() >= 2);
     }
 }

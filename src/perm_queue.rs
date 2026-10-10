@@ -540,4 +540,27 @@ mod tests {
         assert!(!q.synced(), "a failed write: the profile may disagree with the table");
         assert!(matches!(q.step(Some(3))[..], [Out::Read { .. }]));
     }
+
+    /// Review r1 New 1: a revoke's reset that keeps failing reloads the origin's pages, but the store
+    /// is unsynced from then on, so the reload is parked by the page gate and the stale grant never
+    /// runs: only a sync landing (a complete read and its plan) lets the page load again.
+    #[test]
+    fn a_failed_default_write_leaves_the_store_unsynced_for_the_reload_gate() {
+        let mut q = ProfileQueue::default();
+        q.sync();
+        q.step(Some(3));
+        q.read_answer(3, vec![], true);
+        drain(&mut q);
+        assert!(q.synced());
+        q.revoke(vec![(4, "https://a.b".into(), 0)], Some("https://a.b".into()));
+        let mut outs = Vec::new();
+        for seq in 1..=WRITE_TRIES as u64 {
+            let step = q.step(Some(3));
+            let seq = step.iter().find_map(|o| if let Out::Write { seq, .. } = o { Some(*seq) } else { None }).unwrap_or(seq);
+            outs.extend(q.written(3, seq, false));
+        }
+        outs.extend(q.step(Some(3)));
+        assert!(outs.contains(&Out::Reload { origin: "https://a.b".into() }), "its pages are asked to reload: {outs:?}");
+        assert!(!q.synced(), "the profile may still hold the Allow");
+    }
 }
