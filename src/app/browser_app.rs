@@ -672,7 +672,7 @@ impl App {
             Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
             Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
             Event::AudioPlaying { playing, .. } => self.browser_audio_playing(pane, *playing),
-            Event::PermissionStates { view, states, complete } => self.permission_states_read(pane, *view, states, *complete),
+            Event::PermissionStates { view, states, complete, workers_cleared } => self.permission_states_read(pane, *view, states, *complete, *workers_cleared),
             Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok),
             // The method of the document request (13x5): the Edit menu's gate and the prompt's OK.
             Event::DocumentMethod { .. } => self.marks_method_event(pane, e),

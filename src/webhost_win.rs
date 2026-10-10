@@ -1157,14 +1157,14 @@ impl WebView {
     /// build let sites install workers; one starts from its cache with no fetch, so the request
     /// refusal never reaches it, and it could show WebView2's own toast). The read, and so the end of
     /// the start-up sync that pages wait on, comes only after the clear answered; whether it worked
-    /// is kept on the environment, and kind 4 is not offered while it has not (fail closed).
+    /// is kept on the environment, and kind 4 is not offered while it has not (fail closed); the answer carries it, so the sync also writes Default for every kind-4 entry (LG1-R).
     pub fn read_permission_states(&self) {
         let (poster, id, cleared) = {
             let i = self.inner.borrow();
             (i.poster.clone(), i.id, i.env.workers_cleared.clone())
         };
         self.with(move |c| {
-            let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
+            let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false, workers_cleared: false });
             let Some(p4) = profile4(&c.view) else {
                 cleared.store(false, std::sync::atomic::Ordering::SeqCst);
                 crate::dlog!("webhost: this runtime has no profile permission states");
@@ -1173,7 +1173,7 @@ impl WebView {
             let Ok(p2) = p4.cast::<ICoreWebView2Profile2>() else {
                 cleared.store(false, std::sync::atomic::Ordering::SeqCst);
                 crate::dlog!("webhost: this runtime cannot clear service workers; notifications are not offered");
-                return read_states(&p4, &poster, id);
+                return read_states(&p4, &poster, id, false);
             };
             let (p4c, posterc, c2) = (p4.clone(), poster.clone(), cleared.clone());
             let done = webview2_com::ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| guard(|| {
@@ -1181,13 +1181,13 @@ impl WebView {
                 if hr.is_err() {
                     crate::dlog!("webhost: clearing the profile's service workers failed; notifications are not offered");
                 }
-                read_states(&p4c, &posterc, id);
+                read_states(&p4c, &posterc, id, hr.is_ok());
                 Ok(())
             })));
             if unsafe { p2.ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS, &done) }.is_err() {
                 cleared.store(false, std::sync::atomic::Ordering::SeqCst);
                 crate::dlog!("webhost: clearing the profile's service workers failed; notifications are not offered");
-                read_states(&p4, &poster, id);
+                read_states(&p4, &poster, id, false);
             }
         });
     }
@@ -1203,13 +1203,13 @@ impl WebView {
 }
 
 /// The profile's non-default permission states, posted as `Event::PermissionStates` (always posts).
-fn read_states(p4: &ICoreWebView2Profile4, poster: &Poster, id: ViewId) {
-    let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
+fn read_states(p4: &ICoreWebView2Profile4, poster: &Poster, id: ViewId, workers_cleared: bool) {
+    let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false, workers_cleared });
     let p2 = poster.clone();
     let handler = webview2_com::GetNonDefaultPermissionSettingsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
         if hr.is_err() {
             crate::dlog!("webhost: reading the profile permission states failed");
-            p2.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
+            p2.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false, workers_cleared });
             return Ok(());
         }
         let mut states = Vec::new();
@@ -1241,7 +1241,7 @@ fn read_states(p4: &ICoreWebView2Profile4, poster: &Poster, id: ViewId) {
         } else {
             complete = false;
         }
-        p2.post(Event::PermissionStates { view: id, states, complete });
+        p2.post(Event::PermissionStates { view: id, states, complete, workers_cleared });
         Ok(())
     })));
     if unsafe { p4.GetNonDefaultPermissionSettings(&handler) }.is_err() {
@@ -5854,6 +5854,7 @@ window.addEventListener('message', function (e) {
         let refused: Vec<String> = WORKER_REFUSED.lock().map(|l| l[before..].to_vec()).unwrap_or_default();
         println!("probe: the registration answered {got:?}; the refusal answered 403 to {refused:?}");
         assert!(got.as_deref().is_ok_and(|c| c.starts_with("denied:")), "the worker never installs: {got:?}");
+        assert!(got.as_deref().is_ok_and(|c| c.contains("(403)")), "the registration failed on the refusal's 403: {got:?}");
         assert!(refused.iter().any(|u| u == "https://perm.tandem-probe.invalid/sw.js"), "the refusal itself answered the script fetch (not a DNS failure): {refused:?} / {got:?}");
         p.settle(1000);
         assert!(p.notes.is_empty(), "no notification at all: {:?}", p.notes);
@@ -5871,7 +5872,7 @@ window.addEventListener('message', function (e) {
     /// delegate to never reaches Tandem.
     #[test]
     #[ignore]
-    fn a_frame_request_names_the_frame() {
+    fn a_frame_request_names_the_top_page_and_an_undelegated_frame_asks_nothing() {
         const CHILD: &str = "https://child.tandem-probe.invalid/c.html";
         const OTHER: &str = "https://other.tandem-probe.invalid/";
         let page = perm_page(&format!("<iframe allow=\"geolocation\" src=\"{CHILD}\"></iframe>"));

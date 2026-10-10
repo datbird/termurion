@@ -474,7 +474,7 @@ pub(super) fn shrink_for(states: &[(i32, String, i32)]) -> Vec<(i32, String, i32
 
 /// The plan for a profile read: the table decides kinds 1 to 4. An unreadable table wants
 /// nothing, so no grant of those kinds survives (fail closed).
-pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<&[(String, PermissionType, Decision)]>) -> Vec<(i32, String, i32)> {
+pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<&[(String, PermissionType, Decision)]>, workers_cleared: bool) -> Vec<(i32, String, i32)> {
     let wanted = match rows_newest_first {
         Some(rows) => {
             let oldest_first: Vec<_> = rows.iter().rev().cloned().collect();
@@ -482,6 +482,9 @@ pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<
         }
         None => Vec::new(),
     };
+    // LG1-R: with old service workers not cleared, web notifications are off for the run, so the
+    // profile holds no kind-4 entry (an existing one is reset to Default); the table is untouched.
+    let wanted: Vec<_> = if workers_cleared { wanted } else { wanted.into_iter().filter(|(k, _, _)| *k != 4).collect() };
     bp::sync_plan(states, &wanted)
 }
 
@@ -765,10 +768,10 @@ impl App {
     /// through the queue ahead of anything asked after the read. The sync is done only when a
     /// COMPLETE read's plan has landed; an incomplete read fails closed: what was read is
     /// rewritten the same way and the profile is read again, a bounded number of times.
-    pub(super) fn permission_states_read(&mut self, pane: PaneId, view: ViewId, states: &[(i32, String, i32)], complete: bool) {
+    pub(super) fn permission_states_read(&mut self, pane: PaneId, view: ViewId, states: &[(i32, String, i32)], complete: bool, workers_cleared: bool) {
         let dev_null = self.pane_dev_null(pane);
         let rows: Option<Vec<_>> = self.browser_db(dev_null).map(|db| db.all_permissions().into_iter().map(|r| (r.origin, r.kind, r.decision)).collect());
-        let mut plan = sync_for(states, rows.as_deref());
+        let mut plan = sync_for(states, rows.as_deref(), workers_cleared);
         plan.extend(shrink_for(states));
         let Some(outs) = self.perm_queue(dev_null).read_answer(view, plan, complete) else { return };
         if !complete {
@@ -1539,11 +1542,11 @@ mod tests {
     #[test]
     fn the_start_up_sync_fails_closed() {
         // A clipboard grant is kept; with an empty database nothing is sent for it.
-        assert!(sync_for(&[(6, "https://a.b".into(), 1)], Some(&[])).is_empty());
+        assert!(sync_for(&[(6, "https://a.b".into(), 1)], Some(&[]), true).is_empty());
         // A stale grant the table does not hold is reset; one it holds as Denied becomes Deny.
         let rows = [("https://c.d".to_string(), Notification, Decision::Denied)];
         let states = [(4, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
-        assert_eq!(sync_for(&states, Some(&rows)), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 2)]);
+        assert_eq!(sync_for(&states, Some(&rows), true), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 2)]);
         // Every read (complete too) resets the other kinds it saw (the host denies them all anyway):
         // a legacy grant never stands, and a profile over the read's cap shrinks.
         let legacy = [(6, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
@@ -1554,10 +1557,25 @@ mod tests {
         assert_eq!(shrink_for(&kinds).len(), 9, "every other kind that is not default");
         assert!(shrink_for(&[(1, "https://a.b".to_string(), 1), (4, "https://a.b".to_string(), 2)]).is_empty(), "kinds 1 to 4 are the table's");
         // An unreadable table wants nothing: no Allow of kinds 1 to 4 survives.
-        assert_eq!(sync_for(&states, None), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 0)]);
+        assert_eq!(sync_for(&states, None, true), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 0)]);
         // Newest-first rows: the newest wins.
         let rows = [("https://a.b".to_string(), Notification, Decision::Denied), ("https://a.b".to_string(), Notification, Decision::Granted)];
-        assert_eq!(sync_for(&[], Some(&rows)), vec![(4, "https://a.b".to_string(), 2)]);
+        assert_eq!(sync_for(&[], Some(&rows), true), vec![(4, "https://a.b".to_string(), 2)]);
+    }
+
+    /// LG1-R: when the start-up service-worker clear failed, the plan mirrors no kind-4 entry and
+    /// resets every existing one to Default, whatever the table holds; other kinds are unchanged.
+    #[test]
+    fn a_failed_worker_clear_writes_default_for_every_notification_entry() {
+        let rows = [("https://a.b".to_string(), Notification, Decision::Granted), ("https://c.d".to_string(), Notification, Decision::Denied), ("https://e.f".to_string(), Geolocation, Decision::Granted)];
+        let states = [(4, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 2), (4, "https://x.y".to_string(), 1)];
+        let plan = sync_for(&states, Some(&rows), false);
+        assert!(plan.iter().all(|(k, _, s)| *k != 4 || *s == 0), "no kind-4 entry is written other than Default: {plan:?}");
+        for o in ["https://a.b", "https://c.d", "https://x.y"] {
+            assert!(plan.contains(&(4, o.to_string(), 0)), "{o} reset: {plan:?}");
+        }
+        assert!(plan.iter().any(|(k, o, s)| *k != 4 && o == "https://e.f" && *s == 1), "other kinds still mirror: {plan:?}");
+        assert!(sync_for(&[], Some(&rows), false).iter().all(|(k, _, _)| *k != 4), "nothing to mirror for kind 4");
     }
 
     /// Final review M1: the page's Revoke, Revoke All and Clear All clear the origin's notification
@@ -1581,7 +1599,7 @@ mod tests {
         assert!(prod.contains("db.revoke_permission(origin, t)") && prod.contains("db.reset_permission(origin, t)") && prod.contains("db.revoke_all_permissions(origin)"));
         assert!(prod.contains("self.browser_js_call(") && prod.contains("bp::sweep_reloads(&url, r.as_ref().map_err(|_| ()), &origin)") && prod.contains("bp::check_iframe_origins_js()"), "the one sweep script runs in the isolated world");
         let ev = include_str!("browser_app.rs");
-        assert!(ev.contains("self.sync_permission_states(dev_null)") && ev.contains("self.permission_states_read(pane, *view, states, *complete)"));
+        assert!(ev.contains("self.sync_permission_states(dev_null)") && ev.contains("self.permission_states_read(pane, *view, states, *complete, *workers_cleared)"));
         let rd = include_str!("browser_reader_app.rs");
         assert!(rd.contains("self.browser_permission_dismiss()"), "a navigation dismisses the question");
         assert!(include_str!("webhost_app.rs").contains("self.perm_store_lost("), "a lost environment is synced again");

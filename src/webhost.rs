@@ -324,7 +324,7 @@ pub enum Event {
     /// is false when the read failed, an item could not be read or the list was cut at
     /// `MAX_PERMISSION_STATES`: the start-up sync must then fail closed (revoke every profile
     /// state the Tandem table does not hold), never treat the list as the whole profile.
-    PermissionStates { view: ViewId, states: Vec<(i32, String, i32)>, complete: bool },
+    PermissionStates { view: ViewId, states: Vec<(i32, String, i32)>, complete: bool, workers_cleared: bool },
     /// The completion of `set_permission_state(seq, ..)`: `ok` is false when the runtime cannot
     /// set the profile or the write failed. Always posted once per call while the view lives (the
     /// app's write queue, `perm_queue`, waits for it).
@@ -2043,7 +2043,7 @@ mod tests {
     fn permission_events_are_plain_data() {
         let events = vec![
             Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
-            Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1)], complete: true },
+            Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1)], complete: true, workers_cleared: true },
             Event::NotificationShown { view: 1, token: 3, origin: "https://a.b".into(), title: "T".into(), body: "B".into() },
             Event::NotificationClosed { view: 1, token: 3 },
             Event::AudioPlaying { view: 1, playing: true },
@@ -2066,7 +2066,7 @@ mod tests {
             Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
             Event::NotificationShown { view: 1, token: 3, origin: "o".into(), title: "t".into(), body: "b".into() },
             Event::NotificationClosed { view: 1, token: 3 },
-            Event::PermissionStates { view: 1, states: vec![], complete: false },
+            Event::PermissionStates { view: 1, states: vec![], complete: false, workers_cleared: false },
             Event::PermissionWritten { view: 1, seq: 9, ok: true },
         ];
         for e in &held {
@@ -2076,7 +2076,7 @@ mod tests {
         let shown = Event::NotificationShown { view: 1, token: 3, origin: "ooo".into(), title: "tt".into(), body: "b".into() };
         assert_eq!(shown.weight(), 6);
         assert_eq!(Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() }.weight(), 12);
-        let states = Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1), (3, "x".into(), 2)], complete: true };
+        let states = Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1), (3, "x".into(), 2)], complete: true, workers_cleared: true };
         assert_eq!(states.weight(), 12);
     }
 
