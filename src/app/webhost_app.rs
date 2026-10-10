@@ -386,6 +386,9 @@ impl App {
             return;
         }
         match event {
+            // A view that raised one of these has no pane to answer it (the pane went first): the
+            // view's drop completes the request refused (`shut`), so only the fact is logged.
+            Event::Permission { view, .. } | Event::NotificationShown { view, .. } => crate::dlog!("webhost: view {} raised a permission event with no pane", *view),
             Event::Created(v) => crate::dlog!("webhost: view {} created", *v),
             // A view's process failed: which view, never the reason's text (13w B8).
             Event::Failed(v, _) => crate::rlog!("webhost: view {} failed", *v),

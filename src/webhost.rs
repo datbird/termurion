@@ -297,6 +297,53 @@ pub enum Event {
     ContextMenu { view: ViewId, token: u64, target: MenuTarget },
     /// A custom item of the answered menu was chosen: `id` is the `MenuEntry::Custom` id.
     ContextMenuPicked { view: ViewId, token: u64, id: u32 },
+    /// A page asked for a permission Tandem asks about (`browser_perms::route_kind`); the view holds
+    /// the request (a deferral) until `answer_permission(token, ..)`. `kind` is
+    /// `COREWEBVIEW2_PERMISSION_KIND`, `uri` the requesting frame's URI. Every other kind, and a
+    /// request over the limits (`PermissionLimiter`), is denied by the host and never posted.
+    Permission { view: ViewId, token: u64, kind: i32, uri: String },
+    /// A page's notification (`NotificationReceived`, marked handled so WebView2 shows none); the
+    /// view holds the notification object under `token` until `notification_report`. `origin` is
+    /// the sender's origin; `title` and `body` are cut by `cap_note_title` and `cap_note_body`.
+    NotificationShown { view: ViewId, token: u64, origin: String, title: String, body: String },
+    /// The page closed the notification held under `token`.
+    NotificationClosed { view: ViewId, token: u64 },
+    /// `IsDocumentPlayingAudio` changed (it stays true while the view is muted).
+    AudioPlaying { view: ViewId, playing: bool },
+    /// The answer to `read_permission_states`: kind, origin as WebView2 reports it, state.
+    PermissionStates { view: ViewId, states: Vec<(i32, String, i32)> },
+}
+
+/// How the app answers a `Event::Permission`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermAnswer {
+    /// Refuse (`COREWEBVIEW2_PERMISSION_STATE_DENY`, nothing saved in the profile). There is no
+    /// "leave it to WebView2": that would be a grant nobody asked Tandem about (pre-flight B3).
+    Deny,
+    /// `state` is a `browser_perms::STATE_*`; `saves` sets `SavesInProfile` first, so WebView2 keeps
+    /// the state where a page reads it synchronously (notifications, location).
+    State { state: i32, saves: bool },
+}
+
+/// A notification title is cut to this many characters before it is queued.
+pub const NOTE_TITLE_CHARS: usize = 256;
+/// A notification body likewise.
+pub const NOTE_BODY_CHARS: usize = 1024;
+/// Permission settings one `PermissionStates` carries.
+pub const MAX_PERMISSION_STATES: usize = 2048;
+
+fn cap_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// A page's notification title, cut (the app cleans it for display).
+pub fn cap_note_title(s: &str) -> String {
+    cap_chars(s, NOTE_TITLE_CHARS)
+}
+
+/// A page's notification body, cut.
+pub fn cap_note_body(s: &str) -> String {
+    cap_chars(s, NOTE_BODY_CHARS)
 }
 
 impl Event {
@@ -321,7 +368,12 @@ impl Event {
             | Event::FrameMessage { view, .. }
             | Event::Starting { view, .. }
             | Event::ContextMenu { view, .. }
-            | Event::ContextMenuPicked { view, .. } => *view,
+            | Event::ContextMenuPicked { view, .. }
+            | Event::Permission { view, .. }
+            | Event::NotificationShown { view, .. }
+            | Event::NotificationClosed { view, .. }
+            | Event::AudioPlaying { view, .. }
+            | Event::PermissionStates { view, .. } => *view,
         }
     }
 
@@ -348,6 +400,12 @@ impl Event {
         if let Event::DevTools { name, .. } = self {
             return name == BINDING_EVENT;
         }
+        // A new audio state is corrected by the next change (and a new document resets it); the
+        // permission and notification events hold a COM object or answer a request, so none is
+        // dropped: the host bounds them where they are made (`PermissionLimiter`, `NotificationLimiter`).
+        if matches!(self, Event::AudioPlaying { .. }) {
+            return true;
+        }
         // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
         // lose the press to both (final review minor 6). Only a person's key makes one.
         matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { taken: false, .. } | Event::History { .. } | Event::Loading(..))
@@ -366,6 +424,9 @@ impl Event {
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
+            Event::Permission { uri, .. } => uri.len(),
+            Event::NotificationShown { origin, title, body, .. } => origin.len() + title.len() + body.len(),
+            Event::PermissionStates { states, .. } => states.iter().map(|(_, o, _)| o.len()).sum(),
             _ => 0,
         }
     }
@@ -706,6 +767,69 @@ impl NewWindowLimiter {
             }
         }
         if self.in_window >= NEW_WINDOWS_PER_SECOND {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
+/// Permission requests a view may raise per second, and may have waiting for an answer. The rest
+/// are denied at once and never queued (pre-flight B2).
+pub const PERMISSIONS_PER_SECOND: usize = 4;
+pub const MAX_PENDING_PERMISSIONS: usize = 8;
+
+/// `PermissionRequested` limiter, the `NewWindowLimiter` pattern.
+#[derive(Debug, Default)]
+pub struct PermissionLimiter {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl PermissionLimiter {
+    pub fn allow(&mut self, now: Instant, pending: usize) -> bool {
+        if pending >= MAX_PENDING_PERMISSIONS {
+            return false;
+        }
+        match self.window_start {
+            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= PERMISSIONS_PER_SECOND {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
+/// Notifications a view may raise per minute, and the objects it may hold (each is a COM object).
+pub const NOTES_PER_MINUTE: usize = 30;
+pub const MAX_HELD_NOTES: usize = 16;
+
+/// `NotificationReceived` limiter: what it refuses is reported closed to the page and released.
+#[derive(Debug, Default)]
+pub struct NotificationLimiter {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl NotificationLimiter {
+    pub fn allow(&mut self, now: Instant, held: usize) -> bool {
+        if held >= MAX_HELD_NOTES {
+            return false;
+        }
+        match self.window_start {
+            Some(t) if now.duration_since(t) < Duration::from_secs(60) => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= NOTES_PER_MINUTE {
             return false;
         }
         self.in_window += 1;
@@ -1775,5 +1899,81 @@ mod tests {
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
         let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true };
         assert!(nav_verdict(&own, &only_https, &yes));
+    }
+
+    /// Task 3: the permission, notification and audio events are plain data (they cross the
+    /// channel as `Posted` values), and a deny answer differs from any state.
+    #[test]
+    fn permission_events_are_plain_data() {
+        let events = vec![
+            Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
+            Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1)] },
+            Event::NotificationShown { view: 1, token: 3, origin: "https://a.b".into(), title: "T".into(), body: "B".into() },
+            Event::NotificationClosed { view: 1, token: 3 },
+            Event::AudioPlaying { view: 1, playing: true },
+        ];
+        for e in events {
+            let posted = Posted { env: None, event: Some(e.clone()), charge: None };
+            assert_eq!(posted.event, Some(e.clone()));
+            assert_eq!(e.view(), 1);
+        }
+        assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::Deny);
+        assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::State { state: 2, saves: true });
+    }
+
+    /// Pre-flight B2: the held ones are never dropped, the cheap state ones may be, and what a page
+    /// chose is counted, so a flood cannot grow the queue unseen.
+    #[test]
+    fn new_events_are_weighed_and_dropped_by_the_rules() {
+        let held = [
+            Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
+            Event::NotificationShown { view: 1, token: 3, origin: "o".into(), title: "t".into(), body: "b".into() },
+            Event::NotificationClosed { view: 1, token: 3 },
+            Event::PermissionStates { view: 1, states: vec![] },
+        ];
+        for e in &held {
+            assert!(!e.droppable(), "{e:?} holds a COM object or answers a request");
+        }
+        assert!(Event::AudioPlaying { view: 1, playing: true }.droppable(), "a state change the next one corrects");
+        let shown = Event::NotificationShown { view: 1, token: 3, origin: "ooo".into(), title: "tt".into(), body: "b".into() };
+        assert_eq!(shown.weight(), 6);
+        assert_eq!(Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() }.weight(), 12);
+        let states = Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1), (3, "x".into(), 2)] };
+        assert_eq!(states.weight(), 12);
+    }
+
+    /// B2: a page's notification text is cut in characters before it is queued.
+    #[test]
+    fn notification_text_is_capped() {
+        let long = "\u{e9}".repeat(5000);
+        assert_eq!(cap_note_title(&long).chars().count(), NOTE_TITLE_CHARS);
+        assert_eq!(cap_note_body(&long).chars().count(), NOTE_BODY_CHARS);
+        assert_eq!(cap_note_title("short"), "short");
+    }
+
+    /// B2: at most 4 permission requests a second and 8 pending; the rest are denied at once.
+    #[test]
+    fn permission_requests_are_limited() {
+        let mut l = PermissionLimiter::default();
+        let t = Instant::now();
+        for _ in 0..PERMISSIONS_PER_SECOND {
+            assert!(l.allow(t, 0));
+        }
+        assert!(!l.allow(t, 0), "over the per-second budget");
+        assert!(l.allow(t + Duration::from_millis(1100), 0), "a new second");
+        assert!(!l.allow(t + Duration::from_secs(5), MAX_PENDING_PERMISSIONS), "too many pending");
+    }
+
+    /// B2: notifications are limited per minute and by how many the host holds.
+    #[test]
+    fn notifications_are_limited() {
+        let mut l = NotificationLimiter::default();
+        let t = Instant::now();
+        for _ in 0..NOTES_PER_MINUTE {
+            assert!(l.allow(t, 0));
+        }
+        assert!(!l.allow(t + Duration::from_secs(30), 0), "over the per-minute budget");
+        assert!(l.allow(t + Duration::from_secs(61), 0), "a new minute");
+        assert!(!l.allow(t + Duration::from_secs(200), MAX_HELD_NOTES), "too many held");
     }
 }

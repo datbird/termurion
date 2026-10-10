@@ -197,6 +197,7 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         resource_filters: filters,
         favicon: true,
         context_menu: true,
+        permissions: true,
         ..Default::default()
     }
 }
@@ -631,6 +632,20 @@ impl App {
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
                 self.browser_script_event(pane, e);
             }
+            // Permissions, notifications and audio (13x6 Task 3). Until the permission flow lands
+            // (Tasks 4 to 7) nothing is granted and nothing is shown: a request is refused, a notification
+            // released, so no deferral or held object outlives its event (pre-flight B3).
+            Event::Permission { token, .. } => {
+                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                    v.answer_permission(*token, webhost::PermAnswer::Deny);
+                }
+            }
+            Event::NotificationShown { token, .. } => {
+                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                    v.notification_report(*token, crate::webhost_win::NoteReport::Release);
+                }
+            }
+            Event::NotificationClosed { .. } | Event::AudioPlaying { .. } | Event::PermissionStates { .. } => {}
             // Everything a page's script says, the world's events and the calls' answers: the router.
             _ => {
                 self.browser_script_event(pane, e);

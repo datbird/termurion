@@ -260,7 +260,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/triggers_ui.rs", 1),
     ("app/view_source_app.rs", 2),
     ("app/web_popover_app.rs", 4),
-    ("app/webhost_app.rs", 7),
+    ("app/webhost_app.rs", 8),
     ("app/windows_ui.rs", 3),
     ("app/workgroup_app.rs", 2),
     ("app/workgroup_restore_app.rs", 3),
@@ -269,7 +269,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("jobwatch.rs", 2),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
-    ("webhost_win.rs", 2),
+    ("webhost_win.rs", 11),
 ];
 
 
