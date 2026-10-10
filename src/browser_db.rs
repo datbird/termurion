@@ -204,7 +204,7 @@ fn err(e: impl std::fmt::Display) -> String {
 
 /// Schemas later plans add (each plan's tables, verbatim from iTerm2's `Database/*.swift`), run in
 /// order after `SCHEMA` by `open` and `open_in_memory`.
-pub const EXTRA_SCHEMAS: &[&str] = &[];
+pub const EXTRA_SCHEMAS: &[&str] = &[crate::browser_db_perms::SCHEMA];
 
 fn bring_up(conn: &Connection, extra: &[&str]) -> Result<(), String> {
     conn.execute_batch(SCHEMA).map_err(err)?;
@@ -286,7 +286,6 @@ impl Db {
     }
 
     /// The connection, for the queries a later plan writes as `impl Db` blocks in its own file.
-    #[allow(dead_code)]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -561,6 +560,9 @@ mod tests {
                 "idx_browser_history_session",
                 "idx_browser_history_title",
                 "idx_browser_history_url",
+                "idx_browser_permissions_created",
+                "idx_browser_permissions_origin",
+                "idx_browser_permissions_type",
                 "idx_browser_visits_count",
                 "idx_browser_visits_hostname",
                 "idx_browser_visits_path",

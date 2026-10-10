@@ -84,6 +84,7 @@ pub mod browser_reader;
 pub mod view_source;
 pub mod devtools;
 pub mod browser_db;
+pub mod browser_db_perms;
 pub mod browser_perms;
 pub mod browser_pages;
 pub mod browser_restore;
