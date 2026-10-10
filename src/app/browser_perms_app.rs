@@ -339,8 +339,9 @@ pub(super) enum Op {
     Revoke(PermissionType),
     /// Revoke all of an origin: the types of the rows it held.
     RevokeAll(Vec<PermissionType>),
-    /// The toolbar's Reset: the row goes, the profile state is reset, nothing reloads (`BVC:1075-1079`).
-    Reset(PermissionType),
+    /// The toolbar's Reset: the row goes and the profile state is reset (`BVC:1075-1079`); `granted`
+    /// says the row it removed was a Granted one.
+    Reset { t: PermissionType, granted: bool },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -350,10 +351,11 @@ pub(super) struct Effects {
 }
 
 /// The profile resets and the reload an `Op` on `origin` needs. Only mirrored kinds (3 and 4) are
-/// ever reset; media is never mirrored (Task 1).
+/// ever reset; media is never mirrored (Task 1). A revoke always reloads; a Reset reloads only when
+/// it removed a Granted camera, microphone or location row.
 pub(super) fn effects(op: &Op, origin: &str) -> Effects {
     let types: Vec<PermissionType> = match op {
-        Op::Revoke(t) | Op::Reset(t) => vec![*t],
+        Op::Revoke(t) | Op::Reset { t, .. } => vec![*t],
         Op::RevokeAll(ts) => ts.clone(),
     };
     let mut states: Vec<(i32, String, i32)> = Vec::new();
@@ -365,7 +367,12 @@ pub(super) fn effects(op: &Op, origin: &str) -> Effects {
             }
         }
     }
-    Effects { states, reload: !matches!(op, Op::Reset(_)) }
+    // A Reset of a Granted camera, microphone or location row stops what runs on it (R13x6-T5d).
+    let reload = match op {
+        Op::Reset { t, granted } => *granted && matches!(t, PermissionType::Camera | PermissionType::Microphone | PermissionType::CameraAndMicrophone | PermissionType::Geolocation),
+        _ => true,
+    };
+    Effects { states, reload }
 }
 
 /// How an `Op` runs through the store's write queue: its profile writes, a reload queued behind
@@ -730,12 +737,14 @@ impl App {
         self.apply_op(dev_null, origin, Op::RevokeAll(types));
     }
 
-    /// The toolbar's Reset: the row goes and the profile state is reset; nothing reloads.
+    /// The toolbar's Reset: the row goes and the profile state is reset; the pages using the origin
+    /// reload when the row was a Granted camera, microphone or location one (R13x6-T5d).
     #[allow(dead_code)] // Task 8's menu calls it
     pub(super) fn reset_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) {
         let Some(db) = self.browser_db(dev_null) else { return };
+        let granted = db.get_permission(origin, t).is_some_and(|r| r.decision == Decision::Granted);
         db.reset_permission(origin, t);
-        self.apply_op(dev_null, origin, Op::Reset(t));
+        self.apply_op(dev_null, origin, Op::Reset { t, granted });
     }
 
     /// iTerm2's revocation sweep (`BPM:230-241`, `BM:518-586`): a pane whose main origin matches
@@ -1128,8 +1137,19 @@ mod tests {
         assert_eq!((fx.states, fx.reload), (vec![], true), "media is never mirrored but the pages still reload");
         let fx = effects(&Op::RevokeAll(vec![Notification, Geolocation, Camera, AudioPlayback]), origin);
         assert_eq!((fx.states, fx.reload), (vec![reset(4), reset(3)], true));
-        let fx = effects(&Op::Reset(Geolocation), origin);
-        assert_eq!((fx.states, fx.reload), (vec![reset(3)], false), "Reset reloads nothing (BVC:1075-1079)");
+        // Reset of a Granted camera, microphone or location row is a revocation from the person's
+        // side: the pages using it reload (R13x6-T5d, a deviation from BVC:1075-1079). A Denied
+        // row, and notifications (the table is checked at each one), reload nothing.
+        let fx = effects(&Op::Reset { t: Geolocation, granted: true }, origin);
+        assert_eq!((fx.states, fx.reload), (vec![reset(3)], true));
+        for t in [Camera, Microphone, CameraAndMicrophone] {
+            assert_eq!(effects(&Op::Reset { t, granted: true }, origin), Effects { states: vec![], reload: true }, "{t:?}");
+        }
+        assert!(!effects(&Op::Reset { t: Geolocation, granted: false }, origin).reload, "a Denied row");
+        assert!(!effects(&Op::Reset { t: Camera, granted: false }, origin).reload);
+        assert_eq!(effects(&Op::Reset { t: Notification, granted: true }, origin), Effects { states: vec![reset(4)], reload: false });
+        let st = steps(effects(&Op::Reset { t: Geolocation, granted: true }, origin), origin);
+        assert_eq!(st.reload_after.as_deref(), Some(origin), "after its reset landed");
         // A pane on the origin reloads at once, any other runs the sweep.
         let panes = vec![(1, "https://a.b/x".to_string()), (2, "https://c.d/".to_string())];
         assert_eq!(reload_plan(&panes, origin), vec![(1, Reload::Now), (2, Reload::Sweep)]);

@@ -25,3 +25,38 @@ column; because nothing can fill it but the person's own dialog answer, no row i
 Readers skip any row that is not exactly a "granted" / "denied" decision of a known type with a
 canonical origin of at most 300 bytes and finite dates; a corrupt file is set aside by
 `Db::open` and replaced by an empty table (deny). The table holds at most 10,000 rows.
+
+Task 5 review fixes (one permission-write queue, controller class ruling):
+
+R13x6-T5a (one queue). Every profile permission write (a mirrored grant, the start-up sync's
+plan, a revoke, a reset) and every read of the profile's states goes through one ordered queue per
+WebView2 profile (`perm_queue::ProfileQueue`, one for Browser and one for Dev Null), one at a
+time: the next starts only when `Event::PermissionWritten` (or `PermissionStates`) came back. A
+revoke or reset starts a new generation: a queued write of the same entry from an older generation
+is dropped and an answer waiting behind an older mirrored grant of it becomes a Deny. A failed
+write is tried 3 times, then the pages using its origin reload and the sync reads again. The host
+never writes the profile when it answers a request.
+
+R13x6-T5b (sync). The start-up sync is done only when a COMPLETE read's plan has landed. An
+incomplete read rewrites what it saw and reads again; a read whose view goes is asked again on
+another view; 3 failed tries in a row give up (logged, a banner) until the next view of the store
+or the next page the person opens. Until it is done, no page of that store loads (R13x6-T5c).
+
+R13x6-T5c (first page). A browser pane's own load and a typed navigation wait, blank, until the
+store's sync is done; the sync's end loads them. The setup's own about:blank check is not a page.
+
+R13x6-T5d (Reset reloads). DEVIATION from iTerm2 (`BVC:1075-1079` only resets): the toolbar's
+Reset of a Granted Camera, Microphone, Camera and Microphone or Location row reloads the pages
+using the origin, after the reset landed, so a running stream or watchPosition stops. It follows
+the ledger rule "revocation takes effect immediately for live pages". A Denied row reloads
+nothing; a Notification reset reloads nothing (Tandem checks the table at each notification).
+
+R13x6-T5e (sweep). Revoke reloads only after its profile resets were confirmed. The sweep's answer
+over a cap (more than 256 origins, an entry over 2048 bytes) or of the wrong shape reloads the
+whole pane (fail closed); only a FAILED script falls back to the main origin (iTerm2 `BM:576-583`).
+iTerm2-equal limit, recorded: the sweep sees the top document's iframes and resource entries
+only, so a revoked origin in a nested iframe (Y embeds Z embeds X), or an iframe navigated after
+creation, is not found (task 5 review minor 5).
+
+R13x6-T5f (ruling A wording). Ruling A's "Deny never saved" covers ANSWERS only: the start-up
+sync writes a Denied row back as profile Deny (state 2), which matches the table.
