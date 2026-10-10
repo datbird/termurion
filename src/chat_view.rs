@@ -554,7 +554,8 @@ pub fn materialize(root: &Path, chat: &str, id: &str, name: &str, content: &[u8]
 /// (ruling F19). Anything else is revealed.
 pub fn openable(name: &str) -> bool {
     const INERT: [&str; 11] = ["txt", "md", "json", "csv", "log", "pdf", "png", "jpg", "jpeg", "gif", "webp"];
-    Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| INERT.contains(&e.to_ascii_lowercase().as_str()))
+    // A stream form (`a.exe:x.txt`) opens another file's stream: never (the one normalizer).
+    !crate::inert_files::opened_name(name).stream && Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| INERT.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// A link a bubble may open: web and mail only (ruling F18); every other scheme, `file:`, UNC
@@ -1011,7 +1012,7 @@ mod tests {
         for ok in ["a.txt", "b.MD", "c.json", "d.csv", "e.log", "f.pdf", "g.png", "h.JPG", "i.jpeg", "j.gif", "k.webp"] {
             assert!(openable(ok), "{ok}");
         }
-        for no in ["a.docm", "a.xlsm", "a.rdp", "a.iso", "a.html", "a.htm", "a.svg", "a.exe", "a.lnk", "a.ps1", "a.py", "a", "a.txt.exe", "a.", ".txt", "a.tx", "a.pdf.lnk", "a.LNK"] {
+        for no in ["a.docm", "a.xlsm", "a.rdp", "a.iso", "a.html", "a.htm", "a.svg", "a.exe", "a.lnk", "a.ps1", "a.py", "a", "a.txt.exe", "a.", ".txt", "a.tx", "a.pdf.lnk", "a.LNK", "a.exe:x.txt", "a.lnk::$DATA:x.png"] {
             assert!(!openable(no), "{no}");
         }
     }

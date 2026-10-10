@@ -34,12 +34,53 @@ const DANGEROUS: &[(&str, bool)] = &[
     ("vst", false), ("vsw", false), ("iso", false), ("img", false), ("vhd", false), ("vhdx", false),
 ];
 
-/// The type of a name as Windows reads it (`PathFindExtension`): the final component, trailing
-/// dots and spaces ignored, then the text after its last dot, a leading dot included (`.scf` is an
-/// SCF file), in lower case. None when there is no dot.
+/// A path's final name as Windows opens it: THE normalizer `extension`, `high_risk` (the write
+/// door), `semantic::runnable` and every open-or-reveal decision share (findings r2 N1; the same
+/// forms `settings_export::aliased` refuses in a name). A `\\?\` or `\\.\` prefix and a leading
+/// drive (`C:`) are dropped; the final component is cut at its first `:` (an NTFS stream:
+/// `a.exe::$DATA` and `a.exe:` open `a.exe`); trailing dots and spaces go, as Windows drops them;
+/// the case is folded one character for one, as NTFS folds it. `stream` is true when any `:`
+/// remains past the drive, in any component: such a path is dangerous whatever its type (fail
+/// closed).
+pub struct Opened {
+    pub name: String,
+    pub stream: bool,
+}
+
+/// `path`'s final name as Windows opens it, and whether it names a stream (see `Opened`).
+pub fn opened_name(path: &str) -> Opened {
+    let mut rest = path;
+    for prefix in [r"\\?\", r"\\.\", "//?/", "//./"] {
+        if let Some(r) = rest.strip_prefix(prefix) {
+            rest = r;
+            break;
+        }
+    }
+    let b = rest.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        rest = &rest[2..];
+    }
+    let last = rest.rsplit(['\\', '/']).next().unwrap_or(rest);
+    let last = last.split(':').next().unwrap_or(last).trim_end_matches([' ', '.']);
+    let name = last
+        .chars()
+        .map(|c| {
+            let mut up = c.to_uppercase();
+            match (up.next(), up.next()) {
+                (Some(u), None) => u,
+                _ => c,
+            }
+        })
+        .collect::<String>()
+        .to_ascii_lowercase();
+    Opened { name, stream: rest.contains(':') }
+}
+
+/// The type of a name as Windows reads it (`PathFindExtension`) of the name `opened_name` gives:
+/// the text after its last dot, a leading dot included (`.scf` is an SCF file), folded to lower
+/// case. None when there is no dot.
 pub fn extension(name: &str) -> Option<String> {
-    let last = name.rsplit(['\\', '/']).next().unwrap_or(name).trim_end_matches([' ', '.']);
-    last.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())
+    opened_name(name).name.rsplit_once('.').map(|(_, e)| e.to_string())
 }
 
 /// Whether the type `ext` (lower case, no dot) is on the one dangerous list.
@@ -48,9 +89,9 @@ pub fn dangerous_extension(ext: &str) -> bool {
 }
 
 /// Whether this name's type is on the one dangerous list (run, installed, followed or parsed by
-/// the shell).
+/// the shell), or it names a stream (`opened_name`: fail closed).
 pub fn high_risk(name: &str) -> bool {
-    extension(name).is_some_and(|e| dangerous_extension(&e))
+    opened_name(name).stream || extension(name).is_some_and(|e| dangerous_extension(&e))
 }
 
 /// The name a file someone else named is kept under: a high-risk type gets a trailing `_`

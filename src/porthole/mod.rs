@@ -238,6 +238,9 @@ mod tests {
         assert_eq!(link_action(&LinkTarget::File("C:\\x\\tool.EXE".into())), LinkAction::Reveal);
         assert_eq!(link_action(&LinkTarget::File("C:\\x\\notes.md".into())), LinkAction::Open);
         assert_eq!(link_action(&LinkTarget::Url("https://x.org/a.exe".into())), LinkAction::Open);
+        // A stream suffix does not hide the program (findings r2 N1).
+        assert_eq!(link_action(&LinkTarget::File("C:\\x\\a.exe::$DATA".into())), LinkAction::Reveal);
+        assert_eq!(link_action(&LinkTarget::File("C:\\x\\a.cmd:s".into())), LinkAction::Reveal);
     }
 
     #[test]

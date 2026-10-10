@@ -889,12 +889,15 @@ pub fn open_url_run(text: &str, has_code: bool) -> Run {
 }
 
 /// Programs and scripts: "open" would run them, so Tandem shows them instead. The one list is
-/// `inert_files::high_risk` (read from the last dot, as Windows reads a type), plus the machine's
-/// own PATHEXT.
+/// `inert_files::high_risk` (the name as Windows opens it, `inert_files::opened_name`: a stream
+/// suffix, trailing dots and spaces dropped, and any stream fails closed), plus the machine's own
+/// PATHEXT.
 pub(crate) fn runnable(path: &str) -> bool {
+    if crate::inert_files::high_risk(path) {
+        return true;
+    }
     let Some(ext) = crate::inert_files::extension(path) else { return false };
-    crate::inert_files::dangerous_extension(&ext)
-        || std::env::var("PATHEXT").is_ok_and(|p| p.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext)))
+    std::env::var("PATHEXT").is_ok_and(|p| p.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext)))
 }
 
 /// A local file: link as a Windows path. None for a link to another machine.
@@ -1823,6 +1826,27 @@ mod tests {
         for fine in [".bashrc", "x.exe_", r"C:\x.exe\notes", "notes.md", "a.txt"] {
             assert!(!runnable(fine), "{fine:?}");
         }
+    }
+
+    /// The one normalizer (findings r2 N1): a stream suffix, trailing dots and spaces, a `\\?\`
+    /// prefix and a drive-relative path are read as Windows opens them, and a stream `:` past the
+    /// drive is dangerous whatever the base type (fail closed: revealed, never opened).
+    #[test]
+    fn a_stream_or_alias_form_never_hides_a_program() {
+        for bad in [r"C:\x\a.exe::$DATA", "a.exe:stream", "a.EXE . .", r"\\?\C:\a.exe", r"\\.\C:\a.exe", "x.LNK:$DATA", "C:a.exe", r"C:\x\a.ps1::$DATA", "a.exe:", r"C:\x\a.txt:s", r"C:\d:s\x.txt", "a.p\u{17f}1"] {
+            assert!(runnable(bad), "{bad:?}");
+            assert!(crate::inert_files::high_risk(bad), "{bad:?}");
+        }
+        for fine in [r"C:\x\a.txt", r"\\?\C:\a.txt", "C:a.txt", r"C:\x\notes.md"] {
+            assert!(!runnable(fine), "{fine:?}");
+        }
+        // Every open-or-reveal decision of a file link follows it.
+        let settle = |r: Run| match r {
+            Run::OpenLocal { path, has_code } => open_local_result(&path, has_code, &crate::netpath::Probe::default(), &|_| true),
+            other => other,
+        };
+        assert_eq!(settle(guard_open("file:///C:/x/a.exe::$DATA", false)), Run::Reveal("C:\\x\\a.exe::$DATA".into()));
+        assert_eq!(settle(open_file_run("C:\\x\\a.exe:s", None, false)), Run::Reveal("C:\\x\\a.exe:s".into()));
     }
 
     #[test]
