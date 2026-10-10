@@ -164,7 +164,7 @@ impl Saving {
             queue: VecDeque::new(),
             waiting: None,
             outstanding: 0,
-            budget: crate::devtools::Budget::default(),
+            budget: crate::devtools::Budget::with_limits(page_saver::MAX_REPLY_BYTES, page_saver::MAX_READ_TOTAL),
             io_error: None,
             over: false,
         }
@@ -461,14 +461,14 @@ impl App {
         for act in acts {
             match act {
                 Act::Page(body) => {
-                    self.browser_page_call(pane, &body, json!({}), Box::new(move |app, pane, r| app.page_save_answer(pane, id, Answer::Page(r))));
+                    self.browser_page_call_capped(pane, &body, page_saver::MAX_PAGE_RESULT, Box::new(move |app, pane, r| app.page_save_answer(pane, id, Answer::Page(r))));
                 }
                 Act::Tree => {
-                    self.devtools_read(pane, "Page.getResourceTree", json!({}), Box::new(move |app, pane, r| app.page_save_answer(pane, id, Answer::Tree(r))));
+                    self.devtools_read(pane, "Page.getResourceTree", json!({}), page_saver::MAX_REPLY_BYTES, Box::new(move |app, pane, r| app.page_save_answer(pane, id, Answer::Tree(r))));
                 }
                 Act::Content { frame, url } => {
                     let params = crate::devtools::resource_content_params(&frame, &url);
-                    self.devtools_read(pane, "Page.getResourceContent", params, Box::new(move |app, pane, r| app.page_save_answer(pane, id, Answer::Content(r))));
+                    self.devtools_read(pane, "Page.getResourceContent", params, page_saver::MAX_REPLY_BYTES, Box::new(move |app, pane, r| app.page_save_answer(pane, id, Answer::Content(r))));
                 }
                 Act::File(op) => {
                     let sent = self.page_saves.get(&pane).filter(|s| s.id == id).and_then(|s| s.worker.as_ref()).map(|w| w.send(op.clone()).is_ok());
@@ -812,6 +812,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Final review minor 2: the stated caps are the ones that bind. A 6 MiB image (8 MiB of base64
+    /// JSON, over the View Source reply cap and the runner's 4 MiB default) is saved whole; one over
+    /// `MAX_RESOURCE_BYTES` is skipped and keeps its live URL.
+    #[test]
+    fn a_large_resource_is_saved_up_to_the_stated_cap() {
+        let root = temp_root("bigres");
+        let folder = root.join("site");
+        let big = vec![7u8; 6 * 1024 * 1024];
+        let reply = json!({"content": base64::engine::general_purpose::STANDARD.encode(&big), "base64Encoded": true});
+        assert!(crate::devtools::reply_weight(&reply) > crate::devtools::MAX_RESOURCE, "the reply is over View Source's cap");
+        assert!(crate::devtools::reply_weight(&reply) <= page_saver::MAX_REPLY_BYTES);
+        let urls = json!(["https://tandem.test/i.png"]);
+        let mut h = Harness::new(folder.clone(), vec![Ok(urls), Ok(tree()), Ok(reply), Ok(Value::Null), Ok(json!("<html>hi</html>"))]);
+        h.go();
+        assert!(h.fails.is_empty(), "{:?}", h.fails);
+        assert_eq!(std::fs::read(folder.join("resources").join("i.png")).unwrap().len(), big.len(), "saved whole");
+        // Just over the stated cap: skipped, the page still saved.
+        let folder2 = root.join("site2");
+        let over = vec![7u8; page_saver::MAX_RESOURCE_BYTES as usize + 1];
+        let reply = json!({"content": base64::engine::general_purpose::STANDARD.encode(&over), "base64Encoded": true});
+        let mut h = Harness::new(folder2.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(reply), Ok(Value::Null), Ok(json!("<html>hi</html>"))]);
+        h.go();
+        assert!(h.fails.is_empty(), "{:?}", h.fails);
+        assert!(!folder2.join("resources").join("i.png").exists(), "over MAX_RESOURCE_BYTES is skipped");
+        assert!(folder2.join("index.html").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Final review minor 2, the wiring: the saver's page-world calls are read up to
+    /// `MAX_PAGE_RESULT` (a page whose HTML with its stylesheets passes the runner's 4 MiB default is
+    /// saved), its reads up to `MAX_REPLY_BYTES`, and the runner honours a call's own cap.
+    #[test]
+    fn the_saver_reads_carry_its_stated_caps() {
+        let src = include_str!("page_saver_app.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap()];
+        assert!(prod.contains("self.browser_page_call_capped(pane, &body, page_saver::MAX_PAGE_RESULT,"));
+        assert!(!prod.contains("self.browser_page_call("), "no saver call at the default cap");
+        assert!(prod.contains("\"Page.getResourceContent\", params, page_saver::MAX_REPLY_BYTES,"));
+        assert!(prod.contains("crate::devtools::Budget::with_limits(page_saver::MAX_REPLY_BYTES, page_saver::MAX_READ_TOTAL)"));
+        let r = include_str!("browser_scripts_app.rs");
+        let done = &r[r.find("pub(super) fn browser_script_done").unwrap()..];
+        let done = &done[..done.find("\n    }\n").unwrap()];
+        assert!(done.contains("let cap = bv.result_caps.remove(&token).unwrap_or(MAX_RESULT);") && done.contains("text.len() > cap"), "{done}");
+        assert!(page_saver::MAX_PAGE_RESULT >= 2 * page_saver::MAX_MAPPING_BYTES);
+        assert!(page_saver::MAX_READ_TOTAL as u64 >= 2 * page_saver::MAX_TOTAL_BYTES);
+    }
+
     /// Final review minor 3: a cancel (or the pane closing) while the save folder is being made, before
     /// its answer, leaves no empty folder. The worker carries out the queued MakeDir, then exactly
     /// what `page_save_cancel` sends; the late answer goes nowhere (the save is gone).
@@ -1056,7 +1103,7 @@ mod tests {
         // One write door and the permits check before every step; the page runner is the page-world one.
         assert_eq!(prod.matches("write_new_checked_with(").count(), 1);
         assert!(prod.contains("self.job.permits(&step)") && prod.contains("self.job.check_epoch(now)") && prod.contains("self.job.attributes_body()"));
-        assert!(prod.contains("self.browser_page_call(pane, &body, json!({})") && !prod.contains("browser_js_call("));
+        assert!(prod.contains("self.browser_page_call_capped(pane, &body, page_saver::MAX_PAGE_RESULT,") && !prod.contains("browser_js_call("));
         assert!(prod.contains("self.devtools_read(pane, \"Page.getResourceTree\"") && prod.contains("self.devtools_read(pane, \"Page.getResourceContent\""));
         assert!(prod.contains("Kind::Persistent, Then::Nothing"));
         let ctx = include_str!("browser_ctx_app.rs");

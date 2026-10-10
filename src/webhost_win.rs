@@ -3722,6 +3722,7 @@ mod probe {
         let mut done = None;
         // What each read answered, named in a failure.
         let mut fetched: Vec<String> = Vec::new();
+        let mut read_budget = crate::devtools::Budget::with_limits(crate::page_saver::MAX_REPLY_BYTES, crate::page_saver::MAX_READ_TOTAL);
         let page_world = |p: &mut Probe, body: &str| -> Value {
             let script = crate::browser_js::page_call_script(body, &json!({})).expect("the script");
             let text = p.page_eval(&script).expect("the page answers");
@@ -3750,7 +3751,8 @@ mod probe {
                     let frame = crate::devtools::frame_for(t, &u);
                     let reply = frame.as_ref().map(|f| p.call_wait(None, "Page.getResourceContent", &crate::devtools::resource_content_params(f, &u)));
                     let got = reply.as_ref().and_then(|r| r.as_ref().ok()).and_then(|r| {
-                        let bytes = crate::devtools::content_bytes(&serde_json::from_str(r).ok()?)?;
+                        // As the app reads it: the saver's own caps (`Saving.budget`).
+                        let bytes = read_budget.take(&serde_json::from_str(r).ok()?).ok()?;
                         Some((bytes, crate::devtools::resource_mime(t, &u)))
                     });
                     fetched.push(format!("{u}: frame {frame:?}, {}", match (&reply, &got) {

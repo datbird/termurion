@@ -9,21 +9,24 @@ use serde_json::Value;
 
 impl App {
     /// A host-initiated read. Refused (`done(Err("devtools method not allowed"))`, nothing sent) for
-    /// any other method or any arguments Tandem would not build; a reply over the per-resource cap is
-    /// an error. `done` always runs, also when the pane or page is gone (the runner answers it).
-    pub(super) fn devtools_read(&mut self, pane: PaneId, method: &str, params: Value, done: JsDone) {
+    /// any other method or any arguments Tandem would not build; a reply over `cap` (bytes of its JSON
+    /// text: `devtools::MAX_RESOURCE` for View Source and the tree, `page_saver::MAX_REPLY_BYTES` for
+    /// a saved resource) is an error. `done` always runs, also when the pane or page is gone (the
+    /// runner answers it).
+    pub(super) fn devtools_read(&mut self, pane: PaneId, method: &str, params: Value, cap: usize, done: JsDone) {
         if let Some(why) = crate::devtools::refusal(method, &params) {
             done(self, pane, Err(why.into()));
             return;
         }
         // The reply is page-derived: over the per-resource cap it is an error, never passed on.
-        self.browser_devtools(
+        self.browser_devtools_capped(
             pane,
             method,
             params,
+            cap,
             Box::new(move |app, pane, r| {
                 let r = match r {
-                    Ok(v) if crate::devtools::reply_weight(&v) > crate::devtools::MAX_RESOURCE => Err(crate::devtools::TOO_LARGE.into()),
+                    Ok(v) if crate::devtools::reply_weight(&v) > cap => Err(crate::devtools::TOO_LARGE.into()),
                     r => r,
                 };
                 done(app, pane, r)
@@ -64,10 +67,12 @@ mod tests {
         let me = prod(include_str!("devtools_read_app.rs"));
         let f = between(me, "pub(super) fn devtools_read", "\n    }\n");
         assert!(f.contains("crate::devtools::refusal(method, &params)"), "the narrower gate is asked");
-        assert!(f.find("refusal(").unwrap() < f.find("self.browser_devtools(").unwrap(), "before the send");
+        assert!(f.find("refusal(").unwrap() < f.find("self.browser_devtools_capped(").unwrap(), "before the send");
         assert!(f.contains("done(self, pane, Err(why.into()))") && f.contains("return;"), "the refusal answers done and sends nothing");
-        assert_eq!(me.matches("browser_devtools(").count(), 1, "one send");
-        assert!(f.contains("reply_weight") && f.contains("TOO_LARGE"), "the reply is capped per resource");
+        assert_eq!(me.matches("browser_devtools_capped(").count(), 1, "one send");
+        assert!(f.contains("reply_weight(&v) > cap") && f.contains("TOO_LARGE"), "the reply is capped per resource, at the caller's cap");
+        // The callers' caps: View Source at the DevTools cap, Save Page As at its stated one.
+        assert!(include_str!("view_source_app.rs").contains("self.devtools_read(pane, method, params, crate::devtools::MAX_RESOURCE,"));
     }
 
     /// Security (B1): a page or isolated-world message cannot reach a DevTools read. The message
@@ -79,6 +84,7 @@ mod tests {
         let router = files.iter().find(|(n, _)| n == "browser_scripts_app.rs").unwrap().1.as_str();
         let msg = between(router, "pub(super) fn browser_message", "pub(super) fn browser_page_open");
         for bad in ["devtools_read", "devtools_send", "browser_devtools", "getResource"] {
+            // (`browser_devtools` also matches `browser_devtools_capped`, `devtools_send` its capped form.)
             assert!(!msg.contains(bad), "the router names {bad}");
         }
         for (name, src) in &files {

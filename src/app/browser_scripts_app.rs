@@ -225,6 +225,7 @@ impl App {
             bv.copy_mode = None;
             bv.reader.reset();
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
+            bv.result_caps.clear();
         }
         self.global_pane_gone(pane);
         for done in dones {
@@ -465,11 +466,19 @@ impl App {
     /// The one DevTools sender of the app: `done` gets the answer (the result object) or the error.
     /// A method outside `browser_world::ALLOWED` is refused here and in the host.
     pub(super) fn devtools_send(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, done: JsDone) -> Option<u64> {
+        self.devtools_send_capped(pane, session, method, params, MAX_RESULT, done)
+    }
+
+    /// `devtools_send` with the answer read up to `cap` bytes of JSON text instead of `MAX_RESULT`.
+    pub(super) fn devtools_send_capped(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, cap: usize, done: JsDone) -> Option<u64> {
         let why = match self.browser_views.get_mut(&pane) {
             Some(bv) if bv.view.is_some() && browser_world::method_allowed(method) => {
                 let token = bv.next_token;
                 bv.next_token += 1;
                 bv.pending_js.insert(token, done);
+                if cap != MAX_RESULT {
+                    bv.result_caps.insert(token, cap);
+                }
                 if let Some(v) = &bv.view {
                     match session {
                         None => v.devtools_call(method, &params.to_string(), token),
@@ -489,6 +498,12 @@ impl App {
     pub(super) fn browser_devtools(&mut self, pane: PaneId, method: &str, params: Value, done: JsDone) {
         let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::DevTools, &format!("{method} {params}"), done) else { return };
         self.devtools_send(pane, None, method, &params, done);
+    }
+
+    /// `browser_devtools` with the answer read up to `cap` bytes of JSON text (`devtools_read`).
+    pub(super) fn browser_devtools_capped(&mut self, pane: PaneId, method: &str, params: Value, cap: usize, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::DevTools, &format!("{method} {params}"), done) else { return };
+        self.devtools_send_capped(pane, None, method, &params, cap, done);
     }
 
     /// The lifecycle events the view's host filter held (final review I4), in order.
@@ -653,12 +668,20 @@ impl App {
     /// `safelyEvaluateJavaScript` in the PAGE world: `make_safe`, then `ExecuteScript`; the answer is
     /// page-controlled data and never decides a capability.
     pub(super) fn browser_eval(&mut self, pane: PaneId, script: &str, done: JsDone) {
+        self.browser_eval_capped(pane, script, MAX_RESULT, done);
+    }
+
+    /// `browser_eval` with the answer read up to `cap` bytes of JSON text instead of `MAX_RESULT`.
+    pub(super) fn browser_eval_capped(&mut self, pane: PaneId, script: &str, cap: usize, done: JsDone) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return done(self, pane, Err("no view".into())) };
         let Some(view) = &bv.view else { return done(self, pane, Err("no view".into())) };
         let token = bv.next_token;
         bv.next_token += 1;
         bv.eval_waiting.insert(token);
         bv.pending_js.insert(token, done);
+        if cap != MAX_RESULT {
+            bv.result_caps.insert(token, cap);
+        }
         view.execute_script(&browser_js::make_safe(script), token);
     }
 
@@ -672,6 +695,16 @@ impl App {
         let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::Page, body, done) else { return };
         match browser_js::page_call_script(body, &args) {
             Ok(script) => self.browser_eval(pane, &script, done),
+            Err(e) => done(self, pane, Err(e)),
+        }
+    }
+
+    /// `browser_page_call` (no argument) with the answer read up to `cap` bytes of JSON text: Save
+    /// Page As's URL list and HTML (`page_saver::MAX_PAGE_RESULT`).
+    pub(super) fn browser_page_call_capped(&mut self, pane: PaneId, body: &str, cap: usize, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::Page, body, done) else { return };
+        match browser_js::page_call_script(body, &Value::Null) {
+            Ok(script) => self.browser_eval_capped(pane, &script, cap, done),
             Err(e) => done(self, pane, Err(e)),
         }
     }
@@ -694,10 +727,11 @@ impl App {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return false };
         let page = bv.eval_waiting.remove(&token);
         bv.world.setup_calls.remove(&token);
+        let cap = bv.result_caps.remove(&token).unwrap_or(MAX_RESULT);
         let Some(done) = bv.pending_js.remove(&token) else { return page };
         let result = match json {
             Err(e) => Err(e.clone()),
-            Ok(text) if text.len() > MAX_RESULT => Err("the result is too large".into()),
+            Ok(text) if text.len() > cap => Err("the result is too large".into()),
             Ok(text) if text.is_empty() => Ok(Value::Null),
             Ok(text) => serde_json::from_str::<Value>(text).map_err(|_| "the answer is not JSON".to_string()),
         };
@@ -780,7 +814,10 @@ impl App {
                         bv.eval_waiting.clear();
                         // The setup's own calls that are still out (a timed-out setup) stay: their
                         // late answers are removed by `late_removal`.
-                        bv.world.take_navigated(&mut bv.pending_js)
+                        let dones = bv.world.take_navigated(&mut bv.pending_js);
+                        let pending = &bv.pending_js;
+                        bv.result_caps.retain(|t, _| pending.contains_key(t));
+                        dones
                     }
                     _ => Vec::new(),
                 };

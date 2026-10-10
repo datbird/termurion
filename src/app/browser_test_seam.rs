@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn the_runners_consult_the_seam() {
         let src = include_str!("browser_scripts_app.rs").split("\n#[cfg(test)]\nmod tests").next().unwrap().to_string();
-        for (name, runner) in [("pub(super) fn browser_js_call(", "Runner::World"), ("pub(super) fn browser_page_call(", "Runner::Page"), ("pub(super) fn browser_devtools(", "Runner::DevTools")] {
+        for (name, runner) in [("pub(super) fn browser_js_call(", "Runner::World"), ("pub(super) fn browser_page_call(", "Runner::Page"), ("pub(super) fn browser_page_call_capped(", "Runner::Page"), ("pub(super) fn browser_devtools(", "Runner::DevTools"), ("pub(super) fn browser_devtools_capped(", "Runner::DevTools")] {
             let body = &src[src.find(name).unwrap()..];
             let body = &body[..body.find("\n    }\n").unwrap()];
             assert!(body.contains("self.seam_intercept(pane, super::browser_test_seam::") && body.contains(&format!("{runner}, ")), "{name}");

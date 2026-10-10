@@ -140,10 +140,15 @@ pub fn resource_mime(tree: &Value, url: &str) -> Option<String> {
 /// `base64Encoded` is true, else its UTF-8 bytes. None without `content`, for bad base64, and for a
 /// reply over `MAX_RESOURCE`.
 pub fn content_bytes(reply: &Value) -> Option<Vec<u8>> {
-    use base64::Engine;
     if reply_weight(reply) > MAX_RESOURCE {
         return None;
     }
+    decode_content(reply)
+}
+
+/// The decoding alone; the caller has weighed the reply against its own cap (`Budget::take`).
+fn decode_content(reply: &Value) -> Option<Vec<u8>> {
+    use base64::Engine;
     let content = reply.get("content")?.as_str()?;
     if reply.get("base64Encoded").and_then(Value::as_bool).unwrap_or(false) {
         base64::engine::general_purpose::STANDARD.decode(content).ok()
@@ -153,23 +158,37 @@ pub fn content_bytes(reply: &Value) -> Option<Vec<u8>> {
 }
 
 /// The running total of one read job (View Source reads one body, Save Page As reads many).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Budget {
     used: usize,
+    per: usize,
+    total: usize,
+}
+
+/// `MAX_RESOURCE` per reply and `MAX_TOTAL` in all (View Source).
+impl Default for Budget {
+    fn default() -> Budget {
+        Budget::with_limits(MAX_RESOURCE, MAX_TOTAL)
+    }
 }
 
 impl Budget {
+    /// A job with its own caps (Save Page As: `page_saver::MAX_REPLY_BYTES`, `MAX_READ_TOTAL`).
+    pub fn with_limits(per: usize, total: usize) -> Budget {
+        Budget { used: 0, per, total }
+    }
+
     /// Takes one content reply: its body, or why it was refused (over the per-resource cap, over the
     /// total, or no content). A refused reply costs nothing.
     pub fn take(&mut self, reply: &Value) -> Result<Vec<u8>, &'static str> {
         let w = reply_weight(reply);
-        if w > MAX_RESOURCE {
+        if w > self.per {
             return Err(TOO_LARGE);
         }
-        if self.used.saturating_add(w) > MAX_TOTAL {
+        if self.used.saturating_add(w) > self.total {
             return Err(OVER_BUDGET);
         }
-        let bytes = content_bytes(reply).ok_or("no content")?;
+        let bytes = decode_content(reply).ok_or("no content")?;
         self.used += w;
         Ok(bytes)
     }
@@ -260,6 +279,11 @@ mod tests {
         assert!(content_bytes(&fit).is_some());
         let big = json!({"content": "a".repeat(MAX_RESOURCE), "base64Encoded": false});
         assert_eq!(content_bytes(&big), None, "over the per-resource cap");
+        // A job with its own caps (Save Page As) takes what the default refuses, up to its own.
+        assert_eq!(Budget::default().take(&big), Err(TOO_LARGE));
+        let mut wide = Budget::with_limits(2 * MAX_RESOURCE, 3 * MAX_RESOURCE);
+        assert!(wide.take(&big).is_ok(), "decoded under the job's cap");
+        assert_eq!(Budget::with_limits(MAX_RESOURCE / 2, 3 * MAX_RESOURCE).take(&fit), Err(TOO_LARGE));
         let mut b = Budget::default();
         assert_eq!(b.take(&big), Err(TOO_LARGE));
         assert_eq!(b.used(), 0, "a refused reply costs nothing");

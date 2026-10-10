@@ -27,6 +27,21 @@ pub const MAX_CSS_URLS: usize = 5000;
 pub const MAX_MAPPING_BYTES: usize = 32 * 1024 * 1024;
 /// How deep stylesheets that import stylesheets are followed (Task 9 review I2).
 pub const MAX_CSS_DEPTH: usize = 8;
+/// Room for a reply's JSON around its content (keys, quotes, the base64 flag).
+const REPLY_SLACK: usize = 64 * 1024;
+/// The largest `Page.getResourceContent` reply a save reads, in bytes of its JSON text: one that
+/// carries a `MAX_RESOURCE_BYTES` resource in base64 (final review minor 2: the transport carries
+/// the stated cap; View Source keeps `devtools::MAX_RESOURCE`). A text resource is sent unencoded,
+/// so one whose JSON escaping grows it past this is skipped.
+pub const MAX_REPLY_BYTES: usize = (MAX_RESOURCE_BYTES as usize).div_ceil(3) * 4 + REPLY_SLACK;
+/// The most reply JSON one save reads in all: twice `MAX_TOTAL_BYTES`, so the byte total binds for
+/// base64 (4/3) and plain text alike.
+pub const MAX_READ_TOTAL: usize = 2 * MAX_TOTAL_BYTES as usize;
+/// The largest answer of the saver's page-world scripts (the URL list, the page's HTML with its
+/// stylesheets inlined), in bytes of the JSON text `ExecuteScript` answers: twice the mapping the
+/// HTML can take in (`MAX_MAPPING_BYTES`), with room for the page's own markup. The runner's
+/// default (4 MiB) would fail a page that iTerm2 saves (final review minor 2).
+pub const MAX_PAGE_RESULT: usize = 2 * MAX_MAPPING_BYTES;
 
 fn units(s: &str) -> usize {
     s.encode_utf16().count()

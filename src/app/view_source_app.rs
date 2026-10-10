@@ -83,7 +83,7 @@ impl App {
                 self.browser_navigate(pane, view_source::SOURCE_URL);
             }
             Next::Read { method, params, stage } => {
-                self.devtools_read(pane, method, params, Box::new(move |app, pane, r| {
+                self.devtools_read(pane, method, params, crate::devtools::MAX_RESOURCE, Box::new(move |app, pane, r| {
                     if !app.browser_views.get(&pane).is_some_and(|b| b.reader.current(epoch)) {
                         return;
                     }
