@@ -181,12 +181,11 @@ const fn bact(class: &'static str, title: &'static str, kind: Kind, placeholder:
     act(class, title, kind, placeholder, idempotent)
 }
 
-/// Every browser action, in iTerm2's menu order (by title). Enter Reader Mode and the two
-/// workgroup actions wait for their milestone (13): `later` is cleared when Task 10 lands.
+/// Every browser action, in iTerm2's menu order (by title).
 pub const BROWSER_CATALOG: &[ActionInfo] = &[
-    ActionInfo { later: Some(13), ..bact("iTerm2SharedARC.ReaderModeBrowserTrigger", "Enter Reader Mode", Kind::None, "", false) },
-    ActionInfo { later: Some(13), live_session_only: false, ..bact("iTermEnterWorkgroupBrowserTrigger", "Enter Workgroup\u{2026}", Kind::Workgroup, "", true) },
-    ActionInfo { later: Some(13), ..bact("iTermExitWorkgroupBrowserTrigger", "Exit Workgroup", Kind::None, "", true) },
+    bact("iTerm2SharedARC.ReaderModeBrowserTrigger", "Enter Reader Mode", Kind::None, "", false),
+    bact("iTermEnterWorkgroupBrowserTrigger", "Enter Workgroup\u{2026}", Kind::Workgroup, "", true),
+    bact("iTermExitWorkgroupBrowserTrigger", "Exit Workgroup", Kind::None, "", true),
     bact("iTerm2SharedARC.HighlightBrowserTrigger", "Highlight Text", Kind::BrowserColors, "", false),
     bact("InjectJavascriptContentTrigger", "Inject Javascript (Content Regex)", Kind::Text, "Javascript", false),
     bact("InjectJavascriptURLTrigger", "Inject Javascript (URL Regex)", Kind::Text, "Javascript", false),
@@ -986,9 +985,22 @@ mod tests {
             assert_eq!(browser_match_type(t.class), None);
         }
         assert_eq!((URL_REGEX, PAGE_CONTENT_REGEX), (1, 2));
+    }
+
+    #[test]
+    fn reader_and_workgroup_triggers_follow_iterm2() {
+        let k = |c: &str| browser_action_info(c).unwrap();
         for c in ["iTerm2SharedARC.ReaderModeBrowserTrigger", "iTermEnterWorkgroupBrowserTrigger", "iTermExitWorkgroupBrowserTrigger"] {
-            assert_eq!(k(c).later, Some(13), "{c}");
+            assert_eq!(k(c).later, None, "{c}: 13x4 and 13y1 are built");
         }
+        // `EWB:19-21`, `:65-71`: a workgroup that is not there reads "(missing)".
+        let label = enter_workgroup_label("x", &[]);
+        assert_eq!(enter_workgroup_description(&label), "Enter Workgroup \u{201c}(missing)\u{201d}");
+        // `XWB:21-23`: Exit takes no parameter and has no leader-only option, unlike the terminal one.
+        let exit = k("iTermExitWorkgroupBrowserTrigger");
+        assert_eq!((exit.kind, exit.leader_only_option), (Kind::None, false));
+        assert!(action_info("iTermExitWorkgroupTrigger").unwrap().leader_only_option);
+        assert_eq!(k("iTermEnterWorkgroupBrowserTrigger").kind, Kind::Workgroup);
     }
 
     #[test]

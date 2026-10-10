@@ -147,8 +147,8 @@ impl App {
 
     /// Runs one effect, within the pane's rate (B8). Highlight and Hyperlink call the engine in the
     /// isolated world with typed arguments; Inject (and Reload, which is Inject of its fixed script) runs
-    /// in the page world. Reader Mode and the workgroup actions are Task 10's: until then they show the
-    /// "not available yet" banner and do nothing.
+    /// in the page world. Reader Mode enters through 13x4, and the workgroup actions are queued to
+    /// 13y1's trigger queue (B6).
     pub(super) fn browser_trigger_effect(&mut self, pane: PaneId, e: Effect) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let now = Instant::now();
@@ -176,9 +176,13 @@ impl App {
                 let body = format!("{}\nreturn null;", browser_js::iife(&script));
                 self.browser_page_call(pane, &body, json!({}), done);
             }
-            Effect::EnterReaderMode | Effect::EnterWorkgroup(_) | Effect::ExitWorkgroup => {
-                self.tell_once(pane, "browser-trigger-later", "That trigger action is not available in Tandem yet.");
-            }
+            // Reader Mode is 13x4's entry point (fail-closed loaders, isolated world), no second copy.
+            Effect::EnterReaderMode => self.enter_reader_mode(pane),
+            // The workgroup actions go through the terminal trigger queue (13y1): page text is not the
+            // person's consent, so the same dedupe, declined, restoring and ask rules apply, and the
+            // question names the workgroup.
+            Effect::EnterWorkgroup(id) => self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::EnterBrowser(id)),
+            Effect::ExitWorkgroup => self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::ExitBrowser),
             Effect::Stop => {}
         }
     }
@@ -209,7 +213,7 @@ mod tests {
             assert!(!me.contains(bad), "{bad}");
         }
         let effect = between(me, "pub(super) fn browser_trigger_effect", "\n    }\n");
-        let inject = between(effect, "Effect::Inject(script) =>", "Effect::EnterReaderMode");
+        let inject = between(effect, "Effect::Inject(script) =>", "// Reader Mode");
         assert!(inject.contains("browser_page_call(") && !inject.contains("browser_js_call") && !inject.contains("secret"));
         for arm in ["Effect::Highlight", "Effect::Hyperlink"] {
             let a = between(effect, arm, "}\n            Effect::");
@@ -254,5 +258,27 @@ mod tests {
         let refresh = between(me, "pub(super) fn browser_triggers_refresh", "\n    }\n");
         assert!(refresh.contains("bt::needs_reload(old, &list)") && refresh.contains("bt::load(&list, old.secret.clone())"));
         assert!(refresh.find("needs_reload").unwrap() < refresh.find("browser_js_call").unwrap());
+    }
+
+    /// Reader Mode enters through 13x4's one entry point; the workgroup actions never enter directly,
+    /// they join the terminal trigger queue and its guards (B6: a hostile page cannot spam questions).
+    #[test]
+    fn workgroup_effects_follow_iterm2() {
+        let me = prod(include_str!("browser_triggers_app.rs"));
+        let effect = between(me, "pub(super) fn browser_trigger_effect", "\n    }\n");
+        assert!(effect.contains("Effect::EnterReaderMode => self.enter_reader_mode(pane)"));
+        assert!(effect.contains("queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::EnterBrowser(id))"));
+        assert!(effect.contains("queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::ExitBrowser)"));
+        assert!(!effect.contains("enter_workgroup(") && !effect.contains("exit_workgroup(") && !effect.contains("not available"));
+        let wg = prod(include_str!("workgroup_app.rs"));
+        let run = between(wg, "fn run_workgroup_triggers", "/// Ends the members a teardown queued");
+        assert!(run.contains("self.enter_workgroup(&id, pane, Mechanism::BrowserTrigger)") && !run.contains("enter_workgroup_now"));
+        assert!(run.contains("TriggerWork::ExitBrowser =>") && run.contains("self.exit_workgroup(pane)"));
+        let guard = between(wg, "fn trigger_enter_id", "\n    }\n");
+        for need in ["is_restoring_session(pane)", "can_enter_from_ui(in_group, &d)", "refused for workgroup", "restoring.declined(pane, &id)", "scripts_alerts::waits("] {
+            assert!(guard.contains(need), "{need}");
+        }
+        assert!(wg.contains("due.len() < MAX_TRIGGER_QUEUE && !due.iter().any(|(p, w)| *p == pane && *w == work)"), "bounded, each request once");
+        assert!(crate::triggers::MAX_WORKGROUP_ID <= 128);
     }
 }

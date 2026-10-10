@@ -25,6 +25,11 @@ pub(super) enum TriggerWork {
     Enter(String),
     /// Exit Workgroup, leader-only or from any member.
     Exit(bool),
+    /// A browser trigger's Enter Workgroup (page text, never the person's consent): the same queue,
+    /// dedupe, declined and restoring guards as the terminal trigger, entered as `BrowserTrigger`.
+    EnterBrowser(String),
+    /// A browser trigger's Exit Workgroup (`XWB`: no leader-only option).
+    ExitBrowser,
 }
 
 /// Requests held at most (a trigger's text printed in a loop cannot grow the queue).
@@ -706,6 +711,33 @@ impl App {
         }
     }
 
+    /// The workgroup a queued Enter may ask about, or None. Enter is a no-op in a session a restore is
+    /// rebuilding (the flag is read when the trigger fires, `PS:25381-25390`), refused (and logged) in
+    /// a session already in a workgroup or where entering would not go ahead (`BVC:1666-1673`), not
+    /// asked again after a Cancel for this session (not every 5 s), and not asked while a question for
+    /// this very entry is up or waiting.
+    fn trigger_enter_id(&mut self, pane: PaneId, param: &str, what: &'static str) -> Option<String> {
+        if self.is_restoring_session(pane) {
+            return None;
+        }
+        let list: Vec<(String, String)> = self.workgroup_model.workgroups.iter().map(|w| (w.unique_identifier.clone(), w.name.clone())).collect();
+        let id = crate::triggers::effective_workgroup(param, &list)?;
+        let in_group = self.workgroup_of(pane).is_some();
+        let d = run::disposition(self.workgroup_model.get(&id), None, self.is_restoring_anchor(pane));
+        if !run::can_enter_from_ui(in_group, &d) {
+            let guid = self.panes.get(&pane).map(|p| p.session_guid.clone()).unwrap_or_default();
+            crate::rlog!("{}: refused for workgroup {} on session {}", what, crate::dlog::name(&id), crate::dlog::name(&guid));
+            return None;
+        }
+        if self.workgroups.restoring.declined(pane, &id) {
+            return None;
+        }
+        let pending = scripts_alerts::waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, |t| {
+            matches!(t, scripts_alerts::Then::EnterWorkgroup { workgroup, pane: p, .. } if *p == pane && workgroup.unique_identifier == id)
+        });
+        (!pending).then_some(id)
+    }
+
     /// The queued triggers, after the pass. Enter is a no-op in a session that is already in a
     /// workgroup (iTerm2: the menu disables itself there too) and never runs a command unasked:
     /// `enter_workgroup` asks for every trigger (`needs_ask`) and the answer enters. Exit leaves
@@ -717,23 +749,16 @@ impl App {
             }
             match work {
                 TriggerWork::Enter(param) => {
-                    // A replayed start in a session a restore is rebuilding must not start a second
-                    // workgroup: the flag is read when the trigger fires (`PS:25381-25390`).
-                    if self.workgroup_of(pane).is_some() || self.is_restoring_session(pane) {
-                        continue;
-                    }
-                    let list: Vec<(String, String)> = self.workgroup_model.workgroups.iter().map(|w| (w.unique_identifier.clone(), w.name.clone())).collect();
-                    let Some(id) = crate::triggers::effective_workgroup(&param, &list) else { continue };
-                    // A question the person cancelled is not asked again for this session (not every 5 s).
-                    if self.workgroups.restoring.declined(pane, &id) {
-                        continue;
-                    }
-                    // A question for this very entry is already up or waiting: the person has not answered, so no second one.
-                    let pending = scripts_alerts::waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, |t| {
-                        matches!(t, scripts_alerts::Then::EnterWorkgroup { workgroup, pane: p, .. } if *p == pane && workgroup.unique_identifier == id)
-                    });
-                    if !pending {
-                        self.enter_workgroup(&id, pane, Mechanism::Trigger);
+                    let Some(id) = self.trigger_enter_id(pane, &param, "enterWorkgroupTrigger") else { continue };
+                    self.enter_workgroup(&id, pane, Mechanism::Trigger);
+                }
+                TriggerWork::EnterBrowser(param) => {
+                    let Some(id) = self.trigger_enter_id(pane, &param, "browserTriggerEnterWorkgroup") else { continue };
+                    self.enter_workgroup(&id, pane, Mechanism::BrowserTrigger);
+                }
+                TriggerWork::ExitBrowser => {
+                    if self.workgroup_of(pane).is_some() {
+                        self.exit_workgroup(pane);
                     }
                 }
                 TriggerWork::Exit(leader_only) => {
