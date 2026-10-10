@@ -5035,6 +5035,28 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// Task 5 fix (no first page before the sync): the hazard the gate closes. A grant the profile
+    /// holds is honored by the first page with NO `PermissionRequested`, so a stale grant from an
+    /// earlier run works until the sync has rewritten the profile from the table; after a reset
+    /// the page sees the default and must ask.
+    #[test]
+    #[ignore]
+    fn a_profile_grant_is_honored_with_no_request() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load("about:blank");
+        p.view().set_permission_state(31, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(31, true))), "written: {:?}", p.writes);
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the first page has the stale grant");
+        assert!(p.perm_reqs.is_empty(), "and nothing asked Tandem: {:?}", p.perm_reqs);
+        p.view().set_permission_state(32, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(32, true))));
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "synced: the page must ask");
+        p.finish();
+    }
+
     /// Task 5 (P-sweep): the revocation sweep script, run as the app runs it (isolated world,
     /// `return (...)`), reads the frames' and resources' origins of a hostile page: a cross-origin
     /// iframe, 5000 resource entries and a page that overrides `performance.getEntriesByType`.

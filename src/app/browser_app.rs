@@ -1212,6 +1212,9 @@ impl App {
 
     /// Loads `url` in the pane's view (Tandem's own load: the person typed it).
     pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
+        // Before the store's permissions were synced no page loads (13x6): the URL waits.
+        let synced = self.perm_synced(pane);
+        let dev_null = self.pane_dev_null(pane);
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
             bv.bar.nav_state.will_load(url);
@@ -1222,6 +1225,11 @@ impl App {
                 return;
             }
             match &bv.view {
+                Some(_) if !synced => {
+                    bv.world.restore_load = Some(url.to_string());
+                    // A sync that gave up starts over.
+                    self.sync_permission_states(dev_null);
+                }
                 Some(v) => v.navigate_tandem(url),
                 None => {
                     bv.pending_url = Some(url.to_string());

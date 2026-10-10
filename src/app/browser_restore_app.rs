@@ -17,8 +17,17 @@ impl App {
     /// (which keeps `file:` and `about:` pages) or an arrangement's URL that `load_gate` already
     /// judged at `start_browser_pane`.
     pub(super) fn browser_restoration_done(&mut self) {
+        self.browser_release_waiting_loads(None);
+    }
+
+    /// Loads every waiting page that may load now (`page_may_load`): the restoration is over and its
+    /// store's permissions were synced (13x6). `store` limits it to one store's panes (`dev_null`).
+    pub(super) fn browser_release_waiting_loads(&mut self, store: Option<bool>) {
         let panes: Vec<PaneId> = self.browser_views.keys().copied().collect();
         for pane in panes {
+            if store.is_some_and(|d| d != self.pane_dev_null(pane)) || !super::browser_perms_app::page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
+                continue;
+            }
             let Some(bv) = self.browser_views.get_mut(&pane) else { continue };
             // A view still in its setup loads when the setup ends (the flag is off by then).
             if bv.view.is_none() || bv.world.setup.is_some() {
@@ -33,6 +42,17 @@ impl App {
     /// as the guarded NavigationStarting will, so a refused one says so instead of leaving a blank
     /// pane.
     pub(super) fn browser_load_own(&mut self, pane: PaneId, url: &str) {
+        // No page loads before the launch's restoration ended and its store's permissions were
+        // synced from the table (13x6): it waits, blank, and `browser_release_waiting_loads` loads it.
+        if !super::browser_perms_app::page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
+            if let Some(bv) = self.browser_views.get_mut(&pane) {
+                bv.world.restore_load = Some(url.to_string());
+            }
+            // A sync that gave up starts over.
+            let dev_null = self.pane_dev_null(pane);
+            self.sync_permission_states(dev_null);
+            return;
+        }
         let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
         let Some(url) = browser_restore::own_load(url, &|t| crate::webhost::file_url_local(t, &judge)) else {
             self.banners.set("action", "Tandem will not open that file location.");

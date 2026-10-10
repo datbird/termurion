@@ -383,6 +383,13 @@ pub(super) fn reload_plan(panes: &[(PaneId, String)], origin: &str) -> Vec<(Pane
         .collect()
 }
 
+/// Whether a browser pane's own page may load now: never while the launch restores windows, and
+/// never before its store's profile permissions were synced from the table (13x6 Task 5 fix: a
+/// stale profile grant would otherwise work for the first page with no question and no row).
+pub(super) fn page_may_load(restoring: bool, synced: bool) -> bool {
+    !restoring && synced
+}
+
 /// The plan for a profile read: the table decides kinds 1 to 4. An unreadable table wants
 /// nothing, so no grant of those kinds survives (fail closed).
 pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<&[(String, PermissionType, Decision)]>) -> Vec<(i32, String, i32)> {
@@ -618,10 +625,18 @@ impl App {
                     }
                 }
                 Out::Reload { origin } => self.reload_panes_using(dev_null, &origin),
-                Out::Synced => {}
-                Out::GaveUp => crate::dlog!("webhost: the profile permission sync gave up after {} tries; pages wait for the next view", crate::perm_queue::SYNC_TRIES),
+                Out::Synced => self.browser_release_waiting_loads(Some(dev_null)),
+                Out::GaveUp => {
+                    crate::dlog!("webhost: the profile permission sync gave up after {} tries; pages wait for the next view", crate::perm_queue::SYNC_TRIES);
+                    self.banners.set("window", "Browser pages are waiting: Tandem could not check this browser's site permissions. Open the page again to retry.");
+                }
             }
         }
+    }
+
+    /// Whether `pane`'s store has synced its profile permissions from the table (its pages may load).
+    pub(super) fn perm_synced(&self, pane: PaneId) -> bool {
+        self.perm_queues[usize::from(self.pane_dev_null(pane))].synced()
     }
 
     /// A profile write came back (`Event::PermissionWritten`).
@@ -1179,5 +1194,23 @@ mod tests {
         let ev = include_str!("browser_app.rs");
         let created = &ev[ev.find("Event::Created(_) => {").unwrap()..];
         assert!(created[..600].contains("self.sync_permission_states(dev_null)"));
+    }
+
+    #[test]
+    fn no_page_loads_before_its_store_synced() {
+        assert!(page_may_load(false, true));
+        assert!(!page_may_load(false, false), "not synced: the page waits");
+        assert!(!page_may_load(true, true), "restoring: the page waits");
+        let rs = include_str!("browser_restore_app.rs");
+        let own = &rs[rs.find("pub(super) fn browser_load_own").unwrap()..rs.find("pub(super) fn browser_nav_starting").unwrap()];
+        let gate = own.find("page_may_load(self.browser_restoring(), self.perm_synced(pane))").expect("the one road for a pane's own load is gated");
+        assert!(gate < own.find("navigate_tandem").unwrap() && own[gate..].contains("restore_load = Some("), "it waits, never loads");
+        let done = &rs[rs.find("fn browser_release_waiting_loads").unwrap()..rs.find("pub(super) fn browser_load_own").unwrap()];
+        assert!(done.contains("restore_load.take()") && done.contains("self.browser_load_own(pane, &url)"));
+        let app = include_str!("browser_app.rs");
+        let nav = &app[app.find("pub(super) fn browser_navigate(").unwrap()..app.find("pub(super) fn browser_suggest").unwrap()];
+        assert!(nav.contains("let synced = self.perm_synced(pane);") && nav.find("if !synced").unwrap() < nav.find("navigate_tandem").unwrap(), "a typed page waits too");
+        let me = include_str!("browser_perms_app.rs");
+        assert!(me.contains("Out::Synced => self.browser_release_waiting_loads(Some(dev_null))"), "the sync's end loads what waits");
     }
 }
