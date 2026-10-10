@@ -79,6 +79,8 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "exit-distraction-removal.js" => include_str!("../resources/browser/exit-distraction-removal.js"),
         "remove-element-at-point.js" => include_str!("../resources/browser/remove-element-at-point.js"),
         "extract-plain-text.js" => include_str!("../resources/browser/extract-plain-text.js"),
+        "extract-resources.js" => include_str!("../resources/browser/extract-resources.js"),
+        "add-saved-attributes.js" => include_str!("../resources/browser/add-saved-attributes.js"),
         "convert-to-markdown.js" => include_str!("../resources/browser/convert-to-markdown.js"),
         "turndown.browser.umd.js" => include_str!("../resources/browser/turndown.browser.umd.js"),
         _ => return None,

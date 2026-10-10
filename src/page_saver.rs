@@ -332,6 +332,429 @@ pub fn rewrite_css(css: &str, base: &str, local: &dyn Fn(&str) -> Option<String>
         .into_owned()
 }
 
+// ---- the save job (Task 9, PSV:50-232) ----
+use crate::browser_reader::expression_body;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+
+pub const SAVE_FAILED: &str = "Save Failed";
+pub const FAILED_TO_GET_HTML: &str = "Failed to get page HTML content";
+pub const FAILED_TO_CREATE_DIRECTORY: &str = "Failed to create save directory";
+pub const FAILED_TO_SAVE_FILE: &str = "Failed to save file";
+/// The reason when the page moved to another document while a save was running.
+pub const NAVIGATED_AWAY: &str = "The page navigated away";
+const CANCELLED: &str = "Cancelled";
+/// Resources asked for at most (answered or not): the page names the list, so asking is bounded as
+/// well as keeping (review B5).
+pub const MAX_ATTEMPTS: usize = 4 * MAX_RESOURCES;
+/// The longest URL the job asks for, and the most URLs it queues from the page's list.
+const MAX_URL_LEN: usize = 8192;
+const MAX_QUEUE: usize = 20_000;
+
+/// The clone-and-apply script (`PSV:124-171`, verbatim): an IIFE expression run in the page world.
+pub const CLONE_EXPR: &str = r####"(function() {
+    // Clone the entire document
+    const clonedDoc = document.cloneNode(true);
+    
+    // Apply saved src attributes in the clone
+    clonedDoc.querySelectorAll('[data-saved-src]').forEach(el => {
+        el.setAttribute('src', el.getAttribute('data-saved-src'));
+        el.removeAttribute('data-saved-src');
+    });
+    
+    // Replace CSS link tags with style tags in the clone
+    clonedDoc.querySelectorAll('link[rel="stylesheet"][data-saved-css-content]').forEach(link => {
+        const cssContent = link.getAttribute('data-saved-css-content');
+        const styleEl = clonedDoc.createElement('style');
+        styleEl.textContent = cssContent;
+        link.parentNode.replaceChild(styleEl, link);
+    });
+    
+    // Apply saved href attributes for non-CSS links in the clone
+    clonedDoc.querySelectorAll('[data-saved-href]').forEach(el => {
+        el.setAttribute('href', el.getAttribute('data-saved-href'));
+        el.removeAttribute('data-saved-href');
+    });
+    
+    // Apply saved data attributes in the clone
+    clonedDoc.querySelectorAll('[data-saved-data]').forEach(el => {
+        el.setAttribute('data', el.getAttribute('data-saved-data'));
+        el.removeAttribute('data-saved-data');
+    });
+    
+    // Apply saved styles in the clone
+    clonedDoc.querySelectorAll('[data-saved-style]').forEach(el => {
+        el.setAttribute('style', el.getAttribute('data-saved-style'));
+        el.removeAttribute('data-saved-style');
+    });
+    
+    // Apply saved content to style tags in the clone
+    clonedDoc.querySelectorAll('style[data-saved-content]').forEach(styleEl => {
+        styleEl.textContent = styleEl.getAttribute('data-saved-content');
+        styleEl.removeAttribute('data-saved-content');
+    });
+    
+    // Get the full document including DOCTYPE from the clone
+    const doctype = document.doctype ? 
+        '<!DOCTYPE ' + document.doctype.name + '>' : '';
+    return doctype + clonedDoc.documentElement.outerHTML;
+})();"####;
+
+const PLACEHOLDER: &str = "new Map(URL_MAPPING_PLACEHOLDER)";
+
+/// "Could not save the page: <e>" (`PSV:386-387`).
+pub fn save_failed_text(e: &str) -> String {
+    format!("Could not save the page: {e}")
+}
+
+/// The URL extraction script as a function body (`PSV:80-98`); the file begins with a `//` comment.
+pub fn extract_body() -> String {
+    expression_body(crate::browser_js::resource("extract-resources.js").unwrap_or_default())
+}
+
+/// The mapping as a JavaScript array literal (`PSV:104-106`): every string JSON-encoded, U+2028 and
+/// U+2029 written as escapes (JSON allows them raw, JavaScript source did not before ES2019 and
+/// they must never reach the page as line terminators).
+pub fn mapping_json(mapping: &[(String, String)]) -> String {
+    let enc = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()).replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+    let pairs: Vec<String> = mapping.iter().map(|(o, l)| format!("[{}, {}]", enc(o), enc(l))).collect();
+    format!("[{}]", pairs.join(", "))
+}
+
+/// `Some(body)` when the copied file holds `new Map(URL_MAPPING_PLACEHOLDER)` exactly once.
+fn try_saved_attributes(mapping: &[(String, String)]) -> Option<String> {
+    let text = crate::browser_js::resource("add-saved-attributes.js")?;
+    if text.matches(PLACEHOLDER).count() != 1 {
+        return None;
+    }
+    Some(expression_body(&text.replace(PLACEHOLDER, &format!("new Map({})", mapping_json(mapping)))))
+}
+
+/// The saved-attribute script as a function body (`PSV:100-120`). Only the placeholder inside
+/// `new Map(...)` is replaced. A copied file that lost it panics in debug builds; the job itself
+/// fails with `FAILED_TO_GET_HTML` in release.
+pub fn saved_attributes_body(mapping: &[(String, String)]) -> String {
+    let b = try_saved_attributes(mapping);
+    debug_assert!(b.is_some(), "add-saved-attributes.js lost new Map(URL_MAPPING_PLACEHOLDER)");
+    b.unwrap_or_default()
+}
+
+pub fn clone_body() -> String {
+    expression_body(CLONE_EXPR)
+}
+
+/// One thing for the app to do, in order. The job touches neither the file system nor the page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Run `extract_body()` in the page world and answer `on_urls`.
+    Extract,
+    /// Read this URL from the page's loaded resources (`App::devtools_read`), answer `on_resource`.
+    Fetch(String),
+    /// Run this body in the page world, answer `on_attributes_added`. The app runs
+    /// `Job::attributes_body()` at that moment, which is current if a write failed since.
+    AddAttributes(String),
+    /// Run `clone_body()` in the page world, answer `on_html`.
+    GetHtml,
+    /// Write through `inert_files::write_checked` (`index.html` through `write_marked`); on an
+    /// error call `on_write_failed(path)`.
+    Write { path: PathBuf, bytes: Vec<u8> },
+    /// `localfs::create_dir` (no intermediates); on an error call `on_make_dir_failed(path)`.
+    MakeDir(PathBuf),
+    /// Delete a file this job wrote (an abort or failure cleaning up its partial output).
+    Remove(PathBuf),
+    /// Delete an empty folder this job made (never recursive).
+    RemoveDir(PathBuf),
+    Done(PathBuf),
+    Failed(String),
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum Phase {
+    Idle,
+    Extracting,
+    Fetching,
+    Attributes,
+    Html,
+    Finished,
+}
+
+enum Kind {
+    File(PathBuf, String),
+    Css(String),
+}
+
+struct CssFrame {
+    url: String,
+    text: String,
+    refs: VecDeque<String>,
+}
+
+pub struct Job {
+    folder: PathBuf,
+    resources: PathBuf,
+    phase: Phase,
+    queue: VecDeque<String>,
+    seen: HashSet<String>,
+    stack: Vec<CssFrame>,
+    current: Option<String>,
+    entries: Vec<(String, Kind)>,
+    issued: HashSet<String>,
+    written: Vec<PathBuf>,
+    made: Vec<PathBuf>,
+    budget: Budget,
+    attempts: usize,
+    epoch: Option<u64>,
+    /// An abort or a reported failure: nothing more is accepted.
+    dead: bool,
+    /// The files and folders are gone (or never made).
+    cleaned: bool,
+    /// `Done` was sent.
+    done: bool,
+}
+
+fn is_web(url: &str) -> bool {
+    let l = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+impl Job {
+    pub fn new(folder: PathBuf) -> Job {
+        let resources = folder.join("resources");
+        Job {
+            folder,
+            resources,
+            phase: Phase::Idle,
+            queue: VecDeque::new(),
+            seen: HashSet::new(),
+            stack: Vec::new(),
+            current: None,
+            entries: Vec::new(),
+            issued: HashSet::new(),
+            written: Vec::new(),
+            made: Vec::new(),
+            budget: Budget::default(),
+            attempts: 0,
+            epoch: None,
+            dead: false,
+            cleaned: false,
+            done: false,
+        }
+    }
+
+    pub fn start(&mut self) -> Vec<Step> {
+        if self.phase != Phase::Idle || self.dead {
+            return Vec::new();
+        }
+        self.phase = Phase::Extracting;
+        self.made = vec![self.folder.clone(), self.resources.clone()];
+        vec![Step::MakeDir(self.folder.clone()), Step::MakeDir(self.resources.clone()), Step::Extract]
+    }
+
+    /// The app could not make this folder: it is not ours, so a cleanup never touches it.
+    pub fn on_make_dir_failed(&mut self, path: &Path) {
+        self.made.retain(|p| p != path);
+    }
+
+    pub fn on_urls(&mut self, urls: Vec<String>) -> Vec<Step> {
+        if self.dead || self.phase != Phase::Extracting {
+            return Vec::new();
+        }
+        self.queue = urls.into_iter().filter(|u| u.len() <= MAX_URL_LEN).take(MAX_QUEUE).collect();
+        self.phase = Phase::Fetching;
+        self.pump()
+    }
+
+    /// Whether `url` is to be asked for now; marks it asked.
+    fn candidate(&mut self, url: &str) -> bool {
+        if !is_web(url) || url.len() > MAX_URL_LEN || self.seen.contains(url) {
+            return false;
+        }
+        if !self.budget.open() || self.attempts >= MAX_ATTEMPTS {
+            return false;
+        }
+        self.seen.insert(url.to_string());
+        self.attempts += 1;
+        self.current = Some(url.to_string());
+        true
+    }
+
+    /// The next step after an answer: the next fetch, a finished stylesheet, or the attributes.
+    fn pump(&mut self) -> Vec<Step> {
+        loop {
+            if !self.budget.open() || self.attempts >= MAX_ATTEMPTS {
+                // Past a cap: nothing more is asked for; what is open finishes (B5).
+                self.queue.clear();
+                for f in &mut self.stack {
+                    f.refs.clear();
+                }
+            }
+            if let Some(top) = self.stack.last_mut() {
+                if let Some(r) = top.refs.pop_front() {
+                    let Some(abs) = resolve_url(&top.url, &r) else { continue };
+                    if self.candidate(&abs) {
+                        return vec![Step::Fetch(abs)];
+                    }
+                    continue;
+                }
+                let f = self.stack.pop().expect("frame");
+                self.entries.push((f.url, Kind::Css(f.text)));
+                continue;
+            }
+            if let Some(u) = self.queue.pop_front() {
+                if self.candidate(&u) {
+                    return vec![Step::Fetch(u)];
+                }
+                continue;
+            }
+            self.current = None;
+            return match try_saved_attributes(&self.mapping()) {
+                Some(body) => {
+                    self.phase = Phase::Attributes;
+                    vec![Step::AddAttributes(body)]
+                }
+                None => self.fail(FAILED_TO_GET_HTML.to_string()),
+            };
+        }
+    }
+
+    fn fail(&mut self, e: String) -> Vec<Step> {
+        self.dead = true;
+        vec![Step::Failed(e)]
+    }
+
+    /// The mapping as it stands: files that were written, stylesheets rewritten against what was
+    /// completed before them (children first). A failed write has already left it.
+    fn mapping(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut known: HashMap<String, String> = HashMap::new();
+        for (url, kind) in &self.entries {
+            let value = match kind {
+                Kind::File(_, name) => format!("resources/{name}"),
+                Kind::Css(text) => rewrite_css(text, url, &|abs| known.get(abs).cloned()),
+            };
+            known.insert(url.clone(), value.clone());
+            out.push((url.clone(), value));
+        }
+        out
+    }
+
+    /// The script body for the current mapping (what the app runs for `AddAttributes`).
+    pub fn attributes_body(&self) -> String {
+        try_saved_attributes(&self.mapping()).unwrap_or_default()
+    }
+
+    pub fn on_resource(&mut self, url: &str, got: Option<(Vec<u8>, Option<String>)>, taken: &dyn Fn(&str) -> bool) -> Vec<Step> {
+        if self.dead || self.phase != Phase::Fetching || self.current.as_deref() != Some(url) {
+            return Vec::new();
+        }
+        self.current = None;
+        let Some((bytes, mime)) = got else { return self.pump() };
+        if bytes.len() as u64 > MAX_RESOURCE_BYTES || !self.budget.admit(bytes.len() as u64) {
+            return self.pump();
+        }
+        let is_css = mime.as_deref().map(|m| m.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/css")).unwrap_or(false);
+        if is_css {
+            if let Ok(text) = String::from_utf8(bytes.clone()) {
+                let refs = css_urls(&text).into_iter().collect();
+                self.stack.push(CssFrame { url: url.to_string(), text, refs });
+                return self.pump();
+            }
+        }
+        let base = base_filename(url, mime.as_deref());
+        let issued = &self.issued;
+        let name = unique_filename(&base, &|n| issued.contains(&n.to_lowercase()) || taken(n));
+        let path = self.resources.join(&name);
+        // The name is the sanitizer's: one component, directly under resources, not refused.
+        let direct = path.parent() == Some(self.resources.as_path()) && path.file_name().map(|n| n.to_string_lossy() == name.as_str()).unwrap_or(false);
+        if !direct || name.contains(['/', '\\']) || crate::inert_files::refused_path(&path.to_string_lossy()) {
+            return self.pump();
+        }
+        self.issued.insert(name.to_lowercase());
+        self.entries.push((url.to_string(), Kind::File(path.clone(), name)));
+        self.written.push(path.clone());
+        let mut steps = vec![Step::Write { path, bytes }];
+        steps.extend(self.pump());
+        steps
+    }
+
+    /// A write failed: the resource keeps its live URL in the page (`PSV:219-231`).
+    pub fn on_write_failed(&mut self, path: &Path) {
+        self.entries.retain(|(_, k)| !matches!(k, Kind::File(p, _) if p == path));
+        self.written.retain(|p| p != path);
+    }
+
+    pub fn on_attributes_added(&mut self) -> Vec<Step> {
+        if self.dead || self.phase != Phase::Attributes {
+            return Vec::new();
+        }
+        self.phase = Phase::Html;
+        vec![Step::GetHtml]
+    }
+
+    pub fn on_html(&mut self, html: Option<String>) -> Vec<Step> {
+        if self.dead || self.phase != Phase::Html {
+            return Vec::new();
+        }
+        let Some(html) = html else { return self.fail(FAILED_TO_GET_HTML.to_string()) };
+        self.phase = Phase::Finished;
+        self.done = true;
+        let path = self.folder.join("index.html");
+        self.written.push(path.clone());
+        vec![Step::Write { path: path.clone(), bytes: html.into_bytes() }, Step::Done(path)]
+    }
+
+    pub fn on_error(&mut self, e: String) -> Vec<Step> {
+        if self.dead {
+            return Vec::new();
+        }
+        self.done = false;
+        self.fail(e)
+    }
+
+    /// The steps that remove what this job wrote and the folders it made, once.
+    pub fn cleanup(&mut self) -> Vec<Step> {
+        if self.cleaned {
+            return Vec::new();
+        }
+        self.cleaned = true;
+        let mut steps: Vec<Step> = self.written.drain(..).rev().map(Step::Remove).collect();
+        for d in self.made.iter().rev() {
+            steps.push(Step::RemoveDir(d.clone()));
+        }
+        steps
+    }
+
+    fn abort(&mut self, reason: &str) -> Vec<Step> {
+        if self.dead || self.done {
+            return Vec::new();
+        }
+        self.dead = true;
+        self.current = None;
+        let mut steps = self.cleanup();
+        steps.push(Step::Failed(reason.to_string()));
+        steps
+    }
+
+    /// The person cancelled: stop, remove the partial output, say so.
+    pub fn cancel(&mut self) -> Vec<Step> {
+        self.abort(CANCELLED)
+    }
+
+    /// Record the pane's navigation epoch at the start; a save never spans a navigation.
+    pub fn bind_epoch(&mut self, e: u64) {
+        self.epoch = Some(e);
+    }
+
+    /// Called with the pane's epoch before each step is carried out: when it moved, the job
+    /// aborts and cleans up, and every later answer is ignored.
+    pub fn check_epoch(&mut self, now: u64) -> Vec<Step> {
+        match self.epoch {
+            Some(e) if e != now => self.abort(NAVIGATED_AWAY),
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +893,263 @@ mod tests {
             kept += 1;
         }
         assert_eq!(kept as u64, MAX_TOTAL_BYTES / MAX_RESOURCE_BYTES);
+    }
+
+    // ---- Task 9: the save job ----
+    use std::path::{Path, PathBuf};
+
+    fn d() -> PathBuf {
+        PathBuf::from(r"C:\save\D")
+    }
+    fn res(name: &str) -> PathBuf {
+        d().join("resources").join(name)
+    }
+    fn none_taken(_: &str) -> bool {
+        false
+    }
+    fn png() -> Vec<u8> {
+        vec![0x89, b'P', b'N', b'G']
+    }
+    fn s(x: &str) -> String {
+        x.to_string()
+    }
+    fn mapping_of(step: &Step) -> String {
+        match step {
+            Step::AddAttributes(b) => b.clone(),
+            other => panic!("not AddAttributes: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_job_follows_iterm2() {
+        let mut j = Job::new(d());
+        assert_eq!(j.start(), vec![Step::MakeDir(d()), Step::MakeDir(d().join("resources")), Step::Extract]);
+        let urls = ["https://a/i.png", "https://a/s.css", "data:x", "ftp://a/f", "https://a/i.png"].map(s).to_vec();
+        assert_eq!(j.on_urls(urls), vec![Step::Fetch(s("https://a/i.png"))]);
+        assert_eq!(
+            j.on_resource("https://a/i.png", Some((png(), Some(s("image/png")))), &none_taken),
+            vec![Step::Write { path: res("i.png"), bytes: png() }, Step::Fetch(s("https://a/s.css"))]
+        );
+        assert_eq!(
+            j.on_resource("https://a/s.css", Some((b"b{x:url(bg.gif)}".to_vec(), Some(s("text/css")))), &none_taken),
+            vec![Step::Fetch(s("https://a/bg.gif"))]
+        );
+        let steps = j.on_resource("https://a/bg.gif", Some((b"GIF".to_vec(), Some(s("image/gif")))), &none_taken);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0], Step::Write { path: res("bg.gif"), bytes: b"GIF".to_vec() });
+        let body = mapping_of(&steps[1]);
+        let want = mapping_json(&[
+            (s("https://a/i.png"), s("resources/i.png")),
+            (s("https://a/bg.gif"), s("resources/bg.gif")),
+            (s("https://a/s.css"), s("b{x:url('resources/bg.gif')}")),
+        ]);
+        assert!(body.contains(&format!("new Map({want})")), "{body}");
+        assert_eq!(j.on_attributes_added(), vec![Step::GetHtml]);
+        assert_eq!(
+            j.on_html(Some(s("<html></html>"))),
+            vec![Step::Write { path: d().join("index.html"), bytes: b"<html></html>".to_vec() }, Step::Done(d().join("index.html"))]
+        );
+        let mut j = Job::new(d());
+        j.start();
+        j.on_urls(vec![]);
+        j.on_attributes_added();
+        assert_eq!(j.on_html(None), vec![Step::Failed(s(FAILED_TO_GET_HTML))]);
+    }
+
+    fn job_with(urls: &[&str]) -> (Job, Vec<Step>) {
+        let mut j = Job::new(d());
+        j.start();
+        let first = j.on_urls(urls.iter().map(|u| s(u)).collect());
+        (j, first)
+    }
+
+    #[test]
+    fn save_job_edges_follow_iterm2() {
+        // None skips with no mapping and goes on.
+        let (mut j, _) = job_with(&["https://a/x.png", "https://a/y.png"]);
+        let st = j.on_resource("https://a/x.png", None, &none_taken);
+        assert_eq!(st, vec![Step::Fetch(s("https://a/y.png"))]);
+        let st = j.on_resource("https://a/y.png", Some((png(), Some(s("image/png")))), &none_taken);
+        let body = mapping_of(st.last().unwrap());
+        assert!(body.contains("y.png") && !body.contains("x.png\", \"resources"), "{body}");
+        // A failed write drops the mapping.
+        let (mut j, _) = job_with(&["https://a/i.png", "https://a/j.png"]);
+        j.on_resource("https://a/i.png", Some((png(), Some(s("image/png")))), &none_taken);
+        j.on_write_failed(&res("i.png"));
+        let st = j.on_resource("https://a/j.png", Some((png(), Some(s("image/png")))), &none_taken);
+        let body = mapping_of(st.last().unwrap());
+        assert!(!body.contains("resources/i.png") && body.contains("resources/j.png"), "{body}");
+        assert!(!j.attributes_body().contains("resources/i.png"));
+        // A CSS that references itself.
+        let (mut j, _) = job_with(&["https://a/self.css"]);
+        let st = j.on_resource("https://a/self.css", Some((b"a{x:url(self.css)}".to_vec(), Some(s("text/css")))), &none_taken);
+        assert_eq!(st.len(), 1);
+        assert!(matches!(st[0], Step::AddAttributes(_)), "{st:?}");
+        // Two CSS files that reference each other.
+        let (mut j, _) = job_with(&["https://a/p.css"]);
+        let st = j.on_resource("https://a/p.css", Some((b"a{x:url(q.css)}".to_vec(), Some(s("text/css")))), &none_taken);
+        assert_eq!(st, vec![Step::Fetch(s("https://a/q.css"))]);
+        let st = j.on_resource("https://a/q.css", Some((b"b{x:url(p.css)}".to_vec(), Some(s("text/css")))), &none_taken);
+        assert_eq!(st.len(), 1);
+        assert!(matches!(st[0], Step::AddAttributes(_)), "{st:?}");
+        // A CSS file referencing another CSS file maps that reference to the inner CSS text.
+        let (mut j, _) = job_with(&["https://a/o.css"]);
+        j.on_resource("https://a/o.css", Some((b"a{x:url(in.css)}".to_vec(), Some(s("text/css")))), &none_taken);
+        let st = j.on_resource("https://a/in.css", Some((b"zz".to_vec(), Some(s("text/css")))), &none_taken);
+        let body = mapping_of(&st[0]);
+        assert!(body.contains(&mapping_json(&[(s("https://a/in.css"), s("zz")), (s("https://a/o.css"), s("a{x:url('zz')}"))])), "{body}");
+        // A CSS body that is not UTF-8 is saved as a file.
+        let (mut j, _) = job_with(&["https://a/b.css"]);
+        let st = j.on_resource("https://a/b.css", Some((vec![0xff, 0xfe, 0xfd], Some(s("text/css")))), &none_taken);
+        assert_eq!(st[0], Step::Write { path: res("b.css"), bytes: vec![0xff, 0xfe, 0xfd] });
+        // Colliding names.
+        let (mut j, _) = job_with(&["https://a/1/x.png", "https://a/2/x.png"]);
+        let a = j.on_resource("https://a/1/x.png", Some((png(), Some(s("image/png")))), &none_taken);
+        assert_eq!(a[0], Step::Write { path: res("x.png"), bytes: png() });
+        let b = j.on_resource("https://a/2/x.png", Some((png(), Some(s("image/png")))), &|n: &str| n == "x.png");
+        assert_eq!(b[0], Step::Write { path: res("x_1.png"), bytes: png() });
+        // The job also remembers names it issued, case-insensitively, even when the disk does not.
+        let (mut j, _) = job_with(&["https://a/1/x.png", "https://a/2/X.png"]);
+        j.on_resource("https://a/1/x.png", Some((png(), Some(s("image/png")))), &none_taken);
+        let b = j.on_resource("https://a/2/X.png", Some((png(), Some(s("image/png")))), &none_taken);
+        assert_eq!(b[0], Step::Write { path: res("X_1.png"), bytes: png() });
+        // Hostile names (review I3).
+        let (mut j, _) = job_with(&["https://a/%2e%2e", "https://a/NUL.png"]);
+        let a = j.on_resource("https://a/%2e%2e", Some((png(), None)), &none_taken);
+        assert_eq!(a[0], Step::Write { path: res("resource"), bytes: png() });
+        let b = j.on_resource("https://a/NUL.png", Some((png(), Some(s("image/png")))), &none_taken);
+        assert_eq!(b[0], Step::Write { path: res("_NUL.png"), bytes: png() });
+        // An error fails the job.
+        let (mut j, _) = job_with(&[]);
+        assert_eq!(j.on_error(s("e")), vec![Step::Failed(s("e"))]);
+    }
+
+    #[test]
+    fn save_scripts_follow_iterm2() {
+        let e = extract_body();
+        assert!(e.starts_with("return (\n// Recursively extract"), "{e}");
+        assert!(e.ends_with("return Array.from(urls);\n})()\n)"), "{e}");
+        let b = saved_attributes_body(&[(s("https://a/\"q"), s("resources/q"))]);
+        assert_eq!(b.matches("new Map([[\"https://a/\\\"q\", \"resources/q\"]])").count(), 1, "{b}");
+        assert!(b.contains("// URL_MAPPING_PLACEHOLDER will be replaced with actual mapping data"));
+        assert_eq!(b.matches("URL_MAPPING_PLACEHOLDER").count(), 1);
+        assert!(saved_attributes_body(&[]).contains("new Map([])"));
+        let c = clone_body();
+        assert!(c.contains("clonedDoc.querySelectorAll('link[rel=\"stylesheet\"][data-saved-css-content]')"));
+        assert!(c.contains("return doctype + clonedDoc.documentElement.outerHTML;"));
+        assert_eq!(SAVE_FAILED, "Save Failed");
+        assert_eq!(save_failed_text("boom"), "Could not save the page: boom");
+        assert_eq!(FAILED_TO_GET_HTML, "Failed to get page HTML content");
+        assert_eq!(FAILED_TO_CREATE_DIRECTORY, "Failed to create save directory");
+        assert_eq!(FAILED_TO_SAVE_FILE, "Failed to save file");
+    }
+
+    #[test]
+    fn saver_bodies_never_return_a_comment() {
+        for b in [extract_body(), saved_attributes_body(&[]), saved_attributes_body(&[(s("a"), s("b"))]), clone_body()] {
+            assert!(!b.starts_with("return //"), "{b}");
+            assert!(!b.contains("return // Recursively extract"));
+            assert!(b.starts_with("return (\n"), "{b}");
+            for bad in ["__tandemResult", "sessionSecret", "chrome.webview"] {
+                assert!(!b.contains(bad), "{bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn saver_mapping_escapes_line_separators() {
+        let m = [(s("https://a/s.css"), s("a{}\u{2028}alert(1)//\u{2029}b{}"))];
+        assert_eq!(mapping_json(&m), r#"[["https://a/s.css", "a{}\u2028alert(1)//\u2029b{}"]]"#);
+        let b = saved_attributes_body(&m);
+        assert!(!b.contains('\u{2028}') && !b.contains('\u{2029}'));
+        assert_eq!(b.matches("alert(1)").count(), 1);
+        assert!(b.contains("new Map([[\"https://a/s.css\", \"a{}\\u2028alert(1)"));
+        let hostile = [(s("\");alert(1);(\""), s("</script>"))];
+        let b = saved_attributes_body(&hostile);
+        assert!(b.contains("new Map([[\"\\\");alert(1);(\\\"\", \"</script>\"]])"), "{b}");
+    }
+
+    #[test]
+    fn save_job_stops_at_the_caps() {
+        // 5000 URLs, every one answered: at most MAX_RESOURCES are kept and fetching stops.
+        let urls: Vec<String> = (0..5000).map(|i| format!("https://a/{i}.png")).collect();
+        let mut j = Job::new(d());
+        j.start();
+        let mut steps = j.on_urls(urls);
+        let (mut fetched, mut written) = (0usize, 0usize);
+        while let Some(Step::Fetch(u)) = steps.iter().find(|x| matches!(x, Step::Fetch(_))).cloned() {
+            fetched += 1;
+            steps = j.on_resource(&u, Some((png(), Some(s("image/png")))), &none_taken);
+            written += steps.iter().filter(|x| matches!(x, Step::Write { .. })).count();
+        }
+        assert_eq!(written, MAX_RESOURCES);
+        assert!(fetched <= MAX_RESOURCES + 1, "{fetched}");
+        assert!(steps.iter().any(|x| matches!(x, Step::AddAttributes(_))), "{steps:?}");
+        // One resource over the per-resource cap is skipped; the total cap stops the rest.
+        let (mut j, _) = job_with(&["https://a/big.png", "https://a/ok.png"]);
+        let st = j.on_resource("https://a/big.png", Some((vec![0; (MAX_RESOURCE_BYTES + 1) as usize], None)), &none_taken);
+        assert_eq!(st, vec![Step::Fetch(s("https://a/ok.png"))]);
+        let urls: Vec<String> = (0..64).map(|i| format!("https://a/{i}.bin")).collect();
+        let mut j = Job::new(d());
+        j.start();
+        let mut steps = j.on_urls(urls);
+        let mut total = 0u64;
+        while let Some(Step::Fetch(u)) = steps.iter().find(|x| matches!(x, Step::Fetch(_))).cloned() {
+            steps = j.on_resource(&u, Some((vec![1; MAX_RESOURCE_BYTES as usize], None)), &none_taken);
+            total += steps.iter().filter_map(|x| if let Step::Write { bytes, .. } = x { Some(bytes.len() as u64) } else { None }).sum::<u64>();
+        }
+        assert!(total > 0 && total <= MAX_TOTAL_BYTES, "{total}");
+    }
+
+    #[test]
+    fn save_job_does_not_span_a_navigation() {
+        let (mut j, _) = job_with(&["https://a/i.png", "https://a/j.png"]);
+        j.bind_epoch(7);
+        assert!(j.check_epoch(7).is_empty());
+        j.on_resource("https://a/i.png", Some((png(), Some(s("image/png")))), &none_taken);
+        let st = j.check_epoch(8);
+        assert_eq!(
+            st,
+            vec![Step::Remove(res("i.png")), Step::RemoveDir(d().join("resources")), Step::RemoveDir(d()), Step::Failed(s(NAVIGATED_AWAY))]
+        );
+        // After the abort every answer is ignored: nothing more is written.
+        assert!(j.on_resource("https://a/j.png", Some((png(), None)), &none_taken).is_empty());
+        assert!(j.on_html(Some(s("x"))).is_empty());
+        assert!(j.on_attributes_added().is_empty());
+        assert!(j.check_epoch(9).is_empty());
+        // A failed write is not removed (never written); a cancel mid-job cleans what exists.
+        let (mut j, _) = job_with(&["https://a/i.png"]);
+        j.on_resource("https://a/i.png", Some((png(), Some(s("image/png")))), &none_taken);
+        j.on_write_failed(&res("i.png"));
+        let st = j.cancel();
+        assert_eq!(st, vec![Step::RemoveDir(d().join("resources")), Step::RemoveDir(d()), Step::Failed(s("Cancelled"))]);
+        // A finished job keeps its files.
+        let (mut j, _) = job_with(&[]);
+        j.bind_epoch(1);
+        j.on_attributes_added();
+        j.on_html(Some(s("<p>")));
+        assert!(j.check_epoch(2).is_empty());
+        assert!(j.cancel().is_empty());
+    }
+
+    #[test]
+    fn save_job_writes_only_under_the_folder() {
+        // Names come from the sanitizer: no separator, no parent, never outside resources.
+        let mut wrote = 0;
+        for url in ["https://a/..%2f..%2fevil.png", "https://a/a%5cb%5c..%5cc.png", "https://a/x.url", "https://a/desktop.ini"] {
+            let (mut j, _) = job_with(&[url]);
+            let st = j.on_resource(url, Some((png(), Some(s("image/png")))), &none_taken);
+            for step in st {
+                if let Step::Write { path, .. } = step {
+                    wrote += 1;
+                    assert_eq!(path.parent(), Some(d().join("resources").as_path()), "{path:?}");
+                    let name = path.file_name().unwrap().to_string_lossy().to_string();
+                    assert!(!name.contains(['/', '\\']) && name != ".." && name != ".", "{name}");
+                    assert!(!crate::inert_files::refused_path(&path.to_string_lossy()), "{path:?}");
+                }
+            }
+        }
+        assert!(wrote >= 2, "{wrote}");
+        let _ = Path::new("");
     }
 }
