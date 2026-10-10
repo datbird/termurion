@@ -70,7 +70,8 @@ impl App {
             bv.triggers = Some(loaded);
             self.browser_triggers_tell(pane, held);
             // Only a page that has asked has the engine; the next page asks for the new list itself.
-            if served && self.client_open(pane) {
+            let page = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+            if served && bt::resend_allowed(&page) && self.client_open(pane) {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.trigger_gate.serve(epoch);
                 }
@@ -169,8 +170,12 @@ impl App {
                 let c = bt::hyperlink_call(&match_id, &url);
                 self.browser_js_call(pane, &c.body, c.args, done);
             }
-            Effect::Inject(script) => {
-                if script.starts_with("function reloadAfter(") && !bv.trigger_gate.reload_allowed(now) {
+            Effect::Inject { script, captures } => {
+                let body = bt::inject_body(&script, &captures);
+                self.browser_page_call(pane, &body, json!({}), done);
+            }
+            Effect::Reload(script) => {
+                if !bv.trigger_gate.reload_allowed(now) {
                     return;
                 }
                 let body = format!("{}\nreturn null;", browser_js::iife(&script));
@@ -213,7 +218,7 @@ mod tests {
             assert!(!me.contains(bad), "{bad}");
         }
         let effect = between(me, "pub(super) fn browser_trigger_effect", "\n    }\n");
-        let inject = between(effect, "Effect::Inject(script) =>", "// Reader Mode");
+        let inject = between(effect, "Effect::Inject { script, captures } =>", "Effect::Reload");
         assert!(inject.contains("browser_page_call(") && !inject.contains("browser_js_call") && !inject.contains("secret"));
         for arm in ["Effect::Highlight", "Effect::Hyperlink"] {
             let a = between(effect, arm, "}\n            Effect::");
@@ -258,6 +263,7 @@ mod tests {
         let refresh = between(me, "pub(super) fn browser_triggers_refresh", "\n    }\n");
         assert!(refresh.contains("bt::needs_reload(old, &list)") && refresh.contains("bt::load(&list, old.secret.clone())"));
         assert!(refresh.find("needs_reload").unwrap() < refresh.find("browser_js_call").unwrap());
+        assert!(refresh.contains("bt::resend_allowed(&page)"), "never to an iterm2-about: page");
     }
 
     /// Reader Mode enters through 13x4's one entry point; the workgroup actions never enter directly,

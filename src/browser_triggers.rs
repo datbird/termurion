@@ -6,7 +6,7 @@
 //! Everything a page says is untrusted. The engine runs in the isolated world; a message is read only
 //! after the secret matched; every count and string is bounded here before the app sees it; the
 //! only text that reaches a script as source is a generated secret, a constant, or the person's own
-//! stored Inject Javascript text. Every other value (the trigger list, a match id, a color) goes in as
+//! stored Inject Javascript text, and the captures of a match are data (`inject_body`). Every other value (the trigger list, a match id, a color) goes in as
 //! a typed argument (`browser_marks::Call`).
 
 use std::collections::VecDeque;
@@ -181,11 +181,13 @@ pub fn triggers_json(l: &Loaded) -> String {
 
 /// The engine as the document-start script: `triggers.js` with its secret and its two includes. Four
 /// exact-once patches bound what a page can make it do (B8; each fails closed: no patch target, no
-/// script): the page text it builds is cut at 1 MiB, one check posts at most `MAX_MATCHES` matches and
+/// script): the page text it builds is cut at 1 MiB (also inside one text node), one check posts at most `MAX_MATCHES` matches and
 /// stops scanning after 250 ms between matches, and at most 4096 matches are kept for the effects.
 pub fn user_script(secret: &str) -> Result<String, String> {
     let src = browser_js::resource("triggers.js").ok_or("the trigger script is missing")?;
     let s = patch_once(src, "function walkNodes(node) {", "function walkNodes(node) {\n                if (fullText.length >= 1048576) { return; }")?;
+    // The cap counts per text node too: one huge text node (a log, one `<pre>`) is cut at the append.
+    let s = patch_once(&s, "fullText += node.textContent;", "fullText += node.textContent.slice(0, Math.max(0, 1048576 - fullText.length));")?;
     let s = patch_once(&s, "const matches = [];", "const matches = [];\n        const tandemDeadline = Date.now() + 250;")?;
     let s = patch_once(&s, "while ((contentMatch = globalContentRegex.exec(fullText)) !== null) {", "while (matches.length < 64 && Date.now() < tandemDeadline && (contentMatch = globalContentRegex.exec(fullText)) !== null) {")?;
     let s = patch_once(&s, "storedMatches[matchId] = matchData;", "if (matchIdCounter <= 4096) { storedMatches[matchId] = matchData; }")?;
@@ -349,8 +351,20 @@ const EXIT: &str = "iTermExitWorkgroupBrowserTrigger";
 /// Whether the action resolves its parameter against the captures (M10): Highlight's resolved text is
 /// discarded (`HGT:120-130`), Enter Workgroup uses its id as stored (`EWB:106`), Reader Mode and Exit
 /// Workgroup have no parameter.
+///
+/// Inject Javascript (both) is not resolved either (R13x5-10/13, a deviation from `IJT:48-54`): page
+/// text is never spliced into the person's script. The match's captures reach the script as typed data
+/// (`inject_body`: the `captures` array), so the capability stays and the source is a constant.
 pub fn resolves_parameter(class: &str) -> bool {
-    triggers::browser_action_info(class).is_some_and(|a| !matches!(a.class, HIGHLIGHT | ENTER | READER | EXIT))
+    triggers::browser_action_info(class).is_some_and(|a| !matches!(a.class, HIGHLIGHT | ENTER | READER | EXIT | INJECT_URL | INJECT_CONTENT))
+}
+
+/// The page-world body for an Inject Javascript effect: the captures as a JSON array literal (data,
+/// every `<` written `\u003c`, so no capture can end a string or a script), then the person's stored
+/// script, unchanged, in iTerm2's `iife`.
+pub fn inject_body(script: &str, captures: &[String]) -> String {
+    let data = serde_json::to_string(captures).unwrap_or_else(|_| "[]".into()).replace('<', "\\u003c");
+    format!("const captures = {data};\n{}\nreturn null;", browser_js::iife(script))
 }
 
 /// `paramWithBackreferencesReplaced(withValues:absLine: -1, ...)`: plain `\0`..`\8`, or an interpolated
@@ -369,7 +383,10 @@ pub fn resolve(param: &str, caps: &[String], interpolated: bool, var: &dyn Fn(&s
 pub enum Effect {
     Highlight { match_id: String, text: Option<String>, background: Option<String> },
     Hyperlink { match_id: String, url: String },
-    Inject(String),
+    /// Inject Javascript: the stored script (a constant) and the match's captures (data).
+    Inject { script: String, captures: Vec<String> },
+    /// Reload After Delay: its fixed script.
+    Reload(String),
     EnterReaderMode,
     EnterWorkgroup(String),
     ExitWorkgroup,
@@ -407,8 +424,8 @@ pub fn effect(t: &Trigger, m: &Match, param: &str, workgroups: &[(String, String
             let match_id = m.match_id.clone()?;
             Some(Effect::Hyperlink { match_id, url: triggers::hyperlink_url_ok(param)? })
         }
-        INJECT_URL | INJECT_CONTENT => (!param.trim().is_empty() && param.len() <= MAX_INJECT).then(|| Effect::Inject(param.to_string())),
-        RELOAD => Some(Effect::Inject(reload_script(delay_ok(param)?))),
+        INJECT_URL | INJECT_CONTENT => (!param.trim().is_empty() && param.len() <= MAX_INJECT).then(|| Effect::Inject { script: param.to_string(), captures: captures(m) }),
+        RELOAD => Some(Effect::Reload(reload_script(delay_ok(param)?))),
         READER => Some(Effect::EnterReaderMode),
         ENTER => triggers::effective_workgroup(param, workgroups).filter(|id| !id.is_empty() && id.len() <= triggers::MAX_WORKGROUP_ID).map(Effect::EnterWorkgroup),
         EXIT => Some(Effect::ExitWorkgroup),
@@ -424,6 +441,12 @@ pub fn effect(t: &Trigger, m: &Match, param: &str, workgroups: &[(String, String
 /// local-page bridge).
 pub fn accepted(world: browser_js::World, frame: Option<u64>, source: &str, page_url: &str) -> bool {
     world == browser_js::World::Client && frame.is_none() && !crate::browser::local_source_ok(source) && !crate::browser::local_source_ok(page_url)
+}
+
+/// Whether the list may be sent to the page showing now after a profile edit: never to one of Tandem's
+/// own `iterm2-about:` pages (B5; the same rule as `accepted`, for the resend path).
+pub fn resend_allowed(page_url: &str) -> bool {
+    !crate::browser::local_source_ok(page_url)
 }
 
 /// A pane's engine state in its web view: the navigation the page's engine last asked in (a match is
@@ -545,9 +568,16 @@ mod tests {
     }
 
     #[test]
+    fn the_list_never_goes_to_a_local_page() {
+        assert!(resend_allowed("https://a.example/") && resend_allowed(""));
+        assert!(!resend_allowed("iterm2-about:history") && !resend_allowed("ITERM2-ABOUT:source"));
+        assert!(!accepted(browser_js::World::Client, None, "iterm2-about:history", "https://a/"));
+    }
+
+    #[test]
     fn the_trigger_script_patches_are_exact_once() {
         let u = user_script("x").unwrap();
-        for needle in ["fullText.length >= 1048576", "const tandemDeadline = Date.now() + 250;", "matches.length < 64 && Date.now() < tandemDeadline", "if (matchIdCounter <= 4096) { storedMatches[matchId] = matchData; }"] {
+        for needle in ["fullText.length >= 1048576", "node.textContent.slice(0, Math.max(0, 1048576 - fullText.length))", "const tandemDeadline = Date.now() + 250;", "matches.length < 64 && Date.now() < tandemDeadline", "if (matchIdCounter <= 4096) { storedMatches[matchId] = matchData; }"] {
             assert_eq!(u.matches(needle).count(), 1, "{needle}");
         }
         // The copy on disk is iTerm2's: none of the patches is in it.
@@ -602,10 +632,10 @@ mod tests {
         assert_eq!(resolve("\\(line)", &captures(&m), true, &var).unwrap(), "-1");
         assert!(resolve("\\(1 +)", &captures(&m), true, &var).is_err());
         assert_eq!(resolve("\\(x)", &captures(&m), false, &var).unwrap(), "\\(x)", "plain when interpolation is off");
-        for class in [HIGHLIGHT, ENTER, READER, EXIT] {
+        for class in [HIGHLIGHT, ENTER, READER, EXIT, INJECT_URL, INJECT_CONTENT] {
             assert!(!resolves_parameter(class), "{class}");
         }
-        for class in [HYPERLINK, INJECT_URL, INJECT_CONTENT, RELOAD] {
+        for class in [HYPERLINK, RELOAD] {
             assert!(resolves_parameter(class), "{class}");
         }
         let t = trig(ENTER, "u", "w\\1", 1, true);
@@ -627,17 +657,25 @@ mod tests {
             assert_eq!(effect(&link, &m, bad, &[]), None, "{bad}");
         }
         let inj = trig(INJECT_CONTENT, "a", "x", 2, true);
-        assert_eq!(effect(&inj, &m, "document.title='x'", &[]), Some(Effect::Inject("document.title='x'".into())));
+        assert_eq!(effect(&inj, &m, "document.title='x'", &[]), Some(Effect::Inject { script: "document.title='x'".into(), captures: captures(&m) }));
         let injurl = trig(INJECT_URL, "a", "x", 1, true);
-        assert_eq!(effect(&injurl, &m, "console.log(1)", &[]), Some(Effect::Inject("console.log(1)".into())));
+        assert_eq!(effect(&injurl, &m, "console.log(1)", &[]), Some(Effect::Inject { script: "console.log(1)".into(), captures: captures(&m) }));
         let rl = trig(RELOAD, "a", "5", 1, true);
-        let Some(Effect::Inject(js)) = effect(&rl, &m, "5", &[]) else { panic!() };
+        let Some(Effect::Reload(js)) = effect(&rl, &m, "5", &[]) else { panic!() };
         assert_eq!(js, reload_script("5"));
         assert!(js.starts_with("function reloadAfter(seconds) {\n    if (typeof seconds !== \"number\" || seconds < 0) {") && js.ends_with("reloadAfter(5);"));
         for bad in ["", "abc", "5);alert(1", "-1", "1e9", "99999999", "5.", "1.2345"] {
             assert_eq!(effect(&rl, &m, bad, &[]), None, "{bad:?}");
         }
-        assert_eq!(effect(&rl, &m, " 2.5 ", &[]), Some(Effect::Inject(reload_script("2.5"))));
+        assert_eq!(effect(&rl, &m, " 2.5 ", &[]), Some(Effect::Reload(reload_script("2.5"))));
+        // A capture is data: the script text is the stored one, and a hostile capture cannot end the literal.
+        let hostile = Match { content_captures: Some(vec!["\");fetch(1);(\"</script>\\".into()]), ..m.clone() };
+        let Some(Effect::Inject { script, captures: caps }) = effect(&inj, &hostile, "send(captures[0])", &[]) else { panic!() };
+        assert_eq!(script, "send(captures[0])");
+        let body = inject_body(&script, &caps);
+        assert!(body.contains("send(captures[0])") && !body.contains("</script>") && !body.contains("fetch(1);(\"</"), "{body}");
+        assert!(body.starts_with("const captures = [") && body.contains("\\\");fetch(1);(\\\"\\u003c/script>"), "{body}");
+        assert!(!resolves_parameter(INJECT_CONTENT), "no \\0..\\9 or \\(...) substitution into the script");
         let rd = trig(READER, "a", "", 1, true);
         assert_eq!(effect(&rd, &m, "", &[]), Some(Effect::EnterReaderMode));
         let wg = vec![("id-b".to_string(), "Beta".to_string()), ("id-a".to_string(), "Alpha".to_string())];

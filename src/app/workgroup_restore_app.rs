@@ -756,8 +756,11 @@ mod tests {
         let wg = include_str!("workgroup_app.rs");
         let production = wg.split("#[cfg(test)]").next().unwrap();
         let queue = &production[production.find("fn run_workgroup_triggers").unwrap()..production.find("/// Ends the members a teardown queued").unwrap()];
-        assert!(queue.contains("self.is_restoring_session(pane)"), "{queue}");
-        assert!(queue.contains("self.workgroups.restoring.declined(pane, &id)"), "{queue}");
+        // The guards live in one helper that both the terminal and the browser Enter call.
+        let guard = &production[production.find("fn trigger_enter_id").unwrap()..production.find("/// The queued triggers, after the pass").unwrap()];
+        assert!(guard.contains("self.is_restoring_session(pane)"), "{guard}");
+        assert!(guard.contains("self.workgroups.restoring.declined(pane, &id)"), "{guard}");
+        assert_eq!(queue.matches("self.trigger_enter_id(pane,").count(), 2, "terminal and browser Enter both use it");
         assert!(production.contains("self.is_restoring_anchor(pane)"), "enter_workgroup passes the real flag, not false");
         let alerts = include_str!("scripts_alerts.rs");
         assert!(alerts.contains("self.workgroups.restoring.decline(pane, &workgroup.unique_identifier)"), "a Cancel is remembered");

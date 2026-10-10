@@ -305,7 +305,7 @@ pub fn enable_warning(t: &Trigger, workgroups: &[(String, String)]) -> Option<St
         _ => format!("every page whose URL matches /{}/", shown(&t.regex, 200)),
     };
     let what = match t.action.as_str() {
-        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => format!("run the JavaScript below ({} characters, all of it shown) inside the page", t.parameter.chars().count()),
+        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => format!("run the JavaScript below ({} characters, all of it shown) inside the page, exactly as written; the text it matched is given to it only as data in the list `captures`, never pasted into it", t.parameter.chars().count()),
         "ReloadBrowserTrigger" => format!("reload the page after {} seconds, again each time it matches", shown(&t.parameter, 40)),
         "iTermEnterWorkgroupBrowserTrigger" => format!("enter the workgroup \u{201c}{}\u{201d} and start what it starts", triggers::enter_workgroup_label(&t.parameter, workgroups)),
         _ => "exit the workgroup".to_string(),
@@ -879,7 +879,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                             // The whole script, scrollable; Turn On waits until its end was in view.
                             let mut read = true;
                             if let Some(script) = enable_script(t) {
-                                let out = egui::ScrollArea::vertical().id_salt("trigger-confirm-script").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(script).monospace()).wrap()));
+                                let out = egui::ScrollArea::vertical().id_salt(("trigger-confirm-script", i)).max_height(200.0).auto_shrink([false, true]).show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(script).monospace()).wrap()));
                                 let at_end = out.state.offset.y + out.inner_rect.height() + 1.0 >= out.content_size.y;
                                 if at_end {
                                     ui.data_mut(|d| d.insert_temp(read_id, i));

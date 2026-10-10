@@ -3619,6 +3619,29 @@ mod probe {
         p.finish();
     }
 
+    /// 13x5 Task 9 review I3: the engine on an `iterm2-about:` page asks for its triggers like any page;
+    /// the message the host would act on is refused by its source, and the list is never sent there
+    /// after a profile edit (`resend_allowed`). Needs the console session.
+    #[test]
+    #[ignore]
+    fn triggers_skip_local_pages() {
+        use crate::browser_triggers as bt;
+        const LOCAL: &str = "iterm2-about:history";
+        let l = bt::load(&trigger_list("wor(ld)"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let pages = [(LOCAL, trigger_page("", "<p>hello world</p>"))];
+        let Some(mut p) = Probe::start_full(&pages, vec![wrapped(&code)], false, &["iterm2-about"]) else { return };
+        p.load(LOCAL);
+        assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("requestTriggers").is_some())), "the engine asks");
+        let sources: Vec<String> = p.routed.iter().filter(|r| r.via == Via::Client).map(|r| r.from.clone()).collect();
+        assert!(!sources.is_empty());
+        for s in &sources {
+            assert!(!bt::accepted(crate::browser_js::World::Client, None, s, "https://other.example/"), "source {s:?} must be refused");
+        }
+        assert!(!bt::resend_allowed(LOCAL));
+        p.finish();
+    }
+
     /// 13x5 Task 9 (B8): a page with thousands of matches posts at most 64 of them, each capture cut,
     /// under the message limit. Needs the console session.
     #[test]
