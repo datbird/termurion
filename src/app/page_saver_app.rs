@@ -335,6 +335,7 @@ impl Saving {
         let (more, e) = match (d.err, d.kind) {
             (Some(e), FileKind::MakeDir) => (self.job.on_make_dir_failed(&d.path), Some(e)),
             (Some(e), FileKind::Write) => (self.job.on_write_failed(&d.path), Some(e)),
+            (None, FileKind::MakeDir) => (self.job.on_made(&d.path), None),
             _ => (Vec::new(), None),
         };
         // Only the error of the operation that failed the save goes in the alert.
@@ -360,22 +361,29 @@ impl App {
             self.banners.set("action", "Save Page As cancelled.".to_string());
             return;
         }
+        // The page is the one shown when the item was chosen: its epoch is bound before the modal
+        // dialog and rechecked after it (Task 10 review minor 7).
+        let epoch = self.page_save_epoch(pane);
         let dialog = rfd::FileDialog::new().set_file_name(page_saver::default_name(&url));
         let Some(picked) = crate::localfs::save_file(dialog) else { return };
-        self.start_page_save(pane, picked.into_path_buf(), url);
+        self.start_page_save(pane, picked.into_path_buf(), url, epoch);
     }
 
-    /// The save of `pane` into the new folder `folder` (the dialog's pick): judged first, nothing is
-    /// written before that.
-    pub(super) fn start_page_save(&mut self, pane: PaneId, folder: PathBuf, url: String) {
-        if self.page_saves.contains_key(&pane) {
+    /// The save of `pane`'s page `url` (shown at `epoch`, when the item was chosen) into the new
+    /// folder `folder` (the dialog's pick): a page that moved since is not saved; the folder is
+    /// judged; nothing is written before both.
+    pub(super) fn start_page_save(&mut self, pane: PaneId, folder: PathBuf, url: String, epoch: u64) {
+        if self.page_saves.contains_key(&pane) || epoch == u64::MAX {
+            return;
+        }
+        if self.page_save_epoch(pane) != epoch {
+            self.page_save_alert(&page_saver::save_failed_text(page_saver::NAVIGATED_AWAY));
             return;
         }
         if let Err(e) = page_saver::destination(&folder) {
             self.page_save_alert(&e);
             return;
         }
-        let Some(epoch) = self.browser_views.get(&pane).map(|b| b.reader.epoch) else { return };
         self.page_save_seq += 1;
         let id = self.page_save_seq;
         let mut saving = Saving::new(folder, url, epoch, id);
@@ -759,6 +767,30 @@ mod tests {
         h.exec(queued);
         assert!(!folder.exists(), "{:?}", h.ops);
         assert!(h.fails.is_empty() && h.reveals.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The epoch is bound when the menu item is chosen, before the dialog (Task 10 review minor 7):
+    /// a page that navigated while the dialog was open is not saved, and nothing is made.
+    #[test]
+    fn a_navigation_during_the_dialog_saves_nothing() {
+        let src = include_str!("page_saver_app.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap()];
+        let menu = &prod[prod.find("pub(super) fn save_page_as").unwrap()..prod.find("pub(super) fn start_page_save").unwrap()];
+        let bound = menu.find("let epoch = self.page_save_epoch(pane);").expect("the epoch is read in save_page_as");
+        assert!(bound < menu.find("crate::localfs::save_file(dialog)").unwrap(), "bound before the dialog");
+        assert!(menu.contains("self.start_page_save(pane, picked.into_path_buf(), url, epoch);"));
+        let start = &prod[prod.find("pub(super) fn start_page_save").unwrap()..];
+        let recheck = start.find("if self.page_save_epoch(pane) != epoch {").expect("rechecked after the dialog");
+        assert!(recheck < start.find("Saving::new(").unwrap() && recheck < start.find("std::thread::Builder::new()").unwrap());
+        // The job bound to the old epoch makes nothing once the page moved.
+        let root = temp_root("dialognav");
+        let folder = root.join("site");
+        let mut h = Harness::new(folder.clone(), vec![]);
+        h.epoch = 8;
+        h.go();
+        assert_eq!(h.fails, vec![page_saver::save_failed_text(page_saver::NAVIGATED_AWAY)]);
+        assert!(!folder.exists() && h.ops.is_empty(), "{:?}", h.ops);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -607,8 +607,21 @@ impl Job {
             return Vec::new();
         }
         self.phase = Phase::Extracting;
-        self.made = vec![self.folder.clone(), self.resources.clone()];
+        // A folder counts as this job's only once the app says it was made (`on_made`): an abort
+        // before that must never remove a folder of the same name that was already there.
         vec![Step::MakeDir(self.folder.clone()), Step::MakeDir(self.resources.clone()), Step::Extract]
+    }
+
+    /// The app made this folder (`localfs::create_dir` succeeded): it is this job's, and the cleanup
+    /// removes it. Made after the job died (an abort raced the MakeDir), it is removed at once.
+    pub fn on_made(&mut self, path: &Path) -> Vec<Step> {
+        if self.dead {
+            return vec![Step::RemoveDir(path.to_path_buf())];
+        }
+        if !self.made.iter().any(|p| p == path) {
+            self.made.push(path.to_path_buf());
+        }
+        Vec::new()
     }
 
     /// The app could not make this folder (`localfs::create_dir`, which fails when it exists): the
@@ -1138,17 +1151,23 @@ mod tests {
             j.on_html(Some(s("<html></html>"))),
             vec![Step::Write { path: d().join("index.html"), bytes: b"<html></html>".to_vec() }, Step::Done(d().join("index.html"))]
         );
-        let mut j = Job::new(d());
-        j.start();
+        let mut j = started();
         j.on_urls(vec![]);
         j.on_attributes_added();
         // A failure cleans up in the same answer (the same rule as an abort).
         assert_eq!(j.on_html(None), vec![Step::RemoveDir(d().join("resources")), Step::RemoveDir(d()), Step::Failed(s(FAILED_TO_GET_HTML))]);
     }
 
-    fn job_with(urls: &[&str]) -> (Job, Vec<Step>) {
+    /// A started job whose two folders the app made.
+    fn started() -> Job {
         let mut j = Job::new(d());
         j.start();
+        assert!(j.on_made(&d()).is_empty() && j.on_made(&d().join("resources")).is_empty());
+        j
+    }
+
+    fn job_with(urls: &[&str]) -> (Job, Vec<Step>) {
+        let mut j = started();
         let first = j.on_urls(urls.iter().map(|u| s(u)).collect());
         (j, first)
     }
@@ -1331,6 +1350,16 @@ mod tests {
     /// whole; nothing is written into, or removed from, a folder the job did not make.
     #[test]
     fn a_folder_or_page_failure_fails_the_save() {
+        // An abort before the app answered the MakeDir removes no folder: one of that name may have
+        // been there (the MakeDir then fails). A folder made after the abort is removed at once.
+        let mut j = Job::new(d());
+        j.start();
+        assert_eq!(j.cancel(), vec![Step::Failed(s(CANCELLED))]);
+        assert!(j.on_make_dir_failed(&d()).is_empty());
+        let mut j = Job::new(d());
+        j.start();
+        j.cancel();
+        assert_eq!(j.on_made(&d()), vec![Step::RemoveDir(d())]);
         // The folder exists (or cannot be made): Save Failed, nothing more is written or removed.
         let mut j = Job::new(d());
         j.start();
@@ -1342,6 +1371,7 @@ mod tests {
         // The folder was made but not resources: the folder is removed, resources is not touched.
         let mut j = Job::new(d());
         j.start();
+        j.on_made(&d());
         let st = j.on_make_dir_failed(&d().join("resources"));
         assert_eq!(st, vec![Step::RemoveDir(d()), Step::Failed(s(FAILED_TO_CREATE_DIRECTORY))]);
         // index.html could not be written: Save Failed, not Done, and the partial output goes.

@@ -3679,6 +3679,8 @@ mod probe {
                 Step::MakeDir(d) => {
                     if crate::localfs::judge_io(&d).and_then(|j| crate::localfs::create_dir(&j)).is_err() {
                         queue.extend(job.on_make_dir_failed(&d));
+                    } else {
+                        queue.extend(job.on_made(&d));
                     }
                 }
                 Step::Extract => {
