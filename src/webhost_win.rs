@@ -3567,6 +3567,112 @@ mod probe {
         p.finish();
     }
 
+    /// The page of the trigger probes: one paragraph of text, or many words for the cap.
+    fn trigger_page(head: &str, body: &str) -> String {
+        format!("<!doctype html><html><head><title>t</title>{head}</head><body>{body}</body></html>")
+    }
+
+    /// A trigger list holding one enabled Page Content Highlight (URL `tandem-probe`, content `regex`).
+    fn trigger_list(regex: &str) -> Vec<crate::triggers::Trigger> {
+        let mut t = crate::triggers::Trigger { regex: "tandem-probe\\.invalid".into(), action: "iTerm2SharedARC.HighlightBrowserTrigger".into(), parameter: "#ff0000;".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 2, extra: toml::Table::new() };
+        t.extra.insert("contentregex".into(), regex.into());
+        vec![t]
+    }
+
+    /// The probe plays the app's part for `iTerm2Trigger` messages: a request is answered with
+    /// `setTriggers` (the typed call, in the isolated world), then the match event is decoded and the
+    /// effect of the first match is run.
+    fn trigger_serve(p: &mut Probe, l: &crate::browser_triggers::Loaded) -> Vec<crate::browser_triggers::Match> {
+        use crate::browser_triggers as bt;
+        assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("requestTriggers").is_some())), "the engine asks for its triggers");
+        marks_run(p, &bt::set_triggers_call(l)).expect("setTriggers runs in the isolated world");
+        assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("matchEvent").is_some())), "a match event arrives");
+        let mut all = Vec::new();
+        for (_, body) in p.clients(bt::MESSAGE_HANDLER) {
+            if let bt::Message::Matches(m) = bt::message_of(&body, &l.secret) {
+                all.extend(m);
+            }
+        }
+        all
+    }
+
+    /// 13x5 Task 9: a Page Content Highlight fires in a page. The engine is a Client user script
+    /// (document start), the request and the match arrive as Client messages, the highlight runs in the
+    /// isolated world and leaves a styled span in the shared DOM, and `window.iTerm2Triggers` exists only
+    /// in the isolated world. Needs the console session.
+    #[test]
+    #[ignore]
+    fn triggers_fire_in_a_page() {
+        use crate::browser_triggers as bt;
+        let l = bt::load(&trigger_list("wor(ld)"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let Some(mut p) = Probe::start(&[(PAGE, trigger_page("", "<p>hello world</p>"))], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        let matches = trigger_serve(&mut p, &l);
+        let m = matches.iter().find(|m| m.content_captures.as_deref() == Some(&["world".to_string(), "ld".to_string()])).expect("the content match");
+        let (_, t) = l.triggers.iter().find(|(i, _)| *i == m.identifier).expect("a loaded trigger");
+        let e = bt::effect(t, m, &t.parameter, &[]).expect("a highlight");
+        let bt::Effect::Highlight { match_id, text, background } = e else { panic!("{e:?}") };
+        marks_run(&mut p, &bt::highlight_call(&match_id, text.as_deref(), background.as_deref())).expect("highlightText");
+        assert_eq!(p.page_eval("getComputedStyle(document.querySelector('span[data-iterm2-highlight]')).color"), Ok("\"rgb(255, 0, 0)\"".into()));
+        assert_eq!(p.page_eval("typeof window.iTerm2Triggers"), Ok("\"undefined\"".into()), "the engine lives in the isolated world only");
+        p.finish();
+    }
+
+    /// 13x5 Task 9 (B8): a page with thousands of matches posts at most 64 of them, each capture cut,
+    /// under the message limit. Needs the console session.
+    #[test]
+    #[ignore]
+    fn many_matches_are_capped() {
+        use crate::browser_triggers as bt;
+        let l = bt::load(&trigger_list("ab+"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let body = format!("<p>{}</p>", "abbb ".repeat(5000));
+        let Some(mut p) = Probe::start(&[(PAGE, trigger_page("", &body))], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        let matches = trigger_serve(&mut p, &l);
+        assert!(!matches.is_empty() && matches.len() <= bt::MAX_MATCHES * 2, "{} matches", matches.len());
+        for r in p.routed.iter().filter(|r| r.via == Via::Client) {
+            assert!(r.body.len() <= crate::webhost::MAX_MESSAGE);
+        }
+        p.finish();
+    }
+
+    /// 13x5 Task 9 (Review Focus 11, review C1): a page that replaced `Function.prototype.bind` and
+    /// `chrome.webview.postMessage` before anything ran sees neither the trigger secret nor the marks
+    /// secret after the engine asked, a trigger fired and a mark was shown and pressed; neither
+    /// `window.iTerm2Triggers` nor `window.iTermLayoutChangeMonitor` exists in the page world. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn page_never_sees_the_marks_or_trigger_secrets() {
+        use crate::browser_marks as bm;
+        use crate::browser_triggers as bt;
+        let spy = "<script>(function(){var send=window.chrome.webview.postMessage.bind(window.chrome.webview);var seen=function(v){try{send({h:\"spy\",b:String(v)});}catch(e){}};var ob=Function.prototype.bind;Function.prototype.bind=function(){for(var i=0;i<arguments.length;i++){seen(arguments[i]);}seen(this);return ob.apply(this,arguments);};window.chrome.webview.postMessage=function(m){seen(JSON.stringify(m));};})();</script>";
+        let l = bt::load(&trigger_list("wor(ld)"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let body = "<p>hello world</p><p>two</p><p>three</p><p>four</p><p>five</p>";
+        let Some(mut p) = Probe::start(&[(PAGE, trigger_page(spy, body))], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        let matches = trigger_serve(&mut p, &l);
+        let m = matches.iter().find(|m| m.match_id.is_some()).expect("a content match");
+        let (_, t) = l.triggers.iter().find(|(i, _)| *i == m.identifier).expect("loaded");
+        if let Some(bt::Effect::Highlight { match_id, text, background }) = bt::effect(t, m, &t.parameter, &[]) {
+            marks_run(&mut p, &bt::highlight_call(&match_id, text.as_deref(), background.as_deref())).expect("highlightText");
+        }
+        let loc = bm::Location { xpath: "//p[1]".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
+        let show = bm::show_call(&[loc.js_dict(Some("m"), "g1")], "MARKS-SECRET-13x5").expect("a call");
+        marks_run(&mut p, &show).expect("annotations");
+        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        p.settle(500);
+        for r in p.routed.iter().filter(|r| r.via == Via::Page) {
+            assert!(!r.body.contains("TRIG-SECRET-13x5") && !r.body.contains("MARKS-SECRET-13x5"), "a page-world message holds a secret: {}", r.body);
+        }
+        assert!(p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"")), "the spy was alive");
+        assert_eq!(p.page_eval("typeof window.iTerm2Triggers + typeof window.iTermLayoutChangeMonitor"), Ok("\"undefinedundefined\"".into()));
+        p.finish();
+    }
+
     /// 13x4 Task 1 (B9): Readability keeps event-handler attributes, and the title goes in as markup;
     /// both run in the PAGE world. From there the reader's objects, the Tandem bridge and the view's
     /// secrets are out of reach, and no Client message results. Needs the console session.

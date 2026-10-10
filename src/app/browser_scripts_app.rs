@@ -178,6 +178,9 @@ impl App {
             if let (Ok(cursor), Ok(keys)) = (crate::browser_copymode::user_script(secret), crate::browser_copymode::keys_script(secret)) {
                 scripts.extend([cursor, keys]);
             }
+            // iTerm2's trigger engine (13x5 Task 9): every browser view, the isolated world only, with
+            // the trigger secret and not the view's.
+            scripts.extend(self.browser_trigger_script(pane));
         }
         scripts
     }
@@ -228,6 +231,10 @@ impl App {
             bv.result_caps.clear();
             bv.marks_method.reset();
             bv.marks_page.rotate(browser_js::new_secret());
+            if let Some(l) = bv.triggers.as_mut() {
+                l.secret = browser_js::new_secret();
+            }
+            bv.trigger_gate.reset();
         }
         self.global_pane_gone(pane);
         for done in dones {
@@ -432,6 +439,10 @@ impl App {
             bv.copy_mode = None;
             bv.reader.reset();
             bv.marks_page.rotate(browser_js::new_secret());
+            if let Some(l) = bv.triggers.as_mut() {
+                l.secret = browser_js::new_secret();
+            }
+            bv.trigger_gate.reset();
             bv.world.restarted = true;
             bv.world.verify_at = None;
         }
@@ -861,6 +872,7 @@ impl App {
             h if h == crate::browser_reader::HANDLER => self.browser_reader_message(pane, &r),
             h if h == crate::browser_marks::MESSAGE_HANDLER => self.marks_message(pane, &r),
             h if h == crate::browser_marks::LAYOUT_HANDLER => self.marks_layout_message(pane, &r),
+            h if h == crate::browser_triggers::MESSAGE_HANDLER => self.browser_trigger_message(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -1055,7 +1067,7 @@ mod tests {
     /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
     /// router or is a listed Client handler that asks `client_open` before it acts.
     fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
-        let known = ["marks_message", "marks_layout_message", "browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message"];
+        let known = ["marks_message", "marks_layout_message", "browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message", "browser_trigger_message"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
         let mut out = Vec::new();
         for (file, src) in files {

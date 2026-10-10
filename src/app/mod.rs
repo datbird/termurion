@@ -168,6 +168,7 @@ mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;
 mod browser_marks_app;
+mod browser_triggers_app;
 mod browser_smart_app;
 mod browser_overlay_app;
 mod browser_input_app;
@@ -4659,6 +4660,8 @@ impl App {
         for id in ids {
             self.apply_emu_rules(id);
         }
+        // A browser pane's trigger list follows its profile (13x5 Task 9).
+        self.browser_triggers_refresh();
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
         // "Status bar enabled" may have changed for a tmux tab.
