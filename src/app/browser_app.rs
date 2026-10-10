@@ -646,7 +646,8 @@ impl App {
             Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
             Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
             Event::AudioPlaying { .. } => {}
-            Event::PermissionStates { states, complete, .. } => self.permission_states_read(pane, states, *complete),
+            Event::PermissionStates { view, states, complete } => self.permission_states_read(pane, *view, states, *complete),
+            Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok),
             // Everything a page's script says, the world's events and the calls' answers: the router.
             _ => {
                 self.browser_script_event(pane, e);

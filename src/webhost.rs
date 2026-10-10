@@ -315,6 +315,10 @@ pub enum Event {
     /// `MAX_PERMISSION_STATES`: the start-up sync must then fail closed (revoke every profile
     /// state the Tandem table does not hold), never treat the list as the whole profile.
     PermissionStates { view: ViewId, states: Vec<(i32, String, i32)>, complete: bool },
+    /// The completion of `set_permission_state(seq, ..)`: `ok` is false when the runtime cannot
+    /// set the profile or the write failed. Always posted once per call while the view lives (the
+    /// app's write queue, `perm_queue`, waits for it).
+    PermissionWritten { view: ViewId, seq: u64, ok: bool },
 }
 
 /// How the app answers a `Event::Permission`.
@@ -324,9 +328,10 @@ pub enum PermAnswer {
     /// "leave it to WebView2": that would be a grant nobody asked Tandem about (pre-flight B3).
     Deny,
     /// `state` is a `browser_perms::STATE_*`. WebView2 never stores a decision (`SavesInProfile` is
-    /// always false); `saves` asks the host to MIRROR an Allow of a notification or location
-    /// request into the profile (`SetPermissionState`) before the request completes, so the page
-    /// works at once. The Tandem table stays the only source; the start-up sync revokes whatever
+    /// always false). `saves` tells the APP to mirror an Allow of a notification or location
+    /// request into the profile through its write queue (`perm_queue`) and to answer only once
+    /// that write came back, so the page works at once; the host itself never writes the profile
+    /// on an answer. The Tandem table stays the only source; the start-up sync revokes whatever
     /// it does not hold as Granted. A Deny is never mirrored.
     State { state: i32, saves: bool },
 }
@@ -379,7 +384,8 @@ impl Event {
             | Event::NotificationShown { view, .. }
             | Event::NotificationClosed { view, .. }
             | Event::AudioPlaying { view, .. }
-            | Event::PermissionStates { view, .. } => *view,
+            | Event::PermissionStates { view, .. }
+            | Event::PermissionWritten { view, .. } => *view,
         }
     }
 
@@ -1917,6 +1923,7 @@ mod tests {
             Event::NotificationShown { view: 1, token: 3, origin: "https://a.b".into(), title: "T".into(), body: "B".into() },
             Event::NotificationClosed { view: 1, token: 3 },
             Event::AudioPlaying { view: 1, playing: true },
+            Event::PermissionWritten { view: 1, seq: 9, ok: false },
         ];
         for e in events {
             let posted = Posted { env: None, event: Some(e.clone()), charge: None };
@@ -1936,6 +1943,7 @@ mod tests {
             Event::NotificationShown { view: 1, token: 3, origin: "o".into(), title: "t".into(), body: "b".into() },
             Event::NotificationClosed { view: 1, token: 3 },
             Event::PermissionStates { view: 1, states: vec![], complete: false },
+            Event::PermissionWritten { view: 1, seq: 9, ok: true },
         ];
         for e in &held {
             assert!(!e.droppable(), "{e:?} holds a COM object or answers a request");

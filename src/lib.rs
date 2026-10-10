@@ -86,6 +86,7 @@ pub mod devtools;
 pub mod browser_db;
 pub mod browser_db_perms;
 pub mod browser_perms;
+pub mod perm_queue;
 pub mod browser_pages;
 pub mod browser_restore;
 pub mod adblock;

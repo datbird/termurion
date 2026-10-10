@@ -466,9 +466,6 @@ struct Pending {
 struct PendingPerm {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2PermissionRequestedEventArgs,
-    kind: i32,
-    /// The requester's normalized origin (None: it cannot be keyed, nothing is mirrored).
-    origin: Option<String>,
 }
 
 /// A page's notification the app may still report on (`notification_report`).
@@ -1057,20 +1054,14 @@ impl WebView {
     }
 
     /// Completes the deferral taken when `Event::Permission { token, .. }` was posted. WebView2
-    /// never stores the answer itself (`SavesInProfile` false). `State` with `saves` and
-    /// `STATE_ALLOW` for a notification or location request first mirrors the grant into the
-    /// profile with `SetPermissionState` and completes the deferral from that call's completion
-    /// handler, so the page works at once (a `new Notification` right after the Allow). Any other
-    /// answer completes at once; only `STATE_ALLOW` allows. An unknown token (already answered,
-    /// or the view dropped it) does nothing.
+    /// never stores the answer itself (`SavesInProfile` false) and this never writes the profile:
+    /// a saved grant was mirrored by the app's write queue before it answered (`perm_queue`), so
+    /// the page works at once (a `new Notification` right after the Allow). Only `STATE_ALLOW`
+    /// allows. An unknown token (already answered, or the view dropped it) does nothing.
     pub fn answer_permission(&self, token: u64, answer: webhost::PermAnswer) {
-        let (pending, p4) = {
-            let mut i = self.inner.borrow_mut();
-            let pending = i.perms.remove(&token);
-            (pending, i.core.as_ref().and_then(|c| profile4(&c.view)))
-        };
+        let pending = self.inner.borrow_mut().perms.remove(&token);
         if let Some(p) = pending {
-            complete_permission(p, answer, p4);
+            complete_permission(p, answer);
         }
     }
 
@@ -1113,16 +1104,34 @@ impl WebView {
         }
     }
 
-    /// Sets the profile's permission state for each (kind, origin, state), in order, each started
-    /// from the previous one's completion handler. A failure is logged with the kind and state
-    /// (numbers), never the origin.
-    pub fn set_permission_states(&self, states: Vec<(i32, String, i32)>) {
-        if states.is_empty() {
-            return;
-        }
-        self.with(move |c| match profile4(&c.view) {
-            Some(p4) => set_next_state(p4, states.into_iter().collect()),
-            None => crate::dlog!("webhost: this runtime has no profile permission states"),
+    /// Sets one profile permission state (`SetPermissionState`); `Event::PermissionWritten` with
+    /// `seq` answers once, `ok` false when the runtime cannot set the profile or the call failed.
+    /// The app's write queue (`perm_queue`) sends one at a time, so writes land in the order they
+    /// were asked. A failure is logged with the kind and state (numbers), never the origin.
+    pub fn set_permission_state(&self, seq: u64, kind: i32, origin: &str, state: i32) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        let w = wide(origin);
+        self.with(move |c| {
+            let failed = |poster: &Poster| poster.post(Event::PermissionWritten { view: id, seq, ok: false });
+            let Some(p4) = profile4(&c.view) else {
+                crate::dlog!("webhost: this runtime has no profile permission states");
+                return failed(&poster);
+            };
+            let p2 = poster.clone();
+            let handler = webview2_com::SetPermissionStateCompletedHandler::create(Box::new(move |hr| guard(|| {
+                if hr.is_err() {
+                    crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
+                }
+                p2.post(Event::PermissionWritten { view: id, seq, ok: hr.is_ok() });
+                Ok(())
+            })));
+            if unsafe { p4.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND(kind), PCWSTR(w.as_ptr()), COREWEBVIEW2_PERMISSION_STATE(state), &handler) }.is_err() {
+                crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
+                failed(&poster);
+            }
         });
     }
 
@@ -1207,34 +1216,10 @@ fn profile4(view: &ICoreWebView2) -> Option<ICoreWebView2Profile4> {
     unsafe { v13.Profile() }.ok()?.cast::<ICoreWebView2Profile4>().ok()
 }
 
-/// One `SetPermissionState`, then the rest from its completion handler (the chain keeps the order).
-fn set_next_state(p4: ICoreWebView2Profile4, mut rest: VecDeque<(i32, String, i32)>) {
-    let Some((kind, origin, state)) = rest.pop_front() else { return };
-    let w = wide(&origin);
-    let rest = Rc::new(RefCell::new(Some(rest)));
-    let (r2, p2) = (rest.clone(), p4.clone());
-    let handler = webview2_com::SetPermissionStateCompletedHandler::create(Box::new(move |hr| guard(|| {
-        if hr.is_err() {
-            crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
-        }
-        if let Some(rest) = r2.borrow_mut().take() {
-            set_next_state(p2.clone(), rest);
-        }
-        Ok(())
-    })));
-    if unsafe { p4.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND(kind), PCWSTR(w.as_ptr()), COREWEBVIEW2_PERMISSION_STATE(state), &handler) }.is_err() {
-        crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
-        if let Some(rest) = rest.borrow_mut().take() {
-            set_next_state(p4, rest);
-        }
-    }
-}
-
-/// Sets the answer on a held request and completes its deferral. A mirrored grant (`saves`, an
-/// Allow, kind 3 or 4, a keyable origin, a profile that can be set) is written to the profile
-/// first and the deferral completes from the write's completion handler (also when it failed: the
-/// request is then answered Allow for this page only, the table still holds the grant).
-fn complete_permission(p: PendingPerm, answer: webhost::PermAnswer, p4: Option<ICoreWebView2Profile4>) {
+/// Sets the answer on a held request and completes its deferral. Only `STATE_ALLOW` allows; the
+/// profile is never written here (a saved grant was mirrored by the app's write queue before it
+/// answered, `perm_queue`), and WebView2 never stores the answer itself.
+fn complete_permission(p: PendingPerm, answer: webhost::PermAnswer) {
     let allow = matches!(answer, webhost::PermAnswer::State { state, .. } if state == crate::browser_perms::STATE_ALLOW);
     let state = if allow { COREWEBVIEW2_PERMISSION_STATE_ALLOW } else { COREWEBVIEW2_PERMISSION_STATE_DENY };
     // SavesInProfile false on every answer, before the state and the completion.
@@ -1242,37 +1227,7 @@ fn complete_permission(p: PendingPerm, answer: webhost::PermAnswer, p4: Option<I
         let _ = unsafe { a3.SetSavesInProfile(false) };
     }
     let _ = unsafe { p.args.SetState(state) };
-    let mirror = matches!(answer, webhost::PermAnswer::State { saves: true, .. }) && allow && matches!(p.kind, 3 | 4);
-    match (mirror, p4, p.origin.clone()) {
-        (true, Some(p4), Some(origin)) => set_state_then(p4, p.kind, origin, crate::browser_perms::STATE_ALLOW, Box::new(move || {
-            let _ = unsafe { p.deferral.Complete() };
-        })),
-        _ => {
-            let _ = unsafe { p.deferral.Complete() };
-        }
-    }
-}
-
-/// One `SetPermissionState`, then `then` from its completion handler (at once when the call fails).
-fn set_state_then(p4: ICoreWebView2Profile4, kind: i32, origin: String, state: i32, then: Box<dyn FnOnce()>) {
-    let w = wide(&origin);
-    let then = Rc::new(RefCell::new(Some(then)));
-    let t2 = then.clone();
-    let handler = webview2_com::SetPermissionStateCompletedHandler::create(Box::new(move |hr| guard(|| {
-        if hr.is_err() {
-            crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
-        }
-        if let Some(f) = t2.borrow_mut().take() {
-            f();
-        }
-        Ok(())
-    })));
-    if unsafe { p4.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND(kind), PCWSTR(w.as_ptr()), COREWEBVIEW2_PERMISSION_STATE(state), &handler) }.is_err() {
-        crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
-        if let Some(f) = then.borrow_mut().take() {
-            f();
-        }
-    }
+    let _ = unsafe { p.deferral.Complete() };
 }
 
 /// Completes a view's pending requests with Continue and closes its controller (its browser
@@ -1287,7 +1242,7 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     drop(i);
     // A permission still waiting is refused, never left pending: nothing grants by the view going away.
     for (_, p) in perms {
-        complete_permission(p, webhost::PermAnswer::Deny, None);
+        complete_permission(p, webhost::PermAnswer::Deny);
     }
     for (_, h) in notes {
         let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
@@ -1968,7 +1923,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
         let uri = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
         let t = i.next_token;
         i.next_token += 1;
-        i.perms.insert(t, PendingPerm { deferral, args: args.clone(), kind: kind.0, origin: crate::browser_perms::normalize_origin(&uri) });
+        i.perms.insert(t, PendingPerm { deferral, args: args.clone() });
         let id = i.id;
         i.poster.post(Event::Permission { view: id, token: t, kind: kind.0, uri: webhost::cap_url(&uri).0 });
         Ok(())
@@ -2225,7 +2180,10 @@ mod tests {
         assert!(policy[..deny].contains("SetSavesInProfile(false)"), "the on-the-spot denial never saves");
         let complete = &live[live.find("fn complete_permission").unwrap()..live.find("fn shut(").unwrap()];
         assert!(complete.contains("SetSavesInProfile(false)") && !complete.contains("SetSavesInProfile(saves)"), "every answer sets SavesInProfile false");
-        assert!(complete.contains("saves: true") && complete.contains("set_state_then") && complete.contains("matches!(p.kind, 3 | 4)"), "a saved Allow of kind 3 or 4 is mirrored before the deferral completes (ruling A)");
+        assert!(!complete.contains("SetPermissionState") && !live.contains("fn set_state_then") && !live.contains("fn set_next_state"), "an answer never writes the profile: every write goes through the app's one queue (Task 5 fix)");
+        let write = &live[live.find("pub fn set_permission_state(").unwrap()..live.find("pub fn read_permission_states").unwrap()];
+        assert!(write.matches("PermissionWritten").count() >= 2 && write.contains("ok: hr.is_ok()") && write.contains("ok: false"), "every write answers once with its sequence");
+        assert!(!live.contains("pub fn set_permission_states"), "no batch write outside the queue");
         let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("pub fn close(self)").unwrap()];
         assert!(read.matches("complete: false").count() + read.matches("complete = false").count() >= 4 && read.contains("complete &="), "an incomplete read says so (I2)");
         assert!(read.contains("webhost::cap_url(&origin.unwrap_or_default())") && read.contains("if cut {") && read.contains("complete = false;"), "a cut origin makes the read partial (re-review minor 3)");
@@ -2823,6 +2781,8 @@ mod probe {
         notes: Vec<(u64, String, String, String)>,
         audio: Vec<bool>,
         state_reads: Vec<Vec<(i32, String, i32)>>,
+        /// `PermissionWritten` answers: (seq, ok).
+        writes: Vec<(u64, bool)>,
     }
 
     impl Probe {
@@ -2905,6 +2865,7 @@ mod probe {
                 notes: Vec::new(),
                 audio: Vec::new(),
                 state_reads: Vec::new(),
+                writes: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -3080,6 +3041,7 @@ mod probe {
                 Event::NotificationShown { token, origin, title, body, .. } => self.notes.push((token, origin, title, body)),
                 Event::AudioPlaying { playing, .. } => self.audio.push(playing),
                 Event::PermissionStates { states, .. } => self.state_reads.push(states),
+                Event::PermissionWritten { seq, ok, .. } => self.writes.push((seq, ok)),
                 Event::FrameMessage { frame, json, source, .. } => {
                     self.graph_page(&json, Some(frame), &source);
                     self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json });
@@ -4974,15 +4936,18 @@ window.addEventListener('message', function (e) {
         // Not saved: the same profile sees the default after a fresh load.
         p.load(PERM_PAGE);
         assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "saves:false leaves the profile alone");
-        // Saved: it survives a reload.
+        // Saved: the app's queue writes the profile first, then answers; it survives a reload.
         p.page_eval("ask(); 1").expect("asks again");
         let (token, ..) = p.next_permission(1);
+        p.view().set_permission_state(1, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(1, true))), "the write answered: {:?}", p.writes);
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
         assert!(p.page_becomes(10, "window.__r", false, "granted"));
         p.load(PERM_PAGE);
-        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "saves:true is kept by the profile");
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the mirrored grant is kept by the profile");
         // Put back to default through the profile, and read the non-default states.
-        p.view().set_permission_states(vec![(4, PERM_HOST.to_string(), STATE_DEFAULT)]);
+        p.view().set_permission_state(2, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(2, true))), "the reset answered: {:?}", p.writes);
         assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the state went back to default");
         p.view().read_permission_states();
         assert!(p.wait(10, |p| !p.state_reads.is_empty()), "PermissionStates within 10 s");
@@ -5004,6 +4969,9 @@ window.addEventListener('message', function (e) {
         p.load(PERM_PAGE);
         p.page_eval("go(); 1").expect("the page asks");
         let (token, ..) = p.next_permission(0);
+        // The app's order (Task 5 fix): the queue's write, its completion, then the answer.
+        p.view().set_permission_state(1, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(1, true))), "the write answered: {:?}", p.writes);
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
         assert!(p.wait(10, |p| p.notes.iter().any(|n| n.2 == "T")), "the notification was raised: {:?}", p.notes);
         // Ruling A: WebView2 stored nothing itself; the grant was mirrored with SetPermissionState before the request completed.
@@ -5018,6 +4986,26 @@ window.addEventListener('message', function (e) {
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: false });
         p.settle(3000);
         assert_eq!(p.notes.len(), before, "an unsaved answer raises nothing: {:?}", p.notes);
+        p.finish();
+    }
+
+    /// Task 5 fix (one write queue): every `set_permission_state` answers once with its own
+    /// sequence number, so the queue can send the next only after the last landed; an Allow then
+    /// a reset of the same entry leaves the profile at the reset.
+    #[test]
+    #[ignore]
+    fn profile_writes_answer_once_with_their_sequence() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.view().set_permission_state(11, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(11, true))), "the grant answered: {:?}", p.writes);
+        assert!(p.page_becomes(10, "Notification.permission", false, "granted"), "live at once");
+        p.view().set_permission_state(12, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(12, true))), "the reset answered: {:?}", p.writes);
+        assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the reset is the last word");
+        p.settle(500);
+        assert_eq!(p.writes, vec![(11, true), (12, true)], "each write answers exactly once");
         p.finish();
     }
 

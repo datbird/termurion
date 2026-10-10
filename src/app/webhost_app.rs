@@ -258,7 +258,7 @@ impl App {
             return false;
         }
         if self.web_envs.env_lost(store, Instant::now()) {
-            self.perm_sync.lost(store == Store::BrowserDevNull);
+            self.perm_store_lost(store == Store::BrowserDevNull);
         }
         true
     }
@@ -337,6 +337,8 @@ impl App {
     /// window is known to have it, the hold ends, the 13u hook is told (Tandem's Win chords and
     /// remaps act again in that window, never on the shell) and the window takes the keyboard back.
     pub(super) fn web_view_dropped(&mut self, view: ViewId, parent: isize) {
+        // A profile write or read in flight on it is sent again on another view (13x6).
+        self.perm_view_gone(view);
         let held = self.web_focus_held.and_then(|w| self.window_hwnd(w));
         if !webhost::drop_returns_focus(held, parent, self.web_focus_view, view) {
             return;

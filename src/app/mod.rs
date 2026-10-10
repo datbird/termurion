@@ -1346,6 +1346,9 @@ pub struct App {
     web_note_limits: crate::triggers::RateLimit<String>,
     /// Which browser environments had their profile permission states rewritten from the database.
     perm_sync: browser_perms_app::SyncState,
+    /// The one ordered queue of profile permission writes of each browser store (`[Browser,
+    /// BrowserDevNull]`, 13x6 Task 5 fix): every mirror, sync, revoke and reset goes through it.
+    perm_queues: [crate::perm_queue::ProfileQueue; 2],
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
     /// Checking for updates (M13v2): the worker, the window, the next scheduled check, whether the
     /// check in flight is the person's, and the view waiting to show. App-wide, never per window.
@@ -2539,6 +2542,7 @@ pub fn run() {
         web_note: Default::default(),
         web_note_limits: Default::default(),
         perm_sync: Default::default(),
+        perm_queues: Default::default(),
         scripts_alert: None,
         update_checker: None,
         update_window: None,

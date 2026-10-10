@@ -13,7 +13,8 @@ use super::scripts_alerts::{self, Then};
 use super::App;
 use crate::browser_perms::{self as bp, Decision, PermissionType, Plan, System};
 use crate::layout::PaneId;
-use crate::webhost::PermAnswer;
+use crate::perm_queue::{Out, ProfileQueue};
+use crate::webhost::{PermAnswer, ViewId};
 use crate::webhost_win::NoteReport;
 
 /// Requests that wait behind another open question of the same pane (one prompt at a time per
@@ -109,6 +110,9 @@ pub(super) struct Ask {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Act {
     Answer { pane: PaneId, token: u64, answer: PermAnswer },
+    /// A saved grant of a mirrored kind: written into the profile through the store's one write
+    /// queue (`perm_queue`), and the request answered only once that write came back.
+    Mirror { pane: PaneId, token: u64, epoch: u64, kind: i32, origin: String, answer: PermAnswer },
     /// Open question `id` through the alert path.
     Ask { id: u64, heading: String, text: String },
     /// Question `id` has no page left waiting (it navigated or closed): the window goes, queued or
@@ -144,6 +148,15 @@ fn deny(r: &Req) -> Act {
     Act::Answer { pane: r.pane, token: r.token, answer: PermAnswer::Deny }
 }
 
+/// The act for an answer of type `t` on `origin`: an answer that `saves` (a saved Allow of a
+/// mirrored kind) is mirrored first, anything else is answered at once.
+fn answer_act(pane: PaneId, token: u64, epoch: u64, t: PermissionType, origin: &str, answer: PermAnswer) -> Act {
+    match (answer, bp::kinds_of(t).first()) {
+        (PermAnswer::State { saves: true, .. }, Some(&kind)) => Act::Mirror { pane, token, epoch, kind, origin: origin.to_string(), answer },
+        _ => Act::Answer { pane, token, answer },
+    }
+}
+
 impl Asks {
     /// Groups, plans and answers `preps` (one drain's requests).
     pub(super) fn plan_flush(&mut self, preps: Vec<Prep>, systems: Systems) -> Vec<Act> {
@@ -171,7 +184,7 @@ impl Asks {
             let saved = p.saved.iter().find(|(st, _)| *st == t).map(|(_, d)| *d);
             match bp::plan(Some(t), saved, systems.of(t)) {
                 // A saved decision answers; `saves` only for the kinds a page reads synchronously.
-                Plan::Answer(d) => acts.push(Act::Answer { pane: p.req.pane, token: p.req.token, answer: bp::perm_answer(t, d, true) }),
+                Plan::Answer(d) => acts.push(answer_act(p.req.pane, p.req.token, p.req.epoch, t, &origin, bp::perm_answer(t, d, true))),
                 Plan::Deny | Plan::Default => acts.push(deny(&p.req)),
                 Plan::Ask(t) => self.ask(p, origin, t, &mut acts),
             }
@@ -307,7 +320,7 @@ pub(super) fn settle(s: &Settled, stored: bool, epoch_of: &dyn Fn(PaneId) -> Opt
         let Some(now) = epoch_of(w.pane) else { continue };
         // Another page now: the answer was for the one that asked.
         let answer = if now != w.epoch || failed { PermAnswer::Deny } else { bp::perm_answer(s.t, d, saved) };
-        acts.push(Act::Answer { pane: w.pane, token: w.token, answer });
+        acts.push(answer_act(w.pane, w.token, w.epoch, s.t, &s.origin, answer));
     }
     acts
 }
@@ -529,6 +542,11 @@ impl App {
                         v.answer_permission(token, answer);
                     }
                 }
+                Act::Mirror { pane, token, epoch, kind, origin, answer } => {
+                    let dev_null = self.pane_dev_null(pane);
+                    self.perm_queue(dev_null).mirror_then_answer(kind, &origin, pane, token, epoch, answer);
+                    self.perm_pump(dev_null);
+                }
                 Act::Withdraw { id } => self.browser_permission_withdraw(id),
                 Act::Ask { id, heading, text } => {
                     let ask = scripts_alerts::ask(&heading, &text, &[bp::ALLOW, bp::BLOCK], None, crate::warnings::Kind::Persistent, Then::BrowserPermission(id));
@@ -562,66 +580,128 @@ impl App {
         self.flush_permission_requests();
     }
 
-    /// Any live view of the store (`dev_null` picks it): where profile calls go.
-    fn store_view(&self, dev_null: bool) -> Option<&crate::webhost_win::WebView> {
-        self.browser_views
+    /// The write queue of a store's profile (`dev_null` picks it).
+    fn perm_queue(&mut self, dev_null: bool) -> &mut ProfileQueue {
+        &mut self.perm_queues[usize::from(dev_null)]
+    }
+
+    /// Any live view of the store (`dev_null` picks it): where profile calls go. The lowest pane id
+    /// wins, so the choice does not hop between views.
+    fn store_view_id(&self, dev_null: bool) -> Option<ViewId> {
+        let mut views: Vec<(PaneId, ViewId)> = self
+            .browser_views
             .iter()
-            .filter(|(p, _)| self.pane_dev_null(**p) == dev_null)
-            .find_map(|(_, b)| b.view.as_ref())
+            .filter(|(p, b)| b.view.is_some() && self.pane_dev_null(**p) == dev_null)
+            .map(|(p, b)| (*p, b.id))
+            .collect();
+        views.sort();
+        views.first().map(|(_, v)| *v)
     }
 
-    /// Writes the profile states of `Effects` on any live view of the store (none live: the next
-    /// sync covers it).
-    fn set_profile_states(&self, dev_null: bool, states: Vec<(i32, String, i32)>) {
-        if states.is_empty() {
-            return;
-        }
-        if let Some(v) = self.store_view(dev_null) {
-            v.set_permission_states(states);
+    fn view_of_id(&self, view: ViewId) -> Option<&crate::webhost_win::WebView> {
+        self.browser_views.values().find(|b| b.id == view).and_then(|b| b.view.as_ref())
+    }
+
+    /// Runs the store's write queue as far as it goes: answers and reloads at its head, then the
+    /// next write or read on a live view of the store (none live: it waits for the next view).
+    pub(super) fn perm_pump(&mut self, dev_null: bool) {
+        loop {
+            let view = self.store_view_id(dev_null);
+            let outs = self.perm_queue(dev_null).step(view);
+            if outs.is_empty() {
+                return;
+            }
+            self.perm_outs(dev_null, outs);
         }
     }
 
-    /// Mirrors a decision (None: a reset) of kinds 3 and 4 into the profile. A saved Allow is
-    /// mirrored by the host before the request completes; this is for the rest.
-    #[allow(dead_code)] // the host mirrors an Allow itself; kept for a later task's callers
-    pub(super) fn mirror_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType, d: Option<Decision>) {
-        if bp::normalize_origin(origin).as_deref() != Some(origin) {
-            return;
+    fn perm_outs(&mut self, dev_null: bool, outs: Vec<Out>) {
+        for out in outs {
+            match out {
+                Out::Write { view, seq, kind, origin, state } => match self.view_of_id(view) {
+                    Some(v) => v.set_permission_state(seq, kind, &origin, state),
+                    None => {
+                        let more = self.perm_queue(dev_null).view_gone(view);
+                        self.perm_outs(dev_null, more);
+                    }
+                },
+                Out::Read { view } => match self.view_of_id(view) {
+                    Some(v) => v.read_permission_states(),
+                    None => {
+                        let more = self.perm_queue(dev_null).view_gone(view);
+                        self.perm_outs(dev_null, more);
+                    }
+                },
+                // The page that asked must still be the page it asked from.
+                Out::Answer { pane, token, epoch, answer } => {
+                    if let Some(b) = self.browser_views.get(&pane) {
+                        let answer = if b.reader.epoch == epoch { answer } else { PermAnswer::Deny };
+                        if let Some(v) = &b.view {
+                            v.answer_permission(token, answer);
+                        }
+                    }
+                }
+                Out::Reload { origin } => self.reload_panes_using(dev_null, &origin),
+            }
         }
-        let states = bp::kinds_of(t).iter().map(|k| (*k, origin.to_string(), bp::state_of(d))).collect();
-        self.set_profile_states(dev_null, states);
+    }
+
+    /// A profile write came back (`Event::PermissionWritten`).
+    pub(super) fn perm_written(&mut self, pane: PaneId, view: ViewId, seq: u64, ok: bool) {
+        let dev_null = self.pane_dev_null(pane);
+        let outs = self.perm_queue(dev_null).written(view, seq, ok);
+        self.perm_outs(dev_null, outs);
+        self.perm_pump(dev_null);
+    }
+
+    /// A web view went away: what its profile queue had in flight on it is sent again elsewhere.
+    pub(super) fn perm_view_gone(&mut self, view: ViewId) {
+        for dev_null in [false, true] {
+            let outs = self.perm_queue(dev_null).view_gone(view);
+            self.perm_outs(dev_null, outs);
+            self.perm_pump(dev_null);
+        }
+    }
+
+    /// The store's environment was lost: its queue goes (held answers are refused).
+    pub(super) fn perm_store_lost(&mut self, dev_null: bool) {
+        let outs = self.perm_queue(dev_null).lost();
+        self.perm_outs(dev_null, outs);
+        self.perm_sync.lost(dev_null);
     }
 
     /// Once per environment, at its first view: reads the profile's states (the answer is
     /// `permission_states_read`). Nothing is stored by WebView2 itself, so what it holds from an
     /// earlier run is stale until the table has rewritten it.
     pub(super) fn sync_permission_states(&mut self, dev_null: bool) {
-        if !self.perm_sync.due(dev_null) {
-            return;
+        if self.perm_sync.due(dev_null) {
+            self.perm_queue(dev_null).read();
         }
-        match self.store_view(dev_null) {
-            Some(v) => v.read_permission_states(),
-            None => self.perm_sync.retry(dev_null),
-        }
+        self.perm_pump(dev_null);
     }
 
-    /// The profile's non-default states arrived: the table decides kinds 1 to 4. An incomplete read
-    /// (some state could not be read) fails closed: what was read is rewritten the same way, the
-    /// environment stays unsynced, and the next view reads again.
-    pub(super) fn permission_states_read(&mut self, pane: PaneId, states: &[(i32, String, i32)], complete: bool) {
+    /// The profile's non-default states arrived: the table decides kinds 1 to 4, and the plan goes
+    /// through the queue ahead of anything asked after the read. An incomplete read (some state
+    /// could not be read) fails closed: what was read is rewritten the same way, the environment
+    /// stays unsynced, and the next view reads again.
+    pub(super) fn permission_states_read(&mut self, pane: PaneId, view: ViewId, states: &[(i32, String, i32)], complete: bool) {
         let dev_null = self.pane_dev_null(pane);
         let rows: Option<Vec<_>> = self.browser_db(dev_null).map(|db| db.all_permissions().into_iter().map(|r| (r.origin, r.kind, r.decision)).collect());
         let plan = sync_for(states, rows.as_deref());
+        if !self.perm_queue(dev_null).read_answer(view, plan) {
+            return;
+        }
         if !complete {
             crate::dlog!("webhost: the profile read was incomplete ({} states); read again at the next view", states.len());
             self.perm_sync.retry(dev_null);
         }
-        self.set_profile_states(dev_null, plan);
+        self.perm_pump(dev_null);
     }
 
     fn apply_op(&mut self, dev_null: bool, origin: &str, op: Op) {
         let fx = effects(&op, origin);
-        self.set_profile_states(dev_null, fx.states);
+        self.perm_queue(dev_null).revoke(fx.states, None);
+        self.perm_pump(dev_null);
         if fx.reload {
             self.reload_panes_using(dev_null, origin);
         }
@@ -792,7 +872,12 @@ mod tests {
     }
 
     fn answers(acts: &[Act]) -> Vec<(u64, PermAnswer)> {
-        acts.iter().filter_map(|a| if let Act::Answer { token, answer, .. } = a { Some((*token, *answer)) } else { None }).collect()
+        acts.iter()
+            .filter_map(|a| match a {
+                Act::Answer { token, answer, .. } | Act::Mirror { token, answer, .. } => Some((*token, *answer)),
+                _ => None,
+            })
+            .collect()
     }
 
     fn alive(_: PaneId) -> Option<u64> {
@@ -984,7 +1069,7 @@ mod tests {
         assert_eq!(asked(&asks.plan_flush(again.into_iter().map(|r| prep(r, &[])).collect(), SYS)).len(), 1, "shown now: it asks");
         // The queue for a hidden pane is bounded, one request per origin.
         let mut asks = Asks::default();
-        let mut mk = |t: u64, uri: &str| {
+        let mk = |t: u64, uri: &str| {
             let mut p = prep(req(2, t, 4, uri), &[]);
             p.visible = false;
             p
@@ -1071,11 +1156,47 @@ mod tests {
         assert!(prod.contains("db.revoke_permission(origin, t)") && prod.contains("db.reset_permission(origin, t)") && prod.contains("db.revoke_all_permissions(origin)"));
         assert!(prod.contains("self.browser_js_call(") && prod.contains("bp::frame_origins(&v)") && prod.contains("bp::check_iframe_origins_js()"), "the one sweep script runs in the isolated world");
         let ev = include_str!("browser_app.rs");
-        assert!(ev.contains("self.sync_permission_states(dev_null)") && ev.contains("self.permission_states_read(pane, states, *complete)"));
+        assert!(ev.contains("self.sync_permission_states(dev_null)") && ev.contains("self.permission_states_read(pane, *view, states, *complete)"));
         let rd = include_str!("browser_reader_app.rs");
         assert!(rd.contains("self.browser_permission_dismiss()"), "a navigation dismisses the question");
-        assert!(include_str!("webhost_app.rs").contains("self.perm_sync.lost("), "a lost environment is synced again");
+        assert!(include_str!("webhost_app.rs").contains("self.perm_store_lost("), "a lost environment is synced again");
         // The dev-null store never reaches the shared profile: calls pick the view by store.
         assert!(prod.contains("self.pane_dev_null(**p) == dev_null"));
+    }
+
+    #[test]
+    fn a_saved_grant_is_mirrored_through_the_queue_before_the_answer() {
+        // A saved Allow of a mirrored kind becomes a Mirror act (the queue writes, then answers);
+        // a Deny, an unsaved answer and media are answered at once.
+        let allow = PermAnswer::State { state: 1, saves: true };
+        assert_eq!(answer_act(1, 2, 7, Notification, "https://a.b", allow), Act::Mirror { pane: 1, token: 2, epoch: 7, kind: 4, origin: "https://a.b".into(), answer: allow });
+        assert_eq!(answer_act(1, 2, 7, Geolocation, "https://a.b", allow), Act::Mirror { pane: 1, token: 2, epoch: 7, kind: 3, origin: "https://a.b".into(), answer: allow });
+        let media = PermAnswer::State { state: 1, saves: false };
+        assert_eq!(answer_act(1, 2, 7, Camera, "https://a.b", media), Act::Answer { pane: 1, token: 2, answer: media });
+        assert_eq!(answer_act(1, 2, 7, Notification, "https://a.b", PermAnswer::Deny), Act::Answer { pane: 1, token: 2, answer: PermAnswer::Deny });
+        let mut asks = Asks::default();
+        let q = asked(&asks.plan_flush(vec![prep(req(1, 1, 4, "https://a.b/"), &[])], SYS));
+        let s = asks.answered(q[0].0, Some(0)).unwrap();
+        assert!(matches!(settle(&s, true, &alive)[..], [Act::Mirror { kind: 4, .. }]), "the dialog's Allow is mirrored first");
+        let saved = asks.plan_flush(vec![prep(req(1, 2, 3, "https://a.b/"), &[(Geolocation, Decision::Granted)])], SYS);
+        assert!(matches!(saved[..], [Act::Mirror { kind: 3, .. }]), "a saved grant answering a new request too");
+    }
+
+    #[test]
+    fn every_profile_write_goes_through_the_one_queue() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(!prod.contains(concat!("set_permission_", "states(")), "no batch write");
+        assert_eq!(prod.matches(concat!(".set_permission_", "state(")).count(), 1, "one place issues writes: the queue's output");
+        assert_eq!(prod.matches(concat!(".read_permission_", "states()")).count(), 1, "one place issues reads: the queue's output");
+        let op = &prod[prod.find("fn apply_op(").unwrap()..];
+        assert!(op[..400].contains(".revoke(fx.states"), "revoke and reset write through the queue with a new generation");
+        assert!(prod.contains(".mirror_then_answer(kind, &origin, pane, token, epoch, answer)"), "a grant is mirrored, then answered");
+        let ev = include_str!("browser_app.rs");
+        assert!(ev.contains("Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok)"));
+        let host = include_str!("webhost_app.rs");
+        let dropped = &host[host.find("pub(super) fn web_view_dropped(").unwrap()..];
+        assert!(dropped[..300].contains("self.perm_view_gone(view)"), "a view that goes hands its write on");
+        assert!(include_str!("adblock_app.rs").contains("self.perm_store_lost(true)"));
     }
 }
