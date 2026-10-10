@@ -746,7 +746,7 @@ impl App {
             return Vec::new();
         }
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        let g = self.browser_geom(bar, dev_null);
+        let g = self.browser_geom(pane, bar, dev_null);
         let row_h = self.cell().1 + 6.0 * self.scale();
         browser::suggestion_rects(&g, row_h, bv.bar.suggestions.len(), area.y + area.h)
     }
@@ -758,6 +758,37 @@ impl App {
             let bar = self.browser_strip(tab, id)?;
             (bar.contains(x, y) || self.browser_suggest_rects(id, bar, rect).iter().any(|r| r.contains(x, y))).then_some(id)
         })
+    }
+
+    /// The session indicators a browser pane shows, in iTerm2's order. Every fact is Tandem's own
+    /// state (the tab, the broadcast model, copy mode, the globals); nothing a page says reaches
+    /// it, so a page can neither fake nor hide one (13x6 Task 10, `PTYTextView.m:2325-2390`).
+    pub(super) fn browser_indicators(&self, pane: PaneId) -> Vec<(char, scene::IndicatorKind)> {
+        let Some(p) = self.panes.get(&pane) else { return Vec::new() };
+        let view = self.broadcast_view_in(true);
+        let (ai_linked, ai_streaming) = self.chat_pane_state(pane);
+        let facts = scene::IndicatorFacts {
+            maximized: self.tabs.iter().any(|t| t.zoomed == Some(pane)),
+            sends: self.broadcast.sends(&view, pane),
+            receives: self.broadcast.receives(&view, pane),
+            coprocess: false,
+            alert_next: p.own().marks.alert_next,
+            copy_mode: self.is_browser_copy_mode(pane),
+            debug_logging: crate::dlog::is_on(),
+            pinned: self.in_pinned_hotkey_window(),
+            ai_linked,
+            ai_streaming,
+            show_remembered: self.show_remembered,
+        };
+        scene::session_indicators(&facts, self.globals.bool("disableTopRightIndicators"))
+    }
+
+    /// A click on an indicator: Tandem's own help text in the one text popover below the glyph
+    /// (360 by 80 points, links reduced to their labels). Nothing else happens.
+    fn open_indicator_popover(&mut self, pane: PaneId, kind: scene::IndicatorKind, glyph: Rect, event_loop: &ActiveEventLoop) {
+        let text = scene::plain_markdown(kind.help_markdown());
+        let below = glyph.y + glyph.h + 80.0 * self.scale();
+        self.open_text_popover_at(pane, &text, (360.0, 80.0), Some((glyph.x + glyph.w / 2.0, below)), event_loop);
     }
 
     /// Draws a browser pane's toolbar across `bar` and, while the field has the keyboard, the
@@ -772,7 +803,7 @@ impl App {
         let (bar_bg, field_bg, dim, line) = (mix(bg, fg, 0.08), mix(bg, fg, 0.16), mix(bg, fg, 0.45), mix(bg, fg, 0.3));
         let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans, clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
-        let g = self.browser_geom(bar, io.dev_null);
+        let g = self.browser_geom(pane, bar, io.dev_null);
         frame.quads.push(Quad { rect: bar, color: scene::rgba(bar_bg, 1.0) });
         frame.quads.push(Quad { rect: Rect { y: bar.y + bar.h - 1.0, h: 1.0, ..bar }, color: scene::rgba(line, 1.0) });
         let centered = |r: Rect| (r.x + (r.w - cw) / 2.0, r.y + (r.h - ch) / 2.0);
@@ -796,6 +827,11 @@ impl App {
         if let Some(r) = g.proxy {
             let (x, y) = centered(r);
             frame.rows.push(row(x, y, vec![span(browser::GLYPH_PROXY.to_string(), fg, true)], r));
+        }
+        // The session indicators, in the toolbar's text color, clipped to the strip (no scrolling).
+        for (r, (glyph, _)) in g.status[..g.status_n].iter().zip(self.browser_indicators(pane)) {
+            let (x, y) = centered(*r);
+            frame.rows.push(row(x, y, vec![span(glyph.to_string(), fg, true)], g.strip));
         }
         frame.quads.push(Quad { rect: g.field, color: scene::rgba(field_bg, 1.0) });
         // The favicon, a globe until one loads.
@@ -874,7 +910,7 @@ impl App {
             return true;
         }
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        let g = self.browser_geom(bar, dev_null);
+        let g = self.browser_geom(pane, bar, dev_null);
         match browser::hit(&g, x, y) {
             Some(Hit::Field) => {
                 let keys = self.browser_views.get(&pane).is_some_and(|b| b.bar.keys);
@@ -910,7 +946,7 @@ impl App {
     }
 
     /// The release of a toolbar press: the button acts when the pointer is still over it.
-    pub(super) fn browser_toolbar_release(&mut self, button: MouseButton, _event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn browser_toolbar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         if button != MouseButton::Left {
             return false;
         }
@@ -922,7 +958,7 @@ impl App {
         let (x, y) = self.cursor;
         let Some((bar, _)) = self.browser_bar_rects(pane) else { return true };
         let io = self.panes.get(&pane).and_then(|p| p.browser_io()).cloned().unwrap_or_default();
-        let g = self.browser_geom(bar, io.dev_null);
+        let g = self.browser_geom(pane, bar, io.dev_null);
         let still = browser::hit(&g, x, y).is_some_and(|h| h == press.hit || (matches!(h, Hit::Button(Button::Reload)) && matches!(press.hit, Hit::Button(Button::Reload | Button::Stop))));
         if !still {
             return true;
@@ -947,6 +983,12 @@ impl App {
                     browser::Security::Local => "This is one of Tandem's own pages.",
                 };
                 self.banners.set("action", text);
+            }
+            // Only Tandem's own help popover opens: no page action, nothing from the page.
+            Hit::Status(i) => {
+                if let (Some((_, kind)), Some(r)) = (self.browser_indicators(pane).get(i).copied(), g.status.get(i).copied()) {
+                    self.open_indicator_popover(pane, kind, r, event_loop);
+                }
             }
             Hit::Indicator | Hit::Field => {}
         }
@@ -1150,7 +1192,7 @@ impl App {
                     }
                     if let Some((bar, _)) = self.browser_bar_rects(pane) {
                         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-                        let g = self.browser_geom(bar, dev_null);
+                        let g = self.browser_geom(pane, bar, dev_null);
                         let r = if b == Button::Back { g.back } else { g.forward };
                         self.show_browser_history(pane, b == Button::Back, (r.x, bar.y + bar.h));
                     }
@@ -1670,6 +1712,23 @@ pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 10: the indicators come from Tandem's own state only, the click opens only the help.
+    #[test]
+    fn browser_indicators_follow_iterm2() {
+        let src = include_str!("browser_app.rs");
+        let p = &src[..src.find("#[cfg(test)]").unwrap()];
+        let f = &p[p.find("pub(super) fn browser_indicators(").unwrap()..p.find("fn open_indicator_popover").unwrap()];
+        for needle in ["t.zoomed == Some(pane)", "self.broadcast.sends(&view, pane)", "self.broadcast.receives(&view, pane)", "marks.alert_next", "self.is_browser_copy_mode(pane)", "crate::dlog::is_on()", "self.in_pinned_hotkey_window()", "self.chat_pane_state(pane)", "self.show_remembered", "\"disableTopRightIndicators\""] {
+            assert!(f.contains(needle), "{needle}");
+        }
+        assert!(!f.contains("browser_views") && !f.contains("io.") && !f.contains("url"), "nothing a page says is read");
+        let o = &p[p.find("fn open_indicator_popover").unwrap()..p.find("pub(super) fn draw_browser_bar").unwrap()];
+        assert!(o.contains("plain_markdown(kind.help_markdown())") && o.contains("open_text_popover_at") && !o.contains("browser_eval") && !o.contains("shell_open"));
+        let a = include_str!("adblock_app.rs");
+        assert!(a.contains("geometry_status(bar, self.scale(), dev_null, self.browser_proxy_label().is_some(), self.browser_indicators(pane).len())"), "one geometry");
+        assert!(include_str!("mod.rs").contains("self.text_popover = None;"), "pane_gone drops the one popover");
+    }
+
     use super::*;
     use crate::pane::Pane;
 

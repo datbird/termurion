@@ -116,8 +116,8 @@ impl App {
     }
 
     /// The toolbar's parts, with the proxy indicator while the proxy is on.
-    pub(super) fn browser_geom(&self, bar: crate::layout::Rect, dev_null: bool) -> crate::browser::Geometry {
-        crate::browser::geometry_with(bar, self.scale(), dev_null, self.browser_proxy_label().is_some())
+    pub(super) fn browser_geom(&self, pane: crate::layout::PaneId, bar: crate::layout::Rect, dev_null: bool) -> crate::browser::Geometry {
+        crate::browser::geometry_status(bar, self.scale(), dev_null, self.browser_proxy_label().is_some(), self.browser_indicators(pane).len())
     }
 
     /// The answer for one request of a browser page: blocked when the list says so, else on its way.

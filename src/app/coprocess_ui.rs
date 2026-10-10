@@ -194,7 +194,7 @@ impl App {
         }
         let glyphs: Vec<char> = shown.iter().map(|(g, _)| *g).collect();
         let rects = scene::top_right_indicators(frame, rect, &glyphs, p.own().palette.fg, cell);
-        shown.iter().zip(rects).filter(|((_, k), _)| *k != scene::IndicatorKind::Other).map(|((_, k), r)| (id, r, *k)).collect()
+        shown.iter().zip(rects).filter(|((_, k), _)| k.terminal_press()).map(|((_, k), r)| (id, r, *k)).collect()
     }
 
     /// Copy Interpolated String (key action 72): the text with the session's variables.

@@ -1944,40 +1944,138 @@ pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool, linked: bo
     indicators(sends, receives, coprocess, linked, streaming, pinned, debug_logging).into_iter().map(|(g, _)| g).collect()
 }
 
-/// What a press on an indicator glyph does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a press on an indicator glyph does, and which indicator it is. The one list of
+/// indicators (`IH:302-321`) is `session_indicators`; a terminal pane's top-right corner and a
+/// browser pane's toolbar both read it (13x6 B6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IndicatorKind {
-    Other,
+    Maximized,
+    Broadcast,
+    Receive,
+    Coprocess,
+    Alert,
+    CopyMode,
+    DebugLogging,
+    Pin,
     AiLinked,
     AiStreaming,
-    Pin,
-    DebugLogging,
+    ShowRemembered,
 }
 
-/// The glyphs with their kinds, in the same order.
-pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool, debug_logging: bool) -> Vec<(char, IndicatorKind)> {
-    let mut out = Vec::new();
-    if sends {
-        out.push((BROADCAST_GLYPH, IndicatorKind::Other));
-    } else if receives {
-        out.push((RECEIVE_ONLY_GLYPH, IndicatorKind::Other));
+impl IndicatorKind {
+    /// Whether a press on it in a terminal pane's corner is Tandem's (the AI glyphs open their
+    /// menu; the pin and the bug show hover text); the others are drawn only.
+    pub fn terminal_press(self) -> bool {
+        matches!(self, IndicatorKind::AiLinked | IndicatorKind::AiStreaming | IndicatorKind::Pin | IndicatorKind::DebugLogging)
     }
-    if coprocess {
-        out.push((COPROCESS_GLYPH, IndicatorKind::Other));
+
+    /// iTerm2's identifier, the browser toolbar button's tooltip (`IH:19-40`, `BIV:102`; the
+    /// lower-case "t" of the two broadcast ones is iTerm2's own).
+    pub fn identifier(self) -> &'static str {
+        match self {
+            IndicatorKind::Maximized => "kiTermIndicatorMaximized",
+            IndicatorKind::Broadcast => "kItermIndicatorBroadcastInput",
+            IndicatorKind::Receive => "kItermIndicatorBroadcastInputReceiver",
+            IndicatorKind::Coprocess => "kiTermIndicatorCoprocess",
+            IndicatorKind::Alert => "kiTermIndicatorAlert",
+            IndicatorKind::CopyMode => "kiTermIndicatorCopyMode",
+            IndicatorKind::DebugLogging => "kiTermIndicatorDebugLogging",
+            IndicatorKind::Pin => "kiTermIndicatorPinned",
+            IndicatorKind::AiLinked => "kiTermIndicatorAIChatLinked",
+            IndicatorKind::AiStreaming => "kiTermIndicatorAIChatStreaming",
+            IndicatorKind::ShowRemembered => "kiTermIndicatorShowRememberedAlerts",
+        }
     }
-    if debug_logging {
-        out.push((DEBUG_LOGGING_GLYPH, IndicatorKind::DebugLogging));
+
+    /// The help markdown (`IH:377-402`, "iTerm2" is "Tandem"). The AI links are not followed.
+    pub fn help_markdown(self) -> &'static str {
+        match self {
+            IndicatorKind::Maximized => "This is a maximized split pane.",
+            IndicatorKind::Broadcast => "Keyboard input gets broadcast to other sessions.",
+            IndicatorKind::Receive => "Keyboard input from another session gets broadcast to this one, but this session is not an input source for broadcasting (anything you type here stays here).",
+            IndicatorKind::Coprocess => "A coprocess is running.",
+            IndicatorKind::Alert => "Will alert on next mark.",
+            IndicatorKind::CopyMode => "In copy mode. See [documentation](https://iterm2.com/documentation-copymode.html) for details.",
+            IndicatorKind::DebugLogging => "Debug logging is enabled.",
+            IndicatorKind::Pin => "This Hotkey Window is pinned.",
+            IndicatorKind::AiLinked => "AI Chats can view or control this session.\n * [Unlink from AI Chat](iterm2:unlink-session-chat)\n * [Reveal AI Chat](iterm2:reveal-chat-for-session)",
+            IndicatorKind::AiStreaming => "Commands run in this session are automatically sent to an AI chat, along with their output. [Stop sending](iterm2:disable-streaming-session-chat)",
+            IndicatorKind::ShowRemembered => "Showing alerts with remembered selections. Disable in Tandem > Suppressed Alerts.",
+        }
     }
-    if pinned {
-        out.push((PIN_GLYPH, IndicatorKind::Pin));
+}
+
+/// A help markdown as plain text: a `[label](url)` link becomes its label.
+pub fn plain_markdown(markdown: &str) -> String {
+    let mut out = String::new();
+    let mut rest = markdown;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        match (after.find("]("), after.find(']')) {
+            (Some(mid), Some(close)) if mid == close => {
+                let Some(end) = after[mid + 2..].find(')') else { break };
+                out.push_str(&rest[..open]);
+                out.push_str(&after[..mid]);
+                rest = &after[mid + 2 + end + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
     }
-    if linked {
-        out.push((AI_LINKED_GLYPH, IndicatorKind::AiLinked));
-    }
-    if streaming {
-        out.push((AI_STREAMING_GLYPH, IndicatorKind::AiStreaming));
-    }
+    out.push_str(rest);
     out
+}
+
+/// Maximized (Segoe Fluent Icons "FullScreen"), the eye of an alert on the next mark ("View"),
+/// copy mode ("Copy") and the bell badge of remembered alerts ("Ringer").
+pub const MAXIMIZED_GLYPH: char = '\u{E740}';
+pub const ALERT_NEXT_GLYPH: char = '\u{E890}';
+pub const COPY_MODE_GLYPH: char = '\u{E8C8}';
+pub const SHOW_REMEMBERED_GLYPH: char = '\u{EA8F}';
+
+/// Everything a pane's indicators depend on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IndicatorFacts {
+    pub maximized: bool,
+    pub sends: bool,
+    pub receives: bool,
+    pub coprocess: bool,
+    pub alert_next: bool,
+    pub copy_mode: bool,
+    pub debug_logging: bool,
+    pub pinned: bool,
+    pub ai_linked: bool,
+    pub ai_streaming: bool,
+    pub show_remembered: bool,
+}
+
+/// The one indicator list, in iTerm2's order (`IH:302-321`): BroadcastInput when `sends`,
+/// the receiver when `receives && !sends`; nothing when `disabled` (`IH:344-346`).
+pub fn session_indicators(f: &IndicatorFacts, disabled: bool) -> Vec<(char, IndicatorKind)> {
+    if disabled {
+        return Vec::new();
+    }
+    let rows = [
+        (f.maximized, MAXIMIZED_GLYPH, IndicatorKind::Maximized),
+        (f.sends, BROADCAST_GLYPH, IndicatorKind::Broadcast),
+        (f.receives && !f.sends, RECEIVE_ONLY_GLYPH, IndicatorKind::Receive),
+        (f.coprocess, COPROCESS_GLYPH, IndicatorKind::Coprocess),
+        (f.alert_next, ALERT_NEXT_GLYPH, IndicatorKind::Alert),
+        (f.copy_mode, COPY_MODE_GLYPH, IndicatorKind::CopyMode),
+        (f.debug_logging, DEBUG_LOGGING_GLYPH, IndicatorKind::DebugLogging),
+        (f.pinned, PIN_GLYPH, IndicatorKind::Pin),
+        (f.ai_linked, AI_LINKED_GLYPH, IndicatorKind::AiLinked),
+        (f.ai_streaming, AI_STREAMING_GLYPH, IndicatorKind::AiStreaming),
+        (f.show_remembered, SHOW_REMEMBERED_GLYPH, IndicatorKind::ShowRemembered),
+    ];
+    rows.into_iter().filter(|r| r.0).map(|r| (r.1, r.2)).collect()
+}
+
+/// The terminal corner's glyphs with their kinds (the facts a terminal pane feeds so far).
+pub fn indicators(sends: bool, receives: bool, coprocess: bool, linked: bool, streaming: bool, pinned: bool, debug_logging: bool) -> Vec<(char, IndicatorKind)> {
+    session_indicators(&IndicatorFacts { sends, receives, coprocess, ai_linked: linked, ai_streaming: streaming, pinned, debug_logging, ..Default::default() }, false)
 }
 
 /// The AI chat indicators: a session linked to a chat, and one whose finished commands stream to
@@ -4518,6 +4616,30 @@ mod broadcast_tests {
     }
 
     #[test]
+    fn session_indicators_follow_iterm2() {
+        use IndicatorKind as K;
+        let kinds = |f: IndicatorFacts, d: bool| session_indicators(&f, d).into_iter().map(|(_, k)| k).collect::<Vec<_>>();
+        assert_eq!(kinds(IndicatorFacts { maximized: true, ..Default::default() }, false), vec![K::Maximized]);
+        assert_eq!(kinds(IndicatorFacts { sends: true, receives: true, ..Default::default() }, false), vec![K::Broadcast]);
+        assert_eq!(kinds(IndicatorFacts { receives: true, ..Default::default() }, false), vec![K::Receive]);
+        let all = IndicatorFacts { maximized: true, sends: true, receives: true, coprocess: true, alert_next: true, copy_mode: true, debug_logging: true, pinned: true, ai_linked: true, ai_streaming: true, show_remembered: true };
+        assert_eq!(kinds(all, false), vec![K::Maximized, K::Broadcast, K::Coprocess, K::Alert, K::CopyMode, K::DebugLogging, K::Pin, K::AiLinked, K::AiStreaming, K::ShowRemembered]);
+        assert!(kinds(all, true).is_empty(), "disableTopRightIndicators hides all");
+        let glyphs: Vec<char> = session_indicators(&all, false).into_iter().map(|(g, _)| g).collect();
+        assert_eq!(glyphs, vec!['\u{E740}', BROADCAST_GLYPH, COPROCESS_GLYPH, '\u{E890}', '\u{E8C8}', DEBUG_LOGGING_GLYPH, PIN_GLYPH, AI_LINKED_GLYPH, AI_STREAMING_GLYPH, '\u{EA8F}']);
+        let ids: Vec<&str> = [K::Maximized, K::Broadcast, K::Receive, K::Alert, K::CopyMode, K::DebugLogging, K::Pin, K::AiLinked, K::AiStreaming, K::ShowRemembered].iter().map(|k| k.identifier()).collect();
+        assert_eq!(ids, vec!["kiTermIndicatorMaximized", "kItermIndicatorBroadcastInput", "kItermIndicatorBroadcastInputReceiver", "kiTermIndicatorAlert", "kiTermIndicatorCopyMode", "kiTermIndicatorDebugLogging", "kiTermIndicatorPinned", "kiTermIndicatorAIChatLinked", "kiTermIndicatorAIChatStreaming", "kiTermIndicatorShowRememberedAlerts"]);
+        assert_eq!(K::Maximized.help_markdown(), "This is a maximized split pane.");
+        assert_eq!(K::Alert.help_markdown(), "Will alert on next mark.");
+        assert_eq!(K::ShowRemembered.help_markdown(), "Showing alerts with remembered selections. Disable in Tandem > Suppressed Alerts.");
+        assert_eq!(plain_markdown(K::CopyMode.help_markdown()), "In copy mode. See documentation for details.");
+        assert_eq!(plain_markdown(K::AiLinked.help_markdown()), "AI Chats can view or control this session.\n * Unlink from AI Chat\n * Reveal AI Chat");
+        assert_eq!(plain_markdown("a [b] c [d](e"), "a [b] c [d](e", "malformed links stay as written");
+        // The terminal corner keeps its presses: only the AI, pin and bug glyphs are Tandem's there.
+        assert!(!K::Maximized.terminal_press() && K::Pin.terminal_press());
+    }
+
+    #[test]
     fn indicators_keep_iterm2_order() {
         assert_eq!(indicator_glyphs(true, true, true, false, false, false, false), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
         assert_eq!(indicator_glyphs(false, true, false, false, false, false, false), vec![RECEIVE_ONLY_GLYPH]);
@@ -4557,7 +4679,7 @@ mod broadcast_tests {
         // Each glyph knows what a press on it means; the streaming glyph is told apart from
         // receive-only by its kind, not its character.
         let kinds: Vec<IndicatorKind> = indicators(false, true, true, true, true, false, false).into_iter().map(|(_, k)| k).collect();
-        assert_eq!(kinds, vec![IndicatorKind::Other, IndicatorKind::Other, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
+        assert_eq!(kinds, vec![IndicatorKind::Receive, IndicatorKind::Coprocess, IndicatorKind::AiLinked, IndicatorKind::AiStreaming]);
         let hits = top_right_indicators(&mut Frame::default(), Rect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, &[BROADCAST_GLYPH, AI_LINKED_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
         assert_eq!(hits.len(), 2);
         assert!(hits[0].x > hits[1].x, "right to left from the corner");

@@ -799,9 +799,17 @@ impl App {
     /// component is not on screen), measured in the session's own window; it replaces one
     /// already open and goes with its session (`pane_gone`).
     pub(super) fn open_text_popover(&mut self, pane: PaneId, id: &str, text: &str, size: (f64, f64), event_loop: &ActiveEventLoop) {
+        self.enter_pane_window(pane);
+        let anchor = self.component_anchor(pane, id);
+        self.open_text_popover_at(pane, text, size, anchor, event_loop);
+    }
+
+    /// The one text popover, its bottom centered on `anchor` (window pixels), or on the middle of
+    /// the window's top when none. The browser toolbar's indicator help uses it too.
+    pub(super) fn open_text_popover_at(&mut self, pane: PaneId, text: &str, size: (f64, f64), anchor: Option<(f32, f32)>, event_loop: &ActiveEventLoop) {
         let back = self.current_window();
         self.enter_pane_window(pane);
-        let anchor = self.component_anchor(pane, id).unwrap_or_else(|| {
+        let anchor = anchor.unwrap_or_else(|| {
             let a = self.window_area();
             (a.x + a.w / 2.0, a.y)
         });
