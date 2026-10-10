@@ -22,6 +22,9 @@ pub const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
 /// references of one stylesheet are read.
 pub const MAX_CSS_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CSS_URLS: usize = 5000;
+/// The most the saved-attribute script's mapping may weigh as the JSON text the page world runs
+/// (findings r2 M3): sized to what one `ExecuteScript` should carry, well under the job's total.
+pub const MAX_MAPPING_BYTES: usize = 32 * 1024 * 1024;
 /// How deep stylesheets that import stylesheets are followed (Task 9 review I2).
 pub const MAX_CSS_DEPTH: usize = 8;
 
@@ -214,11 +217,6 @@ impl Budget {
         true
     }
     /// Whether another resource may still be asked for at all (stop fetching past the cap).
-    /// The bytes still allowed under `MAX_TOTAL_BYTES`.
-    pub fn left(&self) -> u64 {
-        MAX_TOTAL_BYTES.saturating_sub(self.bytes)
-    }
-
     pub fn open(&self) -> bool {
         self.count < MAX_RESOURCES && self.bytes < MAX_TOTAL_BYTES
     }
@@ -461,9 +459,18 @@ pub fn extract_body() -> String {
 /// U+2029 written as escapes (JSON allows them raw, JavaScript source did not before ES2019 and
 /// they must never reach the page as line terminators).
 pub fn mapping_json(mapping: &[(String, String)]) -> String {
-    let enc = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()).replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
-    let pairs: Vec<String> = mapping.iter().map(|(o, l)| format!("[{}, {}]", enc(o), enc(l))).collect();
+    let pairs: Vec<String> = mapping.iter().map(|(o, l)| pair_json(o, l)).collect();
     format!("[{}]", pairs.join(", "))
+}
+
+/// One string as `mapping_json` writes it.
+fn js_string(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()).replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029")
+}
+
+/// One pair as `mapping_json` writes it.
+fn pair_json(o: &str, l: &str) -> String {
+    format!("[{}, {}]", js_string(o), js_string(l))
 }
 
 /// `Some(body)` when the copied file holds `new Map(URL_MAPPING_PLACEHOLDER)` exactly once.
@@ -500,8 +507,8 @@ pub enum Step {
     AddAttributes(String),
     /// Run `clone_body()` in the page world, answer `on_html`.
     GetHtml,
-    /// Write a NEW file through `inert_files::write_checked` (`index.html` through `write_marked`),
-    /// create-new: an existing file is an error, never overwritten. On an error call
+    /// Write a NEW file (`index.html` too) through `inert_files::write_new_checked`: the door's
+    /// checks, create-new (an existing file is an error, never overwritten), the Mark of the Web. On an error call
     /// `on_write_failed(path)` and carry out what it answers.
     Write { path: PathBuf, bytes: Vec<u8> },
     /// `localfs::create_dir` (no intermediates; an existing folder is an error); on an error call
@@ -696,21 +703,27 @@ impl Job {
     fn mapping(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
         let mut known: HashMap<String, String> = HashMap::new();
-        // Inlined stylesheets count against what is left of the job's total cap; a sheet over its
-        // own cap or past the total keeps its live URL (Task 9 review I2).
-        let mut left = self.budget.left();
+        // Every pair is weighed as the JSON text the page world runs (`MAX_MAPPING_BYTES`, findings
+        // r2 M3); a sheet over its own cap, or a pair past what is left, keeps its live URL (Task 9
+        // review I2).
+        let mut left = MAX_MAPPING_BYTES.saturating_sub(2);
         for (url, kind) in &self.entries {
             let value = match kind {
                 Kind::File(_, name) => format!("resources/{name}"),
                 Kind::Css(text) => {
                     let v = rewrite_css(text, url, &|abs| known.get(abs).cloned());
-                    if v.len() > MAX_CSS_BYTES || v.len() as u64 > left {
+                    if v.len() > MAX_CSS_BYTES {
                         continue;
                     }
-                    left -= v.len() as u64;
                     v
                 }
             };
+            // The pair and its ", " separator.
+            let weight = pair_json(url, &value).len() + 2;
+            if weight > left {
+                continue;
+            }
+            left -= weight;
             known.insert(url.clone(), value.clone());
             out.push((url.clone(), value));
         }
@@ -1350,6 +1363,35 @@ mod tests {
         let body = j.attributes_body();
         assert!(body.len() <= MAX_CSS_BYTES + 64 * 1024, "{} bytes", body.len());
         assert!(j.mapping().iter().all(|(_, v)| v.len() <= MAX_CSS_BYTES));
+    }
+
+    /// `Step::Write` names the create-new door (findings r2 M4), and the app's file worker uses it.
+    #[test]
+    fn writes_go_through_the_create_new_door() {
+        let src = include_str!("page_saver.rs");
+        let doc = &src[src.find("pub enum Step {").unwrap()..src.find("Write { path: PathBuf, bytes: Vec<u8> },").unwrap()];
+        let doc = &doc[doc.rfind("/// Run `clone_body()`").unwrap()..];
+        assert!(doc.contains("inert_files::write_new_checked") && !doc.contains("write_checked`") && !doc.contains("write_marked"), "{doc}");
+        let app = include_str!("app/page_saver_app.rs");
+        assert!(app.contains("FileKind::Write => crate::inert_files::write_new_checked(&op.path, &op.bytes)"));
+    }
+
+    /// The mapping is bounded as the JSON the page world runs (findings r2 M3), not as raw value
+    /// bytes: a control character weighs six bytes there (`\u0001`).
+    #[test]
+    fn the_mapping_is_bounded_as_json() {
+        let urls = ["https://a/0.css", "https://a/1.css", "https://a/2.css", "https://a/x.png"];
+        let (mut j, mut st) = job_with(&urls);
+        let sheet = "\u{1}".repeat(MAX_CSS_BYTES - 16);
+        while let Some(Step::Fetch(u)) = st.iter().find(|x| matches!(x, Step::Fetch(_))).cloned() {
+            let answer = if u.ends_with(".png") { Some((png(), Some(s("image/png")))) } else { css_answer(&sheet) };
+            st = j.on_resource(&u, answer, &none_taken);
+        }
+        let m = j.mapping();
+        let json = mapping_json(&m);
+        assert!(json.len() <= MAX_MAPPING_BYTES, "{} bytes of mapping", json.len());
+        assert!(m.iter().any(|(u, _)| u == "https://a/0.css"), "the first sheet still fits");
+        assert!(m.iter().any(|(u, _)| u == "https://a/x.png"), "a file entry is kept");
     }
 
     /// Nesting is bounded: a chain of stylesheets is followed `MAX_CSS_DEPTH` deep, no further.
