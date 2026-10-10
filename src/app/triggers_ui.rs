@@ -299,11 +299,17 @@ impl App {
             "addTrigger:" => {
                 let text = self.panes.get(&id).and_then(|p| p.screen.selection_text()).unwrap_or_default();
                 let Some(guid) = self.panes.get(&id).map(|p| self.store.shared_guid(&p.profile)) else { return true };
+                let browser = self.panes.get(&id).is_some_and(|p| p.browser_io().is_some());
                 if let Some(profile) = self.store.get_mut(&guid) {
                     let stored = profile.get("Triggers");
                     let mut list = stored.as_ref().map(triggers::parse_list).unwrap_or_default();
                     let line = text.lines().next().unwrap_or("").to_string();
-                    list.push(Trigger { regex: triggers::escape_regex(&line), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: line, job: String::new(), match_type: 0, extra: toml::Table::new() });
+                    if browser {
+                        // iTerm2's add-trigger panel in a browser starts at URL Regex (`TC:229-230`).
+                        list.push(Trigger { match_type: triggers::URL_REGEX, ..crate::settings_triggers::browser_default() });
+                    } else {
+                        list.push(Trigger { regex: triggers::escape_regex(&line), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: line, job: String::new(), match_type: 0, extra: toml::Table::new() });
+                    }
                     profile.set("Triggers", triggers::merge_list(stored.as_ref(), &list));
                     crate::settings_triggers::focus_last();
                 }

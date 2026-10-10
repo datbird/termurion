@@ -181,6 +181,9 @@ pub fn row(t: &Trigger) -> Row {
 /// `row`, with the configured workgroups so an Enter Workgroup trigger shows the workgroup's name
 /// (`EWT:description`) and not its id.
 pub fn row_with(t: &Trigger, workgroups: &[(String, String)]) -> Row {
+    if triggers::is_browser_action(&t.action) {
+        return browser_row(t);
+    }
     let mut detail = String::new();
     if t.instant {
         detail.push_str("Instant. ");
@@ -202,6 +205,138 @@ pub fn row_with(t: &Trigger, workgroups: &[(String, String)]) -> Row {
         detail.push_str(&t.parameter.replace('\u{1}', " "));
     }
     Row { name: t.name.clone(), detail, faint: !t.enabled }
+}
+
+/// The Match Against pop-up (`ATV:806-812`): a browser profile offers the page URL and content too.
+pub fn match_types(browser: bool) -> Vec<(&'static str, i64)> {
+    let mut v = vec![("Regular Expression", 0)];
+    if browser {
+        v.push(("URL", triggers::URL_REGEX));
+        v.push(("Page Content", triggers::PAGE_CONTENT_REGEX));
+    }
+    v
+}
+
+/// Whether the Match Against pop-up can be changed for this action: every browser action allows
+/// one match type (`ATV:268-269`).
+pub fn match_type_enabled(class: &str) -> bool {
+    !triggers::is_browser_action(class)
+}
+
+pub const CONTENT_REGEX_LABEL: &str = "Content Regex:";
+/// The key a Page Content trigger keeps its content regex under (`TRG:23`); it travels in `extra`.
+pub const CONTENT_REGEX_KEY: &str = "contentregex";
+
+/// The label over the regex field: in a browser, Page Content's first regex is the URL's (`ATV:1879-1884`).
+pub fn regex_label(browser: bool, match_type: i64) -> &'static str {
+    if browser && match_type == triggers::PAGE_CONTENT_REGEX {
+        "URL Regex:"
+    } else {
+        "Regular Expression:"
+    }
+}
+
+/// What "+" adds in a browser profile: index 0 of the sorted browser list (`TC:481-490`).
+pub fn browser_default() -> Trigger {
+    let a = &triggers::BROWSER_CATALOG[0];
+    Trigger { regex: String::new(), action: a.class.into(), parameter: String::new(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() }
+}
+
+/// Highlight Text's stored `text;background` (`HGT:47-60`); an unset side is empty.
+pub fn browser_colors_param(fg: Option<Rgb>, bg: Option<Rgb>) -> String {
+    format!("{};{}", fg.map(hex).unwrap_or_default(), bg.map(hex).unwrap_or_default())
+}
+
+/// A stored Highlight color as a picker color: "#rrggbb", or a "p3#" color approximated by its
+/// high bytes. Anything else is unset.
+fn stored_rgb(s: &str) -> Option<Rgb> {
+    let ok = |h: &str, n: usize| h.len() == n && h.bytes().all(|b| b.is_ascii_hexdigit());
+    let byte = |h: &str, i: usize, w: usize| u8::from_str_radix(&h[i * w..i * w + 2], 16).ok();
+    if let Some(h) = s.strip_prefix('#') {
+        return (ok(h, 6)).then(|| Rgb { r: byte(h, 0, 2).unwrap_or(0), g: byte(h, 1, 2).unwrap_or(0), b: byte(h, 2, 2).unwrap_or(0) });
+    }
+    let h = s.strip_prefix("p3#")?;
+    ok(h, 12).then(|| Rgb { r: byte(h, 0, 4).unwrap_or(0), g: byte(h, 1, 4).unwrap_or(0), b: byte(h, 2, 4).unwrap_or(0) })
+}
+
+/// Picking a browser action (`TC`): its fixed match type, and the parameter set to the action's
+/// default (Reload "60", Inject "console.log('Testing');", Hyperlink "https://\\0", Highlight white
+/// on red, the first workgroup). An action that runs script, reloads or changes the workgroup is
+/// left turned off until the person confirms it (`enable_warning`).
+pub fn pick_browser_action(t: &mut Trigger, class: &str, interpolated: bool, workgroups: &[(String, String)]) {
+    let Some(info) = triggers::browser_action_info(class) else { return };
+    t.action = info.class.to_string();
+    t.match_type = triggers::browser_match_type(info.class).unwrap_or(triggers::URL_REGEX);
+    t.parameter = match info.class {
+        "ReloadBrowserTrigger" => "60".into(),
+        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => "console.log('Testing');".into(),
+        "iTerm2SharedARC.HyperlinkBrowserTrigger" => if interpolated { "https://\\(match0)" } else { "https://\\0" }.into(),
+        "iTerm2SharedARC.HighlightBrowserTrigger" => browser_colors_param(Some(Rgb { r: 255, g: 255, b: 255 }), Some(Rgb { r: 255, g: 0, b: 0 })),
+        "iTermEnterWorkgroupBrowserTrigger" => triggers::effective_workgroup("", workgroups).unwrap_or_default(),
+        _ => String::new(),
+    };
+    if needs_confirm(info.class) {
+        t.enabled = false;
+    }
+}
+
+/// The browser actions the editor makes the person confirm before they are turned on: script in
+/// the page, reload, and starting or ending a workgroup.
+fn needs_confirm(class: &str) -> bool {
+    matches!(
+        triggers::browser_action_info(class).map(|a| a.class),
+        Some("InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" | "ReloadBrowserTrigger" | "iTermEnterWorkgroupBrowserTrigger" | "iTermExitWorkgroupBrowserTrigger")
+    )
+}
+
+/// What turning this trigger on will do, shown in the one confirm (None: no confirm). Every
+/// stored text goes through `display_text`, bounded.
+pub fn enable_warning(t: &Trigger) -> Option<String> {
+    if !needs_confirm(&t.action) {
+        return None;
+    }
+    let shown = |s: &str, n: usize| crate::inert_files::display_text(s, n, false);
+    let title = triggers::browser_action_info(&t.action).map_or("this action", |a| a.title);
+    let on = match t.match_type {
+        triggers::PAGE_CONTENT_REGEX => format!("every page whose URL matches /{}/ and whose text matches /{}/", shown(&t.regex, 200), shown(t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or(""), 200)),
+        _ => format!("every page whose URL matches /{}/", shown(&t.regex, 200)),
+    };
+    let what = match t.action.as_str() {
+        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => format!("run this JavaScript inside the page: {}", shown(&t.parameter, 600)),
+        "ReloadBrowserTrigger" => format!("reload the page after {} seconds, again each time it matches", shown(&t.parameter, 40)),
+        "iTermEnterWorkgroupBrowserTrigger" => "enter a workgroup".to_string(),
+        _ => "exit the workgroup".to_string(),
+    };
+    Some(format!("{title} will {what}, on {on}. Turn it on only if you wrote it or trust where it came from."))
+}
+
+/// A browser trigger's list row: `/url regex/ /content regex/ Action parameter`; Instant does not
+/// exist in a browser. Every stored text goes through `display_text`.
+pub fn browser_row(t: &Trigger) -> Row {
+    let shown = |s: &str| crate::inert_files::display_text(s, 200, false);
+    let mut detail = String::new();
+    if !t.job.is_empty() {
+        detail.push_str(&format!("Job: {} ", shown(&t.job)));
+    }
+    detail.push_str(&format!("/{}/ ", shown(&t.regex)));
+    if t.match_type == triggers::PAGE_CONTENT_REGEX {
+        detail.push_str(&format!("/{}/ ", shown(t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or(""))));
+    }
+    let info = triggers::browser_action_info(&t.action);
+    detail.push_str(&info.map_or_else(|| format!("{} (not in Tandem)", shown(&t.action)), action_label));
+    if info.is_some_and(|a| a.kind == Kind::BrowserColors) {
+        let (fg, bg) = triggers::browser_colors(&t.parameter);
+        for (label, c) in [(" Text: ", fg), (" Background: ", bg)] {
+            if let Some(c) = c {
+                detail.push_str(label);
+                detail.push_str(&shown(&c));
+            }
+        }
+    } else if !t.parameter.is_empty() {
+        detail.push(' ');
+        detail.push_str(&shown(&t.parameter.replace('\u{1}', " ")));
+    }
+    Row { name: shown(&t.name), detail, faint: !t.enabled }
 }
 
 fn hex(c: Rgb) -> String {
@@ -390,8 +525,19 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String, workgroup
             }
             changed
         }
-        // The browser-mode editor (Task 8) draws this one; a terminal list never holds it.
-        Kind::BrowserColors => false,
+        Kind::BrowserColors => {
+            let (f, b) = triggers::browser_colors(value);
+            let (mut fg, mut bg) = (f.as_deref().and_then(stored_rgb), b.as_deref().and_then(stored_rgb));
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                changed |= optional_color(ui, "Text color", &mut fg, Rgb { r: 255, g: 255, b: 255 });
+                changed |= optional_color(ui, "Background color", &mut bg, Rgb { r: 255, g: 0, b: 0 });
+            });
+            if changed {
+                *value = browser_colors_param(fg, bg);
+            }
+            changed
+        }
     }
 }
 
@@ -520,11 +666,13 @@ fn import_button(profile: &mut Profile) -> bool {
 pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, String)]) -> bool {
     let mut list = profile.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default();
     let interpolated = profile.bool("Triggers Use Interpolated Strings");
+    let browser = crate::browser::is_browser(&profile.string("Custom Command"));
+    let confirm_id = egui::Id::new("trigger-confirm-enable");
     let sel_id = egui::Id::new("trigger-selected");
     let mut selected: Option<usize> = take_focus(list.len()).or_else(|| ui.data(|d| d.get_temp(sel_id))).filter(|i: &usize| *i < list.len());
     let mut changed = false;
     let mut imported = false;
-    ui.label("Triggers act on output that matches a regular expression.");
+    ui.label(if browser { "Triggers act on pages whose address or text matches a regular expression." } else { "Triggers act on output that matches a regular expression." });
     egui::ScrollArea::vertical().max_height(220.0).id_salt("trigger-list").show(ui, |ui| {
         for (i, t) in list.iter().enumerate() {
             let r = row_with(t, workgroups);
@@ -545,7 +693,11 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
     });
     ui.horizontal(|ui| {
         if ui.button("+").clicked() {
-            list.push(Trigger { regex: String::new(), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() });
+            list.push(if browser {
+                browser_default()
+            } else {
+                Trigger { regex: String::new(), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() }
+            });
             selected = Some(list.len() - 1);
             changed = true;
         }
@@ -572,7 +724,22 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 changed |= ui.text_edit_singleline(&mut t.name).changed();
                 ui.end_row();
                 ui.label("Match Against:");
-                let event = crate::trigger_events::EventKind::from_match_type(t.match_type);
+                let event = if browser { None } else { crate::trigger_events::EventKind::from_match_type(t.match_type) };
+                if browser {
+                    let types = match_types(true);
+                    let shown = types.iter().find(|(_, n)| *n == t.match_type).map_or(types[0].0, |(name, _)| name);
+                    let can = match_type_enabled(&t.action);
+                    ui.add_enabled_ui(can, |ui| {
+                        egui::ComboBox::from_id_salt("trigger-match").selected_text(shown).width(260.0).show_ui(ui, |ui| {
+                            for (name, n) in &types {
+                                if ui.selectable_label(t.match_type == *n, *name).clicked() {
+                                    t.match_type = *n;
+                                    changed = true;
+                                }
+                            }
+                        });
+                    });
+                } else {
                 egui::ComboBox::from_id_salt("trigger-match").selected_text(event.map_or("Regular Expression".to_string(), event_label)).width(260.0).show_ui(ui, |ui| {
                     if ui.selectable_label(event.is_none(), "Regular Expression").clicked() {
                         t.match_type = 0;
@@ -589,13 +756,23 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                         }
                     }
                 });
+                }
                 ui.end_row();
                 match event {
                     Some(e) => changed |= event_params(ui, e, t),
                     None => {
-                        ui.label("Regular Expression:");
-                        changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().desired_width(360.0)).changed();
+                        ui.label(regex_label(browser, t.match_type));
+                        changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
                         ui.end_row();
+                        if browser && t.match_type == triggers::PAGE_CONTENT_REGEX {
+                            let mut content = t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            ui.label(CONTENT_REGEX_LABEL);
+                            if ui.add(egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
+                                t.extra.insert(CONTENT_REGEX_KEY.into(), content.into());
+                                changed = true;
+                            }
+                            ui.end_row();
+                        }
                     }
                 }
                 ui.label("Job:");
@@ -605,9 +782,21 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 changed |= ui.add_enabled(!job_event, egui::TextEdit::singleline(&mut t.job).hint_text(hint).desired_width(360.0)).changed();
                 ui.end_row();
                 ui.label("Action:");
-                let current = triggers::action_info(&t.action).map_or_else(|| t.action.clone(), action_label);
+                let current = if browser {
+                    triggers::browser_action_info(&t.action).map_or_else(|| crate::inert_files::display_text(&t.action, 80, false), action_label)
+                } else {
+                    triggers::action_info(&t.action).map_or_else(|| t.action.clone(), action_label)
+                };
                 egui::ComboBox::from_id_salt("trigger-action").selected_text(current).width(260.0).show_ui(ui, |ui| {
-                    for a in triggers::CATALOG {
+                    if browser {
+                        for a in triggers::BROWSER_CATALOG {
+                            if ui.selectable_label(triggers::browser_action_info(&t.action).is_some_and(|c| c.class == a.class), action_label(a)).clicked() {
+                                pick_browser_action(t, a.class, interpolated, workgroups);
+                                changed = true;
+                            }
+                        }
+                    }
+                    for a in if browser { &[][..] } else { triggers::CATALOG } {
                         if ui.selectable_label(triggers::action_info(&t.action).is_some_and(|c| c.class == a.class), action_label(a)).clicked() {
                             t.action = a.class.to_string();
                             t.parameter = match a.kind {
@@ -626,9 +815,9 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 });
                 ui.end_row();
                 ui.label("Parameters:");
-                match triggers::action_info(&t.action) {
+                match if browser { triggers::browser_action_info(&t.action) } else { triggers::action_info(&t.action) } {
                     Some(info) => changed |= parameter(ui, info, &mut t.parameter, workgroups),
-                    None => changed |= ui.text_edit_singleline(&mut t.parameter).changed(),
+                    None => changed |= ui.add(egui::TextEdit::singleline(&mut t.parameter).char_limit(triggers::MAX_PARAMETER)).changed(),
                 }
                 ui.end_row();
                 // Exit Workgroup's own option (`hasLeaderOnlyOption`): kept in the event params, only when on.
@@ -650,12 +839,44 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 }
                 ui.label("");
                 ui.horizontal(|ui| {
-                    changed |= ui.checkbox(&mut t.instant, "Instant").changed();
-                    changed |= ui.checkbox(&mut t.enabled, "Enabled").changed();
+                    if !browser {
+                        changed |= ui.checkbox(&mut t.instant, "Instant").changed();
+                    }
+                    let was = t.enabled;
+                    if ui.checkbox(&mut t.enabled, "Enabled").changed() {
+                        if !was && enable_warning(t).is_some() {
+                            // Turning on a script, reload or workgroup trigger asks first; nothing runs here.
+                            t.enabled = false;
+                            ui.data_mut(|d| d.insert_temp(confirm_id, i));
+                        } else {
+                            changed = true;
+                        }
+                    }
                 });
                 ui.end_row();
             });
-            if let (0, Err(e)) = (t.match_type, fancy_regex::Regex::new(&t.regex)) {
+            // The one confirm: what the trigger will do, and Turn On or Cancel.
+            if ui.data(|d| d.get_temp::<usize>(confirm_id)) == Some(i) {
+                match enable_warning(t) {
+                    Some(text) => {
+                        ui.group(|ui| {
+                            ui.colored_label(egui::Color32::from_rgb(0xff, 0xb0, 0x40), text);
+                            ui.horizontal(|ui| {
+                                if ui.button("Turn On").clicked() {
+                                    t.enabled = true;
+                                    changed = true;
+                                    ui.data_mut(|d| d.remove::<usize>(confirm_id));
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    ui.data_mut(|d| d.remove::<usize>(confirm_id));
+                                }
+                            });
+                        });
+                    }
+                    None => ui.data_mut(|d| d.remove::<usize>(confirm_id)),
+                }
+            }
+            if let (false, 0, Err(e)) = (browser, t.match_type, fancy_regex::Regex::new(&t.regex)) {
                 ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("This expression does not compile, so the trigger never fires: {e}"));
             }
             // An interpolated parameter that cannot be evaluated (iTerm2: Error in Trigger Parameter).
@@ -753,6 +974,78 @@ mod tests {
         let (kept, alerts) = import_into(Some(&stored), &bad);
         assert_eq!(kept, stored, "a file that failed adds nothing");
         assert_eq!(alerts, vec![("Import Failed".to_string(), "Malformed file at z.it2triggers".to_string())]);
+    }
+
+    #[test]
+    fn browser_editor_follows_iterm2() {
+        let white = Rgb { r: 255, g: 255, b: 255 };
+        let red = Rgb { r: 255, g: 0, b: 0 };
+        assert_eq!(match_types(true), vec![("Regular Expression", 0), ("URL", 1), ("Page Content", 2)]);
+        let t = match_types(false);
+        assert_eq!(t[0], ("Regular Expression", 0));
+        assert!(t.iter().all(|(n, _)| *n != "URL" && *n != "Page Content"));
+        assert!(!match_type_enabled("InjectJavascriptURLTrigger"));
+        for a in triggers::BROWSER_CATALOG {
+            assert!(!match_type_enabled(a.class), "{}", a.class);
+        }
+        assert!(match_type_enabled("BounceTrigger"));
+        assert_eq!(regex_label(true, 2), "URL Regex:");
+        assert_eq!(regex_label(true, 1), "Regular Expression:");
+        assert_eq!(regex_label(false, 2), "Regular Expression:");
+        assert_eq!((CONTENT_REGEX_LABEL, CONTENT_REGEX_KEY), ("Content Regex:", "contentregex"));
+        let d = browser_default();
+        assert_eq!((d.action.as_str(), d.regex.as_str(), d.match_type, d.enabled), ("iTerm2SharedARC.ReaderModeBrowserTrigger", "", 0, true));
+        assert_eq!(browser_colors_param(Some(white), Some(red)), "#ffffff;#ff0000");
+        assert_eq!(browser_colors_param(None, Some(red)), ";#ff0000");
+        assert_eq!(browser_colors_param(Some(white), None), "#ffffff;");
+        let mut t = trig("", "", "iTerm2SharedARC.ReaderModeBrowserTrigger", "");
+        pick_browser_action(&mut t, "iTerm2SharedARC.HighlightBrowserTrigger", false, &[]);
+        assert_eq!((t.match_type, t.parameter.as_str()), (2, "#ffffff;#ff0000"));
+        pick_browser_action(&mut t, "ReloadBrowserTrigger", false, &[]);
+        assert_eq!((t.match_type, t.parameter.as_str()), (1, "60"));
+        pick_browser_action(&mut t, "InjectJavascriptContentTrigger", false, &[]);
+        assert_eq!((t.match_type, t.parameter.as_str()), (2, "console.log('Testing');"));
+        pick_browser_action(&mut t, "iTerm2SharedARC.HyperlinkBrowserTrigger", false, &[]);
+        assert_eq!(t.parameter, "https://\\0");
+        pick_browser_action(&mut t, "iTerm2SharedARC.HyperlinkBrowserTrigger", true, &[]);
+        assert_eq!(t.parameter, "https://\\(match0)");
+        let mut c = trig("", "y", "iTerm2SharedARC.HighlightBrowserTrigger", "#ffffff;#ff0000");
+        c.match_type = 2;
+        c.extra.insert(CONTENT_REGEX_KEY.into(), "x".into());
+        assert_eq!(browser_row(&c).detail, "/y/ /x/ Highlight Text Text: #ffffff Background: #ff0000");
+        assert_eq!(row(&c).detail, browser_row(&c).detail, "row describes browser triggers");
+        let back = Trigger::from_table(&c.to_table());
+        assert_eq!(back.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()), Some("x"));
+        let mut u = trig("n", "u", "ReloadBrowserTrigger", "30");
+        u.match_type = 1;
+        assert_eq!(browser_row(&u).detail, "/u/ Reload After Delay 30");
+        u.instant = true;
+        u.job = "j".into();
+        assert!(!browser_row(&u).detail.contains("Instant"));
+    }
+
+    #[test]
+    fn browser_editor_is_safe() {
+        // Picking a script, reload or workgroup action leaves the trigger off until the person confirms.
+        for class in ["InjectJavascriptContentTrigger", "InjectJavascriptURLTrigger", "ReloadBrowserTrigger", "iTermEnterWorkgroupBrowserTrigger", "iTermExitWorkgroupBrowserTrigger"] {
+            let mut t = trig("", "", "iTerm2SharedARC.HighlightBrowserTrigger", "");
+            pick_browser_action(&mut t, class, false, &[]);
+            assert!(!t.enabled, "{class}");
+            assert!(enable_warning(&t).is_some(), "{class}");
+        }
+        let mut h = trig("", "", "iTerm2SharedARC.ReaderModeBrowserTrigger", "");
+        pick_browser_action(&mut h, "iTerm2SharedARC.HighlightBrowserTrigger", false, &[]);
+        assert!(h.enabled && enable_warning(&h).is_none());
+        // The warning shows the script, bounded and without hidden characters.
+        let mut s = trig("", "^https://a/", "InjectJavascriptURLTrigger", &format!("alert(1);\u{202e}{}", "x".repeat(5000)));
+        s.match_type = 1;
+        let w = enable_warning(&s).unwrap();
+        assert!(w.contains("alert(1);") && w.contains("^https://a/") && !w.contains('\u{202e}'));
+        assert!(w.chars().count() < 1500);
+        // A hostile name or regex is shown through display_text.
+        let mut n = trig("", "a\u{202e}b", "ReloadBrowserTrigger", "5");
+        n.match_type = 1;
+        assert!(!browser_row(&n).detail.contains('\u{202e}'));
     }
 
     #[cfg(windows)]
