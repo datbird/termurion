@@ -289,6 +289,154 @@ pub const DISABLE_MONITOR_JS: &str = "console.log('Swift disabling monitor.'); w
 /// `NMM:273-274`.
 pub const ENABLE_MONITOR_JS: &str = "console.log('Swift enabling monitor.'); window.iTermLayoutChangeMonitor.reenableLayoutChangeMonitoring()";
 
+/// Why an add is refused (`BVC:591-606`, `NMM:142-145`; `Local` is Tandem's: B5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Not an http or https page (the Edit menu's gate).
+    Scheme,
+    /// A known method other than GET.
+    Method,
+    /// An `iterm2-about:` page: Tandem's own pages carry no marks and no annotations (B5).
+    Local,
+}
+
+/// How the person asked for the mark: the Edit menu, the page's context menu, the Named Marks tool.
+/// A mark is only ever added by one of these, never because a page asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddPath {
+    Menu,
+    ContextMenu,
+    Tool,
+}
+
+fn scheme_lower(url: &str) -> String {
+    url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default()
+}
+
+/// Whether `url` is one of Tandem's own pages (the privileged local-page bridge lives there, B5).
+pub fn is_local_page(url: &str) -> bool {
+    scheme_lower(url) == "iterm2-about"
+}
+
+/// The Edit menu's gate (`BVC:591-606`): http or https, and a known method that is exactly "GET".
+pub fn can_add(url: &str, method: Option<&str>) -> bool {
+    matches!(scheme_lower(url).as_str(), "http" | "https") && method == Some("GET")
+}
+
+/// What stops the prompt from opening (review M11): the menu applies `can_add`; the context menu and
+/// the tool open it on any page (`BVC:1170-1188`, `BVC:1401-1425`) except Tandem's own.
+pub fn gate_before_prompt(path: AddPath, url: &str, method: Option<&str>) -> Option<Refusal> {
+    match path {
+        AddPath::Menu => {
+            if !matches!(scheme_lower(url).as_str(), "http" | "https") {
+                Some(Refusal::Scheme)
+            } else if method != Some("GET") {
+                Some(Refusal::Method)
+            } else {
+                None
+            }
+        }
+        AddPath::ContextMenu | AddPath::Tool => is_local_page(url).then_some(Refusal::Local),
+    }
+}
+
+/// `add`'s own check (`NMM:142-145`): a known method other than GET throws; none passes.
+pub fn gate_on_add(method: Option<&str>) -> Option<Refusal> {
+    method.filter(|m| *m != "GET").map(|_| Refusal::Method)
+}
+
+/// Whether a Document-context request is this view's main document request (review M7): the request
+/// is the view's, a document (not a sub-resource), and its URI is the one the view's last
+/// main-frame NavigationStarting had (an iframe's document has another).
+pub fn document_method_applies(view_matches: bool, is_document: bool, request_uri: &str, last_main_nav_uri: Option<&str>) -> bool {
+    view_matches && is_document && last_main_nav_uri == Some(request_uri)
+}
+
+/// The method of the page's last main-frame navigation, paired with the navigation that made it
+/// (P5) and counted as an epoch: everything a pending add knows is the epoch it began in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodState {
+    method: String,
+    nav: u64,
+    epoch: u64,
+}
+
+impl Default for MethodState {
+    fn default() -> Self {
+        MethodState { method: "GET".into(), nav: 0, epoch: 0 }
+    }
+}
+
+impl MethodState {
+    /// Every main-frame start, redirects included (a redirected load is a new document request):
+    /// a navigation with no request seen counts as GET (Decision).
+    pub fn starting(&mut self, nav: u64) {
+        self.method = "GET".into();
+        self.nav = nav;
+        self.epoch += 1;
+    }
+
+    /// The document request of navigation `nav`; one of another navigation is ignored.
+    pub fn document(&mut self, nav: u64, method: &str) {
+        if nav == self.nav {
+            self.method = method.to_string();
+        }
+    }
+
+    /// The world or the view was remade: nothing known of the page, and no earlier epoch matches.
+    pub fn reset(&mut self) {
+        *self = MethodState { epoch: self.epoch + 1, ..MethodState::default() };
+    }
+
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+/// The viewport centre in page coordinates (`BVC:1409-1412`): the page's answer is two finite
+/// numbers in a sane range, else None.
+pub fn center_point(answer: &Value) -> Option<(i64, i64)> {
+    let a = answer.as_array()?;
+    if a.len() != 2 {
+        return None;
+    }
+    click_point(a[0].as_f64()?, a[1].as_f64()?)
+}
+
+/// A page point as the integers the script takes; None for a value that is not finite or lies
+/// outside 0 to 1,000,000.
+pub fn click_point(x: f64, y: f64) -> Option<(i64, i64)> {
+    let ok = |v: f64| v.is_finite() && (0.0..=1_000_000.0).contains(&v);
+    (ok(x) && ok(y)).then(|| (x.floor() as i64, y.floor() as i64))
+}
+
+/// The script finding the viewport centre (`BVC:1409-1412`).
+pub const CENTER_JS: &str = "return [Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2)];";
+/// The prompt's window title, as `open_mark_prompt`.
+pub const PROMPT_TITLE: &str = "Set Named Mark";
+/// The prompt's label (`BDV:16`).
+pub const PROMPT_LABEL: &str = "Enter Mark Name";
+
+/// One mark of the app-wide cache (`NM:8-21`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mark {
+    pub guid: String,
+    pub url: String,
+    pub name: String,
+    pub sort: i64,
+}
+
+/// Every mark of one store, newest first, and a counter that changes whenever they may have.
+#[derive(Default)]
+pub struct Cache {
+    pub marks: Vec<Mark>,
+    pub generation: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,4 +606,75 @@ mod tests {
         assert!(trust_patched(&format!("{src}\n{src}")).is_err());
         assert!(patch_once("abc", "b", "x").is_ok() && patch_once("abcb", "b", "x").is_err() && patch_once("ac", "b", "x").is_err());
     }
+    #[test]
+    fn add_refusals_follow_iterm2() {
+        assert!(can_add("https://a", Some("GET")));
+        assert!(can_add("HTTP://a", Some("GET")));
+        assert!(!can_add("https://a", Some("POST")));
+        assert!(!can_add("https://a", None));
+        assert!(!can_add("file:///c:/x", Some("GET")));
+        assert!(!can_add("iterm2-about:history", Some("GET")));
+        assert_eq!(gate_before_prompt(AddPath::Menu, "about:blank", Some("GET")), Some(Refusal::Scheme));
+        assert_eq!(gate_before_prompt(AddPath::Menu, "https://a", Some("POST")), Some(Refusal::Method));
+        assert_eq!(gate_before_prompt(AddPath::Menu, "https://a", Some("GET")), None);
+        assert_eq!(gate_before_prompt(AddPath::ContextMenu, "about:blank", Some("POST")), None);
+        assert_eq!(gate_before_prompt(AddPath::Tool, "file:///c:/x", None), None);
+        // Tandem's own pages carry no marks, whichever way they are asked (B5).
+        assert_eq!(gate_before_prompt(AddPath::ContextMenu, "iterm2-about:history", Some("GET")), Some(Refusal::Local));
+        assert_eq!(gate_before_prompt(AddPath::Tool, "ITERM2-ABOUT:welcome", None), Some(Refusal::Local));
+        assert_eq!(gate_on_add(None), None);
+        assert_eq!(gate_on_add(Some("GET")), None);
+        assert_eq!(gate_on_add(Some("POST")), Some(Refusal::Method));
+        assert_eq!(PROMPT_LABEL, "Enter Mark Name");
+        assert_eq!(PROMPT_TITLE, "Set Named Mark");
+    }
+
+    #[test]
+    fn document_method_follows_windows() {
+        let u = Some("https://a/r");
+        assert!(document_method_applies(true, true, "https://a/r", u));
+        assert!(!document_method_applies(false, true, "https://a/r", u));
+        assert!(!document_method_applies(true, false, "https://a/r", u));
+        assert!(!document_method_applies(true, true, "https://a/frame", u));
+        assert!(!document_method_applies(true, true, "https://a/r", None));
+    }
+
+    /// A method belongs to the navigation that made it (P5); every start resets to GET; a reset
+    /// moves the epoch, so a prompt opened before it can no longer add.
+    #[test]
+    fn method_tracking_follows_iterm2() {
+        let mut m = MethodState::default();
+        assert_eq!(m.method(), "GET");
+        m.starting(7);
+        assert_eq!(m.method(), "GET", "a navigation with no request seen is GET");
+        m.document(7, "POST");
+        assert_eq!(m.method(), "POST");
+        m.document(6, "GET");
+        assert_eq!(m.method(), "POST", "another navigation's request is ignored");
+        let first = m.epoch();
+        m.starting(8);
+        assert_eq!(m.method(), "GET");
+        assert_ne!(m.epoch(), first);
+        m.document(7, "POST");
+        assert_eq!(m.method(), "GET", "the old navigation's late request is ignored");
+        let e = m.epoch();
+        m.reset();
+        assert_ne!(m.epoch(), e);
+        assert_eq!(m.method(), "GET");
+    }
+
+    #[test]
+    fn click_points_are_validated() {
+        assert_eq!(center_point(&json!([400, 300])), Some((400, 300)));
+        assert_eq!(center_point(&json!([400.9, 300.2])), Some((400, 300)));
+        assert_eq!(center_point(&json!([400])), None);
+        assert_eq!(center_point(&json!(["a", 1])), None);
+        assert_eq!(center_point(&json!([-1, 1])), None);
+        assert_eq!(center_point(&json!([1e12, 1])), None);
+        assert_eq!(center_point(&json!(null)), None);
+        assert_eq!(click_point(3.0, 4.0), Some((3, 4)));
+        assert_eq!(click_point(f64::NAN, 4.0), None);
+        assert_eq!(click_point(f64::INFINITY, 4.0), None);
+    }
+
 }

@@ -226,6 +226,7 @@ impl App {
             bv.reader.reset();
             dones = bv.pending_js.drain().map(|(_, d)| d).collect();
             bv.result_caps.clear();
+            bv.marks_method.reset();
         }
         self.global_pane_gone(pane);
         for done in dones {

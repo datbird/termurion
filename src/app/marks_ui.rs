@@ -9,8 +9,17 @@ use winit::event_loop::ActiveEventLoop;
 
 use super::App;
 use crate::layout::PaneId;
+use crate::browser_marks::AddPath;
 use crate::marks;
 use crate::prompt_ui::{PromptResult, PromptWindow};
+
+/// What the one Set Named Mark window is for (review M9): a terminal pane's add (`Terminal(None)`) or
+/// rename (`Terminal(Some(mark))`), or a browser pane's request.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum PromptFor {
+    Terminal(Option<u32>),
+    Browser(super::browser_marks_app::MarkPrompt),
+}
 
 /// Mark commands this module runs.
 pub(super) const SELECTORS: [&str; 13] = [
@@ -116,6 +125,12 @@ impl App {
             return false;
         }
         let Some(id) = self.focused_id_for_marks() else { return true };
+        // On a browser pane, Edit > Mark and Set Named Mark both name a spot on the page
+        // (`PS:16755-16771`, `PT:2650-2661`); the Edit menu's gate applies.
+        if matches!(selector, "saveScrollPosition:" | "addNamedMark:") && self.is_browser_pane(id) {
+            self.browser_add_named_mark(id, None, AddPath::Menu);
+            return true;
+        }
         match selector {
             "saveScrollPosition:" => {
                 let line = self.top_visible_line(id);
@@ -192,18 +207,18 @@ impl App {
         let stamp = crate::prompt_ui::local_stamp();
         let text = rename.map_or(stamp.as_str(), |(_, name)| name);
         match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Set Named Mark", "Enter Mark Name", text) {
-            Ok(w) => self.prompt = Some((w, id, rename.map(|(m, _)| m))),
+            Ok(w) => self.prompt = Some((w, id, PromptFor::Terminal(rename.map(|(m, _)| m)))),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
 
     /// Handles an event for the Set Named Mark window. False when `window` is not it.
     pub(super) fn prompt_event(&mut self, window: winit::window::WindowId, event: &WindowEvent) -> bool {
-        let Some((w, pane, rename)) = self.prompt.as_mut() else { return false };
+        let Some((w, pane, target)) = self.prompt.as_mut() else { return false };
         if w.id() != window {
             return false;
         }
-        let (pane, rename) = (*pane, *rename);
+        let (pane, target) = (*pane, target.clone());
         match event {
             WindowEvent::CloseRequested => self.prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {
@@ -213,6 +228,10 @@ impl App {
                     self.prompt = None;
                     // An empty name cancels, as in iTerm2 (`BookmarkDialogViewController.swift:33-37`).
                     if !name.trim().is_empty() {
+                        let rename = match target {
+                            PromptFor::Terminal(rename) => rename,
+                            PromptFor::Browser(prompt) => return { self.browser_mark_prompt_done(pane, prompt, name); true },
+                        };
                         match rename {
                             // Renaming adds no annotation (Set Named Mark adds none here).
                             Some(mark) => {

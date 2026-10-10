@@ -6,12 +6,13 @@
 
 use super::*;
 use crate::browser_ctx::{self, Built, Ctx, Item};
+use crate::browser_marks::AddPath;
 use crate::webhost::MenuTarget;
 
 impl App {
     /// Which items exist: 13x2 builds Print; 13x4 adds Remove Element and View Source; later plans set theirs.
     pub(super) fn browser_ctx_built(&self) -> Built {
-        Built { print: true, remove_element: true, view_source: true, save_page: true, ..Built::default() }
+        Built { print: true, remove_element: true, view_source: true, save_page: true, named_marks: true }
     }
 
     /// A right-click on pane `pane`'s page: the pane becomes the focused one (iTerm2's menu acts on
@@ -123,7 +124,10 @@ impl App {
                 Item::ViewSource => a.view_page_source(pane),
                 Item::SavePageAs => save_page = true,
                 // The later plans' items.
-                Item::AddNamedMark | Item::Native => {}
+                // A person's pick: the prompt opens from the event loop (review I2); the gate is the
+                // context menu's (`BVC:1170-1188`).
+                Item::AddNamedMark => a.browser_add_named_mark(pane, Some((ctx.x, ctx.y)), AddPath::ContextMenu),
+                Item::Native => {}
             }
         });
         if save_page {

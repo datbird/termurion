@@ -1377,6 +1377,9 @@ impl App {
             ToolId::NamedMarks => {
                 let Some(pane) = self.focused_id() else { return };
                 if !edit {
+                    if self.is_browser_pane(pane) {
+                        return self.browser_add_named_mark(pane, None, crate::browser_marks::AddPath::Tool);
+                    }
                     return self.open_named_mark_prompt(pane, event_loop);
                 }
                 let Some(row) = row else { return };

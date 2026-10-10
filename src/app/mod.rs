@@ -167,6 +167,7 @@ mod page_saver_app;
 mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;
+mod browser_marks_app;
 mod browser_smart_app;
 mod browser_overlay_app;
 mod browser_input_app;
@@ -541,7 +542,13 @@ pub struct App {
     global_generation: u64,
     /// The Set Named Mark window, and the pane it names a mark in.
     /// The Set Named Mark prompt, its pane, and the mark it renames (the toolbelt's Edit).
-    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId, Option<u32>)>,
+    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId, crate::app::marks_ui::PromptFor)>,
+    /// A browser mark window asked for and not yet open (13x5): `about_to_wait` opens it in the shared
+    /// `prompt` slot. `mark_prompt_focused`: the open window it waits for was already brought forward.
+    pending_mark_prompt: Option<(PaneId, crate::app::browser_marks_app::MarkPrompt)>,
+    mark_prompt_focused: bool,
+    /// The browser's named marks, newest first, one cache per store (normal, Dev Null); app-wide.
+    browser_marks: HashMap<bool, crate::browser_marks::Cache>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
@@ -2146,6 +2153,9 @@ pub fn run() {
         note_pos: HashMap::new(),
         ctx_pending: None,
         prompt: None,
+        pending_mark_prompt: None,
+        mark_prompt_focused: false,
+        browser_marks: HashMap::new(),
         co_prompt: None,
         tmux_drag: None,
         tmux_pending_close: Vec::new(),
@@ -4103,6 +4113,7 @@ impl App {
             self.web_popover = None;
         }
         self.browser_tip_drop(id);
+        self.marks_pane_gone(id);
         self.close_browser_view(id);
     }
 
@@ -7121,6 +7132,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.sync_pane_activity();
         self.session_hotkeys_flush();
+        self.open_pending_mark_prompt(event_loop);
         self.flush_dropped();
         self.ssh_suggest_purge();
         // The queue is taken whole: a wake's index into it means nothing after this.

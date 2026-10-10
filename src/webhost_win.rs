@@ -444,6 +444,9 @@ pub struct ViewSetup {
     /// The page's right-click menu is the app's to decorate: `ContextMenuRequested` posts
     /// `Event::ContextMenu` and waits for `answer_context_menu` (browser panes).
     pub context_menu: bool,
+    /// The view reports the HTTP method of its main document requests (`Event::DocumentMethod`,
+    /// 13x5): a second `WebResourceRequested` handler on a Document-context filter, no deferral.
+    pub track_document_method: bool,
 }
 
 #[derive(Clone)]
@@ -499,6 +502,8 @@ struct Inner {
     queued: Vec<Box<dyn FnOnce(&Core)>>,
     /// NavigationStarting's URI by NavigationId, for `Navigated` (at most 64 kept).
     nav_uris: VecDeque<(u64, String)>,
+    /// The (capped) URI and id of the last main-frame NavigationStarting, for the Document filter.
+    last_main_nav: Option<(String, u64)>,
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
@@ -554,6 +559,7 @@ impl WebView {
             core: None,
             queued: Vec::new(),
             nav_uris: VecDeque::new(),
+            last_main_nav: None,
             tandem_uri: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
@@ -1119,6 +1125,9 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     if !setup.resource_filters.is_empty() {
         register_requests(inner, view, &setup.resource_filters, &mut token).map_err(|x| e("requests", x))?;
     }
+    if setup.track_document_method {
+        register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
+    }
     Ok(())
 }
 
@@ -1318,6 +1327,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let (policy, by_tandem) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
+            i.last_main_nav = Some((capped.clone(), nav));
             i.nav_uris.push_back((nav, capped));
             while i.nav_uris.len() > MAX_NAV_URIS {
                 i.nav_uris.pop_front();
@@ -1680,10 +1690,15 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         if inner.borrow().pending.len() >= MAX_PENDING_REQUESTS {
             return Ok(());
         }
-        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
         let url = unsafe { args.Request() }.ok().and_then(|r| pwstr_out(|p| unsafe { r.Uri(p) })).unwrap_or_default();
         let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT(0);
         let _ = unsafe { args.ResourceContext(&mut context) };
+        // Every handler sees every request any filter matched: a Document request that only the
+        // method tracker's filter matched is not this handler's (B10), and takes no deferral.
+        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && inner.borrow().setup.track_document_method && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
+            return Ok(());
+        }
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
         let top = sender.as_ref().and_then(source_of).unwrap_or_default();
         let mut i = inner.borrow_mut();
         let t = i.next_token;
@@ -1699,6 +1714,31 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL) }?;
     }
     Ok(())
+}
+
+/// The method tracker (13x5, B10): its own handler on a Document-context filter. A request counts
+/// only through `browser_marks::document_method_applies` (this view's document request whose URI is
+/// the last main-frame NavigationStarting's); it takes no deferral and leaves the request to go on.
+fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let weak = Rc::downgrade(inner);
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT(0);
+        let _ = unsafe { args.ResourceContext(&mut context) };
+        let Ok(request) = (unsafe { args.Request() }) else { return Ok(()) };
+        let uri = webhost::cap_url(&pwstr_out(|p| unsafe { request.Uri(p) }).unwrap_or_default()).0;
+        let i = inner.borrow();
+        let last = i.last_main_nav.as_ref();
+        if !crate::browser_marks::document_method_applies(true, context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, &uri, last.map(|(u, _)| u.as_str())) {
+            return Ok(());
+        }
+        let method = webhost::bounded_method(&pwstr_out(|p| unsafe { request.Method(p) }).unwrap_or_default());
+        i.poster.post(Event::DocumentMethod { view: i.id, nav: last.map_or(0, |(_, n)| *n), method });
+        Ok(())
+    })));
+    unsafe { view.add_WebResourceRequested(&handler, token) }?;
+    let w = wide("*");
+    unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
 }
 
 #[cfg(test)]
@@ -1818,6 +1858,7 @@ mod tests {
         let s = ViewSetup::default();
         assert!(!s.in_private && !s.guard_local_schemes && !s.web_message && !s.new_windows && !s.devtools);
         assert!(s.scripts.is_empty() && s.resource_filters.is_empty() && s.user_agent.is_none() && s.allowed_schemes.is_none());
+        assert!(!s.track_document_method);
     }
 
     /// Preflight P5: no host object reaches a page, anywhere in Tandem.
@@ -2119,6 +2160,78 @@ mod tests {
         drop(env);
         let _ = unsafe { DestroyWindow(hwnd) };
         // Best effort: the browser process may still hold the folder for a moment.
+        if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
+            let _ = crate::localfs::remove_dir_all(&lp);
+        }
+    }
+
+    /// 13x5 Task 3: a view with `track_document_method` reports POST for a form submit and GET for a
+    /// plain link click. Run by hand in a console session (`scripts/xt test --lib webhost -- --ignored`);
+    /// with no runtime it prints a note and passes.
+    #[test]
+    #[ignore]
+    fn document_method_is_reported() {
+        if runtime_version(None).is_err() {
+            println!("WebView2 Runtime not installed; skipped");
+            return;
+        }
+        let mut session = 0u32;
+        unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut session) };
+        if session == 0 {
+            println!("session 0 cannot host WebView2 windows; skipped");
+            return;
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+        let class = windows::core::w!("TandemWebView2MethodTest");
+        let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
+        unsafe { RegisterClassW(&wc) };
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-wv2-method"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
+        let folder = std::env::temp_dir().join(format!("tandem-wv2-method-{}", std::process::id()));
+        let (tx, rx) = mpsc::channel::<Posted>();
+        let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
+        let cell = env_cell.clone();
+        Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *cell.borrow_mut() = Some(r)));
+        let end = Instant::now() + Duration::from_secs(20);
+        while env_cell.borrow().is_none() && Instant::now() < end {
+            pump_until(&rx, 1, |_| false);
+        }
+        let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
+        let setup = ViewSetup { guard_local_schemes: true, resource_filters: vec!["https://tandem.test/*".into()], track_document_method: true, ..Default::default() };
+        let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
+        assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
+        let page = b"<title>m</title><a id=l href='/next'>next</a><form method=post action='/post'><input name=a value=b></form>".to_vec();
+        // Answers every request the filter holds; returns the first DocumentMethod that arrives.
+        let serve = || -> Option<(u64, String)> {
+            let end = Instant::now() + Duration::from_secs(10);
+            let mut seen = None;
+            while Instant::now() < end && seen.is_none() {
+                match pump_until(&rx, 1, |e| matches!(e, Event::Request { view: 1, .. } | Event::DocumentMethod { view: 1, .. })) {
+                    Some(Event::Request { token, .. }) => view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: page.clone(), headers: vec![] }),
+                    Some(Event::DocumentMethod { nav, method, .. }) => seen = Some((nav, method)),
+                    _ => {}
+                }
+            }
+            seen
+        };
+        view.navigate_tandem("https://tandem.test/start");
+        let first = serve();
+        assert_eq!(first.map(|f| f.1), Some("GET".to_string()), "the first load reports GET");
+        let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
+        view.execute_script("document.forms[0].submit()", 1);
+        let posted = serve();
+        assert_eq!(posted.map(|f| f.1), Some("POST".to_string()), "a form submit reports POST");
+        let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
+        view.execute_script("document.getElementById('l').click()", 2);
+        let linked = serve();
+        assert_eq!(linked.map(|f| f.1), Some("GET".to_string()), "a link click reports GET");
+        drop(view);
+        drop(env);
+        let _ = unsafe { DestroyWindow(hwnd) };
         if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
             let _ = crate::localfs::remove_dir_all(&lp);
         }
