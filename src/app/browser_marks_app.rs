@@ -498,7 +498,7 @@ impl App {
     }
 
     fn marks_run_reveal(&mut self, pane: PaneId, mark: &Mark) {
-        let Some(loc) = Location::from_url(&mark.url) else { return crate::rlog!("Invalid URL") };
+        let Some(loc) = Location::from_url(&mark.url) else { return crate::rlog!("Invalid mark location") };
         if self.marks_page(pane).is_none() {
             return;
         }
@@ -774,6 +774,6 @@ mod tests {
         let ui = include_str!("marks_ui.rs");
         assert!(ui.contains("let guarded = self.mark_input_guarded(event);") && ui.contains("guarded && matches!(target, PromptFor::Browser(_))"));
         assert!(include_str!("mod.rs").contains("self.mark_confirm_event(id, &event)"));
-        assert!(p.contains("\"updateNamedMarkName failed\"") && p.contains("\"removeNamedMark failed\"") && p.contains("\"Invalid URL\"") && p.contains("\"Failed to navigate to mark - element not found\""));
+        assert!(p.contains("\"updateNamedMarkName failed\"") && p.contains("\"removeNamedMark failed\"") && p.contains("\"Invalid mark location\"") && p.contains("\"Failed to navigate to mark - element not found\""));
     }
 }

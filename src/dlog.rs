@@ -244,7 +244,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/bell_ui.rs", 2),
     ("app/browser_app.rs", 3),
     ("app/browser_db_app.rs", 1),
-    ("app/browser_marks_app.rs", 6),
+    ("app/browser_marks_app.rs", 12),
     ("app/browser_overlay_app.rs", 1),
     ("app/browser_reader_app.rs", 1),
     ("app/browser_scripts_app.rs", 5),

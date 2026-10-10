@@ -1166,7 +1166,7 @@ mod tests {
         assert!(own.contains("world.history.arm()"));
         let app = include_str!("browser_app.rs");
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
-        let nav = &app[app.find("Event::Navigated { ok, .. } => {").unwrap()..app.find("Event::History { back, forward, .. } =>").unwrap()];
+        let nav = &app[app.find("Event::Navigated { ok, nav, .. } => {").unwrap()..app.find("Event::History { back, forward, .. } =>").unwrap()];
         assert!(nav.contains("world.history.loaded()") && nav.contains("browser_world::RESET_HISTORY"));
     }
 
