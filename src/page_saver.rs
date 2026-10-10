@@ -463,10 +463,12 @@ pub enum Step {
     AddAttributes(String),
     /// Run `clone_body()` in the page world, answer `on_html`.
     GetHtml,
-    /// Write through `inert_files::write_checked` (`index.html` through `write_marked`); on an
-    /// error call `on_write_failed(path)`.
+    /// Write a NEW file through `inert_files::write_checked` (`index.html` through `write_marked`),
+    /// create-new: an existing file is an error, never overwritten. On an error call
+    /// `on_write_failed(path)` and carry out what it answers.
     Write { path: PathBuf, bytes: Vec<u8> },
-    /// `localfs::create_dir` (no intermediates); on an error call `on_make_dir_failed(path)`.
+    /// `localfs::create_dir` (no intermediates; an existing folder is an error); on an error call
+    /// `on_make_dir_failed(path)` and carry out what it answers.
     MakeDir(PathBuf),
     /// Delete a file this job wrote (an abort or failure cleaning up its partial output).
     Remove(PathBuf),
@@ -565,9 +567,20 @@ impl Job {
         vec![Step::MakeDir(self.folder.clone()), Step::MakeDir(self.resources.clone()), Step::Extract]
     }
 
-    /// The app could not make this folder: it is not ours, so a cleanup never touches it.
-    pub fn on_make_dir_failed(&mut self, path: &Path) {
-        self.made.retain(|p| p != path);
+    /// The app could not make this folder (`localfs::create_dir`, which fails when it exists): the
+    /// save fails whole (`PSV:331-335`), and the folder is not ours, so no cleanup touches it, nor
+    /// anything inside it when it is the save folder (Task 9 review I1).
+    pub fn on_make_dir_failed(&mut self, path: &Path) -> Vec<Step> {
+        if path == self.folder {
+            self.made.clear();
+        } else {
+            self.made.retain(|p| p != path);
+        }
+        if self.dead {
+            return Vec::new();
+        }
+        self.done = false;
+        self.fail(FAILED_TO_CREATE_DIRECTORY.to_string())
     }
 
     pub fn on_urls(&mut self, urls: Vec<String>) -> Vec<Step> {
@@ -632,9 +645,13 @@ impl Job {
         }
     }
 
+    /// Save Failed: nothing more is accepted, and the partial output goes (one rule with `abort`).
     fn fail(&mut self, e: String) -> Vec<Step> {
         self.dead = true;
-        vec![Step::Failed(e)]
+        self.current = None;
+        let mut steps = self.cleanup();
+        steps.push(Step::Failed(e));
+        steps
     }
 
     /// The mapping as it stands: files that were written, stylesheets rewritten against what was
@@ -692,10 +709,17 @@ impl Job {
         steps
     }
 
-    /// A write failed: the resource keeps its live URL in the page (`PSV:219-231`).
-    pub fn on_write_failed(&mut self, path: &Path) {
+    /// A write failed: a resource keeps its live URL in the page (`PSV:219-231`); `index.html`
+    /// fails the save whole (`PSV:384-391`, Task 9 review I1). The failed file is not ours, so no
+    /// cleanup removes it.
+    pub fn on_write_failed(&mut self, path: &Path) -> Vec<Step> {
         self.entries.retain(|(_, k)| !matches!(k, Kind::File(p, _) if p == path));
         self.written.retain(|p| p != path);
+        if self.dead || path != self.folder.join("index.html") {
+            return Vec::new();
+        }
+        self.done = false;
+        self.fail(FAILED_TO_SAVE_FILE.to_string())
     }
 
     pub fn on_attributes_added(&mut self) -> Vec<Step> {
@@ -728,7 +752,8 @@ impl Job {
 
     /// The steps that remove what this job wrote and the folders it made, once.
     pub fn cleanup(&mut self) -> Vec<Step> {
-        if self.cleaned {
+        // A finished save is never removed by a stray call.
+        if self.cleaned || (self.done && !self.dead) {
             return Vec::new();
         }
         self.cleaned = true;
@@ -1008,7 +1033,8 @@ mod tests {
         j.start();
         j.on_urls(vec![]);
         j.on_attributes_added();
-        assert_eq!(j.on_html(None), vec![Step::Failed(s(FAILED_TO_GET_HTML))]);
+        // A failure cleans up in the same answer (the same rule as an abort).
+        assert_eq!(j.on_html(None), vec![Step::RemoveDir(d().join("resources")), Step::RemoveDir(d()), Step::Failed(s(FAILED_TO_GET_HTML))]);
     }
 
     fn job_with(urls: &[&str]) -> (Job, Vec<Step>) {
@@ -1076,7 +1102,7 @@ mod tests {
         assert_eq!(b[0], Step::Write { path: res("_NUL.png"), bytes: png() });
         // An error fails the job.
         let (mut j, _) = job_with(&[]);
-        assert_eq!(j.on_error(s("e")), vec![Step::Failed(s("e"))]);
+        assert_eq!(j.on_error(s("e")), vec![Step::RemoveDir(d().join("resources")), Step::RemoveDir(d()), Step::Failed(s("e"))]);
     }
 
     #[test]
@@ -1189,6 +1215,36 @@ mod tests {
 
     /// NTFS compares names through its upcase table: names that differ only in case, final sigma
     /// against sigma, or the micro sign against mu are one file. Each resource still gets its own.
+    /// Task 9 review I1: the folder must be new and `index.html` must land, or the save fails
+    /// whole; nothing is written into, or removed from, a folder the job did not make.
+    #[test]
+    fn a_folder_or_page_failure_fails_the_save() {
+        // The folder exists (or cannot be made): Save Failed, nothing more is written or removed.
+        let mut j = Job::new(d());
+        j.start();
+        let st = j.on_make_dir_failed(&d());
+        assert_eq!(st, vec![Step::Failed(s(FAILED_TO_CREATE_DIRECTORY))]);
+        assert!(j.on_urls(vec![s("https://a/x.png")]).is_empty());
+        assert!(j.on_resource("https://a/x.png", Some((png(), Some(s("image/png")))), &none_taken).is_empty());
+        assert!(j.cleanup().is_empty(), "nothing of the existing folder is ever removed");
+        // The folder was made but not resources: the folder is removed, resources is not touched.
+        let mut j = Job::new(d());
+        j.start();
+        let st = j.on_make_dir_failed(&d().join("resources"));
+        assert_eq!(st, vec![Step::RemoveDir(d()), Step::Failed(s(FAILED_TO_CREATE_DIRECTORY))]);
+        // index.html could not be written: Save Failed, not Done, and the partial output goes.
+        let (mut j, _) = job_with(&["https://a/x.png"]);
+        j.on_resource("https://a/x.png", Some((png(), Some(s("image/png")))), &none_taken);
+        j.on_attributes_added();
+        let st = j.on_html(Some(s("<html></html>")));
+        let index = d().join("index.html");
+        assert!(matches!(st.last(), Some(Step::Done(_))));
+        let st = j.on_write_failed(&index);
+        assert_eq!(st.last(), Some(&Step::Failed(s(FAILED_TO_SAVE_FILE))), "{st:?}");
+        assert!(st.contains(&Step::Remove(res("x.png"))) && !st.contains(&Step::Remove(index.clone())), "{st:?}");
+        assert!(st.contains(&Step::RemoveDir(d().join("resources"))) && st.contains(&Step::RemoveDir(d())), "{st:?}");
+    }
+
     #[test]
     fn case_folded_names_never_collide() {
         for pair in [["A.png", "a.png"], ["\u{3c3}.png", "\u{3c2}.png"], ["\u{b5}.png", "\u{3bc}.png"], ["\u{3a3}.PNG", "\u{3c2}.png"]] {
