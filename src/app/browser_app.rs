@@ -436,6 +436,7 @@ impl App {
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
         self.browser_permission_pane_gone(pane);
+        self.browser_web_note_dropped(pane);
         self.browser_bars_end(pane);
         self.browser_reset_world(pane);
         if let Some(bv) = self.browser_views.remove(&pane) {
@@ -642,12 +643,9 @@ impl App {
             // Permissions, notifications and audio (13x6). A permission request is held for the tick's
             // flush (Task 4); until Tasks 6 and 7 a notification is released unshown.
             Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
-            Event::NotificationShown { token, .. } => {
-                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                    v.notification_report(*token, crate::webhost_win::NoteReport::Release);
-                }
-            }
-            Event::NotificationClosed { .. } | Event::AudioPlaying { .. } => {}
+            Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
+            Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
+            Event::AudioPlaying { .. } => {}
             Event::PermissionStates { states, complete, .. } => self.permission_states_read(pane, states, *complete),
             // Everything a page's script says, the world's events and the calls' answers: the router.
             _ => {

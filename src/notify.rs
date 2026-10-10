@@ -170,6 +170,19 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Dismisses the balloon on screen (an empty `szInfo` removes it). Nothing when no icon was added.
+pub fn clear_info() {
+    let w = WINDOW.load(Ordering::SeqCst);
+    if w != 0 && ADDED.load(Ordering::SeqCst) {
+        let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = w as HWND;
+        nid.uID = ICON_ID;
+        nid.uFlags = NIF_INFO;
+        unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
+    }
+}
+
 /// Shows a notification (the mark alert's older entry point; `_owner` is not needed).
 pub fn show(_owner: isize, title: &str, body: &str) -> Result<(), String> {
     show_with(title, body, false)

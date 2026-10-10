@@ -441,6 +441,74 @@ pub fn check_iframe_origins_js() -> &'static str {
     crate::browser_js::resource("check-iframe-origins.js").unwrap_or("")
 }
 
+/// Whether a page's notification may be shown: only for an origin with a saved Granted
+/// notifications decision (`BNH:136-140`); the database decides, never the page.
+pub fn show_notification(saved: Option<Decision>) -> bool {
+    saved == Some(Decision::Granted)
+}
+
+/// Whether a page's close of its notification is honored: iTerm2 checks the origin again before a
+/// close (`BNH:58-62`), so a revoked origin cannot touch Tandem's balloon.
+pub fn close_honored(saved: Option<Decision>) -> bool {
+    saved == Some(Decision::Granted)
+}
+
+/// Longest origin shown in a notification's title (the tray title holds 63 characters).
+const NOTE_ORIGIN_CHARS: usize = 60;
+const NOTE_TEXT_CHARS: usize = 120;
+const NOTE_BODY_CHARS: usize = 200;
+
+/// A web notification's balloon text (B4). The origin (punycode, as `normalize_origin` made it) is
+/// ALWAYS the title, so a page can never pose as Tandem or as another site; the page's own title
+/// and body, cleaned of control and bidi characters and capped, are the body. A notification with
+/// no text at all still says who sent it (an empty body removes the balloon).
+pub fn notification_text(title: &str, body: &str, origin: &str) -> (String, String) {
+    let clean = |s: &str| crate::inert_files::display_text(s, NOTE_TEXT_CHARS, false);
+    let head = crate::inert_files::display_text(origin, NOTE_ORIGIN_CHARS, false);
+    let (t, b) = (clean(title), clean(body));
+    let text = match (t.is_empty(), b.is_empty()) {
+        (true, true) => "(no text)".to_string(),
+        (false, true) => t,
+        (true, false) => b,
+        (false, false) => format!("{t}: {b}"),
+    };
+    (head, crate::inert_files::display_text(&text, NOTE_BODY_CHARS, false))
+}
+
+/// The one web notification on Tandem's balloon: the pane, the page's token and the origin. The
+/// balloon holds one notification, so a newer one (or any other Tandem alert) replaces it, and the
+/// page is told the old one closed.
+#[derive(Debug, Default)]
+pub struct NoteScreen {
+    on: Option<(crate::layout::PaneId, u64, String)>,
+}
+
+impl NoteScreen {
+    /// A web notification is now on the balloon; returns the one it replaced.
+    pub fn shown(&mut self, pane: crate::layout::PaneId, token: u64, origin: &str) -> Option<(crate::layout::PaneId, u64)> {
+        self.on.replace((pane, token, origin.to_string())).map(|(p, t, _)| (p, t))
+    }
+
+    /// Another alert took the balloon (or the person navigated away): the one on screen, taken.
+    pub fn take(&mut self) -> Option<(crate::layout::PaneId, u64)> {
+        self.on.take().map(|(p, t, _)| (p, t))
+    }
+
+    /// The origin of the notification on screen under `token`, when it is that one.
+    pub fn origin_of(&self, pane: crate::layout::PaneId, token: u64) -> Option<&str> {
+        self.on.as_ref().filter(|(p, t, _)| *p == pane && *t == token).map(|(_, _, o)| o.as_str())
+    }
+
+    /// The pane's notification, taken, when it is the one on screen.
+    pub fn take_pane(&mut self, pane: crate::layout::PaneId) -> Option<(crate::layout::PaneId, u64)> {
+        if self.on.as_ref().is_some_and(|(p, _, _)| *p == pane) { self.take() } else { None }
+    }
+
+    pub fn on_screen(&self) -> bool {
+        self.on.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,5 +792,43 @@ mod tests {
         assert_eq!(frame_origins(&json!(vec!["https://a.b"; 257])), None, "more than 256 entries");
         assert!(frame_origins(&json!(vec!["https://a.b"; 256])).is_some());
         assert_eq!(frame_origins(&json!([format!("https://{}", "a".repeat(2050))])), None, "an entry over 2048");
+    }
+
+    #[test]
+    fn web_notification_follows_iterm2() {
+        assert!(show_notification(Some(Decision::Granted)));
+        assert!(!show_notification(Some(Decision::Denied)));
+        assert!(!show_notification(None));
+        assert!(close_honored(Some(Decision::Granted)));
+        assert!(!close_honored(Some(Decision::Denied)));
+        assert!(!close_honored(None));
+        assert_eq!(notification_text("T", "B", "https://a.b"), ("https://a.b".into(), "T: B".into()));
+        assert_eq!(notification_text("T", "", "https://a.b").1, "T");
+        assert_eq!(notification_text("", "B", "https://a.b").1, "B");
+        assert_eq!(notification_text("", "", "https://a.b").1, "(no text)", "a body-less notification still shows");
+    }
+
+    #[test]
+    fn a_page_cannot_pose_as_tandem() {
+        let (t, b) = notification_text("Session Ended", "Tandem: your session \"x\" just terminated\u{202e}\n", "https://evil.example");
+        assert_eq!(t, "https://evil.example", "the origin is always the title");
+        assert!(!b.contains('\u{202e}') && !b.contains('\n'));
+        assert!(b.starts_with("Session Ended: "));
+        let (t, b) = notification_text(&"x".repeat(500), &"y".repeat(500), &format!("https://{}.example", "a".repeat(200)));
+        assert!(t.chars().count() <= 60 && t.starts_with("https://aaa"));
+        assert!(b.chars().count() <= 200);
+    }
+
+    #[test]
+    fn one_web_note_is_on_screen() {
+        let mut n = NoteScreen::default();
+        assert_eq!(n.shown(1, 1, "https://a.b"), None);
+        assert_eq!(n.origin_of(1, 1), Some("https://a.b"));
+        assert_eq!(n.origin_of(1, 2), None, "an older or other token is not on screen");
+        assert_eq!(n.shown(1, 2, "https://c.d"), Some((1, 1)), "the replaced one is returned to be reported closed");
+        assert_eq!(n.take_pane(9), None);
+        assert_eq!(n.take_pane(1), Some((1, 2)));
+        assert!(!n.on_screen());
+        assert_eq!(n.take(), None);
     }
 }

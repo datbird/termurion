@@ -14,6 +14,7 @@ use super::App;
 use crate::browser_perms::{self as bp, Decision, PermissionType, Plan, System};
 use crate::layout::PaneId;
 use crate::webhost::PermAnswer;
+use crate::webhost_win::NoteReport;
 
 /// Requests that wait behind another open question of the same pane (one prompt at a time per
 /// pane); the rest are denied at once.
@@ -25,6 +26,8 @@ const WAITING_PER_ASK: usize = 16;
 /// without a window for this long (B2): a page cannot re-raise the window by looping.
 const COOLDOWN_MS: u64 = 60_000;
 const COOLDOWNS_KEPT: usize = 256;
+/// A granted origin may show one notification this often; a flood from one site is dropped.
+const WEB_NOTE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Milliseconds on a monotonic clock (the cooldown's).
 fn now_ms() -> u64 {
@@ -694,6 +697,65 @@ impl App {
         self.perm_acts(acts);
     }
 
+    /// A page's notification (13x6 Task 6). The database decides, not the page: only an origin with a
+    /// saved Granted notifications row is shown, anything else is released without a sound. It
+    /// goes through the one alert path (`post_alert`, `AlertKind::Web`), labelled with its origin.
+    pub(super) fn browser_notification(&mut self, pane: PaneId, token: u64, origin: &str, title: &str, body: &str) {
+        let origin = bp::normalize_origin(origin);
+        let granted = origin.as_deref().filter(|_| self.is_browser_pane(pane)).and_then(|o| self.saved_notification(pane, o)).and_then(|d| bp::show_notification(Some(d)).then_some(d));
+        let (Some(origin), Some(_)) = (origin, granted) else { return self.note_report(pane, token, NoteReport::Release) };
+        // A granted site is still rate limited: one notification an origin every few seconds.
+        if !self.web_note_limits.allow(origin.clone(), std::time::Instant::now(), WEB_NOTE_EVERY) {
+            return self.note_report(pane, token, NoteReport::Release);
+        }
+        let kind = crate::alerts::AlertKind::Web { origin: origin.clone(), title: title.to_string(), body: body.to_string() };
+        if self.post_alert(pane, kind) {
+            // `post_alert` took the balloon from any older web notification; this one is on screen now.
+            self.web_note.shown(pane, token, &origin);
+            self.note_report(pane, token, NoteReport::Shown);
+        } else {
+            self.note_report(pane, token, NoteReport::Release);
+        }
+    }
+
+    /// The page closed its notification: honored only for the one on screen, from an origin that is
+    /// still granted (`BNH:58-62`).
+    pub(super) fn browser_notification_closed(&mut self, pane: PaneId, token: u64) {
+        let Some(origin) = self.web_note.origin_of(pane, token).map(str::to_string) else { return };
+        if !bp::close_honored(self.saved_notification(pane, &origin)) {
+            return;
+        }
+        self.web_note.take();
+        crate::notify::clear_info();
+        self.note_report(pane, token, NoteReport::Closed);
+    }
+
+    /// Another alert took the balloon: the web notification on it, if any, is reported closed.
+    pub(super) fn web_note_replaced(&mut self) {
+        if let Some((pane, token)) = self.web_note.take() {
+            self.note_report(pane, token, NoteReport::Closed);
+        }
+    }
+
+    /// A navigation or a closed pane: that pane's notification on the balloon goes.
+    pub(super) fn browser_web_note_dropped(&mut self, pane: PaneId) {
+        if let Some((pane, token)) = self.web_note.take_pane(pane) {
+            crate::notify::clear_info();
+            self.note_report(pane, token, NoteReport::Closed);
+        }
+    }
+
+    fn saved_notification(&mut self, pane: PaneId, origin: &str) -> Option<Decision> {
+        let dev_null = self.pane_dev_null(pane);
+        self.browser_db(dev_null)?.get_permission(origin, PermissionType::Notification).map(|r| r.decision)
+    }
+
+    fn note_report(&self, pane: PaneId, token: u64, r: NoteReport) {
+        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+            v.notification_report(token, r);
+        }
+    }
+
     /// Takes question `id` away: queued, or showing (its window closes with no answer).
     fn browser_permission_withdraw(&mut self, id: u64) {
         let is = |t: &Then| matches!(t, Then::BrowserPermission(i) if *i == id);
@@ -876,6 +938,26 @@ mod tests {
         assert_eq!(s.origin, "https://xn--bcher-kva.example");
         // Unicode never reaches a prompt: such a host has no origin and is denied.
         assert_eq!(bp::normalize_origin("https://b\u{fc}cher.example/"), None);
+    }
+
+    #[test]
+    fn browser_notification_follows_iterm2() {
+        // An App cannot be built in a unit test (browser_test_seam); the pure rules are tested in
+        // `browser_perms` and `alerts`, and this pins the wiring of the app side.
+        let me = include_str!("browser_perms_app.rs");
+        let body = me.split("pub(super) fn browser_notification(").nth(1).unwrap().split("pub(super) fn browser_notification_closed").next().unwrap();
+        assert!(body.contains("bp::show_notification(") && body.contains("normalize_origin"), "only a granted, normalized origin");
+        assert!(body.contains("AlertKind::Web") && body.contains("self.post_alert(") && !body.contains("show_with"), "the one alert path");
+        assert!(body.contains("NoteReport::Release") && body.contains("NoteReport::Shown"));
+        assert!(body.contains("web_note_limits.allow"), "a per-origin cap");
+        let closed = me.split("pub(super) fn browser_notification_closed").nth(1).unwrap().split("pub(super) fn web_note_replaced").next().unwrap();
+        assert!(closed.contains("bp::close_honored(") && closed.contains("clear_info()") && closed.contains("NoteReport::Closed"));
+        let ev = include_str!("browser_app.rs");
+        assert!(ev.contains("self.browser_notification(pane, *token, origin, title, body)") && ev.contains("self.browser_notification_closed(pane, *token)"));
+        let alerts = include_str!("alerts_ui.rs");
+        assert!(alerts.contains("self.web_note_replaced()"), "another alert reports the web notification closed");
+        assert!(include_str!("browser_reader_app.rs").contains("self.browser_web_note_dropped(pane)"), "a navigation drops it");
+        assert!(ev.contains("self.browser_web_note_dropped(pane)"), "a closed pane drops it");
     }
 
     #[test]

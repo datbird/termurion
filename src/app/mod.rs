@@ -1341,6 +1341,9 @@ pub struct App {
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     /// Open site-permission questions and the tick's requests (app-wide, 13x6).
     perm_asks: browser_perms_app::Asks,
+    /// The web notification on the tray balloon, and when each granted origin last showed one (13x6).
+    web_note: crate::browser_perms::NoteScreen,
+    web_note_limits: crate::triggers::RateLimit<String>,
     /// Which browser environments had their profile permission states rewritten from the database.
     perm_sync: browser_perms_app::SyncState,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
@@ -2533,6 +2536,8 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         perm_asks: Default::default(),
+        web_note: Default::default(),
+        web_note_limits: Default::default(),
         perm_sync: Default::default(),
         scripts_alert: None,
         update_checker: None,
