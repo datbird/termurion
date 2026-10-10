@@ -22,6 +22,8 @@ pub const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
 /// references of one stylesheet are read.
 pub const MAX_CSS_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CSS_URLS: usize = 5000;
+/// How deep stylesheets that import stylesheets are followed (Task 9 review I2).
+pub const MAX_CSS_DEPTH: usize = 8;
 
 fn units(s: &str) -> usize {
     s.encode_utf16().count()
@@ -212,6 +214,11 @@ impl Budget {
         true
     }
     /// Whether another resource may still be asked for at all (stop fetching past the cap).
+    /// The bytes still allowed under `MAX_TOTAL_BYTES`.
+    pub fn left(&self) -> u64 {
+        MAX_TOTAL_BYTES.saturating_sub(self.bytes)
+    }
+
     pub fn open(&self) -> bool {
         self.count < MAX_RESOURCES && self.bytes < MAX_TOTAL_BYTES
     }
@@ -321,6 +328,10 @@ pub fn rewrite_css(css: &str, base: &str, local: &dyn Fn(&str) -> Option<String>
         return css.to_string();
     }
     let mut seen = 0usize;
+    // The output never passes MAX_CSS_BYTES: an inlined value that would push it past keeps the
+    // original reference (the inlined-stylesheet quirk could otherwise multiply a small sheet
+    // thousands of times per level, Task 9 review I2).
+    let mut out_len = css.len();
     css_regex()
         .replace_all(css, |caps: &Captures| {
             seen += 1;
@@ -329,13 +340,20 @@ pub fn rewrite_css(css: &str, base: &str, local: &dyn Fn(&str) -> Option<String>
                 return whole;
             }
             let url = &caps[1];
-            if script_url(url) {
-                return "url('about:blank')".to_string();
+            let new = if script_url(url) {
+                "url('about:blank')".to_string()
+            } else {
+                match resolve_url(base, url).and_then(|abs| local(&abs)) {
+                    Some(l) => format!("url('{}')", css_safe_path(&l)),
+                    None => return whole,
+                }
+            };
+            let grown = out_len - whole.len() + new.len();
+            if grown > MAX_CSS_BYTES && new.len() > whole.len() {
+                return whole;
             }
-            match resolve_url(base, url).and_then(|abs| local(&abs)) {
-                Some(l) => format!("url('{}')", css_safe_path(&l)),
-                None => whole,
-            }
+            out_len = grown;
+            new
         })
         .into_owned()
 }
@@ -659,10 +677,20 @@ impl Job {
     fn mapping(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
         let mut known: HashMap<String, String> = HashMap::new();
+        // Inlined stylesheets count against what is left of the job's total cap; a sheet over its
+        // own cap or past the total keeps its live URL (Task 9 review I2).
+        let mut left = self.budget.left();
         for (url, kind) in &self.entries {
             let value = match kind {
                 Kind::File(_, name) => format!("resources/{name}"),
-                Kind::Css(text) => rewrite_css(text, url, &|abs| known.get(abs).cloned()),
+                Kind::Css(text) => {
+                    let v = rewrite_css(text, url, &|abs| known.get(abs).cloned());
+                    if v.len() > MAX_CSS_BYTES || v.len() as u64 > left {
+                        continue;
+                    }
+                    left -= v.len() as u64;
+                    v
+                }
             };
             known.insert(url.clone(), value.clone());
             out.push((url.clone(), value));
@@ -687,7 +715,9 @@ impl Job {
         let is_css = mime.as_deref().map(|m| m.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/css")).unwrap_or(false);
         if is_css {
             if let Ok(text) = String::from_utf8(bytes.clone()) {
-                let refs = css_urls(&text).into_iter().collect();
+                // Nesting is bounded: a sheet at the deepest level is kept, its references are not
+                // followed (Task 9 review I2).
+                let refs = if self.stack.len() + 1 >= MAX_CSS_DEPTH { VecDeque::new() } else { css_urls(&text).into_iter().collect() };
                 self.stack.push(CssFrame { url: url.to_string(), text, refs });
                 return self.pump();
             }
@@ -1243,6 +1273,39 @@ mod tests {
         assert_eq!(st.last(), Some(&Step::Failed(s(FAILED_TO_SAVE_FILE))), "{st:?}");
         assert!(st.contains(&Step::Remove(res("x.png"))) && !st.contains(&Step::Remove(index.clone())), "{st:?}");
         assert!(st.contains(&Step::RemoveDir(d().join("resources"))) && st.contains(&Step::RemoveDir(d())), "{st:?}");
+    }
+
+    fn css_answer(text: &str) -> Option<(Vec<u8>, Option<String>)> {
+        Some((text.as_bytes().to_vec(), Some(s("text/css"))))
+    }
+
+    /// Task 9 review I2: the inlined stylesheets are bounded. A sheet that references a small
+    /// sheet 5000 times would grow to 5000 copies of it; each value stays under `MAX_CSS_BYTES`.
+    #[test]
+    fn inlined_stylesheets_are_bounded() {
+        let (mut j, _) = job_with(&["https://a/b.css"]);
+        let b = "x{y:url(a.css)}".repeat(MAX_CSS_URLS);
+        let st = j.on_resource("https://a/b.css", css_answer(&b), &none_taken);
+        assert_eq!(st, vec![Step::Fetch(s("https://a/a.css"))]);
+        let a = "a".repeat(4096);
+        let st = j.on_resource("https://a/a.css", css_answer(&a), &none_taken);
+        assert!(matches!(st.last(), Some(Step::AddAttributes(_))), "{}", st.len());
+        let body = j.attributes_body();
+        assert!(body.len() <= MAX_CSS_BYTES + 64 * 1024, "{} bytes", body.len());
+        assert!(j.mapping().iter().all(|(_, v)| v.len() <= MAX_CSS_BYTES));
+    }
+
+    /// Nesting is bounded: a chain of stylesheets is followed `MAX_CSS_DEPTH` deep, no further.
+    #[test]
+    fn stylesheet_nesting_is_bounded() {
+        let (mut j, mut st) = job_with(&["https://a/c0.css"]);
+        let mut fetched = 0;
+        while let Some(Step::Fetch(u)) = st.first().cloned() {
+            fetched += 1;
+            let n: usize = u.trim_start_matches("https://a/c").trim_end_matches(".css").parse().unwrap();
+            st = j.on_resource(&u, css_answer(&format!("x{{y:url(c{}.css)}}", n + 1)), &none_taken);
+        }
+        assert_eq!(fetched, MAX_CSS_DEPTH, "{st:?}");
     }
 
     #[test]
