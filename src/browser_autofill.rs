@@ -464,6 +464,95 @@ pub fn save_card(_path: &std::path::Path, _card: &Card) -> Result<(), String> {
     Err("the contact card is stored with Windows data protection".to_string())
 }
 
+// --- The confirmed fill (Task 3, Task 1 review I1) ---
+
+/// Why a page that is not https gets no fill (autofill never runs over http).
+pub const HTTP_REFUSAL: &str = "Autofill works only on secure (https) pages.";
+/// The question's heading and its fill button (Enter answers Cancel).
+pub const CONFIRM_HEADING: &str = "Autofill";
+pub const CONFIRM_FILL: &str = "Fill";
+
+/// `scheme://host[:port]`, lowercase, the default port dropped, for an http or https URL with a host and
+/// no user information; None for anything else (an origin is what a fill is bound to).
+pub fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port) = if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        (&authority[..=end], authority[end + 1..].strip_prefix(':').unwrap_or(""))
+    } else {
+        authority.split_once(':').unwrap_or((authority, ""))
+    };
+    if host.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let default = if scheme == "https" { "443" } else { "80" };
+    let port = if port.is_empty() || port == default { String::new() } else { format!(":{port}") };
+    Some(format!("{scheme}://{}{port}", host.to_ascii_lowercase()))
+}
+
+/// None when `url` is an https page a fill may go to, else the message that says why not.
+pub fn refusal(url: &str) -> Option<&'static str> {
+    match origin_of(url) {
+        Some(o) if o.starts_with("https://") => None,
+        _ => Some(HTTP_REFUSAL),
+    }
+}
+
+/// The types the card can fill among the requested fields, each once, in the page's order.
+pub fn kinds_to_fill(fields: &[Field], card: &Card) -> Vec<&'static str> {
+    let values = card_values(card);
+    let mut out: Vec<&'static str> = Vec::new();
+    for f in fields {
+        if let Some((k, _)) = values.iter().find(|(k, _)| *k == f.kind) {
+            if !out.contains(k) {
+                out.push(k);
+            }
+        }
+    }
+    out
+}
+
+/// The label of a field type, as the card editor shows it.
+pub fn kind_label(kind: &str) -> &'static str {
+    CARD_LABELS.iter().find(|(k, _)| *k == kind).map_or("Other", |(_, l)| l)
+}
+
+/// The question: the page's origin as a person reads it (punycode host, the end of a long host kept,
+/// no hidden character) and each type to be filled. No value.
+pub fn confirm_text(origin: &str, kinds: &[&str]) -> String {
+    let shown = crate::inert_files::display_text(&crate::browser::display_url(origin), 300, false);
+    let list: Vec<&str> = kinds.iter().map(|k| kind_label(k)).collect();
+    format!("A page on {shown} asked to fill its form from your contact card.\n\nFields to fill: {}.\n\nPress Fill only if you asked for this and trust that site. Enter does not fill.", list.join(", "))
+}
+
+/// Whether a fill asked on `origin` in navigation `epoch` may still run on the page at `url` in
+/// `now_epoch`: the same exact origin, https, and no navigation since.
+pub fn bound_valid(origin: &str, epoch: u64, url: &str, now_epoch: u64) -> bool {
+    epoch == now_epoch && origin.starts_with("https://") && origin_of(url).as_deref() == Some(origin)
+}
+
+/// One queued fill with the page it was asked on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bound {
+    pub origin: String,
+    pub epoch: u64,
+    pub fill: Fill,
+}
+
+impl Bound {
+    pub fn valid(&self, url: &str, now_epoch: u64) -> bool {
+        bound_valid(&self.origin, self.epoch, url, now_epoch)
+    }
+}
+
 // --- The operation queue (iTerm2's AsyncMutex) ---
 
 /// One operation at a time per pane; the rest wait in order. Past `MAX_QUEUE` waiting, the oldest
@@ -873,5 +962,75 @@ mod tests {
         assert_eq!(q.take_dropped(), 3, "the oldest are dropped and counted");
         assert_eq!(q.take_dropped(), 0);
         assert_eq!(q.finish(), Some(4));
+    }
+
+    // --- Task 3: the confirmed fill ---
+
+    #[test]
+    fn origin_is_exact_and_https_only() {
+        assert_eq!(origin_of("https://Example.COM/a?b#c").as_deref(), Some("https://example.com"));
+        assert_eq!(origin_of("https://example.com:443/x").as_deref(), Some("https://example.com"));
+        assert_eq!(origin_of("https://example.com:8443/x").as_deref(), Some("https://example.com:8443"));
+        assert_eq!(origin_of("http://example.com/").as_deref(), Some("http://example.com"));
+        assert_eq!(origin_of("https://user@example.com/"), None, "user information is no origin to fill");
+        assert_eq!(origin_of("iterm2-about:history"), None);
+        assert_eq!(origin_of("data:text/html,x"), None);
+        assert_eq!(origin_of("https:///x"), None);
+        assert_eq!(refusal("https://example.com/"), None);
+        assert_eq!(refusal("http://example.com/"), Some(HTTP_REFUSAL));
+        assert_eq!(refusal("iterm2-about:history"), Some(HTTP_REFUSAL));
+        assert_eq!(refusal("file:///c:/x.html"), Some(HTTP_REFUSAL));
+    }
+
+    #[test]
+    fn confirm_names_the_origin_and_each_field_type() {
+        let card = Card { first_name: "Ann".into(), email: "a@b".into(), ..Card::default() };
+        let fields = vec![
+            Field { kind: "firstName".into(), id: Some("a".into()), name: None },
+            Field { kind: "email".into(), id: Some("b".into()), name: None },
+            Field { kind: "email".into(), id: Some("c".into()), name: None },
+            Field { kind: "phone".into(), id: Some("d".into()), name: None },
+        ];
+        let kinds = kinds_to_fill(&fields, &card);
+        assert_eq!(kinds, vec!["firstName", "email"], "each type once, only those the card holds");
+        let text = confirm_text("https://xn--e1afmkfd.example", &kinds);
+        assert!(text.contains("https://xn--e1afmkfd.example") && text.contains("First name") && text.contains("Email") && !text.contains("Phone"), "{text}");
+        assert!(!text.contains("Ann") && !text.contains("a@b"), "no value in the question");
+        let long = format!("https://{}.bank.example", "a.".repeat(300));
+        let t = confirm_text(&long, &kinds);
+        assert!(t.contains("bank.example"), "the end of a long host stays: {t}");
+        let hostile = confirm_text("https://exa\u{202e}mple.com", &kinds);
+        assert!(!hostile.contains('\u{202e}'), "display text hides bidi marks");
+    }
+
+    #[test]
+    fn a_fill_is_bound_to_its_origin_and_epoch() {
+        assert!(bound_valid("https://a.example", 4, "https://a.example/other", 4));
+        assert!(!bound_valid("https://a.example", 4, "https://a.example/other", 5), "a navigation between request and confirm cancels");
+        assert!(!bound_valid("https://a.example", 4, "https://evil.example/", 4), "an origin change cancels");
+        assert!(!bound_valid("https://a.example", 4, "http://a.example/", 4), "http is never a match");
+        assert!(!bound_valid("https://a.example", 4, "https://a.example:8443/", 4));
+    }
+
+    #[test]
+    fn fills_never_reach_the_log() {
+        // The request line logs the page's scheme and host (dlog::origin) and a count: no path, query or value.
+        let host = crate::dlog::origin("https://shop.example/cart?x=a@b").to_string();
+        assert!(host.contains("shop.example") && !host.contains("a@b") && !host.contains("cart"), "{host}");
+        let call = write_call("fn", "", "Ann");
+        assert!(!format!("{call:?}").contains("Ann"), "a call prints no value");
+        let fill = Fill { id: Some("a".into()), name: None, value: "a@b".into() };
+        assert!(!format!("{fill:?}").contains("a@b"));
+    }
+
+    #[test]
+    fn queued_fills_keep_their_binding() {
+        let mut q: Queue<Bound> = Queue::new();
+        let b = |e: u64| Bound { origin: "https://a.example".into(), epoch: e, fill: Fill { id: Some("x".into()), name: None, value: "v".into() } };
+        assert!(q.push(b(1)).is_some());
+        assert!(q.push(b(1)).is_none());
+        let next = q.finish().expect("next");
+        assert!(next.valid("https://a.example/p", 1));
+        assert!(!next.valid("https://a.example/p", 2), "a queued fill of an older page never runs");
     }
 }

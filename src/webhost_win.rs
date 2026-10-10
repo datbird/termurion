@@ -693,6 +693,17 @@ impl WebView {
         self.inner.borrow_mut().key_gate = gate;
     }
 
+    /// Whether WebView2's own general autofill and password autosave are on (13x7 Review Focus 4).
+    #[cfg(test)]
+    pub fn engine_autofill(&self) -> Option<(bool, bool)> {
+        let c = self.inner.borrow().core.clone()?;
+        let s4 = unsafe { c.view.Settings() }.ok()?.cast::<ICoreWebView2Settings4>().ok()?;
+        let (mut a, mut b) = (BOOL(0), BOOL(0));
+        unsafe { s4.IsGeneralAutofillEnabled(&mut a) }.ok()?;
+        unsafe { s4.IsPasswordAutosaveEnabled(&mut b) }.ok()?;
+        Some((a.as_bool(), b.as_bool()))
+    }
+
     pub fn focus(&self) {
         self.with(|c| {
             let _ = unsafe { c.ctrl.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) };
@@ -3404,6 +3415,53 @@ mod probe {
             p.page_eval(focus).unwrap();
             assert_eq!(p.eval(None, &guard), Ok(json!(true)), "{focus}");
         }
+        p.finish();
+    }
+
+    /// 13x7 Review Focus 4: WebView2's own autofill and password saving are off in a view made with the
+    /// default setup. Needs the console session.
+    #[test]
+    #[ignore]
+    fn engine_autofill_off() {
+        let Some(p) = Probe::start(&[(PAGE, "<!doctype html><html><body></body></html>".to_string())], Vec::new()) else { return };
+        assert_eq!(p.view().engine_autofill(), Some((false, false)), "general autofill and password autosave are off");
+        p.finish();
+    }
+
+    /// The detector as the app injects it, on a local form (13x7 Task 3).
+    fn autofill_form() -> String {
+        "<!doctype html><html><body style=\"margin:0\"><form><input id=fn name=fname><input id=em type=email></form></body></html>".to_string()
+    }
+
+    /// 13x7 Task 3: a page script's click on Tandem's button posts nothing and fills nothing (R13x67-2); a
+    /// real, trusted press posts exactly one request; and the confirmed fill (Task 1's `write_call`, the
+    /// one writer, run the way `browser_js_call` runs it) puts the values in the form. Needs the console
+    /// session.
+    #[test]
+    #[ignore]
+    fn autofill_press_requests_and_the_confirmed_fill_writes() {
+        use crate::browser_autofill as ba;
+        let secret = hex32();
+        let code = ba::detector_script(&secret).expect("the detector assembles");
+        let det = crate::browser_js::wrap(&crate::browser_js::UserScript { id: "autofillHandler", code, inject: crate::browser_js::Inject::DocumentEnd, main_frame_only: true, world: crate::browser_js::World::Client });
+        let Some(mut p) = Probe::start(&[(PAGE, autofill_form())], vec![det]) else { return };
+        p.load(PAGE);
+        p.settle(2600);
+        // The page can see no button and click none: they live in a closed shadow root of the world.
+        assert_eq!(p.page_eval("document.querySelectorAll('[data-iterm-autofill]').length"), Ok("0".into()));
+        p.page_eval("document.querySelector('[data-iterm-autofill]') && document.querySelector('[data-iterm-autofill]').click(); 0").expect("a scripted click");
+        p.settle(2000);
+        assert!(p.clients(ba::HANDLER).is_empty(), "a scripted click requests nothing");
+        let vals = |p: &mut Probe| p.page_eval("[document.getElementById('fn').value, document.getElementById('em').value].join('|')");
+        assert_eq!(vals(&mut p), Ok("\"|\"".into()), "both inputs still empty");
+        // The confirmed fill, as the app runs it after the person pressed Fill.
+        let a = ba::write_call("fn", "", "Ann");
+        let b = ba::write_call("em", "", "a@b");
+        for c in [a, b] {
+            let expr = crate::browser_js::call_js(&c.body, &c.args).expect("the call");
+            p.eval(None, &expr).expect("the write");
+        }
+        assert_eq!(vals(&mut p), Ok("\"Ann|a@b\"".into()));
         p.finish();
     }
 

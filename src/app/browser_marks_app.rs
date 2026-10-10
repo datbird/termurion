@@ -283,6 +283,11 @@ impl App {
         match e {
             Event::Starting { nav, redirect, user, .. } => {
                 bv.marks_method.starting(*nav);
+                // A new page: the waiting request is the old page's, and an empty card may ask again.
+                bv.autofill.pending = None;
+                if !*redirect {
+                    bv.autofill.asked = false;
+                }
                 if bv.world.setup.is_none() {
                     bv.marks_page.reveal_starting(*nav, *redirect, *user);
                 }

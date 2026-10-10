@@ -4124,6 +4124,7 @@ impl App {
         }
         self.browser_tip_drop(id);
         self.marks_pane_gone(id);
+        self.autofill_pane_gone(id);
         self.close_browser_view(id);
     }
 
@@ -7241,6 +7242,7 @@ impl ApplicationHandler<UserEvent> for App {
         #[cfg(windows)]
         self.tick_logout();
         self.open_pwm_windows(event_loop);
+        self.open_autofill_windows(event_loop);
         self.api_tick(event_loop);
         self.api_notify_tick();
         self.open_api_alerts(event_loop);

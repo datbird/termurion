@@ -177,6 +177,8 @@ struct Confirm {
     kind: ConfirmKind,
     /// A notice shown in the remembered mode: the saved answer's label.
     remembered: Option<String>,
+    /// When the window opened (the input guard of a question a page can cause).
+    opened: Option<Instant>,
 }
 
 enum ConfirmKind {
@@ -188,6 +190,9 @@ enum ConfirmKind {
     Warning,
     /// An adapter's notice, OK with iTerm2's checkbox (`adapter_warning_spec`).
     Notice(crate::warnings::Spec),
+    /// A browser page's autofill press, asked in Tandem's own window (13x7): only Fill, pressed by
+    /// the person, runs it, and only on the page it was asked on.
+    Autofill(PaneId, super::browser_autofill_app::AutofillAsk),
 }
 
 impl App {
@@ -218,10 +223,14 @@ impl App {
                 ConfirmKind::Check(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
                 ConfirmKind::Broadcast(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, BROADCAST_ENTER),
                 ConfirmKind::Warning => ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
+                ConfirmKind::Autofill(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, crate::browser_autofill::CONFIRM_FILL),
                 ConfirmKind::Notice(spec) => super::warnings_app::open_warning(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), spec, c.remembered.as_deref(), underline),
             };
             match opened {
-                Ok(w) => c.window = Some(w),
+                Ok(w) => {
+                    c.window = Some(w);
+                    c.opened = Some(Instant::now());
+                }
                 Err(e) => failed = Some(e),
             }
         }
@@ -350,7 +359,7 @@ impl App {
     }
 
     fn pwm_warning(&mut self, heading: &str, text: &str) {
-        self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text: text.to_string(), kind: ConfirmKind::Warning, remembered: None });
+        self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text: text.to_string(), kind: ConfirmKind::Warning, remembered: None, opened: None });
     }
 
     /// A gear setting's value (stored, else iTerm2's default).
@@ -1128,7 +1137,7 @@ impl App {
                         Preempt::ShowRemembered { saved_label } => Some(Some(saved_label)),
                     };
                     if let Some(remembered) = remembered {
-                        self.pwm.confirms.push(Confirm { window: None, heading: spec.heading.clone(), text, kind: ConfirmKind::Notice(spec), remembered });
+                        self.pwm.confirms.push(Confirm { window: None, heading: spec.heading.clone(), text, kind: ConfirmKind::Notice(spec), remembered, opened: None });
                     }
                 }
             }
@@ -1398,7 +1407,7 @@ impl App {
                 Out::SendPassword if single => self.send_entry(pane),
                 Out::Failed if single => {
                     let id = self.pwm.entries.get(&pane).map_or(0, |(id, _)| *id);
-                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id), remembered: None });
+                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id), remembered: None, opened: None });
                 }
                 Out::SendPassword | Out::Failed => {
                     let ok = matches!(o, Out::SendPassword);
@@ -1469,7 +1478,7 @@ impl App {
                 }
                 Finish::Ask { heading, text, ok, .. } => {
                     let kind = if ok.is_empty() { ConfirmKind::Warning } else { ConfirmKind::Broadcast(ok, r.password) };
-                    self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text, kind, remembered: None });
+                    self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text, kind, remembered: None, opened: None });
                 }
             }
         }
@@ -1484,12 +1493,17 @@ impl App {
     /// Events for the password manager's questions. False for other windows.
     pub(super) fn pwm_confirm_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
         let Some(i) = self.pwm.confirms.iter().position(|c| c.window.as_ref().is_some_and(|w| w.id() == id)) else { return false };
+        // THE call site of the native-window input guard for a question a page can raise (the same
+        // 500 ms rule as 13x5's mark windows; it becomes the one shared guard when 13x6 merges).
+        let guarded = matches!(self.pwm.confirms[i].kind, ConfirmKind::Autofill(..)) && native_input_guarded(self.pwm.confirms[i].opened, event);
         let Some(w) = self.pwm.confirms[i].window.as_mut() else { return false };
         let answer = match event {
             WindowEvent::CloseRequested => ConfirmResult::Cancel,
             WindowEvent::RedrawRequested => w.redraw(),
             other => {
-                w.event(other);
+                if !guarded {
+                    w.event(other);
+                }
                 ConfirmResult::Open
             }
         };
@@ -1499,13 +1513,36 @@ impl App {
                 let spec = spec.clone();
                 if self.warning_window_answered(&spec, c.remembered.is_some(), *index, *suppress) {
                     // Forgotten: the notice again, without the remembered mode.
-                    self.pwm.confirms.push(Confirm { window: None, remembered: None, ..c });
+                    self.pwm.confirms.push(Confirm { window: None, remembered: None, opened: None, ..c });
                 }
                 return true;
             }
             self.pwm_confirmed(c.kind, answer);
         }
         true
+    }
+
+    /// Opens a page's autofill question for `pane` on the next pass. One at a time per pane (the
+    /// caller checks `autofill_ask_open`).
+    pub(super) fn pwm_ask_autofill(&mut self, pane: PaneId, text: String, ask: super::browser_autofill_app::AutofillAsk) {
+        self.pwm.confirms.push(Confirm { window: None, heading: crate::browser_autofill::CONFIRM_HEADING.to_string(), text, kind: ConfirmKind::Autofill(pane, ask), remembered: None, opened: None });
+        self.redraw();
+    }
+
+    /// Whether `pane` has an autofill question open or waiting.
+    pub(super) fn autofill_ask_open(&self, pane: PaneId) -> bool {
+        self.pwm.confirms.iter().any(|c| matches!(&c.kind, ConfirmKind::Autofill(p, _) if *p == pane))
+    }
+
+    /// Drops `pane`'s autofill questions (closing their windows) whose page is gone: all of them with
+    /// `all`, else those `still` (origin, epoch) does not accept. Nothing fills.
+    pub(super) fn autofill_ask_drop(&mut self, pane: PaneId, all: bool, still: impl Fn(&str, u64) -> bool) {
+        self.pwm.confirms.retain(|c| !matches!(&c.kind, ConfirmKind::Autofill(p, a) if *p == pane && (all || !still(&a.origin, a.epoch))));
+    }
+
+    /// The panes with an autofill question, to sweep.
+    pub(super) fn autofill_ask_panes(&self) -> Vec<PaneId> {
+        self.pwm.confirms.iter().filter_map(|c| match &c.kind { ConfirmKind::Autofill(p, _) => Some(*p), _ => None }).collect()
     }
 
     fn pwm_confirmed(&mut self, kind: ConfirmKind, answer: ConfirmResult) {
@@ -1526,6 +1563,11 @@ impl App {
                     for p in sessions {
                         self.write_password(p, &password);
                     }
+                }
+            }
+            ConfirmKind::Autofill(pane, ask) => {
+                if ok {
+                    self.autofill_confirmed(pane, ask);
                 }
             }
             // A notice's answer is remembered in `pwm_confirm_event`; closed, nothing.
@@ -1559,6 +1601,12 @@ impl App {
         self.pwm_warning(pwm_cli::LP_LOGIN_SUCCESSFUL_TITLE, pwm_cli::LP_LOGIN_SUCCESSFUL_MESSAGE);
         self.close_pane(pane, event_loop);
     }
+}
+
+/// Whether a key or click is dropped: the window opened less than the guard's time ago (a keystroke
+/// meant for the page must not answer a question a page raised).
+fn native_input_guarded(opened: Option<Instant>, event: &WindowEvent) -> bool {
+    matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && opened.is_some_and(|t| crate::browser_marks::input_ignored(t, Instant::now()))
 }
 
 /// An `iTermWarning` with no heading of its own (`iTermWarning.m:329`).
