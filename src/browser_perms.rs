@@ -472,13 +472,42 @@ const NOTE_ORIGIN_CHARS: usize = 60;
 const NOTE_TEXT_CHARS: usize = 120;
 const NOTE_BODY_CHARS: usize = 200;
 
+/// An origin as a label at most `max` characters long that always keeps the END of the host (the
+/// registrable domain and the port, the part that names the sender): a long host is cut from the
+/// LEFT after the scheme, behind an ellipsis, as Chromium shows origins. Hidden characters are
+/// dropped first. `https://tandem-update.microsoft.com.aaaa.evil.example` never reads as
+/// microsoft.com.
+pub fn origin_label(origin: &str, max: usize) -> String {
+    let clean = crate::inert_files::clean_name(origin);
+    let chars: Vec<char> = clean.chars().collect();
+    if chars.len() <= max {
+        return clean;
+    }
+    let head: Vec<char> = clean.find("://").map_or(String::new(), |i| clean[..i + 3].to_string()).chars().collect();
+    // A scheme too long to leave room: the end alone.
+    let head = if head.len() + 2 > max { Vec::new() } else { head };
+    let keep = max.saturating_sub(head.len() + 1);
+    head.iter().chain(['\u{2026}'].iter()).chain(chars[chars.len() - keep..].iter()).collect()
+}
+
+/// `s` with its hidden characters dropped and at most `max` characters, the last an ellipsis when
+/// it was cut (a cut text never reads as complete).
+fn clip(s: &str, max: usize) -> String {
+    let chars: Vec<char> = crate::inert_files::clean_name(s).chars().collect();
+    if chars.len() <= max {
+        return chars.into_iter().collect();
+    }
+    chars[..max.saturating_sub(1)].iter().chain(['\u{2026}'].iter()).collect()
+}
+
 /// A web notification's balloon text (B4). The origin (punycode, as `normalize_origin` made it) is
 /// ALWAYS the title, so a page can never pose as Tandem or as another site; the page's own title
 /// and body, cleaned of control and bidi characters and capped, are the body. A notification with
 /// no text at all still says who sent it (an empty body removes the balloon).
 pub fn notification_text(title: &str, body: &str, origin: &str) -> (String, String) {
-    let clean = |s: &str| crate::inert_files::display_text(s, NOTE_TEXT_CHARS, false);
-    let head = crate::inert_files::display_text(origin, NOTE_ORIGIN_CHARS, false);
+    let clean = |s: &str| clip(s, NOTE_TEXT_CHARS);
+    // The END of the origin always shows (Task 6 review I2).
+    let head = origin_label(origin, NOTE_ORIGIN_CHARS);
     let (t, b) = (clean(title), clean(body));
     let text = match (t.is_empty(), b.is_empty()) {
         (true, true) => "(no text)".to_string(),
@@ -486,7 +515,7 @@ pub fn notification_text(title: &str, body: &str, origin: &str) -> (String, Stri
         (true, false) => b,
         (false, false) => format!("{t}: {b}"),
     };
-    (head, crate::inert_files::display_text(&text, NOTE_BODY_CHARS, false))
+    (head, clip(&text, NOTE_BODY_CHARS))
 }
 
 /// A web notification taken off Tandem's record: whom to tell it closed, and `notify::shown_count()`
@@ -851,9 +880,22 @@ mod tests {
         assert_eq!(t, "https://evil.example", "the origin is always the title");
         assert!(!b.contains('\u{202e}') && !b.contains('\n'));
         assert!(b.starts_with("Session Ended: "));
-        let (t, b) = notification_text(&"x".repeat(500), &"y".repeat(500), &format!("https://{}.example", "a".repeat(200)));
-        assert!(t.chars().count() <= 60 && t.starts_with("https://aaa"));
-        assert!(b.chars().count() <= 200);
+        // Task 6 review I2: a long lookalike host keeps its END (the real domain and the port),
+        // cut from the left behind an ellipsis; never the lookalike head alone.
+        let fake = format!("https://tandem-update.microsoft.com.{}.evil.example:8443", "a".repeat(60));
+        let (t, b) = notification_text(&"x".repeat(500), &"y".repeat(500), &fake);
+        assert!(t.chars().count() <= 60, "{t}");
+        assert!(t.starts_with("https://\u{2026}") && t.ends_with(".evil.example:8443"), "the sender's domain is visible: {t}");
+        assert!(!t.contains("microsoft.com"), "{t}");
+        let long = format!("https://{}.example", "a".repeat(200));
+        assert!(notification_text("t", "b", &long).0.ends_with("aaa.example"));
+        assert_eq!(origin_label("https://a.b:8443", 60), "https://a.b:8443", "a short origin is whole");
+        // Minor 1: a cut text says so with an ellipsis.
+        assert!(b.chars().count() <= 200 && b.ends_with('\u{2026}'), "{b}");
+        assert!(!notification_text("Hi", "there", "https://a.b").1.contains('\u{2026}'));
+        // Minor 5: zero-width characters are dropped from what a page wrote.
+        let (_, b) = notification_text("Ta\u{200b}ndem", "x\u{200d}y\u{feff}", "https://a.b");
+        assert_eq!(b, "Tandem: xy");
     }
 
     #[test]

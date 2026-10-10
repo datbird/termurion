@@ -60,3 +60,20 @@ creation, is not found (task 5 review minor 5).
 
 R13x6-T5f (ruling A wording). Ruling A's "Deny never saved" covers ANSWERS only: the start-up
 sync writes a Denied row back as profile Deny (state 2), which matches the table.
+
+Task 6 review fixes (web notifications):
+
+R13x6-T6a (close only itself). A page's close of its notification, and its navigation, clear the
+balloon only while `notify::shown_count()` is still the count recorded right after that
+notification was shown (`notify::clear_if_shown`); anything shown since, by any caller, is never
+the page's to clear. The page is still told its notification closed.
+
+R13x6-T6b (origin label). The origin a notification and a permission question show always keeps
+the END of the host and the port: a long host is cut from the left after the scheme, behind an
+ellipsis (`origin_label`), as Chromium shows origins. Page text cut to its cap ends with an
+ellipsis; zero-width and bidi characters are dropped.
+
+R13x6-T6c (master switch). Web notifications of a granted site are shown even when the profile's
+"Notification Center alerts" switch is off (only "suppress alerts in the active session" holds
+them): the person granted that site directly. Recorded for Robert; the stricter choice (the
+switch also silences sites) is his call.

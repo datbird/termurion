@@ -27,6 +27,8 @@ const WAITING_PER_ASK: usize = 16;
 /// without a window for this long (B2): a page cannot re-raise the window by looping.
 const COOLDOWN_MS: u64 = 60_000;
 const COOLDOWNS_KEPT: usize = 256;
+/// Longest origin a permission question names (two of them and the question fit its 300).
+const PROMPT_ORIGIN_CHARS: usize = 120;
 /// A granted origin may show one notification this often; a flood from one site is dropped.
 const WEB_NOTE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -193,9 +195,11 @@ impl Asks {
     }
 
     fn ask(&mut self, p: Prep, origin: String, t: PermissionType, acts: &mut Vec<Act>) {
+        // Each origin keeps its END in the question (the domain that names it, Task 6 review I2).
+        let label = |o: &str| bp::origin_label(o, PROMPT_ORIGIN_CHARS);
         let shown = match &p.top {
-            Some(top) if *top != origin => format!("{origin} on {top}"),
-            _ => origin.clone(),
+            Some(top) if *top != origin => format!("{} on {}", label(&origin), label(top)),
+            _ => label(&origin),
         };
         let waiter = Waiter { pane: p.req.pane, token: p.req.token, epoch: p.req.epoch };
         // Closed unanswered a moment ago: no window, no grant (B2).
@@ -1049,6 +1053,15 @@ mod tests {
         assert_eq!(s.origin, "https://xn--bcher-kva.example");
         // Unicode never reaches a prompt: such a host has no origin and is denied.
         assert_eq!(bp::normalize_origin("https://b\u{fc}cher.example/"), None);
+        // Task 6 review I2: long origins keep their END in the prompt, and the question still
+        // ends with what it asks.
+        let mut asks = Asks::default();
+        let frame = format!("https://login.bank.example.{}.evil.example", "a".repeat(60).repeat(3).chars().collect::<Vec<_>>().chunks(60).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join("."));
+        let mut pr = prep(req(1, 1, 3, &format!("{frame}/")), &[]);
+        pr.top = Some(format!("https://top.{}.example", "b".repeat(60).repeat(3).chars().collect::<Vec<_>>().chunks(60).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(".")));
+        let q = asked(&asks.plan_flush(vec![pr], SYS));
+        let text = &q[0].2;
+        assert!(text.contains(".evil.example on https://\u{2026}") && text.ends_with(".example wants to know your location."), "{text}");
     }
 
     #[test]
