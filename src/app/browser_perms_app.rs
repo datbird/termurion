@@ -38,12 +38,11 @@ fn now_ms() -> u64 {
     START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
 }
 
-/// Per-pane state for the audio and mute work (Task 7 fills it); it lives on the pane, not the view.
+/// Per-pane state for the audio and mute work; it lives on the pane, not the view (a remade view
+/// keeps it).
 #[derive(Default)]
-#[allow(dead_code)] // Task 7 reads these
 pub(super) struct PaneState {
-    pub(super) muted_by_us: bool,
-    pub(super) audio_disabled: bool,
+    pub(super) audio: bp::AudioState,
 }
 
 /// One request as the page raised it, with the page's navigation epoch at that moment.
@@ -902,6 +901,99 @@ impl App {
     }
 }
 
+/// Audio muting (Task 7). The state is `bp::AudioState` on the pane; the engine's play events and
+/// the person's answers are the only inputs (a page cannot unmute itself: nothing a page sends
+/// reaches here).
+impl App {
+    fn saved_audio(&mut self, pane: PaneId, url: &str) -> Option<Decision> {
+        let origin = bp::normalize_origin(url)?;
+        let dev_null = self.pane_dev_null(pane);
+        self.browser_db(dev_null)?.get_permission(&origin, PermissionType::AudioPlayback).map(|r| r.decision)
+    }
+
+    fn browser_set_muted(&mut self, pane: PaneId, on: bool) {
+        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+            v.set_muted(on);
+        }
+    }
+
+    /// A main-frame navigation began (called from the one `Starting` dispatch, after it has left
+    /// the isolated world's own navigations alone): the page is muted unless its origin is allowed,
+    /// both ways, and a new document (not a redirect) resets the state (`BM:1255-1256`).
+    pub(super) fn browser_navigation_starting(&mut self, pane: PaneId, url: &str, redirect: bool) {
+        let saved = self.saved_audio(pane, url);
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let on = bv.perms.audio.starting(redirect, saved);
+        self.browser_set_muted(pane, on);
+    }
+
+    /// A view was made (first, or remade): it starts unmuted, so the pane's page is muted now unless
+    /// its origin is allowed, before the first `Starting`.
+    pub(super) fn browser_audio_created(&mut self, pane: PaneId) {
+        let Some(url) = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()) else { return };
+        let saved = self.saved_audio(pane, &url);
+        self.browser_set_muted(pane, bp::premute(saved));
+    }
+
+    /// The document started or stopped playing (the engine's state, `IsDocumentPlayingAudio`).
+    /// A pause does nothing (`BAH:67-69`).
+    pub(super) fn browser_audio_playing(&mut self, pane: PaneId, playing: bool) {
+        if !playing {
+            return;
+        }
+        let Some(url) = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()) else { return };
+        let saved = self.saved_audio(pane, &url);
+        let muted = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()).is_some_and(|v| v.is_muted());
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let (set, ask) = bv.perms.audio.playing(saved, muted);
+        let epoch = bv.perms.audio.epoch;
+        if let Some(on) = set {
+            self.browser_set_muted(pane, on);
+        }
+        // An origin that cannot be keyed (opaque) has nothing to remember: muted, not asked.
+        let (true, Some(origin)) = (ask, bp::normalize_origin(&url)) else { return };
+        let asked = origin.clone();
+        let asked_url = url.clone();
+        self.browser_announce(pane, &bp::audio_bar_id(&origin), &bp::audio_prompt(&origin), &bp::AUDIO_BUTTONS, Box::new(move |app, pane, index| {
+            app.browser_audio_answered(pane, asked, asked_url, epoch, bp::AudioAnswer::parse(index));
+        }));
+    }
+
+    /// The bar's answer (`BM:2098-2122`). The save happens whatever the page did since; unmuting
+    /// and ending the question concern only the page that was asked (`bp::AudioState::answered`).
+    pub(super) fn browser_audio_answered(&mut self, pane: PaneId, origin: String, url: String, epoch: u64, answer: bp::AudioAnswer) {
+        let now = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+        let same_origin = bp::normalize_origin(&now).as_deref() == Some(origin.as_str());
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        let out = bv.perms.audio.answered(epoch, now == url, same_origin, answer);
+        if let Some(d) = out.save {
+            let dev_null = self.pane_dev_null(pane);
+            if let Some(db) = self.browser_db(dev_null) {
+                let _ = db.save_permission(&origin, PermissionType::AudioPlayback, d, super::warnings_app::unix_now());
+            }
+        }
+        if out.unmute {
+            self.browser_set_muted(pane, false);
+        }
+    }
+
+    /// "Unmute Current Page" (`BM:594-600`).
+    #[allow(dead_code)] // Task 8's menu
+    pub(super) fn browser_unmute(&mut self, pane: PaneId) {
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.perms.audio.unmute();
+        }
+        self.browser_set_muted(pane, false);
+    }
+
+    /// Whether Tandem muted the current page on a play event (`currentPageIsMuted`, `BM:590-592`).
+    #[allow(dead_code)] // Task 8's menu
+    pub(super) fn browser_page_muted(&self, pane: PaneId) -> bool {
+        self.browser_views.get(&pane).is_some_and(|b| b.perms.audio.muted_by_us)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1319,5 +1411,24 @@ mod tests {
         let op = &prod[prod.find("fn apply_op(").unwrap()..prod.find("pub(super) fn revoke_permission(").unwrap()];
         assert!(op.contains("steps(effects(&op, origin), origin)") && op.contains(".revoke(st.states, st.reload_after)"), "the queue runs the reload after the writes");
         assert!(op.find("if st.reload_now").is_some() && !op.contains("if fx.reload"), "no reload races the reset");
+    }
+
+    #[test]
+    fn audio_is_wired_to_the_engine_and_the_person() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let audio = &prod[prod.find("fn saved_audio").unwrap()..];
+        assert!(audio.contains("bp::AUDIO_BUTTONS") && audio.contains("self.browser_announce(") && audio.contains("bp::audio_bar_id("), "the one announcement bar");
+        assert!(audio.contains("PermissionType::AudioPlayback") && audio.matches("set_muted(").count() >= 2);
+        assert!(audio.contains("perms.audio.answered(epoch"), "stale answers are matched by the navigation epoch");
+        assert!(!audio.contains("Event::Message") && !audio.contains("json"), "no page message reaches the mute state");
+        let ev = include_str!("browser_app.rs");
+        assert!(ev.contains("Event::AudioPlaying { playing, .. } => self.browser_audio_playing(pane, *playing)") && ev.contains("self.browser_audio_created(pane)"));
+        let restore = include_str!("browser_restore_app.rs");
+        let f = &restore[restore.find("pub(super) fn browser_nav_starting").unwrap()..];
+        let guard = f.find("bv.world.setup.is_some()").unwrap();
+        let call = f.find("self.browser_navigation_starting(pane, url, redirect)").unwrap();
+        assert!(guard < call, "the isolated world's own navigations never reach the audio state (B8)");
+        assert!(ev.matches("Event::Starting {").count() >= 1 && !ev.contains("browser_navigation_starting"), "one Starting dispatch");
     }
 }

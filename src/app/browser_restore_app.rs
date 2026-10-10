@@ -83,6 +83,8 @@ impl App {
         }
         let t = bv.bar.nav_state.starting(url, kind, user, redirect);
         bv.bar.transition = Some(t);
+        // Audio is judged here, past the world's own about:blank guard, in the one dispatch (13x6 B8).
+        self.browser_navigation_starting(pane, url, redirect);
     }
 
     /// The pane's page color for the minimal tab style's tint (`PS:5838-5850`): Some only for a

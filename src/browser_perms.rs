@@ -563,6 +563,163 @@ impl NoteScreen {
     }
 }
 
+// ---- Audio (Task 7, `BM:2058-2122`, `BAH`) ----
+
+/// The question bar's buttons (`BM:2092-2095`); `_X` marks Alt+X.
+pub const ALLOW_ONCE: &str = "Allow _Once";
+pub const ALLOW_ALWAYS: &str = "Allow _Always";
+pub const DENY_ONCE: &str = "_Deny Once";
+pub const DENY_ALWAYS: &str = "De_ny Always";
+pub const AUDIO_BUTTONS: [&str; 4] = [ALLOW_ONCE, ALLOW_ALWAYS, DENY_ONCE, DENY_ALWAYS];
+
+/// What a play event does (`BM:2073-2083`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioAct {
+    Nothing,
+    Unmute,
+    /// Mute if needed and record the page as muted by Tandem.
+    Mute,
+    /// The same, and ask.
+    Ask,
+}
+
+/// Whether a page starts muted: unless its origin is Granted (a Denied or unknown origin is silent
+/// until the person allows it).
+pub fn premute(saved: Option<Decision>) -> bool {
+    saved != Some(Decision::Granted)
+}
+
+/// What a play event does for a page whose origin has `saved`, with `muted` the view's state now.
+/// `disabled` is a once answer's "until the next document" (`BAH:72`).
+pub fn on_playing(disabled: bool, saved: Option<Decision>, muted: bool) -> AudioAct {
+    if disabled {
+        return AudioAct::Nothing;
+    }
+    match saved {
+        Some(Decision::Denied) => AudioAct::Mute,
+        Some(Decision::Granted) if muted => AudioAct::Unmute,
+        Some(Decision::Granted) => AudioAct::Nothing,
+        None => AudioAct::Ask,
+    }
+}
+
+pub fn audio_prompt(origin: &str) -> String {
+    format!("Audio was muted. Allow playback by {origin}?")
+}
+
+pub fn audio_bar_id(origin: &str) -> String {
+    format!("NoSyncMuteAudio_{origin}")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioAnswer {
+    AllowOnce,
+    AllowAlways,
+    DenyOnce,
+    DenyAlways,
+    Closed,
+}
+
+impl AudioAnswer {
+    /// The bar's answer: the index into `AUDIO_BUTTONS`; None or out of range is Closed.
+    pub fn parse(index: Option<usize>) -> AudioAnswer {
+        match index {
+            Some(0) => AudioAnswer::AllowOnce,
+            Some(1) => AudioAnswer::AllowAlways,
+            Some(2) => AudioAnswer::DenyOnce,
+            Some(3) => AudioAnswer::DenyAlways,
+            _ => AudioAnswer::Closed,
+        }
+    }
+}
+
+/// (decision to save, unmute now, disable the handler until the next document) (`BM:2098-2122`).
+pub fn apply(answer: AudioAnswer) -> (Option<Decision>, bool, bool) {
+    match answer {
+        AudioAnswer::AllowOnce => (None, true, true),
+        AudioAnswer::AllowAlways => (Some(Decision::Granted), true, false),
+        AudioAnswer::DenyOnce => (None, false, true),
+        AudioAnswer::DenyAlways => (Some(Decision::Denied), false, false),
+        AudioAnswer::Closed => (None, false, false),
+    }
+}
+
+/// One pane's audio state. It lives on the pane, not the view (a remade view keeps it). Every
+/// change comes from the person's choices and the engine's play events, never from a page message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AudioState {
+    /// Tandem muted the page on a play event (`currentPageIsMuted`, `BM:590-592`).
+    pub muted_by_us: bool,
+    /// A once answer ended the question for this document (`BAH:72`).
+    pub disabled: bool,
+    /// Counts the pane's documents: a question asked of an earlier one is stale.
+    pub epoch: u64,
+}
+
+/// What an answer to the bar did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Answered {
+    pub save: Option<Decision>,
+    pub unmute: bool,
+}
+
+impl AudioState {
+    /// A main-frame navigation began; returns whether the view should now be muted (both ways, so a
+    /// redirect to a granted origin unmutes). A new document (`redirect` false) resets the state
+    /// (`BM:1255-1256`); a redirect only re-evaluates the pre-mute. The caller never passes the
+    /// isolated world's own `about:blank` navigations.
+    pub fn starting(&mut self, redirect: bool, saved: Option<Decision>) -> bool {
+        if !redirect {
+            self.muted_by_us = false;
+            self.disabled = false;
+            self.epoch = self.epoch.wrapping_add(1);
+        }
+        premute(saved)
+    }
+
+    /// The document started playing audio. Returns (set the view muted to, ask).
+    pub fn playing(&mut self, saved: Option<Decision>, muted: bool) -> (Option<bool>, bool) {
+        let act = on_playing(self.disabled, saved, muted);
+        match act {
+            AudioAct::Nothing => (None, false),
+            AudioAct::Unmute => {
+                self.muted_by_us = false;
+                (Some(false), false)
+            }
+            AudioAct::Mute | AudioAct::Ask => {
+                self.muted_by_us = true;
+                ((!muted).then_some(true), act == AudioAct::Ask)
+            }
+        }
+    }
+
+    /// The bar asked at `asked` (an epoch) was answered. `same_url` says the pane is still on the page
+    /// URL it was asked about, `same_origin` on its origin. A save happens whatever the page did
+    /// since; an unmute only for the page that was asked, and a once answer only ends the question
+    /// of the document that asked it (`BM:2099`, review M8).
+    pub fn answered(&mut self, asked: u64, same_url: bool, same_origin: bool, answer: AudioAnswer) -> Answered {
+        let (save, unmute, disable) = apply(answer);
+        let same_doc = asked == self.epoch;
+        let unmute = unmute
+            && match answer {
+                AudioAnswer::AllowAlways => same_origin,
+                _ => same_doc && same_url,
+            };
+        if disable && same_doc && (unmute || answer == AudioAnswer::DenyOnce) {
+            self.disabled = true;
+        }
+        if unmute {
+            self.muted_by_us = false;
+        }
+        Answered { save, unmute }
+    }
+
+    /// "Unmute Current Page".
+    pub fn unmute(&mut self) {
+        self.muted_by_us = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,5 +1083,221 @@ mod tests {
         let gone = n.take().unwrap();
         assert!(!crate::notify::still_shown(gone.shown_at, 11), "the Tandem alert is not the page's to clear");
         assert!(crate::notify::still_shown(gone.shown_at, 10), "its own still is");
+    }
+
+    #[test]
+    fn audio_follows_iterm2() {
+        assert!(premute(None) && premute(Some(Decision::Denied)) && !premute(Some(Decision::Granted)));
+        let (g, d) = (Some(Decision::Granted), Some(Decision::Denied));
+        assert_eq!(on_playing(false, d, true), AudioAct::Mute);
+        assert_eq!(on_playing(false, d, false), AudioAct::Mute);
+        assert_eq!(on_playing(false, g, false), AudioAct::Nothing);
+        assert_eq!(on_playing(false, g, true), AudioAct::Unmute, "a page pre-muted before its origin was granted never stays silent");
+        assert_eq!(on_playing(false, None, true), AudioAct::Ask);
+        assert_eq!(on_playing(false, None, false), AudioAct::Ask);
+        for (saved, muted) in [(g, true), (None, false), (d, true)] {
+            assert_eq!(on_playing(true, saved, muted), AudioAct::Nothing, "disabled after a once answer");
+        }
+        assert_eq!(apply(AudioAnswer::AllowOnce), (None, true, true));
+        assert_eq!(apply(AudioAnswer::AllowAlways), (g, true, false));
+        assert_eq!(apply(AudioAnswer::DenyOnce), (None, false, true));
+        assert_eq!(apply(AudioAnswer::DenyAlways), (d, false, false));
+        assert_eq!(apply(AudioAnswer::Closed), (None, false, false));
+    }
+
+    #[test]
+    fn audio_bar_follows_iterm2() {
+        assert_eq!(audio_prompt("https://a.b"), "Audio was muted. Allow playback by https://a.b?");
+        assert_eq!(audio_bar_id("https://a.b"), "NoSyncMuteAudio_https://a.b");
+        assert_eq!(AUDIO_BUTTONS, ["Allow _Once", "Allow _Always", "_Deny Once", "De_ny Always"]);
+        let bar = crate::infobar::Bar { id: audio_bar_id("https://a.b"), text: audio_prompt("https://a.b"), buttons: AUDIO_BUTTONS.iter().map(|b| b.to_string()).collect(), important: true };
+        let labels: Vec<String> = (0..4).map(|i| bar.label(i)).collect();
+        assert_eq!(labels, ["Allow Once", "Allow Always", "Deny Once", "Deny Always"]);
+        assert_eq!([bar.shortcut('o'), bar.shortcut('a'), bar.shortcut('d'), bar.shortcut('n')], [Some(0), Some(1), Some(2), Some(3)]);
+        assert_eq!(AudioAnswer::parse(Some(0)), AudioAnswer::AllowOnce);
+        assert_eq!(AudioAnswer::parse(Some(1)), AudioAnswer::AllowAlways);
+        assert_eq!(AudioAnswer::parse(Some(2)), AudioAnswer::DenyOnce);
+        assert_eq!(AudioAnswer::parse(Some(3)), AudioAnswer::DenyAlways);
+        assert_eq!(AudioAnswer::parse(Some(4)), AudioAnswer::Closed);
+        assert_eq!(AudioAnswer::parse(None), AudioAnswer::Closed);
+    }
+
+    /// A pane the way `App` drives it: the saved rows, the view's mute, the pane's URL and the bars.
+    struct Pane {
+        saved: std::collections::HashMap<String, Decision>,
+        st: AudioState,
+        muted: bool,
+        url: String,
+        calls: Vec<String>,
+        /// (id, text, epoch, url, origin) of the bar showing.
+        bar: Option<(String, String, u64, String, String)>,
+        announces: usize,
+    }
+
+    impl Pane {
+        fn new() -> Pane {
+            Pane { saved: Default::default(), st: AudioState::default(), muted: false, url: String::new(), calls: vec![], bar: None, announces: 0 }
+        }
+        fn saved(&self, url: &str) -> Option<Decision> {
+            normalize_origin(url).and_then(|o| self.saved.get(&o).copied())
+        }
+        fn set_muted(&mut self, on: bool) {
+            self.muted = on;
+            self.calls.push(format!("set_muted({on})"));
+        }
+        fn starting(&mut self, url: &str, redirect: bool) {
+            self.url = url.to_string();
+            let on = self.st.starting(redirect, self.saved(url));
+            self.set_muted(on);
+        }
+        fn playing(&mut self, on: bool) {
+            if !on {
+                return;
+            }
+            let origin = normalize_origin(&self.url).unwrap();
+            let (set, ask) = self.st.playing(self.saved(&self.url), self.muted);
+            if let Some(m) = set {
+                self.set_muted(m);
+            }
+            if ask {
+                self.announces += 1;
+                if self.bar.as_ref().is_some_and(|b| b.0 == audio_bar_id(&origin)) {
+                    // The duplicate id answers None at once.
+                    return self.answer_for(None, self.st.epoch, self.url.clone(), origin);
+                }
+                self.bar = Some((audio_bar_id(&origin), audio_prompt(&origin), self.st.epoch, self.url.clone(), origin));
+            }
+        }
+        fn press(&mut self, index: usize) {
+            let (_, _, epoch, url, origin) = self.bar.take().unwrap();
+            self.answer_for(Some(index), epoch, url, origin);
+        }
+        fn answer_for(&mut self, index: Option<usize>, epoch: u64, url: String, origin: String) {
+            let same_origin = normalize_origin(&self.url).as_deref() == Some(origin.as_str());
+            let out = self.st.answered(epoch, self.url == url, same_origin, AudioAnswer::parse(index));
+            if let Some(d) = out.save {
+                self.saved.insert(origin, d);
+            }
+            if out.unmute {
+                self.set_muted(false);
+            }
+        }
+    }
+
+    #[test]
+    fn browser_audio_flow_follows_iterm2() {
+        // Nothing saved: muted at start, asked on play, Allow Always saves and unmutes.
+        let mut p = Pane::new();
+        p.st.muted_by_us = true;
+        p.st.disabled = true;
+        p.starting("https://a.b/", false);
+        assert_eq!(p.calls, ["set_muted(true)"]);
+        assert!(!p.st.muted_by_us && !p.st.disabled, "a new document resets both");
+        p.playing(true);
+        assert!(p.st.muted_by_us);
+        assert_eq!(p.bar.as_ref().map(|b| (b.0.as_str(), b.1.as_str())), Some(("NoSyncMuteAudio_https://a.b", "Audio was muted. Allow playback by https://a.b?")));
+        p.press(1);
+        assert_eq!(p.saved.get("https://a.b"), Some(&Decision::Granted));
+        assert!(!p.muted && !p.st.muted_by_us);
+        p.starting("https://a.b/other", false);
+        assert_eq!(p.calls.last().unwrap(), "set_muted(false)", "a later start to the same origin is unmuted");
+
+        // Deny Once leaves it muted and silences the question for this document.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.press(2);
+        assert!(p.muted && p.st.muted_by_us && p.st.disabled);
+        let asked = p.announces;
+        p.playing(true);
+        assert_eq!(p.announces, asked, "disabled: no second question");
+        assert!(p.saved.is_empty());
+        // The next document asks again.
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        assert_eq!(p.announces, asked + 1);
+
+        // A redirect only re-evaluates the pre-mute and keeps what the first start set.
+        let mut p = Pane::new();
+        p.saved.insert("https://g.h".into(), Decision::Granted);
+        p.starting("https://c.d/", false);
+        p.st.disabled = true;
+        p.st.muted_by_us = true;
+        p.calls.clear();
+        p.starting("https://g.h/", true);
+        assert_eq!(p.calls, ["set_muted(false)"]);
+        assert!(p.st.disabled && p.st.muted_by_us, "a redirect does not reset");
+        let epoch = p.st.epoch;
+        p.starting("https://g.h/", false);
+        assert_eq!(p.st.epoch, epoch + 1, "reload or back/forward (any kind) is a new document");
+
+        // Granted from another pane: unmuted on the next play.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.saved.insert("https://a.b".into(), Decision::Granted);
+        p.calls.clear();
+        p.playing(true);
+        assert_eq!(p.calls, ["set_muted(false)"]);
+        assert!(p.bar.is_none() && !p.st.muted_by_us);
+
+        // Denied: muted quietly, "Unmute Current Page" shows (muted_by_us).
+        let mut p = Pane::new();
+        p.saved.insert("https://a.b".into(), Decision::Denied);
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        assert!(p.bar.is_none() && p.muted && p.st.muted_by_us);
+        p.st.unmute();
+        p.set_muted(false);
+        assert!(!p.st.muted_by_us && !p.muted);
+
+        // Pause does nothing.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(false);
+        assert!(p.bar.is_none() && !p.st.muted_by_us);
+
+        // Allow Once after the pane moved on does not unmute; nor does it disable the new page.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.starting("https://a.b/next", false);
+        p.press(0);
+        assert!(p.muted && !p.st.disabled);
+        // Allow Always after the pane moved to another origin saves the row but leaves the page muted.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.starting("https://c.d/", false);
+        p.press(1);
+        assert_eq!(p.saved.get("https://a.b"), Some(&Decision::Granted));
+        assert!(p.muted, "the new origin's page stays muted");
+        // Same origin, new document: Allow Always unmutes (the origin is granted).
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.starting("https://a.b/x", false);
+        p.press(1);
+        assert!(!p.muted);
+        // Deny Always saves whatever happened; Deny Once from a stale document disables nothing.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.starting("https://c.d/", false);
+        p.press(3);
+        assert_eq!(p.saved.get("https://a.b"), Some(&Decision::Denied));
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.starting("https://a.b/", false);
+        p.press(2);
+        assert!(!p.st.disabled, "a stale Deny Once leaves the new document's question on");
+
+        // A second play event while the bar shows asks again; the duplicate answers None and changes nothing.
+        let mut p = Pane::new();
+        p.starting("https://a.b/", false);
+        p.playing(true);
+        p.playing(true);
+        assert_eq!(p.announces, 2);
+        assert!(p.bar.is_some() && p.muted && !p.st.disabled && p.saved.is_empty());
     }
 }

@@ -17,7 +17,6 @@ use crate::webhost_win::{ViewSetup, WebView};
 /// The view of one browser pane.
 pub(super) struct BrowserView {
     /// Permission and audio state that belongs to the pane (13x6).
-    #[allow(dead_code)] // Task 7
     pub(super) perms: crate::app::browser_perms_app::PaneState,
     /// None until the environment exists (and again after a window closed its views).
     pub(super) view: Option<WebView>,
@@ -616,6 +615,8 @@ impl App {
                 // The first view of an environment rewrites the profile's permission states (13x6).
                 let dev_null = self.pane_dev_null(pane);
                 self.sync_permission_states(dev_null);
+                // A new view starts unmuted: the pane's page is muted until its origin is allowed (13x6).
+                self.browser_audio_created(pane);
             }
             // The view could not be made: remade from the URL within the budget.
             Event::Failed(view, _) => {
@@ -645,7 +646,7 @@ impl App {
             Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
             Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
             Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
-            Event::AudioPlaying { .. } => {}
+            Event::AudioPlaying { playing, .. } => self.browser_audio_playing(pane, *playing),
             Event::PermissionStates { view, states, complete } => self.permission_states_read(pane, *view, states, *complete),
             Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok),
             // Everything a page's script says, the world's events and the calls' answers: the router.

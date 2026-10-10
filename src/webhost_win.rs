@@ -5204,4 +5204,21 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(10, |p| starts(p) > n), "a real navigation starts one: {:?}", p.order);
         p.finish();
     }
+
+    /// Task 7: the view's mute is the person's: a page's own `muted = false`, a new play call and a
+    /// same-document navigation do not lift it, and muting still reports the document as playing.
+    #[test]
+    #[ignore]
+    fn a_page_cannot_unmute_itself() {
+        let audio = format!("<audio id=a loop src=\"{}\"></audio>", tone_wav_uri());
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(&audio))], Vec::new(), false, &[], true) else { return };
+        p.view().set_muted(true);
+        p.load(PERM_PAGE);
+        p.page_eval("var a = document.getElementById('a'); a.muted = false; a.volume = 1; a.play(); 1").expect("the page plays");
+        assert!(p.wait(10, |p| p.audio.contains(&true)), "AudioPlaying true arrives: {:?}", p.audio);
+        p.page_eval("var a = document.getElementById('a'); a.muted = false; a.play(); history.pushState({}, '', '/n'); 1").expect("the page tries again");
+        p.settle(500);
+        assert!(p.view().is_muted(), "the page cannot lift the view's mute");
+        p.finish();
+    }
 }
