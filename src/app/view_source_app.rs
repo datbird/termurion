@@ -28,9 +28,13 @@ impl App {
     /// The answer for a request for a source URL, or None when `url` is not one (the other local
     /// pages' rule answers). Only a document request takes the pane's pending source.
     pub(super) fn browser_source_answer(&mut self, pane: PaneId, url: &str, context: i32) -> Option<Answer> {
-        // The main frame's own navigation to the source URL armed the pane (`Event::Starting`); the
-        // first document request after it is that navigation's, so a frame cannot take the source.
-        let top_level = view_source::is_source_url(url) && context == crate::browser_pages::CONTEXT_DOCUMENT && self.browser_views.get_mut(&pane).is_some_and(|b| std::mem::take(&mut b.source_nav));
+        // Only the main frame can request the source: every subframe navigation to an `iterm2-about:`
+        // URL is cancelled in WebView2 (`webhost::frame_nav_cancelled`), so no frame's request reaches
+        // here. The main frame's `Starting` arms the pane, but arming does not depend on the event
+        // order: a source document request with a pending source is the main frame's either way.
+        let armed = self.browser_views.get_mut(&pane).is_some_and(|b| std::mem::take(&mut b.source_nav));
+        let have = self.browser_views.get(&pane).is_some_and(|b| b.pending_source.is_some());
+        let top_level = view_source::is_source_url(url) && context == crate::browser_pages::CONTEXT_DOCUMENT && (armed || have);
         let nonce = crate::browser_pages::new_nonce();
         let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
         let mut none = None;
@@ -240,7 +244,7 @@ mod tests {
         let src = include_str!("view_source_app.rs");
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(prod.contains("if invalid_log_due() {") && prod.contains("from_secs(1)"));
-        assert!(prod.contains("std::mem::take(&mut b.source_nav)") && prod.contains("request(pending, url, context, top_level,"));
+        assert!(prod.contains("std::mem::take(&mut b.source_nav)") && prod.contains("(armed || have)") && prod.contains("request(pending, url, context, top_level,"));
         let r = include_str!("browser_restore_app.rs");
         let r = &r[..r.find("#[cfg(test)]").unwrap()];
         let starting = &r[r.find("pub(super) fn browser_nav_starting").unwrap()..];

@@ -1284,11 +1284,27 @@ fn source_of(view: &ICoreWebView2) -> Option<String> {
 }
 
 fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
-    // ONE NavigationStarting handler: later plans add their post to it.
+    unsafe { view.add_NavigationStarting(&starting_handler(inner, false), token) }?;
+    // The same handler body, in frame mode, for FrameNavigationStarting: a subframe may not go to an
+    // `iterm2-about:` page, so only the main frame can request the View Source page.
+    let mut frame_token = 0i64;
+    unsafe { view.add_FrameNavigationStarting(&starting_handler(inner, true), &mut frame_token) }?;
+    register_navigation_rest(inner, view, token)
+}
+
+/// ONE NavigationStarting handler (later plans add their post to it), built for the main frame
+/// (`frame` false) or for a subframe (`frame` true, which only cancels `iterm2-about:` targets).
+fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2NavigationStartingEventHandler {
     let weak = Rc::downgrade(inner);
-    let starting = NavigationStartingEventHandler::create(Box::new(move |sender, args| guard(|| {
+    NavigationStartingEventHandler::create(Box::new(move |sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
         let uri = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
+        if frame {
+            if webhost::frame_nav_cancelled(&uri) {
+                let _ = unsafe { args.SetCancel(true) };
+            }
+            return Ok(());
+        }
         let (user, redirect) = (bool_out(|b| unsafe { args.IsUserInitiated(b) }), bool_out(|b| unsafe { args.IsRedirected(b) }));
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
@@ -1332,9 +1348,10 @@ fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
         i.poster.post(Event::Starting { view: i.id, url: webhost::cap_url(&uri).0, kind: kind.0, user, redirect, nav });
         i.poster.post(Event::Loading(i.id, true));
         Ok(())
-    })));
-    unsafe { view.add_NavigationStarting(&starting, token) }?;
+    })))
+}
 
+fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
     let weak = Rc::downgrade(inner);
     let completed = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
@@ -1811,6 +1828,8 @@ mod tests {
         // The one NavigationStarting handler, and two message constructors (the view's and the frames',
         // 13x2 B8a) that both read a message only through `message_post`.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
+        // ...registered for the main frame and, in frame mode, for subframes (they may not reach iterm2-about:).
+        assert!(code.contains("add_FrameNavigationStarting(&starting_handler(inner, true)") && code.contains("webhost::frame_nav_cancelled(&uri)"));
         assert_eq!(code.matches("WebMessageReceivedEventHandler::create").count(), 2);
         assert_eq!(code.matches("args.WebMessageAsJson(").count(), 1, "one reader: message_post");
         assert_eq!(code.matches("message_post(&inner").count(), 2);
@@ -2343,6 +2362,8 @@ mod probe {
         rx: mpsc::Receiver<Posted>,
         pages: HashMap<String, String>,
         not_served: Vec<String>,
+        /// `starting <url>` and `request <context> <url>` in the order the host saw them.
+        order: Vec<String>,
         contexts: Contexts,
         setup: Setup,
         sources: Vec<String>,
@@ -2384,6 +2405,12 @@ mod probe {
         /// `start`, with `new_windows` as the view's setup (the browser pane's is on): a page's
         /// `window.open` then reaches the host's limiter, and an allowed one is `Event::NewWindow`.
         fn start_with(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool) -> Option<Probe> {
+            Probe::start_full(pages, sources, new_windows, &[])
+        }
+
+        /// `start_with`, with the custom schemes the environment registers (`iterm2-about` for the
+        /// local pages, as the app's environment does).
+        fn start_full(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool, schemes: &[&str]) -> Option<Probe> {
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
                 return None;
@@ -2417,6 +2444,7 @@ mod probe {
                 rx,
                 pages: pages.iter().map(|(u, b)| (u.to_string(), b.clone())).collect(),
                 not_served: Vec::new(),
+                order: Vec::new(),
                 contexts: Contexts::default(),
                 setup: Setup::unchecked(&sources),
                 sources,
@@ -2441,7 +2469,8 @@ mod probe {
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
-            Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *c2.borrow_mut() = Some(r)));
+            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+            Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
             let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, resource_filters: vec!["*".into()], ..Default::default() };
@@ -2559,7 +2588,9 @@ mod probe {
                 Event::Failed(_, why) => self.failed.push(why),
                 Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
                 Event::Navigated { ok, url, .. } => self.navigated.push((url, ok)),
-                Event::Request { token, url, .. } => {
+                Event::Starting { url, redirect: false, .. } => self.order.push(format!("starting {url}")),
+                Event::Request { token, url, context, .. } => {
+                    self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
                     let answer = match self.pages.get(&key) {
                         Some(body) => Answer::Respond { status: 200, mime: "text/html".into(), body: body.clone().into_bytes(), headers: vec![] },
@@ -3544,6 +3575,38 @@ mod probe {
         let text = p.page_eval("document.querySelector('.source-code').textContent").expect("the text");
         assert!(text.contains("<p class=\\\"k\\\">x</p>"), "{text}");
         assert_eq!(p.page_eval("String(document.querySelector('p.url').textContent)"), Ok("\"https://tandem.test/\"".into()));
+        p.finish();
+    }
+
+    /// 13x4 Task 7 I1 and the subframe ruling: the two facts View Source arming rests on, through the
+    /// real `iterm2-about:` scheme. The main frame's `Starting` for `iterm2-about:source` is posted
+    /// before its document `Request` (and the page it is answered with shows), and an iframe a page
+    /// adds that points at `iterm2-about:source` produces neither: the frame navigation is cancelled
+    /// in `FrameNavigationStarting`. Needs the console session.
+    #[test]
+    #[ignore]
+    fn view_source_arming_facts() {
+        const TEST_PAGE: &str = "https://tandem.test/";
+        const SOURCE: &str = "iterm2-about:source";
+        let pages = [(TEST_PAGE, "<html><body><p>x</p></body></html>".to_string()), (SOURCE, "<html><body><p id=\"s\">SOURCE-SHOWN</p></body></html>".to_string())];
+        let Some(mut p) = Probe::start_full(&pages, Vec::new(), false, &["iterm2-about"]) else { return };
+        p.load(TEST_PAGE);
+        // The main frame: Starting first, then the document Request, and the page shows.
+        p.order.clear();
+        let n = p.navigated.len();
+        p.view().navigate_tandem(SOURCE);
+        assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
+        let at = |p: &Probe, what: &str| p.order.iter().position(|o| o == what);
+        let (s, r) = (at(&p, &format!("starting {SOURCE}")), at(&p, &format!("request {} {SOURCE}", crate::browser_pages::CONTEXT_DOCUMENT)));
+        assert!(s.is_some() && r.is_some() && s < r, "Starting before the document Request: {:?}", p.order);
+        p.settle(300);
+        assert_eq!(p.page_eval("document.getElementById('s') && document.getElementById('s').textContent"), Ok("\"SOURCE-SHOWN\"".into()));
+        // A subframe: cancelled before any request.
+        p.load(TEST_PAGE);
+        p.order.clear();
+        p.page_eval("var f = document.createElement('iframe'); f.src = 'iterm2-about:source'; document.body.appendChild(f); 1").expect("the iframe");
+        p.settle(1500);
+        assert!(!p.order.iter().any(|o| o.contains(SOURCE)), "a subframe reached the host: {:?}", p.order);
         p.finish();
     }
 

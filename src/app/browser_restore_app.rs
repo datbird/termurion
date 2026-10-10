@@ -56,6 +56,10 @@ impl App {
         // The main frame's own navigation to the source page arms its one document request (Task 7).
         if !redirect {
             bv.source_nav = crate::view_source::is_source_url(url);
+            // A source left behind by a replaced or cancelled source navigation is dropped (Task 7 M3).
+            if !bv.source_nav {
+                bv.pending_source = None;
+            }
         }
         let t = bv.bar.nav_state.starting(url, kind, user, redirect);
         bv.bar.transition = Some(t);

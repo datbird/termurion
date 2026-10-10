@@ -35,3 +35,5 @@ Task 6 (View Source page, preflight B2, P12, P13):
   and takes the common css as a parameter here).
 - The page gets no bridge use: `browser_pages::route` knows no `source` page (tested). `NewWindow`
   links go through the existing `nav_gate_tab`; it already refuses every listed URL, no change.
+
+R13x4-T8-1 (Task 7 residual): subframe navigations to iterm2-about: are cancelled in FrameNavigationStarting (same handler body, frame mode; webhost::frame_nav_cancelled). The source request no longer depends on Starting arriving first (armed or pending source). A non-source main-frame Starting drops a left-behind pending source. Probe view_source_arming_facts written, not run.

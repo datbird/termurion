@@ -548,6 +548,13 @@ pub fn scheme_of(url: &str) -> String {
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') { s.to_ascii_lowercase() } else { String::new() }
 }
 
+/// Whether a navigation of a SUBFRAME is cancelled: any `iterm2-about:` target. The local pages
+/// are never framed (their policy refuses framing), so only the main frame may request one; this
+/// leaves a frame no way to race the main frame for the View Source page.
+pub fn frame_nav_cancelled(uri: &str) -> bool {
+    scheme_of(uri) == "iterm2-about"
+}
+
 fn local_scheme(s: &str) -> bool {
     matches!(s, "file" | "iterm2-file" | "iterm2-ssh")
 }
@@ -1734,6 +1741,16 @@ mod tests {
         assert_eq!(ev.view(), 3);
         assert!(ev.droppable());
         assert_eq!(ev.weight(), 18);
+    }
+
+    #[test]
+    fn subframes_never_navigate_to_local_pages() {
+        for u in ["iterm2-about:source", "ITERM2-ABOUT:history", "iterm2-about:blank"] {
+            assert!(frame_nav_cancelled(u), "{u}");
+        }
+        for u in ["https://a/", "about:blank", "iterm2-aboutx:y", "data:text/html,x", "https://a/iterm2-about:source"] {
+            assert!(!frame_nav_cancelled(u), "{u}");
+        }
     }
 
     #[test]
