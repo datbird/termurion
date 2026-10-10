@@ -1117,41 +1117,55 @@ impl WebView {
     }
 
     /// Reads the profile's non-default permission states; `Event::PermissionStates` answers (at
-    /// most `MAX_PERMISSION_STATES`). Nothing is posted when the read fails (logged).
+    /// most `MAX_PERMISSION_STATES`). Always posts: `complete` is false when the runtime cannot read
+    /// the profile, the read failed, an item could not be read or the list was cut.
     pub fn read_permission_states(&self) {
         let (poster, id) = {
             let i = self.inner.borrow();
             (i.poster.clone(), i.id)
         };
         self.with(move |c| {
+            let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
             let Some(p4) = profile4(&c.view) else {
-                return crate::dlog!("webhost: this runtime has no profile permission states");
+                crate::dlog!("webhost: this runtime has no profile permission states");
+                return incomplete(&poster);
             };
             let p2 = poster.clone();
             let handler = webview2_com::GetNonDefaultPermissionSettingsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
                 if hr.is_err() {
                     crate::dlog!("webhost: reading the profile permission states failed");
+                    p2.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
                     return Ok(());
                 }
                 let mut states = Vec::new();
+                let mut complete = true;
                 if let Some(list) = list {
                     let mut n = 0u32;
-                    let _ = unsafe { list.Count(&mut n) };
+                    complete &= unsafe { list.Count(&mut n) }.is_ok();
+                    complete &= n as usize <= webhost::MAX_PERMISSION_STATES;
                     for k in 0..n.min(webhost::MAX_PERMISSION_STATES as u32) {
-                        let Ok(item) = (unsafe { list.GetValueAtIndex(k) }) else { continue };
+                        let Ok(item) = (unsafe { list.GetValueAtIndex(k) }) else {
+                            complete = false;
+                            continue;
+                        };
                         let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
                         let mut state = COREWEBVIEW2_PERMISSION_STATE(0);
-                        let origin = pwstr_out(|p| unsafe { item.PermissionOrigin(p) }).unwrap_or_default();
-                        if unsafe { item.PermissionKind(&mut kind) }.is_ok() && unsafe { item.PermissionState(&mut state) }.is_ok() {
-                            states.push((kind.0, webhost::cap_url(&origin).0, state.0));
+                        let origin = pwstr_out(|p| unsafe { item.PermissionOrigin(p) });
+                        if origin.is_some() && unsafe { item.PermissionKind(&mut kind) }.is_ok() && unsafe { item.PermissionState(&mut state) }.is_ok() {
+                            states.push((kind.0, webhost::cap_url(&origin.unwrap_or_default()).0, state.0));
+                        } else {
+                            complete = false;
                         }
                     }
+                } else {
+                    complete = false;
                 }
-                p2.post(Event::PermissionStates { view: id, states });
+                p2.post(Event::PermissionStates { view: id, states, complete });
                 Ok(())
             })));
             if unsafe { p4.GetNonDefaultPermissionSettings(&handler) }.is_err() {
                 crate::dlog!("webhost: reading the profile permission states failed");
+                incomplete(&poster);
             }
         });
     }
@@ -1202,14 +1216,14 @@ fn set_next_state(p4: ICoreWebView2Profile4, mut rest: VecDeque<(i32, String, i3
 
 /// Sets the answer on a held request and completes its deferral.
 fn complete_permission(p: &PendingPerm, answer: webhost::PermAnswer) {
-    let (state, saves) = match answer {
-        webhost::PermAnswer::State { state, saves } if state == crate::browser_perms::STATE_ALLOW => (COREWEBVIEW2_PERMISSION_STATE_ALLOW, saves),
-        webhost::PermAnswer::State { saves, .. } => (COREWEBVIEW2_PERMISSION_STATE_DENY, saves),
-        webhost::PermAnswer::Deny => (COREWEBVIEW2_PERMISSION_STATE_DENY, false),
+    // `saves` is ignored: the Tandem table is the only source, WebView2 never stores a decision.
+    let state = match answer {
+        webhost::PermAnswer::State { state, .. } if state == crate::browser_perms::STATE_ALLOW => COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        webhost::PermAnswer::State { .. } | webhost::PermAnswer::Deny => COREWEBVIEW2_PERMISSION_STATE_DENY,
     };
-    // SavesInProfile first: the profile then holds the state before the page's promise resolves.
+    // SavesInProfile false on every answer, before the state and the completion.
     if let Ok(a3) = p.args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
-        let _ = unsafe { a3.SetSavesInProfile(saves) };
+        let _ = unsafe { a3.SetSavesInProfile(false) };
     }
     let _ = unsafe { p.args.SetState(state) };
     let _ = unsafe { p.deferral.Complete() };
@@ -1863,6 +1877,8 @@ fn register_audio(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2) {
     let mut t = 0i64;
     if unsafe { v8.add_IsDocumentPlayingAudioChanged(&handler, &mut t) }.is_ok() {
         inner.borrow_mut().audio_watch = Some((v8, t));
+    } else {
+        crate::dlog!("webhost: the audio state handler was not added");
     }
 }
 
@@ -1871,10 +1887,15 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
     // (`ViewSetup::permissions`) holds the requests Tandem asks about and denies the rest on the
     // spot; every other view denies everything.
     let ask = inner.borrow().setup.permissions;
+    let notes_supported = view.cast::<ICoreWebView2_24>().is_ok();
     let weak = Rc::downgrade(inner);
     let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let Some(args) = args else { return Ok(()) };
         let deny = || {
+            // WebView2 keeps a decision by default (SavesInProfile is TRUE): never store one.
+            if let Ok(a3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                let _ = unsafe { a3.SetSavesInProfile(false) };
+            }
             let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
         };
         deny();
@@ -1885,6 +1906,10 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
         let _ = unsafe { args.PermissionKind(&mut kind) };
         // Kinds Tandem never asks about (and any it does not know) stay denied.
         if !matches!(crate::browser_perms::route_kind(kind.0), crate::browser_perms::KindRoute::Ask(_)) {
+            return Ok(());
+        }
+        // Without notification events WebView2 would show its own toast for a granted origin: refuse.
+        if kind.0 == 4 && !notes_supported {
             return Ok(());
         }
         let Some(inner) = weak.upgrade() else { return Ok(()) };
@@ -2150,6 +2175,12 @@ mod tests {
         let hold = policy.find("GetDeferral").expect("a deferral");
         assert!(deny < ask && ask < hold, "deny, then the kind route, then the deferral");
         assert!(policy.contains("perm_limit.allow"), "limited");
+        // Task 3 review I1: no answer lets WebView2 store a decision.
+        assert!(policy[..deny].contains("SetSavesInProfile(false)"), "the on-the-spot denial never saves");
+        let complete = &live[live.find("fn complete_permission").unwrap()..live.find("fn shut(").unwrap()];
+        assert!(complete.contains("SetSavesInProfile(false)") && !complete.contains("SetSavesInProfile(saves)"), "every answer sets SavesInProfile false");
+        let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("pub fn close(self)").unwrap()];
+        assert!(read.matches("complete: false").count() + read.matches("complete = false").count() >= 4 && read.contains("complete &="), "an incomplete read says so (I2)");
         assert!(!live.contains("Untouched"), "no answer leaves a request to WebView2's own prompt");
         let shut = &live[live.find("fn shut(").unwrap()..live.find("pub fn close_all").unwrap()];
         assert!(shut.contains("PermAnswer::Deny"), "a view going away refuses its pending requests");

@@ -269,7 +269,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("jobwatch.rs", 2),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
-    ("webhost_win.rs", 11),
+    ("webhost_win.rs", 12),
 ];
 
 

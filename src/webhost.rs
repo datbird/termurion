@@ -310,8 +310,11 @@ pub enum Event {
     NotificationClosed { view: ViewId, token: u64 },
     /// `IsDocumentPlayingAudio` changed (it stays true while the view is muted).
     AudioPlaying { view: ViewId, playing: bool },
-    /// The answer to `read_permission_states`: kind, origin as WebView2 reports it, state.
-    PermissionStates { view: ViewId, states: Vec<(i32, String, i32)> },
+    /// The answer to `read_permission_states`: kind, origin as WebView2 reports it, state. `complete`
+    /// is false when the read failed, an item could not be read or the list was cut at
+    /// `MAX_PERMISSION_STATES`: the start-up sync must then fail closed (revoke every profile
+    /// state the Tandem table does not hold), never treat the list as the whole profile.
+    PermissionStates { view: ViewId, states: Vec<(i32, String, i32)>, complete: bool },
 }
 
 /// How the app answers a `Event::Permission`.
@@ -320,8 +323,9 @@ pub enum PermAnswer {
     /// Refuse (`COREWEBVIEW2_PERMISSION_STATE_DENY`, nothing saved in the profile). There is no
     /// "leave it to WebView2": that would be a grant nobody asked Tandem about (pre-flight B3).
     Deny,
-    /// `state` is a `browser_perms::STATE_*`; `saves` sets `SavesInProfile` first, so WebView2 keeps
-    /// the state where a page reads it synchronously (notifications, location).
+    /// `state` is a `browser_perms::STATE_*`. `saves` is IGNORED by the host: `SavesInProfile` is
+    /// always false, so WebView2 never stores a decision and the Tandem table is the only source
+    /// (task 3 review I1).
     State { state: i32, saves: bool },
 }
 
@@ -1907,7 +1911,7 @@ mod tests {
     fn permission_events_are_plain_data() {
         let events = vec![
             Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
-            Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1)] },
+            Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1)], complete: true },
             Event::NotificationShown { view: 1, token: 3, origin: "https://a.b".into(), title: "T".into(), body: "B".into() },
             Event::NotificationClosed { view: 1, token: 3 },
             Event::AudioPlaying { view: 1, playing: true },
@@ -1929,7 +1933,7 @@ mod tests {
             Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
             Event::NotificationShown { view: 1, token: 3, origin: "o".into(), title: "t".into(), body: "b".into() },
             Event::NotificationClosed { view: 1, token: 3 },
-            Event::PermissionStates { view: 1, states: vec![] },
+            Event::PermissionStates { view: 1, states: vec![], complete: false },
         ];
         for e in &held {
             assert!(!e.droppable(), "{e:?} holds a COM object or answers a request");
@@ -1938,7 +1942,7 @@ mod tests {
         let shown = Event::NotificationShown { view: 1, token: 3, origin: "ooo".into(), title: "tt".into(), body: "b".into() };
         assert_eq!(shown.weight(), 6);
         assert_eq!(Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() }.weight(), 12);
-        let states = Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1), (3, "x".into(), 2)] };
+        let states = Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1), (3, "x".into(), 2)], complete: true };
         assert_eq!(states.weight(), 12);
     }
 
