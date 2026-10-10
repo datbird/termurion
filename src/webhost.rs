@@ -933,9 +933,11 @@ pub fn refuse_worker_request(source_kinds: i32, service_worker_header: bool) -> 
 }
 
 /// Notifications are asked about only when the view raises them to Tandem AND no service worker can
-/// raise one past it (fail closed).
-pub fn notifications_offered(events: bool, workers_refused: bool) -> bool {
-    events && workers_refused
+/// raise one past it (fail closed): new workers are refused (`refuse_worker_request`) and the
+/// registrations an older build let sites make were cleared from the profile (last-gate LG-1; such
+/// a worker starts from its cache with no fetch, so the refusal alone never reaches it).
+pub fn notifications_offered(events: bool, workers_refused: bool, old_workers_cleared: bool) -> bool {
+    events && workers_refused && old_workers_cleared
 }
 
 /// What one view has queued: events, bytes and messages. Shared by the view's handlers and every
@@ -2124,8 +2126,11 @@ mod tests {
         assert!(refuse_worker_request(1, true), "a document request carrying the worker script header");
         assert!(!refuse_worker_request(1, false), "a page's own request continues");
         assert!(!refuse_worker_request(2, false), "a shared worker's request continues");
-        assert!(notifications_offered(true, true));
-        assert!(!notifications_offered(true, false), "events without the worker refusal: WebView2 would toast a persistent one itself");
-        assert!(!notifications_offered(false, true), "no events: WebView2 would toast every one itself");
+        assert!(notifications_offered(true, true, true));
+        assert!(!notifications_offered(true, false, true), "events without the worker refusal: WebView2 would toast a persistent one itself");
+        assert!(!notifications_offered(false, true, true), "no events: WebView2 would toast every one itself");
+        // Last-gate LG-1: a worker an older build let install still runs from its cache until the
+        // profile's registrations are cleared; until that clear succeeded, kind 4 is not offered.
+        assert!(!notifications_offered(true, true, false), "registrations not cleared: an old worker could still toast");
     }
 }

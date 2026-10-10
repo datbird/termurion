@@ -340,6 +340,10 @@ fn signed_by_microsoft(path: &Path) -> Result<(), String> {
 pub struct Env {
     pub store: Store,
     env: ICoreWebView2Environment,
+    /// Whether the profile's service worker registrations were cleared by the last start-up sync
+    /// read (last-gate LG-1); shared by every view of this environment. Notifications are offered
+    /// only while it holds.
+    workers_cleared: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Env {
@@ -387,7 +391,7 @@ impl Env {
         let (done_in, store_copy) = (done.clone(), store);
         let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |hr, env| guard(|| {
             let result = match (hr, env) {
-                (Ok(()), Some(env)) => Ok(Env { store: store_copy, env }),
+                (Ok(()), Some(env)) => Ok(Env { store: store_copy, env, workers_cleared: Default::default() }),
                 (Err(e), _) => Err(format!("the WebView2 environment could not be created: {e}")),
                 (Ok(()), None) => Err("the WebView2 environment was not created".to_string()),
             };
@@ -1148,65 +1152,102 @@ impl WebView {
     /// Reads the profile's non-default permission states; `Event::PermissionStates` answers (at
     /// most `MAX_PERMISSION_STATES`). Always posts: `complete` is false when the runtime cannot read
     /// the profile, the read failed, an item could not be read or the list was cut.
+    ///
+    /// Last-gate LG-1: the read first clears the profile's service worker registrations (an older
+    /// build let sites install workers; one starts from its cache with no fetch, so the request
+    /// refusal never reaches it, and it could show WebView2's own toast). The read, and so the end of
+    /// the start-up sync that pages wait on, comes only after the clear answered; whether it worked
+    /// is kept on the environment, and kind 4 is not offered while it has not (fail closed).
     pub fn read_permission_states(&self) {
-        let (poster, id) = {
+        let (poster, id, cleared) = {
             let i = self.inner.borrow();
-            (i.poster.clone(), i.id)
+            (i.poster.clone(), i.id, i.env.workers_cleared.clone())
         };
         self.with(move |c| {
             let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
             let Some(p4) = profile4(&c.view) else {
+                cleared.store(false, std::sync::atomic::Ordering::SeqCst);
                 crate::dlog!("webhost: this runtime has no profile permission states");
                 return incomplete(&poster);
             };
-            let p2 = poster.clone();
-            let handler = webview2_com::GetNonDefaultPermissionSettingsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
+            let Ok(p2) = p4.cast::<ICoreWebView2Profile2>() else {
+                cleared.store(false, std::sync::atomic::Ordering::SeqCst);
+                crate::dlog!("webhost: this runtime cannot clear service workers; notifications are not offered");
+                return read_states(&p4, &poster, id);
+            };
+            let (p4c, posterc, c2) = (p4.clone(), poster.clone(), cleared.clone());
+            let done = webview2_com::ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| guard(|| {
+                c2.store(hr.is_ok(), std::sync::atomic::Ordering::SeqCst);
                 if hr.is_err() {
-                    crate::dlog!("webhost: reading the profile permission states failed");
-                    p2.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
-                    return Ok(());
+                    crate::dlog!("webhost: clearing the profile's service workers failed; notifications are not offered");
                 }
-                let mut states = Vec::new();
-                let mut complete = true;
-                if let Some(list) = list {
-                    let mut n = 0u32;
-                    complete &= unsafe { list.Count(&mut n) }.is_ok();
-                    complete &= n as usize <= webhost::MAX_PERMISSION_STATES;
-                    for k in 0..n.min(webhost::MAX_PERMISSION_STATES as u32) {
-                        let Ok(item) = (unsafe { list.GetValueAtIndex(k) }) else {
-                            complete = false;
-                            continue;
-                        };
-                        let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
-                        let mut state = COREWEBVIEW2_PERMISSION_STATE(0);
-                        let origin = pwstr_out(|p| unsafe { item.PermissionOrigin(p) });
-                        if origin.is_some() && unsafe { item.PermissionKind(&mut kind) }.is_ok() && unsafe { item.PermissionState(&mut state) }.is_ok() {
-                            let (url, cut) = webhost::cap_url(&origin.unwrap_or_default());
-                            if cut {
-                                // A cut origin matches no key: skipped, and the read says it is partial.
-                                complete = false;
-                            } else {
-                                states.push((kind.0, url, state.0));
-                            }
-                        } else {
-                            complete = false;
-                        }
-                    }
-                } else {
-                    complete = false;
-                }
-                p2.post(Event::PermissionStates { view: id, states, complete });
+                read_states(&p4c, &posterc, id);
                 Ok(())
             })));
-            if unsafe { p4.GetNonDefaultPermissionSettings(&handler) }.is_err() {
-                crate::dlog!("webhost: reading the profile permission states failed");
-                incomplete(&poster);
+            if unsafe { p2.ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS, &done) }.is_err() {
+                cleared.store(false, std::sync::atomic::Ordering::SeqCst);
+                crate::dlog!("webhost: clearing the profile's service workers failed; notifications are not offered");
+                read_states(&p4, &poster, id);
             }
         });
     }
 
+    /// Whether this view's environment cleared its profile's service workers (tests only).
+    #[cfg(test)]
+    pub fn workers_cleared(&self) -> bool {
+        self.inner.borrow().env.workers_cleared.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Closes the view (the same as dropping it).
     pub fn close(self) {}
+}
+
+/// The profile's non-default permission states, posted as `Event::PermissionStates` (always posts).
+fn read_states(p4: &ICoreWebView2Profile4, poster: &Poster, id: ViewId) {
+    let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
+    let p2 = poster.clone();
+    let handler = webview2_com::GetNonDefaultPermissionSettingsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
+        if hr.is_err() {
+            crate::dlog!("webhost: reading the profile permission states failed");
+            p2.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false });
+            return Ok(());
+        }
+        let mut states = Vec::new();
+        let mut complete = true;
+        if let Some(list) = list {
+            let mut n = 0u32;
+            complete &= unsafe { list.Count(&mut n) }.is_ok();
+            complete &= n as usize <= webhost::MAX_PERMISSION_STATES;
+            for k in 0..n.min(webhost::MAX_PERMISSION_STATES as u32) {
+                let Ok(item) = (unsafe { list.GetValueAtIndex(k) }) else {
+                    complete = false;
+                    continue;
+                };
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
+                let mut state = COREWEBVIEW2_PERMISSION_STATE(0);
+                let origin = pwstr_out(|p| unsafe { item.PermissionOrigin(p) });
+                if origin.is_some() && unsafe { item.PermissionKind(&mut kind) }.is_ok() && unsafe { item.PermissionState(&mut state) }.is_ok() {
+                    let (url, cut) = webhost::cap_url(&origin.unwrap_or_default());
+                    if cut {
+                        // A cut origin matches no key: skipped, and the read says it is partial.
+                        complete = false;
+                    } else {
+                        states.push((kind.0, url, state.0));
+                    }
+                } else {
+                    complete = false;
+                }
+            }
+        } else {
+            complete = false;
+        }
+        p2.post(Event::PermissionStates { view: id, states, complete });
+        Ok(())
+    })));
+    if unsafe { p4.GetNonDefaultPermissionSettings(&handler) }.is_err() {
+        crate::dlog!("webhost: reading the profile permission states failed");
+        incomplete(poster);
+    }
 }
 
 impl Drop for WebView {
@@ -1920,6 +1961,11 @@ fn register_audio(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2) {
     }
 }
 
+/// The URLs `register_worker_refusal` refused (tests only): the probe's positive evidence that the
+/// refusal itself ran, not a DNS failure (last-gate LG-2).
+#[cfg(test)]
+static WORKER_REFUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Ruling R13x6-SW (`webhost::refuse_worker_request`): every request a service worker makes, its
 /// script fetch included, is answered 403 on the spot, so no worker installs and none can show a
 /// persistent notification through WebView2's own toast. WebView2 raises a worker's requests on every
@@ -1930,16 +1976,18 @@ fn register_worker_refusal(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
         crate::dlog!("webhost: this runtime cannot filter service worker requests; notifications are not offered");
         return false;
     };
-    let weak = Rc::downgrade(inner);
+    // The environment is held here: the handler never borrows the view, so a busy view cannot let a
+    // worker's request through (last-gate minor).
+    let env = inner.borrow().env.clone();
     let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
-        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let Some(args) = args else { return Ok(()) };
         if !from_service_worker(&args) {
             return Ok(());
         }
-        let env = match inner.try_borrow() {
-            Ok(i) => i.env.clone(),
-            Err(_) => return Ok(()),
-        };
+        #[cfg(test)]
+        if let Ok(mut l) = WORKER_REFUSED.lock() {
+            l.push(unsafe { args.Request() }.ok().and_then(|r| pwstr_out(|p| unsafe { r.Uri(p) })).unwrap_or_default());
+        }
         if let Ok(resp) = unsafe { env.env.CreateWebResourceResponse(None::<&windows::Win32::System::Com::IStream>, 403, windows::core::w!("Blocked"), windows::core::w!("")) } {
             let _ = unsafe { args.SetResponse(&resp) };
         }
@@ -1974,7 +2022,9 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_ref
     // (`ViewSetup::permissions`) holds the requests Tandem asks about and denies the rest on the
     // spot; every other view denies everything.
     let ask = inner.borrow().setup.permissions;
-    let notes_supported = webhost::notifications_offered(view.cast::<ICoreWebView2_24>().is_ok(), workers_refused);
+    let events = view.cast::<ICoreWebView2_24>().is_ok();
+    // Whether the start-up sync cleared the profile's old service workers (LG-1), read at each request.
+    let cleared = inner.borrow().env.workers_cleared.clone();
     let weak = Rc::downgrade(inner);
     let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let Some(args) = args else { return Ok(()) };
@@ -1995,9 +2045,9 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_ref
         if !matches!(crate::browser_perms::route_kind(kind.0), crate::browser_perms::KindRoute::Ask(_)) {
             return Ok(());
         }
-        // Without notification events, or with service workers able to run, WebView2 would show its own
-        // toast for a granted origin: refuse.
-        if kind.0 == 4 && !notes_supported {
+        // Without notification events, with service workers able to run, or before the profile's old
+        // registrations were cleared, WebView2 would show its own toast for a granted origin: refuse.
+        if kind.0 == 4 && !webhost::notifications_offered(events, workers_refused, cleared.load(std::sync::atomic::Ordering::SeqCst)) {
             return Ok(());
         }
         let Some(inner) = weak.upgrade() else { return Ok(()) };
@@ -2287,6 +2337,27 @@ mod tests {
         assert!(!s.track_document_method);
     }
 
+    /// Last-gate LG-1: the profile read the start-up sync begins with first clears the profile's
+    /// service worker registrations (an older build let sites install them; one runs from its cache
+    /// with no fetch) and records whether that worked on the store's environment; the policy offers
+    /// kind 4 only once it did. The refusal never borrows the view (a failed borrow fails open).
+    #[test]
+    fn the_sync_clears_old_service_workers_before_notifications_are_offered() {
+        let this = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/webhost_win.rs")).unwrap();
+        let live = this.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("impl Drop for WebView {").unwrap()];
+        let clear = read.find("ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS").expect("the read clears the registrations");
+        let get = read.find("GetNonDefaultPermissionSettings(").expect("then reads");
+        assert!(clear < get, "the clear comes first, so the sync (and the page gate) ends after it");
+        assert!(read.contains("c2.store(hr.is_ok(), "), "the store remembers whether the clear worked");
+        let done = &read[read.find("ClearBrowsingDataCompletedHandler::create").expect("a completion")..clear];
+        assert!(done.contains("read_states(&p4c"), "the read starts from the clear's completion");
+        let policy = &live[live.find("fn register_policy").unwrap()..live.find("// A failed process is reported").unwrap()];
+        assert!(policy.contains("webhost::notifications_offered(events, workers_refused, cleared.load("), "kind 4 is offered only after a successful clear, read at each request");
+        let refusal = &live[live.find("fn register_worker_refusal").unwrap()..live.find("fn from_service_worker").unwrap()];
+        assert!(!refusal.contains("try_borrow"), "the refusal holds its own environment: a busy view never lets a worker request through");
+    }
+
     /// Pre-flight B3: every permission request is denied first, only the kinds Tandem asks about are
     /// held, a held one is limited, and a view going away refuses what it still holds.
     #[test]
@@ -2307,7 +2378,7 @@ mod tests {
         let write = &live[live.find("pub fn set_permission_state(").unwrap()..live.find("pub fn read_permission_states").unwrap()];
         assert!(write.matches("PermissionWritten").count() >= 2 && write.contains("ok: hr.is_ok()") && write.contains("ok: false"), "every write answers once with its sequence");
         assert!(!live.contains("pub fn set_permission_states"), "no batch write outside the queue");
-        let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("pub fn close(self)").unwrap()];
+        let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("impl Drop for WebView {").unwrap()];
         assert!(read.matches("complete: false").count() + read.matches("complete = false").count() >= 4 && read.contains("complete &="), "an incomplete read says so (I2)");
         assert!(read.contains("webhost::cap_url(&origin.unwrap_or_default())") && read.contains("if cut {") && read.contains("complete = false;"), "a cut origin makes the read partial (re-review minor 3)");
         assert!(!live.contains("Untouched"), "no answer leaves a request to WebView2's own prompt");
@@ -3052,6 +3123,15 @@ mod probe {
         /// `start_full`, with `permissions` as the view's setup (the browser pane's is on): permission
         /// requests, notifications and the audio state reach the host's events.
         fn start_perms(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool, schemes: &[&str], permissions: bool) -> Option<Probe> {
+            let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, permissions, resource_filters: vec!["*".into()], ..Default::default() };
+            Probe::start_setup(pages, sources, schemes, setup)
+        }
+
+        /// A view with the given setup. With `permissions`, the profile is read once first, as the
+        /// app's start-up sync does: that read clears the profile's service workers, and kind 4 is
+        /// offered only after it did (last-gate LG-1).
+        fn start_setup(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup) -> Option<Probe> {
+            let permissions = setup.permissions;
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
                 return None;
@@ -3120,7 +3200,6 @@ mod probe {
             Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
-            let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, permissions, resource_filters: vec!["*".into()], ..Default::default() };
             let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 400, 300), setup, tx);
             p.env = Some(env);
             p.view = Some(view);
@@ -3131,6 +3210,13 @@ mod probe {
             p.step_setup();
             assert!(p.wait(15, |p| *p.setup.state() != ClientWorld::Setting), "the setup finished within 15 s: {:?}", p.log.iter().map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>());
             assert_eq!(*p.setup.state(), ClientWorld::Ready, "the isolated world is unavailable: {:?}", p.setup.state());
+            if permissions {
+                p.view().read_permission_states();
+                assert!(p.wait(15, |p| !p.state_reads.is_empty()), "the start-up read within 15 s");
+                assert!(p.view().workers_cleared(), "the start-up read cleared the profile's service workers (LG-1)");
+                p.state_reads.clear();
+                p.reads_complete.clear();
+            }
             Some(p)
         }
 
@@ -4588,20 +4674,42 @@ mod probe {
         const PAGE: &str = "iterm2-about:permissions";
         let (html, _) = crate::browser_pages::document("permissions", "probe-nonce").expect("the adapted page");
         let pages = [(PAGE, html)];
-        let sources = vec![crate::browser_js::wrap(&crate::browser_js::local_page_script()), wrapped("window.__tandemProbeWorld = 1;")];
-        let Some(mut p) = Probe::start_full(&pages, sources, false, &["iterm2-about"]) else { return };
+        // The bridge goes where the app puts it (`browser_setup`'s page scripts): the PAGE world.
+        // Probe run 2026-10-10b: given as a probe source it lands in the isolated world, so the
+        // page's own `window.webkit` was undefined and its post threw (the click itself arrived).
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, scripts: vec![crate::browser_pages::shim_js()], resource_filters: vec!["*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&pages, vec![wrapped("window.__tandemProbeWorld = 1;")], &["iterm2-about"], setup) else { return };
         assert_eq!(p.try_load(PAGE), Ok(()));
+        // Positive control: with the bridge in place the page's own load request is posted.
+        assert!(p.wait(5, |p| p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("loadPermissions"))), "the page's loadPermissions reached the host: {:?}", p.routed.iter().map(|r| r.body.chars().take(80).collect::<String>()).collect::<Vec<_>>());
         p.page_eval("window.confirm = function () { return true; }; window.onPermissionsLoaded({permissions: [{origin: 'https://a.b', permissionType: 'camera', decision: 'granted', createdAt: 1, updatedAt: 1}], hasMore: false}); 1").expect("a row");
         let revokes = |p: &Probe| p.routed.iter().filter(|r| r.via == Via::Page).filter_map(|r| crate::browser_js::route(&r.body, crate::browser_js::World::Page, r.frame, &r.from)).filter(|r| r.handler == "iterm2-about:permissions" && r.body.get("action").and_then(Value::as_str) == Some("revokePermission")).count();
         p.page_eval("document.querySelector('.revoke-button').click(); 1").expect("a synthetic click");
         p.settle(800);
         assert_eq!(revokes(&p), 0, "a click a script made posts nothing");
-        let rect = p.page_eval("(function(){var r=document.querySelector('.revoke-button').getBoundingClientRect();return JSON.stringify([r.x+r.width/2,r.y+r.height/2]);})()").expect("the button");
+        // The probe's view is 400 by 300: the first row sits below the page's header and filters, out
+        // of the viewport, where a dispatched press hits nothing (probe run 2026-10-10). It is scrolled
+        // into view first; the page records the trusted clicks it saw, so a press that missed is told
+        // apart from a click the page ignored.
+        p.page_eval("window.__trusted = []; window.__calls = []; window.__errs = []; window.addEventListener('error', function (e) { window.__errs.push(String(e.message)); }); var __rp = window.revokePermission; window.revokePermission = function (o, t) { window.__calls.push([o, t]); try { return __rp.apply(this, arguments); } catch (x) { window.__errs.push(String(x)); throw x; } }; document.addEventListener('click', function (e) { if (e.isTrusted) { window.__trusted.push(e.target && e.target.className); } }, true); document.querySelector('.revoke-button').scrollIntoView({block: 'center'}); 1").expect("scrolled");
+        p.settle(300);
+        let rect = p.page_eval("(function(){var r=document.querySelector('.revoke-button').getBoundingClientRect();return JSON.stringify([r.x+r.width/2,r.y+r.height/2,innerWidth,innerHeight]);})()").expect("the button");
         let xy: Vec<f64> = serde_json::from_str(&serde_json::from_str::<String>(&rect).unwrap()).unwrap();
+        assert!(xy[0] >= 0.0 && xy[1] >= 0.0 && xy[0] < xy[2] && xy[1] < xy[3], "the button is in the viewport: {xy:?}");
         for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
             p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": xy[0], "y": xy[1], "button": "left", "clickCount": 1})).expect("a trusted press");
         }
-        assert!(p.wait(10, |p| revokes(p) == 1), "the trusted click posts the revoke");
+        let posted = p.wait(10, |p| revokes(p) == 1);
+        let seen = p.page_string("JSON.stringify([window.__trusted, window.__calls, window.__errs, typeof window.webkit, typeof confirm])");
+        if !posted {
+            // Where it stopped: what the page posted, and whether a direct call posts at all.
+            let msgs: Vec<String> = p.routed.iter().filter(|r| r.via == Via::Page).map(|r| r.body.chars().take(160).collect()).collect();
+            let _ = p.page_eval("window.revokePermission('https://a.b', 'camera'); 1");
+            let direct = p.wait(5, |p| revokes(p) >= 1);
+            panic!("the trusted click posts the revoke (the page saw [trusted clicks, calls, errors, webkit, confirm]: {seen:?}, button at {xy:?}; page messages {msgs:?}; a direct call posts: {direct})");
+        }
+        p.settle(500);
+        assert_eq!(revokes(&p), 1, "exactly one revoke");
         p.finish();
     }
 
@@ -5501,8 +5609,11 @@ window.addEventListener('message', function (e) {
     }
 
     /// Review I1 and ruling A: a saved Allow is mirrored into the profile (SetPermissionState)
-    /// BEFORE the request completes, so a `new Notification` in the `then` is raised at once; an
-    /// unsaved answer mirrors nothing and raises nothing.
+    /// BEFORE the request completes, so a `new Notification` in the `then` is raised at once. An
+    /// unsaved Allow is WebView2's for the document only (probe run 2026-10-10: it raises
+    /// `NotificationReceived` too): it leaves nothing in the profile, so a reload sees the default.
+    /// Whether any raised notification is SHOWN is the app's (`browser_notification`: a saved
+    /// Granted row or a quiet release), never this event's.
     #[test]
     #[ignore]
     fn saved_grant_is_live_before_the_promise_resolves() {
@@ -5529,8 +5640,18 @@ window.addEventListener('message', function (e) {
         p.page_eval("go(); 1").expect("the other origin asks");
         let (token, ..) = p.next_permission(1);
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: false });
-        p.settle(3000);
-        assert_eq!(p.notes.len(), before, "an unsaved answer raises nothing: {:?}", p.notes);
+        // The document's own grant: WebView2 raises the event (the app releases it: no saved row).
+        p.settle(2000);
+        println!("probe: notifications raised after the unsaved Allow: {:?}", &p.notes[before..]);
+        for n in p.notes[before..].to_vec() {
+            p.view().notification_report(n.0, NoteReport::Release);
+        }
+        p.view().read_permission_states();
+        let reads = p.state_reads.len();
+        assert!(p.wait(10, |p| p.state_reads.len() > reads), "PermissionStates within 10 s");
+        assert!(p.state_reads[reads].iter().all(|(k, o, _)| !(*k == 4 && o.starts_with("https://other.tandem-probe.invalid"))), "an unsaved answer leaves nothing in the profile: {:?}", p.state_reads[reads]);
+        p.load(OTHER);
+        assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "a reload of the unsaved origin sees the default");
         p.finish();
     }
 
@@ -5651,6 +5772,10 @@ window.addEventListener('message', function (e) {
         assert!(frame_origins(&crowd).is_none(), "over 256 origins is unacceptable: {}", crowd.as_array().map_or(0, Vec::len));
         assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), other), "an oversized answer reloads even for an origin it does not name");
         assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), "https://frame.tandem-probe.invalid"), "the iframe's origin still reloads");
+        // The 300 images are answered 404 on purpose (probe run 2026-10-10 failed only here): exactly
+        // those leave the not-served list; anything else still fails `finish`.
+        let crowd_url = |u: &String| u.strip_prefix("https://h").and_then(|r| r.strip_suffix(".tandem-probe.invalid/x.png")).is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 300));
+        p.not_served.retain(|u| !crowd_url(u));
         p.finish();
     }
 
@@ -5701,48 +5826,66 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
-    /// Final review M5 (ruling R13x6-SW): WebView2 raises `NotificationReceived` for non-persistent
-    /// notifications only, so a service worker's `showNotification` would reach WebView2's own toast.
-    /// For a granted origin (mirrored as the app does), the worker's script fetch is refused, the
-    /// registration fails, no registration exists, no notification reaches Tandem and the probe's
-    /// server never saw the script request.
+    /// Final review M5 (ruling R13x6-SW), last-gate LG-2: WebView2 raises `NotificationReceived` for
+    /// non-persistent notifications only, so a service worker's `showNotification` would reach
+    /// WebView2's own toast. The view has the SHIPPING filter set of a browser pane with ad blocking
+    /// off (`browser_setup`: `iterm2-about:*` plus the Document-method tracker), and the probe's page is
+    /// served through one exact-URL filter that does not match `/sw.js`. For a granted origin (mirrored
+    /// as the app does), the worker's script fetch is refused by `register_worker_refusal` itself (its
+    /// test-only record names `/sw.js`: positive evidence, not a DNS failure on `.invalid`), the
+    /// registration fails, no registration exists, no notification reaches Tandem and nothing served
+    /// the script.
     #[test]
     #[ignore]
     fn service_worker_notifications_are_refused() {
         use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
-        const SW: &str = "https://perm.tandem-probe.invalid/sw.js";
-        let worker = "self.addEventListener('install', function () { self.registration.showNotification('W'); });".to_string();
-        let page = perm_page("<script>window.__sw = 'pending'; window.__regs = 'pending'; function reg() { return navigator.serviceWorker.register('/sw.js').then(function (r) { window.__sw = 'registered'; return r.showNotification('P').then(function () { window.__sw = 'shown'; }, function (e) { window.__sw = 'refused:' + e.name; }); }, function (e) { window.__sw = 'denied:' + e.name; }).then(function () { return navigator.serviceWorker.getRegistrations(); }).then(function (l) { window.__regs = String(l.length); }); }</script>");
-        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page), (SW, worker)], Vec::new(), false, &[], true) else { return };
+        let page = perm_page("<script>window.__sw = 'pending'; window.__regs = 'pending'; function reg() { return navigator.serviceWorker.register('/sw.js').then(function (r) { window.__sw = 'registered'; return r.showNotification('P').then(function () { window.__sw = 'shown'; }, function (e) { window.__sw = 'refused:' + e.name; }); }, function (e) { window.__sw = 'denied:' + e.name + ': ' + e.message; }).then(function () { return navigator.serviceWorker.getRegistrations(); }).then(function (l) { window.__regs = String(l.length); }); }</script>");
+        // `browser_setup(dev_null: false, adblock: false, ..)`, plus the exact URL of the probe's page.
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows: true, permissions: true, track_document_method: true, resource_filters: vec!["iterm2-about:*".into(), PERM_PAGE.into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[(PERM_PAGE, page)], Vec::new(), &["iterm2-about"], setup) else { return };
         p.view().set_permission_state(61, 4, PERM_HOST, STATE_ALLOW);
         assert!(p.wait(10, |p| p.writes.contains(&(61, true))), "the grant is mirrored: {:?}", p.writes);
         p.load(PERM_PAGE);
         assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the origin is granted, as after Allow");
+        let before = WORKER_REFUSED.lock().map(|l| l.len()).unwrap_or(0);
         p.page_eval("reg(); 1").expect("the page registers a worker");
         assert!(p.page_becomes(15, "window.__regs", false, "0"), "no registration exists: {:?} / {:?}", p.page_string("window.__sw"), p.page_string("window.__regs"));
         let got = p.page_string("window.__sw");
+        let refused: Vec<String> = WORKER_REFUSED.lock().map(|l| l[before..].to_vec()).unwrap_or_default();
+        println!("probe: the registration answered {got:?}; the refusal answered 403 to {refused:?}");
         assert!(got.as_deref().is_ok_and(|c| c.starts_with("denied:")), "the worker never installs: {got:?}");
+        assert!(refused.iter().any(|u| u == "https://perm.tandem-probe.invalid/sw.js"), "the refusal itself answered the script fetch (not a DNS failure): {refused:?} / {got:?}");
         p.settle(1000);
         assert!(p.notes.is_empty(), "no notification at all: {:?}", p.notes);
-        assert!(!p.order.iter().any(|o| o.ends_with("/sw.js")), "the script fetch never reached the server: {:?}", p.order);
+        assert!(!p.order.iter().any(|o| o.ends_with("/sw.js")), "the script fetch never reached the app's handler: {:?}", p.order);
         p.view().set_permission_state(62, 4, PERM_HOST, STATE_DEFAULT);
         assert!(p.wait(10, |p| p.writes.contains(&(62, true))));
         p.finish();
     }
 
-    /// A request from an iframe is attributed to the frame's URI, not the page's.
+    /// A request from an iframe. Chromium delegates the powerful kinds (location, camera,
+    /// microphone): a cross-origin frame may ask only when the top page lets it (`allow=`), and the
+    /// request is the TOP page's, so WebView2 names the top page's URI (probe run 2026-10-10) and the
+    /// grant Chromium then enforces is keyed by the top origin too. The prompt names the site the
+    /// person is on, which chose to delegate (ruling R13x6-P3). A frame the top page did not
+    /// delegate to never reaches Tandem.
     #[test]
     #[ignore]
     fn a_frame_request_names_the_frame() {
         const CHILD: &str = "https://child.tandem-probe.invalid/c.html";
+        const OTHER: &str = "https://other.tandem-probe.invalid/";
         let page = perm_page(&format!("<iframe allow=\"geolocation\" src=\"{CHILD}\"></iframe>"));
-        let child = "<!doctype html><script>navigator.geolocation.getCurrentPosition(function () {}, function () {});</script>".to_string();
-        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page), (CHILD, child)], Vec::new(), false, &[], true) else { return };
+        let undelegated = perm_page(&format!("<iframe src=\"{CHILD}\"></iframe>"));
+        let child = "<!doctype html><script>window.__g = 'pending'; navigator.geolocation.getCurrentPosition(function () { window.__g = 'ok'; }, function (e) { window.__g = 'denied:' + e.code; });</script>".to_string();
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page), (OTHER, undelegated), (CHILD, child)], Vec::new(), false, &[], true) else { return };
         p.load(PERM_PAGE);
         let (token, kind, uri) = p.next_permission(0);
         assert_eq!(kind, 3, "geolocation");
-        assert!(uri.starts_with("https://child.tandem-probe.invalid/"), "the frame's URI: {uri}");
+        assert!(uri.starts_with(PERM_PAGE), "the delegating top page's URI: {uri}");
         p.view().answer_permission(token, crate::webhost::PermAnswer::Deny);
+        p.load(OTHER);
+        p.settle(2000);
+        assert_eq!(p.perm_reqs.len(), 1, "a frame the top page did not delegate to asks nothing: {:?}", p.perm_reqs);
         p.finish();
     }
 

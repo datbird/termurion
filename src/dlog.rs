@@ -274,7 +274,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("perm_queue.rs", 1),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
-    ("webhost_win.rs", 15),
+    ("webhost_win.rs", 18),
 ];
 
 
