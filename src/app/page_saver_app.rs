@@ -526,13 +526,15 @@ mod tests {
         held: Vec<Act>,
         /// Every mark fails, as on a drive without streams (FAT32, exFAT).
         unmarkable: bool,
+        /// Keep every file write back (in `held`), as writes still queued in the worker.
+        hold_writes: bool,
     }
 
     impl Harness {
         fn new(folder: PathBuf, answers: Vec<Result<Value, String>>) -> Harness {
             let mut seam = ScriptSeam::default();
             seam.answers.extend(answers);
-            Harness { s: Saving::new(folder, "https://tandem.test/".into(), 7, 1), seam, reveals: Vec::new(), fails: Vec::new(), epoch: 7, ops: Vec::new(), hold: false, held: Vec::new(), unmarkable: false }
+            Harness { s: Saving::new(folder, "https://tandem.test/".into(), 7, 1), seam, reveals: Vec::new(), fails: Vec::new(), epoch: 7, ops: Vec::new(), hold: false, held: Vec::new(), unmarkable: false, hold_writes: false }
         }
 
         fn go(&mut self) {
@@ -563,6 +565,10 @@ mod tests {
                         assert!(crate::devtools::refusal("Page.getResourceContent", &params).is_none());
                         let r = self.seam.run(1, Runner::DevTools, &format!("Page.getResourceContent {params}"));
                         self.s.content_answer(r, now)
+                    }
+                    Act::File(op) if self.hold_writes && op.kind == FileKind::Write => {
+                        self.held.push(Act::File(op));
+                        Vec::new()
                     }
                     Act::File(op) => {
                         self.ops.push((op.kind, op.path.clone()));
@@ -688,6 +694,8 @@ mod tests {
         assert_eq!(h3.fails.len(), 1, "{:?}", h3.fails);
         assert!(h3.fails[0].starts_with("Could not save the page: Failed to save file"), "{}", h3.fails[0]);
         assert!(h3.reveals.is_empty());
+        assert_eq!(listing(&folder3), vec!["index.html"], "resources is gone; only the planted folder is left");
+        assert!(folder3.join("index.html").is_dir(), "a folder the job did not make is never removed");
         let _ = std::fs::remove_dir_all(&root3);
     }
 
@@ -728,6 +736,29 @@ mod tests {
         assert!(h.s.over && h.fails.is_empty() && h.reveals.is_empty());
         // A late answer of the page does nothing.
         assert!(h.s.page_answer(Ok(json!(["https://tandem.test/i.png"])), 7).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A cancel that lands while writes are still queued in the worker (Task 10 review minor 6): the
+    /// worker runs the queue in order, so each queued write runs before the removal the cancel
+    /// sends after it, and nothing is left.
+    #[test]
+    fn cancel_with_writes_queued_leaves_nothing() {
+        let root = temp_root("cancelq");
+        let folder = root.join("site");
+        let urls = json!(["https://tandem.test/i.png"]);
+        let mut h = Harness::new(folder.clone(), vec![Ok(urls), Ok(tree()), Ok(png())]);
+        h.hold_writes = true;
+        h.go();
+        assert!(matches!(h.held.as_slice(), [Act::File(FileOp { kind: FileKind::Write, .. })]), "{:?}", h.held);
+        let cleanup = h.s.cancel(7);
+        assert!(cleanup.iter().any(|a| matches!(a, Act::File(op) if op.kind == FileKind::Remove && op.path == folder.join("resources").join("i.png"))), "{cleanup:?}");
+        // The worker's order: the queued write first, then the cleanup the cancel sent.
+        h.hold_writes = false;
+        let queued: Vec<Act> = h.held.drain(..).chain(cleanup).collect();
+        h.exec(queued);
+        assert!(!folder.exists(), "{:?}", h.ops);
+        assert!(h.fails.is_empty() && h.reveals.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
