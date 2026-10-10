@@ -337,6 +337,10 @@ impl App {
                     if generation != app.global_generation || !global_script_present(&answer) {
                         return;
                     }
+                    // A peer hidden while the probe ran is in no layout: it gets no find state (S4).
+                    if !app.pane_in_a_layout(pane) {
+                        return;
+                    }
                     let Some(bv) = app.browser_views.get_mut(&pane) else { return };
                     bv.global_gen = generation;
                     let secret = bv.secret.clone();
@@ -379,6 +383,11 @@ impl App {
         self.global_error = None;
     }
 
+    /// Whether `pane` is in some window's layout (a hidden workgroup peer is in none).
+    fn pane_in_a_layout(&self, pane: PaneId) -> bool {
+        self.all_tab_panes().iter().any(|(_, _, panes)| panes.contains(&pane))
+    }
+
     /// A picked browser match: the page shows its global results when the last search was the
     /// bar's, then reveals the match (`FM:438-450`).
     pub(super) fn browser_global_reveal(&mut self, pane: PaneId, identifier: &Value) {
@@ -387,7 +396,7 @@ impl App {
         }
         // A workgroup peer hidden since the search (13y1 seam S4) is in no layout: it gets no find
         // state, as `browser_global_start` never searched it.
-        if !self.all_tab_panes().iter().any(|(_, _, panes)| panes.contains(&pane)) {
+        if !self.pane_in_a_layout(pane) {
             return;
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
@@ -869,12 +878,22 @@ mod tests {
     /// 13y1 merge seam S4: a hidden workgroup peer (in no layout) gets no find state. Find Globally
     /// searches the layouts only, and a row picked after a peer swap hid its pane reveals nothing.
     #[test]
+    fn a_peer_hidden_mid_search_gets_no_find_state() {
+        let me = prod(include_str!("browser_find_app.rs"));
+        let start = between(me, "pub(super) fn browser_global_start", "pub(super) fn browser_global_results");
+        let cb = start.find("Box::new(move |app, pane, answer|").expect("the callback");
+        let guard = start[cb..].find("app.pane_in_a_layout(pane)").expect("the callback checks the layout");
+        assert!(guard < start[cb..].find("global_commands(").unwrap(), "before any find state");
+        assert!(start[cb..].find("bv.global_gen = generation").unwrap() > guard, "and before the pane joins the search");
+    }
+
+    #[test]
     fn hidden_peers_get_no_find_state() {
         let me = prod(include_str!("browser_find_app.rs"));
         let start = between(me, "pub(super) fn browser_global_start", "pub(super) fn browser_global_results");
         assert!(start.contains("self.all_tab_panes()"), "the search reaches the layouts only");
         let reveal = between(me, "pub(super) fn browser_global_reveal", "pub(super) fn browser_find_command");
-        let guard = reveal.find("self.all_tab_panes().iter().any(|(_, _, panes)| panes.contains(&pane))").expect("layout guard");
+        let guard = reveal.find("self.pane_in_a_layout(pane)").expect("layout guard");
         assert!(guard < reveal.find("reveal_commands(").unwrap(), "the guard comes before any find state");
         let windows = prod(include_str!("windows_ui.rs"));
         assert!(between(windows, "pub(super) fn all_tab_panes", "\n    }\n").contains("layout.panes()"), "a hidden peer is in no layout");
