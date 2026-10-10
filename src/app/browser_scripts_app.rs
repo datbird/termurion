@@ -241,6 +241,7 @@ impl App {
             }
             bv.trigger_gate.reset();
             bv.autofill.reset();
+            bv.password.reset();
         }
         self.autofill_ask_drop(pane, true, |_, _| false);
         self.global_pane_gone(pane);
@@ -499,6 +500,12 @@ impl App {
 
     /// `devtools_send` with the answer read up to `cap` bytes of JSON text instead of `MAX_RESULT`.
     pub(super) fn devtools_send_capped(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, cap: usize, done: JsDone) -> Option<u64> {
+        self.devtools_send_text(pane, session, method, &params.to_string(), cap, done)
+    }
+
+    /// The sender itself: `params` is the JSON text (a caller with a secret in it builds the text in a
+    /// `Secret` and drops it after this returns).
+    fn devtools_send_text(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &str, cap: usize, done: JsDone) -> Option<u64> {
         let why = match self.browser_views.get_mut(&pane) {
             Some(bv) if bv.view.is_some() && browser_world::method_allowed(method) => {
                 let token = bv.next_token;
@@ -509,8 +516,8 @@ impl App {
                 }
                 if let Some(v) = &bv.view {
                     match session {
-                        None => v.devtools_call(method, &params.to_string(), token),
-                        Some(s) => v.devtools_call_for_session(s, method, &params.to_string(), token),
+                        None => v.devtools_call(method, params, token),
+                        Some(s) => v.devtools_call_for_session(s, method, params, token),
                     }
                 }
                 return Some(token);
@@ -654,13 +661,7 @@ impl App {
 
     /// `allow_setup` is the isolation check's own call, the only one that may run before the world is Ready.
     fn browser_evaluate_in(&mut self, pane: PaneId, frame: Option<u64>, expression: String, done: JsDone, allow_setup: bool) {
-        let target = match self.browser_views.get(&pane) {
-            None => Err("no view"),
-            Some(bv) if bv.view.is_none() => Err("no view"),
-            Some(bv) if bv.client_world != ClientWorld::Ready && !(allow_setup && bv.world.setup.is_some()) => Err("isolated world unavailable"),
-            Some(bv) => bv.contexts.unique_for(frame).ok_or("no context"),
-        };
-        let (session, unique) = match target {
+        let (session, unique) = match self.world_target(pane, frame, allow_setup) {
             Ok(t) => t,
             Err(why) => {
                 log_js_failure(why);
@@ -669,6 +670,47 @@ impl App {
         };
         let params = browser_world::evaluate_params(&unique, &expression);
         self.devtools_send(pane, session.as_deref(), "Runtime.evaluate", &params, Box::new(move |app, pane, r| {
+            let r = r.and_then(|v| browser_world::evaluate_result(&v.to_string()));
+            if let Err(e) = &r {
+                log_js_failure(e);
+            }
+            done(app, pane, r)
+        }));
+    }
+
+    /// The DevTools session and unique context id of `pane`'s Tandem world (the frame's, or the main
+    /// frame's): Err with the reason when there is no view, the world is not Ready or no context exists.
+    fn world_target(&self, pane: PaneId, frame: Option<u64>, allow_setup: bool) -> Result<(Option<String>, String), &'static str> {
+        match self.browser_views.get(&pane) {
+            None => Err("no view"),
+            Some(bv) if bv.view.is_none() => Err("no view"),
+            Some(bv) if bv.client_world != ClientWorld::Ready && !(allow_setup && bv.world.setup.is_some()) => Err("isolated world unavailable"),
+            Some(bv) => bv.contexts.unique_for(frame).ok_or("no context"),
+        }
+    }
+
+    /// `browser_js_call` for a body with ONE secret argument (a password, B10): the expression and the
+    /// DevTools parameters are built in `Secret` buffers and wiped as soon as the send returns; no
+    /// `Value` or `to_string` copy is made. The seam sees only the constant body. Main frame only.
+    pub(super) fn browser_js_call_secret(&mut self, pane: PaneId, body: &str, args: Value, secret_name: &str, secret: &crate::pwm::Secret, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::World, body, done) else { return };
+        let (session, unique) = match self.world_target(pane, None, false) {
+            Ok(t) => t,
+            Err(why) => {
+                log_js_failure(why);
+                return done(self, pane, Err(why.into()));
+            }
+        };
+        let expr = match browser_js::call_js_secret(body, &args, secret_name, secret) {
+            Ok(e) => e,
+            Err(e) => {
+                log_js_failure(&e);
+                return done(self, pane, Err(e));
+            }
+        };
+        let params = browser_world::evaluate_params_secret(&unique, &expr);
+        drop(expr);
+        self.devtools_send_text(pane, session.as_deref(), "Runtime.evaluate", params.expose(), MAX_RESULT, Box::new(move |app, pane, r| {
             let r = r.and_then(|v| browser_world::evaluate_result(&v.to_string()));
             if let Err(e) = &r {
                 log_js_failure(e);

@@ -3468,6 +3468,38 @@ mod probe {
         p.finish();
     }
 
+    /// 13x7 Task 5: the password writer in Tandem's world: a visible password field takes the password
+    /// (typed argument, secret call text, as the app runs it), the page sees it only as that field's value, a
+    /// text field, a hidden field and another origin take nothing, and no page global holds it. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn password_writer_writes_only_a_visible_password_field() {
+        use crate::{browser_password as bp, pwm::Secret};
+        let page = "<!doctype html><html><body><input id=u><input id=p type=password><input id=h type=password style=\"opacity:0\"></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
+        p.load(PAGE);
+        p.settle(800);
+        let run = |p: &mut Probe, origin: &str, req: bool, focus: &str| {
+            p.page_eval(&format!("document.getElementById('{focus}').focus()")).expect("focus");
+            let c = bp::write_call(origin, req, false);
+            let secret = Secret::new("pw\"1\n</script>".into());
+            let e = crate::browser_js::call_js_secret(&c.body, &c.args, bp::TEXT_ARG, &secret).expect("call");
+            p.eval(None, e.expose())
+        };
+        let vals = |p: &mut Probe| p.page_eval("['u','p','h'].map(i => document.getElementById(i).value).join('|')");
+        let origin = p.page_eval("location.origin").expect("origin").trim_matches('"').to_string();
+        // PAGE is http(s) only on a real server; the origin guard compares exactly, so another origin fails.
+        assert_eq!(run(&mut p, "https://other.test", true, "p"), Ok("false".into()), "another origin takes nothing");
+        assert_eq!(run(&mut p, &origin, true, "u"), Ok("false".into()), "a text field takes nothing when a password field is required");
+        assert_eq!(run(&mut p, &origin, true, "h"), Ok("false".into()), "a transparent field takes nothing");
+        assert_eq!(vals(&mut p), Ok("\"||\"".into()), "nothing was written");
+        assert_eq!(run(&mut p, &origin, true, "p"), Ok("true".into()), "the visible password field takes it");
+        assert_eq!(vals(&mut p), Ok("\"|pw\\\"1\\n</script>|\"".into()));
+        assert_eq!(p.page_eval("Object.keys(window).filter(k => /pw|text|secret/i.test(k)).length"), Ok("0".into()), "no page global holds it");
+        p.finish();
+    }
+
     /// Task 7: the page's Smart Selection scripts in Tandem's world: the text around a point, the
     /// matcher's counts, and the selection `select-text.js` makes. (`browser_smart_select` is these
     /// calls in order; the App has no test constructor.) Needs the console session.

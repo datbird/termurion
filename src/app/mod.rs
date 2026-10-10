@@ -169,6 +169,7 @@ mod browser_scripts_app;
 mod browser_ctx_app;
 mod browser_marks_app;
 mod browser_autofill_app;
+mod browser_password_app;
 mod browser_triggers_app;
 mod browser_smart_app;
 mod browser_overlay_app;
@@ -4125,6 +4126,7 @@ impl App {
         self.browser_tip_drop(id);
         self.marks_pane_gone(id);
         self.autofill_pane_gone(id);
+        self.browser_pw_pane_gone(id);
         self.close_browser_view(id);
     }
 

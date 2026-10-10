@@ -97,6 +97,10 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "autofill-detector.js" => include_str!("../resources/browser/autofill-detector.js"),
         "autofill-fill-all.js" => include_str!("../resources/browser/autofill-fill-all.js"),
         "autofill-write.js" => include_str!("../resources/browser/autofill-write.js"),
+        "password-button.js" => include_str!("../resources/browser/password-button.js"),
+        "focus-password.js" => include_str!("../resources/browser/focus-password.js"),
+        "probe-password.js" => include_str!("../resources/browser/probe-password.js"),
+        "write-password.js" => include_str!("../resources/browser/write-password.js"),
         "turndown.browser.umd.js" => include_str!("../resources/browser/turndown.browser.umd.js"),
         _ => return None,
     })
@@ -565,6 +569,75 @@ pub fn call_js(body: &str, args: &Value) -> Result<String, String> {
     Ok(format!("(async () => {{ {prefix}{decls}{rewritten} }})()"))
 }
 
+/// Appends `s` to `out` as a JSON string literal (quotes included), a character at a time, so no
+/// second copy of the text exists outside `out`. Control characters, quotes, backslashes and the two
+/// line separators U+2028 and U+2029 are escaped. `out` is made with room for the worst case
+/// (`json_room`), so it never regrows.
+pub fn push_json_str(out: &mut crate::pwm::Secret, s: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push_str("\"");
+    for c in s.chars() {
+        let mut buf = [0u8; 4];
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{2028}' || c == '\u{2029}' => {
+                let n = c as u32;
+                let esc = [b'\\', b'u', HEX[(n >> 12 & 15) as usize], HEX[(n >> 8 & 15) as usize], HEX[(n >> 4 & 15) as usize], HEX[(n & 15) as usize]];
+                out.push_str(std::str::from_utf8(&esc).unwrap_or(""));
+            }
+            c => out.push_str(c.encode_utf8(&mut buf)),
+        }
+    }
+    out.push_str("\"");
+}
+
+/// The most room `push_json_str` needs for a string of `len` bytes (six bytes an escaped byte, two quotes).
+pub fn json_room(len: usize) -> usize {
+    len * 6 + 2
+}
+
+/// `call_js` for a call with ONE secret argument (a password): the expression is built in a
+/// `Secret`-owned buffer made with room for everything, the secret argument is escaped into it
+/// directly, and nothing but the returned `Secret` (wiped when dropped) holds the text. The other
+/// arguments are not secret. The caller never logs the result. Residual, recorded and not claimed away:
+/// the DevTools send, WebView2 and the renderer own further copies of the text.
+pub fn call_js_secret(body: &str, args: &Value, secret_name: &str, secret: &crate::pwm::Secret) -> Result<crate::pwm::Secret, String> {
+    if !identifier_ok(secret_name) {
+        return Err("bad argument name".into());
+    }
+    let mut decls = String::new();
+    match args {
+        Value::Null => {}
+        Value::Object(m) => {
+            for (k, v) in m {
+                if !identifier_ok(k) || k == secret_name {
+                    return Err("bad argument name".into());
+                }
+                decls.push_str(&format!("const {k} = {v}; "));
+            }
+        }
+        _ => return Err("bad argument name".into()),
+    }
+    let rewritten = rewrite_bridge(body);
+    let prefix = if rewritten != body { format!("{CLIENT_CAPTURE} {} ", bridge_object(World::Client)) } else { String::new() };
+    let mut out = crate::pwm::Secret::new(String::with_capacity(prefix.len() + decls.len() + rewritten.len() + secret_name.len() + json_room(secret.expose().len()) + 64));
+    out.push_str("(async () => { ");
+    out.push_str(&prefix);
+    out.push_str("const ");
+    out.push_str(secret_name);
+    out.push_str(" = ");
+    push_json_str(&mut out, secret.expose());
+    out.push_str("; ");
+    out.push_str(&decls);
+    out.push_str(&rewritten);
+    out.push_str(" })()");
+    Ok(out)
+}
+
 /// A synchronous script for the PAGE world, run with no bridge and no argument (iTerm2's
 /// `evaluateJavaScript` in `.page`); the answer is page-controlled data.
 pub fn page_call_script(body: &str, args: &Value) -> Result<String, String> {
@@ -892,6 +965,29 @@ mod tests {
         assert_eq!(route(r#"{"h":"x"}"#, World::Page, None, "o").unwrap().body, serde_json::Value::Null);
         assert!(route(&format!(r#"{{"h":"{}"}}"#, "a".repeat(200)), World::Page, None, "o").is_none());
         assert!(route(&format!(r#"{{"h":"x","b":"{}"}}"#, "a".repeat(crate::webhost::MAX_MESSAGE)), World::Page, None, "o").is_none());
+    }
+
+    /// B10: the secret call text has `call_js`'s shape, its literal reads back as the password whatever
+    /// the password holds, and a secret argument cannot share a name with another argument.
+    #[test]
+    fn call_js_secret_matches_call_js() {
+        use crate::pwm::Secret;
+        for pw in ["plain", "p\"w\n", "back\\slash", "</script>{{VALUE}}", "tab\tcr\r\u{1}\u{1f}", "line\u{2028}sep\u{2029}", "uni\u{e9}\u{1f600}", ""] {
+            let got = call_js_secret("return textArg + o;", &json!({"o": "x"}), "textArg", &Secret::new(pw.into())).unwrap();
+            let text = got.expose();
+            let head = "(async () => { const textArg = ";
+            let tail = "; const o = \"x\"; return textArg + o; })()";
+            assert!(text.starts_with(head) && text.ends_with(tail), "{pw:?}");
+            let lit = &text[head.len()..text.len() - tail.len()];
+            assert!(!lit.contains(['\n', '\r', '\u{2028}', '\u{2029}']), "no raw line break in the literal");
+            let back: serde_json::Value = serde_json::from_str(lit).unwrap();
+            assert_eq!(back, pw, "the literal reads back as the password");
+        }
+        let s = Secret::new("a".into());
+        assert!(call_js_secret("return 1;", &json!({"textArg": 1}), "textArg", &s).is_err(), "no duplicate name");
+        assert!(call_js_secret("return 1;", &json!({}), "bad name", &s).is_err());
+        assert!(call_js_secret("return 1;", &json!([1]), "textArg", &s).is_err());
+        assert_eq!(call_js_secret("return 1;", &json!({}), "textArg", &s).unwrap().expose(), "(async () => { const textArg = \"a\"; return 1; })()");
     }
 
     #[test]
