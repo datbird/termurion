@@ -142,7 +142,7 @@ pub fn extend_script(start: bool, forward: bool, unit: i64) -> Option<String> {
 /// never past the selection's anchor (a selection that is only whitespace is left alone). The copied
 /// file is not edited; the target must be found exactly once, or there is no word extension.
 const FORWARD_EXTEND_RAW: &str = "            newOffset = modifiedRange.endOffset;\n";
-const FORWARD_EXTEND_TYPED: &str = "            newOffset = modifiedRange.endOffset;\n            // Tandem (Windows): Chromium's Windows editing behavior extends forward by word to the start\n            // of the next word, past the space; macOS stops at the end of the word. Trim whitespace the\n            // extension ended on, never back to the anchor.\n            if (newContainer.nodeType === 3) {\n                var floor = newContainer === modifiedRange.startContainer ? modifiedRange.startOffset : 0;\n                var trimmed = newOffset;\n                while (trimmed > floor && /\\s/.test(newContainer.textContent.charAt(trimmed - 1))) trimmed--;\n                if (trimmed > floor) newOffset = trimmed;\n            }\n";
+const FORWARD_EXTEND_TYPED: &str = "            newOffset = modifiedRange.endOffset;\n            // Tandem (Windows): Chromium's Windows editing behavior extends forward by word to the start\n            // of the next word, past the space; macOS stops at the end of the word. From the end of a\n            // word that is a step over the space alone: extend once more (macOS reaches the end of the\n            // next word). Then trim whitespace the extension ended on, never back to the anchor.\n            if (/^\\s+$/.test(modifiedRange.toString())) {\n                tempSelection.modify(\"extend\", \"forward\", \"word\");\n                if (tempSelection.rangeCount > 0) {\n                    modifiedRange = tempSelection.getRangeAt(0);\n                    newContainer = modifiedRange.endContainer;\n                    newOffset = modifiedRange.endOffset;\n                }\n            }\n            if (newContainer.nodeType === 3) {\n                var floor = newContainer === modifiedRange.startContainer ? modifiedRange.startOffset : 0;\n                var trimmed = newOffset;\n                while (trimmed > floor && /\\s/.test(newContainer.textContent.charAt(trimmed - 1))) trimmed--;\n                if (trimmed > floor) newOffset = trimmed;\n            }\n";
 
 fn type_forward_extension(script: &str) -> Result<String, String> {
     match script.matches(FORWARD_EXTEND_RAW).count() {
@@ -750,6 +750,12 @@ mod tests {
         let f = extend_script(false, true, 1).expect("the script assembles");
         assert_eq!(f.matches("// Tandem (Windows): Chromium's Windows editing behavior extends forward by word").count(), 1);
         assert!(f.contains("trimmed--") && !f.contains("{{"));
+        // Probe run 2026-10-10: from the end of "hello" the Windows step covers only the space, so a
+        // second extension stayed "hello ". A whitespace-only step extends once more, before the trim
+        // (headless Chromium, editingBehaviorType=1 vs 0: every offset of a mixed line now agrees).
+        let again = f.find("if (/^\\s+$/.test(modifiedRange.toString())) {").expect("a whitespace-only step extends again");
+        assert!(again < f.find("trimmed--").unwrap(), "extend again, then trim");
+        assert_eq!(f.matches("tempSelection.modify(\"extend\", \"forward\", \"word\");").count(), 1);
         assert_eq!(f.matches(FORWARD_EXTEND_TYPED).count(), 1);
         assert_eq!(resource("extend-selection-word.js").unwrap().matches(FORWARD_EXTEND_RAW).count(), 1, "the copy is unchanged");
         assert!(type_forward_extension("no target here").is_err());
