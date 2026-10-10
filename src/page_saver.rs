@@ -520,6 +520,13 @@ pub struct Job {
     done: bool,
 }
 
+/// A name as NTFS compares it: upper case (NTFS folds through its upcase table, so `\u{3c2}` and
+/// `\u{3c3}`, or the micro sign and mu, are one name; lower case keeps them apart). A full mapping
+/// that folds more (`\u{df}` to `SS`) only numbers a name that was free.
+fn folded(name: &str) -> String {
+    name.to_uppercase()
+}
+
 fn is_web(url: &str) -> bool {
     let l = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     l.starts_with("http://") || l.starts_with("https://")
@@ -670,14 +677,14 @@ impl Job {
         }
         let base = base_filename(url, mime.as_deref());
         let issued = &self.issued;
-        let name = unique_filename(&base, &|n| issued.contains(&n.to_lowercase()) || taken(n));
+        let name = unique_filename(&base, &|n| issued.contains(&folded(n)) || taken(n));
         let path = self.resources.join(&name);
         // The name is the sanitizer's: one component, directly under resources, not refused.
         let direct = path.parent() == Some(self.resources.as_path()) && path.file_name().map(|n| n.to_string_lossy() == name.as_str()).unwrap_or(false);
         if !direct || name.contains(['/', '\\']) || crate::inert_files::refused_write(&path.to_string_lossy()) {
             return self.pump();
         }
-        self.issued.insert(name.to_lowercase());
+        self.issued.insert(folded(&name));
         self.entries.push((url.to_string(), Kind::File(path.clone(), name)));
         self.written.push(path.clone());
         let mut steps = vec![Step::Write { path, bytes }];
@@ -1178,6 +1185,29 @@ mod tests {
         j.on_html(Some(s("<p>")));
         assert!(j.check_epoch(2).is_empty());
         assert!(j.cancel().is_empty());
+    }
+
+    /// NTFS compares names through its upcase table: names that differ only in case, final sigma
+    /// against sigma, or the micro sign against mu are one file. Each resource still gets its own.
+    #[test]
+    fn case_folded_names_never_collide() {
+        for pair in [["A.png", "a.png"], ["\u{3c3}.png", "\u{3c2}.png"], ["\u{b5}.png", "\u{3bc}.png"], ["\u{3a3}.PNG", "\u{3c2}.png"]] {
+            let urls: Vec<String> = pair.iter().map(|n| format!("https://a/{n}")).collect();
+            let (mut j, _) = job_with(&[&urls[0], &urls[1]]);
+            let mut names = Vec::new();
+            for u in &urls {
+                for step in j.on_resource(u, Some((png(), Some(s("image/png")))), &none_taken) {
+                    if let Step::Write { path, .. } = step {
+                        names.push(path.file_name().unwrap().to_string_lossy().to_uppercase());
+                    }
+                }
+            }
+            assert_eq!(names.len(), 2, "{pair:?}");
+            assert_ne!(names[0], names[1], "{pair:?} collide on NTFS");
+        }
+        // A name on disk in another case is taken as well (the app's `taken` is the disk's).
+        let on_disk = |n: &str| n.to_uppercase() == "LOGO.PNG";
+        assert_eq!(unique_filename("logo.png", &on_disk), "logo_1.png");
     }
 
     #[test]
