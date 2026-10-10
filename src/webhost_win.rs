@@ -5193,11 +5193,16 @@ window.addEventListener('message', function (e) {
         // Grant notifications, then flood new Notification() without ever reporting on them.
         let notif: Vec<(u64, i32)> = p.perm_reqs.iter().filter(|r| r.1 == 4).map(|r| (r.0, r.1)).collect();
         let (token, _) = notif.first().copied().unwrap_or_else(|| panic!("a notification request arrived: {:?}", p.perm_reqs));
+        // The app's order (ruling A): mirror the grant into the profile, wait for the write, then answer.
+        // Without the mirror an Allow may raise no notification at all and the cap below would hold with 0.
+        p.view().set_permission_state(51, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(51, true))), "the write answered: {:?}", p.writes);
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
         p.settle(500);
         p.page_eval("for (var i = 0; i < 5000; i++) { try { new Notification('n' + i); } catch (e) {} } 1").expect("the flood runs");
         p.settle(3000);
-        assert!(p.notes.len() <= MAX_HELD_NOTES, "at most {MAX_HELD_NOTES} held: {}", p.notes.len());
+        // Review I2: the flood is held AT the cap, so a grant that raised nothing fails here.
+        assert_eq!(p.notes.len(), MAX_HELD_NOTES, "the flood fills the cap of {MAX_HELD_NOTES} and no more: {}", p.notes.len());
         assert_eq!(p.page_eval("1"), Ok("1".into()), "still responsive after the flood");
         p.finish();
     }
