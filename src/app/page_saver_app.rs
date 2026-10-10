@@ -34,6 +34,11 @@ pub enum FileKind {
     Write,
     Remove,
     RemoveDir,
+    /// The save is over unfinished (cancelled, or failed): the worker removes the folders IT made
+    /// for this save, deepest first, each only if empty (`localfs::remove_dir`). A MakeDir whose
+    /// answer had not reached the job when it ended is covered too (final review minor 3). Nothing
+    /// is answered.
+    Abandon,
 }
 
 /// One file operation for the worker.
@@ -68,10 +73,31 @@ fn run_op_with(op: &FileOp, mark: &dyn Fn(&Path, Option<&str>) -> std::io::Resul
         FileKind::MakeDir => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::create_dir(&p)),
         FileKind::Write => crate::inert_files::write_new_checked_with(&op.path, &op.bytes, Some(&op.host_url), mark),
         FileKind::Remove => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::remove_file(&p)),
-        FileKind::RemoveDir => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::remove_dir(&p)),
+        FileKind::RemoveDir | FileKind::Abandon => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::remove_dir(&p)),
     };
     let unmarked = r.as_ref().err().is_some_and(crate::inert_files::unmarkable);
     FileDone { kind: op.kind, path: op.path.clone(), err: r.err().map(|e| e.to_string()), unmarked }
+}
+
+/// The file worker of one save: carries out each operation in order and hands each result to
+/// `sink`, until the save's sender is dropped.
+/// The folders the worker made (a create_dir that succeeded: never one that was there before) are
+/// remembered for an `Abandon`.
+pub(super) fn page_save_worker(rx: std::sync::mpsc::Receiver<FileOp>, sink: &dyn Fn(FileDone)) {
+    let mut made: Vec<PathBuf> = Vec::new();
+    for op in rx {
+        if op.kind == FileKind::Abandon {
+            for dir in made.drain(..).rev() {
+                let _ = run_op(&FileOp { kind: FileKind::Abandon, path: dir, bytes: Vec::new(), host_url: String::new() });
+            }
+            continue;
+        }
+        let done = run_op(&op);
+        if op.kind == FileKind::MakeDir && done.err.is_none() {
+            made.push(op.path.clone());
+        }
+        sink(done);
+    }
 }
 
 /// One thing for the app to do.
@@ -147,6 +173,19 @@ impl Saving {
     pub(super) fn begin(&mut self, now: u64) -> Vec<Act> {
         let steps = self.job.start();
         self.run(steps, now)
+    }
+
+    /// What a cancel hands the file worker, in order (`App::page_save_cancel` sends exactly these).
+    pub(super) fn cancel_ops(&mut self, now: u64) -> Vec<FileOp> {
+        let mut ops: Vec<FileOp> = self.cancel(now).into_iter().filter_map(|a| if let Act::File(op) = a { Some(op) } else { None }).collect();
+        ops.push(self.abandon_op());
+        ops
+    }
+
+    /// The last operation of a save that ends unfinished: after the queued ones, the worker removes
+    /// the empty folders it made.
+    pub(super) fn abandon_op(&self) -> FileOp {
+        FileOp { kind: FileKind::Abandon, path: self.folder.clone(), bytes: Vec::new(), host_url: String::new() }
     }
 
     /// The person cancelled, or the pane closed: stop, remove the partial output. No alert.
@@ -391,10 +430,9 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
         let proxy = self.proxy.clone();
         let spawned = std::thread::Builder::new().name("page-save".into()).spawn(move || {
-            for op in rx {
-                let done = run_op(&op);
+            page_save_worker(rx, &|done| {
                 let _ = proxy.lock().map(|p| p.send_event(UserEvent::PageSaveFile { pane, id, done }));
-            }
+            });
         });
         if let Err(e) = spawned {
             self.page_save_alert(&e.to_string());
@@ -445,7 +483,12 @@ impl App {
                     self.reveal_in_explorer(&path.to_string_lossy());
                 }
                 Act::Fail(text) => {
-                    self.page_saves.remove(&pane);
+                    // A folder made while the save failed, its answer still on the way, goes too.
+                    if let Some(saving) = self.page_saves.remove(&pane) {
+                        if let Some(w) = &saving.worker {
+                            let _ = w.send(saving.abandon_op());
+                        }
+                    }
                     self.page_save_alert(&text);
                 }
             }
@@ -477,12 +520,10 @@ impl App {
     pub(super) fn page_save_cancel(&mut self, pane: PaneId) {
         let now = self.page_save_epoch(pane);
         let Some(mut saving) = self.page_saves.remove(&pane) else { return };
-        let acts = saving.cancel(now);
+        let ops = saving.cancel_ops(now);
         if let Some(w) = &saving.worker {
-            for a in acts {
-                if let Act::File(op) = a {
-                    let _ = w.send(op);
-                }
+            for op in ops {
+                let _ = w.send(op);
             }
         }
     }
@@ -769,6 +810,100 @@ mod tests {
         assert!(!folder.exists(), "{:?}", h.ops);
         assert!(h.fails.is_empty() && h.reveals.is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Final review minor 3: a cancel (or the pane closing) while the save folder is being made, before
+    /// its answer, leaves no empty folder. The worker carries out the queued MakeDir, then exactly
+    /// what `page_save_cancel` sends; the late answer goes nowhere (the save is gone).
+    #[test]
+    fn a_cancel_while_a_folder_is_made_leaves_no_folder() {
+        let root = temp_root("cancelmk");
+        let folder = root.join("site");
+        let mut s = Saving::new(folder.clone(), "https://tandem.test/".into(), 7, 1);
+        let first = s.begin(7);
+        let made: Vec<FileOp> = first.into_iter().filter_map(|a| if let Act::File(op) = a { Some(op) } else { None }).collect();
+        assert!(matches!(made.as_slice(), [FileOp { kind: FileKind::MakeDir, .. }]), "{made:?}");
+        let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
+        for op in made.into_iter().chain(s.cancel_ops(7)) {
+            tx.send(op).unwrap();
+        }
+        drop(tx);
+        page_save_worker(rx, &|_| {});
+        assert!(listing(&root).is_empty(), "the cancelled save left {:?}", listing(&root));
+        // A folder that was there before is never removed: the same race against an existing one.
+        std::fs::create_dir(&folder).unwrap();
+        let mut s = Saving::new(folder.clone(), "https://tandem.test/".into(), 7, 2);
+        let first = s.begin(7);
+        let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
+        for a in first {
+            if let Act::File(op) = a {
+                tx.send(op).unwrap();
+            }
+        }
+        for op in s.cancel_ops(7) {
+            tx.send(op).unwrap();
+        }
+        drop(tx);
+        page_save_worker(rx, &|_| {});
+        assert!(folder.is_dir(), "an existing folder stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Final review minor 3, the failure path: the page's script fails while `resources` is being
+    /// made (the MakeDir overlaps the extract). The job's cleanup cannot remove `site` (not empty
+    /// yet) and the `resources` answer arrives after the save is gone; the app sends the abandon
+    /// after the failure's operations, so neither folder is left. A file the worker could not
+    /// remove keeps its folder (only empty folders go).
+    #[test]
+    fn a_failure_while_a_folder_is_made_leaves_no_folder() {
+        let root = temp_root("failmk");
+        let folder = root.join("site");
+        let mut s = Saving::new(folder.clone(), "https://tandem.test/".into(), 7, 1);
+        let ops = |acts: Vec<Act>| -> Vec<FileOp> { acts.into_iter().filter_map(|a| if let Act::File(op) = a { Some(op) } else { None }).collect() };
+        // One worker for the whole save, as the app has: it makes `site` too.
+        let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
+        let (dtx, drx) = std::sync::mpsc::channel::<FileDone>();
+        let worker = std::thread::spawn(move || page_save_worker(rx, &|d| {
+            let _ = dtx.send(d);
+        }));
+        let first = ops(s.begin(7));
+        assert_eq!(first.len(), 1);
+        tx.send(first[0].clone()).unwrap();
+        let after = s.file_done(drx.recv().unwrap(), 7);
+        assert!(after.iter().any(|a| matches!(a, Act::Page(_))), "the extract runs while resources is made: {after:?}");
+        let resources = ops(after);
+        assert!(matches!(resources.as_slice(), [FileOp { kind: FileKind::MakeDir, .. }]), "{resources:?}");
+        // The MakeDir is in flight; its answer will find the save gone.
+        tx.send(resources[0].clone()).unwrap();
+        let failed = s.page_answer(Err("boom".into()), 7);
+        assert!(failed.iter().any(|a| matches!(a, Act::Fail(_))), "{failed:?}");
+        // The failure's cleanup, then the abandon the app sends at Act::Fail.
+        for op in ops(failed).into_iter().chain([s.abandon_op()]) {
+            tx.send(op).unwrap();
+        }
+        drop(tx);
+        worker.join().unwrap();
+        assert!(listing(&root).is_empty(), "the failed save left {:?}", listing(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The app sends the abandon at both unfinished ends, after their operations, and never on a
+    /// finished save.
+    #[test]
+    fn unfinished_saves_send_the_abandon() {
+        let src = include_str!("page_saver_app.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap()];
+        let fail = &prod[prod.find("Act::Fail(text) => {").unwrap()..];
+        let fail = &fail[..fail.find("self.page_save_alert(&text);").unwrap()];
+        assert!(fail.contains("let _ = w.send(saving.abandon_op());"), "{fail}");
+        let cancel = &prod[prod.find("pub(super) fn page_save_cancel").unwrap()..];
+        let cancel = &cancel[..cancel.find("\n    }\n").unwrap()];
+        assert!(cancel.contains("let ops = saving.cancel_ops(now);"));
+        let reveal = &prod[prod.find("Act::Reveal(path) => {").unwrap()..prod.find("Act::Fail(text) => {").unwrap()];
+        assert!(!reveal.contains("abandon"), "a finished save keeps its folders");
+        let mut s = Saving::new(PathBuf::from("C:\\x\\site"), String::new(), 7, 1);
+        let _ = s.begin(7);
+        assert_eq!(s.cancel_ops(7).last().map(|o| o.kind), Some(FileKind::Abandon), "the abandon is the cancel's last operation");
     }
 
     /// The epoch is bound when the menu item is chosen, before the dialog (Task 10 review minor 7):
