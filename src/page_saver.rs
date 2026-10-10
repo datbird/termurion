@@ -328,7 +328,7 @@ pub fn rewrite_css(css: &str, base: &str, local: &dyn Fn(&str) -> Option<String>
         return css.to_string();
     }
     let mut seen = 0usize;
-    // The output never passes MAX_CSS_BYTES: an inlined value that would push it past keeps the
+    // The output passes MAX_CSS_BYTES only by blanks: an inlined value that would push it past keeps the
     // original reference (the inlined-stylesheet quirk could otherwise multiply a small sheet
     // thousands of times per level, Task 9 review I2).
     let mut out_len = css.len();
@@ -340,7 +340,10 @@ pub fn rewrite_css(css: &str, base: &str, local: &dyn Fn(&str) -> Option<String>
                 return whole;
             }
             let url = &caps[1];
-            let new = if script_url(url) {
+            // A script URL is always blanked, at the cap too (findings r2 M2): the blank grows a
+            // reference by at most a few bytes, at most MAX_CSS_URLS times.
+            let blank = script_url(url);
+            let new = if blank {
                 "url('about:blank')".to_string()
             } else {
                 match resolve_url(base, url).and_then(|abs| local(&abs)) {
@@ -349,7 +352,7 @@ pub fn rewrite_css(css: &str, base: &str, local: &dyn Fn(&str) -> Option<String>
                 }
             };
             let grown = out_len - whole.len() + new.len();
-            if grown > MAX_CSS_BYTES && new.len() > whole.len() {
+            if !blank && grown > MAX_CSS_BYTES && new.len() > whole.len() {
                 return whole;
             }
             out_len = grown;
@@ -990,6 +993,18 @@ mod tests {
         let base = sanitize(&("a".repeat(236) + ".exe." + &"x".repeat(20)));
         let next = unique_filename(&base, &|n| n == base);
         assert!(!crate::inert_files::high_risk(&next) && u(&next) <= MAX_NAME_UNITS, "{next:?}");
+    }
+
+    /// A script URL is blanked even when the output is at its cap (findings r2 M2): the blank is a
+    /// few bytes longer than `url(vbscript:a)`, and the size check must not keep the live one.
+    #[test]
+    fn script_urls_are_blanked_at_the_cap() {
+        let tail = "a{b:url(vbscript:a)}c{d:url(javascript:x)}";
+        let css = "/".repeat(MAX_CSS_BYTES - tail.len()) + tail;
+        assert_eq!(css.len(), MAX_CSS_BYTES);
+        let out = rewrite_css(&css, "https://a/s.css", &|_| None);
+        assert!(!out.contains("vbscript:") && !out.contains("javascript:"), "{}", &out[out.len() - 80..]);
+        assert_eq!(out.matches("url('about:blank')").count(), 2);
     }
 
     #[test]
