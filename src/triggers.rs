@@ -482,12 +482,28 @@ fn substitute_pieces(param: &str, captures: &[Option<&str>]) -> Vec<CmdPiece> {
 
 /// Enable All and Disable All in place: `disabled` set on every entry that is a table;
 /// everything else stays as stored. None when the value is not a list.
+/// Enable All never turns on an entry that needs its own confirm (Inject Javascript, Reload After
+/// Delay, Enter Reader Mode and the two workgroup actions: the classes `imports_enabled` refuses); it
+/// leaves those as stored. Disable All disables everything.
 pub fn set_all_disabled(v: &toml::Value, disabled: bool) -> Option<toml::Value> {
     let mut a = v.as_array()?.clone();
     for t in a.iter_mut().filter_map(toml::Value::as_table_mut) {
+        if !disabled && needs_own_confirm(t.get("action").and_then(|x| x.as_str()).unwrap_or("")) {
+            continue;
+        }
         t.insert("disabled".into(), disabled.into());
     }
     Some(toml::Value::Array(a))
+}
+
+/// A browser action that only its own confirm turns on: any browser class an import does not turn on.
+pub fn needs_own_confirm(action: &str) -> bool {
+    is_browser_action(action) && !imports_enabled(action)
+}
+
+/// How many entries of the stored list `set_all_disabled(.., false)` leaves off for that reason.
+pub fn left_off_by_enable_all(v: &toml::Value) -> usize {
+    v.as_array().map_or(0, |a| a.iter().filter_map(toml::Value::as_table).filter(|t| needs_own_confirm(t.get("action").and_then(|x| x.as_str()).unwrap_or("")) && !Trigger::from_table(t).enabled).count())
 }
 
 /// `toggleTriggerEnabledAtIndex:` (`PS:4506-4512`) in place: `disabled` flips on the stored
@@ -837,6 +853,10 @@ mod tests {
         assert!(limit.allow((1, 0), t0 + second, second));
     }
 
+    fn parse_value(items: &[(&str, bool)]) -> toml::Value {
+        to_value(&items.iter().map(|(a, enabled)| Trigger { regex: "x".into(), action: a.to_string(), parameter: String::new(), instant: false, enabled: *enabled, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() }).collect::<Vec<_>>())
+    }
+
     /// A stored list with an entry that is not a table, a numeric popup parameter, an
     /// integer `disabled` and a key Tandem does not know.
     fn odd_list() -> toml::Value {
@@ -860,6 +880,14 @@ mod tests {
             assert_eq!(a[2].as_table().unwrap().len(), 3, "only disabled is added");
         }
         assert!(set_all_disabled(&toml::Value::String("x".into()), true).is_none());
+        // Enable All never turns on an entry that needs its own confirm; Disable All still turns it off.
+        let mixed = parse_value(&[("BellTrigger", false), ("InjectJavascriptURLTrigger", false), ("ReloadBrowserTrigger", false), ("iTerm2SharedARC.ReaderModeBrowserTrigger", false), ("iTermEnterWorkgroupBrowserTrigger", false), ("iTermExitWorkgroupBrowserTrigger", false), ("iTerm2SharedARC.HighlightBrowserTrigger", false)]);
+        let on = set_all_disabled(&mixed, false).unwrap();
+        let state: Vec<(String, bool)> = parse_list(&on).into_iter().map(|t| (t.action, t.enabled)).collect();
+        assert_eq!(state.iter().filter(|(_, e)| *e).map(|(a, _)| a.as_str()).collect::<Vec<_>>(), vec!["BellTrigger", "iTerm2SharedARC.HighlightBrowserTrigger"]);
+        assert_eq!(left_off_by_enable_all(&mixed), 5);
+        let all_on = parse_value(&[("InjectJavascriptURLTrigger", true)]);
+        assert!(parse_list(&set_all_disabled(&all_on, true).unwrap()).iter().all(|t| !t.enabled), "Disable All still disables");
     }
 
     #[test]

