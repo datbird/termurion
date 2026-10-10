@@ -93,6 +93,10 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "trigger-highlight-text.js" => include_str!("../resources/browser/trigger-highlight-text.js"),
         "trigger-make-hyperlink.js" => include_str!("../resources/browser/trigger-make-hyperlink.js"),
         "trigger-remove-highlighted-text.js" => include_str!("../resources/browser/trigger-remove-highlighted-text.js"),
+        "autofill-core.js" => include_str!("../resources/browser/autofill-core.js"),
+        "autofill-detector.js" => include_str!("../resources/browser/autofill-detector.js"),
+        "autofill-fill-all.js" => include_str!("../resources/browser/autofill-fill-all.js"),
+        "autofill-write.js" => include_str!("../resources/browser/autofill-write.js"),
         "turndown.browser.umd.js" => include_str!("../resources/browser/turndown.browser.umd.js"),
         _ => return None,
     })
