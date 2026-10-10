@@ -117,7 +117,8 @@ pub(super) struct Saving {
     /// File operations handed out and not yet answered.
     outstanding: usize,
     budget: crate::devtools::Budget,
-    /// The first file error, for the alert.
+    /// The error of the file operation that failed the save (a MakeDir, `index.html`), for the
+    /// alert; a skipped resource's error is never kept (Task 10 review minor 3).
     io_error: Option<String>,
     /// `Reveal` or `Fail` was answered.
     over: bool,
@@ -280,7 +281,12 @@ impl Saving {
             }
             (Some(Waiting::Attributes), Ok(_)) => self.job.on_attributes_added(),
             (Some(Waiting::Html), Ok(v)) => self.job.on_html(v.as_str().map(str::to_string)),
-            (Some(Waiting::Extract | Waiting::Attributes | Waiting::Html), Err(e)) => self.job.on_error(e),
+            // A page-world exception's text is the page's to choose: logged, never shown. The alert
+            // says Tandem's fixed text (Task 10 review minor 2).
+            (Some(Waiting::Extract | Waiting::Attributes | Waiting::Html), Err(e)) => {
+                crate::rlog!("save page as: a saver script failed: {}", crate::dlog::name(&e));
+                self.job.on_error(page_saver::FAILED_TO_GET_HTML.to_string())
+            }
             (other, _) => {
                 self.waiting = other;
                 return Vec::new();
@@ -326,17 +332,15 @@ impl Saving {
             self.queue.extend(more);
             return self.pump(now);
         }
-        let more = match (d.err, d.kind) {
-            (Some(e), FileKind::MakeDir) => {
-                self.io_error.get_or_insert(e);
-                self.job.on_make_dir_failed(&d.path)
-            }
-            (Some(e), FileKind::Write) => {
-                self.io_error.get_or_insert(e);
-                self.job.on_write_failed(&d.path)
-            }
-            _ => Vec::new(),
+        let (more, e) = match (d.err, d.kind) {
+            (Some(e), FileKind::MakeDir) => (self.job.on_make_dir_failed(&d.path), Some(e)),
+            (Some(e), FileKind::Write) => (self.job.on_write_failed(&d.path), Some(e)),
+            _ => (Vec::new(), None),
         };
+        // Only the error of the operation that failed the save goes in the alert.
+        if more.iter().any(|s| matches!(s, Step::Failed(_))) {
+            self.io_error = e;
+        }
         self.queue.extend(more);
         self.pump(now)
     }
@@ -765,6 +769,33 @@ mod tests {
         assert_eq!(h.fails, vec![page_saver::save_failed_text(crate::inert_files::UNMARKABLE)]);
         assert!(h.reveals.is_empty());
         assert_eq!(listing(&root), Vec::<String>::new(), "the save folder and everything in it are gone");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The alert names the failing operation's own error, never an earlier skipped resource's, and
+    /// never page-authored text (Task 10 review minors 2 and 3).
+    #[test]
+    fn the_alert_names_the_right_cause() {
+        let folder = PathBuf::from("C:\\x\\site");
+        let skipped = |s: &mut Saving| {
+            let d = FileDone { kind: FileKind::Write, path: folder.join("resources").join("i.png"), err: Some("resource error".into()), unmarked: false };
+            assert!(s.file_done(d, 1).is_empty());
+        };
+        // A navigation after a skipped resource: the reason alone.
+        let mut s = Saving::new(folder.clone(), String::new(), 1, 1);
+        skipped(&mut s);
+        assert_eq!(s.run(vec![Step::Failed(page_saver::NAVIGATED_AWAY.into())], 1), vec![Act::Fail(page_saver::save_failed_text(page_saver::NAVIGATED_AWAY))]);
+        // index.html failing after a skipped resource: index.html's error.
+        let mut s = Saving::new(folder.clone(), String::new(), 1, 1);
+        skipped(&mut s);
+        let d = FileDone { kind: FileKind::Write, path: folder.join("index.html"), err: Some("index error".into()), unmarked: false };
+        let acts = s.file_done(d, 1);
+        assert_eq!(acts.last(), Some(&Act::Fail(page_saver::save_failed_text("Failed to save file: index error"))), "{acts:?}");
+        // A page-world exception (a hostile page can choose its message) shows Tandem's fixed text.
+        let root = temp_root("pageerr");
+        let mut h = Harness::new(root.join("site"), vec![Err("Uncaught Error: Your files are encrypted, call 555".into())]);
+        h.go();
+        assert_eq!(h.fails, vec![page_saver::save_failed_text(page_saver::FAILED_TO_GET_HTML)]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
