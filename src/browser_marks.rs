@@ -77,8 +77,11 @@ pub fn mark_url(page_url: &str, loc: &Location) -> Option<String> {
 }
 
 impl Location {
+    /// Page data is bounded, and an XPath holding `&` is refused: the fragment is `&`-split and `&` is
+    /// not escaped by the fragment encoding, so the page could write its own `textFragment` pair
+    /// (task-1 re-review minor 5; R13x5-5).
     fn bounded(self) -> Option<Location> {
-        (self.xpath.len() <= MAX_XPATH && self.text_fragment.as_ref().is_none_or(|t| t.len() <= MAX_TEXT)).then_some(self)
+        (self.xpath.len() <= MAX_XPATH && !self.xpath.contains('&') && self.text_fragment.as_ref().is_none_or(|t| t.len() <= MAX_TEXT)).then_some(self)
     }
 
     /// From the page's answer (`NMM:45-57`): `xpath` a string, `offsetY`, `scrollY`, `y` integers.
@@ -139,30 +142,34 @@ impl Location {
     }
 }
 
-/// What the annotation box asked for.
+/// What the annotation box asked for. The box only REQUESTS (B2, class fix): the name is typed and
+/// a delete is confirmed in a Tandem window outside the page, which the page cannot see, cover or
+/// type into. A forged or clickjacked press can at most open that window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
-    Rename { guid: String, name: String },
-    Delete { guid: String },
+    RequestRename { guid: String },
+    RequestDelete { guid: String },
 }
 
 fn same_secret(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
-/// `handleMessage` (`NMM:228-252`): the secret must match (an empty one never does), `delete: true`
-/// wins, else a `name` renames. Whether the guid names a mark is the caller's check.
+/// `handleMessage` (`NMM:228-252`), changed (B2): the secret must match (an empty one never does) and
+/// the message is `requestDelete: true` or `requestRename: true`. A message carrying a `name` or
+/// `delete` is not honored: no page-reachable path changes a mark without the native window. Whether
+/// the guid names a mark is the caller's check.
 pub fn update_of(body: &Value, secret: &str) -> Option<Update> {
     let guid = body.get("guid")?.as_str()?;
     let sent = body.get("sessionSecret")?.as_str()?;
     if secret.is_empty() || !same_secret(sent, secret) || guid.is_empty() || guid.len() > MAX_GUID {
         return None;
     }
-    if body.get("delete").and_then(Value::as_bool) == Some(true) {
-        return Some(Update::Delete { guid: guid.to_string() });
+    let flag = |k: &str| body.get(k).and_then(Value::as_bool) == Some(true);
+    if flag("requestDelete") {
+        return Some(Update::RequestDelete { guid: guid.to_string() });
     }
-    let name = body.get("name")?.as_str()?;
-    (name.chars().count() <= MAX_NAME).then(|| Update::Rename { guid: guid.to_string(), name: name.to_string() })
+    flag("requestRename").then(|| Update::RequestRename { guid: guid.to_string() })
 }
 
 /// `handleLayoutUpdateMessage` (`NMM:256-260`).
@@ -192,32 +199,45 @@ pub(crate) fn patch_once(src: &str, from: &str, to: &str) -> Result<String, Stri
     }
 }
 
-/// The annotation box acts only on events the person caused, aimed at the real button (B2, the
-/// carried rule plus the task-1 review's clickjacking ruling). Three layers: the box is built in a
-/// closed shadow root made in the isolated world (a page cannot reach its input or styles, nor
-/// listen inside it); a handler ignores an untrusted event; and Save and Delete act only when the
-/// trusted pointer event's point holds that very button (`elementFromPoint` on the shadow root,
-/// which answers the host, not the button, when a page overlay covers it) or, for a keyboard
-/// activation (`detail` 0), when that button has focus. The Enter key's own `saveButton.click()` is
-/// untrusted, so it carries a flag that only this world's wrapper of the button holds.
+/// The annotation box in the page is display plus two buttons that only REQUEST (B2, class fix; the
+/// task-1 re-review showed that any in-page control can be clickjacked and that the page sees the keys
+/// typed into the page). The name input is made a hidden field (it can take no key), "Save" becomes
+/// "Rename" and posts `requestRename`, "Delete" posts `requestDelete` and removes nothing: the name is
+/// typed and the delete confirmed in a Tandem window outside the web view. Defense in depth: the
+/// box is built in a closed shadow root made in the isolated world under a host styled with
+/// `!important` inline rules, a handler ignores an untrusted event, and a press counts only when the
+/// trusted pointer event's point holds that very button (`elementFromPoint` on the shadow root) or,
+/// for a keyboard activation (`detail` 0), when that button has focus. All patches are exact-once and
+/// fail closed.
 pub(crate) fn trust_patched(src: &str) -> Result<String, String> {
-    let s = patch_once(src, "if (e.key === 'Enter') {", "if (e.isTrusted && e.key === 'Enter') {")?;
-    let s = patch_once(&s, "saveButton.click(); // Trigger the save button click", "saveButton.tandemKey = true; saveButton.click(); saveButton.tandemKey = false; // Trigger the save button click")?;
-    let s = patch_once(&s, "deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(e) { if (!tandemReal(e, deleteButton)) { return; }")?;
-    let s = patch_once(&s, "saveButton.addEventListener('click', function(e) {", "saveButton.addEventListener('click', function(e) { if (!saveButton.tandemKey && !tandemReal(e, saveButton)) { return; }")?;
+    let s = patch_once(src, "deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(e) { if (!tandemReal(e, deleteButton)) { return; }")?;
+    let s = patch_once(&s, "saveButton.addEventListener('click', function(e) {", "saveButton.addEventListener('click', function(e) { if (!tandemReal(e, saveButton)) { return; }")?;
+    // Requests only: no name leaves the page, nothing is removed or renamed in it.
+    let s = patch_once(&s, "delete: true,", "requestDelete: true,")?;
+    let s = patch_once(&s, "name: input.value,", "requestRename: true,")?;
+    let s = patch_once(&s, "annotation.remove();", "")?;
+    let s = patch_once(&s, "mark.name = input.value;", "")?;
+    let s = patch_once(&s, "collapsedView.textContent = input.value;", "")?;
+    let s = patch_once(&s, "input.type = 'text';", "input.type = 'hidden';")?;
+    let s = patch_once(&s, "saveButton.textContent = 'Save';", "saveButton.textContent = 'Rename';")?;
+    let s = patch_once(&s, "collapsedView.title = 'Click to expand and edit name';", "collapsedView.title = 'Click to expand';")?;
     shadow_patched(&s)
 }
 
-/// The annotations live in a closed shadow root under a host with the old container's id; the root
-/// is kept as `window.tandemMarkRoot` (the isolated world's window, which a page cannot see) for
-/// `update-mark-positions.js`. `tandemReal` is the real-button test.
+/// The annotations live in a closed shadow root under a host Tandem keeps (`window.tandemMarkHost`,
+/// the isolated world's window, which a page cannot see) and styles inline with `!important` after
+/// `all: initial`, so page CSS cannot move, hide-by-containing-block or restyle it. The root is
+/// `window.tandemMarkRoot` for `update-mark-positions.js`. The previous box is removed by that
+/// reference, never by a page-controlled id. `tandemReal` is the real-button test.
 fn shadow_patched(src: &str) -> Result<String, String> {
     let s = patch_once(
         src,
         "var container = document.createElement('div');",
-        "var host = document.createElement('div');\n    host.id = 'iterm-mark-annotations';\n    var shadow = host.attachShadow({mode: 'closed'});\n    window.tandemMarkRoot = shadow;\n    function tandemReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
+        "var host = document.createElement('div');\n    host.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n    var shadow = host.attachShadow({mode: 'closed'});\n    window.tandemMarkRoot = shadow;\n    window.tandemMarkHost = host;\n    function tandemReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
     )?;
     let s = patch_once(&s, "container.id = 'iterm-mark-annotations';", "")?;
+    let s = patch_once(&s, "document.getElementById('iterm-mark-annotations')", "window.tandemMarkHost")?;
+    let s = patch_once(&s, "existingContainer.remove();", "existingContainer.remove();\n        window.tandemMarkHost = null;\n        window.tandemMarkRoot = null;")?;
     patch_once(&s, "document.body.appendChild(container);", "shadow.appendChild(container);\n        document.body.appendChild(host);")
 }
 
@@ -516,17 +536,19 @@ mod tests {
 
     #[test]
     fn updates_follow_iterm2() {
-        let del = json!({"guid":"g","delete":true,"sessionSecret":"s"});
-        assert_eq!(update_of(&del, "s"), Some(Update::Delete { guid: "g".into() }));
-        let ren = json!({"guid":"g","name":"n","sessionSecret":"s"});
-        assert_eq!(update_of(&ren, "s"), Some(Update::Rename { guid: "g".into(), name: "n".into() }));
-        assert_eq!(update_of(&json!({"guid":"g","name":"","sessionSecret":"s"}), "s"), Some(Update::Rename { guid: "g".into(), name: String::new() }));
+        let del = json!({"guid":"g","requestDelete":true,"sessionSecret":"s"});
+        assert_eq!(update_of(&del, "s"), Some(Update::RequestDelete { guid: "g".into() }));
+        let ren = json!({"guid":"g","requestRename":true,"sessionSecret":"s"});
+        assert_eq!(update_of(&ren, "s"), Some(Update::RequestRename { guid: "g".into() }));
         assert_eq!(update_of(&ren, "t"), None);
-        assert_eq!(update_of(&json!({"guid":"g","name":"n"}), "s"), None);
-        assert_eq!(update_of(&json!({"guid":"g","name":"n","sessionSecret":""}), ""), None, "no secret is never a match");
-        assert_eq!(update_of(&json!({"name":"n","sessionSecret":"s"}), "s"), None);
-        assert_eq!(update_of(&json!({"guid":"g","delete":false,"name":"n","sessionSecret":"s"}), "s"), Some(Update::Rename { guid: "g".into(), name: "n".into() }));
-        assert_eq!(update_of(&json!({"guid":"g","delete":false,"sessionSecret":"s"}), "s"), None);
+        assert_eq!(update_of(&json!({"guid":"g","requestRename":true}), "s"), None);
+        assert_eq!(update_of(&json!({"guid":"g","requestRename":true,"sessionSecret":""}), ""), None, "no secret is never a match");
+        assert_eq!(update_of(&json!({"requestRename":true,"sessionSecret":"s"}), "s"), None);
+        assert_eq!(update_of(&json!({"guid":"g","requestDelete":false,"sessionSecret":"s"}), "s"), None);
+        // Class fix (B2): a message that carries a name or a delete changes nothing; only the native window does.
+        assert_eq!(update_of(&json!({"guid":"g","name":"n","sessionSecret":"s"}), "s"), None);
+        assert_eq!(update_of(&json!({"guid":"g","delete":true,"sessionSecret":"s"}), "s"), None);
+        assert_eq!(update_of(&json!({"guid":"g","requestDelete":true,"name":"n","sessionSecret":"s"}), "s"), Some(Update::RequestDelete { guid: "g".into() }), "a name beside a request is ignored");
         assert!(is_layout_change(&json!({"type":"layoutChange"})));
         assert!(!is_layout_change(&json!({"type":"x"})));
         assert!(!is_layout_change(&json!("layoutChange")));
@@ -592,20 +614,44 @@ mod tests {
     }
 
     #[test]
-    fn annotation_buttons_ignore_untrusted_events() {
+    fn annotation_buttons_only_request() {
         let shown = show_call(&[json!({"name":"n","guid":"g"})], "s").unwrap().body;
-        assert_eq!(shown.matches("e.isTrusted").count(), 2, "keydown and the real-button test");
-        assert_eq!(shown.matches("tandemReal(e, ").count(), 3, "the definition, Delete and Save");
+        assert_eq!(shown.matches("e.isTrusted").count(), 1, "the real-button test");
+        assert_eq!(shown.matches("tandemReal(e, ").count(), 3, "the definition, Delete and Rename");
         assert_eq!(shown.matches("attachShadow({mode: 'closed'})").count(), 1, "the box is in a closed shadow root");
         assert!(shown.contains("shadow.elementFromPoint(e.clientX, e.clientY) === button") && shown.contains("shadow.appendChild(container)"));
-        assert!(!shown.contains("container.id") && shown.contains("host.id = 'iterm-mark-annotations'"));
+        // Requests only: no name leaves the page, nothing is removed in it, the input takes no key.
+        assert!(shown.contains("requestDelete: true,") && shown.contains("requestRename: true,"));
+        assert!(!shown.contains("input.value,") && !shown.contains("delete: true") && !shown.contains("annotation.remove()") && !shown.contains("mark.name = input.value"));
+        assert!(shown.contains("input.type = 'hidden'") && shown.contains("saveButton.textContent = 'Rename'"));
+        // The host is styled inline, important, after `all: initial`; the old box goes by Tandem's reference.
+        assert!(shown.contains("host.style.cssText = 'all: initial !important;") && shown.contains("position: absolute !important") && shown.contains("height: 0 !important"));
+        assert!(shown.contains("document.body.appendChild(host)") && !shown.contains("getElementById") && !shown.contains("iterm-mark-annotations"));
+        assert!(shown.contains("var existingContainer = window.tandemMarkHost;") && shown.contains("window.tandemMarkRoot = null;"));
         // The patch fails closed: a target that moved or repeats is an error, not a silent skip.
         let src = crate::browser_js::resource("show-named-mark-annotations.js").unwrap();
         assert!(trust_patched(src).is_ok());
         assert!(trust_patched(&src.replace("deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(ev) {")).is_err());
+        for target in ["delete: true,", "name: input.value,", "annotation.remove();", "input.type = 'text';", "document.getElementById('iterm-mark-annotations')", "existingContainer.remove();"] {
+            assert!(trust_patched(&src.replace(target, "")).is_err(), "{target}: a moved target fails closed");
+        }
         assert!(trust_patched(&format!("{src}\n{src}")).is_err());
         assert!(patch_once("abc", "b", "x").is_ok() && patch_once("abcb", "b", "x").is_err() && patch_once("ac", "b", "x").is_err());
     }
+
+    /// Minor 5: the fragment is `&`-split and `&` survives its encoding, so an XPath holding one is
+    /// refused (a page could otherwise write its own `textFragment` pair); `=` is safe (a pair splits
+    /// at its first one).
+    #[test]
+    fn an_ampersand_in_an_xpath_is_refused() {
+        let evil = "//a[@id=\"x&textFragment=evil\"]";
+        assert_eq!(Location::from_json(&json!({"xpath":evil,"offsetY":1,"scrollY":2,"y":3})), None);
+        assert_eq!(Location::from_url("https://a/#iterm-mark:xpath=%2Fa%26b&offsetY=1&scrollY=2&y=3"), None);
+        let eq = Location::from_json(&json!({"xpath":"//a[@id=\"x\"]","offsetY":1,"scrollY":2,"y":3})).unwrap();
+        let url = mark_url("https://a/p", &eq).unwrap();
+        assert_eq!(Location::from_url(&url), Some(eq));
+    }
+
     #[test]
     fn add_refusals_follow_iterm2() {
         assert!(can_add("https://a", Some("GET")));

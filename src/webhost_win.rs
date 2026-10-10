@@ -3478,8 +3478,12 @@ mod probe {
     /// 13x5 Task 1 (B2, B3, B4): the Marks scripts run once in the isolated world. The point script
     /// answers the XPath under a point; the navigate script finds a hostile XPath without breaking out
     /// (the value is a typed argument); the annotations show, a page's synthetic Delete and Save
-    /// clicks post nothing, a real click posts a rename; the position update answers; the layout
-    /// monitor starts only in the isolated world. Needs the console session.
+    /// clicks post nothing (the box only ever REQUESTS a rename or delete; the name is typed and the
+    /// delete confirmed in a Tandem window, so no page-reachable press changes a mark); a page's own
+    /// element with the old container id survives a second show; page CSS cannot displace the host;
+    /// the names are not in the page's text; the position update answers; the layout monitor
+    /// starts only in the isolated world. A trusted press cannot be synthesized here. Needs the
+    /// console session.
     #[test]
     #[ignore]
     fn marks_scripts_run_in_a_page() {
@@ -3504,8 +3508,19 @@ mod probe {
         assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
         // The annotations are in a closed shadow root: the page sees only the host.
         assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("0".into()));
-        assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations').shadowRoot === null"), Ok("true".into()));
-        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.locateMark + typeof window.tandemMarkRoot"), Ok("\"undefinedundefinedundefined\"".into()));
+        assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') === null"), Ok("true".into()), "the host carries no id a page could use");
+        assert_eq!(p.page_eval("document.body.lastElementChild.shadowRoot === null"), Ok("true".into()), "the root is closed");
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.tandemMarkRoot + typeof window.tandemMarkHost"), Ok("\"undefinedundefinedundefined\"".into()));
+        assert_eq!(p.page_eval("document.body.innerText.includes('first')"), Ok("false".into()), "the name is not in the page's text");
+        assert_eq!(p.page_eval("window.find('first')"), Ok("false".into()), "nor findable by the page");
+        // Page CSS cannot displace the host (all: initial and inline important rules).
+        p.page_eval("document.head.insertAdjacentHTML('beforeend', '<style>div { position: relative !important; transform: translateY(900px) !important; opacity: 0 !important; }</style>'); 0").expect("style");
+        assert_eq!(p.page_eval("(function(){ var r = document.body.lastElementChild.getBoundingClientRect(); return r.top + ':' + getComputedStyle(document.body.lastElementChild).opacity; })()"), Ok("\"0:1\"".into()), "page rules do not move or hide the host");
+        // A page element with the old container id is not removed by a second show, and the old host is.
+        p.page_eval("var d = document.createElement('div'); d.id = 'iterm-mark-annotations'; document.body.prepend(d); 0").expect("decoy");
+        assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
+        assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') !== null"), Ok("true".into()), "the page's own element stays");
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "one box: the old host went by Tandem's reference");
         assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation button').length"), Ok(json!(3)));
         // The isolated world's own synthetic clicks are untrusted too.
         marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
