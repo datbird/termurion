@@ -408,9 +408,6 @@ pub(super) fn reload_plan(panes: &[(PaneId, String)], origin: &str) -> Vec<(Pane
         .collect()
 }
 
-/// Whether a browser pane's own page may load now: never while the launch restores windows, and
-/// never before its store's profile permissions were synced from the table (13x6 Task 5 fix: a
-/// stale profile grant would otherwise work for the first page with no question and no row).
 /// How the handler judged a navigation it parked (the `Parked` event's fields).
 pub(super) struct ParkedBy {
     pub user: bool,
@@ -420,6 +417,9 @@ pub(super) struct ParkedBy {
     pub source: Option<String>,
 }
 
+/// Whether a browser pane's own page may load now: never while the launch restores windows, and
+/// never before its store's profile permissions were synced from the table (13x6 Task 5 fix: a
+/// stale profile grant would otherwise work for the first page with no question and no row).
 pub(super) fn page_may_load(restoring: bool, synced: bool) -> bool {
     !restoring && synced
 }
@@ -753,37 +753,42 @@ impl App {
     /// An operation the permissions page asked for (Task 9), through the one write queue, and only
     /// when the pane's own main-frame URL (WebView2's `Source`, kept in `BrowserIo.url`) is the page.
     /// The operation is already typed by `browser_pages::route`; nothing from the message is read here.
-    pub(super) fn permission_page_op(&mut self, pane: PaneId, dev_null: bool, op: crate::browser_pages::PermissionOp) {
+    /// Whether it acted: the page shows "revoked" only then (iTerm2 confirms on success, `BPVH:163-183`).
+    pub(super) fn permission_page_op(&mut self, pane: PaneId, dev_null: bool, op: crate::browser_pages::PermissionOp) -> bool {
         use crate::browser_pages::PermissionOp;
         let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
         if !bp::page_message_allowed(&url, None) {
-            return;
+            return false;
         }
         match op {
             PermissionOp::Revoke { origin, kind } => self.revoke_permission(dev_null, &origin, kind),
             PermissionOp::RevokeAll { origin } => self.revoke_all_permissions(dev_null, &origin),
             PermissionOp::ClearAll => {
-                let origins = self.browser_db(dev_null).map(|db| bp::clear_origins(&db.all_permissions())).unwrap_or_default();
+                let Some(db) = self.browser_db(dev_null) else { return false };
+                let origins = bp::clear_origins(&db.all_permissions());
                 for origin in origins {
                     self.revoke_all_permissions(dev_null, &origin);
                 }
+                true
             }
         }
     }
 
     /// The page's Revoke: the row goes, the profile state is reset, and every pane using the origin reloads.
-    pub(super) fn revoke_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) {
-        let Some(db) = self.browser_db(dev_null) else { return };
+    pub(super) fn revoke_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) -> bool {
+        let Some(db) = self.browser_db(dev_null) else { return false };
         db.revoke_permission(origin, t);
         self.apply_op(dev_null, origin, Op::Revoke(t));
+        true
     }
 
     /// Revoke all of an origin: every row goes, each saved mirrored kind is reset, panes reload.
-    pub(super) fn revoke_all_permissions(&mut self, dev_null: bool, origin: &str) {
-        let Some(db) = self.browser_db(dev_null) else { return };
+    pub(super) fn revoke_all_permissions(&mut self, dev_null: bool, origin: &str) -> bool {
+        let Some(db) = self.browser_db(dev_null) else { return false };
         let types: Vec<PermissionType> = db.permissions_for_origin(origin).into_iter().map(|r| r.kind).collect();
         db.revoke_all_permissions(origin);
         self.apply_op(dev_null, origin, Op::RevokeAll(types));
+        true
     }
 
     /// The toolbar's Reset: the row goes and the profile state is reset; the pages using the origin

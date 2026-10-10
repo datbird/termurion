@@ -571,7 +571,7 @@ mod tests {
         q.revoke(vec![(4, "https://a.b".into(), 0)], Some("https://a.b".into()));
         for seq in 1..=WRITE_TRIES as u64 {
             let step = q.step(Some(3));
-            let seq = step.iter().find_map(|o| if let Out::Write { seq, .. } = o { Some(*seq) } else { None }).unwrap_or(seq);
+            let seq = step.iter().find_map(|o| if let Out::Write { seq, .. } = o { Some(*seq) } else { None }).expect("each step holds a Write");
             q.written(3, seq, false);
         }
         assert!(!q.synced() && !g.load(SeqCst), "a failed write from Done turns it off again");
@@ -601,7 +601,7 @@ mod tests {
         let mut outs = Vec::new();
         for seq in 1..=WRITE_TRIES as u64 {
             let step = q.step(Some(3));
-            let seq = step.iter().find_map(|o| if let Out::Write { seq, .. } = o { Some(*seq) } else { None }).unwrap_or(seq);
+            let seq = step.iter().find_map(|o| if let Out::Write { seq, .. } = o { Some(*seq) } else { None }).expect("each step holds a Write");
             outs.extend(q.written(3, seq, false));
         }
         outs.extend(q.step(Some(3)));
