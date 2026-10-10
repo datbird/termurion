@@ -2783,6 +2783,8 @@ mod probe {
         state_reads: Vec<Vec<(i32, String, i32)>>,
         /// `PermissionWritten` answers: (seq, ok).
         writes: Vec<(u64, bool)>,
+        /// Each `PermissionStates`'s `complete`.
+        reads_complete: Vec<bool>,
     }
 
     impl Probe {
@@ -2866,6 +2868,7 @@ mod probe {
                 audio: Vec::new(),
                 state_reads: Vec::new(),
                 writes: Vec::new(),
+                reads_complete: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -3040,7 +3043,10 @@ mod probe {
                 Event::Permission { token, kind, uri, .. } => self.perm_reqs.push((token, kind, uri)),
                 Event::NotificationShown { token, origin, title, body, .. } => self.notes.push((token, origin, title, body)),
                 Event::AudioPlaying { playing, .. } => self.audio.push(playing),
-                Event::PermissionStates { states, .. } => self.state_reads.push(states),
+                Event::PermissionStates { states, complete, .. } => {
+                    self.state_reads.push(states);
+                    self.reads_complete.push(complete);
+                }
                 Event::PermissionWritten { seq, ok, .. } => self.writes.push((seq, ok)),
                 Event::FrameMessage { frame, json, source, .. } => {
                     self.graph_page(&json, Some(frame), &source);
@@ -5006,6 +5012,26 @@ window.addEventListener('message', function (e) {
         assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the reset is the last word");
         p.settle(500);
         assert_eq!(p.writes, vec![(11, true), (12, true)], "each write answers exactly once");
+        p.finish();
+    }
+
+    /// Task 5 fix (sync done only on a complete answer): a read of a profile the probe has just
+    /// written answers once, complete, and holds the entry; the start-up sync trusts only such an
+    /// answer.
+    #[test]
+    #[ignore]
+    fn a_profile_read_says_it_is_complete() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.view().set_permission_state(21, 3, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(21, true))), "written: {:?}", p.writes);
+        p.view().read_permission_states();
+        assert!(p.wait(10, |p| !p.state_reads.is_empty()), "PermissionStates within 10 s");
+        assert_eq!(p.reads_complete, vec![true], "a plain profile reads complete");
+        assert!(p.state_reads[0].iter().any(|(k, o, st)| *k == 3 && o.starts_with(PERM_HOST) && *st == STATE_ALLOW), "{:?}", p.state_reads);
+        p.view().set_permission_state(22, 3, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(22, true))));
         p.finish();
     }
 

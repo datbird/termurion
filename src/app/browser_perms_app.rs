@@ -383,30 +383,6 @@ pub(super) fn reload_plan(panes: &[(PaneId, String)], origin: &str) -> Vec<(Pane
         .collect()
 }
 
-/// The start-up sync of one environment: once per environment, again after it is made anew, and
-/// again at the next view when a read came back incomplete (fail closed, never trusted).
-#[derive(Default)]
-pub(super) struct SyncState {
-    done: std::collections::HashSet<bool>,
-}
-
-impl SyncState {
-    /// True once per environment (`dev_null` picks the store); the caller then reads the profile.
-    pub(super) fn due(&mut self, dev_null: bool) -> bool {
-        self.done.insert(dev_null)
-    }
-
-    /// The read failed or was partial: try again at the next view.
-    pub(super) fn retry(&mut self, dev_null: bool) {
-        self.done.remove(&dev_null);
-    }
-
-    /// The environment of this store was dropped.
-    pub(super) fn lost(&mut self, dev_null: bool) {
-        self.done.remove(&dev_null);
-    }
-}
-
 /// The plan for a profile read: the table decides kinds 1 to 4. An unreadable table wants
 /// nothing, so no grant of those kinds survives (fail closed).
 pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<&[(String, PermissionType, Decision)]>) -> Vec<(i32, String, i32)> {
@@ -642,6 +618,8 @@ impl App {
                     }
                 }
                 Out::Reload { origin } => self.reload_panes_using(dev_null, &origin),
+                Out::Synced => {}
+                Out::GaveUp => crate::dlog!("webhost: the profile permission sync gave up after {} tries; pages wait for the next view", crate::perm_queue::SYNC_TRIES),
             }
         }
     }
@@ -667,34 +645,29 @@ impl App {
     pub(super) fn perm_store_lost(&mut self, dev_null: bool) {
         let outs = self.perm_queue(dev_null).lost();
         self.perm_outs(dev_null, outs);
-        self.perm_sync.lost(dev_null);
     }
 
-    /// Once per environment, at its first view: reads the profile's states (the answer is
-    /// `permission_states_read`). Nothing is stored by WebView2 itself, so what it holds from an
-    /// earlier run is stale until the table has rewritten it.
+    /// At each view of a store: starts its sync unless it runs or is done (`perm_queue::Sync`).
+    /// Nothing is stored by WebView2 itself, so what the profile holds from an earlier run is stale
+    /// until a complete read's plan has rewritten it from the table.
     pub(super) fn sync_permission_states(&mut self, dev_null: bool) {
-        if self.perm_sync.due(dev_null) {
-            self.perm_queue(dev_null).read();
-        }
+        self.perm_queue(dev_null).sync();
         self.perm_pump(dev_null);
     }
 
     /// The profile's non-default states arrived: the table decides kinds 1 to 4, and the plan goes
-    /// through the queue ahead of anything asked after the read. An incomplete read (some state
-    /// could not be read) fails closed: what was read is rewritten the same way, the environment
-    /// stays unsynced, and the next view reads again.
+    /// through the queue ahead of anything asked after the read. The sync is done only when a
+    /// COMPLETE read's plan has landed; an incomplete read fails closed: what was read is
+    /// rewritten the same way and the profile is read again, a bounded number of times.
     pub(super) fn permission_states_read(&mut self, pane: PaneId, view: ViewId, states: &[(i32, String, i32)], complete: bool) {
         let dev_null = self.pane_dev_null(pane);
         let rows: Option<Vec<_>> = self.browser_db(dev_null).map(|db| db.all_permissions().into_iter().map(|r| (r.origin, r.kind, r.decision)).collect());
         let plan = sync_for(states, rows.as_deref());
-        if !self.perm_queue(dev_null).read_answer(view, plan) {
-            return;
-        }
+        let Some(outs) = self.perm_queue(dev_null).read_answer(view, plan, complete) else { return };
         if !complete {
-            crate::dlog!("webhost: the profile read was incomplete ({} states); read again at the next view", states.len());
-            self.perm_sync.retry(dev_null);
+            crate::dlog!("webhost: the profile read was incomplete ({} states); read again", states.len());
         }
+        self.perm_outs(dev_null, outs);
         self.perm_pump(dev_null);
     }
 
@@ -1140,13 +1113,6 @@ mod tests {
         // Newest-first rows: the newest wins.
         let rows = [("https://a.b".to_string(), Notification, Decision::Denied), ("https://a.b".to_string(), Notification, Decision::Granted)];
         assert_eq!(sync_for(&[], Some(&rows)), vec![(4, "https://a.b".to_string(), 2)]);
-        // Once per environment; an incomplete read or a lost environment reads again.
-        let mut s = SyncState::default();
-        assert!(s.due(false) && !s.due(false) && s.due(true));
-        s.retry(false);
-        assert!(s.due(false));
-        s.lost(true);
-        assert!(s.due(true));
     }
 
     #[test]
@@ -1198,5 +1164,20 @@ mod tests {
         let dropped = &host[host.find("pub(super) fn web_view_dropped(").unwrap()..];
         assert!(dropped[..300].contains("self.perm_view_gone(view)"), "a view that goes hands its write on");
         assert!(include_str!("adblock_app.rs").contains("self.perm_store_lost(true)"));
+    }
+
+    #[test]
+    fn the_sync_is_done_only_after_a_complete_read_landed() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let read = &prod[prod.find("pub(super) fn permission_states_read(").unwrap()..prod.find("fn apply_op(").unwrap()];
+        assert!(read.contains(".read_answer(view, plan, complete)"), "the queue decides from the answer's completeness");
+        assert!(read.contains("self.perm_outs(dev_null, outs)") && read.contains("self.perm_pump(dev_null)"));
+        let sync = &prod[prod.find("pub(super) fn sync_permission_states(").unwrap()..prod.find("pub(super) fn permission_states_read(").unwrap()];
+        assert!(sync.contains("self.perm_queue(dev_null).sync()"), "every view of a store starts its sync unless it runs or is done");
+        assert!(!prod.contains("SyncState"), "no second record of the sync");
+        let ev = include_str!("browser_app.rs");
+        let created = &ev[ev.find("Event::Created(_) => {").unwrap()..];
+        assert!(created[..600].contains("self.sync_permission_states(dev_null)"));
     }
 }
