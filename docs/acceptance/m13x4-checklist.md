@@ -5,8 +5,8 @@ Build a release binary (`scripts/xt build --release`). Close any open Tandem win
 `C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
-Before anything else: `m13x4-rulings.txt` line "Probe:" records the 13x4 desktop probe (`PENDING`,
-or the last run's `PASS`/`FAIL`). Section A lists the probe tests; sections B to F are what no test
+Before anything else: `m13x4-rulings.txt` line "Probe:" records the 13x4 desktop probe (PASS, 34
+of 34 on EXTREME on 2026-10-10, run c). Section A lists the probe tests; sections B to F are what no test
 could execute (a real page, a real drive, the real Explorer). Reader Mode, Remove Distractions and
 Remove Element cannot be compared with a running iTerm2 (iTerm2's never run at `64791fc`, see the
 rulings); the expected behavior is written on each line. Rows marked (world) are inert only if the
@@ -32,17 +32,19 @@ Command: `scripts/probe-desktop.ps1` (default filters `webhost_win::probe::` and
 `webhost_win::tests::menu_gets_our_items`: 33 probe tests and the menu test, 34). The eleven new
 tests are:
 
-- [ ] `reader_mode_runs_in_a_page`
-- [ ] `reader_article_handlers_stay_in_the_page_world`
-- [ ] `page_never_sees_the_view_secret`
-- [ ] `markdown_is_turndowns`
-- [ ] `remove_element_runs_in_a_page`
-- [ ] `devtools_reads_a_page`
-- [ ] `view_source_reads_the_original`
-- [ ] `view_source_arming_facts`
-- [ ] `view_source_shows_the_page`
-- [ ] `save_page_writes_a_folder`
-- [ ] `extend_word_forward_stops_before_the_space`
+- [x] `reader_mode_runs_in_a_page`
+- [x] `reader_article_handlers_stay_in_the_page_world`
+- [x] `page_never_sees_the_view_secret`
+- [x] `markdown_is_turndowns`
+- [x] `remove_element_runs_in_a_page`
+- [x] `devtools_reads_a_page`
+- [x] `view_source_reads_the_original`
+- [x] `view_source_arming_facts`
+- [x] `view_source_shows_the_page`
+- [x] `save_page_writes_a_folder`
+- [x] `extend_word_forward_stops_before_the_space`
+
+All 34 passed on 2026-10-10 (run c, after one product fix and the probe fixes; m13x4-rulings.txt).
 
 ## B. Reader Mode, Remove Distractions, Remove Element (world)
 
@@ -72,6 +74,8 @@ tests are:
 - [ ] Save to a network path (a mapped drive's UNC path): "Save Failed" with "Network locations are not supported for Save Page As."
 - [ ] Save to a FAT or exFAT USB stick: a clear Save Failed (no Mark of the Web on that drive) and nothing left behind on the stick (no folder, no files).
 - [ ] Cancel mid-save: start a save of a large page, then re-run Save Page As or close the pane while it writes: the partial folder is removed (and an existing folder of the same name is never touched).
+- [ ] Cancel at once: choose the folder, then re-run Save Page As (or close the pane) within a second: no empty folder is left.
+- [ ] A page with a 5 MB photo saves the photo into `resources`; a resource over 8 MiB keeps its web address in `index.html`.
 - [ ] The Save Failed text names the error, never text taken from the page.
 
 ## E. Risky names and links (changes on main)
