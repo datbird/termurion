@@ -5229,7 +5229,8 @@ window.addEventListener('message', function (e) {
         p.load(PERM_PAGE);
         p.settle(2000);
         let got = p.page_string("window.__c");
-        assert!(got.as_deref().is_ok_and(|c| c.starts_with("denied:")), "the MIDI request was refused: {got:?}");
+        // A permission refusal, not any rejection (a MIDI "NotSupportedError" would pass otherwise).
+        assert!(got.as_deref().is_ok_and(|c| c == "denied:NotAllowedError" || c == "denied:SecurityError"), "the MIDI request was refused by permission: {got:?}");
         assert!(p.perm_reqs.is_empty(), "a kind Tandem does not ask about never reaches the app: {:?}", p.perm_reqs);
         assert_eq!(p.page_eval("1"), Ok("1".into()), "the view still answers");
         p.finish();
