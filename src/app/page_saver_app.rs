@@ -281,10 +281,11 @@ impl Saving {
             }
             (Some(Waiting::Attributes), Ok(_)) => self.job.on_attributes_added(),
             (Some(Waiting::Html), Ok(v)) => self.job.on_html(v.as_str().map(str::to_string)),
-            // A page-world exception's text is the page's to choose: logged, never shown. The alert
-            // says Tandem's fixed text (Task 10 review minor 2).
+            // A page-world exception's text is the page's to choose: never shown, and only its size
+            // is logged (page text stays out of the log). The alert says Tandem's fixed text (Task 10
+            // review minor 2).
             (Some(Waiting::Extract | Waiting::Attributes | Waiting::Html), Err(e)) => {
-                crate::rlog!("save page as: a saver script failed: {}", crate::dlog::name(&e));
+                crate::rlog!("save page as: a saver script failed (an error of {} bytes)", e.len());
                 self.job.on_error(page_saver::FAILED_TO_GET_HTML.to_string())
             }
             (other, _) => {
