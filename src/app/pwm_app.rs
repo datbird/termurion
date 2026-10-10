@@ -24,7 +24,7 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::{self, Account, AccountPanel, Alert, Auth, Busy, GearItem, Secret};
 use crate::pwm_cli::{self, OpNotUsable};
 use crate::pwm_prompt;
-use crate::pwm_source::{self, Caps, Field, Kind, Source};
+use crate::pwm_source::{self, Caps, Field, Kind, Scope, Source};
 use crate::pwm_ui::{PwmAct, PwmView, PwmWindow};
 use crate::warnings::Preempt;
 
@@ -895,7 +895,7 @@ impl App {
             adapter.settings = plain.chain(secret).collect();
             adapter.settings.sort();
         }
-        Config { kind, cli, groups: self.globals.string(LP_GROUPS_KEY), account: self.globals.string(OP_ACCOUNT_KEY), adapter }
+        Config { kind, cli, groups: self.globals.string(LP_GROUPS_KEY), account: self.globals.string(OP_ACCOUNT_KEY), adapter, scope: Scope::Terminal }
     }
 
     /// Sends a request for the current window's manager to the worker; `busy` shows the scrim
@@ -1733,6 +1733,8 @@ struct Config {
     /// is written back into the built source's config, so it does not.
     account: String,
     adapter: AdapterConfig,
+    /// Which password manager the source serves: the terminal's, or the browser's own store.
+    scope: Scope,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -1745,7 +1747,7 @@ struct AdapterConfig {
 
 impl Config {
     fn same_source(&self, o: &Config) -> bool {
-        self.kind == o.kind && self.cli == o.cli && self.groups == o.groups && self.account == o.account && self.adapter == o.adapter
+        self.kind == o.kind && self.cli == o.cli && self.groups == o.groups && self.account == o.account && self.adapter == o.adapter && self.scope == o.scope
     }
 }
 
@@ -1917,7 +1919,7 @@ impl Worker {
 fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
     use crate::pwm_run::ProcessRunner;
     match config.kind {
-        Kind::CredentialManager => Ok(Box::new(crate::pwm_credman::CredentialManager::new())),
+        Kind::CredentialManager => Ok(Box::new(crate::pwm_credman::CredentialManager::for_scope(config.scope))),
         Kind::OnePassword => {
             let mut runner = ProcessRunner::new();
             let path = if config.cli.is_empty() {
@@ -1928,18 +1930,18 @@ fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
                 config.cli.clone()
             };
             let account = Some(config.account.clone()).filter(|a| !a.is_empty());
-            Ok(Box::new(pwm_cli::OnePassword::new(runner, path, account, ctx.master_prompt()).with_picker(ctx.picker())))
+            Ok(Box::new(pwm_cli::OnePassword::new(runner, path, account, ctx.master_prompt()).with_picker(ctx.picker()).with_scope(config.scope)))
         }
         Kind::LastPass => {
             let path = if config.cli.is_empty() { pwm_cli::resolve_lpass().map_err(|_| NeedCli::Lp)? } else { config.cli.clone() };
-            Ok(Box::new(pwm_cli::LastPass::new(ProcessRunner::new(), path, pwm_cli::lpass_groups(&config.groups), ctx.login_prompt())))
+            Ok(Box::new(pwm_cli::LastPass::new(ProcessRunner::new(), path, pwm_cli::lpass_groups(&config.groups), ctx.login_prompt()).with_scope(config.scope)))
         }
         Kind::KeePassXC | Kind::Bitwarden | Kind::Keeper => {
             let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
             let path = crate::pwm_adapter::adapter_path(config.kind, &exe_dir).unwrap_or_default();
             let a = &config.adapter;
             let settings = a.settings.iter().cloned().collect();
-            Ok(Box::new(crate::pwm_adapter::Adapter::new(ProcessRunner::new(), config.kind, path, a.db.clone(), a.exe.clone(), settings, None, ctx.master_prompt())))
+            Ok(Box::new(crate::pwm_adapter::Adapter::new(ProcessRunner::new(), config.kind, path, a.db.clone(), a.exe.clone(), settings, None, ctx.master_prompt()).with_scope(config.scope)))
         }
     }
 }
@@ -2346,10 +2348,17 @@ mod tests {
 
     #[test]
     fn a_changed_source_is_rebuilt() {
-        let c = Config { kind: Kind::OnePassword, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default() };
+        let c = Config { kind: Kind::OnePassword, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default(), scope: Scope::Terminal };
         let picked = Config { account: "AB".into(), ..c.clone() };
         assert!(!c.same_source(&picked), "an account changed in Settings rebuilds the 1Password source");
         assert!(!c.same_source(&Config { cli: "C:\\op.exe".into(), ..c.clone() }));
         assert!(!c.same_source(&Config { kind: Kind::LastPass, ..c.clone() }));
+    }
+
+    #[test]
+    fn a_changed_scope_is_rebuilt() {
+        let c = Config { kind: Kind::CredentialManager, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default(), scope: Scope::Terminal };
+        assert!(c.same_source(&c.clone()));
+        assert!(!c.same_source(&Config { scope: Scope::Browser, ..c.clone() }));
     }
 }

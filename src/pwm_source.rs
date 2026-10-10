@@ -14,6 +14,40 @@ pub const SOURCE_KEY: &str = "NoSyncPasswordManagerDataSourceName";
 /// "iTerm2", its items keyed by `account + SEP + user`).
 pub const SERVICE: &str = "Tandem";
 
+/// The browser password manager's source choice key (iTerm2's
+/// `NoSyncPasswordManagerDataSourceName` plus "Browser", `PDS:28-30`): a separate store.
+pub const SOURCE_KEY_BROWSER: &str = "NoSyncPasswordManagerDataSourceNameBrowser";
+
+/// The browser scope's Credential Manager service (iTerm2's "iTerm2-Browser", `KDS:237-244`).
+pub const SERVICE_BROWSER: &str = "Tandem-Browser";
+
+/// Which password manager a source serves: the terminal's, or the browser's (iTerm2's
+/// `PasswordManagerDataSourceProvider(browser:)`). The two never share accounts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Scope {
+    #[default]
+    Terminal,
+    Browser,
+}
+
+impl Scope {
+    /// The globals key holding this scope's source choice.
+    pub fn source_key(self) -> &'static str {
+        match self {
+            Scope::Terminal => SOURCE_KEY,
+            Scope::Browser => SOURCE_KEY_BROWSER,
+        }
+    }
+
+    /// The Credential Manager service this scope's targets live under.
+    pub fn service(self) -> &'static str {
+        match self {
+            Scope::Terminal => SERVICE,
+            Scope::Browser => SERVICE_BROWSER,
+        }
+    }
+}
+
 /// The password manager's sources, in the gear menu's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -168,7 +202,12 @@ pub fn password_failed(message: &str) -> String {
 /// The Credential Manager target for an account: `Tandem/<account><SEP><user>`. iTerm2's
 /// modern add always joins with the separator, so an empty user leaves it trailing.
 pub fn target_name(account: &str, user: &str) -> String {
-    format!("{SERVICE}/{account}{SEP}{user}")
+    target_name_in(Scope::Terminal, account, user)
+}
+
+/// `target_name` for a scope: `<service>/<account><SEP><user>`.
+pub fn target_name_in(scope: Scope, account: &str, user: &str) -> String {
+    format!("{}/{account}{SEP}{user}", scope.service())
 }
 
 /// The account a Credential Manager target names, or `None` when it is not one of Tandem's.
@@ -177,7 +216,13 @@ pub fn target_name(account: &str, user: &str) -> String {
 /// empty. The display string is that part unchanged (iTerm2's `displayString`, the keychain
 /// account name) and the id is the whole target.
 pub fn parse_target(target: &str) -> Option<Account> {
-    let combined = target.strip_prefix(SERVICE)?.strip_prefix('/')?;
+    parse_target_in(Scope::Terminal, target)
+}
+
+/// `parse_target` for a scope: only that scope's exact service prefix counts, so a terminal
+/// target is never a browser account and the other way round.
+pub fn parse_target_in(scope: Scope, target: &str) -> Option<Account> {
+    let combined = target.strip_prefix(scope.service())?.strip_prefix('/')?;
     let (account, user) = combined.split_once(SEP).unwrap_or((combined, ""));
     Some(Account {
         id: target.to_string(),
@@ -193,6 +238,19 @@ pub fn parse_target(target: &str) -> Option<Account> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_scope_follows_iterm2() {
+        assert_eq!(Scope::Browser.source_key(), "NoSyncPasswordManagerDataSourceNameBrowser");
+        assert_eq!(Scope::Terminal.source_key(), SOURCE_KEY);
+        let t = target_name_in(Scope::Browser, "https://x.y (R)", "me");
+        assert_eq!(t, "Tandem-Browser/https://x.y (R)\u{2002}\u{2014}\u{2002}me");
+        let a = parse_target_in(Scope::Browser, &t).unwrap();
+        assert_eq!((a.account_name.as_str(), a.user_name.as_str()), ("https://x.y (R)", "me"));
+        assert!(parse_target_in(Scope::Terminal, &t).is_none());
+        assert!(parse_target_in(Scope::Browser, "Tandem/a").is_none());
+        assert!(parse_target(&target_name("a", "b")).is_some());
+    }
 
     #[test]
     fn credman_names_follow_iterm2() {

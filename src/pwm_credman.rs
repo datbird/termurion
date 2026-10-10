@@ -8,7 +8,7 @@
 //! Credential Manager; the milestone's checklist covers that by hand.
 
 use crate::pwm::{Account, Secret};
-use crate::pwm_source::{self, Caps, Kind, Source};
+use crate::pwm_source::{self, Caps, Kind, Scope, Source};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
 use windows_sys::Win32::Security::Credentials::{
     CredDeleteW, CredEnumerateW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_MAX_CREDENTIAL_BLOB_SIZE,
@@ -26,9 +26,10 @@ fn last_error() -> String {
     std::io::Error::last_os_error().to_string()
 }
 
-/// The enumeration filter: every target named under `pwm_source::SERVICE`.
-fn filter() -> Vec<u16> {
-    wide(&format!("{}/*", pwm_source::SERVICE))
+/// The enumeration filter: every target named under the scope's service. `Tandem/*` never
+/// matches `Tandem-Browser/...`, so the two scopes do not mix.
+fn filter(scope: Scope) -> Vec<u16> {
+    wide(&format!("{}/*", scope.service()))
 }
 
 /// A NUL-terminated wide string Windows owns, copied out (target names, never secrets). None
@@ -70,16 +71,16 @@ unsafe fn zero_blob(c: *mut CREDENTIALW) {
 
 /// The account's target, refused unless it is one of Tandem's (so nothing here ever reads,
 /// writes or deletes another program's credential).
-fn target(a: &Account) -> Result<&str, String> {
-    match pwm_source::parse_target(&a.id) {
+fn target(scope: Scope, a: &Account) -> Result<&str, String> {
+    match pwm_source::parse_target_in(scope, &a.id) {
         Some(_) => Ok(&a.id),
         None => Err("Not a Tandem credential.".to_string()),
     }
 }
 
-/// The prefixes of every target Tandem owns: the password manager's `Tandem/` and the AI keys'
-/// `TandemAI/` (compared case-sensitively).
-const OWNED_PREFIXES: [&str; 2] = ["Tandem/", "TandemAI/"];
+/// The prefixes of every target Tandem owns: the password manager's `Tandem/` and
+/// `Tandem-Browser/` and the AI keys' `TandemAI/` (compared case-sensitively).
+const OWNED_PREFIXES: [&str; 3] = ["Tandem/", "Tandem-Browser/", "TandemAI/"];
 
 /// Whether a target is one of Tandem's. The generic functions below refuse any other target
 /// before calling Windows, so nothing here ever touches another program's credential.
@@ -200,11 +201,19 @@ fn write(target: &str, user: &str, p: &Secret) -> Result<(), String> {
 
 /// Windows Credential Manager, always available, one account, no one-time codes.
 #[derive(Default)]
-pub struct CredentialManager;
+pub struct CredentialManager {
+    scope: Scope,
+}
 
 impl CredentialManager {
     pub fn new() -> CredentialManager {
-        CredentialManager
+        CredentialManager::for_scope(Scope::Terminal)
+    }
+
+    /// The Credential Manager source of one password manager scope (`Tandem/` or
+    /// `Tandem-Browser/` targets).
+    pub fn for_scope(scope: Scope) -> CredentialManager {
+        CredentialManager { scope }
     }
 }
 
@@ -228,7 +237,7 @@ impl Source for CredentialManager {
     fn accounts(&mut self) -> Result<Vec<Account>, String> {
         let mut count = 0u32;
         let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
-        let filter = filter();
+        let filter = filter(self.scope);
         // SAFETY: out-pointers are valid; on success Windows owns `list` until CredFree.
         if unsafe { CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut list) } == 0 {
             // SAFETY: plain thread-local read right after the failing call.
@@ -244,7 +253,7 @@ impl Source for CredentialManager {
                 let c = *list.add(i);
                 // The filter is case-insensitive; parse_target keeps only Tandem's exact prefix.
                 // A name that is not valid UTF-16 is skipped (it could not be used).
-                if let Some(a) = from_wide((*c).TargetName).and_then(|t| pwm_source::parse_target(&t)) {
+                if let Some(a) = from_wide((*c).TargetName).and_then(|t| pwm_source::parse_target_in(self.scope, &t)) {
                     out.push(a);
                 }
                 // Enumeration returns every blob too; none is read, all are zeroed.
@@ -257,18 +266,18 @@ impl Source for CredentialManager {
     }
 
     fn password(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
-        match read_generic(target(a)?, "password")? {
+        match read_generic(target(self.scope, a)?, "password")? {
             Some(p) => Ok((p, None)),
             None => Err(not_found()),
         }
     }
 
     fn set_password(&mut self, a: &Account, p: Secret) -> Result<(), String> {
-        write(target(a)?, &a.user_name, &p)
+        write(target(self.scope, a)?, &a.user_name, &p)
     }
 
     fn delete(&mut self, a: &Account) -> Result<(), String> {
-        if delete_generic(target(a)?)? {
+        if delete_generic(target(self.scope, a)?)? {
             Ok(())
         } else {
             Err(not_found())
@@ -277,9 +286,9 @@ impl Source for CredentialManager {
 
     fn add(&mut self, name: &str, user: &str, p: Secret, _flags: &[(String, bool)]) -> Result<Account, String> {
         // Credential Manager has no Add Account toggles, so flags is ignored (as iTerm2's keychain).
-        let t = pwm_source::target_name(name, user);
+        let t = pwm_source::target_name_in(self.scope, name, user);
         write(&t, user, &p)?;
-        pwm_source::parse_target(&t).ok_or_else(|| "Not a Tandem credential.".to_string())
+        pwm_source::parse_target_in(self.scope, &t).ok_or_else(|| "Not a Tandem credential.".to_string())
     }
 
     fn edit_in_place(&mut self, _a: &Account, _name: Option<&str>, _user: Option<&str>, _p: Option<Secret>) -> Result<(), String> {
@@ -307,12 +316,23 @@ mod tests {
 
     #[test]
     fn names_decode_strictly_and_the_filter_follows_service() {
-        assert_eq!(filter(), wide("Tandem/*"));
+        assert_eq!(filter(Scope::Terminal), wide("Tandem/*"));
         let good = wide("Tandem/site/me");
         assert_eq!(unsafe { from_wide(good.as_ptr()) }.as_deref(), Some("Tandem/site/me"));
         // An unpaired surrogate: skipped, never shown as a row that names nothing.
         let bad = [0x54u16, 0xD800, 0x61, 0];
         assert_eq!(unsafe { from_wide(bad.as_ptr()) }, None);
+    }
+
+    #[test]
+    fn credman_scopes_do_not_mix() {
+        assert_eq!(filter(Scope::Browser), wide("Tandem-Browser/*"));
+        assert_eq!(filter(Scope::Terminal), wide("Tandem/*"));
+        let a = pwm_source::parse_target_in(Scope::Browser, "Tandem-Browser/https://x.y").unwrap();
+        assert!(target(Scope::Browser, &a).is_ok());
+        assert!(target(Scope::Terminal, &a).is_err());
+        assert!(owned("Tandem-Browser/https://x.y"));
+        assert!(!owned("Tandem-Browse/x"));
     }
 
     #[test]
