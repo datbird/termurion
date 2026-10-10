@@ -810,13 +810,22 @@ impl Job {
         self.abort(CANCELLED)
     }
 
+    /// Whether the app may carry out `step` now; it asks before EVERY step. Once the job failed or
+    /// aborted, only the cleanup (`Remove`, `RemoveDir`) and `Failed` run: the rest of a batch
+    /// handed out before (a `Write`, a `Fetch`, a `Done`) is dropped, so nothing recreates a file
+    /// the cleanup removed (Task 9 review I3).
+    pub fn permits(&self, step: &Step) -> bool {
+        !self.dead || matches!(step, Step::Remove(_) | Step::RemoveDir(_) | Step::Failed(_))
+    }
+
     /// Record the pane's navigation epoch at the start; a save never spans a navigation.
     pub fn bind_epoch(&mut self, e: u64) {
         self.epoch = Some(e);
     }
 
     /// Called with the pane's epoch before each step is carried out: when it moved, the job
-    /// aborts and cleans up, and every later answer is ignored.
+    /// aborts and cleans up, and every later answer is ignored. A non-empty answer replaces the
+    /// rest of the batch (`permits` refuses those steps).
     pub fn check_epoch(&mut self, now: u64) -> Vec<Step> {
         match self.epoch {
             Some(e) if e != now => self.abort(NAVIGATED_AWAY),
@@ -1306,6 +1315,53 @@ mod tests {
             st = j.on_resource(&u, css_answer(&format!("x{{y:url(c{}.css)}}", n + 1)), &none_taken);
         }
         assert_eq!(fetched, MAX_CSS_DEPTH, "{st:?}");
+    }
+
+    /// Task 9 review I3: an abort is terminal for the batch it lands in. The app asks `permits`
+    /// before each step; the rest of an old batch is refused, so no write recreates a file the
+    /// cleanup removed, and a failed index.html's Done never runs.
+    #[test]
+    fn an_abort_drops_the_rest_of_the_batch() {
+        let (mut j, _) = job_with(&["https://a/x.png", "https://a/y.png"]);
+        j.bind_epoch(1);
+        let batch = j.on_resource("https://a/x.png", Some((png(), Some(s("image/png")))), &none_taken);
+        assert_eq!(batch.len(), 2, "{batch:?}");
+        // The app: the epoch moved before the first step; the abort's answer replaces the batch.
+        let mut disk: HashSet<PathBuf> = [res("x.png")].into_iter().collect();
+        let mut run = |j: &mut Job, steps: Vec<Step>, disk: &mut HashSet<PathBuf>| {
+            for step in steps {
+                if !j.permits(&step) {
+                    continue;
+                }
+                match step {
+                    Step::Write { path, .. } => {
+                        disk.insert(path);
+                    }
+                    Step::Remove(path) => {
+                        disk.remove(&path);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        let abort = j.check_epoch(2);
+        assert!(abort.contains(&Step::Remove(res("x.png"))) && matches!(abort.last(), Some(Step::Failed(_))), "{abort:?}");
+        run(&mut j, abort.clone(), &mut disk);
+        run(&mut j, batch.clone(), &mut disk);
+        assert!(disk.is_empty(), "a step of the old batch ran after the abort: {disk:?}");
+        for step in &batch {
+            assert!(!j.permits(step), "{step:?}");
+        }
+        for step in &abort {
+            assert!(j.permits(step), "{step:?}");
+        }
+        // A failed index.html: the Done of its batch is refused.
+        let (mut j, _) = job_with(&[]);
+        j.on_attributes_added();
+        let batch = j.on_html(Some(s("<html></html>")));
+        let failed = j.on_write_failed(&d().join("index.html"));
+        assert!(matches!(failed.last(), Some(Step::Failed(_))));
+        assert!(!j.permits(&batch[1]), "{batch:?}");
     }
 
     #[test]
