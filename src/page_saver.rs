@@ -428,6 +428,22 @@ pub const CLONE_EXPR: &str = r####"(function() {
 
 const PLACEHOLDER: &str = "new Map(URL_MAPPING_PLACEHOLDER)";
 
+/// The text of a refused destination (Tandem's, the no-UNC invariant).
+pub const NETWORK_TEXT: &str = "Network locations are not supported for Save Page As.";
+
+/// Whether the folder the person named may be written: the judge's rule for the path and for every
+/// folder above it (a link or junction to a network path is followed by `read_link`). Judged before
+/// anything is written; refusing a share the person typed into the dialog is stronger than
+/// `localfs::save_file`'s own rule (preflight B3).
+pub fn destination_ok(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), String> {
+    crate::netpath::judge(path, read_link, &crate::netpath::LocalDrives).then_some(()).ok_or_else(|| NETWORK_TEXT.to_string())
+}
+
+/// `destination_ok` with the real reparse reader and device map: the judged folder, or the refusal.
+pub fn destination(path: &Path) -> Result<crate::localfs::LocalPath, String> {
+    crate::localfs::LocalPath::judge(path).ok_or_else(|| NETWORK_TEXT.to_string())
+}
+
 /// "Could not save the page: <e>" (`PSV:386-387`).
 pub fn save_failed_text(e: &str) -> String {
     format!("Could not save the page: {e}")
@@ -841,6 +857,19 @@ mod tests {
 
     fn u(s: &str) -> usize {
         units(s)
+    }
+
+    #[test]
+    fn save_destination_follows_windows() {
+        let none = |_: &Path| None;
+        assert_eq!(destination_ok(Path::new(r"C:\Users\u\Desktop\www.ex.com"), &none), Ok(()));
+        assert_eq!(destination_ok(Path::new(r"\\?\C:\Users\u\x"), &none), Ok(()));
+        for bad in [r"\\srv\share\x", r"\\?\UNC\srv\share\x", "//srv/share/x", r"\\.\COM1"] {
+            assert_eq!(destination_ok(Path::new(bad), &none), Err(NETWORK_TEXT.to_string()), "{bad}");
+        }
+        let link = |p: &Path| (p == Path::new(r"C:\Users\u\Linked")).then(|| PathBuf::from(r"\\srv\share"));
+        assert_eq!(destination_ok(Path::new(r"C:\Users\u\Linked\www.ex.com"), &link), Err(NETWORK_TEXT.to_string()));
+        assert_eq!(destination_ok(Path::new(r"C:\Users\u\Other\www.ex.com"), &link), Ok(()));
     }
 
     #[test]

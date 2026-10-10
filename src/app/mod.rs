@@ -163,6 +163,7 @@ mod browser_db_app;
 mod browser_reader_app;
 mod devtools_read_app;
 mod view_source_app;
+mod page_saver_app;
 mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;
@@ -281,6 +282,8 @@ pub enum UserEvent {
     ShutdownAsk,
     /// The quit question's answer (true: OK), from the thread that showed it.
     ShutdownAnswer(bool),
+    /// The Save Page As worker finished a file operation for pane `pane`'s save `id` (`page_saver_app`).
+    PageSaveFile { pane: PaneId, id: u64, done: page_saver_app::FileDone },
 }
 
 #[derive(Clone)]
@@ -1716,6 +1719,10 @@ pub struct App {
     /// The web view of every browser pane (13x Task 5). App-wide: keyed by pane, and a view is
     /// re-parented when its pane changes windows.
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
+    /// The Save Page As job of each browser pane (13x4 Task 10). App-wide: pane ids are.
+    page_saves: HashMap<PaneId, page_saver_app::Saving>,
+    /// The last save's number, so a cancelled save's worker events are ignored.
+    page_save_seq: u64,
     /// Commands a person confirmed from a page's Smart Selection action, each run in a single-use
     /// window by the next tick (the answer has no event loop). App-wide: pane ids are.
     browser_runs: Vec<(PaneId, String)>,
@@ -2709,6 +2716,8 @@ pub fn run() {
         tool_view_ids: HashMap::new(),
         tool_restarts: HashMap::new(),
         browser_views: HashMap::new(),
+        page_saves: HashMap::new(),
+        page_save_seq: 0,
         browser_runs: Vec::new(),
         browser_next: Vec::new(),
         adblock: adblock_app::Adblock::default(),
@@ -4062,6 +4071,7 @@ impl App {
     /// failed arrangement's): its API subscriptions, unread counts and script caches go.
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
+        self.page_save_cancel(id);
         self.api_session_subs.forget_session(id);
         // The shell a model's held text was typed into is gone (Task 10 fix round 2).
         self.orch_held.remove(&id);
@@ -7350,6 +7360,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::DebugLogSaved(result, announce) => return self.debug_log_saved(result, announce),
+            UserEvent::PageSaveFile { pane, id, done } => return self.page_save_file_done(pane, id, done),
             UserEvent::DisplayChanged => {
                 let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));
                 self.display_due = Some(Instant::now() + delay);

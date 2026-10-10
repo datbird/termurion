@@ -11,7 +11,7 @@ use crate::webhost::MenuTarget;
 impl App {
     /// Which items exist: 13x2 builds Print; 13x4 adds Remove Element and View Source; later plans set theirs.
     pub(super) fn browser_ctx_built(&self) -> Built {
-        Built { print: true, remove_element: true, view_source: true, ..Built::default() }
+        Built { print: true, remove_element: true, view_source: true, save_page: true, ..Built::default() }
     }
 
     /// A right-click on pane `pane`'s page: the pane becomes the focused one (iTerm2's menu acts on
@@ -72,6 +72,8 @@ impl App {
             let last = self.browser_views.get(&pane).and_then(|b| b.last_title.clone());
             (last.or_else(|| io.map(|i| i.title.clone())).unwrap_or_default(), io.map(|i| i.url.clone()).unwrap_or_default())
         };
+        // Save Page As opens a blocking dialog: it runs after the window closure, never inside it.
+        let mut save_page = false;
         self.in_pane_window(pane, |a| {
             if let Some(t) = a.tabs.iter_mut().find(|t| t.layout.panes().contains(&pane)) {
                 t.focused = pane;
@@ -119,10 +121,14 @@ impl App {
                 Item::RemoveElement => a.remove_element(pane, ctx.x, ctx.y),
                 // A person's pick: the one caller of `view_page_source`.
                 Item::ViewSource => a.view_page_source(pane),
+                Item::SavePageAs => save_page = true,
                 // The later plans' items.
-                Item::AddNamedMark | Item::SavePageAs | Item::Native => {}
+                Item::AddNamedMark | Item::Native => {}
             }
         });
+        if save_page {
+            self.save_page_as(pane);
+        }
     }
 }
 
@@ -140,7 +146,7 @@ mod tests {
         let p = prod();
         let from = p.find("pub(super) fn browser_ctx_picked").unwrap();
         // To the end of the function, so every later arm (View Source, Save Page As) is inside the pin.
-        let run = &p[from..from + p[from..].find("\n        });\n    }\n}").unwrap()];
+        let run = &p[from..from + p[from..].find("\n        });\n        if save_page").unwrap()];
         assert!(run.contains("Item::RemoveElement") && run.contains("Item::SavePageAs"), "the pin spans all the arms");
         assert!(run.find("t.focused = pane;").unwrap() < run.find("match item").unwrap());
         assert_eq!(run.matches("a.browser_page_open(").count(), 1);

@@ -2593,7 +2593,11 @@ mod probe {
                     self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
                     let answer = match self.pages.get(&key) {
-                        Some(body) => Answer::Respond { status: 200, mime: "text/html".into(), body: body.clone().into_bytes(), headers: vec![] },
+                        Some(body) => {
+                            // A page by default; a stylesheet or an image by its extension (Save Page As).
+                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else { "text/html" };
+                            Answer::Respond { status: 200, mime: mime.into(), body: body.clone().into_bytes(), headers: vec![] }
+                        }
                         None => {
                             if !key.ends_with("/favicon.ico") {
                                 self.not_served.push(url);
@@ -3637,6 +3641,89 @@ mod probe {
         assert!(links.iter().all(|l| !l.contains(' ')), "no link holds a space: {links:?}");
         assert_eq!(p.page_eval("String(document.querySelector('p.url').textContent)"), Ok("\"https://tandem.test/orig?x='1'&y=\\\\\"".into()), "the visible URL");
         p.finish();
+    }
+
+    /// 13x4 Task 10 (R13x45-2): Save Page As writes a folder. A page answered from memory at
+    /// `https://tandem.test/` references `s.css` (which has `url(bg.png)`) and `i.png`; the real saver
+    /// scripts run in the page world, the resources are read from the page's own loaded copy through
+    /// the two DevTools reads, and the job's steps are carried out as the app does (create-new through
+    /// `inert_files::write_new_checked`, `localfs::create_dir`). The folder holds an `index.html` whose
+    /// `<style>` has `resources/bg.png` and whose `<img>` is `resources/i.png`, and the two files hold
+    /// exactly the served bytes. Needs the console session.
+    #[test]
+    #[ignore]
+    fn save_page_writes_a_folder() {
+        use crate::page_saver::{Job, Step};
+        const TEST_PAGE: &str = "https://tandem.test/";
+        let html = "<html><head><title>T</title><link rel=\"stylesheet\" href=\"s.css\"></head><body><img src=\"i.png\"><p>hi</p></body></html>";
+        let pages = [(TEST_PAGE, html.to_string()), ("https://tandem.test/s.css", "body { background: url(bg.png); }".to_string()), ("https://tandem.test/i.png", "IMAGE-BYTES-I".to_string()), ("https://tandem.test/bg.png", "IMAGE-BYTES-BG".to_string())];
+        let Some(mut p) = Probe::start(&pages, Vec::new()) else { return };
+        p.load(TEST_PAGE);
+        p.settle(800);
+        let root = std::env::temp_dir().join(format!("tandem-save-probe-{}", hex32()));
+        std::fs::create_dir_all(&root).expect("a temp root");
+        let folder = root.join("site");
+        let mut job = Job::new(folder.clone());
+        job.bind_epoch(1);
+        let mut queue: std::collections::VecDeque<Step> = job.start().into();
+        let mut tree: Option<Value> = None;
+        let mut done = None;
+        let page_world = |p: &mut Probe, body: &str| -> Value {
+            let script = crate::browser_js::page_call_script(body, &json!({})).expect("the script");
+            let text = p.page_eval(&script).expect("the page answers");
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        };
+        while let Some(step) = queue.pop_front() {
+            assert!(job.permits(&step), "{step:?}");
+            match step {
+                Step::MakeDir(d) => {
+                    if crate::localfs::judge_io(&d).and_then(|j| crate::localfs::create_dir(&j)).is_err() {
+                        queue.extend(job.on_make_dir_failed(&d));
+                    }
+                }
+                Step::Extract => {
+                    let v = page_world(&mut p, &crate::page_saver::extract_body());
+                    let urls = v.as_array().map(|a| a.iter().filter_map(|u| u.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                    queue.extend(job.on_urls(urls));
+                }
+                Step::Fetch(u) => {
+                    if tree.is_none() {
+                        tree = Some(p.call_wait(None, "Page.getResourceTree", &json!({})).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({})));
+                    }
+                    let t = tree.as_ref().unwrap();
+                    let got = crate::devtools::frame_for(t, &u).and_then(|f| {
+                        let r = p.call_wait(None, "Page.getResourceContent", &crate::devtools::resource_content_params(&f, &u)).ok()?;
+                        let bytes = crate::devtools::content_bytes(&serde_json::from_str(&r).ok()?)?;
+                        Some((bytes, crate::devtools::resource_mime(t, &u)))
+                    });
+                    queue.extend(job.on_resource(&u, got, &|_| false));
+                }
+                Step::Write { path, bytes } => {
+                    if crate::inert_files::write_new_checked(&path, &bytes).is_err() {
+                        queue.extend(job.on_write_failed(&path));
+                    }
+                }
+                Step::AddAttributes(_) => {
+                    page_world(&mut p, &job.attributes_body());
+                    queue.extend(job.on_attributes_added());
+                }
+                Step::GetHtml => {
+                    let v = page_world(&mut p, &crate::page_saver::clone_body());
+                    queue.extend(job.on_html(v.as_str().map(str::to_string)));
+                }
+                Step::Done(path) => done = Some(Ok(path)),
+                Step::Failed(e) => done = Some(Err(e)),
+                Step::Remove(_) | Step::RemoveDir(_) => {}
+            }
+        }
+        p.finish();
+        assert_eq!(done, Some(Ok(folder.join("index.html"))), "the save finished");
+        let index = std::fs::read_to_string(folder.join("index.html")).expect("index.html");
+        assert!(index.contains("resources/i.png"), "the img points at the saved file: {index}");
+        assert!(index.contains("<style") && index.contains("resources/bg.png"), "the stylesheet is inlined with its url rewritten: {index}");
+        assert_eq!(std::fs::read(folder.join("resources").join("i.png")).expect("i.png"), b"IMAGE-BYTES-I");
+        assert_eq!(std::fs::read(folder.join("resources").join("bg.png")).expect("bg.png"), b"IMAGE-BYTES-BG");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Main bug from the 13x3 probe review: Chromium's Windows editing behavior extends forward by

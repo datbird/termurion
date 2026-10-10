@@ -213,6 +213,24 @@ pub fn write_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     write_marked(path, bytes)
 }
 
+/// `write_checked` that never replaces a file: an existing name (a file, a folder, a link) is an
+/// `AlreadyExists` error and nothing is written (`CREATE_NEW` does not follow a link). The Save Page
+/// As job writes only this way (Task 9 review I1). The file is marked as from the internet.
+pub fn write_new_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if refused_write(&path.to_string_lossy()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "files of this type are not allowed"));
+    }
+    let judged = crate::localfs::judge_io(path)?;
+    let mut f = crate::localfs::open_custom(&judged, |o| {
+        o.write(true).create_new(true);
+    })?;
+    f.write_all(bytes)?;
+    drop(f);
+    mark(path);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +381,32 @@ mod tests {
             }
         }
         assert!(!is_hidden('a') && !is_hidden(' ') && !is_hidden('\u{e9}'));
+    }
+
+    /// Create-new: an existing file is kept as it was, an existing folder fails, the door's refusals
+    /// hold, and a written file carries the Mark of the Web (the real stream, on Windows).
+    #[test]
+    fn write_new_checked_never_overwrites_and_marks() {
+        let dir = std::env::temp_dir().join(format!("tandem-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        write_new_checked(&f, b"one").unwrap();
+        let e = write_new_checked(&f, b"two").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&f).unwrap(), b"one");
+        std::fs::create_dir(dir.join("d.png")).unwrap();
+        assert!(write_new_checked(&dir.join("d.png"), b"x").is_err());
+        for bad in ["x.url", "desktop.ini", "a.scf", "x.exe", "a.txt:s"] {
+            assert!(write_new_checked(&dir.join(bad), b"x").is_err(), "{bad}");
+            assert!(!dir.join(bad).exists() || bad == "a.txt:s", "{bad}");
+        }
+        #[cfg(windows)]
+        {
+            let stream = format!("{}:Zone.Identifier", f.display());
+            let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).expect("a Zone.Identifier stream");
+            assert_eq!(zone_of(&text), Some(3), "{text:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
