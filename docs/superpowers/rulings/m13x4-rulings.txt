@@ -1,0 +1,16 @@
+m13x4 rulings (browser reader, source, saver). Entries are appended as tasks land.
+
+P22 amendment (Task 5, preflight B1): `Page.getResourceTree` and `Page.getResourceContent` are in
+`browser_world::ALLOWED` (the one list `devtools_send` and the host's `devtools_call_in` both read;
+17 methods). They are host-initiated reads only: Tandem's Rust code calls them through
+`App::devtools_read`, which first asks `devtools::refusal` (the narrower second gate: the two
+methods, exactly the argument shape Tandem builds). No page or isolated-world message reaches a
+DevTools sender; the `frameId` and `url` of a content read come from Tandem's own resource tree
+read. Replies are page-derived data: a reply over `devtools::MAX_RESOURCE` (4 MiB of JSON text, as
+`ViewGate::admit` weighs a ScriptDone) is an error, and `devtools::Budget` caps a read job at
+`MAX_TOTAL` (64 MiB). `Page.enable` was already sent by the world setup.
+
+Task 4 finding I1 (ruled: fix, safer than iTerm2): a navigation cancels a pending plain-text,
+page-content or reader-loader call. `browser_reader::State.epoch` is bumped by `reset()`; a call
+captures it first, and its answer is dropped (nothing cached, null page content, "the page changed"
+for the loaders) when it moved. iTerm2 (`RMM:35-61`) caches the late answer for the new page.

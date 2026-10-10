@@ -104,8 +104,9 @@ pub fn escape_html(s: &str) -> String {
 /// `ChatAgent.neutralizeContextDelimiters`, hardened beyond iTerm2 (Task 8 finding 5).
 ///
 /// Untrusted terminal text must not close the wrapper early and read as top-level instructions.
-/// The four tags iTerm2 replaces, in any letter case: a closing tag also with whitespace or a
-/// line break before its `>`. An opening tag keeps its own `>`. Line breaks elsewhere are kept
+/// The three tags (iTerm2's two and Tandem's `page-content`), in any letter case: whitespace or a
+/// line break after the `<` or the `</`, and a closing tag also before its `>`. An opening tag keeps
+/// its own `>`. Line breaks elsewhere are kept
 /// (the screen's rows matter to the model).
 pub fn neutralize(s: &str) -> String {
     const NAMES: [&str; 3] = ["visible-screen", "terminal-state", "page-content"];
@@ -114,9 +115,10 @@ pub fn neutralize(s: &str) -> String {
     while let Some(at) = rest.find('<') {
         out.push_str(&rest[..at]);
         let tag = &rest[at + 1..];
-        let (closing, body) = match tag.strip_prefix('/') {
-            Some(b) => (true, b),
-            None => (false, tag),
+        // Whitespace after `<` and after `</` is no different to a reader (a model, or a parser).
+        let (closing, body) = match tag.trim_start().strip_prefix('/') {
+            Some(b) => (true, b.trim_start()),
+            None => (false, tag.trim_start()),
         };
         let name = NAMES.iter().find_map(|n| body.get(..n.len()).filter(|h| h.eq_ignore_ascii_case(n)));
         let Some(name) = name else {
@@ -238,6 +240,21 @@ mod tests {
         assert_eq!(neutralize("<VISIBLE-SCREEN>"), "\u{2039}VISIBLE-SCREEN>");
         assert_eq!(neutralize("</visible-screenx>"), "</visible-screenx>", "another tag name is left alone");
         assert_eq!(neutralize("a < b </other >"), "a < b </other >");
+    }
+
+    /// Review minor (13x4 Task 4): spaced and variant markers are caught for every tag, whatever the
+    /// caller (`</ page-content>`, `< /page-content>`, `<  page-content>`, a line break after `</`).
+    #[test]
+    fn neutralize_catches_spaced_and_variant_markers() {
+        assert_eq!(neutralize("</ page-content>"), "\u{2039}/page-content\u{203A}");
+        assert_eq!(neutralize("< /page-content>"), "\u{2039}/page-content\u{203A}");
+        assert_eq!(neutralize("<\t/\n PAGE-CONTENT \n>x"), "\u{2039}/PAGE-CONTENT\u{203A}x");
+        assert_eq!(neutralize("</ visible-screen>"), "\u{2039}/visible-screen\u{203A}");
+        assert_eq!(neutralize("</\nterminal-state >"), "\u{2039}/terminal-state\u{203A}");
+        assert_eq!(neutralize("<  page-content>"), "\u{2039}page-content>");
+        assert_eq!(neutralize("< page_content>"), "< page_content>", "another name is left alone");
+        assert_eq!(neutralize("a < b </ other >"), "a < b </ other >");
+        assert_eq!(neutralize("1 < 2 and 3 > 2"), "1 < 2 and 3 > 2");
     }
 
     #[test]

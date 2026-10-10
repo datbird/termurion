@@ -3435,21 +3435,40 @@ mod probe {
         let Some(mut p) = Probe::start(&[(PAGE, article_page("An article", extra))], Vec::new()) else { return };
         p.load(PAGE);
         let shown = |p: &mut Probe, id: &str| p.page_eval(&format!("getComputedStyle(document.getElementById('{id}')).display")).expect("computed display");
-        // A synthetic click on the page is no menu pick: nothing is removed.
+        // Review minor: the leg can fail. A page listener counts the events it sees, and the whole
+        // DOM is compared before and after: any removal (or any mutation) by a synthetic click or
+        // contextmenu event, or by a trusted right press through Input.dispatchMouseEvent, fails it.
+        // (A native ContextMenuRequested is not raised for synthesized input in this harness, so the
+        // real menu pick stays the app's, covered by `remove_element_is_picked`.)
+        p.page_eval("window.__ctx = 0; document.addEventListener('contextmenu', () => { window.__ctx++; }, true); 1").expect("the counter");
+        let snapshot = |p: &mut Probe| p.page_eval("document.documentElement.outerHTML + '|' + getComputedStyle(document.getElementById('overlay')).display + getComputedStyle(document.getElementById('backdrop')).display").expect("a snapshot");
+        let before = snapshot(&mut p);
         p.page_eval("document.getElementById('overlay').dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, clientX: 150, clientY: 150})); document.getElementById('overlay').click(); 1").expect("synthetic");
+        assert_eq!(p.page_eval("window.__ctx"), Ok("1".into()), "the page saw its own event, so the leg is not vacuous");
+        for kind in ["mousePressed", "mouseReleased"] {
+            p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": 150, "y": 150, "button": "right", "clickCount": 1})).expect("a trusted right press");
+        }
         p.settle(200);
-        assert_ne!(shown(&mut p, "overlay"), "\"none\"", "a synthetic click removes nothing");
+        println!("contextmenu events the page saw (1 synthetic, then the trusted press if raised): {:?}", p.page_eval("window.__ctx"));
+        assert_eq!(snapshot(&mut p), before, "a synthetic or trusted click changes nothing");
+        assert_ne!(shown(&mut p, "overlay"), "\"none\"", "a click removes nothing");
+        assert!(p.routed.iter().all(|r| r.via != Via::Client), "and posts no Client message");
         // A point inside the overlay.
         assert_eq!(reader_run(&mut p, &crate::browser_reader::remove_element_body(150.0, 150.0).expect("the body")), Ok(json!(true)));
         assert_eq!(shown(&mut p, "overlay"), "\"none\"", "the overlay under the point is hidden");
         assert_ne!(shown(&mut p, "backdrop"), "\"none\"", "no backdrop sweep");
         let article = |p: &mut Probe| p.page_eval("getComputedStyle(document.querySelector('article')).display").expect("the article");
         assert_ne!(article(&mut p), "\"none\"", "the article stays");
-        // Non-finite points are 0,0 (the backdrop lies there but is the main-container-level sweep's
-        // target only; the answer is true and the article stays).
+        // Non-finite points are 0,0 (iTerm2 parity). With the overlay gone, the full-viewport backdrop
+        // is what lies there, and removing the overlay under a point removes it too: it is hidden. The
+        // article stays. (The finding's "a point inside the article removes nothing" is not achievable
+        // on this page: every article point is under the backdrop, and on a page without one a point
+        // on a paragraph hides that paragraph, because the search stops below the main container.)
         assert_eq!(reader_run(&mut p, &crate::browser_reader::remove_element_body(f64::NAN, f64::NAN).expect("the body")), Ok(json!(true)));
+        assert_eq!(shown(&mut p, "backdrop"), "\"none\"", "the backdrop at 0,0 is what a non-finite point removes");
         assert_ne!(article(&mut p), "\"none\"", "a non-finite point removes no article");
         assert!(reader_actions(&p).is_empty(), "the body posts nothing");
+        assert!(p.routed.iter().all(|r| r.via != Via::Client), "no Client message at all");
         p.finish();
     }
 

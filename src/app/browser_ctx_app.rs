@@ -137,7 +137,9 @@ mod tests {
     fn picks_focus_first_and_open_through_the_funnel() {
         let p = prod();
         let from = p.find("pub(super) fn browser_ctx_picked").unwrap();
-        let run = &p[from..from + p[from..].find("Item::RemoveElement").unwrap() + 80];
+        // To the end of the function, so every later arm (View Source, Save Page As) is inside the pin.
+        let run = &p[from..from + p[from..].find("\n        });\n    }\n}").unwrap()];
+        assert!(run.contains("Item::RemoveElement") && run.contains("Item::SavePageAs"), "the pin spans all the arms");
         assert!(run.find("t.focused = pane;").unwrap() < run.find("match item").unwrap());
         assert_eq!(run.matches("a.browser_page_open(").count(), 1);
         for banned in ["open_url_in_browser(", "open_link(", "execute(", "execute_with(", "Command::new(", "guard_open(", "shell_open("] {

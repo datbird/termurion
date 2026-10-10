@@ -20,6 +20,9 @@ fn log_failure_as(f: Failure, what: &str) {
     crate::rlog!("{}", crate::dlog::name(&line));
 }
 
+/// What a call answers when the page changed under it (Task 4 finding I1).
+const PAGE_CHANGED: &str = "the page changed";
+
 /// The plain text of a page, or None (`RMM:35-61`).
 pub(super) type TextDone = Box<dyn FnOnce(&mut App, PaneId, Option<String>)>;
 
@@ -59,6 +62,8 @@ impl App {
                 return then(self, pane, Err(e));
             }
         };
+        // The page this call is for: a navigation (or a lost world) in between makes it another page's.
+        let epoch = self.browser_views.get(&pane).map_or(0, |b| b.reader.epoch);
         self.browser_js_call(pane, &first, json!({}), Box::new(move |app, pane, r| {
             if let Err(e) = r {
                 log_failure(Failure::Inject, &e);
@@ -66,8 +71,9 @@ impl App {
             }
             app.browser_js_call(pane, &second, json!({}), Box::new(move |app, pane, r| match r {
                 Ok(_) => {
-                    if let Some(bv) = app.browser_views.get_mut(&pane) {
-                        bv.reader.injected = true;
+                    let same = app.browser_views.get_mut(&pane).is_some_and(|bv| bv.reader.mark_injected_at(epoch));
+                    if !same {
+                        return then(app, pane, Err(PAGE_CHANGED.into()));
                     }
                     then(app, pane, Ok(json!(true)))
                 }
@@ -159,6 +165,8 @@ impl App {
         if let Some(cached) = self.browser_views.get(&pane).and_then(|b| b.reader.cached_plain()) {
             return done(self, pane, Some(cached));
         }
+        // I1: a navigation cancels the call: an answer from another epoch is dropped, never cached.
+        let epoch = self.browser_views.get(&pane).map_or(0, |b| b.reader.epoch);
         self.ensure_reader_scripts(pane, Box::new(move |app, pane, r| {
             // `ensure` logged a failure; there is no text.
             if r.is_err() {
@@ -170,7 +178,7 @@ impl App {
                     Ok(_) => None,
                     Err(_) => return done(app, pane, None),
                 };
-                let answer = app.browser_views.get_mut(&pane).and_then(|b| b.reader.store_plain(text.as_deref()));
+                let answer = app.browser_views.get_mut(&pane).and_then(|b| b.reader.store_plain_at(epoch, text.as_deref())).flatten();
                 done(app, pane, answer)
             }));
         }));
@@ -199,7 +207,7 @@ impl App {
 
     /// The page for the AI (`BM:607-618`), the one entry point for page text: `done` gets
     /// `{"title", "content"}` or null (no URL, or no text). The text is the cache's ("" included) or
-    /// Readability's, cached through `store_plain`. Page-derived: see `page_derived_block`.
+    /// Readability's, cached through `store_plain`. Page-derived, title and content: see `page_derived_block`.
     pub(super) fn browser_page_content(&mut self, pane: PaneId, done: JsDone) {
         let (url, title) = match self.panes.get(&pane).and_then(|p| p.browser_io()) {
             Some(io) => (io.url.clone(), io.title.clone()),
@@ -208,8 +216,13 @@ impl App {
         if url.is_empty() {
             return done(self, pane, Ok(Value::Null));
         }
+        // I1: the url and title belong to the page of this epoch; if it moved the answer is null, never
+        // one page's text under another's address.
+        let epoch = self.browser_views.get(&pane).map_or(0, |b| b.reader.epoch);
         self.browser_plain_text(pane, Box::new(move |app, pane, plain| {
-            done(app, pane, Ok(reader::page_content_json(&url, &title, plain.as_deref())))
+            let same = app.browser_views.get(&pane).is_some_and(|b| b.reader.current(epoch));
+            let content = if same { reader::page_content_json(&url, &title, plain.as_deref()) } else { Value::Null };
+            done(app, pane, Ok(content))
         }));
     }
 
@@ -316,7 +329,7 @@ mod tests {
         assert!(dr.contains("exit_distraction_body") && dr.contains("distraction_bodies") && dr.contains("answered_true(&v)") && dr.contains("Failure::ExitDistraction") && dr.contains("Failure::EnterDistraction"));
         assert!(dr.find("ensure_reader_scripts").unwrap() < dr.find("distraction_bodies").unwrap());
         let ensure = between(me, "pub(super) fn ensure_reader_scripts", "/// Reader Mode from the menu");
-        assert!(ensure.contains("bv.reader.injected = true") && ensure.contains("Failure::Inject") && ensure.contains("loader_bodies()"));
+        assert!(ensure.contains("mark_injected_at(epoch)") && ensure.contains("Failure::Inject") && ensure.contains("loader_bodies()"));
         let text = between(me, "pub(super) fn browser_plain_text", "/// The Menu button");
         assert!(text.contains("cached_plain()") && text.contains("Err(_) => return done(app, pane, None)"), "an error is not cached");
     }
@@ -350,7 +363,12 @@ mod tests {
         let content = between(me, "pub(super) fn browser_page_content", "/// Remove Element at a page point");
         assert!(content.contains("url.is_empty()") && content.contains("self.browser_plain_text(") && content.contains("reader::page_content_json(&url, &title, plain.as_deref())"));
         let text = between(me, "pub(super) fn browser_plain_text", "/// The page as markdown");
-        assert!(text.contains("reader::bound_text(&s)") && text.contains("store_plain(text.as_deref())"));
+        assert!(text.contains("reader::bound_text(&s)") && text.contains("store_plain_at(epoch, text.as_deref())") && !text.contains(".store_plain("), "I1: stored only for the epoch it began in");
+        assert!(text.find("let epoch").unwrap() < text.find("ensure_reader_scripts").unwrap(), "the epoch is read before anything runs");
+        assert!(content.contains("reader.current(epoch)") && content.find("let epoch").unwrap() < content.find("browser_plain_text(").unwrap() && content.contains("Value::Null"), "I1: null if the page changed");
+        let ensure = between(me, "pub(super) fn ensure_reader_scripts", "/// Reader Mode from the menu");
+        assert!(ensure.contains("mark_injected_at(epoch)") && !ensure.contains("injected = true") && ensure.find("let epoch").unwrap() < ensure.find("browser_js_call").unwrap(), "I1 twin: injected only for the same page");
+        assert!(!md.contains("browser_page_call"), "M3: turndown runs in the isolated world only");
         let press = between(me, "pub(super) fn browser_menu_press", "/// What the menu shows");
         assert!(press.contains("self.browser_page_content(pane,") && !press.contains("browser_plain_text"), "M4");
     }
