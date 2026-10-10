@@ -47,16 +47,17 @@ fn reserved_stem(name: &str) -> bool {
     stem == "COM0" || stem == "LPT0"
 }
 
-/// Cuts a name to `MAX_NAME_UNITS`, keeping a short extension, never splitting a surrogate pair.
-fn cap(name: &str) -> String {
-    if units(name) <= MAX_NAME_UNITS {
+/// Cuts a name to `max` UTF-16 units, keeping a short extension, never splitting a surrogate pair;
+/// trailing dots and spaces left by the cut go.
+fn cap(name: &str, max: usize) -> String {
+    if units(name) <= max {
         return name.to_string();
     }
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if units(e) <= MAX_EXT_UNITS => (s, format!(".{e}")),
         _ => (name, String::new()),
     };
-    let room = MAX_NAME_UNITS.saturating_sub(units(&ext));
+    let room = max.saturating_sub(units(&ext));
     let mut cut = String::new();
     let mut used = 0;
     for c in stem.chars() {
@@ -73,9 +74,10 @@ fn cap(name: &str) -> String {
 /// A file name that is safe to create under the folder the person chose. iTerm2's
 /// `\/:*?"<>|` become `_`; then control characters become `_`; hidden, bidi and format characters
 /// are dropped (`inert_files::is_hidden`); trailing dots and spaces go; empty, `.` and `..` become
-/// `resource`; a device name gets a `_` prefix; a high-risk extension (the one list,
-/// `inert_files::high_risk`) is neutralized with a trailing `_`; an 8.3 `~digit` alias becomes `_digit`;
-/// then the length is capped.
+/// `resource`; the length is cut to two units under `MAX_NAME_UNITS`; a device name gets a `_`
+/// prefix; a high-risk extension (the one list, `inert_files::high_risk`) is neutralized with a
+/// trailing `_`; an 8.3 `~digit` alias becomes `_digit`; the final name is rechecked with the
+/// owners (`resource` when it fails).
 pub fn sanitize(name: &str) -> String {
     sanitize_with(name, true)
 }
@@ -99,6 +101,12 @@ fn sanitize_with(name: &str, neutralize: bool) -> String {
     if s.is_empty() || s == "." || s == ".." {
         s = "resource".to_string();
     }
+    // Cut first (room for the two `_` the steps below may add), so no later cut can bring back a
+    // type the neutralize step did not see (Task 8 review I1).
+    s = cap(&s, MAX_NAME_UNITS - 2);
+    if s.is_empty() {
+        s = "resource".to_string();
+    }
     if reserved_stem(&s) {
         s.insert(0, '_');
     }
@@ -108,8 +116,17 @@ fn sanitize_with(name: &str, neutralize: bool) -> String {
     if crate::settings_export::aliased(&s) {
         s = s.replace('~', "_");
     }
-    let s = cap(&s);
-    if s.is_empty() { "resource".to_string() } else { s }
+    if final_ok(&s, neutralize) { s } else { "resource".to_string() }
+}
+
+/// The recheck of a final name with the owners: within `MAX_NAME_UNITS`, no device or alias form,
+/// no listing type, and (for a file) no high-risk type.
+fn final_ok(s: &str, file: bool) -> bool {
+    units(s) <= MAX_NAME_UNITS
+        && !s.is_empty()
+        && !reserved_stem(s)
+        && !crate::settings_export::aliased(s)
+        && (!file || (!refused_extension(s) && !crate::inert_files::refused_on_listing(s)))
 }
 
 /// The folder-name default (`PSV:347`): the host sanitized, else "page".
@@ -179,7 +196,7 @@ pub fn unique_filename(base: &str, taken: &dyn Fn(&str) -> bool) -> String {
             cut.push(c);
         }
         let candidate = format!("{cut}{suffix}");
-        if !taken(&candidate) {
+        if final_ok(&candidate, true) && !taken(&candidate) {
             return candidate;
         }
         i += 1;
@@ -800,12 +817,12 @@ mod tests {
         assert_eq!(base_filename("https://a/CON", Some("text/css")), "_CON.css");
         assert_eq!(default_name("https://con/"), "_con");
         let long = sanitize(&("a".repeat(300) + ".png"));
-        assert_eq!(u(&long), 240);
+        assert_eq!(u(&long), MAX_NAME_UNITS - 2);
         assert!(long.ends_with(".png"));
         let emoji = sanitize(&("\u{1F600}".repeat(150) + ".png"));
         assert!(u(&emoji) <= 240 && emoji.ends_with(".png"));
         assert!(emoji.strip_suffix(".png").unwrap().chars().all(|c| c == '\u{1F600}'));
-        assert_eq!(u(&sanitize(&"b".repeat(300))), 240);
+        assert_eq!(u(&sanitize(&"b".repeat(300))), MAX_NAME_UNITS - 2);
         assert_eq!(sanitize(&".".repeat(250)), "resource");
         assert_eq!(sanitize(&(".".repeat(250) + "b")), ".b");
         let c = "c".repeat(240);
@@ -854,6 +871,33 @@ mod tests {
         assert_ne!(scf, ".scf");
         assert!(!crate::semantic::runnable(&scf) && !crate::inert_files::refused_on_listing(&scf), "{scf}");
         assert!(!crate::semantic::runnable(&base_filename("https://a/.exe", None)));
+    }
+
+    /// The order is cut, then neutralize, then recheck (review I1): a cut can never bring back a
+    /// type the neutralize step did not see.
+    #[test]
+    fn a_cut_never_restores_a_dangerous_type() {
+        let ok = |n: &str| {
+            let s = sanitize(n);
+            assert!(u(&s) <= MAX_NAME_UNITS, "{} units", u(&s));
+            assert!(!crate::inert_files::high_risk(&s) && !crate::inert_files::refused_on_listing(&s), "{n:?} -> {s:?}");
+            assert!(!s.ends_with(['.', ' ']) && !crate::settings_export::aliased(&s), "{s:?}");
+            s
+        };
+        ok(&("a".repeat(236) + ".exe." + &"x".repeat(20)));
+        ok(&("a".repeat(236) + ".hta" + &"b".repeat(60)));
+        ok(&("a".repeat(233) + ".url." + &"y".repeat(30)));
+        assert_eq!(ok("a.pdf.exe"), "a.pdf.exe_");
+        assert_eq!(ok("a.exe.pdf"), "a.exe.pdf");
+        let trail = ok(&("a".repeat(236) + " . " + &".".repeat(1) + &"z".repeat(20)));
+        assert!(trail.chars().all(|c| c == 'a'), "{trail:?}");
+        // The neutralize step still has room after the cut.
+        let long = ok(&("c".repeat(300) + ".exe"));
+        assert!(long.ends_with(".exe_"), "{long:?}");
+        // A suffixed unique name is rechecked too.
+        let base = sanitize(&("a".repeat(236) + ".exe." + &"x".repeat(20)));
+        let next = unique_filename(&base, &|n| n == base);
+        assert!(!crate::inert_files::high_risk(&next) && u(&next) <= MAX_NAME_UNITS, "{next:?}");
     }
 
     #[test]
