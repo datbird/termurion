@@ -124,7 +124,7 @@ pub fn clean_name(name: &str) -> String {
 }
 
 /// A free name for `name` in `dir`: "a.txt", then "a (1).txt", and so on. Any folder part
-/// of the name is dropped, and a high-risk type gets a trailing `_` ("setup.exe_").
+/// of the name is dropped, and a high-risk type gets `.download` ("setup.exe.download").
 pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     // A high-risk type is kept as bytes under a neutral name (`inert_files::neutralized`), so the
     // question, the refusal check and the save all see the name that is written. A type the shell
@@ -479,9 +479,9 @@ mod tests {
     fn download_names_cannot_hide_their_type() {
         let d = std::env::temp_dir().join(format!("tandem-dl2-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe_"));
+        assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe.download"));
         // A high-risk type is kept as bytes but never as its type (the door refuses it).
-        assert_eq!(unique_path(&d, "setup.EXE"), d.join("setup.EXE_"));
+        assert_eq!(unique_path(&d, "setup.EXE"), d.join("setup.EXE.download"));
         assert!(save(&d, ".url", b"x").is_err(), "a listing type stays refused");
         assert_eq!(unique_path(&d, "a.txt"), d.join("a.txt"));
         assert_eq!(unique_path(&d, "a\u{200b}b.txt. . "), d.join("ab.txt"));

@@ -67,9 +67,9 @@ fn cap(name: &str, max: usize) -> String {
 /// A file name that is safe to create under the folder the person chose. iTerm2's
 /// `\/:*?"<>|` become `_`; then control characters become `_`; hidden, bidi and format characters
 /// are dropped (`inert_files::is_hidden`); trailing dots and spaces go; empty, `.` and `..` become
-/// `resource`; the length is cut to two units under `MAX_NAME_UNITS`; a device name gets a `_`
-/// prefix; a high-risk extension (the one list, `inert_files::high_risk`) is neutralized with a
-/// trailing `_`; an 8.3 `~digit` alias becomes `_digit`; the final name is rechecked with the
+/// `resource`; the length is cut to leave room for the two steps below; a device name gets a `_`
+/// prefix; a high-risk extension (the one list, `inert_files::high_risk`) is neutralized with
+/// `inert_files::NEUTRAL_SUFFIX` (`x.js.download`); an 8.3 `~digit` alias becomes `_digit`; the final name is rechecked with the
 /// owners (`resource` when it fails).
 pub fn sanitize(name: &str) -> String {
     sanitize_with(name, true)
@@ -94,9 +94,9 @@ fn sanitize_with(name: &str, neutralize: bool) -> String {
     if s.is_empty() || s == "." || s == ".." {
         s = "resource".to_string();
     }
-    // Cut first (room for the two `_` the steps below may add), so no later cut can bring back a
-    // type the neutralize step did not see (Task 8 review I1).
-    s = cap(&s, MAX_NAME_UNITS - 2);
+    // Cut first (room for the `_` prefix and the neutral suffix the steps below may add), so no
+    // later cut can bring back a type the neutralize step did not see (Task 8 review I1).
+    s = cap(&s, MAX_NAME_UNITS - 1 - units(crate::inert_files::NEUTRAL_SUFFIX));
     if s.is_empty() {
         s = "resource".to_string();
     }
@@ -104,7 +104,7 @@ fn sanitize_with(name: &str, neutralize: bool) -> String {
         s.insert(0, '_');
     }
     if neutralize && refused_extension(&s) {
-        s.push('_');
+        s = crate::inert_files::neutralized(&s);
     }
     if crate::settings_export::aliased(&s) {
         s = s.replace('~', "_");
@@ -881,7 +881,7 @@ mod tests {
         assert_eq!(base_filename("https://a/img/logo", Some("image/png")), "logo.png");
         assert_eq!(base_filename("https://a/", Some("text/css")), "resource.css");
         assert_eq!(base_filename("https://a/x/y/", None), "y");
-        assert_eq!(base_filename("https://a/f%20g.js", None), "f g.js_");
+        assert_eq!(base_filename("https://a/f%20g.js", None), "f g.js.download");
         assert_eq!(base_filename("https://a/a:b.css", None), "a_b.css");
         assert_eq!(unique_filename("a.png", &|n| n == "a.png" || n == "a_1.png"), "a_2.png");
         assert_eq!(unique_filename("a", &|n| n == "a"), "a_1");
@@ -909,12 +909,12 @@ mod tests {
         assert_eq!(base_filename("https://a/CON", Some("text/css")), "_CON.css");
         assert_eq!(default_name("https://con/"), "_con");
         let long = sanitize(&("a".repeat(300) + ".png"));
-        assert_eq!(u(&long), MAX_NAME_UNITS - 2);
+        assert_eq!(u(&long), MAX_NAME_UNITS - 10);
         assert!(long.ends_with(".png"));
         let emoji = sanitize(&("\u{1F600}".repeat(150) + ".png"));
         assert!(u(&emoji) <= 240 && emoji.ends_with(".png"));
         assert!(emoji.strip_suffix(".png").unwrap().chars().all(|c| c == '\u{1F600}'));
-        assert_eq!(u(&sanitize(&"b".repeat(300))), MAX_NAME_UNITS - 2);
+        assert_eq!(u(&sanitize(&"b".repeat(300))), MAX_NAME_UNITS - 10);
         assert_eq!(sanitize(&".".repeat(250)), "resource");
         assert_eq!(sanitize(&(".".repeat(250) + "b")), ".b");
         let c = "c".repeat(240);
@@ -955,10 +955,10 @@ mod tests {
     /// neutralized like any other high-risk type (controller ruling: no exemption at the door).
     #[test]
     fn leading_dot_names_are_neutral() {
-        assert_eq!(sanitize(".scf"), ".scf_");
-        assert_eq!(sanitize(".exe"), ".exe_");
-        assert_eq!(sanitize(".URL"), ".URL_");
-        assert_eq!(sanitize("app.js"), "app.js_");
+        assert_eq!(sanitize(".scf"), ".scf.download");
+        assert_eq!(sanitize(".exe"), ".exe.download");
+        assert_eq!(sanitize(".URL"), ".URL.download");
+        assert_eq!(sanitize("app.js"), "app.js.download");
         let scf = base_filename("https://a/.scf", Some("image/png"));
         assert_ne!(scf, ".scf");
         assert!(!crate::semantic::runnable(&scf) && !crate::inert_files::refused_on_listing(&scf), "{scf}");
@@ -979,13 +979,13 @@ mod tests {
         ok(&("a".repeat(236) + ".exe." + &"x".repeat(20)));
         ok(&("a".repeat(236) + ".hta" + &"b".repeat(60)));
         ok(&("a".repeat(233) + ".url." + &"y".repeat(30)));
-        assert_eq!(ok("a.pdf.exe"), "a.pdf.exe_");
+        assert_eq!(ok("a.pdf.exe"), "a.pdf.exe.download");
         assert_eq!(ok("a.exe.pdf"), "a.exe.pdf");
         let trail = ok(&("a".repeat(236) + " . " + &".".repeat(1) + &"z".repeat(20)));
         assert!(trail.chars().all(|c| c == 'a'), "{trail:?}");
         // The neutralize step still has room after the cut.
         let long = ok(&("c".repeat(300) + ".exe"));
-        assert!(long.ends_with(".exe_"), "{long:?}");
+        assert!(long.ends_with(".exe.download"), "{long:?}");
         // A suffixed unique name is rechecked too.
         let base = sanitize(&("a".repeat(236) + ".exe." + &"x".repeat(20)));
         let next = unique_filename(&base, &|n| n == base);

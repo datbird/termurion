@@ -94,11 +94,17 @@ pub fn high_risk(name: &str) -> bool {
     opened_name(name).stream || extension(name).is_some_and(|e| dangerous_extension(&e))
 }
 
-/// The name a file someone else named is kept under: a high-risk type gets a trailing `_`
-/// (`setup.exe` is kept as `setup.exe_`, bytes and all, and never runs from a double click);
-/// any other name is unchanged. Trailing dots and spaces are dropped first, as Windows drops them.
+/// What `neutralized` appends: a type with no shell action whose first three characters are
+/// inert too, so the 8.3 short name (`SETUP~1.DOW`) keeps no type either (findings r2 M1; the
+/// form browsers use for a download in progress).
+pub const NEUTRAL_SUFFIX: &str = ".download";
+
+/// The name a file someone else named is kept under: a high-risk type gets `NEUTRAL_SUFFIX`
+/// (`setup.exe` is kept as `setup.exe.download`, bytes and all, and never runs from a double
+/// click); any other name is unchanged. Trailing dots and spaces are dropped first, as Windows
+/// drops them.
 pub fn neutralized(name: &str) -> String {
-    if high_risk(name) { format!("{}_", name.trim_end_matches([' ', '.'])) } else { name.to_string() }
+    if high_risk(name) { format!("{}{NEUTRAL_SUFFIX}", name.trim_end_matches([' ', '.'])) } else { name.to_string() }
 }
 
 /// Whether writing a file with this final name is refused: its type is read by the shell on
@@ -319,10 +325,26 @@ mod tests {
             let r = write_checked(&dir.join(bad), b"MZ");
             assert!(r.is_err(), "{bad:?} was written");
         }
-        for fine in ["a.txt", "a.log", "notes.md", "export.zip", "a.json", "x.exe_", "a.pdf", ".bashrc"] {
+        for fine in ["a.txt", "a.log", "notes.md", "export.zip", "a.json", "x.exe.download", "a.pdf", ".bashrc"] {
             write_checked(&dir.join(fine), b"ok").unwrap_or_else(|e| panic!("{fine:?}: {e}"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A neutralized name ends in `.download` (findings r2 M1): its 8.3 short name is `X~1.DOW`,
+    /// never `X~1.EXE` as `x.exe_` gave, and no dangerous type starts with `dow`.
+    #[test]
+    fn neutral_names_stay_neutral_as_short_names() {
+        assert_eq!(neutralized("setup.exe"), "setup.exe.download");
+        assert_eq!(neutralized("x.LNK. ."), "x.LNK.download");
+        assert_eq!(neutralized("notes.txt"), "notes.txt");
+        for (e, _) in DANGEROUS {
+            let n = neutralized(&format!("a.{e}"));
+            assert_eq!(n, format!("a.{e}.download"));
+            assert!(!high_risk(&n) && !refused_on_listing(&n), "{n}");
+            let short = &extension(&n).unwrap()[..3];
+            assert!(!DANGEROUS.iter().any(|(d, _)| d.get(..3) == Some(short) || *d == short), "{n}: short {short}");
+        }
     }
 
     #[test]

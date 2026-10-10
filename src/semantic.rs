@@ -1823,7 +1823,7 @@ mod tests {
         for bad in [".exe", r"C:\x\.hta", "x.exe.", "x.cmd ", ".LNK", "x.psd1", "x.ps1xml", "x.xll", "x.hlp", "x.mst", "x.search-ms", "x.wsc", "x.ins", "x.isp", "x.jnlp"] {
             assert!(runnable(bad), "{bad:?}");
         }
-        for fine in [".bashrc", "x.exe_", r"C:\x.exe\notes", "notes.md", "a.txt"] {
+        for fine in [".bashrc", "x.exe_", "x.exe.download", r"C:\x.exe\notes", "notes.md", "a.txt"] {
             assert!(!runnable(fine), "{fine:?}");
         }
     }

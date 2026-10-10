@@ -340,7 +340,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 
 | Sequence | What it does | Tandem status |
 |---|---|---|
-| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | have, inline images with iTerm2 sizing; downloads ask, then save to the Downloads folder (no "Choose..." yet); milestone 5f: text documents (`inline=1` with a text type or name, or UTF-8 that is not a picture) show rendered in place, `mode=wide` |
+| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | have, inline images with iTerm2 sizing; downloads ask, then save to the Downloads folder (no "Choose..." yet) with the Mark of the Web; a program or script type (the one dangerous list, `inert_files`) is saved as `name.ext.download` and a type the shell reads on listing (`.url`, `.lnk`, ...) is refused, a deliberate difference from iTerm2, which keeps the name (13x4 findings r2); milestone 5f: text documents (`inline=1` with a text type or name, or UTF-8 that is not a picture) show rendered in place, `mode=wide` |
 | OSC 1337 ; MultipartFile=... | Same as File= but data arrives in chunks via FilePart/FileEnd. | have |
 | OSC 1337 ; FilePart=... | Appends a base64 chunk to an in-progress multipart file transfer. | have |
 | OSC 1337 ; FileEnd | Ends a multipart file transfer. | have |
