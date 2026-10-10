@@ -131,7 +131,8 @@ $f = @(
 
 ## I. Indicators
 
-- [ ] While the camera or microphone is active, its indicator is always visible in the toolbar, also in a zoomed (Maximize) browser pane; clicking it shows its help text.
+- [ ] Zoom a browser pane (Maximize): the Maximized indicator shows in the toolbar; a click shows its help text.
+- [ ] Tandem draws no camera or microphone capture indicator (iTerm2 has none); the camera light shows capture.
 - [ ] Turn on debug logging: its indicator shows in every browser pane's toolbar.
 - [ ] Too many indicators are clipped at the toolbar's end, not scrolled.
 
