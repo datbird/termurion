@@ -827,9 +827,10 @@ impl Job {
     /// aborts and cleans up, and every later answer is ignored. A non-empty answer replaces the
     /// rest of the batch (`permits` refuses those steps).
     pub fn check_epoch(&mut self, now: u64) -> Vec<Step> {
+        // An unbound epoch fails closed: the app forgot `bind_epoch`, so a navigation could not be seen.
         match self.epoch {
-            Some(e) if e != now => self.abort(NAVIGATED_AWAY),
-            _ => Vec::new(),
+            Some(e) if e == now => Vec::new(),
+            _ => self.abort(NAVIGATED_AWAY),
         }
     }
 }
@@ -1015,7 +1016,7 @@ mod tests {
     }
 
     // ---- Task 9: the save job ----
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     fn d() -> PathBuf {
         PathBuf::from(r"C:\save\D")
@@ -1250,6 +1251,9 @@ mod tests {
         j.on_html(Some(s("<p>")));
         assert!(j.check_epoch(2).is_empty());
         assert!(j.cancel().is_empty());
+        // An app that forgot bind_epoch fails closed: the save aborts, it never spans a navigation.
+        let (mut j, _) = job_with(&["https://a/i.png"]);
+        assert!(matches!(j.check_epoch(3).last(), Some(Step::Failed(_))));
     }
 
     /// NTFS compares names through its upcase table: names that differ only in case, final sigma
@@ -1328,7 +1332,7 @@ mod tests {
         assert_eq!(batch.len(), 2, "{batch:?}");
         // The app: the epoch moved before the first step; the abort's answer replaces the batch.
         let mut disk: HashSet<PathBuf> = [res("x.png")].into_iter().collect();
-        let mut run = |j: &mut Job, steps: Vec<Step>, disk: &mut HashSet<PathBuf>| {
+        let run = |j: &mut Job, steps: Vec<Step>, disk: &mut HashSet<PathBuf>| {
             for step in steps {
                 if !j.permits(&step) {
                     continue;
@@ -1403,6 +1407,5 @@ mod tests {
             }
         }
         assert!(wrote >= 2, "{wrote}");
-        let _ = Path::new("");
     }
 }
