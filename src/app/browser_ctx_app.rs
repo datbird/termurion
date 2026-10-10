@@ -9,9 +9,9 @@ use crate::browser_ctx::{self, Built, Ctx, Item};
 use crate::webhost::MenuTarget;
 
 impl App {
-    /// Which items exist: 13x2 builds Print; 13x4 adds Remove Element; later plans set theirs.
+    /// Which items exist: 13x2 builds Print; 13x4 adds Remove Element and View Source; later plans set theirs.
     pub(super) fn browser_ctx_built(&self) -> Built {
-        Built { print: true, remove_element: true, ..Built::default() }
+        Built { print: true, remove_element: true, view_source: true, ..Built::default() }
     }
 
     /// A right-click on pane `pane`'s page: the pane becomes the focused one (iTerm2's menu acts on
@@ -117,8 +117,10 @@ impl App {
                 // The click point is already in page coordinates (`ctx_of` divided by the monitor
                 // scale and the page scale): passed through, never divided again.
                 Item::RemoveElement => a.remove_element(pane, ctx.x, ctx.y),
+                // A person's pick: the one caller of `view_page_source`.
+                Item::ViewSource => a.view_page_source(pane),
                 // The later plans' items.
-                Item::AddNamedMark | Item::SavePageAs | Item::ViewSource | Item::Native => {}
+                Item::AddNamedMark | Item::SavePageAs | Item::Native => {}
             }
         });
     }

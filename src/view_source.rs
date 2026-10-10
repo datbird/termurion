@@ -8,6 +8,7 @@
 //! carries `browser_pages`' per-load nonce policy; the one script is the copied highlighter.
 
 use crate::browser_js::resource;
+use serde_json::Value;
 
 pub const SOURCE_URL: &str = "iterm2-about:source";
 pub const NO_SOURCE: &str = "No source available";
@@ -135,6 +136,95 @@ pub fn request(pending: &mut Option<Pending>, url: &str, context: i32, common_cs
     Verdict::Page(serve(pending, common_css, nonce))
 }
 
+/// Which text View Source shows (`BM:1669-1704`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choice {
+    /// The original document the page loaded, read from the DevTools resource cache.
+    Cached,
+    /// The live DOM, read in the page world.
+    Dom,
+    /// No page: nothing happens.
+    Nothing,
+}
+
+/// The body iTerm2 evaluates in the page for the DOM text (`BM:1683`).
+pub const DOM_BODY: &str = "return document.documentElement.outerHTML";
+/// The log line for a DOM answer that is not a string (`BM:1685`).
+pub const NO_HTML: &str = "Failed to get HTML source";
+
+/// `BM:1669-1704`, `MD:10-12`: no URL is Nothing; an http or https page whose main document
+/// answered 200 is Cached (`BM:1706`: the scheme compared lower-cased; `BM:1720-1725`: only a 200);
+/// everything else reads the DOM.
+pub fn source_choice(url: &str, status: i32) -> Choice {
+    if url.is_empty() {
+        return Choice::Nothing;
+    }
+    let web = url.split_once(':').is_some_and(|(s, _)| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https"));
+    if web && status == 200 { Choice::Cached } else { Choice::Dom }
+}
+
+/// One step of the View Source flow: what the app does next.
+#[derive(Debug, PartialEq)]
+pub enum Next {
+    Nothing,
+    /// A DevTools read through `devtools_read`; its answer goes to `after_tree` or `after_content`.
+    Read { method: &'static str, params: Value, stage: Stage },
+    /// The page-world DOM read of `DOM_BODY`; its answer goes to `after_dom`.
+    Dom,
+    Show(Pending),
+    Log(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Tree,
+    Content,
+}
+
+pub fn start(choice: Choice) -> Next {
+    match choice {
+        Choice::Cached => Next::Read { method: "Page.getResourceTree", params: serde_json::json!({}), stage: Stage::Tree },
+        Choice::Dom => Next::Dom,
+        Choice::Nothing => Next::Nothing,
+    }
+}
+
+/// The main frame's own URL, never the fragment-bearing page URL (review M4a). Without a frame the
+/// network read has failed: the DOM (`BM:1678-1697`).
+pub fn after_tree(reply: Result<Value, String>) -> Next {
+    match reply.ok().and_then(|t| crate::devtools::main_frame(&t)) {
+        Some((id, url)) => Next::Read { method: "Page.getResourceContent", params: crate::devtools::resource_content_params(&id, &url), stage: Stage::Content },
+        None => Next::Dom,
+    }
+}
+
+/// The bytes as UTF-8 with replacement (DevTools answers text resources already decoded); a failed
+/// or empty read falls back to the DOM.
+pub fn after_content(reply: Result<Value, String>, page_url: &str) -> Next {
+    let text = reply.ok().and_then(|r| crate::devtools::content_bytes(&r)).map(|b| String::from_utf8_lossy(&b).into_owned()).filter(|t| !t.is_empty());
+    match text {
+        Some(t) => show(t, page_url),
+        None => Next::Dom,
+    }
+}
+
+/// A string is the source; anything else logs and shows nothing (`BM:1685-1693`). The error text is
+/// a page's: hidden and control characters are cut.
+pub fn after_dom(reply: Result<Value, String>, page_url: &str) -> Next {
+    match reply {
+        Ok(Value::String(s)) => show(s, page_url),
+        Ok(_) => Next::Log(NO_HTML.into()),
+        Err(e) => Next::Log(format!("Error getting page source: {}", crate::inert_files::display_text(&e, 200, false))),
+    }
+}
+
+fn show(raw: String, page_url: &str) -> Next {
+    match Pending::new(raw, page_url.to_string()) {
+        Some(p) => Next::Show(p),
+        None => Next::Log(NO_HTML.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +312,16 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(pending.is_none());
+    }
+
+    #[test]
+    fn source_choice_follows_iterm2() {
+        assert_eq!(source_choice("", 200), Choice::Nothing);
+        assert_eq!(source_choice("https://a/", 200), Choice::Cached);
+        assert_eq!(source_choice("HTTP://a/", 200), Choice::Cached, "the scheme is compared lower-cased");
+        assert_eq!(source_choice("https://a/", 404), Choice::Dom, "iTerm2 needs a 200");
+        assert_eq!(source_choice("iterm2-about:welcome", 200), Choice::Dom);
+        assert_eq!(source_choice("file:///c:/x.html", 0), Choice::Dom);
+        assert_eq!(DOM_BODY, "return document.documentElement.outerHTML");
     }
 }

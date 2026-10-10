@@ -3383,6 +3383,12 @@ mod probe {
             assert_eq!(reader_run(&mut p, &crate::browser_reader::exit_distraction_body()), Ok(json!(true)));
         }
         assert_eq!(p.page_eval("typeof window.iTermReaderMode + typeof window.Readability + typeof window.iTermDistractionRemoval"), Ok("\"undefinedundefinedundefined\"".into()));
+        // Task 7: View Source's two reads (the DevTools original, then the page-world DOM body) run
+        // with the canary in the isolated world; the spy sees neither.
+        let original = view_source_cached(&mut p, &format!("{PAGE}#frag")).expect("the cached source");
+        assert!(original.contains("Paragraph 0"), "the original came back");
+        let dom = p.page_eval(&crate::browser_js::page_call_script(crate::view_source::DOM_BODY, &json!({})).expect("the DOM script")).expect("the DOM text");
+        assert!(dom.contains("Paragraph 0"), "the DOM text came back");
         // Proof the spy works: the page's own post is in its log.
         p.page_eval("window.chrome.webview.postMessage({control: 'spy-alive'})").expect("the control post");
         let log = p.page_eval("window.__spy.join('\\n')").expect("the spy log");
@@ -3492,6 +3498,52 @@ mod probe {
         let bytes = crate::devtools::content_bytes(&body).expect("content bytes");
         assert_eq!(String::from_utf8(bytes).unwrap(), html, "the served HTML");
         assert!(p.not_served.is_empty(), "no request was made for the read: {:?}", p.not_served);
+        p.finish();
+    }
+
+    /// View Source's cached read, as the app's flow runs it: the tree, then the main frame's content.
+    fn view_source_cached(p: &mut Probe, page_url: &str) -> Option<String> {
+        use crate::view_source::{Next, Stage};
+        let mut next = crate::view_source::start(crate::view_source::Choice::Cached);
+        for _ in 0..4 {
+            match next {
+                Next::Read { method, params, stage } => {
+                    assert!(crate::devtools::refusal(method, &params).is_none());
+                    let r = p.call_wait(None, method, &params).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).ok_or_else(|| "no answer".to_string());
+                    next = if stage == Stage::Tree { crate::view_source::after_tree(r) } else { crate::view_source::after_content(r, page_url) };
+                }
+                Next::Show(pending) => return Some(pending.raw),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// 13x4 Task 7: View Source shows the page as it was served, not as a script changed it. A page
+    /// answered from memory at `https://tandem.test/`, its DOM changed afterwards: the cached read has
+    /// the original paragraph, the DOM read the change; the source page built from the cached text
+    /// holds the original in `.source-code` and the page URL in `.url`. Needs the console session.
+    #[test]
+    #[ignore]
+    fn view_source_reads_the_original() {
+        const TEST_PAGE: &str = "https://tandem.test/";
+        let html = "<html><head><title>T</title></head><body><p class=\"k\">x</p></body></html>";
+        let Some(mut p) = Probe::start(&[(TEST_PAGE, html.to_string())], Vec::new()) else { return };
+        p.load(TEST_PAGE);
+        p.page_eval("document.querySelector('p.k').textContent = 'changed'; 1").expect("the change");
+        let cached = view_source_cached(&mut p, TEST_PAGE).expect("the cached source");
+        assert!(cached.contains("<p class=\"k\">x</p>"), "the original: {cached}");
+        let dom = p.page_eval(&crate::browser_js::page_call_script(crate::view_source::DOM_BODY, &json!({})).expect("the DOM script")).expect("the DOM text");
+        assert!(dom.contains("changed") && !dom.contains("class=\\\"k\\\">x</p>"), "the DOM differs: {dom}");
+        p.finish();
+        let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
+        let page = crate::view_source::page(&cached, TEST_PAGE, css, "N");
+        let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
+        p.load(PAGE);
+        p.settle(500);
+        let text = p.page_eval("document.querySelector('.source-code').textContent").expect("the text");
+        assert!(text.contains("<p class=\\\"k\\\">x</p>"), "{text}");
+        assert_eq!(p.page_eval("String(document.querySelector('p.url').textContent)"), Ok("\"https://tandem.test/\"".into()));
         p.finish();
     }
 
