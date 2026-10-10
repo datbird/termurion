@@ -1733,6 +1733,7 @@ fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
             return Ok(());
         }
         let method = webhost::bounded_method(&pwstr_out(|p| unsafe { request.Method(p) }).unwrap_or_default());
+        // `post` only sends on a channel; nothing downstream may borrow `inner` mutably.
         i.poster.post(Event::DocumentMethod { view: i.id, nav: last.map_or(0, |(_, n)| *n), method });
         Ok(())
     })));
@@ -3533,6 +3534,36 @@ mod probe {
         assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
         assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
         assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        p.finish();
+    }
+
+    /// 13x5 Task 4: the layout monitor posts `layoutChange` through the isolated-world binding after a
+    /// page mutation, stays silent while disabled (`safelyModifyDOM`), and the page world never sees the
+    /// monitor; synthetic Rename and Delete presses by the page post nothing. Needs the console session.
+    #[test]
+    #[ignore]
+    fn annotations_post_renames() {
+        use crate::browser_marks as bm;
+        let page = "<!doctype html><html><body><p id=\"t\">Hello marked world</p></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
+        p.load(PAGE);
+        assert!(marks_body(&mut p, &bm::monitor_body()).is_ok());
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()));
+        p.page_eval("document.body.appendChild(document.createElement('div')); 0").expect("mutate");
+        p.settle(900);
+        assert!(!p.clients(bm::LAYOUT_HANDLER).is_empty(), "a mutation posts a layout change");
+        assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
+        let seen = p.clients(bm::LAYOUT_HANDLER).len();
+        p.page_eval("document.body.appendChild(document.createElement('div')); 0").expect("mutate");
+        p.settle(900);
+        assert_eq!(p.clients(bm::LAYOUT_HANDLER).len(), seen, "silent while disabled");
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        let loc = bm::Location { xpath: "//p".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
+        let show = bm::show_call(&[loc.js_dict(Some("x"), "g1")], "mark-secret").expect("a call");
+        assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
+        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        p.settle(300);
+        assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "an untrusted press requests nothing");
         p.finish();
     }
 

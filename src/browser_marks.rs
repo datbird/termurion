@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 
-use crate::browser_js::{fill_template, js_string, resource};
+use crate::browser_js::{World, fill_template, js_string, resource};
 use crate::marks::percent_decode_strict;
 
 /// The page's message handler for a rename or delete (`NMM:12`).
@@ -124,7 +124,9 @@ impl Location {
         let mut out = format!("{FRAGMENT_PREFIX}xpath={}&offsetY={}&scrollY={}&y={}", self.xpath, self.offset_y, self.scroll_y, self.y);
         if let Some(t) = self.text_fragment.as_deref().filter(|t| !t.is_empty()) {
             out.push_str("&textFragment=");
-            out.push_str(&encode_allowed(t));
+            // "&" would end the pair: escaped here (stored "%2526", read back as "&"), so page text cannot
+            // write a pair of its own (task-3 review minor 1; the XPath refuses it instead).
+            out.push_str(&encode_allowed(t).replace('&', "%26"));
         }
         out
     }
@@ -309,6 +311,96 @@ pub const DISABLE_MONITOR_JS: &str = "console.log('Swift disabling monitor.'); w
 /// `NMM:273-274`.
 pub const ENABLE_MONITOR_JS: &str = "console.log('Swift enabling monitor.'); window.iTermLayoutChangeMonitor.reenableLayoutChangeMonitoring()";
 
+/// The annotation list of a page (`NM:74-80`, `NMM:341-358`): (guid, url, name) rows to `js_dict`
+/// entries; a row whose URL carries no mark location is dropped (it is listed in menus, never shown).
+pub fn annotation_marks(rows: &[(String, String, String)]) -> Vec<Value> {
+    rows.iter().filter_map(|(guid, url, name)| Location::from_url(url).map(|l| l.js_dict(Some(name), guid))).collect()
+}
+
+/// Whether some update of `updates` (the answer of `update-mark-positions.js`) is valid for a mark in
+/// `known` (`NMM:387-396`): a known `guid` and integer `scrollY`, `offsetY` and `y`. A non-array is false.
+pub fn positions_changed(updates: &Value, known: &[&str]) -> bool {
+    let int = |u: &Value, k: &str| u.get(k).is_some_and(|v| v.as_i64().is_some());
+    updates.as_array().is_some_and(|list| {
+        list.iter().any(|u| u.get("guid").and_then(Value::as_str).is_some_and(|g| known.contains(&g)) && int(u, "scrollY") && int(u, "offsetY") && int(u, "y"))
+    })
+}
+
+/// Whether the cached marks hold one on the page `url` (without fragments, `NMM:367-381`).
+pub fn page_has_marks(marks: &[Mark], url: &str) -> bool {
+    marks.iter().any(|m| same_page(&m.url, url))
+}
+
+/// The guids of the cached marks on the page `url`.
+pub fn page_guids(marks: &[Mark], url: &str) -> Vec<String> {
+    marks.iter().filter(|m| same_page(&m.url, url)).map(|m| m.guid.clone()).collect()
+}
+
+/// The layout monitor as a runner body (`NMM:431-433`): the copied file is an expression.
+pub fn monitor_body() -> String {
+    as_body(LAYOUT_MONITOR_JS)
+}
+
+/// Whether a page message of a Marks handler may be acted on: the isolated world's (the transport
+/// says so; a Page message never), the main frame's, and not from one of Tandem's own pages (B5).
+pub fn message_accepted(world: World, frame: Option<u64>, source: &str) -> bool {
+    world == World::Client && frame.is_none() && !is_local_page(source)
+}
+
+/// The least time between two acts on page-driven messages of one kind (B2: the layout monitor posts
+/// on every scroll, resize and mutation the page makes; its own debounce is 500 ms).
+pub const MIN_GAP_MS: u64 = 1000;
+
+/// A pane's Marks state in its web view: the marks secret (iTerm2's per-manager secret, `NMM:19-24`,
+/// rotated with the world: B3), whether the layout monitor runs in the current isolated world (the
+/// position update needs it: R13x5-3), the reveal that waits for its page (Task 5), and the rate gates.
+#[derive(Debug)]
+pub struct PageState {
+    pub secret: String,
+    pub monitor: bool,
+    pub pending: Option<String>,
+    layout_at: Option<std::time::Instant>,
+    request_at: Option<std::time::Instant>,
+}
+
+impl PageState {
+    pub fn new(secret: String) -> PageState {
+        PageState { secret, monitor: false, pending: None, layout_at: None, request_at: None }
+    }
+
+    /// The world was rebuilt: a new secret, no monitor, no waiting gate. The pending reveal belongs to
+    /// the page that is going and is dropped by Task 5's own rule, not here.
+    pub fn rotate(&mut self, secret: String) {
+        self.secret = secret;
+        self.monitor = false;
+        self.layout_at = None;
+        self.request_at = None;
+    }
+
+    /// A new document or Tandem context: its scripts, monitor included, are gone.
+    pub fn document_gone(&mut self) {
+        self.monitor = false;
+    }
+
+    fn gate(at: &mut Option<std::time::Instant>, now: std::time::Instant) -> bool {
+        if at.is_some_and(|t| now.saturating_duration_since(t) < std::time::Duration::from_millis(MIN_GAP_MS)) {
+            return false;
+        }
+        *at = Some(now);
+        true
+    }
+
+    /// A layout message may act (at most once per `MIN_GAP_MS`).
+    pub fn layout_allowed(&mut self, now: std::time::Instant) -> bool {
+        Self::gate(&mut self.layout_at, now)
+    }
+
+    /// A rename or delete request may act (the same bound; each opens a Tandem window).
+    pub fn request_allowed(&mut self, now: std::time::Instant) -> bool {
+        Self::gate(&mut self.request_at, now)
+    }
+}
+
 /// Why an add is refused (`BVC:591-606`, `NMM:142-145`; `Local` is Tandem's: B5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -367,7 +459,8 @@ pub fn gate_on_add(method: Option<&str>) -> Option<Refusal> {
 
 /// Whether a Document-context request is this view's main document request (review M7): the request
 /// is the view's, a document (not a sub-resource), and its URI is the one the view's last
-/// main-frame NavigationStarting had (an iframe's document has another).
+/// main-frame NavigationStarting had. An iframe may load that same URL, so this alone does not
+/// tell the main document: `MethodState::document` takes only the first request of a navigation.
 pub fn document_method_applies(view_matches: bool, is_document: bool, request_uri: &str, last_main_nav_uri: Option<&str>) -> bool {
     view_matches && is_document && last_main_nav_uri == Some(request_uri)
 }
@@ -379,11 +472,14 @@ pub struct MethodState {
     method: String,
     nav: u64,
     epoch: u64,
+    /// The navigation's method was told: the first document request of a navigation is its own, any
+    /// later one (an iframe loading the page's own URL) changes nothing (task-3 review important 1).
+    told: bool,
 }
 
 impl Default for MethodState {
     fn default() -> Self {
-        MethodState { method: "GET".into(), nav: 0, epoch: 0 }
+        MethodState { method: "GET".into(), nav: 0, epoch: 0, told: false }
     }
 }
 
@@ -393,12 +489,15 @@ impl MethodState {
     pub fn starting(&mut self, nav: u64) {
         self.method = "GET".into();
         self.nav = nav;
+        self.told = false;
         self.epoch += 1;
     }
 
-    /// The document request of navigation `nav`; one of another navigation is ignored.
+    /// The document request of navigation `nav`; one of another navigation, or a second one of this
+    /// navigation, is ignored.
     pub fn document(&mut self, nav: u64, method: &str) {
-        if nav == self.nav {
+        if nav == self.nav && !self.told {
+            self.told = true;
             self.method = method.to_string();
         }
     }
@@ -723,4 +822,86 @@ mod tests {
         assert_eq!(click_point(f64::INFINITY, 4.0), None);
     }
 
+
+    #[test]
+    fn annotations_follow_iterm2() {
+        let rows = vec![
+            ("g".to_string(), "https://a.b/p#iterm-mark:xpath=%2F%2Fp&offsetY=1&scrollY=2&y=3".to_string(), "n".to_string()),
+            ("h".to_string(), "https://a.b/p".to_string(), "m".to_string()),
+        ];
+        let got = annotation_marks(&rows);
+        assert_eq!(got.len(), 1, "a URL with no location is dropped");
+        assert_eq!(got[0]["guid"], "g");
+        assert_eq!(got[0]["name"], "n");
+        assert_eq!(got[0]["xpath"], "//p");
+        assert_eq!(got[0]["offsetY"], 1);
+        assert_eq!(got[0]["y"], 3);
+        assert_eq!(got[0]["textFragment"], "");
+        assert!(annotation_marks(&[]).is_empty());
+        // Nothing is run for no marks (`NMM:345-347`, `:480-483`).
+        assert!(show_call(&annotation_marks(&[]), "S").is_none());
+    }
+
+    #[test]
+    fn layout_updates_follow_iterm2() {
+        let good = json!([{"guid":"g","scrollY":1,"offsetY":2,"y":3}]);
+        assert!(positions_changed(&good, &["g"]));
+        assert!(!positions_changed(&good, &["other"]), "an unknown guid");
+        assert!(!positions_changed(&json!([{"guid":"g","scrollY":1,"offsetY":2}]), &["g"]), "a missing y");
+        assert!(!positions_changed(&json!([{"guid":"g","scrollY":1.5,"offsetY":2,"y":3}]), &["g"]), "not an integer");
+        assert!(!positions_changed(&json!({"guid":"g"}), &["g"]), "not an array");
+        assert!(positions_changed(&json!([{"guid":"x"}, {"guid":"g","scrollY":1,"offsetY":2,"y":3}]), &["g"]), "some entry");
+        let marks = vec![Mark { guid: "g".into(), url: "https://a.b/p#iterm-mark:x".into(), name: "n".into(), sort: 1 }];
+        assert!(page_has_marks(&marks, "https://a.b/p"));
+        assert!(page_has_marks(&marks, "https://a.b/p#other"));
+        assert!(!page_has_marks(&marks, "https://a.b/q"));
+        assert!(!page_has_marks(&[], "https://a.b/p"));
+        assert_eq!(page_guids(&marks, "https://a.b/p"), vec!["g".to_string()]);
+        assert!(page_guids(&marks, "https://a.b/q").is_empty());
+        assert!(monitor_body().starts_with("return "));
+    }
+
+    #[test]
+    fn marks_messages_are_bounded_and_isolated() {
+        assert!(message_accepted(World::Client, None, "tandem-client"));
+        assert!(!message_accepted(World::Page, None, "https://a.b"), "the page world never");
+        assert!(!message_accepted(World::Client, Some(4), "tandem-client"), "a subframe never");
+        assert!(!message_accepted(World::Client, None, "iterm2-about:history"), "Tandem's pages never");
+        let t = std::time::Instant::now();
+        let mut s = PageState::new("S".into());
+        assert!(s.layout_allowed(t));
+        assert!(!s.layout_allowed(t + std::time::Duration::from_millis(999)));
+        assert!(s.layout_allowed(t + std::time::Duration::from_millis(1000)));
+        assert!(s.request_allowed(t) && !s.request_allowed(t));
+        s.monitor = true;
+        s.document_gone();
+        assert!(!s.monitor);
+        s.monitor = true;
+        s.rotate("T".into());
+        assert!(!s.monitor && s.secret == "T" && s.layout_allowed(t) && s.request_allowed(t));
+    }
+
+    #[test]
+    fn one_method_per_navigation() {
+        let mut m = MethodState::default();
+        m.starting(7);
+        m.document(7, "POST");
+        m.document(7, "GET");
+        assert_eq!(m.method(), "POST", "an iframe loading the page's URL cannot change it");
+        m.starting(8);
+        assert_eq!(m.method(), "GET");
+        m.document(7, "POST");
+        assert_eq!(m.method(), "GET", "another navigation's");
+        m.document(8, "POST");
+        assert_eq!(m.method(), "POST");
+    }
+
+    #[test]
+    fn text_fragment_ampersand_cannot_write_a_pair() {
+        let loc = Location { text_fragment: Some("a&xpath=//x&y=0".into()), ..first() };
+        let url = mark_url("https://a.b/p", &loc).unwrap();
+        let back = Location::from_url(&url).unwrap();
+        assert_eq!(back, loc, "round trips, nothing rewritten");
+        assert_eq!(back.xpath, "//p[1]");
+    }
 }

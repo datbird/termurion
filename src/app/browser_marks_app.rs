@@ -7,7 +7,9 @@
 //! The decisions are pure functions in `browser_marks`; this file applies them.
 
 use super::*;
-use crate::browser_marks::{self as marks, AddPath, CENTER_JS, Location, Mark};
+use super::browser_scripts_app::JsDone;
+use crate::browser_marks::{self as marks, AddPath, CENTER_JS, Call, Location, Mark, Update};
+use crate::browser_js::Routed;
 use crate::browser_marks_db::ALL_LIMIT;
 use crate::webhost::Event;
 use serde_json::{Value, json};
@@ -127,7 +129,7 @@ impl App {
         }
         self.browser_marks_load(dev_null);
         self.browser_marks_changed();
-        // Task 4: the page's annotations are shown again here (`NMM:156-161`).
+        self.browser_marks_reload_annotations(pane);
     }
 
     /// A browser pane's event that tells the method of the page's document (P5, Decision): every
@@ -165,6 +167,150 @@ impl App {
         }
         self.tools_changed();
         self.refresh_named_marks();
+    }
+
+    // --- Annotations and the two page handlers (Task 4) ---
+
+    /// The pane's marks secret (iTerm2's per-manager secret, `NMM:19-24`): made with the view, rotated
+    /// with its world (B3). It appears only in scripts the isolated-world runner sends. Empty without a view.
+    pub(super) fn marks_secret(&mut self, pane: PaneId) -> String {
+        self.browser_views.get(&pane).map(|b| b.marks_page.secret.clone()).unwrap_or_default()
+    }
+
+    /// The pane's page URL and store, for a page that may show marks (not Tandem's own: B5), when its
+    /// isolated world is open.
+    fn marks_page(&self, pane: PaneId) -> Option<(String, bool)> {
+        if !self.client_open(pane) {
+            return None;
+        }
+        let io = self.panes.get(&pane)?.browser_io()?;
+        (!marks::is_local_page(&io.url) && !io.url.is_empty()).then(|| (io.url.clone(), io.dev_null))
+    }
+
+    /// A main-frame navigation finished (`NMM:213-225`). Success: Task 5's pending reveal, then the
+    /// layout monitor, and only after it the annotations (R13x5-3: the monitor first, so the position
+    /// update never runs without it). Failure: logged by host, the pending mark kept for the next reveal.
+    pub(super) fn browser_marks_navigated(&mut self, pane: PaneId, ok: bool) {
+        if !ok {
+            let pending = self.browser_views.get(&pane).and_then(|b| b.marks_page.pending.clone());
+            if let Some(guid) = pending {
+                let host = self.panes.get(&pane).and_then(|p| p.browser_io()).and_then(|io| crate::ai_policy::host_of(&io.url)).unwrap_or_default();
+                crate::rlog!("Navigation failed for {} with pending mark {}", crate::dlog::name(&host), crate::dlog::name(&guid));
+            }
+            return;
+        }
+        // Task 5: `marks_navigate_pending(pane)` runs the pending reveal here (`NMM:213-216`).
+        if self.marks_page(pane).is_none() {
+            return;
+        }
+        let epoch = self.browser_views.get(&pane).map_or(0, |b| b.marks_method.epoch());
+        self.browser_js_call(
+            pane,
+            &marks::monitor_body(),
+            json!({}),
+            Box::new(move |app, pane, r| {
+                if app.browser_views.get(&pane).is_some_and(|b| b.marks_method.epoch() == epoch) {
+                    if let (Ok(_), Some(bv)) = (&r, app.browser_views.get_mut(&pane)) {
+                        bv.marks_page.monitor = true;
+                    }
+                    app.browser_marks_reload_annotations(pane);
+                }
+            }),
+        );
+    }
+
+    /// The page's annotations (`NMM:333-361`): the store's marks for the page, converted, nothing run
+    /// when there are none; shown with the DOM changes hidden from the monitor.
+    pub(super) fn browser_marks_reload_annotations(&mut self, pane: PaneId) {
+        let Some((url, dev_null)) = self.marks_page(pane) else { return };
+        let rows: Vec<(String, String, String)> = self.browser_db(dev_null).map(|db| db.named_marks_for_url(&url).into_iter().map(|r| (r.guid, r.url, r.name)).collect()).unwrap_or_default();
+        let secret = self.marks_secret(pane);
+        let Some(call) = marks::show_call(&marks::annotation_marks(&rows), &secret) else { return };
+        self.marks_modify_dom(pane, call, Box::new(|_, _, _| {}));
+    }
+
+    /// iTerm2's `safelyModifyDOM` (`NMM:283-292`): the monitor off, the call, the monitor on again even
+    /// when the call failed. Every step is the isolated-world runner (`.defaultClient`); the monitor
+    /// calls' errors are ignored (`try?`, `NMM:273-279`). `done` gets the call's own answer.
+    pub(super) fn marks_modify_dom(&mut self, pane: PaneId, call: Call, done: JsDone) {
+        self.browser_js_call(
+            pane,
+            marks::DISABLE_MONITOR_JS,
+            json!({}),
+            Box::new(move |app, pane, _| {
+                app.browser_js_call(
+                    pane,
+                    &call.body,
+                    call.args,
+                    Box::new(move |app, pane, r| {
+                        app.browser_js_call(pane, marks::ENABLE_MONITOR_JS, json!({}), Box::new(move |app, pane, _| done(app, pane, r)));
+                    }),
+                );
+            }),
+        );
+    }
+
+    /// The annotation box's request (`MESSAGE_HANDLER`, `NMM:228-252`, changed: B2). Only the isolated
+    /// world's main frame is heard, with the pane's marks secret, naming a mark this pane's page shows,
+    /// at most once a second. The box asks and carries nothing else: the name is typed and a delete is
+    /// confirmed in a Tandem window outside the page (Task 5, `browser_mark_requested`).
+    pub(super) fn marks_message(&mut self, pane: PaneId, r: &Routed) {
+        if !self.client_open(pane) || !marks::message_accepted(r.world, r.frame, &r.source) {
+            return;
+        }
+        let Some((url, dev_null)) = self.marks_page(pane) else { return };
+        let secret = self.marks_secret(pane);
+        let Some(update) = marks::update_of(&r.body, &secret) else { return };
+        let (Update::RequestRename { guid } | Update::RequestDelete { guid }) = &update;
+        if !marks::page_guids(self.browser_marks_cache(dev_null), &url).contains(guid) {
+            return;
+        }
+        if !self.browser_views.get_mut(&pane).is_some_and(|b| b.marks_page.request_allowed(Instant::now())) {
+            return;
+        }
+        self.browser_mark_requested(pane, update);
+    }
+
+    /// Task 5 hook: opens the native name prompt (rename) or the native Delete confirm. The request
+    /// has been checked against this pane's marks and rate-limited; until Task 5 it does nothing.
+    fn browser_mark_requested(&mut self, pane: PaneId, update: Update) {
+        let _ = (pane, update);
+    }
+
+    /// The layout monitor's message (`LAYOUT_HANDLER`, `NMM:254-264`, `:367-381`): when the cache holds
+    /// a mark on this page and the monitor runs, positions are updated inside `marks_modify_dom`; a valid
+    /// update for one of the page's marks shows the annotations again (`NMM:383-402`).
+    pub(super) fn marks_layout_message(&mut self, pane: PaneId, r: &Routed) {
+        if !self.client_open(pane) || !marks::message_accepted(r.world, r.frame, &r.source) || !marks::is_layout_change(&r.body) {
+            return;
+        }
+        let Some((url, dev_null)) = self.marks_page(pane) else { return };
+        let known = marks::page_guids(self.browser_marks_cache(dev_null), &url);
+        if known.is_empty() {
+            return;
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        if !bv.marks_page.monitor || !bv.marks_page.layout_allowed(Instant::now()) {
+            return;
+        }
+        let epoch = bv.marks_method.epoch();
+        let secret = bv.marks_page.secret.clone();
+        let Some(body) = marks::update_positions_script(&secret) else { return };
+        self.marks_modify_dom(
+            pane,
+            Call { body, args: json!({}) },
+            Box::new(move |app, pane, r| {
+                let Ok(answer) = r else { return };
+                if app.browser_views.get(&pane).is_none_or(|b| b.marks_method.epoch() != epoch) {
+                    return;
+                }
+                let valid = crate::browser_marks_db::valid_position_updates(&answer, &|g| known.iter().any(|k| k == g));
+                let names: Vec<&str> = known.iter().map(String::as_str).collect();
+                if !valid.is_empty() && marks::positions_changed(&answer, &names) {
+                    app.browser_marks_reload_annotations(pane);
+                }
+            }),
+        );
     }
 
     /// A pane that closed takes its queued mark window request with it (an open window for it adds
@@ -268,5 +414,50 @@ mod tests {
         let gone = &modrs[modrs.find("pub(super) fn pane_gone").unwrap()..];
         assert!(gone[..gone.find("self.close_browser_view(id);").unwrap()].contains("self.marks_pane_gone(id);"));
         assert!(modrs.contains("self.open_pending_mark_prompt(event_loop);"));
+    }
+
+    /// Source shape (B1): every Marks script goes through the isolated-world runner, none holds the
+    /// view secret, the page world is never used, the order is monitor first, handlers hear only the
+    /// isolated world through `message_accepted`, and the box's request reaches only the Task 5 hook.
+    #[test]
+    fn marks_scripts_use_the_isolated_world() {
+        let p = prod();
+        assert!(!p.contains("browser_page_call") && !p.contains("browser_eval") && !p.contains("execute_script"));
+        assert!(!p.contains("bv.secret") && !p.contains("browser_view_secret") && !p.contains("dom_secret"), "no view secret");
+        assert!(p.contains("self.browser_views.get(&pane).map(|b| b.marks_page.secret.clone())"));
+        let navigated = &p[p.find("pub(super) fn browser_marks_navigated").unwrap()..p.find("pub(super) fn browser_marks_reload_annotations").unwrap()];
+        assert!(navigated.find("marks::monitor_body()").unwrap() < navigated.find("browser_marks_reload_annotations").unwrap(), "monitor first");
+        assert!(navigated.contains("marks_method.epoch() == epoch"));
+        let dom = &p[p.find("pub(super) fn marks_modify_dom").unwrap()..p.find("pub(super) fn marks_message").unwrap()];
+        assert!(dom.find("DISABLE_MONITOR_JS").unwrap() < dom.find("call.body").unwrap() && dom.find("call.body").unwrap() < dom.find("ENABLE_MONITOR_JS").unwrap());
+        assert!(dom.contains("done(app, pane, r)"), "the call's own answer, the monitor back on even when it failed");
+        let msg = &p[p.find("pub(super) fn marks_message").unwrap()..p.find("fn browser_mark_requested").unwrap()];
+        assert!(msg.contains("message_accepted(r.world, r.frame, &r.source)") && msg.contains("update_of(&r.body, &secret)") && msg.contains("page_guids(") && msg.contains("request_allowed("));
+        assert!(msg.find("update_of").unwrap() < msg.find("browser_mark_requested").unwrap());
+        let lay = &p[p.find("pub(super) fn marks_layout_message").unwrap()..p.find("/// A pane that closed takes").unwrap()];
+        assert!(lay.contains("message_accepted(r.world, r.frame, &r.source)") && lay.contains("is_layout_change") && lay.contains("marks_page.monitor") && lay.contains("layout_allowed("));
+        assert!(lay.contains("valid_position_updates") && lay.contains("positions_changed"), "the page's answer is validated");
+        // The router and the Navigated hook.
+        let router = include_str!("browser_scripts_app.rs");
+        let router = &router[router.find("pub(super) fn browser_message").unwrap()..router.find("pub(super) fn browser_page_open").unwrap()];
+        assert!(router.contains("crate::browser_marks::MESSAGE_HANDLER => self.marks_message(pane, &r)") && router.contains("crate::browser_marks::LAYOUT_HANDLER => self.marks_layout_message(pane, &r)"));
+        let app = include_str!("browser_app.rs");
+        assert!(app.contains("self.browser_marks_navigated(pane, *ok);"));
+        // Secrets rotate with the world; the monitor flag dies with the document.
+        let sc = include_str!("browser_scripts_app.rs");
+        assert!(sc.matches("marks_page.rotate(browser_js::new_secret())").count() == 2);
+        assert!(sc.contains("bv.marks_page.document_gone();"));
+    }
+
+    /// The scripts hold the marks secret and never the view's.
+    #[test]
+    fn marks_scripts_hold_only_the_marks_secret() {
+        let marks_json = vec![Location { xpath: "//p".into(), offset_y: 1, scroll_y: 2, text_fragment: None, y: 3 }.js_dict(Some("n"), "g")];
+        let show = marks::show_call(&marks_json, "MARKS-SECRET-13x5").unwrap();
+        let upd = marks::update_positions_script("MARKS-SECRET-13x5").unwrap();
+        for body in [&show.body, &upd] {
+            assert!(body.contains("MARKS-SECRET-13x5") && !body.contains("VIEW-SECRET-13x5"));
+        }
+        assert!(!marks::monitor_body().contains("SECRET-13x5") && !marks::DISABLE_MONITOR_JS.contains("SECRET") && !marks::ENABLE_MONITOR_JS.contains("SECRET"));
     }
 }

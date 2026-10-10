@@ -84,6 +84,8 @@ pub(super) struct BrowserView {
     /// The HTTP method of the page's document and the navigation epoch (13x5): the Edit menu and the
     /// prompt's OK read it; it goes with the view's world.
     pub(super) marks_method: crate::browser_marks::MethodState,
+    /// The Marks secret, the layout monitor's state and the rate gates (13x5 Task 4): they go with the world.
+    pub(super) marks_page: crate::browser_marks::PageState,
     /// The pointer table last given to the page (`browser_input_app`), and the press of a bound
     /// button that is down (button, clicks): its release runs the binding.
     pub(super) pointer_sig: Option<(Vec<String>, bool)>,
@@ -248,7 +250,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         true
     }
 
@@ -566,6 +568,7 @@ impl App {
                     self.browser_color_read(pane);
                 }
                 self.browser_name(pane);
+                self.browser_marks_navigated(pane, *ok);
             }
             Event::History { back, forward, .. } => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
