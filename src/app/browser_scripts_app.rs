@@ -54,6 +54,10 @@ pub(super) struct WorldState {
     /// A URL whose load waits for the launch's window restoration to end (iTerm2 waits for
     /// `iTermSessionRestorationDidCompleteNotification`, `BVC:871-910`).
     pub(super) restore_load: Option<String>,
+    /// Set when `restore_load` is a web page's own navigation the permission gate parked (13x6): how
+    /// it was judged, so the release judges it again with that and loads nothing else. None: the
+    /// target is Tandem's own (the person's typed address, a restored page).
+    pub(super) restore_from: Option<crate::browser_restore::ParkedFrom>,
     /// The check that waits for the navigation to about:blank, and that navigation's id.
     pub(super) reload_wait: bool,
     pub(super) reload_nav: Option<u64>,

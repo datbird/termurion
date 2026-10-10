@@ -649,7 +649,9 @@ impl App {
             }
             // Permissions, notifications and audio (13x6). A permission request is held for the tick's
             // flush (Task 4); until Tasks 6 and 7 a notification is released unshown.
-            Event::Parked { url, .. } => self.browser_navigation_parked(pane, url),
+            Event::Parked { url, user, redirect, by_tandem, history, source, .. } => {
+                self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy { user: *user, redirect: *redirect, by_tandem: *by_tandem, history: *history, source: source.clone() })
+            }
             Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
             Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
             Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
@@ -987,7 +989,7 @@ impl App {
                         self.redraw();
                     }
                 }
-                self.reload_browser_view(pane);
+                self.reload_browser_view_by_person(pane);
             }
             Button::Stop => {
                 if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
@@ -1274,6 +1276,7 @@ impl App {
             bv.bar.nav_state.will_load(url);
             // A person's own load ends the wait of a restored page.
             bv.world.restore_load = None;
+            bv.world.restore_from = None;
             // While the world is being set up nothing loads (review I2): the URL waits.
             if bv.view.is_some() && bv.world.defer_load(url) {
                 return;

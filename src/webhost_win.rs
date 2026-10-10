@@ -1567,16 +1567,6 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             }
             (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone() }, by_tandem)
         };
-        // The permission sync gate (13x6): a store whose profile was not synced from the table lets
-        // no page navigate (a stale profile grant would work with no question): cancelled, the TARGET
-        // posted for the app to load after the sync.
-        let gate = inner.borrow().setup.nav_gate.as_ref().map(|g| g.load(std::sync::atomic::Ordering::SeqCst));
-        if webhost::nav_parked(gate, &uri, by_tandem) {
-            let _ = unsafe { args.SetCancel(true) };
-            let i = inner.borrow();
-            i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0 });
-            return Ok(());
-        }
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
         let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };
@@ -1590,11 +1580,29 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             return Ok(());
         }
         let i = inner.borrow();
-        // The single page-load-start event (ruling Q2): the kind needs a newer runtime (-1 without).
+        // The kind needs a newer runtime (-1 without).
         let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
         if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
             let _ = unsafe { a3.NavigationKind(&mut kind) };
         }
+        // The permission sync gate (13x6), AFTER the verdict (a refused navigation is never parked):
+        // a store whose profile was not synced from the table lets no page navigate (a stale profile
+        // grant would work with no question). Cancelled; a web page's TARGET is posted with how it
+        // was judged, for the app to judge again and load after the sync (`nav_gate`).
+        let gate = i.setup.nav_gate.as_ref().map(|g| g.load(std::sync::atomic::Ordering::SeqCst));
+        match webhost::nav_gate(gate, &uri, by_tandem, webhost::cap_url(&uri).1) {
+            webhost::GateAct::Open => {}
+            webhost::GateAct::Cancel => {
+                let _ = unsafe { args.SetCancel(true) };
+                return Ok(());
+            }
+            webhost::GateAct::Park => {
+                let _ = unsafe { args.SetCancel(true) };
+                i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0, user, redirect, by_tandem, history: kind.0 == 1, source });
+                return Ok(());
+            }
+        }
+        // The single page-load-start event (ruling Q2).
         i.poster.post(Event::Starting { view: i.id, url: webhost::cap_url(&uri).0, kind: kind.0, user, redirect, nav });
         i.poster.post(Event::Loading(i.id, true));
         Ok(())

@@ -34,7 +34,32 @@ impl App {
                 continue;
             }
             let Some(url) = bv.world.restore_load.take() else { continue };
-            self.browser_load_own(pane, &url);
+            // A web page's parked navigation is judged again as the page's, never as Tandem's own.
+            match bv.world.restore_from.take() {
+                Some(from) => self.browser_load_parked(pane, &url, &from),
+                None => self.browser_load_own(pane, &url),
+            }
+        }
+    }
+
+    /// Loads a navigation the permission gate parked: only a web page the one verdict still allows
+    /// with its original initiator (`browser_restore::parked_load`); anything else is dropped and the
+    /// page on screen stays.
+    pub(super) fn browser_load_parked(&mut self, pane: PaneId, url: &str, from: &browser_restore::ParkedFrom) {
+        if !super::browser_perms_app::page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
+            if let Some(bv) = self.browser_views.get_mut(&pane) {
+                bv.world.restore_load = Some(url.to_string());
+                bv.world.restore_from = Some(from.clone());
+            }
+            return;
+        }
+        let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
+        let Some(url) = browser_restore::parked_load(url, from, &|t| crate::webhost::file_url_local(t, &judge)) else { return };
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        bv.world.history.arm();
+        bv.bar.nav_state.will_load(&url);
+        if let Some(v) = &bv.view {
+            v.navigate_tandem(&url);
         }
     }
 
@@ -47,6 +72,7 @@ impl App {
         if !super::browser_perms_app::page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.world.restore_load = Some(url.to_string());
+                bv.world.restore_from = None;
             }
             // A sync that gave up starts over.
             let dev_null = self.pane_dev_null(pane);

@@ -278,7 +278,9 @@ pub enum Event {
     /// A main-frame navigation was cancelled because the store's profile permissions are not
     /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
     /// the app loads once the sync lands. Never dropped.
-    Parked { view: ViewId, url: String },
+    /// `by_tandem`, `user`, `redirect` and `source` are how the handler judged it (the app judges the
+    /// release again with them, never as Tandem's own); `history` is a back or forward step.
+    Parked { view: ViewId, url: String, user: bool, redirect: bool, by_tandem: bool, history: bool, source: Option<String> },
     /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
     /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
     /// `browser_world::Contexts` decides what a context is.
@@ -626,12 +628,37 @@ pub fn scheme_of(url: &str) -> String {
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') { s.to_ascii_lowercase() } else { String::new() }
 }
 
-/// The permission sync gate of the one main-frame NavigationStarting handler (13x6): while the
-/// view's store is not synced (`gate` Some(false)), EVERY main-frame navigation is cancelled and its
-/// target parked (history steps, native F5 and Alt+Left, page navigations, Tandem's own loads),
-/// except Tandem's own about:blank. No gate (popovers, tools) is always open.
-pub fn nav_parked(gate: Option<bool>, uri: &str, by_tandem: bool) -> bool {
-    gate == Some(false) && !(by_tandem && uri.eq_ignore_ascii_case("about:blank"))
+/// What the permission sync gate does with a main-frame navigation the one verdict ALLOWED.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateAct {
+    /// It proceeds.
+    Open,
+    /// Cancelled and forgotten: the page stays (a scheme that may not wait, or a URL cut short).
+    Cancel,
+    /// Cancelled and its target posted for the app to load after the sync, judged again then.
+    Park,
+}
+
+/// The permission sync gate of the one main-frame NavigationStarting handler (13x6), applied AFTER
+/// `nav_verdict` (a refused navigation is never parked): while the view's store is not synced
+/// (`gate` Some(false)) every allowed main-frame navigation is cancelled. Only a web page (http or
+/// https) of any initiator, or Tandem's own load, is parked; any other scheme (file:, iterm2-file:,
+/// iterm2-ssh:, data:, ...) is cancelled and forgotten, because a parked target is later loaded by
+/// Tandem and must never launder a page's choice. Tandem's own about:blank and Tandem's own
+/// `iterm2-about:` pages (they use no web permission) pass; a URL over the cap is never parked
+/// truncated. No gate (popovers, tools) is always open.
+pub fn nav_gate(gate: Option<bool>, uri: &str, by_tandem: bool, over_long: bool) -> GateAct {
+    if gate != Some(false) {
+        return GateAct::Open;
+    }
+    let scheme = scheme_of(uri);
+    if scheme == "iterm2-about" || (by_tandem && uri.eq_ignore_ascii_case("about:blank")) {
+        return GateAct::Open;
+    }
+    if over_long || !(by_tandem || matches!(scheme.as_str(), "http" | "https")) {
+        return GateAct::Cancel;
+    }
+    GateAct::Park
 }
 
 /// Whether a navigation of a SUBFRAME is cancelled: any `iterm2-about:` target. The local pages
@@ -1886,12 +1913,15 @@ mod tests {
         assert!(!refused_click(&info(true, false), true), "an allowed navigation is not refused");
         let redirect = NavInfo { redirect: true, ..info(true, false) };
         assert!(!refused_click(&redirect, false), "a redirect is no click");
-        assert!(nav_parked(Some(false), "https://a.example/", false), "a page's navigation waits for the sync");
-        assert!(nav_parked(Some(false), "https://a.example/", true), "so does a Tandem load that slipped past its call site");
-        assert!(!nav_parked(Some(false), "about:blank", true), "Tandem's own blank page is the parking spot");
-        assert!(nav_parked(Some(false), "about:blank", false), "a page's blank is not Tandem's");
-        assert!(!nav_parked(Some(true), "https://a.example/", false) && !nav_parked(None, "https://a.example/", false));
-        let parked = Event::Parked { view: 4, url: "https://a.example/".into() };
+        assert_eq!(nav_gate(Some(false), "https://a.example/", false, false), GateAct::Park, "a page's navigation waits for the sync");
+        assert_eq!(nav_gate(Some(false), "https://a.example/", true, false), GateAct::Park, "so does a Tandem load that slipped past its call site");
+        assert_eq!(nav_gate(Some(false), "about:blank", true, false), GateAct::Open, "Tandem's own blank page is the parking spot");
+        assert_eq!(nav_gate(Some(false), "about:blank", false, false), GateAct::Cancel, "a page's blank is not Tandem's, and is not parked");
+        assert_eq!(nav_gate(Some(false), "iterm2-about:permissions", false, false), GateAct::Open, "Tandem's own pages use no web permission");
+        assert_eq!(nav_gate(Some(false), "https://a.example/", false, true), GateAct::Cancel, "never parked truncated");
+        assert_eq!(nav_gate(Some(true), "https://a.example/", false, false), GateAct::Open);
+        assert_eq!(nav_gate(None, "https://a.example/", false, false), GateAct::Open);
+        let parked = Event::Parked { view: 4, url: "https://a.example/".into(), user: false, redirect: false, by_tandem: false, history: false, source: None };
         assert_eq!((parked.view(), parked.droppable(), parked.weight()), (4, false, 18), "a parked target is never dropped");
         let ev = Event::Refused { view: 3, url: "https://a.example/".into(), user: true };
         assert_eq!(ev.view(), 3);

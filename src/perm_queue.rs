@@ -554,10 +554,8 @@ mod tests {
         assert!(matches!(q.step(Some(3))[..], [Out::Read { .. }]));
     }
 
-    /// Review r1 New 1: a revoke's reset that keeps failing reloads the origin's pages, but the store
-    /// is unsynced from then on, so the reload is parked by the page gate and the stale grant never
-    /// runs: only a sync landing (a complete read and its plan) lets the page load again.
-    /// The navigation handler's flag follows the sync state exactly.
+    /// The navigation handler's flag follows the sync state exactly: false until a sync lands, true
+    /// exactly while it is Done, false again when a write fails from Done or the store is lost.
     #[test]
     fn the_gate_flag_follows_the_sync() {
         use std::sync::atomic::Ordering::SeqCst;
@@ -566,10 +564,31 @@ mod tests {
         assert!(!g.load(SeqCst));
         q.sync();
         assert!(!g.load(SeqCst), "asked is not done");
+        q.step(Some(3));
+        q.read_answer(3, vec![], true);
+        drain(&mut q);
+        assert!(q.synced() && g.load(SeqCst), "Synced turns the flag on");
+        q.revoke(vec![(4, "https://a.b".into(), 0)], Some("https://a.b".into()));
+        for seq in 1..=WRITE_TRIES as u64 {
+            let step = q.step(Some(3));
+            let seq = step.iter().find_map(|o| if let Out::Write { seq, .. } = o { Some(*seq) } else { None }).unwrap_or(seq);
+            q.written(3, seq, false);
+        }
+        assert!(!q.synced() && !g.load(SeqCst), "a failed write from Done turns it off again");
+        let mut q = ProfileQueue::default();
+        let g = q.gate();
+        q.sync();
+        q.step(Some(3));
+        q.read_answer(3, vec![], true);
+        drain(&mut q);
+        assert!(g.load(SeqCst));
         q.lost();
-        assert!(!g.load(SeqCst));
+        assert!(!g.load(SeqCst), "a lost store turns it off");
     }
 
+    /// Review r1 New 1: a revoke's reset that keeps failing reloads the origin's pages, but the store
+    /// is unsynced from then on, so the reload is parked by the page gate and the stale grant never
+    /// runs: only a sync landing (a complete read and its plan) lets the page load again.
     #[test]
     fn a_failed_default_write_leaves_the_store_unsynced_for_the_reload_gate() {
         let mut q = ProfileQueue::default();

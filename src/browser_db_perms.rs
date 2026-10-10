@@ -308,8 +308,11 @@ mod tests {
             }
         }
         hits.sort();
-        // Only the table itself and the place that registers it, and (later tasks) the browser app.
-        let allowed = ["browser_db.rs", "browser_db_perms.rs", "browser_perms_app.rs", "lib.rs"];
+        // Only the table itself and the place that registers it, the browser app, and the
+        // permissions page (Task 9) that LISTS the person's own rows for display (browser_pages.rs
+        // routes the page's typed messages, browser_perms.rs filters and pages the rows): nothing
+        // there writes a row, reads a file or sends anything.
+        let allowed = ["browser_db.rs", "browser_db_perms.rs", "browser_pages.rs", "browser_perms.rs", "browser_perms_app.rs", "lib.rs"];
         for h in &hits {
             assert!(allowed.contains(&h.as_str()), "{h} names the permissions table: grants are never imported, exported or synced");
         }

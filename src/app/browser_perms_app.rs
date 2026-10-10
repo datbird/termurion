@@ -411,6 +411,15 @@ pub(super) fn reload_plan(panes: &[(PaneId, String)], origin: &str) -> Vec<(Pane
 /// Whether a browser pane's own page may load now: never while the launch restores windows, and
 /// never before its store's profile permissions were synced from the table (13x6 Task 5 fix: a
 /// stale profile grant would otherwise work for the first page with no question and no row).
+/// How the handler judged a navigation it parked (the `Parked` event's fields).
+pub(super) struct ParkedBy {
+    pub user: bool,
+    pub redirect: bool,
+    pub by_tandem: bool,
+    pub history: bool,
+    pub source: Option<String>,
+}
+
 pub(super) fn page_may_load(restoring: bool, synced: bool) -> bool {
     !restoring && synced
 }
@@ -852,15 +861,40 @@ impl App {
     /// reload key, a page's own navigation) and sent its TARGET. The page on screen stays; the
     /// target waits in `restore_load` and loads, as a new navigation with no blank entry, when the
     /// sync lands (`browser_release_waiting_loads`). A cancelled history step leaves no expectation.
-    pub(super) fn browser_navigation_parked(&mut self, pane: PaneId, url: &str) {
+    pub(super) fn browser_navigation_parked(&mut self, pane: PaneId, url: &str, from: ParkedBy) {
         let dev_null = self.pane_dev_null(pane);
+        let person = from.by_tandem || from.user || from.history;
         if let Some(bv) = self.browser_views.get_mut(&pane) {
-            bv.bar.nav.forget_expected();
-            bv.bar.transition = None;
-            bv.world.restore_load = Some(url.to_string());
+            // A web page's navigation never replaces what the person is waiting for.
+            let waiting_for_person = bv.world.restore_load.is_some() && bv.world.restore_from.is_none();
+            if person || !waiting_for_person {
+                bv.bar.nav.forget_expected();
+                bv.bar.transition = None;
+                bv.world.restore_load = Some(url.to_string());
+                // Tandem's own load keeps its own judgment; a page's is judged again as the page's.
+                bv.world.restore_from = (!from.by_tandem).then_some(crate::browser_restore::ParkedFrom { user: from.user, redirect: from.redirect, source: from.source });
+            }
         }
-        // A sync that gave up starts over.
-        self.sync_permission_states(dev_null);
+        // A sync that gave up starts over, for a person's act only (a page cannot keep it retrying).
+        if person {
+            self.sync_permission_states(dev_null);
+        }
+    }
+
+    /// The toolbar's Reload (a person's act): while the store is unsynced the page stays and the
+    /// handler parks the reload, with no blank entry; the sync starts over if it gave up. Every other
+    /// reload (a revoke's, a recovery) blanks the page (`reload_browser_view`).
+    pub(super) fn reload_browser_view_by_person(&mut self, pane: PaneId) {
+        if self.browser_restoring() {
+            return self.reload_browser_view(pane);
+        }
+        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+            v.reload();
+        }
+        if !self.perm_synced(pane) {
+            let dev_null = self.pane_dev_null(pane);
+            self.sync_permission_states(dev_null);
+        }
     }
 
     /// Blanks the pane and keeps its URL for the sync's end (`browser_release_waiting_loads`).
@@ -1555,7 +1589,7 @@ mod tests {
         let app = app.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         assert!(!app.contains("v.reload()"), "the toolbar and the recovery reload through the gate");
         assert!(!app.contains("browser_history_step_allowed"), "history steps are gated by the one handler, not at the call sites");
-        assert!(app.matches("self.reload_browser_view(pane)").count() >= 2);
+        assert!(app.matches("self.reload_browser_view(pane)").count() >= 1 && app.matches("self.reload_browser_view_by_person(pane)").count() == 1, "recovery blanks, the toolbar keeps the page");
     }
 
     /// Review r2 New 1: the sync gate has ONE owner, the main-frame NavigationStarting handler, so
@@ -1565,15 +1599,25 @@ mod tests {
     fn the_navigation_handler_owns_the_sync_gate() {
         let host = include_str!("../webhost_win.rs");
         let h = &host[host.find("fn starting_handler(").unwrap()..host.find("fn register_navigation_rest(").unwrap()];
-        let gate = h.find("webhost::nav_parked(gate, &uri, by_tandem)").unwrap();
-        assert!(gate < h.find("webhost::nav_verdict(").unwrap() && h[gate..].contains("Event::Parked { view: i.id") && h[gate..gate + 400].contains("SetCancel(true)"));
+        let verdict = h.find("webhost::nav_verdict(").unwrap();
+        let gate = h.find("webhost::nav_gate(gate, &uri, by_tandem, webhost::cap_url(&uri).1)").unwrap();
+        assert!(verdict < gate, "r3: the gate runs AFTER the verdict, so a refused navigation is never parked");
+        assert!(h[gate..].contains("Event::Parked { view: i.id") && h[gate..].contains("SetCancel(true)"));
+        assert!(h[gate..].contains("user, redirect, by_tandem") && h[gate..].contains("source }"), "how it was judged travels with the target");
         assert!(h[..gate].contains("if frame {"), "the subframe branch returns before the main-frame gate");
         let me = include_str!("browser_perms_app.rs");
         let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         let p = &prod[prod.find("pub(super) fn browser_navigation_parked(").unwrap()..prod.find("/// Blanks the pane").unwrap()];
         assert!(p.contains("restore_load = Some(url.to_string())") && !p.contains("about:blank") && !p.contains("navigate_tandem"), "the target is kept, no blank entry");
         let app = include_str!("browser_app.rs");
-        assert!(app.contains("Event::Parked { url, .. } => self.browser_navigation_parked(pane, url)"));
+        assert!(app.contains("Event::Parked { url, user, redirect, by_tandem, history, source, .. } => {") && app.contains("self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy"));
+        let rel = include_str!("browser_restore_app.rs");
+        let rel = rel.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(rel.contains("Some(from) => self.browser_load_parked(pane, &url, &from)"), "a page's parked target is judged again as the page's");
+        let lp = &rel[rel.find("fn browser_load_parked").unwrap()..rel.find("pub(super) fn browser_load_own").unwrap()];
+        assert!(lp.contains("browser_restore::parked_load(") && !lp.contains("own_load("), "never judged as Tandem's own");
+        assert!(prod.contains("let waiting_for_person") && prod.contains("if person {"), "a page cannot replace the person's target or restart the sync");
+        assert!(app.contains("self.reload_browser_view_by_person(pane)"), "the toolbar Reload keeps the page");
         assert!(app.contains("setup.nav_gate = Some(gate)") && app.contains("self.perm_gate(io.dev_null)"), "every browser view reads its store's gate");
         let q = include_str!("../perm_queue.rs");
         assert_eq!(q.matches("self.sync = ").count(), 1, "the gate follows every sync change (set_sync)");
