@@ -366,10 +366,79 @@ pub fn answer_of(index: Option<usize>) -> (Decision, bool) {
 }
 
 /// The host answer for a decision of type `t`; `saved` says the decision is in the database.
-/// `saves` (WebView2 keeps the state in its profile) only for the kinds a page reads synchronously.
+/// `saves` (the host mirrors the grant into the profile before completing) only for a saved Allow
+/// of the kinds a page reads synchronously; a Deny is never mirrored.
 /// (Task 1's `answer_for` is the by-kind rule; this one is the dialog's.)
 pub fn perm_answer(t: PermissionType, d: Decision, saved: bool) -> crate::webhost::PermAnswer {
-    crate::webhost::PermAnswer::State { state: state_of(Some(d)), saves: saved && !kinds_of(t).is_empty() }
+    crate::webhost::PermAnswer::State { state: state_of(Some(d)), saves: saved && d == Decision::Granted && !kinds_of(t).is_empty() }
+}
+
+/// The profile entries `rows` mirror, oldest first (the LAST row of a (kind, origin) wins): each
+/// row's `kinds_of` with its state. Media and audio rows are never mirrored (Task 1).
+pub fn mirror_entries(rows: &[(String, PermissionType, Decision)]) -> Vec<(i32, String, i32)> {
+    let mut out: Vec<(i32, String, i32)> = Vec::new();
+    for (origin, t, d) in rows {
+        for &kind in kinds_of(*t) {
+            let state = state_of(Some(*d));
+            match out.iter_mut().find(|(k, o, _)| *k == kind && o == origin) {
+                Some(entry) => entry.2 = state,
+                None => out.push((kind, origin.clone(), state)),
+            }
+        }
+    }
+    out
+}
+
+/// What to send `set_permission_states` so the profile agrees with the database for kinds 1 to 4:
+/// a reset for every existing entry of those kinds that `wanted` does not hold (compared after
+/// `normalize_origin`, since the exact form WebView2 reads back is unverified; the reset uses the
+/// entry's own key so it hits the stored one), then every wanted entry. Entries of kinds 0 and 5
+/// to 12 are never touched. With nothing wanted (the table unreadable) no grant of kinds 1 to 4
+/// is left standing.
+pub fn sync_plan(existing: &[(i32, String, i32)], wanted: &[(i32, String, i32)]) -> Vec<(i32, String, i32)> {
+    let key = |o: &str| normalize_origin(o).unwrap_or_else(|| o.to_string());
+    let held: Vec<(i32, String)> = wanted.iter().map(|(k, o, _)| (*k, key(o))).collect();
+    let mut out: Vec<(i32, String, i32)> = Vec::new();
+    for (kind, origin, _) in existing {
+        if (1..=4).contains(kind) && !held.contains(&(*kind, key(origin))) {
+            let reset = (*kind, origin.clone(), STATE_DEFAULT);
+            if !out.contains(&reset) {
+                out.push(reset);
+            }
+        }
+    }
+    out.extend(wanted.iter().cloned());
+    out
+}
+
+/// Most entries and longest entry the sweep's answer may have.
+const MAX_FRAME_ORIGINS: usize = 256;
+const MAX_FRAME_ORIGIN_LEN: usize = 2048;
+
+/// The sweep script's answer as the page-chosen strings it is: an array of at most 256 strings of
+/// at most 2048 bytes, else None (a failed script, which compares the main origin only).
+pub fn frame_origins(v: &serde_json::Value) -> Option<Vec<String>> {
+    let items = v.as_array()?;
+    if items.len() > MAX_FRAME_ORIGINS {
+        return None;
+    }
+    items.iter().map(|i| i.as_str().filter(|s| s.len() <= MAX_FRAME_ORIGIN_LEN).map(str::to_string)).collect()
+}
+
+/// iTerm2's revocation sweep (`BM:545-586`): the page's main origin is `origin`, or the script's
+/// list holds it. A failed script (None) falls back to the main origin only (`BM:576-583`). Every
+/// origin is compared after `normalize_origin` ("null" and the like match nothing).
+pub fn page_uses_origin(main_url: &str, frame_origins: Option<&[String]>, origin: &str) -> bool {
+    let Some(want) = normalize_origin(origin) else { return false };
+    if normalize_origin(main_url).as_deref() == Some(want.as_str()) {
+        return true;
+    }
+    frame_origins.is_some_and(|list| list.iter().any(|o| normalize_origin(o).as_deref() == Some(want.as_str())))
+}
+
+/// The script behind the revocation sweep (13x2's file, read through its table).
+pub fn check_iframe_origins_js() -> &'static str {
+    crate::browser_js::resource("check-iframe-origins.js").unwrap_or("")
 }
 
 #[cfg(test)]
@@ -594,8 +663,66 @@ mod tests {
         assert_eq!(answer_of(None), (Decision::Denied, false));
         assert_eq!(answer_of(Some(2)), (Decision::Denied, false));
         assert_eq!(perm_answer(Notification, Decision::Granted, true), State { state: 1, saves: true });
-        assert_eq!(perm_answer(Geolocation, Decision::Denied, true), State { state: 2, saves: true });
+        assert_eq!(perm_answer(Geolocation, Decision::Denied, true), State { state: 2, saves: false }, "a Deny is never mirrored");
         assert_eq!(perm_answer(Camera, Decision::Granted, true), State { state: 1, saves: false });
         assert_eq!(perm_answer(Notification, Decision::Denied, false), State { state: 2, saves: false });
+    }
+
+    fn row(o: &str, t: PermissionType, d: Decision) -> (String, PermissionType, Decision) {
+        (o.to_string(), t, d)
+    }
+
+    fn e(k: i32, o: &str, st: i32) -> (i32, String, i32) {
+        (k, o.to_string(), st)
+    }
+
+    #[test]
+    fn profile_mirror_follows_the_database() {
+        use Decision::*;
+        use PermissionType::*;
+        let rows = [row("https://a.b", Notification, Granted), row("https://c.d", CameraAndMicrophone, Denied), row("https://e.f", AudioPlayback, Granted), row("https://g.h", Geolocation, Denied)];
+        assert_eq!(mirror_entries(&rows), vec![e(4, "https://a.b", 1), e(3, "https://g.h", 2)], "media and audio are never mirrored");
+        let rows = [row("https://a.b", Notification, Granted), row("https://a.b", Notification, Denied)];
+        assert_eq!(mirror_entries(&rows), vec![e(4, "https://a.b", 2)], "the later row wins");
+    }
+
+    #[test]
+    fn sync_touches_only_asked_kinds() {
+        let existing = [e(6, "https://a.b", 1), e(9, "https://a.b", 1), e(4, "https://a.b", 1), e(2, "https://c.d", 1), e(4, "https://e.f:443", 2)];
+        let wanted = [e(4, "https://e.f", 2)];
+        assert_eq!(sync_plan(&existing, &wanted), vec![e(4, "https://a.b", 0), e(2, "https://c.d", 0), e(4, "https://e.f", 2)]);
+        assert!(sync_plan(&[], &[]).is_empty());
+        // A stale grant the table does not hold is reset; a table that cannot be read (empty
+        // wanted) therefore leaves no grant of kinds 1 to 4 standing.
+        assert_eq!(sync_plan(&[e(3, "https://x.y", 1), e(4, "https://x.y", 1)], &[]), vec![e(3, "https://x.y", 0), e(4, "https://x.y", 0)]);
+        // A profile Allow where the table says Deny is overwritten, not kept.
+        assert_eq!(sync_plan(&[e(4, "https://a.b", 1)], &[e(4, "https://a.b", 2)]), vec![e(4, "https://a.b", 2)]);
+        // An origin that does not normalize is never in the table: reset under its own key.
+        assert_eq!(sync_plan(&[e(4, "null", 1)], &[]), vec![e(4, "null", 0)]);
+    }
+
+    #[test]
+    fn revocation_reloads_as_iterm2() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(page_uses_origin("https://a.b/x", None, "https://a.b"));
+        assert!(page_uses_origin("https://c.d/", Some(&s(&["https://a.b"])), "https://a.b"));
+        assert!(!page_uses_origin("https://c.d/", Some(&[]), "https://a.b"));
+        assert!(!page_uses_origin("https://c.d/", None, "https://a.b"), "a failed script compares the main origin only");
+        assert!(page_uses_origin("https://c.d/", Some(&s(&["https://a.b:443"])), "https://a.b"), "compared after normalizing");
+        assert!(!page_uses_origin("https://c.d/", Some(&s(&["null", "https://a.b.evil"])), "https://a.b"));
+        assert!(!check_iframe_origins_js().is_empty());
+        assert_eq!(check_iframe_origins_js(), crate::browser_js::resource("check-iframe-origins.js").unwrap());
+    }
+
+    #[test]
+    fn the_sweeps_answer_is_bounded_and_typed() {
+        use serde_json::json;
+        assert_eq!(frame_origins(&json!(["https://a.b", "null"])), Some(vec!["https://a.b".to_string(), "null".to_string()]));
+        assert_eq!(frame_origins(&json!([])), Some(vec![]));
+        assert_eq!(frame_origins(&json!("https://a.b")), None, "not an array");
+        assert_eq!(frame_origins(&json!(["https://a.b", 4])), None, "an entry that is not a string");
+        assert_eq!(frame_origins(&json!(vec!["https://a.b"; 257])), None, "more than 256 entries");
+        assert!(frame_origins(&json!(vec!["https://a.b"; 256])).is_some());
+        assert_eq!(frame_origins(&json!([format!("https://{}", "a".repeat(2050))])), None, "an entry over 2048");
     }
 }

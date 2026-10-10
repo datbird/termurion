@@ -257,7 +257,9 @@ impl App {
         if webhost::failure_action(kind) != webhost::FailAction::Environment {
             return false;
         }
-        self.web_envs.env_lost(store, Instant::now());
+        if self.web_envs.env_lost(store, Instant::now()) {
+            self.perm_sync.lost(store == Store::BrowserDevNull);
+        }
         true
     }
 

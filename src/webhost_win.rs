@@ -466,6 +466,9 @@ struct Pending {
 struct PendingPerm {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2PermissionRequestedEventArgs,
+    kind: i32,
+    /// The requester's normalized origin (None: it cannot be keyed, nothing is mirrored).
+    origin: Option<String>,
 }
 
 /// A page's notification the app may still report on (`notification_report`).
@@ -1053,14 +1056,21 @@ impl WebView {
         let _ = unsafe { p.deferral.Complete() };
     }
 
-    /// Completes the deferral taken when `Event::Permission { token, .. }` was posted. `State`
-    /// sets `SavesInProfile` first, then the state (only `STATE_ALLOW` allows; any other value
-    /// denies), then completes. An unknown token (already answered, or the view dropped it) does
-    /// nothing.
+    /// Completes the deferral taken when `Event::Permission { token, .. }` was posted. WebView2
+    /// never stores the answer itself (`SavesInProfile` false). `State` with `saves` and
+    /// `STATE_ALLOW` for a notification or location request first mirrors the grant into the
+    /// profile with `SetPermissionState` and completes the deferral from that call's completion
+    /// handler, so the page works at once (a `new Notification` right after the Allow). Any other
+    /// answer completes at once; only `STATE_ALLOW` allows. An unknown token (already answered,
+    /// or the view dropped it) does nothing.
     pub fn answer_permission(&self, token: u64, answer: webhost::PermAnswer) {
-        let pending = self.inner.borrow_mut().perms.remove(&token);
+        let (pending, p4) = {
+            let mut i = self.inner.borrow_mut();
+            let pending = i.perms.remove(&token);
+            (pending, i.core.as_ref().and_then(|c| profile4(&c.view)))
+        };
         if let Some(p) = pending {
-            complete_permission(&p, answer);
+            complete_permission(p, answer, p4);
         }
     }
 
@@ -1152,7 +1162,13 @@ impl WebView {
                         let mut state = COREWEBVIEW2_PERMISSION_STATE(0);
                         let origin = pwstr_out(|p| unsafe { item.PermissionOrigin(p) });
                         if origin.is_some() && unsafe { item.PermissionKind(&mut kind) }.is_ok() && unsafe { item.PermissionState(&mut state) }.is_ok() {
-                            states.push((kind.0, webhost::cap_url(&origin.unwrap_or_default()).0, state.0));
+                            let (url, cut) = webhost::cap_url(&origin.unwrap_or_default());
+                            if cut {
+                                // A cut origin matches no key: skipped, and the read says it is partial.
+                                complete = false;
+                            } else {
+                                states.push((kind.0, url, state.0));
+                            }
                         } else {
                             complete = false;
                         }
@@ -1214,19 +1230,49 @@ fn set_next_state(p4: ICoreWebView2Profile4, mut rest: VecDeque<(i32, String, i3
     }
 }
 
-/// Sets the answer on a held request and completes its deferral.
-fn complete_permission(p: &PendingPerm, answer: webhost::PermAnswer) {
-    // `saves` is ignored: the Tandem table is the only source, WebView2 never stores a decision.
-    let state = match answer {
-        webhost::PermAnswer::State { state, .. } if state == crate::browser_perms::STATE_ALLOW => COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-        webhost::PermAnswer::State { .. } | webhost::PermAnswer::Deny => COREWEBVIEW2_PERMISSION_STATE_DENY,
-    };
+/// Sets the answer on a held request and completes its deferral. A mirrored grant (`saves`, an
+/// Allow, kind 3 or 4, a keyable origin, a profile that can be set) is written to the profile
+/// first and the deferral completes from the write's completion handler (also when it failed: the
+/// request is then answered Allow for this page only, the table still holds the grant).
+fn complete_permission(p: PendingPerm, answer: webhost::PermAnswer, p4: Option<ICoreWebView2Profile4>) {
+    let allow = matches!(answer, webhost::PermAnswer::State { state, .. } if state == crate::browser_perms::STATE_ALLOW);
+    let state = if allow { COREWEBVIEW2_PERMISSION_STATE_ALLOW } else { COREWEBVIEW2_PERMISSION_STATE_DENY };
     // SavesInProfile false on every answer, before the state and the completion.
     if let Ok(a3) = p.args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
         let _ = unsafe { a3.SetSavesInProfile(false) };
     }
     let _ = unsafe { p.args.SetState(state) };
-    let _ = unsafe { p.deferral.Complete() };
+    let mirror = matches!(answer, webhost::PermAnswer::State { saves: true, .. }) && allow && matches!(p.kind, 3 | 4);
+    match (mirror, p4, p.origin.clone()) {
+        (true, Some(p4), Some(origin)) => set_state_then(p4, p.kind, origin, crate::browser_perms::STATE_ALLOW, Box::new(move || {
+            let _ = unsafe { p.deferral.Complete() };
+        })),
+        _ => {
+            let _ = unsafe { p.deferral.Complete() };
+        }
+    }
+}
+
+/// One `SetPermissionState`, then `then` from its completion handler (at once when the call fails).
+fn set_state_then(p4: ICoreWebView2Profile4, kind: i32, origin: String, state: i32, then: Box<dyn FnOnce()>) {
+    let w = wide(&origin);
+    let then = Rc::new(RefCell::new(Some(then)));
+    let t2 = then.clone();
+    let handler = webview2_com::SetPermissionStateCompletedHandler::create(Box::new(move |hr| guard(|| {
+        if hr.is_err() {
+            crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
+        }
+        if let Some(f) = t2.borrow_mut().take() {
+            f();
+        }
+        Ok(())
+    })));
+    if unsafe { p4.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND(kind), PCWSTR(w.as_ptr()), COREWEBVIEW2_PERMISSION_STATE(state), &handler) }.is_err() {
+        crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
+        if let Some(f) = then.borrow_mut().take() {
+            f();
+        }
+    }
 }
 
 /// Completes a view's pending requests with Continue and closes its controller (its browser
@@ -1241,7 +1287,7 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     drop(i);
     // A permission still waiting is refused, never left pending: nothing grants by the view going away.
     for (_, p) in perms {
-        complete_permission(&p, webhost::PermAnswer::Deny);
+        complete_permission(p, webhost::PermAnswer::Deny, None);
     }
     for (_, h) in notes {
         let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
@@ -1922,7 +1968,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
         let uri = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
         let t = i.next_token;
         i.next_token += 1;
-        i.perms.insert(t, PendingPerm { deferral, args: args.clone() });
+        i.perms.insert(t, PendingPerm { deferral, args: args.clone(), kind: kind.0, origin: crate::browser_perms::normalize_origin(&uri) });
         let id = i.id;
         i.poster.post(Event::Permission { view: id, token: t, kind: kind.0, uri: webhost::cap_url(&uri).0 });
         Ok(())
@@ -2179,8 +2225,10 @@ mod tests {
         assert!(policy[..deny].contains("SetSavesInProfile(false)"), "the on-the-spot denial never saves");
         let complete = &live[live.find("fn complete_permission").unwrap()..live.find("fn shut(").unwrap()];
         assert!(complete.contains("SetSavesInProfile(false)") && !complete.contains("SetSavesInProfile(saves)"), "every answer sets SavesInProfile false");
+        assert!(complete.contains("saves: true") && complete.contains("set_state_then") && complete.contains("matches!(p.kind, 3 | 4)"), "a saved Allow of kind 3 or 4 is mirrored before the deferral completes (ruling A)");
         let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("pub fn close(self)").unwrap()];
         assert!(read.matches("complete: false").count() + read.matches("complete = false").count() >= 4 && read.contains("complete &="), "an incomplete read says so (I2)");
+        assert!(read.contains("webhost::cap_url(&origin.unwrap_or_default())") && read.contains("if cut {") && read.contains("complete = false;"), "a cut origin makes the read partial (re-review minor 3)");
         assert!(!live.contains("Untouched"), "no answer leaves a request to WebView2's own prompt");
         let shut = &live[live.find("fn shut(").unwrap()..live.find("pub fn close_all").unwrap()];
         assert!(shut.contains("PermAnswer::Deny"), "a view going away refuses its pending requests");
@@ -4942,8 +4990,9 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
-    /// Review I1: the profile holds a saved grant before the page's promise resolves, so a
-    /// `new Notification` in the `then` is raised; an unsaved answer raises nothing.
+    /// Review I1 and ruling A: a saved Allow is mirrored into the profile (SetPermissionState)
+    /// BEFORE the request completes, so a `new Notification` in the `then` is raised at once; an
+    /// unsaved answer mirrors nothing and raises nothing.
     #[test]
     #[ignore]
     fn saved_grant_is_live_before_the_promise_resolves() {
@@ -4957,6 +5006,9 @@ window.addEventListener('message', function (e) {
         let (token, ..) = p.next_permission(0);
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
         assert!(p.wait(10, |p| p.notes.iter().any(|n| n.2 == "T")), "the notification was raised: {:?}", p.notes);
+        // Ruling A: WebView2 stored nothing itself; the grant was mirrored with SetPermissionState before the request completed.
+        p.view().read_permission_states();
+        assert!(p.wait(10, |p| p.state_reads.iter().flatten().any(|(k, o, st)| *k == 4 && o.starts_with(PERM_HOST) && *st == 1)), "the mirrored grant is in the profile: {:?}", p.state_reads);
         let t = p.notes[0].0;
         p.view().notification_report(t, NoteReport::Release);
         let before = p.notes.len();
@@ -4966,6 +5018,35 @@ window.addEventListener('message', function (e) {
         p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: false });
         p.settle(3000);
         assert_eq!(p.notes.len(), before, "an unsaved answer raises nothing: {:?}", p.notes);
+        p.finish();
+    }
+
+    /// Task 5 (P-sweep): the revocation sweep script, run as the app runs it (isolated world,
+    /// `return (...)`), reads the frames' and resources' origins of a hostile page: a cross-origin
+    /// iframe, 5000 resource entries and a page that overrides `performance.getEntriesByType`.
+    /// The answer is bounded by `frame_origins` and a reload follows only a match.
+    #[test]
+    #[ignore]
+    fn revocation_reload_sweep_reads_the_frames_origins() {
+        use crate::browser_perms::{check_iframe_origins_js, frame_origins, page_uses_origin};
+        const FRAME: &str = "https://frame.tandem-probe.invalid/";
+        let hostile = perm_page(&format!("<iframe src=\"{FRAME}\"></iframe><script>performance.getEntriesByType = function () {{ return []; }}; Object.defineProperty(window.location, 'origin', {{get: function () {{ return 'https://forged.invalid'; }}}});</script>"));
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, hostile), (FRAME, "<!doctype html><title>f</title>".to_string())], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.settle(500);
+        let body = format!("return ({});", check_iframe_origins_js().trim_end().trim_end_matches(';'));
+        let expr = crate::browser_js::call_js(&body, &Value::Null).expect("the sweep assembles");
+        let got = p.eval(None, &expr).expect("the sweep runs in the isolated world");
+        let list = frame_origins(&got).expect("a bounded array of strings");
+        assert!(list.len() <= 256);
+        assert!(list.iter().any(|o| o == "https://frame.tandem-probe.invalid"), "the cross-origin iframe is listed: {list:?}");
+        assert!(page_uses_origin(PERM_PAGE, Some(&list), "https://frame.tandem-probe.invalid"), "a match reloads");
+        assert!(!page_uses_origin(PERM_PAGE, Some(&list), "https://other.tandem-probe.invalid"), "no match, no reload");
+        assert!(!page_uses_origin("https://c.d/", None, "https://frame.tandem-probe.invalid"), "a failed script compares the main origin only");
+        // 5000 resource entries: the answer is still bounded or refused, never trusted.
+        p.page_eval("for (var i = 0; i < 5000; i++) { performance.mark('m' + i); } 1").expect("marks");
+        let again = p.eval(None, &expr).expect("still answers");
+        assert!(frame_origins(&again).is_none_or(|l| l.len() <= 256));
         p.finish();
     }
 

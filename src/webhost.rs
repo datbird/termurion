@@ -323,9 +323,11 @@ pub enum PermAnswer {
     /// Refuse (`COREWEBVIEW2_PERMISSION_STATE_DENY`, nothing saved in the profile). There is no
     /// "leave it to WebView2": that would be a grant nobody asked Tandem about (pre-flight B3).
     Deny,
-    /// `state` is a `browser_perms::STATE_*`. `saves` is IGNORED by the host: `SavesInProfile` is
-    /// always false, so WebView2 never stores a decision and the Tandem table is the only source
-    /// (task 3 review I1).
+    /// `state` is a `browser_perms::STATE_*`. WebView2 never stores a decision (`SavesInProfile` is
+    /// always false); `saves` asks the host to MIRROR an Allow of a notification or location
+    /// request into the profile (`SetPermissionState`) before the request completes, so the page
+    /// works at once. The Tandem table stays the only source; the start-up sync revokes whatever
+    /// it does not hold as Granted. A Deny is never mirrored.
     State { state: i32, saves: bool },
 }
 

@@ -336,6 +336,8 @@ impl App {
         }
         if drop_envs {
             self.web_envs.drop_browser_stores();
+            self.perm_sync.lost(false);
+            self.perm_sync.lost(true);
             self.web_envs.rebuild_until = Some(Instant::now() + REBUILD_WINDOW);
         }
         self.redraw();

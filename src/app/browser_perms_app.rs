@@ -21,6 +21,16 @@ const LATER_PER_PANE: usize = 4;
 const LATER_TOTAL: usize = 32;
 /// Requests one open question may hold; the rest are denied at once.
 const WAITING_PER_ASK: usize = 16;
+/// After a prompt is closed unanswered, the same origin and kind in the same pane is denied
+/// without a window for this long (B2): a page cannot re-raise the window by looping.
+const COOLDOWN_MS: u64 = 60_000;
+const COOLDOWNS_KEPT: usize = 256;
+
+/// Milliseconds on a monotonic clock (the cooldown's).
+fn now_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
 
 /// Per-pane state for the audio and mute work (Task 7 fills it); it lives on the pane, not the view.
 #[derive(Default)]
@@ -51,6 +61,9 @@ pub(super) struct Prep {
     pub origin: Option<String>,
     /// The top-level page's normalized origin.
     pub top: Option<String>,
+    /// The pane is shown (this window's active tab, not buried or hidden): only then may a window
+    /// open for it (B1).
+    pub visible: bool,
     /// Saved decisions for the type asked and for CameraAndMicrophone.
     pub saved: Vec<(PermissionType, Decision)>,
 }
@@ -75,7 +88,6 @@ impl Systems {
 pub(super) struct Waiter {
     pane: PaneId,
     token: u64,
-    kind: i32,
     epoch: u64,
 }
 
@@ -96,6 +108,9 @@ pub(super) enum Act {
     Answer { pane: PaneId, token: u64, answer: PermAnswer },
     /// Open question `id` through the alert path.
     Ask { id: u64, heading: String, text: String },
+    /// Question `id` has no page left waiting (it navigated or closed): the window goes, queued or
+    /// showing, and nothing is saved.
+    Withdraw { id: u64 },
 }
 
 /// An answered question: what to save and who waits.
@@ -114,8 +129,12 @@ pub(super) struct Asks {
     open: HashMap<u64, Ask>,
     /// Requests the events of this tick raised (`browser_event` only pushes here).
     pub(super) tick: Vec<Req>,
-    /// Requests behind another open question of their pane, in order.
+    /// Requests behind another open question of their pane, or for a pane that is not shown, in order.
     later: Vec<Req>,
+    /// The clock the cooldown reads (milliseconds; the `App` sets it before each plan).
+    pub(super) now_ms: u64,
+    /// (pane, origin, type, dev null) -> when the cooldown ends.
+    cooldown: HashMap<(PaneId, String, PermissionType, bool), u64>,
 }
 
 fn deny(r: &Req) -> Act {
@@ -162,7 +181,12 @@ impl Asks {
             Some(top) if *top != origin => format!("{origin} on {top}"),
             _ => origin.clone(),
         };
-        let waiter = Waiter { pane: p.req.pane, token: p.req.token, kind: p.req.kind, epoch: p.req.epoch };
+        let waiter = Waiter { pane: p.req.pane, token: p.req.token, epoch: p.req.epoch };
+        // Closed unanswered a moment ago: no window, no grant (B2).
+        if self.cooldown.get(&(p.req.pane, origin.clone(), t, p.dev_null)).is_some_and(|until| self.now_ms < *until) {
+            acts.push(deny(&p.req));
+            return;
+        }
         if let Some(a) = self.open.values_mut().find(|a| a.origin == origin && a.kind == t && a.shown == shown && a.dev_null == p.dev_null) {
             if a.waiting.len() < WAITING_PER_ASK {
                 a.waiting.push(waiter);
@@ -171,9 +195,12 @@ impl Asks {
             }
             return;
         }
-        // One prompt at a time per pane: a different question waits its turn, a bounded number.
-        if self.open.values().any(|a| a.pane == p.req.pane) {
-            if self.later.len() < LATER_TOTAL && self.later.iter().filter(|r| r.pane == p.req.pane).count() < LATER_PER_PANE {
+        // One prompt at a time per pane, and none for a pane the person cannot see: the request
+        // waits its turn, a bounded number, one per origin so a crowd cannot push another site out.
+        if !p.visible || self.open.values().any(|a| a.pane == p.req.pane) {
+            let same_origin = |r: &Req| bp::normalize_origin(&r.uri).as_deref() == Some(origin.as_str());
+            let mine = self.later.iter().filter(|r| r.pane == p.req.pane);
+            if self.later.len() < LATER_TOTAL && mine.clone().count() < LATER_PER_PANE && !mine.clone().any(same_origin) {
                 self.later.push(p.req);
             } else {
                 acts.push(deny(&p.req));
@@ -192,6 +219,16 @@ impl Asks {
     pub(super) fn answered(&mut self, id: u64, index: Option<usize>) -> Option<Settled> {
         let a = self.open.remove(&id)?;
         let (d, save) = bp::answer_of(index);
+        if index.is_none() {
+            if self.cooldown.len() >= COOLDOWNS_KEPT {
+                let now = self.now_ms;
+                self.cooldown.retain(|_, until| now < *until);
+                if self.cooldown.len() >= COOLDOWNS_KEPT {
+                    self.cooldown.clear();
+                }
+            }
+            self.cooldown.insert((a.pane, a.origin.clone(), a.kind, a.dev_null), self.now_ms + COOLDOWN_MS);
+        }
         Some(Settled { origin: a.origin, t: a.kind, d, save, dev_null: a.dev_null, waiters: a.waiting })
     }
 
@@ -205,14 +242,54 @@ impl Asks {
         mine
     }
 
+    /// Panes whose requests wait in the queue with nothing open for them and that are shown now.
+    pub(super) fn ready_panes(&self, shown: &dyn Fn(PaneId) -> bool) -> Vec<PaneId> {
+        let mut panes: Vec<PaneId> = self.later.iter().map(|r| r.pane).filter(|p| shown(*p) && !self.open.values().any(|a| a.pane == *p)).collect();
+        panes.sort();
+        panes.dedup();
+        panes
+    }
+
     /// `pane` is closing: its requests are forgotten (the host completes a dropped view's requests
-    /// refused).
-    pub(super) fn pane_gone(&mut self, pane: PaneId) {
+    /// refused). A question nobody waits on any more is withdrawn.
+    pub(super) fn pane_gone(&mut self, pane: PaneId) -> Vec<Act> {
         self.later.retain(|r| r.pane != pane);
         for a in self.open.values_mut() {
             a.waiting.retain(|w| w.pane != pane);
         }
         self.tick.retain(|r| r.pane != pane);
+        self.withdraw_empty()
+    }
+
+    /// A page navigated or a pane went: every waiter whose pane is gone (None) is forgotten, every
+    /// one whose page changed (another epoch) is denied, and a question with no waiter left is
+    /// withdrawn without saving. Queued requests of a changed page are denied too.
+    pub(super) fn dismiss(&mut self, epoch_of: &dyn Fn(PaneId) -> Option<u64>) -> Vec<Act> {
+        let mut acts = Vec::new();
+        for a in self.open.values_mut() {
+            a.waiting.retain(|w| match epoch_of(w.pane) {
+                None => false,
+                Some(now) if now != w.epoch => {
+                    acts.push(Act::Answer { pane: w.pane, token: w.token, answer: PermAnswer::Deny });
+                    false
+                }
+                Some(_) => true,
+            });
+        }
+        let (stale, kept): (Vec<Req>, Vec<Req>) = std::mem::take(&mut self.later).into_iter().partition(|r| epoch_of(r.pane).is_some_and(|now| now != r.epoch));
+        self.later = kept;
+        acts.extend(stale.iter().map(deny));
+        acts.extend(self.withdraw_empty());
+        acts
+    }
+
+    fn withdraw_empty(&mut self) -> Vec<Act> {
+        let mut ids: Vec<u64> = self.open.iter().filter(|(_, a)| a.waiting.is_empty()).map(|(id, _)| *id).collect();
+        ids.sort();
+        for id in &ids {
+            self.open.remove(id);
+        }
+        ids.into_iter().map(|id| Act::Withdraw { id }).collect()
     }
 }
 
@@ -227,10 +304,104 @@ pub(super) fn settle(s: &Settled, stored: bool, epoch_of: &dyn Fn(PaneId) -> Opt
         let Some(now) = epoch_of(w.pane) else { continue };
         // Another page now: the answer was for the one that asked.
         let answer = if now != w.epoch || failed { PermAnswer::Deny } else { bp::perm_answer(s.t, d, saved) };
-        let _ = w.kind;
         acts.push(Act::Answer { pane: w.pane, token: w.token, answer });
     }
     acts
+}
+
+impl Settled {
+    /// Whether any page that asked is still on the page it asked from.
+    pub(super) fn any_live(&self, epoch_of: &dyn Fn(PaneId) -> Option<u64>) -> bool {
+        self.waiters.iter().any(|w| epoch_of(w.pane) == Some(w.epoch))
+    }
+}
+
+/// What a change to the saved permissions of one origin does to WebView2 (Task 5), by value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Op {
+    /// The page's Revoke: the row goes, the profile state is reset, pages using the origin reload.
+    Revoke(PermissionType),
+    /// Revoke all of an origin: the types of the rows it held.
+    RevokeAll(Vec<PermissionType>),
+    /// The toolbar's Reset: the row goes, the profile state is reset, nothing reloads (`BVC:1075-1079`).
+    Reset(PermissionType),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Effects {
+    pub states: Vec<(i32, String, i32)>,
+    pub reload: bool,
+}
+
+/// The profile resets and the reload an `Op` on `origin` needs. Only mirrored kinds (3 and 4) are
+/// ever reset; media is never mirrored (Task 1).
+pub(super) fn effects(op: &Op, origin: &str) -> Effects {
+    let types: Vec<PermissionType> = match op {
+        Op::Revoke(t) | Op::Reset(t) => vec![*t],
+        Op::RevokeAll(ts) => ts.clone(),
+    };
+    let mut states: Vec<(i32, String, i32)> = Vec::new();
+    for t in types {
+        for &k in bp::kinds_of(t) {
+            let e = (k, origin.to_string(), bp::STATE_DEFAULT);
+            if !states.contains(&e) {
+                states.push(e);
+            }
+        }
+    }
+    Effects { states, reload: !matches!(op, Op::Reset(_)) }
+}
+
+/// How a pane is brought up to date after a revoke: a main origin that matches reloads at once,
+/// every other pane runs the sweep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Reload {
+    Now,
+    Sweep,
+}
+
+pub(super) fn reload_plan(panes: &[(PaneId, String)], origin: &str) -> Vec<(PaneId, Reload)> {
+    panes
+        .iter()
+        .map(|(p, url)| (*p, if bp::page_uses_origin(url, None, origin) { Reload::Now } else { Reload::Sweep }))
+        .collect()
+}
+
+/// The start-up sync of one environment: once per environment, again after it is made anew, and
+/// again at the next view when a read came back incomplete (fail closed, never trusted).
+#[derive(Default)]
+pub(super) struct SyncState {
+    done: std::collections::HashSet<bool>,
+}
+
+impl SyncState {
+    /// True once per environment (`dev_null` picks the store); the caller then reads the profile.
+    pub(super) fn due(&mut self, dev_null: bool) -> bool {
+        self.done.insert(dev_null)
+    }
+
+    /// The read failed or was partial: try again at the next view.
+    pub(super) fn retry(&mut self, dev_null: bool) {
+        self.done.remove(&dev_null);
+    }
+
+    /// The environment of this store was dropped.
+    pub(super) fn lost(&mut self, dev_null: bool) {
+        self.done.remove(&dev_null);
+    }
+}
+
+/// The plan for a profile read: the table decides kinds 1 to 4. An unreadable table wants
+/// nothing, so no grant of those kinds survives (fail closed).
+pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<&[(String, PermissionType, Decision)]>) -> Vec<(i32, String, i32)> {
+    let wanted = match rows_newest_first {
+        Some(rows) => {
+            let oldest_first: Vec<_> = rows.iter().rev().cloned().collect();
+            bp::mirror_entries(&oldest_first)
+        }
+        None => Vec::new(),
+    };
+    bp::sync_plan(states, &wanted)
 }
 
 /// The Windows privacy switches (read only; a missing value is None).
@@ -316,19 +487,34 @@ impl App {
                 }
             }
         }
-        Prep { req, browser, dev_null, origin, top, saved }
+        let visible = self.browser_pane_shown(req.pane);
+        Prep { req, browser, dev_null, origin, top, saved, visible }
     }
 
-    /// Once per drain: groups, plans and answers the requests the events raised.
+    /// Once per drain: groups, plans and answers the requests the events raised. Requests that
+    /// waited for their pane to be shown are planned again once it is.
     pub(super) fn flush_permission_requests(&mut self) {
+        let shown: HashMap<PaneId, bool> = self.browser_views.keys().map(|p| (*p, self.browser_pane_shown(*p))).collect();
+        for pane in self.perm_asks.ready_panes(&|p| shown.get(&p).copied().unwrap_or(false)) {
+            let again = self.perm_asks.take_later(pane);
+            self.perm_asks.tick.extend(again);
+        }
         if self.perm_asks.tick.is_empty() {
             return;
         }
+        self.perm_asks.now_ms = now_ms();
         let reqs = std::mem::take(&mut self.perm_asks.tick);
         let preps: Vec<Prep> = reqs.into_iter().map(|r| self.perm_prep(r)).collect();
         // The registry is read only when a notification or location request is among them.
         let systems = if preps.iter().any(|p| matches!(p.req.kind, 3 | 4)) { systems_now() } else { Systems { notifications: System::Allowed, location: System::Allowed } };
         let acts = self.perm_asks.plan_flush(preps, systems);
+        self.perm_acts(acts);
+    }
+
+    /// A page navigated or a pane closed: questions nobody waits on go, unsaved (B1, I3).
+    pub(super) fn browser_permission_dismiss(&mut self) {
+        let epochs: HashMap<PaneId, u64> = self.browser_views.iter().filter(|(_, b)| b.view.is_some()).map(|(p, b)| (*p, b.reader.epoch)).collect();
+        let acts = self.perm_asks.dismiss(&|p| epochs.get(&p).copied());
         self.perm_acts(acts);
     }
 
@@ -340,6 +526,7 @@ impl App {
                         v.answer_permission(token, answer);
                     }
                 }
+                Act::Withdraw { id } => self.browser_permission_withdraw(id),
                 Act::Ask { id, heading, text } => {
                     let ask = scripts_alerts::ask(&heading, &text, &[bp::ALLOW, bp::BLOCK], None, crate::warnings::Kind::Persistent, Then::BrowserPermission(id));
                     self.ask_scripts(ask);
@@ -350,9 +537,13 @@ impl App {
 
     /// Question `ask` was answered (None: closed or never shown, which blocks and saves nothing).
     pub(super) fn browser_permission_answered(&mut self, ask: u64, index: Option<usize>) {
+        self.perm_asks.now_ms = now_ms();
         let Some(s) = self.perm_asks.answered(ask, index) else { return };
-        let stored = !s.save || self.browser_db(s.dev_null).is_some_and(|db| db.save_permission(&s.origin, s.t, s.d, super::warnings_app::unix_now()));
         let epochs: HashMap<PaneId, u64> = self.browser_views.iter().filter(|(_, b)| b.view.is_some()).map(|(p, b)| (*p, b.reader.epoch)).collect();
+        // A late click for a page that has gone saves nothing (I3).
+        let mut s = s;
+        s.save = s.save && s.any_live(&|p| epochs.get(&p).copied());
+        let stored = !s.save || self.browser_db(s.dev_null).is_some_and(|db| db.save_permission(&s.origin, s.t, s.d, super::warnings_app::unix_now()));
         let acts = settle(&s, stored, &|p| epochs.get(&p).copied());
         let pane = s.waiters.first().map(|w| w.pane);
         self.perm_acts(acts);
@@ -368,9 +559,154 @@ impl App {
         self.flush_permission_requests();
     }
 
+    /// Any live view of the store (`dev_null` picks it): where profile calls go.
+    fn store_view(&self, dev_null: bool) -> Option<&crate::webhost_win::WebView> {
+        self.browser_views
+            .iter()
+            .filter(|(p, _)| self.pane_dev_null(**p) == dev_null)
+            .find_map(|(_, b)| b.view.as_ref())
+    }
+
+    /// Writes the profile states of `Effects` on any live view of the store (none live: the next
+    /// sync covers it).
+    fn set_profile_states(&self, dev_null: bool, states: Vec<(i32, String, i32)>) {
+        if states.is_empty() {
+            return;
+        }
+        if let Some(v) = self.store_view(dev_null) {
+            v.set_permission_states(states);
+        }
+    }
+
+    /// Mirrors a decision (None: a reset) of kinds 3 and 4 into the profile. A saved Allow is
+    /// mirrored by the host before the request completes; this is for the rest.
+    #[allow(dead_code)] // the host mirrors an Allow itself; kept for a later task's callers
+    pub(super) fn mirror_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType, d: Option<Decision>) {
+        if bp::normalize_origin(origin).as_deref() != Some(origin) {
+            return;
+        }
+        let states = bp::kinds_of(t).iter().map(|k| (*k, origin.to_string(), bp::state_of(d))).collect();
+        self.set_profile_states(dev_null, states);
+    }
+
+    /// Once per environment, at its first view: reads the profile's states (the answer is
+    /// `permission_states_read`). Nothing is stored by WebView2 itself, so what it holds from an
+    /// earlier run is stale until the table has rewritten it.
+    pub(super) fn sync_permission_states(&mut self, dev_null: bool) {
+        if !self.perm_sync.due(dev_null) {
+            return;
+        }
+        match self.store_view(dev_null) {
+            Some(v) => v.read_permission_states(),
+            None => self.perm_sync.retry(dev_null),
+        }
+    }
+
+    /// The profile's non-default states arrived: the table decides kinds 1 to 4. An incomplete read
+    /// (some state could not be read) fails closed: what was read is rewritten the same way, the
+    /// environment stays unsynced, and the next view reads again.
+    pub(super) fn permission_states_read(&mut self, pane: PaneId, states: &[(i32, String, i32)], complete: bool) {
+        let dev_null = self.pane_dev_null(pane);
+        let rows: Option<Vec<_>> = self.browser_db(dev_null).map(|db| db.all_permissions().into_iter().map(|r| (r.origin, r.kind, r.decision)).collect());
+        let plan = sync_for(states, rows.as_deref());
+        if !complete {
+            crate::dlog!("webhost: the profile read was incomplete ({} states); read again at the next view", states.len());
+            self.perm_sync.retry(dev_null);
+        }
+        self.set_profile_states(dev_null, plan);
+    }
+
+    fn apply_op(&mut self, dev_null: bool, origin: &str, op: Op) {
+        let fx = effects(&op, origin);
+        self.set_profile_states(dev_null, fx.states);
+        if fx.reload {
+            self.reload_panes_using(dev_null, origin);
+        }
+    }
+
+    /// The page's Revoke: the row goes, the profile state is reset, and every pane using the origin reloads.
+    #[allow(dead_code)] // Task 9's page calls it
+    pub(super) fn revoke_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) {
+        let Some(db) = self.browser_db(dev_null) else { return };
+        db.revoke_permission(origin, t);
+        self.apply_op(dev_null, origin, Op::Revoke(t));
+    }
+
+    /// Revoke all of an origin: every row goes, each saved mirrored kind is reset, panes reload.
+    #[allow(dead_code)] // Task 9's page calls it
+    pub(super) fn revoke_all_permissions(&mut self, dev_null: bool, origin: &str) {
+        let Some(db) = self.browser_db(dev_null) else { return };
+        let types: Vec<PermissionType> = db.permissions_for_origin(origin).into_iter().map(|r| r.kind).collect();
+        db.revoke_all_permissions(origin);
+        self.apply_op(dev_null, origin, Op::RevokeAll(types));
+    }
+
+    /// The toolbar's Reset: the row goes and the profile state is reset; nothing reloads.
+    #[allow(dead_code)] // Task 8's menu calls it
+    pub(super) fn reset_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) {
+        let Some(db) = self.browser_db(dev_null) else { return };
+        db.reset_permission(origin, t);
+        self.apply_op(dev_null, origin, Op::Reset(t));
+    }
+
+    /// iTerm2's revocation sweep (`BPM:230-241`, `BM:518-586`): a pane whose main origin matches
+    /// reloads at once, every other pane of the store asks the page for its frames' and resources'
+    /// origins (isolated world) and reloads on a match; a failed script compares the main origin only.
+    pub(super) fn reload_panes_using(&mut self, dev_null: bool, origin: &str) {
+        let panes: Vec<(PaneId, String)> = self
+            .browser_views
+            .iter()
+            .filter(|(p, b)| b.view.is_some() && self.pane_dev_null(**p) == dev_null)
+            .filter_map(|(p, _)| self.panes.get(p).and_then(|pn| pn.browser_io()).map(|io| (*p, io.url.clone())))
+            .collect();
+        let body = format!("return ({});", bp::check_iframe_origins_js().trim_end().trim_end_matches(';'));
+        for (pane, how) in reload_plan(&panes, origin) {
+            match how {
+                Reload::Now => self.reload_browser_view(pane),
+                Reload::Sweep => {
+                    let origin = origin.to_string();
+                    self.browser_js_call(
+                        pane,
+                        &body,
+                        serde_json::json!({}),
+                        Box::new(move |app, pane, r| {
+                            let frames = r.ok().and_then(|v| bp::frame_origins(&v));
+                            let url = app.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+                            if bp::page_uses_origin(&url, frames.as_deref(), &origin) {
+                                app.reload_browser_view(pane);
+                            }
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
+    fn reload_browser_view(&self, pane: PaneId) {
+        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+            v.reload();
+        }
+    }
+
     /// A browser pane is closing: its requests are forgotten.
     pub(super) fn browser_permission_pane_gone(&mut self, pane: PaneId) {
-        self.perm_asks.pane_gone(pane);
+        let acts = self.perm_asks.pane_gone(pane);
+        self.perm_acts(acts);
+    }
+
+    /// Takes question `id` away: queued, or showing (its window closes with no answer).
+    fn browser_permission_withdraw(&mut self, id: u64) {
+        let is = |t: &Then| matches!(t, Then::BrowserPermission(i) if *i == id);
+        self.alert_drop_queued(is);
+        if self.scripts_alert.as_ref().is_some_and(|(_, a)| is(&a.then)) {
+            self.scripts_alert = None;
+        }
+    }
+
+    /// Whether pane `pane` is shown to the person: this window's active tab, in a layout (not buried
+    /// or a hidden peer).
+    fn browser_pane_shown(&self, pane: PaneId) -> bool {
+        self.browser_pane_visible(pane)
     }
 }
 
@@ -386,7 +722,7 @@ mod tests {
     }
 
     fn prep(r: Req, saved: &[(PermissionType, Decision)]) -> Prep {
-        Prep { origin: if bp::from_kind(r.kind).is_some() { bp::normalize_origin(&r.uri) } else { None }, top: Some("https://a.b".into()), req: r, browser: true, dev_null: false, saved: saved.to_vec() }
+        Prep { origin: if bp::from_kind(r.kind).is_some() { bp::normalize_origin(&r.uri) } else { None }, top: Some("https://a.b".into()), req: r, browser: true, dev_null: false, saved: saved.to_vec(), visible: true }
     }
 
     fn asked(acts: &[Act]) -> Vec<(u64, String, String)> {
@@ -418,7 +754,7 @@ mod tests {
         assert_eq!(answers(&acts), vec![(1, PermAnswer::State { state: 1, saves: true }), (2, PermAnswer::State { state: 1, saves: true })]);
         // A saved Denied answers at once, with no question.
         let acts = asks.plan_flush(vec![prep(req(p, 3, 4, "https://a.b/"), &[(Notification, Decision::Denied)])], SYS);
-        assert_eq!(answers(&acts), vec![(3, PermAnswer::State { state: 2, saves: true })]);
+        assert_eq!(answers(&acts), vec![(3, PermAnswer::State { state: 2, saves: false })], "a Deny is never mirrored into the profile");
         assert!(asked(&acts).is_empty());
         // Camera (2) and Microphone (1) drained together: one question for both.
         let acts = asks.plan_flush(vec![prep(req(2, 4, 2, "https://c.d/"), &[]), prep(req(2, 5, 1, "https://c.d/"), &[])], SYS);
@@ -459,8 +795,18 @@ mod tests {
         let acts = settle(&s, true, &alive);
         assert_eq!(answers(&acts), vec![(1, PermAnswer::State { state: 2, saves: false }), (2, PermAnswer::State { state: 2, saves: false })], "both once, no third");
         assert!(asks.answered(q[0].0, None).is_none(), "an answered question answers once");
-        // Asking again asks again.
-        assert_eq!(asked(&asks.plan_flush(vec![prep(req(p, 3, 4, "https://a.b/"), &[])], SYS)).len(), 1);
+        // Within 60 s the same origin and kind in the same pane is denied with no window (B2); after
+        // it, and for anything else, it asks again.
+        let again = asks.plan_flush(vec![prep(req(p, 3, 4, "https://a.b/"), &[])], SYS);
+        assert!(asked(&again).is_empty() && answers(&again) == vec![(3, PermAnswer::Deny)], "the cooldown denies quietly");
+        let other = asked(&asks.plan_flush(vec![prep(req(p, 4, 3, "https://a.b/"), &[])], SYS));
+        assert_eq!(other.len(), 1, "another kind asks");
+        asks.answered(other[0].0, Some(1)).unwrap();
+        let pane2 = asked(&asks.plan_flush(vec![prep(req(2, 5, 4, "https://a.b/"), &[])], SYS));
+        assert_eq!(pane2.len(), 1, "another pane asks");
+        asks.answered(pane2[0].0, Some(1)).unwrap();
+        asks.now_ms = 60_001;
+        assert_eq!(asked(&asks.plan_flush(vec![prep(req(p, 6, 4, "https://a.b/"), &[])], SYS)).len(), 1, "after the cooldown it asks again");
         // The source routes a close and a dropped ask to the same blocking path.
         let src = include_str!("scripts_alerts.rs");
         assert!(src.contains("Then::BrowserPermission(id) => self.browser_permission_answered(id, None)"));
@@ -540,5 +886,114 @@ mod tests {
         assert!(tick.contains("self.flush_permission_requests()"));
         let me = include_str!("browser_perms_app.rs");
         assert!(me.contains("RRF_RT_REG_DWORD") && !me.contains(concat!("RegSet", "Value")), "registry reads only");
+    }
+
+    #[test]
+    fn a_pane_that_is_not_shown_waits_and_asks_when_shown() {
+        let mut asks = Asks::default();
+        let mut hidden = prep(req(1, 1, 4, "https://a.b/"), &[]);
+        hidden.visible = false;
+        let acts = asks.plan_flush(vec![hidden], SYS);
+        assert!(acts.is_empty(), "no window and no answer yet for a pane nobody sees");
+        assert!(asks.ready_panes(&|_| false).is_empty(), "still hidden");
+        assert_eq!(asks.ready_panes(&|p| p == 1), vec![1]);
+        let again = asks.take_later(1);
+        assert_eq!(again.len(), 1);
+        assert_eq!(asked(&asks.plan_flush(again.into_iter().map(|r| prep(r, &[])).collect(), SYS)).len(), 1, "shown now: it asks");
+        // The queue for a hidden pane is bounded, one request per origin.
+        let mut asks = Asks::default();
+        let mut mk = |t: u64, uri: &str| {
+            let mut p = prep(req(2, t, 4, uri), &[]);
+            p.visible = false;
+            p
+        };
+        let acts = asks.plan_flush(vec![mk(1, "https://a.b/"), mk(2, "https://a.b/x"), mk(3, "https://c.d/")], SYS);
+        assert_eq!(answers(&acts), vec![(2, PermAnswer::Deny)], "a second request of one origin is denied, not queued");
+    }
+
+    #[test]
+    fn one_origin_cannot_crowd_out_another() {
+        let mut asks = Asks::default();
+        let q = asked(&asks.plan_flush(vec![prep(req(1, 1, 4, "https://a.b/"), &[])], SYS));
+        assert_eq!(q.len(), 1);
+        let uris = ["https://x1.test/", "https://x1.test/p", "https://x1.test/q", "https://x1.test/r", "https://top.test/"];
+        let acts = asks.plan_flush(uris.iter().enumerate().map(|(i, u)| prep(req(1, 10 + i as u64, 4, u), &[])).collect(), SYS);
+        assert_eq!(answers(&acts).iter().map(|a| a.0).collect::<Vec<_>>(), vec![11, 12, 13], "an origin's repeats are denied; the top page still waits");
+        assert_eq!(asks.take_later(1).len(), 0, "the first question is still open");
+    }
+
+    #[test]
+    fn navigation_or_closing_dismisses_the_prompt() {
+        let mut asks = Asks::default();
+        let q = asked(&asks.plan_flush(vec![prep(req(1, 1, 4, "https://a.b/"), &[])], SYS));
+        // The page it asked from navigated (epoch 8): its waiter is denied and the question withdrawn.
+        let acts = asks.dismiss(&|_| Some(8));
+        assert_eq!(answers(&acts), vec![(1, PermAnswer::Deny)]);
+        assert!(acts.contains(&Act::Withdraw { id: q[0].0 }));
+        assert!(asks.answered(q[0].0, Some(0)).is_none(), "a late Allow click finds nothing to save");
+        // Still the same page: nothing happens.
+        let q = asked(&asks.plan_flush(vec![prep(req(1, 2, 4, "https://a.b/"), &[])], SYS));
+        assert!(asks.dismiss(&|_| Some(7)).is_empty());
+        // The pane closed.
+        let acts = asks.pane_gone(1);
+        assert_eq!(acts, vec![Act::Withdraw { id: q[0].0 }]);
+        // Backstop: an answer for a page that has moved on saves nothing.
+        let q = asked(&asks.plan_flush(vec![prep(req(1, 3, 4, "https://a.b/"), &[])], SYS));
+        let s = asks.answered(q[0].0, Some(0)).unwrap();
+        assert!(s.any_live(&|_| Some(7)) && !s.any_live(&|_| Some(9)) && !s.any_live(&|_| None));
+    }
+
+    #[test]
+    fn profile_changes_follow_iterm2() {
+        let origin = "https://a.b";
+        let reset = |k: i32| (k, origin.to_string(), bp::STATE_DEFAULT);
+        let fx = effects(&Op::Revoke(Notification), origin);
+        assert_eq!((fx.states, fx.reload), (vec![reset(4)], true));
+        let fx = effects(&Op::Revoke(Camera), origin);
+        assert_eq!((fx.states, fx.reload), (vec![], true), "media is never mirrored but the pages still reload");
+        let fx = effects(&Op::RevokeAll(vec![Notification, Geolocation, Camera, AudioPlayback]), origin);
+        assert_eq!((fx.states, fx.reload), (vec![reset(4), reset(3)], true));
+        let fx = effects(&Op::Reset(Geolocation), origin);
+        assert_eq!((fx.states, fx.reload), (vec![reset(3)], false), "Reset reloads nothing (BVC:1075-1079)");
+        // A pane on the origin reloads at once, any other runs the sweep.
+        let panes = vec![(1, "https://a.b/x".to_string()), (2, "https://c.d/".to_string())];
+        assert_eq!(reload_plan(&panes, origin), vec![(1, Reload::Now), (2, Reload::Sweep)]);
+    }
+
+    #[test]
+    fn the_start_up_sync_fails_closed() {
+        // A clipboard grant is kept; with an empty database nothing is sent for it.
+        assert!(sync_for(&[(6, "https://a.b".into(), 1)], Some(&[])).is_empty());
+        // A stale grant the table does not hold is reset; one it holds as Denied becomes Deny.
+        let rows = [("https://c.d".to_string(), Notification, Decision::Denied)];
+        let states = [(4, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
+        assert_eq!(sync_for(&states, Some(&rows)), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 2)]);
+        // An unreadable table wants nothing: no Allow of kinds 1 to 4 survives.
+        assert_eq!(sync_for(&states, None), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 0)]);
+        // Newest-first rows: the newest wins.
+        let rows = [("https://a.b".to_string(), Notification, Decision::Denied), ("https://a.b".to_string(), Notification, Decision::Granted)];
+        assert_eq!(sync_for(&[], Some(&rows)), vec![(4, "https://a.b".to_string(), 2)]);
+        // Once per environment; an incomplete read or a lost environment reads again.
+        let mut s = SyncState::default();
+        assert!(s.due(false) && !s.due(false) && s.due(true));
+        s.retry(false);
+        assert!(s.due(false));
+        s.lost(true);
+        assert!(s.due(true));
+    }
+
+    #[test]
+    fn revocation_is_wired() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(prod.contains("db.revoke_permission(origin, t)") && prod.contains("db.reset_permission(origin, t)") && prod.contains("db.revoke_all_permissions(origin)"));
+        assert!(prod.contains("self.browser_js_call(") && prod.contains("bp::frame_origins(&v)") && prod.contains("bp::check_iframe_origins_js()"), "the one sweep script runs in the isolated world");
+        let ev = include_str!("browser_app.rs");
+        assert!(ev.contains("self.sync_permission_states(dev_null)") && ev.contains("self.permission_states_read(pane, states, *complete)"));
+        let rd = include_str!("browser_reader_app.rs");
+        assert!(rd.contains("self.browser_permission_dismiss()"), "a navigation dismisses the question");
+        assert!(include_str!("webhost_app.rs").contains("self.perm_sync.lost("), "a lost environment is synced again");
+        // The dev-null store never reaches the shared profile: calls pick the view by store.
+        assert!(prod.contains("self.pane_dev_null(**p) == dev_null"));
     }
 }

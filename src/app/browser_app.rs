@@ -612,6 +612,9 @@ impl App {
                     bv.world.controller_ready(Instant::now());
                     bv.restarts.succeeded();
                 }
+                // The first view of an environment rewrites the profile's permission states (13x6).
+                let dev_null = self.pane_dev_null(pane);
+                self.sync_permission_states(dev_null);
             }
             // The view could not be made: remade from the URL within the budget.
             Event::Failed(view, _) => {
@@ -644,7 +647,8 @@ impl App {
                     v.notification_report(*token, crate::webhost_win::NoteReport::Release);
                 }
             }
-            Event::NotificationClosed { .. } | Event::AudioPlaying { .. } | Event::PermissionStates { .. } => {}
+            Event::NotificationClosed { .. } | Event::AudioPlaying { .. } => {}
+            Event::PermissionStates { states, complete, .. } => self.permission_states_read(pane, states, *complete),
             // Everything a page's script says, the world's events and the calls' answers: the router.
             _ => {
                 self.browser_script_event(pane, e);
