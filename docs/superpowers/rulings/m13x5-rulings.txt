@@ -80,3 +80,9 @@ c. A surplus layout-monitor enable while a disable is outstanding can cost one e
 d. A POST result restored from the back-forward cache is treated as GET (R13x5-18).
 e. An imported Make Hyperlink template such as https://evil.example/?q=\0 turns page text into a link the person may click, and Highlight with equal text and background colors can hide matched text, as the terminal triggers do (R13x5-12).
 f. The runtime probe passed 41 of 41 on 2026-10-10 (Probe line above); R13x5-42's claims are verified.
+
+Carried to 13y2 (final review minors, no change in 13x5):
+- M6: the second include_str! of the copied script (byte-identical, tested equal) is style only.
+- M7: the refused-workgroup log line is written each pass (bounded by the dedupe); noisy, not silent.
+- M8: an orphan layout monitor after a same-document NavigationCompleted disables itself after one post, posts are gated at 1/s, and iTerm2 behaves the same.
+M4 is fixed in 13x5: a failed navigation (NavigationCompleted with IsSuccess false) serves the stored trigger list again to the document still showing, under the same guards as a profile edit (served, not iterm2-about:, client open, current epoch). A navigation that completes with IsSuccess true but no commit is not detected (no event tells it apart); that residual is carried to 13y2.

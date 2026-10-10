@@ -84,6 +84,28 @@ impl App {
         }
     }
 
+    /// A navigation failed or never committed: the document still showing keeps its engine and its list,
+    /// but the epoch moved on at `Starting`, so serve the same list again under the new epoch (M4).
+    /// Nothing is sent to a page that never asked, to an `iterm2-about:` page, or with the client closed.
+    pub(super) fn browser_triggers_navigation_failed(&mut self, pane: PaneId) {
+        let page = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+        let Some(bv) = self.browser_views.get(&pane) else { return };
+        let Some(loaded) = bv.triggers.clone() else { return };
+        if !bv.trigger_gate.is_served() || !bt::resend_allowed(&page) || !self.client_open(pane) {
+            return;
+        }
+        let epoch = bv.marks_method.epoch();
+        let call = bt::set_triggers_call(&loaded);
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.trigger_gate.serve(epoch);
+        }
+        self.browser_js_call(pane, &call.body, call.args, Box::new(|_, _, r| {
+            if let Err(e) = r {
+                log_js_failure(&e);
+            }
+        }));
+    }
+
     /// One `iTerm2Trigger` message from a page. Heard only from the isolated world's main frame, from a
     /// proven world, never for one of Tandem's own pages; the secret is checked by `message_of`.
     pub(super) fn browser_trigger_message(&mut self, pane: PaneId, r: &Routed) {
@@ -256,6 +278,21 @@ mod tests {
         assert!(effect.find("effect_allowed").unwrap() < effect.find("browser_js_call").unwrap());
         let pure = prod(include_str!("../browser_triggers.rs"));
         assert!(pure.contains("triggers::hyperlink_url_ok(param)?") && pure.contains("delay_ok(param)?"));
+    }
+
+    /// Final review M4: a navigation that fails (download, Stop, 204, cancelled) leaves the old document
+    /// showing, but `Starting` began a new epoch, so its matches would be refused for good. The failed
+    /// `Navigated` serves the list again to that document under the same guards as a profile edit.
+    #[test]
+    fn a_failed_navigation_serves_the_list_again() {
+        let me = prod(include_str!("browser_triggers_app.rs"));
+        let again = between(me, "pub(super) fn browser_triggers_navigation_failed", "\n    }\n");
+        assert!(again.contains("trigger_gate.is_served()") && again.contains("bt::resend_allowed(&page)") && again.contains("self.client_open(pane)"));
+        assert!(again.contains("marks_method.epoch()") && again.contains("trigger_gate.serve(epoch)") && again.contains("set_triggers_call(&loaded)"));
+        assert!(again.contains("bv.triggers.clone()"), "the stored list, so imported risky triggers stay as the person left them");
+        let app = prod(include_str!("browser_app.rs"));
+        let nav = between(app, "Event::Navigated { ok, nav, .. } => {", "self.browser_marks_navigated(pane, *ok, *nav);");
+        assert!(nav.contains("if !*ok {") && nav.contains("self.browser_triggers_navigation_failed(pane);"));
     }
 
     /// The resend follows the profile's browser triggers only, and keeps the secret.

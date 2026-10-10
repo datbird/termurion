@@ -550,6 +550,8 @@ impl App {
                 // `BM:1390`: a failed navigation turns copy mode off.
                 if !*ok {
                     self.browser_copy_mode_set(pane, false);
+                    // The old document stays but the epoch moved on: serve its triggers again (M4).
+                    self.browser_triggers_navigation_failed(pane);
                 }
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.failed = !*ok;
