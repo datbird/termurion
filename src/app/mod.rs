@@ -160,6 +160,7 @@ mod browser_find_app;
 mod browser_copymode_app;
 mod adblock_app;
 mod browser_db_app;
+mod browser_perms_app;
 mod browser_reader_app;
 mod devtools_read_app;
 mod view_source_app;
@@ -1338,6 +1339,8 @@ pub struct App {
     uv_installed: bool,
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
+    /// Open site-permission questions and the tick's requests (app-wide, 13x6).
+    perm_asks: browser_perms_app::Asks,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
     /// Checking for updates (M13v2): the worker, the window, the next scheduled check, whether the
     /// check in flight is the person's, and the view waiting to show. App-wide, never per window.
@@ -2527,6 +2530,7 @@ pub fn run() {
         backend_probes: Vec::new(),
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
+        perm_asks: Default::default(),
         scripts_alert: None,
         update_checker: None,
         update_window: None,

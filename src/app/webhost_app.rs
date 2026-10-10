@@ -301,6 +301,8 @@ impl App {
                 self.web_route(event, event_loop);
             }
         }
+        // Grouping works across one drain (a camera and microphone request may be two events).
+        self.flush_permission_requests();
     }
 
     /// A held focus (a web view has keyboard focus, so the parent saw `Focused(false)` while still the

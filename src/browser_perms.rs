@@ -285,6 +285,93 @@ pub fn normalize_origin(url: &str) -> Option<String> {
     }
 }
 
+/// Whether Windows lets desktop programs use a feature: read from the privacy switches, never
+/// prompted (no per-app "not determined" state exists for a desktop program).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum System {
+    Allowed,
+    Denied,
+}
+
+/// `HKCU Software\Microsoft\Windows\CurrentVersion\PushNotifications` `ToastEnabled`: 0 means app notifications are off, a missing value
+/// (or any other) means on.
+pub fn notifications_system(toast_enabled: Option<u32>) -> System {
+    if toast_enabled == Some(0) {
+        System::Denied
+    } else {
+        System::Allowed
+    }
+}
+
+/// The three `ConsentStore\location` values (machine, user, desktop apps): "Deny" in any of them
+/// means denied.
+pub fn location_system(machine: Option<&str>, user: Option<&str>, non_packaged: Option<&str>) -> System {
+    if [machine, user, non_packaged].into_iter().flatten().any(|v| v.eq_ignore_ascii_case("Deny")) {
+        System::Denied
+    } else {
+        System::Allowed
+    }
+}
+
+/// What a request becomes (`BPM:25-59`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Plan {
+    /// A saved decision answers, with no dialog.
+    Answer(Decision),
+    /// Refused with no dialog and nothing saved (a system switch is off).
+    Deny,
+    /// The dialog asks, and its answer is saved.
+    Ask(PermissionType),
+    /// A type iTerm2 never asks about: the caller refuses it (default deny is total).
+    Default,
+}
+
+/// `requestPermission` (`BPM:25-59`): the saved decision of the exact type first, then the system
+/// switch for notifications and location (`BPM:164-214`), then the dialog (`BPM:150-162`).
+pub fn plan(t: Option<PermissionType>, saved: Option<Decision>, system: System) -> Plan {
+    let Some(t) = t else { return Plan::Default };
+    if t == PermissionType::AudioPlayback {
+        // Audio playback is never asked through the manager (`BPM:51-52`).
+        return Plan::Default;
+    }
+    if let Some(d) = saved {
+        return Plan::Answer(d);
+    }
+    match t {
+        PermissionType::Notification | PermissionType::Geolocation if system == System::Denied => Plan::Deny,
+        t => Plan::Ask(t),
+    }
+}
+
+/// The one question that covers requests drained together (`BPM:96-119`): camera with microphone
+/// is `CameraAndMicrophone`, else the first type. An empty list (never passed) is
+/// `AudioPlayback`, which `plan` refuses.
+pub fn group(kinds: &[PermissionType]) -> PermissionType {
+    use PermissionType::{Camera, CameraAndMicrophone, Microphone};
+    if kinds.contains(&CameraAndMicrophone) || (kinds.contains(&Camera) && kinds.contains(&Microphone)) {
+        return CameraAndMicrophone;
+    }
+    kinds.first().copied().unwrap_or(PermissionType::AudioPlayback)
+}
+
+/// What a dialog's answer is (`BPM:224-225`) and whether it is saved: Allow (0) and Block (1) are
+/// saved; a closed window (None) or any other index blocks this request and saves nothing, so a
+/// close never grants.
+pub fn answer_of(index: Option<usize>) -> (Decision, bool) {
+    match index {
+        Some(0) => (Decision::Granted, true),
+        Some(1) => (Decision::Denied, true),
+        _ => (Decision::Denied, false),
+    }
+}
+
+/// The host answer for a decision of type `t`; `saved` says the decision is in the database.
+/// `saves` (WebView2 keeps the state in its profile) only for the kinds a page reads synchronously.
+/// (Task 1's `answer_for` is the by-kind rule; this one is the dialog's.)
+pub fn perm_answer(t: PermissionType, d: Decision, saved: bool) -> crate::webhost::PermAnswer {
+    crate::webhost::PermAnswer::State { state: state_of(Some(d)), saves: saved && !kinds_of(t).is_empty() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +547,55 @@ mod tests {
         // A missing or unparsable stored row is no consent.
         assert_eq!(Decision::parse("allow"), None);
         assert_eq!(Decision::parse("1"), None);
+    }
+
+    #[test]
+    fn request_plan_follows_iterm2() {
+        use Decision::*;
+        use PermissionType::*;
+        assert_eq!(plan(Some(Camera), Some(Granted), System::Allowed), Plan::Answer(Granted));
+        assert_eq!(plan(Some(Camera), Some(Denied), System::Denied), Plan::Answer(Denied));
+        assert_eq!(plan(Some(Notification), None, System::Denied), Plan::Deny);
+        assert_eq!(plan(Some(Geolocation), None, System::Denied), Plan::Deny);
+        assert_eq!(plan(Some(Geolocation), None, System::Allowed), Plan::Ask(Geolocation));
+        assert_eq!(plan(Some(Camera), None, System::Denied), Plan::Ask(Camera));
+        assert_eq!(plan(None, None, System::Allowed), Plan::Default);
+        assert_eq!(plan(Some(AudioPlayback), Some(Granted), System::Allowed), Plan::Default, "never asked through the manager");
+    }
+
+    #[test]
+    fn system_state_follows_windows() {
+        assert_eq!(notifications_system(Some(0)), System::Denied);
+        assert_eq!(notifications_system(Some(1)), System::Allowed);
+        assert_eq!(notifications_system(None), System::Allowed);
+        assert_eq!(location_system(Some("Allow"), Some("Allow"), None), System::Allowed);
+        assert_eq!(location_system(Some("Deny"), None, None), System::Denied);
+        assert_eq!(location_system(None, Some("Deny"), None), System::Denied);
+        assert_eq!(location_system(None, None, Some("Deny")), System::Denied);
+        assert_eq!(location_system(None, None, None), System::Allowed);
+    }
+
+    #[test]
+    fn requests_group_as_iterm2() {
+        use PermissionType::*;
+        assert_eq!(group(&[Camera]), Camera);
+        assert_eq!(group(&[Microphone, Camera]), CameraAndMicrophone);
+        assert_eq!(group(&[Camera, Camera]), Camera);
+        assert_eq!(group(&[Notification]), Notification);
+        assert_eq!(group(&[]), AudioPlayback, "an empty list is refused by plan");
+    }
+
+    #[test]
+    fn dialog_answer_follows_iterm2() {
+        use crate::webhost::PermAnswer::State;
+        use PermissionType::*;
+        assert_eq!(answer_of(Some(0)), (Decision::Granted, true));
+        assert_eq!(answer_of(Some(1)), (Decision::Denied, true));
+        assert_eq!(answer_of(None), (Decision::Denied, false));
+        assert_eq!(answer_of(Some(2)), (Decision::Denied, false));
+        assert_eq!(perm_answer(Notification, Decision::Granted, true), State { state: 1, saves: true });
+        assert_eq!(perm_answer(Geolocation, Decision::Denied, true), State { state: 2, saves: true });
+        assert_eq!(perm_answer(Camera, Decision::Granted, true), State { state: 1, saves: false });
+        assert_eq!(perm_answer(Notification, Decision::Denied, false), State { state: 2, saves: false });
     }
 }

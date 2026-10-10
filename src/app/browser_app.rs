@@ -16,6 +16,9 @@ use crate::webhost_win::{ViewSetup, WebView};
 
 /// The view of one browser pane.
 pub(super) struct BrowserView {
+    /// Permission and audio state that belongs to the pane (13x6).
+    #[allow(dead_code)] // Task 7
+    pub(super) perms: crate::app::browser_perms_app::PaneState,
     /// None until the environment exists (and again after a window closed its views).
     pub(super) view: Option<WebView>,
     pub(super) id: ViewId,
@@ -245,7 +248,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         true
     }
 
@@ -432,6 +435,7 @@ impl App {
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
+        self.browser_permission_pane_gone(pane);
         self.browser_bars_end(pane);
         self.browser_reset_world(pane);
         if let Some(bv) = self.browser_views.remove(&pane) {
@@ -632,14 +636,9 @@ impl App {
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
                 self.browser_script_event(pane, e);
             }
-            // Permissions, notifications and audio (13x6 Task 3). Until the permission flow lands
-            // (Tasks 4 to 7) nothing is granted and nothing is shown: a request is refused, a notification
-            // released, so no deferral or held object outlives its event (pre-flight B3).
-            Event::Permission { token, .. } => {
-                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                    v.answer_permission(*token, webhost::PermAnswer::Deny);
-                }
-            }
+            // Permissions, notifications and audio (13x6). A permission request is held for the tick's
+            // flush (Task 4); until Tasks 6 and 7 a notification is released unshown.
+            Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
             Event::NotificationShown { token, .. } => {
                 if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                     v.notification_report(*token, crate::webhost_win::NoteReport::Release);
