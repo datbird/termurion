@@ -88,7 +88,7 @@ impl Fs for RealFs {
 }
 
 /// Whether any folder or the file of `path` is a Win32 DOS device name (CON, PRN, AUX, NUL, CONIN$,
-/// CONOUT$, COM1-9, LPT1-9, with any extension, trailing spaces or colon): Windows opens the device,
+/// CONOUT$, COM0-9, LPT0-9, with any extension, trailing spaces or colon): Windows opens the device,
 /// not a file, and an LPTn or COMn may be redirected to a share.
 pub fn is_device_name(path: &Path) -> bool {
     path.components().any(|c| matches!(c, std::path::Component::Normal(name) if crate::inert_files::is_device_name(&name.to_string_lossy())))
@@ -638,18 +638,18 @@ mod tests {
         assert!(stays_local(Path::new(r"C:\Windows\notepad.exe")));
     }
 
-    /// Review fix 4: a Win32 DOS device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with any
+    /// Review fix 4: a Win32 DOS device name (CON, PRN, AUX, NUL, COM0-9, LPT0-9, with any
     /// extension, in any folder of the path) is never a local file: opening it would touch a
     /// device, possibly one redirected to a share.
     #[test]
     fn dos_device_names_are_never_local_files() {
         let drives = Remote(&[]);
         let none = |_: &Path| None;
-        for p in [r"C:\x\NUL", r"C:\x\nul.ps1", r"C:\x\Con.txt", r"C:\x\aux.tar.gz", r"C:\x\LPT1", r"C:\x\com9.ps1", r"C:\x\prn .ps1", r"C:\x\NUL:", r"C:\x\lpt3\f.ps1", r"CON", r"C:\x\CONIN$", r"C:\x\conout$.ps1", "C:\\x\\COM\u{b9}", "C:\\x\\lpt\u{b2}.ps1", "C:\\x\\LPT\u{b3}\\f", "C:\\x\\com\u{b3}:"] {
+        for p in [r"C:\x\NUL", r"C:\x\nul.ps1", r"C:\x\Con.txt", r"C:\x\aux.tar.gz", r"C:\x\LPT1", r"C:\x\COM0", r"C:\x\lpt0.ps1", r"C:\x\com9.ps1", r"C:\x\prn .ps1", r"C:\x\NUL:", r"C:\x\lpt3\f.ps1", r"CON", r"C:\x\CONIN$", r"C:\x\conout$.ps1", "C:\\x\\COM\u{b9}", "C:\\x\\lpt\u{b2}.ps1", "C:\\x\\LPT\u{b3}\\f", "C:\\x\\com\u{b3}:"] {
             assert!(is_device_name(Path::new(p)), "{p}");
             assert!(!stays_local_with(Path::new(p), &none, &drives), "{p}");
         }
-        for p in [r"C:\x\console.ps1", r"C:\x\COM0", r"C:\x\COM10", r"C:\x\LPT", r"C:\x\nulx", r"C:\x\a.nul", r"C:\x\s.ps1", "C:\\x\\COM\u{b9}\u{b9}", "C:\\x\\LPT\u{2074}"] {
+        for p in [r"C:\x\console.ps1", r"C:\x\COM10", r"C:\x\LPT", r"C:\x\nulx", r"C:\x\a.nul", r"C:\x\s.ps1", "C:\\x\\COM\u{b9}\u{b9}", "C:\\x\\LPT\u{2074}"] {
             assert!(!is_device_name(Path::new(p)), "{p}");
             assert!(stays_local_with(Path::new(p), &none, &drives), "{p}");
         }

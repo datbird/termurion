@@ -38,15 +38,6 @@ pub fn refused_extension(name: &str) -> bool {
     crate::inert_files::high_risk(name)
 }
 
-/// `COM0`..`COM9` and `LPT0`..`LPT9` too; `is_device_name` is the owner of the rest.
-fn reserved_stem(name: &str) -> bool {
-    if is_device_name(name) {
-        return true;
-    }
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
-    stem == "COM0" || stem == "LPT0"
-}
-
 /// Cuts a name to `max` UTF-16 units, keeping a short extension, never splitting a surrogate pair;
 /// trailing dots and spaces left by the cut go.
 fn cap(name: &str, max: usize) -> String {
@@ -107,7 +98,7 @@ fn sanitize_with(name: &str, neutralize: bool) -> String {
     if s.is_empty() {
         s = "resource".to_string();
     }
-    if reserved_stem(&s) {
+    if is_device_name(&s) {
         s.insert(0, '_');
     }
     if neutralize && refused_extension(&s) {
@@ -124,7 +115,7 @@ fn sanitize_with(name: &str, neutralize: bool) -> String {
 fn final_ok(s: &str, file: bool) -> bool {
     units(s) <= MAX_NAME_UNITS
         && !s.is_empty()
-        && !reserved_stem(s)
+        && !is_device_name(s)
         && !crate::settings_export::aliased(s)
         && (!file || (!refused_extension(s) && !crate::inert_files::refused_on_listing(s)))
 }

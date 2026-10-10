@@ -50,7 +50,7 @@ fn corrupt() -> String {
 }
 
 /// Whether one part of a path is a Windows device name (CON, PRN, AUX, NUL, CONIN$,
-/// CONOUT$, COM1-9 and LPT1-9 with the superscript digits too), with any extension: the
+/// CONOUT$, COM0-9 and LPT0-9 with the superscript digits too), with any extension: the
 /// part before its first dot, trailing spaces ignored, as Windows reads it.
 pub fn device_name(part: &str) -> bool {
     crate::inert_files::is_device_name(part)
@@ -742,10 +742,10 @@ pub(crate) mod tests {
 
     #[test]
     fn device_names_follow_windows() {
-        for d in ["CON", "con", "Con.txt", "PRN", "AUX", "NUL", "COM9", "LPT1", "COM\u{b2}", "LPT\u{b3}", "CONIN$", "CONOUT$", "NUL .txt", "aux.tar.gz"] {
+        for d in ["CON", "con", "Con.txt", "PRN", "AUX", "NUL", "COM9", "LPT1", "COM\u{b2}", "LPT\u{b3}", "COM0", "lpt0.txt", "CONIN$", "CONOUT$", "NUL .txt", "aux.tar.gz"] {
             assert!(device_name(d), "{d}");
         }
-        for n in ["CONSOLE", "COM0", "COM10", "LPT", "xCON", "nul_", "com1x"] {
+        for n in ["CONSOLE", "COM10", "LPT", "xCON", "nul_", "com1x"] {
             assert!(!device_name(n), "{n}");
         }
         assert_eq!(bad_part("tool"), None);

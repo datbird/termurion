@@ -1697,12 +1697,12 @@ mod tests {
     /// Item 2: every Windows device name, any case, with any extension, trailing dots and spaces.
     #[test]
     fn every_device_name_is_taken() {
-        for name in ["CONIN$", "conout$", "CONIN$.log", "ConOut$.txt", "COM\u{b9}", "com\u{b2}.log", "LPT\u{b3}", "lpt\u{b9}.txt", "COM\u{b3}.log.", "CONOUT$ .log", "PRN.", "aux .x", "COM9", "lpt1.a.b"] {
+        for name in ["CONIN$", "conout$", "CONIN$.log", "ConOut$.txt", "COM\u{b9}", "com\u{b2}.log", "LPT\u{b3}", "lpt\u{b9}.txt", "COM\u{b3}.log.", "CONOUT$ .log", "PRN.", "aux .x", "COM9", "lpt1.a.b", "COM0.log", "lpt0"] {
             let safe = safe_file_name(name);
             assert!(safe.starts_with('_'), "{name:?} -> {safe:?}");
         }
         // Not devices.
-        for name in ["CONIN.log", "CONOUT.log", "COM0.log", "COM.log", "COM\u{b4}.log", "LPT10", "CONIN$$.log", "xCON.log"] {
+        for name in ["CONIN.log", "CONOUT.log", "COM.log", "COM\u{b4}.log", "LPT10", "CONIN$$.log", "xCON.log"] {
             assert_eq!(safe_file_name(name), name, "{name:?}");
         }
     }

@@ -83,14 +83,14 @@ pub fn refused_path(path: &str) -> bool {
     rest.contains(':') || refused_on_listing(last) || parts.any(is_device_name)
 }
 
-/// Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1` to `COM9`, `LPT1`
-/// to `LPT9`), which no file may be called, with or without an extension, in any case.
+/// Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0` to `COM9`, `LPT0`
+/// to `LPT9`, and COM/LPT with a superscript 1, 2 or 3), which no file may be called, with or without an extension, in any case.
 pub fn is_device_name(name: &str) -> bool {
     // The one device-name rule (scripts::is_device_name and zip_check::device_name call it): the part
     // before the first dot, trailing spaces and colons ignored, as Windows reads it.
     let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', ':']).to_ascii_uppercase();
-    // COM and LPT take the superscript digits too (Microsoft's "Naming Files").
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.chars().count() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.chars().nth(3), Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')))
+    // COM and LPT take 0 and the superscript digits too (Microsoft's "Naming Files").
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || (stem.chars().count() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.chars().nth(3), Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')))
 }
 
 /// The mark Windows puts on a download (`ZoneId=3`, the Internet zone).
@@ -271,14 +271,16 @@ mod tests {
         for bad in ["con", "CON", "con.txt", "Nul.", "aux.tar.gz", "PRN ", "COM1", "com9.log", "lpt1", "LPT9.x", "conin$", "CONOUT$", r"D:\a\NUL", "sub/con.txt"] {
             assert!(refused_path(bad), "{bad:?}");
         }
-        for fine in ["console.txt", "com10", "COM0", "lpt", "a.con", "nulls.txt", "prn_x", "auxiliary"] {
+        for fine in ["console.txt", "com10", "lpt", "a.con", "nulls.txt", "prn_x", "auxiliary", "COM\u{b9}0", "LPT00"] {
             assert!(!refused_on_listing(fine), "{fine:?}");
             assert!(!is_device_name(fine), "{fine:?}");
         }
         assert!(is_device_name("con.txt") && is_device_name("LPT3") && is_device_name("NUL:"));
         // The superscript digits are devices too, and a device name as a folder is refused.
-        for bad in ["COM\u{b9}", "com\u{b2}.txt", "COM\u{b3}", "LPT\u{b9}", "lpt\u{b2}", "LPT\u{b3}.log"] {
+        // COM0 and LPT0 too (Microsoft's "Naming Files"; Task 8 review I3: the one device rule).
+        for bad in ["COM0", "lpt0.txt", "Com0 .log", "COM\u{b9}", "com\u{b2}.txt", "COM\u{b3}", "LPT\u{b9}", "lpt\u{b2}", "LPT\u{b3}.log"] {
             assert!(is_device_name(bad) && refused_on_listing(bad), "{bad:?}");
+            assert!(crate::settings_export::aliased(bad) && crate::page_saver::sanitize(bad).starts_with('_'), "{bad:?}");
         }
         for bad in [r"sub\con\x.txt", "aux/x.txt", r"D:\a\COM1\b.txt", r"C:\Users\Nul.d\a.txt", "C:\\x\\LPT\u{b9}\\a"] {
             assert!(refused_path(bad), "{bad:?}");

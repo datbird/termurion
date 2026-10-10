@@ -550,8 +550,9 @@ mod tests {
             ("CONSOLE", "CONSOLE"),
             ("COM10", "COM10"),
             ("COMa", "COMa"),
-            // The built rule (inert_files) says COM0 and LPT0 are not device names.
-            ("COM0", "COM0"),
+            // The one rule (inert_files) takes COM0 and LPT0 too (Task 8 review I3).
+            ("COM0", "_COM0"),
+            ("lpt0.txt", "_lpt0.txt"),
         ] {
             let r = clean_name(name);
             assert_eq!(r, want, "{name:?}");
