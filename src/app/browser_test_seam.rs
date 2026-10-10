@@ -3,6 +3,9 @@
 //! answer from a queue at once, so a test sees which runner a feature used and what it sent. The
 //! AI browser tools plan consumes it, and 13x5 reuses it (one seam).
 
+// The seam is test plumbing: release builds compile it but never use it.
+#![allow(dead_code)]
+
 use super::browser_scripts_app::JsDone;
 use super::*;
 use serde_json::Value;
