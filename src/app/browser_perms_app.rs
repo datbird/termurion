@@ -416,6 +416,25 @@ pub(super) fn page_may_load(restoring: bool, synced: bool) -> bool {
     !restoring && synced
 }
 
+/// After an INCOMPLETE read, resets for the non-default entries of the kinds the sync never mirrors
+/// (0 and 5 to 12): the host denies those kinds whatever the profile says, and resetting them
+/// shrinks a profile over the read's cap (`MAX_PERMISSION_STATES`, legacy entries from before
+/// 13x6) so a later read can be complete and the store's pages may load. A complete read never
+/// touches them.
+pub(super) fn shrink_for(states: &[(i32, String, i32)], complete: bool) -> Vec<(i32, String, i32)> {
+    if complete {
+        return Vec::new();
+    }
+    let mut out: Vec<(i32, String, i32)> = Vec::new();
+    for (kind, origin, state) in states {
+        let reset = (*kind, origin.clone(), bp::STATE_DEFAULT);
+        if !(1..=4).contains(kind) && *state != bp::STATE_DEFAULT && !out.contains(&reset) {
+            out.push(reset);
+        }
+    }
+    out
+}
+
 /// The plan for a profile read: the table decides kinds 1 to 4. An unreadable table wants
 /// nothing, so no grant of those kinds survives (fail closed).
 pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<&[(String, PermissionType, Decision)]>) -> Vec<(i32, String, i32)> {
@@ -703,7 +722,8 @@ impl App {
     pub(super) fn permission_states_read(&mut self, pane: PaneId, view: ViewId, states: &[(i32, String, i32)], complete: bool) {
         let dev_null = self.pane_dev_null(pane);
         let rows: Option<Vec<_>> = self.browser_db(dev_null).map(|db| db.all_permissions().into_iter().map(|r| (r.origin, r.kind, r.decision)).collect());
-        let plan = sync_for(states, rows.as_deref());
+        let mut plan = sync_for(states, rows.as_deref());
+        plan.extend(shrink_for(states, complete));
         let Some(outs) = self.perm_queue(dev_null).read_answer(view, plan, complete) else { return };
         if !complete {
             crate::dlog!("webhost: the profile read was incomplete ({} states); read again", states.len());
@@ -1188,6 +1208,12 @@ mod tests {
         let rows = [("https://c.d".to_string(), Notification, Decision::Denied)];
         let states = [(4, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
         assert_eq!(sync_for(&states, Some(&rows)), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 2)]);
+        // An incomplete read also resets the other kinds it saw (the host denies them all anyway),
+        // so a profile over the read's cap shrinks and the next read can be complete.
+        let legacy = [(6, "https://a.b".to_string(), 1), (4, "https://c.d".to_string(), 1)];
+        assert_eq!(shrink_for(&legacy, false), vec![(6, "https://a.b".to_string(), 0)]);
+        assert!(shrink_for(&legacy, true).is_empty(), "a complete read never touches them");
+        assert!(shrink_for(&[(6, "https://a.b".to_string(), 0)], false).is_empty());
         // An unreadable table wants nothing: no Allow of kinds 1 to 4 survives.
         assert_eq!(sync_for(&states, None), vec![(4, "https://a.b".to_string(), 0), (4, "https://c.d".to_string(), 0)]);
         // Newest-first rows: the newest wins.
