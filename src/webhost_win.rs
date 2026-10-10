@@ -415,6 +415,10 @@ impl Env {
 /// How one view is made. Always built with `..Default::default()`: later plans add fields.
 #[derive(Clone, Debug, Default)]
 pub struct ViewSetup {
+    /// The browser pane's permission sync gate (`perm_queue::ProfileQueue::gate`): while it reads
+    /// false the main-frame NavigationStarting handler cancels and parks every navigation
+    /// (`webhost::nav_parked`). None: always open.
+    pub nav_gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// `WebUserAgent`'s setting: Some(setting) applies `webhost::user_agent(setting, engine)` (an
     /// empty setting keeps the engine's agent with "Tandem" appended); None leaves the engine's own.
     pub user_agent: Option<String>,
@@ -1563,6 +1567,16 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             }
             (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone() }, by_tandem)
         };
+        // The permission sync gate (13x6): a store whose profile was not synced from the table lets
+        // no page navigate (a stale profile grant would work with no question): cancelled, the TARGET
+        // posted for the app to load after the sync.
+        let gate = inner.borrow().setup.nav_gate.as_ref().map(|g| g.load(std::sync::atomic::Ordering::SeqCst));
+        if webhost::nav_parked(gate, &uri, by_tandem) {
+            let _ = unsafe { args.SetCancel(true) };
+            let i = inner.borrow();
+            i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0 });
+            return Ok(());
+        }
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
         let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };

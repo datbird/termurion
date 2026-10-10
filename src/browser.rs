@@ -1220,6 +1220,11 @@ impl NavList {
         }
     }
 
+    /// The step Tandem expected was cancelled (a parked navigation): nothing is pending.
+    pub fn forget_expected(&mut self) {
+        self.pending = None;
+    }
+
     /// Tandem is about to go `steps` entries (negative is back).
     pub fn expect(&mut self, steps: i32) {
         self.pending = Some(steps);

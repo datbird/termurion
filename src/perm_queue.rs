@@ -72,6 +72,9 @@ pub struct ProfileQueue {
     /// The head item is in flight on this view under this sequence number.
     flight: Option<(ViewId, u64)>,
     sync: Sync,
+    /// True exactly while `sync` is Done: the browser views' navigation handler reads it (the one
+    /// owner of the page gate, `webhost_win::starting_handler`).
+    gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Failed sync tries in a row.
     sync_tries: u8,
 }
@@ -138,7 +141,7 @@ impl ProfileQueue {
                     Some(Item::Answer { pane, token, epoch, answer, .. }) => out.push(Out::Answer { pane, token, epoch, answer }),
                     Some(Item::Reload { origin }) => out.push(Out::Reload { origin }),
                     Some(Item::Synced) if self.sync == Sync::Pending => {
-                        self.sync = Sync::Done;
+                        self.set_sync(Sync::Done);
                         self.sync_tries = 0;
                         out.push(Out::Synced);
                     }
@@ -230,7 +233,7 @@ impl ProfileQueue {
     fn sync_failed(&mut self, at: Option<usize>) -> Vec<Out> {
         self.items.retain(|i| *i != Item::Synced);
         if self.sync == Sync::Done {
-            self.sync = Sync::Pending;
+            self.set_sync(Sync::Pending);
             self.sync_tries = 0;
         }
         if self.sync != Sync::Pending {
@@ -238,7 +241,7 @@ impl ProfileQueue {
         }
         self.sync_tries += 1;
         if self.sync_tries >= SYNC_TRIES {
-            self.sync = Sync::GaveUp;
+            self.set_sync(Sync::GaveUp);
             self.items.retain(|i| *i != Item::Read);
             return vec![Out::GaveUp];
         }
@@ -257,9 +260,19 @@ impl ProfileQueue {
         if matches!(self.sync, Sync::Pending | Sync::Done) {
             return;
         }
-        self.sync = Sync::Pending;
+        self.set_sync(Sync::Pending);
         self.sync_tries = 0;
         self.read();
+    }
+
+    fn set_sync(&mut self, s: Sync) {
+        self.sync = s;
+        self.gate.store(s == Sync::Done, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The flag a view's navigation handler reads: true while the store is synced.
+    pub fn gate(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.gate.clone()
     }
 
     /// Whether the store's profile was synced from the table (pages may load).
@@ -284,7 +297,7 @@ impl ProfileQueue {
     /// The environment was lost: everything queued goes; waiting answers are Denies.
     pub fn lost(&mut self) -> Vec<Out> {
         self.flight = None;
-        self.sync = Sync::Idle;
+        self.set_sync(Sync::Idle);
         self.sync_tries = 0;
         std::mem::take(&mut self.items)
             .into_iter()
@@ -544,6 +557,19 @@ mod tests {
     /// Review r1 New 1: a revoke's reset that keeps failing reloads the origin's pages, but the store
     /// is unsynced from then on, so the reload is parked by the page gate and the stale grant never
     /// runs: only a sync landing (a complete read and its plan) lets the page load again.
+    /// The navigation handler's flag follows the sync state exactly.
+    #[test]
+    fn the_gate_flag_follows_the_sync() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut q = ProfileQueue::default();
+        let g = q.gate();
+        assert!(!g.load(SeqCst));
+        q.sync();
+        assert!(!g.load(SeqCst), "asked is not done");
+        q.lost();
+        assert!(!g.load(SeqCst));
+    }
+
     #[test]
     fn a_failed_default_write_leaves_the_store_unsynced_for_the_reload_gate() {
         let mut q = ProfileQueue::default();

@@ -275,6 +275,10 @@ pub enum Event {
     /// A top-level navigation the view refused after a person's click (`refused_click`): the app
     /// judges the URL itself (a popover link goes through `guard_open`).
     Refused { view: ViewId, url: String, user: bool },
+    /// A main-frame navigation was cancelled because the store's profile permissions are not
+    /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
+    /// the app loads once the sync lands. Never dropped.
+    Parked { view: ViewId, url: String },
     /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
     /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
     /// `browser_world::Contexts` decides what a context is.
@@ -371,6 +375,7 @@ impl Event {
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
+            | Event::Parked { view, .. }
             | Event::ProcessFailed { view, .. }
             | Event::DevTools { view, .. }
             | Event::DevToolsHeld { view }
@@ -433,7 +438,7 @@ impl Event {
             Event::Starting { url, .. } => url.len(),
             Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
-            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
+            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } | Event::Parked { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             Event::Permission { uri, .. } => uri.len(),
@@ -619,6 +624,14 @@ pub fn scheme_of(url: &str) -> String {
     let end = url.find(':').unwrap_or(0);
     let s = &url[..end];
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') { s.to_ascii_lowercase() } else { String::new() }
+}
+
+/// The permission sync gate of the one main-frame NavigationStarting handler (13x6): while the
+/// view's store is not synced (`gate` Some(false)), EVERY main-frame navigation is cancelled and its
+/// target parked (history steps, native F5 and Alt+Left, page navigations, Tandem's own loads),
+/// except Tandem's own about:blank. No gate (popovers, tools) is always open.
+pub fn nav_parked(gate: Option<bool>, uri: &str, by_tandem: bool) -> bool {
+    gate == Some(false) && !(by_tandem && uri.eq_ignore_ascii_case("about:blank"))
 }
 
 /// Whether a navigation of a SUBFRAME is cancelled: any `iterm2-about:` target. The local pages
@@ -1873,6 +1886,13 @@ mod tests {
         assert!(!refused_click(&info(true, false), true), "an allowed navigation is not refused");
         let redirect = NavInfo { redirect: true, ..info(true, false) };
         assert!(!refused_click(&redirect, false), "a redirect is no click");
+        assert!(nav_parked(Some(false), "https://a.example/", false), "a page's navigation waits for the sync");
+        assert!(nav_parked(Some(false), "https://a.example/", true), "so does a Tandem load that slipped past its call site");
+        assert!(!nav_parked(Some(false), "about:blank", true), "Tandem's own blank page is the parking spot");
+        assert!(nav_parked(Some(false), "about:blank", false), "a page's blank is not Tandem's");
+        assert!(!nav_parked(Some(true), "https://a.example/", false) && !nav_parked(None, "https://a.example/", false));
+        let parked = Event::Parked { view: 4, url: "https://a.example/".into() };
+        assert_eq!((parked.view(), parked.droppable(), parked.weight()), (4, false, 18), "a parked target is never dropped");
         let ev = Event::Refused { view: 3, url: "https://a.example/".into(), user: true };
         assert_eq!(ev.view(), 3);
         assert!(ev.droppable());

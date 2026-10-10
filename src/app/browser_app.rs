@@ -322,8 +322,11 @@ impl App {
             // A view made now starts with a new world: new secrets, no contexts, no pending call.
             self.browser_reset_world(pane);
             let (page_scripts, _) = self.browser_wrapped_scripts(pane);
+            let gate = self.perm_gate(io.dev_null);
             let Some(env) = self.web_env(browser::store_of(io.dev_null)) else { return };
-            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock, page_scripts), sink);
+            let mut setup = browser_setup(io.dev_null, adblock, page_scripts);
+            setup.nav_gate = Some(gate);
+            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), setup, sink);
             view.set_zoom(if io.zoom > 0.0 { io.zoom / 100.0 } else { 1.0 });
             if focus_now {
                 view.focus();
@@ -646,6 +649,7 @@ impl App {
             }
             // Permissions, notifications and audio (13x6). A permission request is held for the tick's
             // flush (Task 4); until Tasks 6 and 7 a notification is released unshown.
+            Event::Parked { url, .. } => self.browser_navigation_parked(pane, url),
             Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
             Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
             Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
@@ -955,7 +959,6 @@ impl App {
             return;
         }
         match b {
-            Button::Back | Button::Forward if !self.browser_history_step_allowed(pane) => {}
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.expect(-1);
@@ -1013,7 +1016,7 @@ impl App {
         type Row = Option<(String, String, bool)>;
         let mut rows: Vec<Row> = Vec::new();
         let at_settings = items.iter().position(|i| matches!(i, Some(("Settings", _)))).unwrap_or(items.len());
-        let mut splice = |rows: &mut Vec<Row>| {
+        let splice = |rows: &mut Vec<Row>| {
             if !site.is_empty() {
                 if rows.last().is_some_and(|r| r.is_some()) {
                     rows.push(None);

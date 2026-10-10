@@ -824,14 +824,24 @@ impl App {
         self.browser_park_page(pane);
     }
 
-    /// Back and Forward are gated the same way: the target is the page's history entry, which
-    /// cannot be held back, so while the store is unsynced the pane is parked on its current URL.
-    pub(super) fn browser_history_step_allowed(&mut self, pane: PaneId) -> bool {
-        if page_may_load(self.browser_restoring(), self.perm_synced(pane)) {
-            return true;
+    /// The flag a store's views read in the one NavigationStarting handler: true while synced.
+    pub(super) fn perm_gate(&self, dev_null: bool) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.perm_queues[usize::from(dev_null)].gate()
+    }
+
+    /// The handler cancelled a main-frame navigation of an unsynced store (a history step, a native
+    /// reload key, a page's own navigation) and sent its TARGET. The page on screen stays; the
+    /// target waits in `restore_load` and loads, as a new navigation with no blank entry, when the
+    /// sync lands (`browser_release_waiting_loads`). A cancelled history step leaves no expectation.
+    pub(super) fn browser_navigation_parked(&mut self, pane: PaneId, url: &str) {
+        let dev_null = self.pane_dev_null(pane);
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.bar.nav.forget_expected();
+            bv.bar.transition = None;
+            bv.world.restore_load = Some(url.to_string());
         }
-        self.browser_park_page(pane);
-        false
+        // A sync that gave up starts over.
+        self.sync_permission_states(dev_null);
     }
 
     /// Blanks the pane and keeps its URL for the sync's end (`browser_release_waiting_loads`).
@@ -1517,7 +1527,7 @@ mod tests {
     fn every_reload_goes_through_the_sync_gate() {
         let me = include_str!("browser_perms_app.rs");
         let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
-        let f = &prod[prod.find("pub(super) fn reload_browser_view").unwrap()..prod.find("pub(super) fn browser_history_step_allowed").unwrap()];
+        let f = &prod[prod.find("pub(super) fn reload_browser_view").unwrap()..prod.find("pub(super) fn perm_gate").unwrap()];
         assert!(f.contains("page_may_load(self.browser_restoring(), self.perm_synced(pane))") && f.find("page_may_load").unwrap() < f.find("v.reload()").unwrap());
         assert!(f.contains("browser_park_page(pane)"));
         let park = &prod[prod.find("fn browser_park_page").unwrap()..];
@@ -1525,7 +1535,28 @@ mod tests {
         let app = include_str!("browser_app.rs");
         let app = app.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         assert!(!app.contains("v.reload()"), "the toolbar and the recovery reload through the gate");
-        assert!(app.contains("Button::Back | Button::Forward if !self.browser_history_step_allowed(pane)"));
+        assert!(!app.contains("browser_history_step_allowed"), "history steps are gated by the one handler, not at the call sites");
         assert!(app.matches("self.reload_browser_view(pane)").count() >= 2);
+    }
+
+    /// Review r2 New 1: the sync gate has ONE owner, the main-frame NavigationStarting handler, so
+    /// every route (history menu, native F5 and Alt+Left, mouse back, page navigations, toolbar) is
+    /// cancelled while the store is unsynced and its TARGET parked; no call site gates history.
+    #[test]
+    fn the_navigation_handler_owns_the_sync_gate() {
+        let host = include_str!("../webhost_win.rs");
+        let h = &host[host.find("fn starting_handler(").unwrap()..host.find("fn register_navigation_rest(").unwrap()];
+        let gate = h.find("webhost::nav_parked(gate, &uri, by_tandem)").unwrap();
+        assert!(gate < h.find("webhost::nav_verdict(").unwrap() && h[gate..].contains("Event::Parked { view: i.id") && h[gate..gate + 400].contains("SetCancel(true)"));
+        assert!(h[..gate].contains("if frame {"), "the subframe branch returns before the main-frame gate");
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let p = &prod[prod.find("pub(super) fn browser_navigation_parked(").unwrap()..prod.find("/// Blanks the pane").unwrap()];
+        assert!(p.contains("restore_load = Some(url.to_string())") && !p.contains("about:blank") && !p.contains("navigate_tandem"), "the target is kept, no blank entry");
+        let app = include_str!("browser_app.rs");
+        assert!(app.contains("Event::Parked { url, .. } => self.browser_navigation_parked(pane, url)"));
+        assert!(app.contains("setup.nav_gate = Some(gate)") && app.contains("self.perm_gate(io.dev_null)"), "every browser view reads its store's gate");
+        let q = include_str!("../perm_queue.rs");
+        assert_eq!(q.matches("self.sync = ").count(), 1, "the gate follows every sync change (set_sync)");
     }
 }
