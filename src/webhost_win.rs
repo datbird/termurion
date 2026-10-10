@@ -3699,7 +3699,7 @@ mod probe {
                     queue.extend(job.on_resource(&u, got, &|_| false));
                 }
                 Step::Write { path, bytes } => {
-                    if crate::inert_files::write_new_checked(&path, &bytes).is_err() {
+                    if crate::inert_files::write_new_checked(&path, &bytes, Some(TEST_PAGE)).is_err() {
                         queue.extend(job.on_write_failed(&path));
                     }
                 }

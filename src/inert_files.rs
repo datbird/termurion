@@ -274,8 +274,24 @@ pub fn write_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// `write_checked` that never replaces a file: an existing name (a file, a folder, a link) is an
 /// `AlreadyExists` error and nothing is written (`CREATE_NEW` does not follow a link). The Save Page
-/// As job writes only this way (Task 9 review I1). The file is marked as from the internet.
-pub fn write_new_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// As job writes only this way (Task 9 review I1). The file is marked strictly (`mark_strict`, with
+/// `host_url` as `HostUrl`): a drive that keeps no streams fails the write with `UNMARKABLE` and the
+/// new file is removed, so a saved web file never lands unmarked.
+pub fn write_new_checked(path: &Path, bytes: &[u8], host_url: Option<&str>) -> std::io::Result<()> {
+    write_new_checked_with(path, bytes, host_url, &mark_strict)
+}
+
+/// The alert text when a saved web file cannot carry the Mark of the Web (a FAT32 or exFAT drive
+/// keeps no streams): the save fails, never lands unmarked (Task 10 review I1, controller ruling).
+pub const UNMARKABLE: &str = "This drive cannot mark saved web files as downloaded. Choose a folder on an NTFS drive.";
+
+/// Whether `e` is `write_new_checked`'s "the mark could not be written" error.
+pub fn unmarkable(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::Unsupported && e.to_string() == UNMARKABLE
+}
+
+/// `write_new_checked` with the marker given (a test forces a failure).
+pub fn write_new_checked_with(path: &Path, bytes: &[u8], host_url: Option<&str>, mark: &dyn Fn(&Path, Option<&str>) -> std::io::Result<()>) -> std::io::Result<()> {
     use std::io::Write;
     if refused_write(&path.to_string_lossy()) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "files of this type are not allowed"));
@@ -284,9 +300,17 @@ pub fn write_new_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = crate::localfs::open_custom(&judged, |o| {
         o.write(true).create_new(true);
     })?;
-    f.write_all(bytes)?;
+    // The file is this call's own (create-new): a failed write or mark removes it.
+    let written = f.write_all(bytes);
     drop(f);
-    mark(path);
+    if let Err(e) = written {
+        let _ = crate::localfs::remove_file(&judged);
+        return Err(e);
+    }
+    if mark(path, host_url).is_err() {
+        let _ = crate::localfs::remove_file(&judged);
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, UNMARKABLE));
+    }
     Ok(())
 }
 
@@ -482,14 +506,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.txt");
-        write_new_checked(&f, b"one").unwrap();
-        let e = write_new_checked(&f, b"two").unwrap_err();
+        write_new_checked(&f, b"one", None).unwrap();
+        let e = write_new_checked(&f, b"two", None).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&f).unwrap(), b"one");
         std::fs::create_dir(dir.join("d.png")).unwrap();
-        assert!(write_new_checked(&dir.join("d.png"), b"x").is_err());
+        assert!(write_new_checked(&dir.join("d.png"), b"x", None).is_err());
         for bad in ["x.url", "desktop.ini", "a.scf", "x.exe", "a.txt:s"] {
-            assert!(write_new_checked(&dir.join(bad), b"x").is_err(), "{bad}");
+            assert!(write_new_checked(&dir.join(bad), b"x", None).is_err(), "{bad}");
             assert!(!dir.join(bad).exists() || bad == "a.txt:s", "{bad}");
         }
         #[cfg(windows)]
@@ -497,6 +521,29 @@ mod tests {
             let stream = format!("{}:Zone.Identifier", f.display());
             let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).expect("a Zone.Identifier stream");
             assert_eq!(zone_of(&text), Some(3), "{text:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A mark that cannot be written fails the write (Task 10 review I1): the new file is removed
+    /// and the error says so; a written file records the page it came from (`HostUrl`).
+    #[test]
+    fn a_mark_failure_is_a_failed_write() {
+        let dir = std::env::temp_dir().join(format!("tandem-unmarked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.png");
+        let fail = |_: &Path, _: Option<&str>| Err(std::io::Error::other("no streams on this drive"));
+        let e = write_new_checked_with(&f, b"x", Some("https://p.test/"), &fail).unwrap_err();
+        assert!(unmarkable(&e), "{e}");
+        assert!(!f.exists(), "an unmarked file never stays");
+        #[cfg(windows)]
+        {
+            let g = dir.join("b.png");
+            write_new_checked(&g, b"x", Some("https://p.test/page")).unwrap();
+            let stream = format!("{}:Zone.Identifier", g.display());
+            let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).unwrap();
+            assert_eq!(text, zone_text(Some("https://p.test/page")));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

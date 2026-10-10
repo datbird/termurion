@@ -784,6 +784,18 @@ impl Job {
         self.fail(FAILED_TO_SAVE_FILE.to_string())
     }
 
+    /// A file was written but could not be marked as downloaded (the drive keeps no streams):
+    /// the door removed it, and the save fails whole with `inert_files::UNMARKABLE` and cleans up.
+    pub fn on_unmarked(&mut self, path: &Path) -> Vec<Step> {
+        self.entries.retain(|(_, k)| !matches!(k, Kind::File(p, _) if p == path));
+        self.written.retain(|p| p != path);
+        if self.dead {
+            return Vec::new();
+        }
+        self.done = false;
+        self.fail(crate::inert_files::UNMARKABLE.to_string())
+    }
+
     pub fn on_attributes_added(&mut self) -> Vec<Step> {
         if self.dead || self.phase != Phase::Attributes {
             return Vec::new();
@@ -1373,7 +1385,8 @@ mod tests {
         let doc = &doc[doc.rfind("/// Run `clone_body()`").unwrap()..];
         assert!(doc.contains("inert_files::write_new_checked") && !doc.contains("write_checked`") && !doc.contains("write_marked"), "{doc}");
         let app = include_str!("app/page_saver_app.rs");
-        assert!(app.contains("FileKind::Write => crate::inert_files::write_new_checked(&op.path, &op.bytes)"));
+        assert!(app.contains("FileKind::Write => crate::inert_files::write_new_checked_with(&op.path, &op.bytes, Some(&op.host_url), mark)"));
+        assert!(app.contains("run_op_with(op, &crate::inert_files::mark_strict)"));
     }
 
     /// The mapping is bounded as the JSON the page world runs (findings r2 M3), not as raw value

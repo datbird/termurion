@@ -9,7 +9,9 @@
 //!
 //! Rules this file keeps (Task 8 and 9 fixes):
 //! - every file is written through `inert_files::write_new_checked` (create-new, the one dangerous
-//!   type list, Mark of the Web), every folder through `localfs::create_dir`; nothing overwrites;
+//!   type list, a strict Mark of the Web with the page's URL: a drive that cannot hold it fails the
+//!   save with `inert_files::UNMARKABLE` and cleans up), every folder through `localfs::create_dir`;
+//!   nothing overwrites;
 //! - `Job::permits` is asked before EVERY step, and the pane's navigation epoch is bound at the start
 //!   and checked before every step and every answer; an abort drops the rest;
 //! - a resource is read only from the page's own loaded copy (`devtools_read`), the mapping and the
@@ -40,6 +42,8 @@ pub(super) struct FileOp {
     pub(super) kind: FileKind,
     pub(super) path: PathBuf,
     pub(super) bytes: Vec<u8>,
+    /// The page the file came from: the Mark of the Web's `HostUrl`.
+    pub(super) host_url: String,
 }
 
 /// What the worker answers: the operation's kind and path, and the error text if it failed.
@@ -48,18 +52,26 @@ pub struct FileDone {
     pub(super) kind: FileKind,
     pub(super) path: PathBuf,
     pub(super) err: Option<String>,
+    /// The file was written but could not be marked (`inert_files::unmarkable`): the save fails.
+    pub(super) unmarked: bool,
 }
 
 /// Carries out one operation. Runs on the worker thread (and in tests, directly). Every path is
-/// judged (`judge_io`); a write is create-new through the door.
+/// judged (`judge_io`); a write is create-new through the door and strictly marked.
 pub(super) fn run_op(op: &FileOp) -> FileDone {
+    run_op_with(op, &crate::inert_files::mark_strict)
+}
+
+/// `run_op` with the marker given (a test forces a failure).
+fn run_op_with(op: &FileOp, mark: &dyn Fn(&Path, Option<&str>) -> std::io::Result<()>) -> FileDone {
     let r: std::io::Result<()> = match op.kind {
         FileKind::MakeDir => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::create_dir(&p)),
-        FileKind::Write => crate::inert_files::write_new_checked(&op.path, &op.bytes),
+        FileKind::Write => crate::inert_files::write_new_checked_with(&op.path, &op.bytes, Some(&op.host_url), mark),
         FileKind::Remove => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::remove_file(&p)),
         FileKind::RemoveDir => crate::localfs::judge_io(&op.path).and_then(|p| crate::localfs::remove_dir(&p)),
     };
-    FileDone { kind: op.kind, path: op.path.clone(), err: r.err().map(|e| e.to_string()) }
+    let unmarked = r.as_ref().err().is_some_and(crate::inert_files::unmarkable);
+    FileDone { kind: op.kind, path: op.path.clone(), err: r.err().map(|e| e.to_string()), unmarked }
 }
 
 /// One thing for the app to do.
@@ -92,6 +104,8 @@ enum Waiting {
 pub(super) struct Saving {
     pub(super) job: Job,
     pub(super) folder: PathBuf,
+    /// The page's URL when the save was chosen: every file's `HostUrl`.
+    url: String,
     /// `Page.getResourceTree`, read once per save.
     pub(super) tree: Option<Value>,
     /// Which save this is, so a worker event of a cancelled save is ignored.
@@ -110,12 +124,13 @@ pub(super) struct Saving {
 }
 
 impl Saving {
-    pub(super) fn new(folder: PathBuf, epoch: u64, id: u64) -> Saving {
+    pub(super) fn new(folder: PathBuf, url: String, epoch: u64, id: u64) -> Saving {
         let mut job = Job::new(folder.clone());
         job.bind_epoch(epoch);
         Saving {
             job,
             folder,
+            url,
             tree: None,
             id,
             worker: None,
@@ -233,7 +248,7 @@ impl Saving {
 
     fn file(&mut self, kind: FileKind, path: PathBuf, bytes: Vec<u8>) -> Act {
         self.outstanding += 1;
-        Act::File(FileOp { kind, path, bytes })
+        Act::File(FileOp { kind, path, bytes, host_url: self.url.clone() })
     }
 
     /// The content read for `url`: only a URL the tree lists is asked for; the job hears None for
@@ -306,6 +321,11 @@ impl Saving {
     /// The worker finished one operation.
     pub(super) fn file_done(&mut self, d: FileDone, now: u64) -> Vec<Act> {
         self.outstanding = self.outstanding.saturating_sub(1);
+        if d.unmarked {
+            let more = self.job.on_unmarked(&d.path);
+            self.queue.extend(more);
+            return self.pump(now);
+        }
         let more = match (d.err, d.kind) {
             (Some(e), FileKind::MakeDir) => {
                 self.io_error.get_or_insert(e);
@@ -338,12 +358,12 @@ impl App {
         }
         let dialog = rfd::FileDialog::new().set_file_name(page_saver::default_name(&url));
         let Some(picked) = crate::localfs::save_file(dialog) else { return };
-        self.start_page_save(pane, picked.into_path_buf());
+        self.start_page_save(pane, picked.into_path_buf(), url);
     }
 
     /// The save of `pane` into the new folder `folder` (the dialog's pick): judged first, nothing is
     /// written before that.
-    pub(super) fn start_page_save(&mut self, pane: PaneId, folder: PathBuf) {
+    pub(super) fn start_page_save(&mut self, pane: PaneId, folder: PathBuf, url: String) {
         if self.page_saves.contains_key(&pane) {
             return;
         }
@@ -354,7 +374,7 @@ impl App {
         let Some(epoch) = self.browser_views.get(&pane).map(|b| b.reader.epoch) else { return };
         self.page_save_seq += 1;
         let id = self.page_save_seq;
-        let mut saving = Saving::new(folder, epoch, id);
+        let mut saving = Saving::new(folder, url, epoch, id);
         let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
         let proxy = self.proxy.clone();
         let spawned = std::thread::Builder::new().name("page-save".into()).spawn(move || {
@@ -403,7 +423,7 @@ impl App {
                     let sent = self.page_saves.get(&pane).filter(|s| s.id == id).and_then(|s| s.worker.as_ref()).map(|w| w.send(op.clone()).is_ok());
                     if sent != Some(true) {
                         // The worker is gone: the operation failed.
-                        let done = FileDone { kind: op.kind, path: op.path, err: Some("the file worker stopped".into()) };
+                        let done = FileDone { kind: op.kind, path: op.path, err: Some("the file worker stopped".into()), unmarked: false };
                         self.page_save_file_done(pane, id, done);
                     }
                 }
@@ -500,13 +520,15 @@ mod tests {
         /// and the extract.
         hold: bool,
         held: Vec<Act>,
+        /// Every mark fails, as on a drive without streams (FAT32, exFAT).
+        unmarkable: bool,
     }
 
     impl Harness {
         fn new(folder: PathBuf, answers: Vec<Result<Value, String>>) -> Harness {
             let mut seam = ScriptSeam::default();
             seam.answers.extend(answers);
-            Harness { s: Saving::new(folder, 7, 1), seam, reveals: Vec::new(), fails: Vec::new(), epoch: 7, ops: Vec::new(), hold: false, held: Vec::new() }
+            Harness { s: Saving::new(folder, "https://tandem.test/".into(), 7, 1), seam, reveals: Vec::new(), fails: Vec::new(), epoch: 7, ops: Vec::new(), hold: false, held: Vec::new(), unmarkable: false }
         }
 
         fn go(&mut self) {
@@ -540,7 +562,7 @@ mod tests {
                     }
                     Act::File(op) => {
                         self.ops.push((op.kind, op.path.clone()));
-                        let d = run_op(&op);
+                        let d = if self.unmarkable { run_op_with(&op, &|_, _| Err(std::io::Error::other("no streams"))) } else { run_op(&op) };
                         self.s.file_done(d, now)
                     }
                     Act::Reveal(p) => {
@@ -725,13 +747,28 @@ mod tests {
         assert!(!saved.iter().any(|n| n.ends_with(".url") || n.ends_with(".scf") || n == "desktop.ini"), "{saved:?}");
         let _ = std::fs::remove_dir_all(&root);
         // Hidden characters in a failure never reach the alert.
-        let mut s = Saving::new(PathBuf::from("C:\\x"), 1, 1);
+        let mut s = Saving::new(PathBuf::from("C:\\x"), String::new(), 1, 1);
         s.io_error = Some("bad \u{202e}name\u{1b}[31m".into());
         let acts = s.run(vec![Step::Failed("Failed to save file".into())], 1);
         assert_eq!(acts, vec![Act::Fail("Could not save the page: Failed to save file: bad name[31m".into())]);
     }
 
-    /// Every file the saver writes carries the Mark of the Web (real NTFS stream).
+    /// A drive that cannot hold the Mark of the Web fails the save with a clear alert and cleans up;
+    /// never a silent unmarked save (Task 10 review I1, controller ruling).
+    #[test]
+    fn an_unmarkable_drive_fails_the_save() {
+        let root = temp_root("unmarked");
+        let folder = root.join("site");
+        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
+        h.unmarkable = true;
+        h.go();
+        assert_eq!(h.fails, vec![page_saver::save_failed_text(crate::inert_files::UNMARKABLE)]);
+        assert!(h.reveals.is_empty());
+        assert_eq!(listing(&root), Vec::<String>::new(), "the save folder and everything in it are gone");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every file the saver writes carries the Mark of the Web (real NTFS stream), with the page's URL.
     #[cfg(windows)]
     #[test]
     fn every_saved_file_is_marked() {
@@ -744,6 +781,7 @@ mod tests {
             let stream = format!("{}:Zone.Identifier", f.display());
             let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).unwrap_or_else(|e| panic!("{f:?}: {e}"));
             assert_eq!(crate::inert_files::zone_of(&text), Some(3), "{f:?}");
+            assert!(text.contains("HostUrl=https://tandem.test/\r\n"), "{text:?}");
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -786,7 +824,7 @@ mod tests {
             assert!(!prod.contains(banned), "{banned}");
         }
         // One write door and the permits check before every step; the page runner is the page-world one.
-        assert_eq!(prod.matches("write_new_checked(").count(), 1);
+        assert_eq!(prod.matches("write_new_checked_with(").count(), 1);
         assert!(prod.contains("self.job.permits(&step)") && prod.contains("self.job.check_epoch(now)") && prod.contains("self.job.attributes_body()"));
         assert!(prod.contains("self.browser_page_call(pane, &body, json!({})") && !prod.contains("browser_js_call("));
         assert!(prod.contains("self.devtools_read(pane, \"Page.getResourceTree\"") && prod.contains("self.devtools_read(pane, \"Page.getResourceContent\""));
