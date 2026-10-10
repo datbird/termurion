@@ -5,8 +5,8 @@ Build a release binary (`scripts/xt build --release`). Close any open Tandem win
 `C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
-Before anything else: `m13x5-rulings.txt` first lines record the 13x5 desktop probe (Probe: PENDING
-until it runs with Robert's yes). 13x2's probe passed (PASS, 12 of 12 on EXTREME, 2026-10-07), so the
+Before anything else: `m13x5-rulings.txt` first lines record the 13x5 desktop probe (Probe: PASS,
+41 of 41 on EXTREME, 2026-10-10). 13x2's probe passed (PASS, 12 of 12 on EXTREME, 2026-10-07), so the
 isolated world exists; a (world) line that finds a feature inert is a fail, not "not shipped".
 Section A lists the probe tests; sections B to F are what no test could execute (a real page, the
 real windows, the real menus).
@@ -20,7 +20,7 @@ Use a normal Browser profile, and a second one with Dev Null Mode on.
 
 ## A. The desktop probe (the controller runs it with Robert's yes)
 
-Command: `scripts/probe-desktop.ps1 -Filters webhost_win::probe::,webhost_win::tests::menu_gets_our_items,webhost_win::tests::document_method_is_reported`
+Command (from a .ps1 or -Command: `-File` cannot pass an array, and a comma string is one filter): `& scripts/probe-desktop.ps1 -Filters @('webhost_win::probe::', 'webhost_win::tests::menu_gets_our_items', 'webhost_win::tests::document_method_is_reported')`
 (the default filters run the first two; the third is 13x5's and is not in the default list). 13x5's
 tests are:
 
@@ -30,10 +30,10 @@ tests are:
 - [ ] `probe::triggers_skip_local_pages` (nothing fires on `iterm2-about:`)
 - [ ] `probe::many_matches_are_capped`
 - [ ] `probe::page_never_sees_the_marks_or_trigger_secrets`
-- [ ] `tests::document_method_is_reported` (a form POST reports POST, a link click GET; also confirms that an iframe loading the page's own URL cannot change the answer, R13x5-7)
+- [ ] `tests::document_method_is_reported` (a form POST reports POST, a link click GET; and a POST result holding an iframe that loads the page's own URL still reports POST, R13x5-7)
 
-Also confirm the unverified claim in R13x5-6: the probe's innerText, `window.find` and select-all
-checks cannot read an annotation's name.
+R13x5-6's claim is checked by `marks_scripts_run_in_a_page`: innerText, `window.find`, a select-all and a
+body range do not read an annotation's name (R13x5-43).
 
 ## B. Adding marks (world)
 
@@ -55,7 +55,7 @@ checks cannot read an annotation's name.
 - [ ] Click Rename on the annotation: a Tandem name window opens outside the page showing the stored name; the page never shows an editable box. Keys and clicks in the first half second of any such window are ignored.
 - [ ] Click Delete on the annotation: a Tandem confirm window opens, Cancel is the default (Enter cancels). Delete removes the mark from all three lists and the annotation leaves the page.
 - [ ] Remove from the Named Marks tool deletes with no confirm (as iTerm2's).
-- [ ] Navigating away while a rename or delete window is open closes it with no change.
+- [ ] Navigating away while a rename or delete window opened from the page's annotation is open closes it with no change (a window the person opened from the Named Marks tool or the menu stays open, R13x5-9).
 - [ ] Removing the last mark of a page clears the annotation box.
 
 ## D. Hostile pages (world)
