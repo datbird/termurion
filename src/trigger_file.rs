@@ -474,6 +474,46 @@ mod tests {
     }
 
     #[test]
+    fn browser_triggers_round_trip_and_import_classified() {
+        let mk = |action: &str, mt: i64, param: &str| table(json!({"action": action, "regex": "^https://a/", "contentregex": "x", "matchType": mt, "parameter": param, "disabled": false}));
+        let all = [
+            ("iTerm2SharedARC.HighlightBrowserTrigger", 2, "#ffffff;#ff0000", true),
+            ("iTerm2SharedARC.HyperlinkBrowserTrigger", 2, "https://\\0", true),
+            ("InjectJavascriptURLTrigger", 1, "console.log(1);", false),
+            ("InjectJavascriptContentTrigger", 2, "console.log(2);", false),
+            ("ReloadBrowserTrigger", 1, "60", false),
+            ("iTerm2SharedARC.ReaderModeBrowserTrigger", 1, "", false),
+            ("iTermEnterWorkgroupBrowserTrigger", 1, "gid", false),
+            ("iTermExitWorkgroupBrowserTrigger", 1, "", false),
+        ];
+        for (class, mt, param, on) in all {
+            let c = canonical(&mk(class, mt, param)).unwrap_or_else(|| panic!("{class} refused"));
+            let text = export_text(std::slice::from_ref(&c));
+            let back = parse(&text, "x.it2triggers").unwrap_or_else(|_| panic!("{class} round trip"));
+            assert_eq!(back, vec![c.clone()], "{class}");
+            let merged = add_triggers(None, &back);
+            let d = merged.as_array().unwrap()[0].as_table().unwrap().get("disabled").and_then(toml::Value::as_bool);
+            assert_eq!(d, Some(!on), "{class}: imported {}", if on { "on" } else { "off" });
+        }
+        // Bounds: a long Reload, a non-text parameter, a bad match type are refused.
+        assert!(canonical(&mk("ReloadBrowserTrigger", 1, &"9".repeat(41))).is_none());
+        assert!(canonical(&mk("iTerm2SharedARC.HighlightBrowserTrigger", 2, &"#".repeat(33))).is_none());
+        assert!(canonical(&mk("InjectJavascriptURLTrigger", 7, "x")).is_none());
+        assert!(canonical(&table(json!({"action": "ReloadBrowserTrigger", "regex": "x", "matchType": 1, "parameter": 5}))).is_none());
+        assert!(canonical(&mk("NoSuchBrowserTrigger", 1, "")).is_none());
+    }
+
+    #[test]
+    fn hyperlink_urls_are_http_only() {
+        use crate::triggers::hyperlink_url_ok;
+        assert_eq!(hyperlink_url_ok("https://a.example/x?q=1").as_deref(), Some("https://a.example/x?q=1"));
+        assert!(hyperlink_url_ok("http://a.example").is_some());
+        for bad in ["javascript:alert(1)", "data:text/html,x", "file:///c:/x", "vbscript:x", "blob:https://a/1", "/relative", "a.example", "https://", "", "\0"] {
+            assert!(hyperlink_url_ok(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
     fn machine_triggers_import_disabled() {
         for class in ["ScriptTrigger", "CoprocessTrigger", "MuteCoprocessTrigger", "CaptureTrigger", "SendTextTrigger", "PasswordTrigger", "iTermRPCTrigger", "iTermSetProfileBooleanTrigger"] {
             assert!(!crate::triggers::imports_enabled(class), "{class}");

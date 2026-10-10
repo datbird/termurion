@@ -330,6 +330,42 @@ pub fn runs_command(action: &str) -> bool {
     matches!(action, "ScriptTrigger" | "CoprocessTrigger" | "MuteCoprocessTrigger" | "CaptureTrigger")
 }
 
+/// Whether a browser trigger's parameter and match type are within the bounds its action allows
+/// (import, export and the API carry browser triggers through `sanitized_trigger`). A parameter
+/// that is not text, or too long for its action, is refused; the match type is 0, 1 or 2.
+pub fn browser_trigger_ok(action: &str, match_type: i64, parameter: Option<&toml::Value>) -> bool {
+    let Some(a) = browser_action_info(action) else { return false };
+    if !(0..=PAGE_CONTENT_REGEX).contains(&match_type) {
+        return false;
+    }
+    let text = match parameter {
+        None => "",
+        Some(toml::Value::String(s)) => s.as_str(),
+        Some(_) => return false,
+    };
+    let (chars, bytes) = (text.chars().count(), text.len());
+    match a.class {
+        "InjectJavascriptContentTrigger" | "InjectJavascriptURLTrigger" => bytes <= MAX_PARAMETER,
+        "iTerm2SharedARC.HyperlinkBrowserTrigger" => chars <= 2048,
+        "iTermEnterWorkgroupBrowserTrigger" => chars <= MAX_WORKGROUP_ID,
+        // "#rrggbb;#rrggbb" or the p3 form: at most two 15-character colors and a separator.
+        "iTerm2SharedARC.HighlightBrowserTrigger" => chars <= 32,
+        "ReloadBrowserTrigger" => chars <= 40,
+        _ => chars <= 256,
+    }
+}
+
+/// Make Hyperlink creates a link only for an absolute http or https URL (R13x5-10): the template
+/// is filled from page text, then the result must parse as such a URL. `javascript:`, `data:`,
+/// `file:`, `vbscript:`, `blob:` and relative text are refused. Task 9 applies it at creation.
+pub fn hyperlink_url_ok(url: &str) -> Option<String> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let p = crate::ai_policy::url_parts(url)?;
+    (p.scheme.eq_ignore_ascii_case("http") || p.scheme.eq_ignore_ascii_case("https")).then(|| url.to_string())
+}
+
 /// The classes whose effect is only what is drawn or shown: these import turned on (B7, final
 /// review). Every other class, and any class the catalog does not know, imports turned off.
 pub const IMPORT_ENABLED: &[&str] = &[
