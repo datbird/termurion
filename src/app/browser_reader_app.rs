@@ -309,7 +309,7 @@ mod tests {
         let router = prod(include_str!("browser_scripts_app.rs"));
         let arm = "h if h == crate::browser_reader::HANDLER => self.browser_reader_message(pane, &r),";
         assert!(router.contains(arm) && router.find(arm).unwrap() < router.find("browser message dropped").unwrap());
-        assert!(include_str!("browser_scripts_app.rs").contains("\"browser_copy_mode_key\", \"browser_reader_message\"]"), "listed in the router test");
+        assert!(include_str!("browser_scripts_app.rs").contains("\"browser_reader_message\", \"browser_trigger_message\"]"), "listed in the router test");
     }
 
     /// Security (Review Focus 6, R13x45-1): every call this file makes is the isolated-world runner's;

@@ -324,7 +324,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Trigger list | Triggers | Ordered list of regex-based rules that watch output and perform an action when matched. | have | Milestone 6a. |
+| Trigger list | Triggers | Ordered list of regex-based rules that watch output and perform an action when matched. | have | Milestone 6a. Milestone 13x5: browser profiles list the eight browser actions with URL Regex and Page Content Regex match types; a terminal profile's list does not offer them and a browser action stored there does nothing. |
 | Regex / match pattern | n/a (per-row field) | The regular expression a trigger tests each new line or screen content against. | have | Milestone 6a. |
 | Parameter | n/a (per-row field) | The action-specific argument for the chosen trigger action. | have | Milestone 6a. |
 | Enabled checkbox | n/a (per-row field) | Turns an individual trigger on or off without deleting it. | have | Milestone 6a. |

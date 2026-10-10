@@ -307,6 +307,8 @@ pub enum ItemKind {
     Action(usize),
     Snippet(usize),
     NamedMark { pane: u64, mark: u32 },
+    /// A browser session's named mark, by its guid (`OQM:717-731`); activation re-checks the pane.
+    BrowserMark { pane: u64, guid: String },
     MenuItem(String),
     /// A script: its path under the Scripts folder, "/" between names (`OQM:813-831`).
     Script(String),
@@ -393,6 +395,8 @@ pub struct Sources {
     pub snippets: Vec<(String, String, String)>,
     /// (pane, mark, name, in the active session).
     pub named_marks: Vec<(u64, u32, String, bool)>,
+    /// (pane, guid, name, in the active session) of every browser session's marks, as the app capped them.
+    pub browser_marks: Vec<(u64, String, String, bool)>,
     /// (id, title, menu path, alternate).
     pub menu_items: Vec<(String, String, Vec<String>, bool)>,
     /// Every script's path under the Scripts folder (`allScripts`, "folder/name.py").
@@ -923,6 +927,26 @@ fn add_named_marks(items: &mut Vec<Item>, query: &str, s: &Sources) {
             detail_bold: Vec::new(),
         });
     }
+    for (pane, guid, name, active) in &s.browser_marks {
+        if name.is_empty() {
+            continue;
+        }
+        let mult = NAMED_MARK_MULT * if *active { 1.5 } else { 1.0 };
+        let docs = vec![name.clone()];
+        let (score, result) = score_feature(query, &docs, mult, mult);
+        if score <= 0.0 {
+            continue;
+        }
+        let (t, bold) = title_from(&docs, result);
+        items.push(Item {
+            kind: ItemKind::BrowserMark { pane: *pane, guid: guid.clone() },
+            score,
+            title: untitled_if_empty(t),
+            title_bold: bold,
+            detail: fill(NAMED_MARK_DETAIL, name),
+            detail_bold: Vec::new(),
+        });
+    }
 }
 
 fn add_menu_items(items: &mut Vec<Item>, query: &str, s: &Sources) {
@@ -1059,6 +1083,19 @@ pub fn items(query: &str, s: &Sources) -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_quickly_browser_marks_follow_iterm2() {
+        let sources = Sources { browser_marks: vec![(7, "g".to_string(), "Docs".to_string(), false), (7, "h".to_string(), String::new(), false), (8, "i".to_string(), "Docs".to_string(), true)], ..Default::default() };
+        let result = items("doc", &sources);
+        let n = result.iter().filter(|it| matches!(it.kind, ItemKind::BrowserMark { .. })).count();
+        assert_eq!(n, 2, "the unnamed mark is skipped");
+        let g = result.iter().find(|it| it.kind == ItemKind::BrowserMark { pane: 7, guid: "g".to_string() }).unwrap();
+        assert_eq!(g.detail, "Named mark \u{201c}Docs\u{201d}");
+        assert!(g.score > 0.0 && g.score <= 0.5 + 1e-9, "scored with NAMED_MARK_MULT: {}", g.score);
+        let a = result.iter().find(|it| it.kind == ItemKind::BrowserMark { pane: 8, guid: "i".to_string() }).unwrap();
+        assert!((a.score - g.score * 1.5).abs() < 1e-9, "1.5 times in the active session");
+    }
 
     fn browser_sources() -> Sources {
         Sources {

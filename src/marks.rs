@@ -197,24 +197,40 @@ pub struct Marks {
     pub path_marks: Vec<crate::pathnav::PathMark>,
 }
 
-/// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
-pub(crate) fn percent_decode(s: &str) -> String {
+/// The one escape loop: %XX to bytes. Strict stops at a `%` without two hex digits after it;
+/// lenient keeps such a `%` as it is.
+fn decode_escapes(s: &str, strict: bool) -> Option<Vec<u8>> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
+        if b[i] == b'%' {
             let hex = |c: u8| (c as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+            if let (Some(h), Some(l)) = (b.get(i + 1).and_then(|c| hex(*c)), b.get(i + 2).and_then(|c| hex(*c))) {
                 out.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
+            }
+            if strict {
+                return None;
             }
         }
         out.push(b[i]);
         i += 1;
     }
+    Some(out)
+}
+
+/// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
+pub(crate) fn percent_decode(s: &str) -> String {
+    let out = decode_escapes(s, false).unwrap_or_default();
     String::from_utf8(out.clone()).unwrap_or_else(|_| out.iter().map(|&c| c as char).collect())
+}
+
+/// Foundation's `removingPercentEncoding`: None when a `%` is not followed by two hex digits or
+/// the decoded bytes are not UTF-8.
+pub(crate) fn percent_decode_strict(s: &str) -> Option<String> {
+    String::from_utf8(decode_escapes(s, true)?).ok()
 }
 
 /// A file:// URL as an OSC 7 report.

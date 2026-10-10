@@ -168,6 +168,8 @@ mod page_saver_app;
 mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;
+mod browser_marks_app;
+mod browser_triggers_app;
 mod browser_smart_app;
 mod browser_overlay_app;
 mod browser_input_app;
@@ -542,7 +544,17 @@ pub struct App {
     global_generation: u64,
     /// The Set Named Mark window, and the pane it names a mark in.
     /// The Set Named Mark prompt, its pane, and the mark it renames (the toolbelt's Edit).
-    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId, Option<u32>)>,
+    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId, crate::app::marks_ui::PromptFor)>,
+    /// A browser mark window asked for and not yet open (13x5): `about_to_wait` opens it in the shared
+    /// `prompt` slot. `mark_prompt_focused`: the open window it waits for was already brought forward.
+    pending_mark_prompt: Option<(PaneId, crate::app::browser_marks_app::MarkPrompt)>,
+    mark_prompt_focused: bool,
+    /// The delete confirm of a browser mark (a `ConfirmWindow`), its pane, mark and navigation epoch;
+    /// and when the last browser mark window opened (the input guard).
+    mark_confirm: Option<(crate::prompt_ui::ConfirmWindow, PaneId, String, Option<u64>)>,
+    mark_window_at: Option<Instant>,
+    /// The browser's named marks, newest first, one cache per store (normal, Dev Null); app-wide.
+    browser_marks: HashMap<bool, crate::browser_marks::Cache>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
@@ -2157,6 +2169,11 @@ pub fn run() {
         note_pos: HashMap::new(),
         ctx_pending: None,
         prompt: None,
+        pending_mark_prompt: None,
+        mark_prompt_focused: false,
+        mark_confirm: None,
+        mark_window_at: None,
+        browser_marks: HashMap::new(),
         co_prompt: None,
         tmux_drag: None,
         tmux_pending_close: Vec::new(),
@@ -4119,6 +4136,7 @@ impl App {
             self.web_popover = None;
         }
         self.browser_tip_drop(id);
+        self.marks_pane_gone(id);
         self.close_browser_view(id);
     }
 
@@ -4658,6 +4676,8 @@ impl App {
         for id in ids {
             self.apply_emu_rules(id);
         }
+        // A browser pane's trigger list follows its profile (13x5 Task 9).
+        self.browser_triggers_refresh();
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
         // "Status bar enabled" may have changed for a tmux tab.
@@ -7137,6 +7157,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.sync_pane_activity();
         self.session_hotkeys_flush();
+        self.open_pending_mark_prompt(event_loop);
         self.flush_dropped();
         self.ssh_suggest_purge();
         // The queue is taken whole: a wake's index into it means nothing after this.
@@ -7456,7 +7477,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;

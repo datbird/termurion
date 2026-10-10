@@ -298,6 +298,10 @@ pub enum Event {
     /// event. `kind` is `COREWEBVIEW2_NAVIGATION_KIND`; a consumer that wants iTerm2's
     /// `didStartProvisionalNavigation` ignores `redirect == true`, which fires once per navigation.
     Starting { view: ViewId, url: String, kind: i32, user: bool, redirect: bool, nav: u64 },
+    /// The HTTP method of a main-frame document request (browser panes that ask,
+    /// `ViewSetup::track_document_method`): `nav` is the navigation the request belongs to, `method`
+    /// is bounded by `bounded_method`. Posted after the navigation's `Starting`; no deferral.
+    DocumentMethod { view: ViewId, nav: u64, method: String },
     /// A right-click on the page: the view holds the menu back (a deferral) until the app answers with
     /// `answer_context_menu(token, ..)`. Never dropped; its strings are capped by `MenuTarget::capped`.
     ContextMenu { view: ViewId, token: u64, target: MenuTarget },
@@ -385,6 +389,7 @@ impl Event {
             | Event::FrameGone { view, .. }
             | Event::FrameMessage { view, .. }
             | Event::Starting { view, .. }
+            | Event::DocumentMethod { view, .. }
             | Event::ContextMenu { view, .. }
             | Event::ContextMenuPicked { view, .. }
             | Event::Permission { view, .. }
@@ -438,6 +443,7 @@ impl Event {
             Event::Message { json, source, .. } | Event::FrameMessage { json, source, .. } => json.len() + source.len(),
             Event::FrameCreated { name, .. } => name.len(),
             Event::Starting { url, .. } => url.len(),
+            Event::DocumentMethod { method, .. } => method.len(),
             Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } | Event::Parked { url, .. } => url.len(),
@@ -449,6 +455,31 @@ impl Event {
             _ => 0,
         }
     }
+}
+
+/// A request method as an event carries it: at most 16 ASCII token characters, upper-cased. Anything
+/// else is "UNKNOWN", which no add accepts (a known method other than GET refuses, `NMM:142-145`).
+pub fn bounded_method(m: &str) -> String {
+    let token = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    if m.is_empty() || m.len() > 16 || !m.chars().all(token) {
+        return "UNKNOWN".to_string();
+    }
+    m.to_ascii_uppercase()
+}
+
+/// Whether a WebView2 resource filter pattern (`*` any run, `?` one character, case ignored) matches
+/// `uri`. A view with a Document-context filter of its own asks this of its other filters, so the
+/// requests only the new filter matched do not take the deferral path.
+pub fn filter_matches(pattern: &str, uri: &str) -> bool {
+    fn go(p: &[char], u: &[char]) -> bool {
+        match p.split_first() {
+            None => u.is_empty(),
+            Some(('*', rest)) => (0..=u.len()).any(|i| go(rest, &u[i..])),
+            Some((c, rest)) => u.split_first().is_some_and(|(x, tail)| (*c == '?' || c.eq_ignore_ascii_case(x)) && go(rest, tail)),
+        }
+    }
+    let (p, u): (Vec<char>, Vec<char>) = (pattern.chars().collect(), uri.chars().collect());
+    go(&p, &u)
 }
 
 /// The one DevTools event a page can raise at will.
@@ -1979,6 +2010,29 @@ mod tests {
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
         let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true };
         assert!(nav_verdict(&own, &only_https, &yes));
+    }
+
+    #[test]
+    fn document_method_events_are_bounded() {
+        let e = Event::DocumentMethod { view: 4, nav: 2, method: "POST".into() };
+        assert_eq!(e.view(), 4);
+        assert!(!e.droppable());
+        assert_eq!(e.weight(), 4);
+        assert_eq!(bounded_method("post"), "POST");
+        assert_eq!(bounded_method("GET"), "GET");
+        assert_eq!(bounded_method(""), "UNKNOWN");
+        assert_eq!(bounded_method("A VERY LONG METHOD NAME"), "UNKNOWN");
+        assert_eq!(bounded_method("GE\u{0}T"), "UNKNOWN");
+    }
+
+    #[test]
+    fn resource_filters_match_like_webview2() {
+        assert!(filter_matches("*", "https://a/b"));
+        assert!(filter_matches("iterm2-about:*", "iterm2-about:history"));
+        assert!(filter_matches("ITERM2-ABOUT:*", "iterm2-about:history"));
+        assert!(!filter_matches("iterm2-about:*", "https://iterm2-about:x"));
+        assert!(filter_matches("https://t.test/?x", "https://t.test/ax"));
+        assert!(!filter_matches("https://t.test/a", "https://t.test/ab"));
     }
 
     /// Task 3: the permission, notification and audio events are plain data (they cross the

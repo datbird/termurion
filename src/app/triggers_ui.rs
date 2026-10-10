@@ -26,7 +26,13 @@ fn notify_allowed(limits: &mut crate::triggers::RateLimit<(PaneId, usize)>, pane
 
 /// A profile's triggers and switches.
 pub(super) fn triggers_of(p: &crate::profile::Profile) -> (Vec<Trigger>, TriggerPrefs) {
-    let list = p.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default();
+    // A terminal screen never evaluates a browser action, and a browser pane's screen evaluates
+    // nothing (the browser list is read by the page engine).
+    let list = if crate::browser::is_browser(&p.string("Custom Command")) {
+        Vec::new()
+    } else {
+        p.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default().into_iter().filter(|t| !triggers::is_browser_action(&t.action)).collect()
+    };
     let prefs = TriggerPrefs { interactive: p.bool("Enable Triggers in Interactive Apps"), interpolated: p.bool("Triggers Use Interpolated Strings"), ..TriggerPrefs::default() };
     (list, prefs)
 }
@@ -293,11 +299,17 @@ impl App {
             "addTrigger:" => {
                 let text = self.panes.get(&id).and_then(|p| p.screen.selection_text()).unwrap_or_default();
                 let Some(guid) = self.panes.get(&id).map(|p| self.store.shared_guid(&p.profile)) else { return true };
+                let browser = self.panes.get(&id).is_some_and(|p| p.browser_io().is_some());
                 if let Some(profile) = self.store.get_mut(&guid) {
                     let stored = profile.get("Triggers");
                     let mut list = stored.as_ref().map(triggers::parse_list).unwrap_or_default();
                     let line = text.lines().next().unwrap_or("").to_string();
-                    list.push(Trigger { regex: triggers::escape_regex(&line), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: line, job: String::new(), match_type: 0, extra: toml::Table::new() });
+                    if browser {
+                        // iTerm2's add-trigger panel in a browser starts at URL Regex (`TC:229-230`).
+                        list.push(Trigger { match_type: triggers::URL_REGEX, ..crate::settings_triggers::browser_default() });
+                    } else {
+                        list.push(Trigger { regex: triggers::escape_regex(&line), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: line, job: String::new(), match_type: 0, extra: toml::Table::new() });
+                    }
                     profile.set("Triggers", triggers::merge_list(stored.as_ref(), &list));
                     crate::settings_triggers::focus_last();
                 }
@@ -317,8 +329,15 @@ impl App {
             "enableAllTriggers:" | "disableAllTriggers:" => {
                 let on = selector == "enableAllTriggers:";
                 // In place: entries Tandem cannot read, and every other key, stay as stored.
-                if let Some(list) = self.profile_of(id).and_then(|p| p.get("Triggers")).and_then(|v| triggers::set_all_disabled(&v, !on)) {
+                // Enable All leaves Inject Javascript, Reload, Reader Mode and the workgroup actions off: each
+                // is turned on only by its own confirm in the Triggers editor (R13x5-12).
+                let stored = self.profile_of(id).and_then(|p| p.get("Triggers"));
+                let left_off = if on { stored.as_ref().map_or(0, triggers::left_off_by_enable_all) } else { 0 };
+                if let Some(list) = stored.and_then(|v| triggers::set_all_disabled(&v, !on)) {
                     self.set_session_values(id, &[("Triggers".into(), Some(list))]);
+                }
+                if left_off > 0 {
+                    self.ask(id, "enable-all-left-off", &format!("{left_off} trigger(s) that run script, reload a page, enter reader mode or change a workgroup were left off. Turn each on in Settings > Triggers, where you can read what it does."), &["OK"], false);
                 }
             }
             _ => return false,
@@ -331,6 +350,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_actions_skip_terminals() {
+        let t = |a: &str| triggers::Trigger { regex: "x".into(), action: a.into(), parameter: String::new(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() };
+        let mut p = crate::profile::Profile::new("t");
+        p.set("Triggers", triggers::to_value(&[t("HighlightTrigger"), t("iTerm2SharedARC.HighlightBrowserTrigger"), t("ReloadBrowserTrigger")]));
+        let (list, _) = triggers_of(&p);
+        assert_eq!(list.iter().map(|t| t.action.as_str()).collect::<Vec<_>>(), ["HighlightTrigger"]);
+        p.set("Custom Command", toml::Value::String("Browser".into()));
+        assert!(triggers_of(&p).0.is_empty());
+    }
 
     /// T7 m3: a trigger refused by its own limit does not spend the pane's floor.
     #[test]

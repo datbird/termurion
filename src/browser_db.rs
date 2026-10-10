@@ -62,9 +62,11 @@ pub struct Caps {
     pub history: i64,
     pub visits: i64,
     pub bookmarks: i64,
+    /// Named marks (13x5, B8): a full table refuses the new one.
+    pub named_marks: i64,
 }
 
-pub const CAPS: Caps = Caps { history: 100_000, visits: 100_000, bookmarks: 20_000 };
+pub const CAPS: Caps = Caps { history: 100_000, visits: 100_000, bookmarks: 20_000, named_marks: 20_000 };
 
 /// One row of the history page.
 #[derive(Clone, Debug, PartialEq)]
@@ -204,7 +206,7 @@ fn err(e: impl std::fmt::Display) -> String {
 
 /// Schemas later plans add (each plan's tables, verbatim from iTerm2's `Database/*.swift`), run in
 /// order after `SCHEMA` by `open` and `open_in_memory`.
-pub const EXTRA_SCHEMAS: &[&str] = &[crate::browser_db_perms::SCHEMA];
+pub const EXTRA_SCHEMAS: &[&str] = &[crate::browser_marks_db::SCHEMA, crate::browser_db_perms::SCHEMA];
 
 fn bring_up(conn: &Connection, extra: &[&str]) -> Result<(), String> {
     conn.execute_batch(SCHEMA).map_err(err)?;
@@ -288,6 +290,10 @@ impl Db {
     /// The connection, for the queries a later plan writes as `impl Db` blocks in its own file.
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub(crate) fn named_marks_cap(&self) -> i64 {
+        self.caps.named_marks
     }
 
     pub fn with_caps(mut self, caps: Caps) -> Db {
@@ -560,6 +566,9 @@ mod tests {
                 "idx_browser_history_session",
                 "idx_browser_history_title",
                 "idx_browser_history_url",
+                "idx_browser_named_marks_date",
+                "idx_browser_named_marks_guid",
+                "idx_browser_named_marks_url",
                 "idx_browser_permissions_created",
                 "idx_browser_permissions_origin",
                 "idx_browser_permissions_type",
@@ -656,7 +665,7 @@ mod tests {
 
     #[test]
     fn the_tables_are_capped() {
-        let db = Db::open_in_memory().with_caps(Caps { history: 5, visits: 4, bookmarks: 3 });
+        let db = Db::open_in_memory().with_caps(Caps { history: 5, visits: 4, bookmarks: 3, named_marks: 3 });
         for i in 0..10 {
             db.record_visit(&format!("https://a.test/{i}"), None, None, None, 1, 100 + i);
         }

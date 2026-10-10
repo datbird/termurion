@@ -290,7 +290,7 @@ pub fn action_description(t: &Table) -> String {
             }
             _ => "Set Profile Setting".into(),
         },
-        other => crate::triggers::action_info(other).map_or_else(|| other.to_string(), |a| a.title.to_string()),
+        other => crate::triggers::action_info(other).or_else(|| crate::triggers::browser_action_info(other)).map_or_else(|| other.to_string(), |a| a.title.to_string()),
     }
 }
 
@@ -462,14 +462,54 @@ mod tests {
 
     #[test]
     fn every_catalog_class_is_classified() {
-        use crate::triggers::{CATALOG, IMPORT_ENABLED, IMPORT_OFF, SYNONYMS};
-        let synonyms: Vec<&str> = SYNONYMS.iter().map(|(old, _)| *old).collect();
-        for class in CATALOG.iter().map(|a| a.class).chain(synonyms.iter().copied()) {
+        use crate::triggers::{BROWSER_CATALOG, BROWSER_SYNONYMS, CATALOG, IMPORT_ENABLED, IMPORT_OFF, SYNONYMS};
+        let synonyms: Vec<&str> = SYNONYMS.iter().chain(BROWSER_SYNONYMS).map(|(old, _)| *old).collect();
+        for class in CATALOG.iter().chain(BROWSER_CATALOG).map(|a| a.class).chain(synonyms.iter().copied()) {
             let n = IMPORT_ENABLED.iter().chain(IMPORT_OFF).filter(|c| **c == class).count();
             assert_eq!(n, 1, "{class} must be in exactly one of IMPORT_ENABLED and IMPORT_OFF");
         }
         for c in IMPORT_ENABLED.iter().chain(IMPORT_OFF) {
-            assert!(CATALOG.iter().any(|a| a.class == *c) || synonyms.contains(c), "{c} is not a catalog class");
+            assert!(CATALOG.iter().chain(BROWSER_CATALOG).any(|a| a.class == *c) || synonyms.contains(c), "{c} is not a catalog class");
+        }
+    }
+
+    #[test]
+    fn browser_triggers_round_trip_and_import_classified() {
+        let mk = |action: &str, mt: i64, param: &str| table(json!({"action": action, "regex": "^https://a/", "contentregex": "x", "matchType": mt, "parameter": param, "disabled": false}));
+        let all = [
+            ("iTerm2SharedARC.HighlightBrowserTrigger", 2, "#ffffff;#ff0000", true),
+            ("iTerm2SharedARC.HyperlinkBrowserTrigger", 2, "https://\\0", true),
+            ("InjectJavascriptURLTrigger", 1, "console.log(1);", false),
+            ("InjectJavascriptContentTrigger", 2, "console.log(2);", false),
+            ("ReloadBrowserTrigger", 1, "60", false),
+            ("iTerm2SharedARC.ReaderModeBrowserTrigger", 1, "", false),
+            ("iTermEnterWorkgroupBrowserTrigger", 1, "gid", false),
+            ("iTermExitWorkgroupBrowserTrigger", 1, "", false),
+        ];
+        for (class, mt, param, on) in all {
+            let c = canonical(&mk(class, mt, param)).unwrap_or_else(|| panic!("{class} refused"));
+            let text = export_text(std::slice::from_ref(&c));
+            let back = parse(&text, "x.it2triggers").unwrap_or_else(|_| panic!("{class} round trip"));
+            assert_eq!(back, vec![c.clone()], "{class}");
+            let merged = add_triggers(None, &back);
+            let d = merged.as_array().unwrap()[0].as_table().unwrap().get("disabled").and_then(toml::Value::as_bool);
+            assert_eq!(d, Some(!on), "{class}: imported {}", if on { "on" } else { "off" });
+        }
+        // Bounds: a long Reload, a non-text parameter, a bad match type are refused.
+        assert!(canonical(&mk("ReloadBrowserTrigger", 1, &"9".repeat(41))).is_none());
+        assert!(canonical(&mk("iTerm2SharedARC.HighlightBrowserTrigger", 2, &"#".repeat(33))).is_none());
+        assert!(canonical(&mk("InjectJavascriptURLTrigger", 7, "x")).is_none());
+        assert!(canonical(&table(json!({"action": "ReloadBrowserTrigger", "regex": "x", "matchType": 1, "parameter": 5}))).is_none());
+        assert!(canonical(&mk("NoSuchBrowserTrigger", 1, "")).is_none());
+    }
+
+    #[test]
+    fn hyperlink_urls_are_http_only() {
+        use crate::triggers::hyperlink_url_ok;
+        assert_eq!(hyperlink_url_ok("https://a.example/x?q=1").as_deref(), Some("https://a.example/x?q=1"));
+        assert!(hyperlink_url_ok("http://a.example").is_some());
+        for bad in ["javascript:alert(1)", "data:text/html,x", "file:///c:/x", "vbscript:x", "blob:https://a/1", "/relative", "a.example", "https://", "", "\0"] {
+            assert!(hyperlink_url_ok(bad).is_none(), "{bad}");
         }
     }
 

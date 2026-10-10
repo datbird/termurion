@@ -453,6 +453,9 @@ pub struct ViewSetup {
     /// is `Event::NotificationShown`; the audio state is `Event::AudioPlaying`. Off: every request
     /// is denied on the spot (tool views, popovers, Quick Look, the icon rasterizer).
     pub permissions: bool,
+    /// The view reports the HTTP method of its main document requests (`Event::DocumentMethod`,
+    /// 13x5): a second `WebResourceRequested` handler on a Document-context filter, no deferral.
+    pub track_document_method: bool,
 }
 
 #[derive(Clone)]
@@ -522,6 +525,8 @@ struct Inner {
     queued: Vec<Box<dyn FnOnce(&Core)>>,
     /// NavigationStarting's URI by NavigationId, for `Navigated` (at most 64 kept).
     nav_uris: VecDeque<(u64, String)>,
+    /// The (capped) URI and id of the last main-frame NavigationStarting, for the Document filter.
+    last_main_nav: Option<(String, u64)>,
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
@@ -599,6 +604,7 @@ impl WebView {
             core: None,
             queued: Vec::new(),
             nav_uris: VecDeque::new(),
+            last_main_nav: None,
             tandem_uri: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
@@ -1353,6 +1359,9 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     if !setup.resource_filters.is_empty() {
         register_requests(inner, view, &setup.resource_filters, &mut token).map_err(|x| e("requests", x))?;
     }
+    if setup.track_document_method {
+        register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
+    }
     Ok(())
 }
 
@@ -1552,6 +1561,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let (policy, by_tandem) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
+            i.last_main_nav = Some((capped.clone(), nav));
             i.nav_uris.push_back((nav, capped));
             while i.nav_uris.len() > MAX_NAV_URIS {
                 i.nav_uris.pop_front();
@@ -2101,10 +2111,15 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         if inner.borrow().pending.len() >= MAX_PENDING_REQUESTS {
             return Ok(());
         }
-        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
         let url = unsafe { args.Request() }.ok().and_then(|r| pwstr_out(|p| unsafe { r.Uri(p) })).unwrap_or_default();
         let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT(0);
         let _ = unsafe { args.ResourceContext(&mut context) };
+        // Every handler sees every request any filter matched: a Document request that only the
+        // method tracker's filter matched is not this handler's (B10), and takes no deferral.
+        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && inner.borrow().setup.track_document_method && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
+            return Ok(());
+        }
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
         let top = sender.as_ref().and_then(source_of).unwrap_or_default();
         let mut i = inner.borrow_mut();
         let t = i.next_token;
@@ -2120,6 +2135,32 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL) }?;
     }
     Ok(())
+}
+
+/// The method tracker (13x5, B10): its own handler on a Document-context filter. A request counts
+/// only through `browser_marks::document_method_applies` (this view's document request whose URI is
+/// the last main-frame NavigationStarting's); it takes no deferral and leaves the request to go on.
+fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let weak = Rc::downgrade(inner);
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT(0);
+        let _ = unsafe { args.ResourceContext(&mut context) };
+        let Ok(request) = (unsafe { args.Request() }) else { return Ok(()) };
+        let uri = webhost::cap_url(&pwstr_out(|p| unsafe { request.Uri(p) }).unwrap_or_default()).0;
+        let i = inner.borrow();
+        let last = i.last_main_nav.as_ref();
+        if !crate::browser_marks::document_method_applies(true, context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, &uri, last.map(|(u, _)| u.as_str())) {
+            return Ok(());
+        }
+        let method = webhost::bounded_method(&pwstr_out(|p| unsafe { request.Method(p) }).unwrap_or_default());
+        // `post` only sends on a channel; nothing downstream may borrow `inner` mutably.
+        i.poster.post(Event::DocumentMethod { view: i.id, nav: last.map_or(0, |(_, n)| *n), method });
+        Ok(())
+    })));
+    unsafe { view.add_WebResourceRequested(&handler, token) }?;
+    let w = wide("*");
+    unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
 }
 
 #[cfg(test)]
@@ -2239,6 +2280,7 @@ mod tests {
         let s = ViewSetup::default();
         assert!(!s.in_private && !s.guard_local_schemes && !s.web_message && !s.new_windows && !s.devtools);
         assert!(s.scripts.is_empty() && s.resource_filters.is_empty() && s.user_agent.is_none() && s.allowed_schemes.is_none());
+        assert!(!s.track_document_method);
     }
 
     /// Pre-flight B3: every permission request is denied first, only the kinds Tandem asks about are
@@ -2570,6 +2612,110 @@ mod tests {
         drop(env);
         let _ = unsafe { DestroyWindow(hwnd) };
         // Best effort: the browser process may still hold the folder for a moment.
+        if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
+            let _ = crate::localfs::remove_dir_all(&lp);
+        }
+    }
+
+    /// 13x5 Task 3: a view with `track_document_method` reports POST for a form submit and GET for a
+    /// plain link click. Run by hand in a console session (`scripts/xt test --lib webhost -- --ignored`);
+    /// with no runtime it prints a note and passes.
+    #[test]
+    #[ignore]
+    fn document_method_is_reported() {
+        if runtime_version(None).is_err() {
+            println!("WebView2 Runtime not installed; skipped");
+            return;
+        }
+        let mut session = 0u32;
+        unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut session) };
+        if session == 0 {
+            println!("session 0 cannot host WebView2 windows; skipped");
+            return;
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+        let class = windows::core::w!("TandemWebView2MethodTest");
+        let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
+        unsafe { RegisterClassW(&wc) };
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-wv2-method"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
+        let folder = std::env::temp_dir().join(format!("tandem-wv2-method-{}", std::process::id()));
+        let (tx, rx) = mpsc::channel::<Posted>();
+        let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
+        let cell = env_cell.clone();
+        Env::create(Store::Default, &folder, None, &EnvOptions::default(), Box::new(move |r| *cell.borrow_mut() = Some(r)));
+        let end = Instant::now() + Duration::from_secs(20);
+        while env_cell.borrow().is_none() && Instant::now() < end {
+            pump_until(&rx, 1, |_| false);
+        }
+        let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
+        let setup = ViewSetup { guard_local_schemes: true, resource_filters: vec!["https://tandem.test/*".into()], track_document_method: true, ..Default::default() };
+        let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
+        assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
+        let page = b"<title>m</title><a id=l href='/next'>next</a><form method=post action='/post'><input name=a value=b></form>".to_vec();
+        // The POST result holds an iframe loading the page's own URL with GET (R13x5-7, checklist A).
+        let post_page = b"<title>p</title><a id=l href='/next'>next</a><iframe src='/post'></iframe>".to_vec();
+        // Answers every request the filter holds (the first request for `first`'s URL with its body, the
+        // rest with `page`); returns every DocumentMethod and every requested URL, pumping `extra`
+        // seconds past the first method.
+        let serve = |first: Option<(&str, &[u8])>, extra: u64| -> (Vec<(u64, String)>, Vec<String>) {
+            let mut first = first;
+            let mut end = Instant::now() + Duration::from_secs(10);
+            let (mut methods, mut urls) = (Vec::new(), Vec::new());
+            while Instant::now() < end {
+                match pump_until(&rx, 1, |e| matches!(e, Event::Request { view: 1, .. } | Event::DocumentMethod { view: 1, .. })) {
+                    Some(Event::Request { token, url, .. }) => {
+                        let body = match first {
+                            Some((u, b)) if url == u => {
+                                first = None;
+                                b.to_vec()
+                            }
+                            _ => page.clone(),
+                        };
+                        urls.push(url);
+                        view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body, headers: vec![] });
+                    }
+                    Some(Event::DocumentMethod { nav, method, .. }) => {
+                        if methods.is_empty() {
+                            end = Instant::now() + Duration::from_secs(extra);
+                        }
+                        methods.push((nav, method));
+                    }
+                    _ => {}
+                }
+            }
+            (methods, urls)
+        };
+        view.navigate_tandem("https://tandem.test/start");
+        let (first, _) = serve(None, 0);
+        assert_eq!(first.first().map(|f| f.1.as_str()), Some("GET"), "the first load reports GET");
+        let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
+        view.execute_script("document.forms[0].submit()", 1);
+        let (posted, urls) = serve(Some(("https://tandem.test/post", &post_page)), 3);
+        assert_eq!(posted.first().map(|f| f.1.as_str()), Some("POST"), "a form submit reports POST: {posted:?}");
+        // The control: the iframe really loaded the same URL (two requests for /post).
+        assert_eq!(urls.iter().filter(|u| u.as_str() == "https://tandem.test/post").count(), 2, "the iframe loaded the page's own URL: {urls:?}");
+        // Whatever the iframe's request reported, the app's state keeps the main document's POST.
+        let nav = posted[0].0;
+        assert!(posted.iter().all(|(n, _)| *n == nav), "one navigation: {posted:?}");
+        let mut state = crate::browser_marks::MethodState::default();
+        state.starting(nav);
+        for (n, m) in &posted {
+            state.document(*n, m);
+        }
+        assert_eq!(state.method(), "POST", "an iframe loading the same URL does not change the answer: {posted:?}");
+        println!("document methods after the POST (the iframe's included): {posted:?}");
+        let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
+        view.execute_script("document.getElementById('l').click()", 2);
+        let (linked, _) = serve(None, 0);
+        assert_eq!(linked.first().map(|f| f.1.as_str()), Some("GET"), "a link click reports GET");
+        drop(view);
+        drop(env);
+        let _ = unsafe { DestroyWindow(hwnd) };
         if let Some(lp) = crate::localfs::LocalPath::judge(&folder) {
             let _ = crate::localfs::remove_dir_all(&lp);
         }
@@ -3829,6 +3975,274 @@ mod probe {
         assert_eq!(reader_run(&mut p, &load), Ok(json!(true)));
         assert_eq!(reader_run(&mut p, &enter), Ok(json!(true)));
         assert_eq!(reader_run(&mut p, &crate::browser_reader::exit_distraction_body()), Ok(json!(true)));
+        p.finish();
+    }
+
+    /// What `App::browser_js_call` does with a `browser_marks::Call`: the isolated-world runner's
+    /// expression, the typed arguments declared as constants.
+    fn marks_run(p: &mut Probe, call: &crate::browser_marks::Call) -> Result<Value, String> {
+        let expr = crate::browser_js::call_js(&call.body, &call.args)?;
+        p.eval(None, &expr)
+    }
+
+    fn marks_body(p: &mut Probe, body: &str) -> Result<Value, String> {
+        marks_run(p, &crate::browser_marks::Call { body: body.to_string(), args: Value::Null })
+    }
+
+    /// 13x5 Task 1 (B2, B3, B4): the Marks scripts run once in the isolated world. The point script
+    /// answers the XPath under a point; the navigate script finds a hostile XPath without breaking out
+    /// (the value is a typed argument); the annotations show, a page's synthetic Delete and Save
+    /// clicks post nothing (the box only ever REQUESTS a rename or delete; the name is typed and the
+    /// delete confirmed in a Tandem window, so no page-reachable press changes a mark); a page's own
+    /// element with the old container id survives a second show; page CSS cannot displace the host;
+    /// the names are not in the page's text; the position update answers; the layout monitor
+    /// starts only in the isolated world. A trusted press cannot be synthesized here. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn marks_scripts_run_in_a_page() {
+        use crate::browser_marks as bm;
+        let page = "<!doctype html><html><body style=\"margin:0\"><div style=\"height:80px\"></div><p id=\"target\" style=\"margin:0;height:40px\">Hello marked world</p><div style=\"height:2000px\"></div></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
+        p.load(PAGE);
+        let at = marks_body(&mut p, &bm::xpath_script(10, 90).expect("the script")).expect("the point script");
+        let loc = bm::Location::from_json(&at).expect("a location");
+        // get-xpath-at-point.js names an element that has an id by its id (`//*[@id='...']`).
+        assert_eq!((loc.xpath.as_str(), at["elementTag"].as_str(), loc.text_fragment.as_deref()), ("//*[@id='target']", Some("p"), Some("Hello marked world")), "{at}");
+        // The monitor starts before any position update (the update calls it; task-1 review).
+        assert!(marks_body(&mut p, &format!("return {}", bm::LAYOUT_MONITOR_JS.trim())).is_ok());
+        let nav = bm::navigate_call(&loc).expect("navigate");
+        assert!(matches!(marks_run(&mut p, &nav), Ok(Value::Bool(_))));
+        let hostile = bm::Location { xpath: "//p[@id=\"x\\\"]</script>');window.__pwned=1;('\"]".into(), text_fragment: Some("\");window.__pwned=1;(\"".into()), ..loc.clone() };
+        let nav = bm::navigate_call(&hostile).expect("navigate");
+        assert!(marks_run(&mut p, &nav).is_ok());
+        assert_eq!(p.page_eval("typeof window.__pwned"), Ok("\"undefined\"".into()), "a hostile XPath or fragment runs nothing");
+        // Annotations.
+        let marks = vec![loc.js_dict(Some("first"), "g1")];
+        let show = bm::show_call(&marks, "mark-secret").expect("a call");
+        assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
+        // The annotations are in a closed shadow root: the page sees only the host.
+        assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("0".into()));
+        assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') === null"), Ok("true".into()), "the host carries no id a page could use");
+        assert_eq!(p.page_eval("document.body.lastElementChild.shadowRoot === null"), Ok("true".into()), "the root is closed");
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.tandemMarkRoot + typeof window.tandemMarkHost"), Ok("\"undefinedundefinedundefined\"".into()));
+        assert_eq!(p.page_eval("document.body.innerText.includes('first')"), Ok("false".into()), "the name is not in the page's text");
+        assert_eq!(p.page_eval("window.find('first')"), Ok("false".into()), "nor findable by the page");
+        // A select-all in the page world (R13x5-6, R13x5-42, checklist A): neither the Selection API's
+        // select-all nor a range over the body picks the name up. The control: the page's own text is
+        // in the same selection, so a selection that read nothing cannot pass.
+        assert_eq!(p.page_string("(document.execCommand('selectAll'), window.getSelection().toString())").map(|t| (t.contains("Hello marked world"), t.contains("first"))), Ok((true, false)), "select-all reads the page, not the name");
+        assert_eq!(p.page_string("(function(){ var s = getSelection(); s.removeAllRanges(); var r = document.createRange(); r.selectNodeContents(document.body); s.addRange(r); return s.toString(); })()").map(|t| (t.contains("Hello marked world"), t.contains("first"))), Ok((true, false)), "a body range reads the page, not the name");
+        p.page_eval("getSelection().removeAllRanges(); 0").expect("clear the selection");
+        // Page CSS cannot displace the host (all: initial and inline important rules).
+        p.page_eval("document.head.insertAdjacentHTML('beforeend', '<style>div { position: relative !important; transform: translateY(900px) !important; opacity: 0 !important; }</style>'); 0").expect("style");
+        assert_eq!(p.page_eval("(function(){ var r = document.body.lastElementChild.getBoundingClientRect(); return r.top + ':' + getComputedStyle(document.body.lastElementChild).opacity; })()"), Ok("\"0:1\"".into()), "page rules do not move or hide the host");
+        // A page element with the old container id is not removed by a second show, and the old host is.
+        p.page_eval("var d = document.createElement('div'); d.id = 'iterm-mark-annotations'; document.body.prepend(d); 0").expect("decoy");
+        assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
+        assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') !== null"), Ok("true".into()), "the page's own element stays");
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "one box: the old host went by Tandem's reference");
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation button').length"), Ok(json!(3)));
+        // The isolated world's own synthetic clicks are untrusted too.
+        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        p.settle(300);
+        assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "an untrusted Delete or Save posts nothing");
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "and removes nothing");
+        // The layout monitor (running already); positions now answer.
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
+        assert_eq!(marks_body(&mut p, &bm::update_positions_script("sec").expect("the script")).map(|v| v.is_array()), Ok(true));
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
+        assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        p.finish();
+    }
+
+    /// 13x5 Task 4: the layout monitor posts `layoutChange` through the isolated-world binding after a
+    /// page mutation, stays silent while disabled (`safelyModifyDOM`), and the page world never sees the
+    /// monitor; synthetic Rename and Delete presses by the page post nothing. Needs the console session.
+    #[test]
+    #[ignore]
+    fn annotations_post_renames() {
+        use crate::browser_marks as bm;
+        let page = "<!doctype html><html><body><p id=\"t\">Hello marked world</p></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
+        p.load(PAGE);
+        assert!(marks_body(&mut p, &bm::monitor_body().unwrap()).is_ok());
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()));
+        // iTerm2's monitor counts only a visible change: an added element over 10 px high or a text node
+        // over 20 characters (layout-change-monitor.js). An empty div is not one, and stays silent.
+        const EMPTY: &str = "document.body.appendChild(document.createElement('div')); 0";
+        const TALL: &str = "var d = document.createElement('div'); d.style.height = '50px'; document.body.appendChild(d); 0";
+        p.page_eval(EMPTY).expect("mutate");
+        p.settle(900);
+        assert!(p.clients(bm::LAYOUT_HANDLER).is_empty(), "an invisible mutation posts nothing");
+        p.page_eval(TALL).expect("mutate");
+        assert!(p.wait(5, |p| !p.clients(bm::LAYOUT_HANDLER).is_empty()), "a visible mutation posts a layout change");
+        // The monitor disabled itself to post; the host brings it back (`marks_layout_message`).
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
+        let seen = p.clients(bm::LAYOUT_HANDLER).len();
+        p.page_eval(TALL).expect("mutate");
+        p.settle(900);
+        assert_eq!(p.clients(bm::LAYOUT_HANDLER).len(), seen, "silent while disabled");
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        // The control for "silent": enabled again, the same mutation posts.
+        p.page_eval(TALL).expect("mutate");
+        assert!(p.wait(5, |p| p.clients(bm::LAYOUT_HANDLER).len() > seen), "enabled again, a visible mutation posts");
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        let loc = bm::Location { xpath: "//p".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
+        let show = bm::show_call(&[loc.js_dict(Some("x"), "g1")], "mark-secret").expect("a call");
+        assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
+        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        p.settle(300);
+        assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "an untrusted press requests nothing");
+        p.finish();
+    }
+
+    /// The page of the trigger probes: one paragraph of text, or many words for the cap.
+    fn trigger_page(head: &str, body: &str) -> String {
+        format!("<!doctype html><html><head><title>t</title>{head}</head><body>{body}</body></html>")
+    }
+
+    /// A trigger list holding one enabled Page Content Highlight (URL `tandem-probe`, content `regex`).
+    fn trigger_list(regex: &str) -> Vec<crate::triggers::Trigger> {
+        let mut t = crate::triggers::Trigger { regex: "tandem-probe\\.invalid".into(), action: "iTerm2SharedARC.HighlightBrowserTrigger".into(), parameter: "#ff0000;".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 2, extra: toml::Table::new() };
+        t.extra.insert("contentregex".into(), regex.into());
+        vec![t]
+    }
+
+    /// The probe plays the app's part for `iTerm2Trigger` messages: a request is answered with
+    /// `setTriggers` (the typed call, in the isolated world), then the match event is decoded and the
+    /// effect of the first match is run.
+    fn trigger_serve(p: &mut Probe, l: &crate::browser_triggers::Loaded) -> Vec<crate::browser_triggers::Match> {
+        use crate::browser_triggers as bt;
+        assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("requestTriggers").is_some())), "the engine asks for its triggers");
+        marks_run(p, &bt::set_triggers_call(l)).expect("setTriggers runs in the isolated world");
+        assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("matchEvent").is_some())), "a match event arrives");
+        let mut all = Vec::new();
+        for (_, body) in p.clients(bt::MESSAGE_HANDLER) {
+            if let bt::Message::Matches(m) = bt::message_of(&body, &l.secret) {
+                all.extend(m);
+            }
+        }
+        all
+    }
+
+    /// 13x5 Task 9: a Page Content Highlight fires in a page. The engine is a Client user script
+    /// (document start), the request and the match arrive as Client messages, the highlight runs in the
+    /// isolated world and leaves a styled span in the shared DOM, and `window.iTerm2Triggers` exists only
+    /// in the isolated world. Needs the console session.
+    #[test]
+    #[ignore]
+    fn triggers_fire_in_a_page() {
+        use crate::browser_triggers as bt;
+        let l = bt::load(&trigger_list("wor(ld)"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let Some(mut p) = Probe::start(&[(PAGE, trigger_page("", "<p>hello world</p>"))], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        let matches = trigger_serve(&mut p, &l);
+        let m = matches.iter().find(|m| m.content_captures.as_deref() == Some(&["world".to_string(), "ld".to_string()])).expect("the content match");
+        let (_, t) = l.triggers.iter().find(|(i, _)| *i == m.identifier).expect("a loaded trigger");
+        let e = bt::effect(t, m, &t.parameter, &[]).expect("a highlight");
+        let bt::Effect::Highlight { match_id, text, background } = e else { panic!("{e:?}") };
+        marks_run(&mut p, &bt::highlight_call(&match_id, text.as_deref(), background.as_deref())).expect("highlightText");
+        assert_eq!(p.page_eval("getComputedStyle(document.querySelector('span[data-iterm2-highlight]')).color"), Ok("\"rgb(255, 0, 0)\"".into()));
+        assert_eq!(p.page_eval("typeof window.iTerm2Triggers"), Ok("\"undefined\"".into()), "the engine lives in the isolated world only");
+        p.finish();
+    }
+
+    /// 13x5 Task 9 review I3: the engine on an `iterm2-about:` page asks for its triggers like any page;
+    /// the message the host would act on is refused by its source, and the list is never sent there
+    /// after a profile edit (`resend_allowed`). Needs the console session.
+    #[test]
+    #[ignore]
+    fn triggers_skip_local_pages() {
+        use crate::browser_triggers as bt;
+        const LOCAL: &str = "iterm2-about:history";
+        let l = bt::load(&trigger_list("wor(ld)"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let pages = [(LOCAL, trigger_page("", "<p>hello world</p>"))];
+        let Some(mut p) = Probe::start_full(&pages, vec![wrapped(&code)], false, &["iterm2-about"]) else { return };
+        p.load(LOCAL);
+        assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("requestTriggers").is_some())), "the engine asks");
+        let sources: Vec<String> = p.routed.iter().filter(|r| r.via == Via::Client).map(|r| r.from.clone()).collect();
+        assert!(!sources.is_empty());
+        // A Client message's source is its isolated context's origin, and Chromium gives an
+        // `iterm2-about:` document an opaque one ("://", probe run 2026-10-10b), so the source names no
+        // local page. The pane's URL carries the rule (B5): `accepted` refuses on it, as the app calls
+        // it (`browser_trigger_message` passes the pane's URL), and `marks_page` refuses a local URL
+        // before any Marks message is read. The control: the same source is heard on a web page.
+        for s in &sources {
+            assert!(!crate::browser::local_source_ok(s), "a Client source is an origin, not a local URL: {s:?}");
+            assert!(!bt::accepted(crate::browser_js::World::Client, None, s, LOCAL), "source {s:?} on the local page must be refused");
+            assert!(bt::accepted(crate::browser_js::World::Client, None, s, "https://other.example/"), "the control: {s:?} on a web page is heard");
+        }
+        assert!(crate::browser_marks::is_local_page(LOCAL), "the Marks gate refuses the page by its URL");
+        assert!(!bt::resend_allowed(LOCAL));
+        p.finish();
+    }
+
+    /// 13x5 Task 9 (B8): a page with thousands of matches posts at most 64 of them, each capture cut,
+    /// under the message limit. Needs the console session.
+    #[test]
+    #[ignore]
+    fn many_matches_are_capped() {
+        use crate::browser_triggers as bt;
+        let l = bt::load(&trigger_list("ab+"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let body = format!("<p>{}</p>", "abbb ".repeat(5000));
+        let Some(mut p) = Probe::start(&[(PAGE, trigger_page("", &body))], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        let matches = trigger_serve(&mut p, &l);
+        assert!(!matches.is_empty() && matches.len() <= bt::MAX_MATCHES * 2, "{} matches", matches.len());
+        // The page-side cap, read before `message_of` (which cuts to 64 itself): every raw matchEvent
+        // the engine posted holds at most 64 matches (final review M5).
+        let raw: Vec<usize> = p.clients(bt::MESSAGE_HANDLER).iter().filter_map(|(_, b)| b.get("matchEvent").and_then(Value::as_str).map(str::to_string)).map(|t| serde_json::from_str::<Value>(&t).expect("a matchEvent is JSON")["matches"].as_array().expect("a matches array").len()).collect();
+        assert!(!raw.is_empty() && raw.iter().all(|n| *n <= bt::MAX_MATCHES), "raw matches per event: {raw:?}");
+        for r in p.routed.iter().filter(|r| r.via == Via::Client) {
+            assert!(r.body.len() <= crate::webhost::MAX_MESSAGE);
+        }
+        p.finish();
+    }
+
+    /// 13x5 Task 9 (Review Focus 11, review C1): a page that replaced `Function.prototype.bind` and
+    /// `chrome.webview.postMessage` before anything ran sees neither the trigger secret nor the marks
+    /// secret after the engine asked, a trigger fired and a mark was shown and pressed; neither
+    /// `window.iTerm2Triggers` nor `window.iTermLayoutChangeMonitor` exists in the page world. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn page_never_sees_the_marks_or_trigger_secrets() {
+        use crate::browser_marks as bm;
+        use crate::browser_triggers as bt;
+        let spy = "<script>(function(){var send=window.chrome.webview.postMessage.bind(window.chrome.webview);var seen=function(v){try{send({h:\"spy\",b:String(v)});}catch(e){}};var ob=Function.prototype.bind;Function.prototype.bind=function(){for(var i=0;i<arguments.length;i++){seen(arguments[i]);}seen(this);return ob.apply(this,arguments);};window.chrome.webview.postMessage=function(m){seen(JSON.stringify(m));};})();</script>";
+        let l = bt::load(&trigger_list("wor(ld)"), "TRIG-SECRET-13x5".into());
+        let code = bt::user_script(&l.secret).expect("the script");
+        let body = "<p>hello world</p><p>two</p><p>three</p><p>four</p><p>five</p>";
+        let Some(mut p) = Probe::start(&[(PAGE, trigger_page(spy, body))], vec![wrapped(&code)]) else { return };
+        p.load(PAGE);
+        let matches = trigger_serve(&mut p, &l);
+        let m = matches.iter().find(|m| m.match_id.is_some()).expect("a content match");
+        let (_, t) = l.triggers.iter().find(|(i, _)| *i == m.identifier).expect("loaded");
+        let Some(bt::Effect::Highlight { match_id, text, background }) = bt::effect(t, m, &t.parameter, &[]) else { panic!("the trigger is a highlight") };
+        marks_run(&mut p, &bt::highlight_call(&match_id, text.as_deref(), background.as_deref())).expect("highlightText");
+        let loc = bm::Location { xpath: "//p[1]".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
+        let show = bm::show_call(&[loc.js_dict(Some("m"), "g1")], "MARKS-SECRET-13x5").expect("a call");
+        marks_run(&mut p, &show).expect("annotations");
+        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        p.settle(500);
+        // Tandem's code runs in the isolated world, which has its own `Function.prototype` and
+        // `chrome.webview`, so the spy normally reports nothing. The proof it is alive and posting is the
+        // page's own call, made last (the 13x4 precedent; a silent spy proves nothing).
+        assert!(!p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"")), "Tandem called nothing the page replaced");
+        p.page_eval("window.chrome.webview.postMessage({control: 'spy-alive'}); 0").expect("the control post");
+        assert!(p.wait(5, |p| p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"") && r.body.contains("spy-alive"))), "the spy is alive: the page's own post went through it");
+        for r in p.routed.iter().filter(|r| r.via == Via::Page) {
+            assert!(!r.body.contains("TRIG-SECRET-13x5") && !r.body.contains("MARKS-SECRET-13x5"), "a page-world message holds a secret: {}", r.body);
+        }
+        // Nothing Tandem wrote into the shared DOM holds either secret.
+        assert_eq!(p.page_eval("document.documentElement.outerHTML.includes('SECRET-13x5')"), Ok("false".into()), "no secret in the page's DOM");
+        assert_eq!(p.page_eval("typeof window.iTerm2Triggers + typeof window.iTermLayoutChangeMonitor"), Ok("\"undefinedundefined\"".into()));
         p.finish();
     }
 

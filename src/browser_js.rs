@@ -84,6 +84,17 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "extract-resources.js" => include_str!("../resources/browser/extract-resources.js"),
         "add-saved-attributes.js" => include_str!("../resources/browser/add-saved-attributes.js"),
         "convert-to-markdown.js" => include_str!("../resources/browser/convert-to-markdown.js"),
+        "get-xpath-at-point.js" => include_str!("../resources/browser/get-xpath-at-point.js"),
+        "extract-text-fragment.js" => include_str!("../resources/browser/extract-text-fragment.js"),
+        "navigate-to-named-mark.js" => include_str!("../resources/browser/navigate-to-named-mark.js"),
+        "show-named-mark-annotations.js" => include_str!("../resources/browser/show-named-mark-annotations.js"),
+        "update-mark-positions.js" => include_str!("../resources/browser/update-mark-positions.js"),
+        "layout-change-monitor.js" => include_str!("../resources/browser/layout-change-monitor.js"),
+        "mark-locator.js" => include_str!("../resources/browser/mark-locator.js"),
+        "triggers.js" => include_str!("../resources/browser/triggers.js"),
+        "trigger-highlight-text.js" => include_str!("../resources/browser/trigger-highlight-text.js"),
+        "trigger-make-hyperlink.js" => include_str!("../resources/browser/trigger-make-hyperlink.js"),
+        "trigger-remove-highlighted-text.js" => include_str!("../resources/browser/trigger-remove-highlighted-text.js"),
         "turndown.browser.umd.js" => include_str!("../resources/browser/turndown.browser.umd.js"),
         _ => return None,
     })
@@ -224,7 +235,14 @@ const CLIENT_CAPTURE: &str = "const __tandemPost = globalThis.__tandemClient;";
 /// string inside the `Runtime.bindingCalled` event, a quote or backslash 2 bytes, a unit outside
 /// printable ASCII 6 (`\uXXXX`), the rest 1. That weight also bounds the decoded UTF-8 size. The
 /// copied find scripts are not edited.
-const CLIENT_CAP: &str = "function (name, body) { if (name !== 'iTermCustomFind' || !body || typeof body !== 'object' || !body.data || typeof body.data !== 'object') { return body; } const ids = Array.isArray(body.data.matchIdentifiers) ? body.data.matchIdentifiers : null; const ctx = Array.isArray(body.data.contexts) ? body.data.contexts : null; if (!ids && !ctx) { return body; } const cut = function (s) { if (typeof s !== 'string') { return s; } if (typeof s.toWellFormed === 'function') { s = s.toWellFormed(); } if (s.length <= 200) { return s; } const c = s.charCodeAt(199); return s.slice(0, c >= 0xD800 && c <= 0xDBFF ? 199 : 200); }; const build = function (n) { const data = Object.assign({}, body.data); if (ids) { data.matchIdentifiers = ids.slice(0, n).map(function (m) { return Object.assign({}, m, {text: cut(m && m.text)}); }); } if (ctx) { data.contexts = ctx.slice(0, n).map(function (c) { return Object.assign({}, c, {contextBefore: cut(c && c.contextBefore), contextAfter: cut(c && c.contextAfter)}); }); } return Object.assign({}, body, {data: data}); }; const weigh = function (o) { const s = JSON.stringify({h: name, b: o}); let w = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); w += (c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6; } return w; }; let n = Math.max(ids ? ids.length : 0, ctx ? ctx.length : 0); let out = build(n); let size = weigh(out); while (size > 60000 && n > 0) { const next = Math.floor(n * 60000 / size * 0.9); n = next < n ? next : n - 1; out = build(n); size = weigh(out); } return out; }";
+const CLIENT_CAP: &str = "function (name, body) { if (name === 'iTerm2Trigger') { return __tandemTriggerCap(body); } if (name !== 'iTermCustomFind' || !body || typeof body !== 'object' || !body.data || typeof body.data !== 'object') { return body; } const ids = Array.isArray(body.data.matchIdentifiers) ? body.data.matchIdentifiers : null; const ctx = Array.isArray(body.data.contexts) ? body.data.contexts : null; if (!ids && !ctx) { return body; } const cut = function (s) { if (typeof s !== 'string') { return s; } if (typeof s.toWellFormed === 'function') { s = s.toWellFormed(); } if (s.length <= 200) { return s; } const c = s.charCodeAt(199); return s.slice(0, c >= 0xD800 && c <= 0xDBFF ? 199 : 200); }; const build = function (n) { const data = Object.assign({}, body.data); if (ids) { data.matchIdentifiers = ids.slice(0, n).map(function (m) { return Object.assign({}, m, {text: cut(m && m.text)}); }); } if (ctx) { data.contexts = ctx.slice(0, n).map(function (c) { return Object.assign({}, c, {contextBefore: cut(c && c.contextBefore), contextAfter: cut(c && c.contextAfter)}); }); } return Object.assign({}, body, {data: data}); }; const weigh = function (o) { const s = JSON.stringify({h: name, b: o}); let w = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); w += (c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6; } return w; }; let n = Math.max(ids ? ids.length : 0, ctx ? ctx.length : 0); let out = build(n); let size = weigh(out); while (size > 60000 && n > 0) { const next = Math.floor(n * 60000 / size * 0.9); n = next < n ? next : n - 1; out = build(n); size = weigh(out); } return out; }";
+
+/// B8 (13x5 Task 9): a trigger match event is JSON inside a JSON string, and one page can match
+/// thousands of times. For the trigger handler only, the Client bridge keeps the first 64 matches, cuts
+/// each capture to 1024 UTF-16 units (never inside a surrogate pair, a lone one made well-formed) and
+/// at most 100 captures, and drops matches from the end until the escaped event weighs under
+/// `CAP_BUDGET` (the weight `ViewGate::admit` uses). A request message passes whole.
+const TRIGGER_CAP: &str = "function (body) { if (!body || typeof body !== 'object' || typeof body.matchEvent !== 'string') { return body; } let ev; try { ev = JSON.parse(body.matchEvent); } catch (e) { return body; } if (!ev || !Array.isArray(ev.matches)) { return body; } const cut = function (s) { if (typeof s !== 'string') { return s; } if (typeof s.toWellFormed === 'function') { s = s.toWellFormed(); } if (s.length <= 1024) { return s; } const c = s.charCodeAt(1023); return s.slice(0, c >= 0xD800 && c <= 0xDBFF ? 1023 : 1024); }; const clean = function (m) { if (!m || typeof m !== 'object') { return m; } const o = Object.assign({}, m); if (Array.isArray(o.urlCaptures)) { o.urlCaptures = o.urlCaptures.slice(0, 100).map(cut); } if (Array.isArray(o.contentCaptures)) { o.contentCaptures = o.contentCaptures.slice(0, 100).map(cut); } return o; }; const all = ev.matches.slice(0, 64).map(clean); const build = function (n) { return Object.assign({}, body, {matchEvent: JSON.stringify({matches: all.slice(0, n)})}); }; const weigh = function (o) { const s = JSON.stringify({h: 'iTerm2Trigger', b: o}); let w = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); w += (c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6; } return w; }; let n = all.length; let out = build(n); while (weigh(out) > 60000 && n > 0) { n = n > 1 ? Math.floor(n / 2) : 0; out = build(n); } return out; }";
 
 /// The find cap's budget, in the bytes the DevTools event spends on the payload (`CLIENT_CAP`): room
 /// under `MAX_MESSAGE + MAX_URL` (73728) for the event's own fields, and under `MAX_MESSAGE` decoded.
@@ -233,7 +251,7 @@ pub const CAP_BUDGET: usize = 60000;
 /// The closure-local `webkit` object: a Proxy answering `{postMessage}` for any handler name.
 fn bridge_object(world: World) -> String {
     match world {
-        World::Client => "const __tandemCap = __CAP__;\nconst __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { body = __tandemCap(name, body); if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };".replace("__CAP__", CLIENT_CAP),
+        World::Client => "const __tandemTriggerCap = __TCAP__;\nconst __tandemCap = __CAP__;\nconst __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { body = __tandemCap(name, body); if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };".replace("__CAP__", CLIENT_CAP).replace("__TCAP__", TRIGGER_CAP),
         World::Page => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__tandemPost) { __tandemPost({h: name, b: body}); } } }; } }) };".to_string(),
     }
 }
@@ -813,6 +831,17 @@ mod tests {
             assert!(p.len() <= MAX_MESSAGE, "and its decoded size is within the message limit");
             assert!(route(&p, World::Client, None, "o").is_some());
         }
+    }
+
+    /// B8 (13x5 Task 9): the trigger handler's events are cut inside the Client bridge, and only theirs.
+    #[test]
+    fn the_client_bridge_caps_trigger_events() {
+        let c = wrap(&script("window.webkit.messageHandlers.iTerm2Trigger.postMessage({a: 1})", World::Client));
+        assert!(c.contains("if (name === 'iTerm2Trigger') { return __tandemTriggerCap(body); }"), "{c}");
+        assert!(c.contains("ev.matches.slice(0, 64)") && c.contains("slice(0, 100)") && c.contains("weigh(out) > 60000"), "{c}");
+        assert!(c.find("const __tandemTriggerCap").unwrap() < c.find("const __tandemCap").unwrap());
+        assert!(!TRIGGER_CAP.to_ascii_lowercase().contains("secret"), "the cap copies the body whole");
+        assert!(!wrap(&script("x", World::Page)).contains("__tandemTriggerCap"));
     }
 
     #[test]

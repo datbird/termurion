@@ -108,7 +108,6 @@ fn coerced_bool(v: Option<&Value>) -> bool {
 /// parameters only when present; None (left out) when its action names no trigger.
 pub(crate) fn sanitized_trigger(t: &toml::Table) -> Option<Json> {
     let action = t.get("action").and_then(Value::as_str)?;
-    crate::triggers::action_info(action)?;
     let text = |k: &str| t.get(k).and_then(Value::as_str);
     let match_type = match t.get("matchType") {
         Some(Value::Integer(i)) => (*i).max(0),
@@ -116,6 +115,15 @@ pub(crate) fn sanitized_trigger(t: &toml::Table) -> Option<Json> {
         Some(Value::Boolean(b)) => *b as i64,
         _ => 0,
     };
+    // A browser action has its own bounded checks (the eight in `BROWSER_CATALOG`); anything else
+    // must be a terminal action.
+    if crate::triggers::is_browser_action(action) {
+        if !crate::triggers::browser_trigger_ok(action, match_type, t.get("parameter")) {
+            return None;
+        }
+    } else {
+        crate::triggers::action_info(action)?;
+    }
     let mut o = Map::new();
     o.insert("action".into(), json!(action));
     o.insert("regex".into(), json!(text("regex").unwrap_or("")));
