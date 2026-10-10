@@ -349,18 +349,15 @@
             if (!codeElement) return;
             
             // Get the current page URL to resolve relative URLs
-            const currentURL = {{URL_JSON}};
+            const currentURL = '{{URL}}';
             let html = codeElement.innerHTML;
             
             // Helper function to resolve relative URLs
             function resolveURL(url) {
-                // Tandem: only a parsed http(s) URL is made a link (the parser percent-encodes spaces
-                // and quotes, so no source text can add an attribute to the anchor), never the raw text.
                 try {
-                    const u = new URL(url, currentURL);
-                    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+                    return new URL(url, currentURL).href;
                 } catch (e) {
-                    return null;
+                    return url;
                 }
             }
             
@@ -374,8 +371,7 @@
                         return match;
                     }
                     
-                    const linkURL = resolveURL(url);
-                    if (!linkURL) return match;
+                    const linkURL = url.startsWith('http') ? url : resolveURL(url);
                     return `${before}<a href="${linkURL}" target="_blank" rel="noopener noreferrer" class="source-link">${url}</a>${after}`;
                 });
             
@@ -386,8 +382,7 @@
                         return match;
                     }
                     
-                    const linkURL = resolveURL(url);
-                    if (!linkURL) return match;
+                    const linkURL = url.startsWith('http') ? url : resolveURL(url);
                     return `${before}<a href="${linkURL}" target="_blank" rel="noopener noreferrer" class="source-link">${url}</a>${after}`;
                 });
             
@@ -398,8 +393,7 @@
                         return match;
                     }
                     
-                    const linkURL = resolveURL(url);
-                    if (!linkURL) return match;
+                    const linkURL = url.startsWith('http') ? url : resolveURL(url);
                     return `${before}${quote1}<a href="${linkURL}" target="_blank" rel="noopener noreferrer" class="source-link">${url}</a>${quote2}${after}`;
                 });
             

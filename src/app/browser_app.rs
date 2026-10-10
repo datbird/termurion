@@ -36,6 +36,9 @@ pub(super) struct BrowserView {
     /// The HTTP status of the main document's last navigation (0 when it failed): View Source reads the
     /// cached original only for a 200 (`BM:1720-1725`).
     pub(super) status: i32,
+    /// The main frame began a navigation to `iterm2-about:source` that has not yet made its document
+    /// request: only that request may take the pending source.
+    pub(super) source_nav: bool,
     /// The toolbar's state: the address field, its suggestions, a press, the history list.
     pub(super) bar: BarState,
     /// Browser Instant Replay: this pane's frames and the state of the capture round trip.
@@ -238,7 +241,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         true
     }
 

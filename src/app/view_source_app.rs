@@ -8,23 +8,46 @@ use crate::view_source::{self, Next, Stage, Verdict};
 use serde_json::json;
 use crate::webhost::Answer;
 
+thread_local! {
+    static LAST_INVALID_LOG: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// At most one "Invalid source URL" line a second.
+fn invalid_log_due() -> bool {
+    LAST_INVALID_LOG.with(|c| {
+        let now = std::time::Instant::now();
+        let due = c.get().is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_secs(1));
+        if due {
+            c.set(Some(now));
+        }
+        due
+    })
+}
+
 impl App {
     /// The answer for a request for a source URL, or None when `url` is not one (the other local
     /// pages' rule answers). Only a document request takes the pane's pending source.
     pub(super) fn browser_source_answer(&mut self, pane: PaneId, url: &str, context: i32) -> Option<Answer> {
+        // The main frame's own navigation to the source URL armed the pane (`Event::Starting`); the
+        // first document request after it is that navigation's, so a frame cannot take the source.
+        let top_level = view_source::is_source_url(url) && context == crate::browser_pages::CONTEXT_DOCUMENT && self.browser_views.get_mut(&pane).is_some_and(|b| std::mem::take(&mut b.source_nav));
         let nonce = crate::browser_pages::new_nonce();
         let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
         let mut none = None;
         let pending = self.browser_views.get_mut(&pane).map_or(&mut none, |b| &mut b.pending_source);
-        let (status, mime, body) = match view_source::request(pending, url, context, css, &nonce) {
+        let (status, mime, body) = match view_source::request(pending, url, context, top_level, css, &nonce) {
             Verdict::NotSource => return None,
             Verdict::Page(html) => (200, "text/html; charset=utf-8", html),
             Verdict::Invalid => {
-                let what = view_source::INVALID_URL;
-                crate::rlog!("{}", what);
+                // Rate-limited: a page can ask for this URL as often as it likes.
+                if invalid_log_due() {
+                    let what = view_source::INVALID_URL;
+                    crate::rlog!("{}", what);
+                }
                 (404, "text/plain; charset=utf-8", "Not found".to_string())
             }
-            Verdict::Refused => (404, "text/plain; charset=utf-8", "Not found".to_string()),
+            // Logged by `render`; the pending source went with the failed page.
+            Verdict::Unavailable | Verdict::Refused => (404, "text/plain; charset=utf-8", "Not found".to_string()),
         };
         Some(Answer::Respond { status, mime: mime.to_string(), body: body.into_bytes(), headers: crate::browser_pages::response_headers(&nonce) })
     }
@@ -208,5 +231,20 @@ mod tests {
         }
         let app = include_str!("browser_app.rs");
         assert!(app.contains("bv.status = if *ok { *status } else { 0 };"));
+    }
+
+    /// The log of an invalid source URL is rate-limited, and the source is taken only after the main
+    /// frame's own navigation to it armed the pane.
+    #[test]
+    fn source_takes_are_armed_by_the_main_frame_and_the_log_is_limited() {
+        let src = include_str!("view_source_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(prod.contains("if invalid_log_due() {") && prod.contains("from_secs(1)"));
+        assert!(prod.contains("std::mem::take(&mut b.source_nav)") && prod.contains("request(pending, url, context, top_level,"));
+        let r = include_str!("browser_scripts_app.rs");
+        let r = &r[..r.find("#[cfg(test)]").unwrap()];
+        let starting = &r[r.find("Event::Starting { redirect: false, url, .. } => {").unwrap()..];
+        let starting = &starting[..starting.find("self.browser_copy_mode_set(pane, false)").unwrap()];
+        assert!(starting.contains("bv.source_nav = crate::view_source::is_source_url(url);"));
     }
 }

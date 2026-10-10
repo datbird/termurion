@@ -3537,7 +3537,7 @@ mod probe {
         assert!(dom.contains("changed") && !dom.contains("class=\\\"k\\\">x</p>"), "the DOM differs: {dom}");
         p.finish();
         let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
-        let page = crate::view_source::page(&cached, TEST_PAGE, css, "N");
+        let page = crate::view_source::page(&cached, TEST_PAGE, css, "N").expect("the page");
         let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
         p.load(PAGE);
         p.settle(500);
@@ -3558,7 +3558,7 @@ mod probe {
     fn view_source_shows_the_page() {
         let raw = "<a href=\"JAVASCRIPT:window.__pwn=1\">j</a> <img src=x onerror=\"window.__pwn=1\"> </script><script nonce=\"FAKE\">window.__pwn=1</script> <a href=\"http://x.test/ onmouseover=window.__pwn=1\">h</a> <a href=\"/rel?a=1\">r</a> <a href=\"data:text/html,<b>\">d</a> {{NONCE}}";
         let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
-        let html = crate::view_source::page(raw, "https://tandem.test/orig?x='1'&y=\\", css, "REALNONCE");
+        let html = crate::view_source::page(raw, "https://tandem.test/orig?x='1'&y=\\", css, "REALNONCE").expect("the page");
         let Some(mut p) = Probe::start(&[(PAGE, html)], Vec::new()) else { return };
         p.load(PAGE);
         p.settle(500);

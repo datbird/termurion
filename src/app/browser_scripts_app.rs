@@ -760,8 +760,9 @@ impl App {
                 true
             }
             // A main-frame navigation began: every call still waiting is over (iTerm2's `willNavigate`).
-            Event::Starting { redirect: false, .. } => {
+            Event::Starting { redirect: false, url, .. } => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
+                    bv.source_nav = crate::view_source::is_source_url(url);
                     // iTerm2's `willNavigate` and the editing reset (`GDH:16-18`, `BM:1258`).
                     bv.editing = false;
                     bv.selection = None;

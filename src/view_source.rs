@@ -79,13 +79,49 @@ fn fill(src: &str, subs: &[(&str, &str)]) -> String {
     out
 }
 
-fn render(source_html: &str, url: &str, common_css: &str, nonce: &str) -> String {
-    let template = resource("view-source.html").unwrap_or_default().replace(EMOJI, GLYPH_SPAN);
-    fill(&template, &[("COMMON_CSS", common_css), ("NONCE", nonce), ("URL", &escape_html(url)), ("URL_JSON", &script_string(url)), ("SOURCE", source_html)])
+/// A patch target that is not there exactly once: no page is served (R13x3-1/-2).
+pub const PATCH_MISSED: &str = "the view source template did not patch";
+
+/// The copied template with `patches` applied, each target found exactly once, else an error.
+pub fn apply_patches(template: &str, patches: &[(&str, &str, &str)]) -> Result<String, String> {
+    let mut text = template.to_string();
+    for (name, raw, typed) in patches {
+        if text.matches(raw).count() != 1 {
+            return Err(format!("{PATCH_MISSED}: {name}"));
+        }
+        text = text.replacen(raw, typed, 1);
+    }
+    Ok(text)
 }
 
+/// The template as served: iTerm2's file (plus the nonce on its one script, the 13x precedent) with
+/// Tandem's load-time patches.
+fn template() -> Result<String, String> {
+    apply_patches(&resource("view-source.html").unwrap_or_default().replace(EMOJI, GLYPH_SPAN), &PATCHES)
+}
+
+fn render(source_html: &str, url: &str, common_css: &str, nonce: &str) -> Option<String> {
+    let template = template().inspect_err(|e| crate::rlog!("{}", crate::dlog::name(e))).ok()?;
+    Some(fill(&template, &[("COMMON_CSS", common_css), ("NONCE", nonce), ("URL", &escape_html(url)), ("URL_JSON", &script_string(url)), ("SOURCE", source_html)]))
+}
+
+/// The load-time patches of the copied template (R13x3-1/-2 pattern): each target must be found
+/// exactly once or no page is served. (name, iTerm2's text, Tandem's text)
+pub const PATCHES: [(&str, &str, &str); 5] = [
+    ("URL_JSON", "            const currentURL = '{{URL}}';\n",
+        "            const currentURL = {{URL_JSON}};\n"),
+    ("RESOLVE", "            function resolveURL(url) {\n                try {\n                    return new URL(url, currentURL).href;\n                } catch (e) {\n                    return url;\n                }\n            }\n",
+        "            function resolveURL(url) {\n                // Tandem: only a parsed http(s) URL is made a link (the parser percent-encodes spaces\n                // and quotes, so no source text can add an attribute to the anchor), never the raw text.\n                try {\n                    const u = new URL(url, currentURL);\n                    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;\n                } catch (e) {\n                    return null;\n                }\n            }\n"),
+    ("SITE_ESCAPED", "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=&quot;)([^&\"]+?)(&quot;)/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = url.startsWith('http') ? url : resolveURL(url);\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n",
+        "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=&quot;)([^&\"]+?)(&quot;)/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = resolveURL(url);\n                    if (!linkURL) return match;\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n"),
+    ("SITE_QUOTED", "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=\")([^\"]+?)(\")/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = url.startsWith('http') ? url : resolveURL(url);\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n",
+        "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=\")([^\"]+?)(\")/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = resolveURL(url);\n                    if (!linkURL) return match;\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n"),
+    ("SITE_CSS", "            html = html.replace(/(url\\()(&quot;|&#39;|\")([^&'\"]+?)(\\2)(\\))/gi, \n                (match, before, quote1, url, quote2, after) => {\n                    if (!url || url.trim() === '') {\n                        return match;\n                    }\n                    \n                    const linkURL = url.startsWith('http') ? url : resolveURL(url);\n                    return `${before}${quote1}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${quote2}${after}`;\n",
+        "            html = html.replace(/(url\\()(&quot;|&#39;|\")([^&'\"]+?)(\\2)(\\))/gi, \n                (match, before, quote1, url, quote2, after) => {\n                    if (!url || url.trim() === '') {\n                        return match;\n                    }\n                    \n                    const linkURL = resolveURL(url);\n                    if (!linkURL) return match;\n                    return `${before}${quote1}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${quote2}${after}`;\n"),
+];
+
 /// The page for a source and the URL it came from (`SH:15-32`), under this response's nonce.
-pub fn page(raw: &str, url: &str, common_css: &str, nonce: &str) -> String {
+pub fn page(raw: &str, url: &str, common_css: &str, nonce: &str) -> Option<String> {
     let mut end = raw.len().min(MAX_SOURCE);
     while !raw.is_char_boundary(end) {
         end -= 1;
@@ -94,12 +130,12 @@ pub fn page(raw: &str, url: &str, common_css: &str, nonce: &str) -> String {
 }
 
 /// Nothing is waiting (`SH:53-57`); iTerm2 leaves `{{URL}}` showing, Tandem shows an empty line.
-pub fn fallback_page(common_css: &str, nonce: &str) -> String {
+pub fn fallback_page(common_css: &str, nonce: &str) -> Option<String> {
     render(NO_SOURCE, "", common_css, nonce)
 }
 
 /// The waiting page, taken (it serves once), else the fallback (`SH:48-57`).
-pub fn serve(pending: &mut Option<Pending>, common_css: &str, nonce: &str) -> String {
+pub fn serve(pending: &mut Option<Pending>, common_css: &str, nonce: &str) -> Option<String> {
     match pending.take() {
         Some(p) => page(&p.raw, &p.url, common_css, nonce),
         None => fallback_page(common_css, nonce),
@@ -113,6 +149,8 @@ pub enum Verdict {
     NotSource,
     /// The page, the pending source taken.
     Page(String),
+    /// The template did not patch: nothing is served (the pending source is dropped).
+    Unavailable,
     /// `iterm2-about:source` as anything but a document request (a web page's image, script or
     /// fetch): a 404 that leaves the pending source for the navigation it belongs to.
     Refused,
@@ -120,9 +158,14 @@ pub enum Verdict {
     Invalid,
 }
 
+/// Whether `url` is exactly the source page's URL (the scheme in any case).
+pub fn is_source_url(url: &str) -> bool {
+    url.split_once(':').is_some_and(|(s, rest)| s.eq_ignore_ascii_case("iterm2-about") && rest == "source")
+}
+
 /// Whether `url` names the source page, and what a request for it gets. Only a document request
 /// takes the pending source (`browser_pages::CONTEXT_DOCUMENT`).
-pub fn request(pending: &mut Option<Pending>, url: &str, context: i32, common_css: &str, nonce: &str) -> Verdict {
+pub fn request(pending: &mut Option<Pending>, url: &str, context: i32, top_level: bool, common_css: &str, nonce: &str) -> Verdict {
     let Some((scheme, rest)) = url.split_once(':') else { return Verdict::NotSource };
     if !scheme.eq_ignore_ascii_case(&SCHEME[..SCHEME.len() - 1]) || !rest.starts_with("source") {
         return Verdict::NotSource;
@@ -130,10 +173,15 @@ pub fn request(pending: &mut Option<Pending>, url: &str, context: i32, common_cs
     if rest != "source" {
         return Verdict::Invalid;
     }
-    if context != crate::browser_pages::CONTEXT_DOCUMENT {
+    // A document request, and the one of the main frame's navigation to this URL: a frame's request
+    // (an iframe of the page being left) never takes the person's source.
+    if context != crate::browser_pages::CONTEXT_DOCUMENT || !top_level {
         return Verdict::Refused;
     }
-    Verdict::Page(serve(pending, common_css, nonce))
+    match serve(pending, common_css, nonce) {
+        Some(html) => Verdict::Page(html),
+        None => Verdict::Unavailable,
+    }
 }
 
 /// Which text View Source shows (`BM:1669-1704`).
@@ -235,7 +283,7 @@ mod tests {
         assert_eq!(escape_source("<a href=\"x\">'&'</a>\n  t\tz"), "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;<br/>&nbsp;&nbsp;t\tz");
         assert_eq!(escape_source("   "), "&nbsp;&nbsp; ");
         assert_eq!(escape_html("a'b\"<"), "a&#39;b&quot;&lt;");
-        let p = page("<p>{{URL}}</p>", "https://a/?q='x'", "CSS", "N1");
+        let p = page("<p>{{URL}}</p>", "https://a/?q='x'", "CSS", "N1").unwrap();
         assert!(p.contains("<title>View Source</title>"));
         assert!(p.contains("<p class=\"url\">https://a/?q=&#39;x&#39;</p>"));
         assert!(p.contains("const currentURL = \"https://a/?q='x'\";"), "the script's URL is a JSON string (P12)");
@@ -249,7 +297,7 @@ mod tests {
     #[test]
     fn the_script_url_is_typed_data() {
         for url in ["https://a/?q=\\", "https://a/?a=1&b=2", "https://a/#\"'", "https://a/#</script><img src=x onerror=alert(1)>"] {
-            let p = page("x", url, "", "N");
+            let p = page("x", url, "", "N").unwrap();
             let line = p.lines().find(|l| l.contains("const currentURL = ")).unwrap().trim();
             let json = line.strip_prefix("const currentURL = ").unwrap().strip_suffix(';').unwrap();
             let back: String = serde_json::from_str(json).unwrap_or_else(|e| panic!("{url}: {json}: {e}"));
@@ -265,7 +313,7 @@ mod tests {
     fn hostile_source_stays_inert() {
         let nonce = "0123456789abcdef0123456789abcdef";
         let raw = "</script><script nonce=\"FAKE\">alert(1)</script><img src=x onerror=alert(1)>{{NONCE}}{{URL}}{{SOURCE}}{{COMMON_CSS}}<!--";
-        let p = page(raw, "https://a/", "", nonce);
+        let p = page(raw, "https://a/", "", nonce).unwrap();
         assert_eq!(p.matches("<script").count(), 1, "no script but the template's");
         assert_eq!(p.matches("</script>").count(), 1);
         assert!(!p.contains("<img"));
@@ -285,9 +333,9 @@ mod tests {
     #[test]
     fn source_serving_follows_iterm2() {
         let mut pending = Pending::new("P".into(), "https://a/".into());
-        let first = serve(&mut pending, "C", "N");
+        let first = serve(&mut pending, "C", "N").unwrap();
         assert!(first.contains("<code class=\"language-html source-code\">P</code>") && pending.is_none());
-        let second = serve(&mut pending, "C", "N");
+        let second = serve(&mut pending, "C", "N").unwrap();
         assert!(second.contains(NO_SOURCE) && second.contains(&format!("{GLYPH_SPAN} Page Source")) && !second.contains('\u{1F4BB}') && !second.contains("{{"));
         assert_eq!(SOURCE_URL, "iterm2-about:source");
         assert!(Pending::new("x".repeat(MAX_SOURCE + 1), String::new()).is_none(), "over the cap, nothing is shown");
@@ -299,15 +347,15 @@ mod tests {
     fn source_not_consumed_by_a_subresource() {
         let mut pending = Pending::new("SECRET-SRC".into(), "https://a/".into());
         for context in [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] {
-            assert_eq!(request(&mut pending, SOURCE_URL, context, "", "N"), Verdict::Refused, "context {context}");
+            assert_eq!(request(&mut pending, SOURCE_URL, context, true, "", "N"), Verdict::Refused, "context {context}");
             assert!(pending.is_some(), "context {context} left the source");
         }
-        assert_eq!(request(&mut pending, "iterm2-about:source?x", CONTEXT_DOCUMENT, "", "N"), Verdict::Invalid);
-        assert_eq!(request(&mut pending, "iterm2-about:source#f", CONTEXT_DOCUMENT, "", "N"), Verdict::Invalid);
+        assert_eq!(request(&mut pending, "iterm2-about:source?x", CONTEXT_DOCUMENT, true, "", "N"), Verdict::Invalid);
+        assert_eq!(request(&mut pending, "iterm2-about:source#f", CONTEXT_DOCUMENT, true, "", "N"), Verdict::Invalid);
         assert!(pending.is_some(), "an invalid URL leaves it too");
-        assert_eq!(request(&mut pending, "iterm2-about:history", CONTEXT_DOCUMENT, "", "N"), Verdict::NotSource);
-        assert_eq!(request(&mut pending, "https://a/source", CONTEXT_DOCUMENT, "", "N"), Verdict::NotSource);
-        match request(&mut pending, "ITERM2-ABOUT:source", CONTEXT_DOCUMENT, "", "N") {
+        assert_eq!(request(&mut pending, "iterm2-about:history", CONTEXT_DOCUMENT, true, "", "N"), Verdict::NotSource);
+        assert_eq!(request(&mut pending, "https://a/source", CONTEXT_DOCUMENT, true, "", "N"), Verdict::NotSource);
+        match request(&mut pending, "ITERM2-ABOUT:source", CONTEXT_DOCUMENT, true, "", "N") {
             Verdict::Page(p) => assert!(p.contains("SECRET-SRC")),
             other => panic!("{other:?}"),
         }
@@ -323,5 +371,62 @@ mod tests {
         assert_eq!(source_choice("iterm2-about:welcome", 200), Choice::Dom);
         assert_eq!(source_choice("file:///c:/x.html", 0), Choice::Dom);
         assert_eq!(DOM_BODY, "return document.documentElement.outerHTML");
+    }
+
+    /// The copied file is iTerm2's but for the nonce on its script tag (the 13x precedent): every
+    /// Tandem change is a load-time patch (B6).
+    #[test]
+    fn the_copied_template_is_iterm2s_but_for_the_nonce() {
+        let t = resource("view-source.html").unwrap();
+        assert_eq!(t.matches("<script nonce=\"{{NONCE}}\">").count(), 1);
+        for (name, raw, typed) in PATCHES.iter() {
+            assert_eq!(t.matches(raw).count(), 1, "{name}: iTerm2's text is in the file exactly once");
+            assert!(!t.contains(typed), "{name}: Tandem's text is not in the file");
+        }
+        assert!(t.contains("const currentURL = '{{URL}}';") && !t.contains("{{URL_JSON}}"));
+    }
+
+    /// One pure test per patch: it applies alone, once, and changes exactly its own text.
+    #[test]
+    fn each_patch_applies_exactly_once() {
+        let t = resource("view-source.html").unwrap().replace(EMOJI, GLYPH_SPAN);
+        assert_eq!(PATCHES.len(), 5);
+        for (i, (name, raw, typed)) in PATCHES.iter().enumerate() {
+            let one = apply_patches(&t, &PATCHES[i..=i]).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(one, t.replacen(raw, typed, 1), "{name}: only its own text changes");
+            assert_eq!(one.matches(typed).count(), 1, "{name}");
+        }
+        let all = template().unwrap();
+        assert!(all.contains("const currentURL = {{URL_JSON}};") && !all.contains("'{{URL}}'"));
+        assert!(all.contains("return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;"));
+        assert_eq!(all.matches("const linkURL = resolveURL(url);\n                    if (!linkURL) return match;").count(), 3, "the three link sites");
+        assert!(!all.contains("url.startsWith('http') ? url"), "no site links raw text");
+    }
+
+    /// A target that is missing, or there twice, serves nothing.
+    #[test]
+    fn a_missed_target_serves_nothing() {
+        let t = "A B";
+        assert_eq!(apply_patches(t, &[("a", "A", "x"), ("b", "B", "y")]).unwrap(), "x y");
+        assert!(apply_patches(t, &[("gone", "Z", "x")]).unwrap_err().starts_with(PATCH_MISSED));
+        assert!(apply_patches("A A", &[("twice", "A", "x")]).unwrap_err().starts_with(PATCH_MISSED));
+        // The served path: a patch that misses makes `render` produce no page, and `request` Unavailable.
+        let broken = apply_patches(&resource("view-source.html").unwrap(), &[("gone", "no such text in the template", "x")]);
+        assert!(broken.is_err());
+        let src = include_str!("view_source.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(prod.contains("let template = template().inspect_err(") && prod.contains(".ok()?;"), "render serves nothing when the template does not patch");
+        assert!(prod.contains("None => Verdict::Unavailable,"));
+    }
+
+    /// Only the main frame's navigation to the source URL takes the source (review minor).
+    #[test]
+    fn a_frame_never_takes_the_source() {
+        let mut pending = Pending::new("SRC".into(), "https://a/".into());
+        assert_eq!(request(&mut pending, SOURCE_URL, CONTEXT_DOCUMENT, false, "", "N"), Verdict::Refused);
+        assert!(pending.is_some());
+        assert!(matches!(request(&mut pending, SOURCE_URL, CONTEXT_DOCUMENT, true, "", "N"), Verdict::Page(_)));
+        assert!(is_source_url("iterm2-about:source") && is_source_url("ITERM2-ABOUT:source"));
+        assert!(!is_source_url("iterm2-about:source?x") && !is_source_url("iterm2-about:sourced") && !is_source_url("https://a/source"));
     }
 }
