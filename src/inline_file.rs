@@ -124,9 +124,13 @@ pub fn clean_name(name: &str) -> String {
 }
 
 /// A free name for `name` in `dir`: "a.txt", then "a (1).txt", and so on. Any folder part
-/// of the name is dropped.
+/// of the name is dropped, and a high-risk type gets a trailing `_` ("setup.exe_").
 pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    // A high-risk type is kept as bytes under a neutral name (`inert_files::neutralized`), so the
+    // question, the refusal check and the save all see the name that is written. A type the shell
+    // reads on listing stays refused (12d), never renamed.
     let clean = clean_name(name);
+    let clean = if crate::inert_files::refused_on_listing(&clean) { clean } else { crate::inert_files::neutralized(&clean) };
     let first = dir.join(&clean);
     if !crate::localfs::local_exists(&first) {
         return first;
@@ -475,7 +479,11 @@ mod tests {
     fn download_names_cannot_hide_their_type() {
         let d = std::env::temp_dir().join(format!("tandem-dl2-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe"));
+        assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe_"));
+        // A high-risk type is kept as bytes but never as its type (the door refuses it).
+        assert_eq!(unique_path(&d, "setup.EXE"), d.join("setup.EXE_"));
+        assert!(save(&d, ".url", b"x").is_err(), "a listing type stays refused");
+        assert_eq!(unique_path(&d, "a.txt"), d.join("a.txt"));
         assert_eq!(unique_path(&d, "a\u{200b}b.txt. . "), d.join("ab.txt"));
         assert_eq!(unique_path(&d, "CON"), d.join("_CON"));
         assert_eq!(unique_path(&d, "nul.txt"), d.join("_nul.txt"));

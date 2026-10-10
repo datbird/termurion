@@ -183,7 +183,7 @@ fn saved_name(dir: &std::path::Path, name: &str) -> String {
 /// Whether a download named `name` would be refused when saved in `dir` (`inert_files`): asked
 /// before the question, so the person is not asked to allow what cannot be saved.
 pub(super) fn download_refused(dir: &std::path::Path, name: &str) -> bool {
-    crate::inert_files::refused_path(&crate::inline_file::unique_path(dir, name).to_string_lossy())
+    crate::inert_files::refused_write(&crate::inline_file::unique_path(dir, name).to_string_lossy())
 }
 
 /// The pane and inline file a question is about.

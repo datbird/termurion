@@ -2,7 +2,8 @@
 //! volume bounds. Every name and every byte comes from a web page, so the one sanitizer is built on
 //! the existing owners: `inert_files::is_hidden` (hidden and bidi characters),
 //! `inert_files::is_device_name` (device names), `settings_export::aliased` (the Windows alias
-//! rule) and `semantic::runnable` (executable extensions). No second list is kept here.
+//! rule) and `inert_files::high_risk` (the one dangerous-type list, which `semantic::runnable` reads
+//! too). No second list is kept here.
 
 use crate::inert_files::{is_device_name, is_hidden};
 use crate::mime_ext::extension_for_mime;
@@ -30,12 +31,11 @@ fn trim_end_dots(s: &str) -> &str {
     s.trim_end_matches(['.', ' '])
 }
 
-/// Whether a file name ends in an extension Windows would run, open or follow, other than "js" (a
-/// saved page needs its scripts; the Mark of the Web covers them). The one list is
-/// `semantic::runnable`.
+/// Whether a file name ends in an extension Windows would run, open, follow or parse: the one
+/// list, `inert_files::high_risk` (a saved script too; the door refuses it, controller ruling for
+/// Task 8 I2).
 pub fn refused_extension(name: &str) -> bool {
-    let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
-    !ext.eq_ignore_ascii_case("js") && crate::semantic::runnable(name)
+    crate::inert_files::high_risk(name)
 }
 
 /// `COM0`..`COM9` and `LPT0`..`LPT9` too; `is_device_name` is the owner of the rest.
@@ -73,8 +73,8 @@ fn cap(name: &str) -> String {
 /// A file name that is safe to create under the folder the person chose. iTerm2's
 /// `\/:*?"<>|` become `_`; then control characters become `_`; hidden, bidi and format characters
 /// are dropped (`inert_files::is_hidden`); trailing dots and spaces go; empty, `.` and `..` become
-/// `resource`; a device name gets a `_` prefix; an executable extension (`semantic::runnable`,
-/// other than js) is neutralized with a trailing `_`; an 8.3 `~digit` alias becomes `_digit`;
+/// `resource`; a device name gets a `_` prefix; a high-risk extension (the one list,
+/// `inert_files::high_risk`) is neutralized with a trailing `_`; an 8.3 `~digit` alias becomes `_digit`;
 /// then the length is capped.
 pub fn sanitize(name: &str) -> String {
     sanitize_with(name, true)
@@ -137,7 +137,7 @@ pub fn base_filename(url: &str, mime: Option<&str>) -> String {
     }
     if let Some(m) = mime {
         let mut ext = extension_for_mime(m);
-        if crate::semantic::runnable(&format!("x.{ext}")) && !ext.eq_ignore_ascii_case("js") {
+        if refused_extension(&format!("x.{ext}")) {
             ext = "bin".to_string();
         }
         match name.rsplit_once('.') {
@@ -666,7 +666,7 @@ impl Job {
         let path = self.resources.join(&name);
         // The name is the sanitizer's: one component, directly under resources, not refused.
         let direct = path.parent() == Some(self.resources.as_path()) && path.file_name().map(|n| n.to_string_lossy() == name.as_str()).unwrap_or(false);
-        if !direct || name.contains(['/', '\\']) || crate::inert_files::refused_path(&path.to_string_lossy()) {
+        if !direct || name.contains(['/', '\\']) || crate::inert_files::refused_write(&path.to_string_lossy()) {
             return self.pump();
         }
         self.issued.insert(name.to_lowercase());
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(base_filename("https://a/img/logo", Some("image/png")), "logo.png");
         assert_eq!(base_filename("https://a/", Some("text/css")), "resource.css");
         assert_eq!(base_filename("https://a/x/y/", None), "y");
-        assert_eq!(base_filename("https://a/f%20g.js", None), "f g.js");
+        assert_eq!(base_filename("https://a/f%20g.js", None), "f g.js_");
         assert_eq!(base_filename("https://a/a:b.css", None), "a_b.css");
         assert_eq!(unique_filename("a.png", &|n| n == "a.png" || n == "a_1.png"), "a_2.png");
         assert_eq!(unique_filename("a", &|n| n == "a"), "a_1");
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(sanitize("lpt\u{b9}.css"), "_lpt\u{b9}.css");
         assert_eq!(sanitize("nul .txt"), "_nul .txt");
         assert_eq!(sanitize("con.txt"), "_con.txt");
-        for n in ["COM10.js", "console.js", "auxiliary.png"] {
+        for n in ["COM10.css", "console.png", "auxiliary.png"] {
             assert_eq!(sanitize(n), n);
         }
         assert_eq!(base_filename("https://a/CON", Some("text/css")), "_CON.css");
@@ -827,7 +827,6 @@ mod tests {
             let s = sanitize(n);
             assert!(!crate::semantic::runnable(&s), "{n} -> {s}");
         }
-        assert_eq!(sanitize("app.js"), "app.js");
         assert_eq!(sanitize("a.html."), "a.html");
         assert_eq!(sanitize("a:b"), "a_b");
         assert_eq!(sanitize("..\\x"), ".._x");
@@ -841,6 +840,20 @@ mod tests {
         let unknown = base_filename("https://a/x", Some("weird/thing"));
         assert_eq!(unknown, "x.dat");
         assert!(!crate::semantic::runnable(&base_filename("https://a/x.exe", None)));
+    }
+
+    /// A name that is a dot and an extension is that type (review I2), and a saved script is
+    /// neutralized like any other high-risk type (controller ruling: no exemption at the door).
+    #[test]
+    fn leading_dot_names_are_neutral() {
+        assert_eq!(sanitize(".scf"), ".scf_");
+        assert_eq!(sanitize(".exe"), ".exe_");
+        assert_eq!(sanitize(".URL"), ".URL_");
+        assert_eq!(sanitize("app.js"), "app.js_");
+        let scf = base_filename("https://a/.scf", Some("image/png"));
+        assert_ne!(scf, ".scf");
+        assert!(!crate::semantic::runnable(&scf) && !crate::inert_files::refused_on_listing(&scf), "{scf}");
+        assert!(!crate::semantic::runnable(&base_filename("https://a/.exe", None)));
     }
 
     #[test]

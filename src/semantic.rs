@@ -888,17 +888,12 @@ pub fn open_url_run(text: &str, has_code: bool) -> Run {
     guard_open(text, has_code)
 }
 
-/// Programs and scripts: "open" would run them, so Tandem shows them instead.
-const RUNNABLE: &[&str] = &[
-    "exe", "com", "bat", "cmd", "btm", "js", "jse", "vbs", "vbe", "vb", "wsf", "wsh", "ws", "hta", "msi", "msp", "msc",
-    "lnk", "scr", "pif", "cpl", "reg", "url", "ps1", "psm1", "py", "pyw", "pyc", "pyz", "jar", "appref-ms",
-    "application", "gadget", "inf", "scf", "sct", "chm", "library-ms", "settingcontent-ms", "appx", "msix",
-    "appinstaller", "diagcab",
-];
-
+/// Programs and scripts: "open" would run them, so Tandem shows them instead. The one list is
+/// `inert_files::high_risk` (read from the last dot, as Windows reads a type), plus the machine's
+/// own PATHEXT.
 pub(crate) fn runnable(path: &str) -> bool {
-    let Some(ext) = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) else { return false };
-    RUNNABLE.contains(&ext.as_str())
+    let Some(ext) = crate::inert_files::extension(path) else { return false };
+    crate::inert_files::dangerous_extension(&ext)
         || std::env::var("PATHEXT").is_ok_and(|p| p.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext)))
 }
 
@@ -1814,6 +1809,19 @@ mod tests {
             std::fs::create_dir_all(&d).unwrap();
             let out = std::process::Command::new("cmd.exe").raw_arg(cmd_args(&line)).current_dir(&d).output().unwrap();
             assert!(!d.join("pwned.txt").exists(), "a second command ran: {out:?}");
+        }
+    }
+
+    /// The type is the text after the last dot of the final name, a leading dot included, trailing
+    /// dots and spaces ignored, as Windows reads it (review I2); the list covers the Windows
+    /// high-risk types.
+    #[test]
+    fn runnable_reads_the_type_as_windows_does() {
+        for bad in [".exe", r"C:\x\.hta", "x.exe.", "x.cmd ", ".LNK", "x.psd1", "x.ps1xml", "x.xll", "x.hlp", "x.mst", "x.search-ms", "x.wsc", "x.ins", "x.isp", "x.jnlp"] {
+            assert!(runnable(bad), "{bad:?}");
+        }
+        for fine in [".bashrc", "x.exe_", r"C:\x.exe\notes", "notes.md", "a.txt"] {
+            assert!(!runnable(fine), "{fine:?}");
         }
     }
 

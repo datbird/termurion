@@ -7,19 +7,69 @@
 
 use std::path::Path;
 
-/// Extensions the shell parses on listing, lower case, with no dot.
-const PARSED_ON_LISTING: [&str; 12] = ["url", "lnk", "website", "library-ms", "searchconnector-ms", "scf", "settingcontent-ms", "appref-ms", "theme", "themepack", "desktopthemepack", "deskthemepack"];
+/// THE list of dangerous file types (lower case, no dot), one place for every caller: the Windows
+/// Attachment Manager's high-risk list, the types the shell runs, installs or follows on open, and
+/// the mountable images. `true` marks a type the shell parses just to list it (an icon location, a
+/// library's folders): those are refused even where the others may be written (a chat attachment,
+/// a tool's file, an archive entry), since no click is needed. `semantic::runnable` reads it (a link
+/// to any of them is revealed, never opened) and `write_checked` refuses all of them.
+const DANGEROUS: &[(&str, bool)] = &[
+    ("url", true), ("lnk", true), ("website", true), ("library-ms", true), ("searchconnector-ms", true), ("scf", true),
+    ("settingcontent-ms", true), ("appref-ms", true), ("theme", true), ("themepack", true), ("desktopthemepack", true),
+    ("deskthemepack", true),
+    ("exe", false), ("com", false), ("scr", false), ("pif", false), ("bat", false), ("cmd", false), ("btm", false),
+    ("ps1", false), ("psm1", false), ("psd1", false), ("ps1xml", false), ("ps2", false), ("ps2xml", false), ("psc1", false),
+    ("psc2", false), ("msh", false), ("msh1", false), ("msh2", false), ("mshxml", false), ("msh1xml", false), ("msh2xml", false),
+    ("vbs", false), ("vbe", false), ("vb", false), ("js", false), ("jse", false), ("wsf", false), ("wsh", false), ("ws", false),
+    ("wsc", false), ("sct", false), ("hta", false), ("msi", false), ("msp", false), ("mst", false), ("msu", false),
+    ("appx", false), ("appxbundle", false), ("msix", false), ("msixbundle", false), ("appinstaller", false), ("inf", false),
+    ("ins", false), ("isp", false), ("reg", false), ("cpl", false), ("msc", false), ("jar", false), ("jnlp", false),
+    ("application", false), ("xbap", false), ("gadget", false), ("search-ms", false), ("diagcab", false), ("chm", false),
+    ("hlp", false), ("xll", false), ("xnk", false), ("mcf", false), ("shb", false), ("shs", false), ("py", false), ("pyw", false),
+    ("pyc", false), ("pyz", false), ("pyzw", false), ("ade", false), ("adp", false), ("app", false), ("asp", false), ("bas", false),
+    ("cer", false), ("crt", false), ("csh", false), ("ksh", false), ("fxp", false), ("its", false), ("mad", false), ("maf", false),
+    ("mag", false), ("mam", false), ("maq", false), ("mar", false), ("mas", false), ("mat", false), ("mau", false), ("mav", false),
+    ("maw", false), ("mda", false), ("mdb", false), ("mde", false), ("mdt", false), ("mdw", false), ("mdz", false), ("ops", false),
+    ("pcd", false), ("prf", false), ("prg", false), ("pst", false), ("tmp", false), ("vsmacros", false), ("vss", false),
+    ("vst", false), ("vsw", false), ("iso", false), ("img", false), ("vhd", false), ("vhdx", false),
+];
+
+/// The type of a name as Windows reads it (`PathFindExtension`): the final component, trailing
+/// dots and spaces ignored, then the text after its last dot, a leading dot included (`.scf` is an
+/// SCF file), in lower case. None when there is no dot.
+pub fn extension(name: &str) -> Option<String> {
+    let last = name.rsplit(['\\', '/']).next().unwrap_or(name).trim_end_matches([' ', '.']);
+    last.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())
+}
+
+/// Whether the type `ext` (lower case, no dot) is on the one dangerous list.
+pub fn dangerous_extension(ext: &str) -> bool {
+    DANGEROUS.iter().any(|(e, _)| *e == ext)
+}
+
+/// Whether this name's type is on the one dangerous list (run, installed, followed or parsed by
+/// the shell).
+pub fn high_risk(name: &str) -> bool {
+    extension(name).is_some_and(|e| dangerous_extension(&e))
+}
+
+/// The name a file someone else named is kept under: a high-risk type gets a trailing `_`
+/// (`setup.exe` is kept as `setup.exe_`, bytes and all, and never runs from a double click);
+/// any other name is unchanged. Trailing dots and spaces are dropped first, as Windows drops them.
+pub fn neutralized(name: &str) -> String {
+    if high_risk(name) { format!("{}_", name.trim_end_matches([' ', '.'])) } else { name.to_string() }
+}
 
 /// Whether writing a file with this final name is refused: its type is read by the shell on
 /// listing, it is a `desktop.ini` (no other `.ini` is refused), a device name, or it holds `:`
 /// (an alternate stream or a device form). Trailing dots and spaces are ignored as Windows
-/// ignores them.
+/// ignores them, and the type is read as Windows reads it (`extension`).
 pub fn refused_on_listing(name: &str) -> bool {
     if name.contains(':') {
         return true;
     }
     let name = name.trim_end_matches([' ', '.']).to_ascii_lowercase();
-    name == "desktop.ini" || is_device_name(&name) || Path::new(&name).extension().and_then(|e| e.to_str()).is_some_and(|e| PARSED_ON_LISTING.contains(&e))
+    name == "desktop.ini" || is_device_name(&name) || extension(&name).is_some_and(|e| DANGEROUS.iter().any(|(d, listed)| *listed && *d == e))
 }
 
 /// `refused_on_listing` for a whole path a tool was given: its final component, a device name as
@@ -147,10 +197,17 @@ pub fn mark(path: &Path) {
     let _ = zone_stream(path).and_then(|s| crate::localfs::write(&s, ZONE_MARK));
 }
 
+/// The door's rule for a whole path (`write_checked`): `refused_path`, or a final name of a
+/// high-risk type. A caller that asks before writing (a question, a save job) asks this.
+pub fn refused_write(path: &str) -> bool {
+    refused_path(path) || high_risk(path)
+}
+
 /// `write_marked` for a name someone else chose that is not yet checked: refused with an error
-/// when `refused_path` says so, so a caller with no name of its own cannot skip the rule.
+/// when `refused_path` says so or the final name is `high_risk`, so a caller with no name of its
+/// own cannot skip the rule (a caller that keeps such a download names it `neutralized` first).
 pub fn write_checked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if refused_path(&path.to_string_lossy()) {
+    if refused_write(&path.to_string_lossy()) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "files of this type are not allowed"));
     }
     write_marked(path, bytes)
@@ -173,6 +230,40 @@ mod tests {
         for fine in ["a.txt", "notes.md", "url.txt", "lnk", "a.pdf", "my.theme.txt", "inifile.txt", "a.json"] {
             assert!(!refused_on_listing(fine), "{fine:?}");
         }
+    }
+
+    /// Windows reads a type from the last dot, a leading dot included (`PathFindExtension`), so a
+    /// name that is only a dot and an extension is that type (review I2).
+    #[test]
+    fn leading_dot_names_keep_their_type() {
+        for bad in [".scf", ".URL", ".lnk", ".library-ms", ".settingcontent-ms", ".url.", ".lnk "] {
+            assert!(refused_on_listing(bad), "{bad:?}");
+        }
+        assert!(refused_path(r"D:\a\.url") && refused_path("sub/.scf"));
+        for fine in [".bashrc", ".gitignore", ".txt"] {
+            assert!(!refused_on_listing(fine), "{fine:?}");
+        }
+    }
+
+    /// The door refuses every high-risk type, not only the listing ones (review I2, controller
+    /// ruling): a remote program's `x.exe` is never written as `x.exe` by any caller.
+    #[test]
+    fn the_door_refuses_high_risk_types() {
+        let dir = std::env::temp_dir().join(format!("tandem-door-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for bad in [
+            "x.exe", ".exe", "a.pdf.exe", "x.EXE.", "x.ps1 ", "x.com", "x.scr", "x.pif", "x.bat", "x.cmd", "x.psm1", "x.psd1", "x.ps1xml", "x.vbs", "x.vbe", "x.js", "x.jse", "x.wsf",
+            "x.wsh", "x.wsc", "x.hta", "x.msi", "x.msp", "x.mst", "x.inf", "x.ins", "x.isp", "x.reg", "x.cpl", "x.msc", "x.jar", "x.application", "x.gadget", "x.search-ms", "x.diagcab",
+            "x.chm", "x.hlp", "x.xll", "x.url", ".scf",
+        ] {
+            let r = write_checked(&dir.join(bad), b"MZ");
+            assert!(r.is_err(), "{bad:?} was written");
+        }
+        for fine in ["a.txt", "a.log", "notes.md", "export.zip", "a.json", "x.exe_", "a.pdf", ".bashrc"] {
+            write_checked(&dir.join(fine), b"ok").unwrap_or_else(|e| panic!("{fine:?}: {e}"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
