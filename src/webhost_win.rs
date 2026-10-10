@@ -3453,6 +3453,29 @@ mod probe {
         p.finish();
     }
 
+    /// 13x4 Task 5 (B1): the two DevTools reads, through the one sender, on a page answered from
+    /// memory at a URL with a fragment: the tree's main frame URL has no fragment and the content of
+    /// that frame and URL is the served HTML, with no network request. Needs the console session.
+    #[test]
+    #[ignore]
+    fn devtools_reads_a_page() {
+        const TEST_PAGE: &str = "https://tandem.test/";
+        let html = "<!doctype html><html><head><title>t</title></head><body>served from memory</body></html>";
+        let Some(mut p) = Probe::start(&[(TEST_PAGE, html.to_string())], Vec::new()) else { return };
+        p.load(&format!("{TEST_PAGE}#frag"));
+        let tree = p.call_wait(None, "Page.getResourceTree", &json!({})).expect("the tree");
+        let tree: Value = serde_json::from_str(&tree).expect("tree JSON");
+        let (frame, url) = crate::devtools::main_frame(&tree).expect("a main frame");
+        assert_eq!(url, TEST_PAGE, "the frame's own URL carries no fragment");
+        assert_eq!(crate::devtools::frame_for(&tree, &url).as_deref(), Some(frame.as_str()));
+        let body = p.call_wait(None, "Page.getResourceContent", &crate::devtools::resource_content_params(&frame, &url)).expect("the content");
+        let body: Value = serde_json::from_str(&body).expect("content JSON");
+        let bytes = crate::devtools::content_bytes(&body).expect("content bytes");
+        assert_eq!(String::from_utf8(bytes).unwrap(), html, "the served HTML");
+        assert!(p.not_served.is_empty(), "no request was made for the read: {:?}", p.not_served);
+        p.finish();
+    }
+
     /// Main bug from the 13x3 probe review: Chromium's Windows editing behavior extends forward by
     /// word to the start of the next word, so the iTerm2 script selected "hello " (trailing space).
     /// The assembled script (`browser_keys::extend_script`, load-time patch) selects "hello", then

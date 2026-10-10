@@ -118,6 +118,12 @@ pub const ALLOWED: &[&str] = &[
     "Input.insertText",
     "Input.dispatchKeyEvent",
     "Input.dispatchMouseEvent",
+    // 13x4 Task 5, preflight B1 (reviewer: the controller): host-initiated READS only. Tandem's Rust
+    // code sends them through `App::devtools_read` (`devtools::refusal` is the narrower second gate,
+    // arguments from Tandem's own resource tree read); no page or isolated-world message reaches a
+    // DevTools sender, and every reply is size-capped page-derived data (`devtools::Budget`).
+    "Page.getResourceTree",
+    "Page.getResourceContent",
 ];
 
 /// A script registration that answers when it is too late (review I3, fail closed): after the setup
@@ -1125,10 +1131,10 @@ mod tests {
     /// origin flag exists anywhere in the program.
     #[test]
     fn devtools_methods_are_a_closed_set() {
-        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Page.resetNavigationHistory", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent"] {
+        for m in ["Page.enable", "Page.getFrameTree", "Page.addScriptToEvaluateOnNewDocument", "Page.removeScriptToEvaluateOnNewDocument", "Page.createIsolatedWorld", "Runtime.enable", "Runtime.addBinding", "Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Target.detachFromTarget", "Page.resetNavigationHistory", "Input.insertText", "Input.dispatchKeyEvent", "Input.dispatchMouseEvent", "Page.getResourceTree", "Page.getResourceContent"] {
             assert!(method_allowed(m), "{m}");
         }
-        assert_eq!(ALLOWED.len(), 15);
+        assert_eq!(ALLOWED.len(), 17);
         // Final review minor 9 (least privilege): not until the console test shows a need.
         assert!(!method_allowed("Emulation.setFocusEmulationEnabled"));
         // Final review minor 8: the table bound ruling P12 states.
