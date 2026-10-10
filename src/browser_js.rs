@@ -82,6 +82,13 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "extract-resources.js" => include_str!("../resources/browser/extract-resources.js"),
         "add-saved-attributes.js" => include_str!("../resources/browser/add-saved-attributes.js"),
         "convert-to-markdown.js" => include_str!("../resources/browser/convert-to-markdown.js"),
+        "get-xpath-at-point.js" => include_str!("../resources/browser/get-xpath-at-point.js"),
+        "extract-text-fragment.js" => include_str!("../resources/browser/extract-text-fragment.js"),
+        "navigate-to-named-mark.js" => include_str!("../resources/browser/navigate-to-named-mark.js"),
+        "show-named-mark-annotations.js" => include_str!("../resources/browser/show-named-mark-annotations.js"),
+        "update-mark-positions.js" => include_str!("../resources/browser/update-mark-positions.js"),
+        "layout-change-monitor.js" => include_str!("../resources/browser/layout-change-monitor.js"),
+        "mark-locator.js" => include_str!("../resources/browser/mark-locator.js"),
         "turndown.browser.umd.js" => include_str!("../resources/browser/turndown.browser.umd.js"),
         _ => return None,
     })

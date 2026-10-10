@@ -3351,6 +3351,58 @@ mod probe {
         p.finish();
     }
 
+    /// What `App::browser_js_call` does with a `browser_marks::Call`: the isolated-world runner's
+    /// expression, the typed arguments declared as constants.
+    fn marks_run(p: &mut Probe, call: &crate::browser_marks::Call) -> Result<Value, String> {
+        let expr = crate::browser_js::call_js(&call.body, &call.args)?;
+        p.eval(None, &expr)
+    }
+
+    fn marks_body(p: &mut Probe, body: &str) -> Result<Value, String> {
+        marks_run(p, &crate::browser_marks::Call { body: body.to_string(), args: Value::Null })
+    }
+
+    /// 13x5 Task 1 (B2, B3, B4): the Marks scripts run once in the isolated world. The point script
+    /// answers the XPath under a point; the navigate script finds a hostile XPath without breaking out
+    /// (the value is a typed argument); the annotations show, a page's synthetic Delete and Save
+    /// clicks post nothing, a real click posts a rename; the position update answers; the layout
+    /// monitor starts only in the isolated world. Needs the console session.
+    #[test]
+    #[ignore]
+    fn marks_scripts_run_in_a_page() {
+        use crate::browser_marks as bm;
+        let page = "<!doctype html><html><body style=\"margin:0\"><div style=\"height:80px\"></div><p id=\"target\" style=\"margin:0;height:40px\">Hello marked world</p><div style=\"height:2000px\"></div></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
+        p.load(PAGE);
+        let at = marks_body(&mut p, &bm::xpath_script(10, 90)).expect("the point script");
+        let loc = bm::Location::from_json(&at).expect("a location");
+        assert!(loc.xpath.contains("p"), "{at}");
+        // The page world never sees the isolated world's objects.
+        assert_eq!(marks_body(&mut p, &bm::update_positions_script("sec")).map(|v| v.is_array()), Ok(true));
+        let nav = bm::navigate_call(&loc).expect("navigate");
+        assert!(matches!(marks_run(&mut p, &nav), Ok(Value::Bool(_))));
+        let hostile = bm::Location { xpath: "//p[@id=\"x\\\"]</script>');window.__pwned=1;('\"]".into(), text_fragment: Some("\");window.__pwned=1;(\"".into()), ..loc.clone() };
+        let nav = bm::navigate_call(&hostile).expect("navigate");
+        assert!(marks_run(&mut p, &nav).is_ok());
+        assert_eq!(p.page_eval("typeof window.__pwned"), Ok("\"undefined\"".into()), "a hostile XPath or fragment runs nothing");
+        // Annotations.
+        let marks = vec![loc.js_dict(Some("first"), "g1")];
+        let show = bm::show_call(&marks, "mark-secret").expect("a call");
+        assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
+        assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("1".into()));
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.locateMark"), Ok("\"undefinedundefined\"".into()));
+        p.page_eval("document.querySelectorAll('.iterm-mark-annotation button').forEach(b => b.click()); 1").expect("synthetic clicks");
+        p.settle(300);
+        assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "a page's synthetic Delete, Save or Enter posts nothing");
+        assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("1".into()), "and removes nothing");
+        // The layout monitor.
+        assert!(marks_body(&mut p, &format!("return {}", bm::LAYOUT_MONITOR_JS.trim())).is_ok());
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
+        assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        p.finish();
+    }
+
     /// 13x4 Task 1 (B9): Readability keeps event-handler attributes, and the title goes in as markup;
     /// both run in the PAGE world. From there the reader's objects, the Tandem bridge and the view's
     /// secrets are out of reach, and no Client message results. Needs the console session.
