@@ -166,13 +166,50 @@ impl App {
             }
             app.browser_js_call(pane, &reader::plain_text_body(), json!({}), Box::new(move |app, pane, r| {
                 let text = match r {
-                    Ok(Value::String(s)) => Some(s),
+                    Ok(Value::String(s)) => Some(reader::bound_text(&s)),
                     Ok(_) => None,
                     Err(_) => return done(app, pane, None),
                 };
                 let answer = app.browser_views.get_mut(&pane).and_then(|b| b.reader.store_plain(text.as_deref()));
                 done(app, pane, answer)
             }));
+        }));
+    }
+
+    /// The page as markdown with chrome kept (`PTS:1009`, `BVC:687`): iTerm2's read-a-section and
+    /// find-for-AI path.
+    pub(super) fn browser_page_markdown(&mut self, pane: PaneId, done: JsDone) {
+        self.browser_page_markdown_with(pane, false, done)
+    }
+
+    /// The page as markdown (`RMM:63-68`), nav, footer, aside and header dropped when `skip_chrome`
+    /// (`PTS:990`, web search). Isolated world, needs no reader script, never cached. `done` gets the
+    /// markdown (bounded), `NO_CONTENT` when the script answered no string, or the script's error text
+    /// cleaned for display. The markdown is page-derived data: a caller that gives it to a model wraps
+    /// it with `page_derived_block`.
+    pub(super) fn browser_page_markdown_with(&mut self, pane: PaneId, skip_chrome: bool, done: JsDone) {
+        self.browser_js_call(pane, &reader::markdown_body(skip_chrome), json!({}), Box::new(move |app, pane, r| {
+            let answer = match r {
+                Ok(v) => Ok(Value::String(reader::bound_text(&reader::markdown_answer(&v)))),
+                Err(e) => Err(crate::inert_files::display_text(&e, 200, false)),
+            };
+            done(app, pane, answer)
+        }));
+    }
+
+    /// The page for the AI (`BM:607-618`), the one entry point for page text: `done` gets
+    /// `{"title", "content"}` or null (no URL, or no text). The text is the cache's ("" included) or
+    /// Readability's, cached through `store_plain`. Page-derived: see `page_derived_block`.
+    pub(super) fn browser_page_content(&mut self, pane: PaneId, done: JsDone) {
+        let (url, title) = match self.panes.get(&pane).and_then(|p| p.browser_io()) {
+            Some(io) => (io.url.clone(), io.title.clone()),
+            None => (String::new(), String::new()),
+        };
+        if url.is_empty() {
+            return done(self, pane, Ok(Value::Null));
+        }
+        self.browser_plain_text(pane, Box::new(move |app, pane, plain| {
+            done(app, pane, Ok(reader::page_content_json(&url, &title, plain.as_deref())))
         }));
     }
 
@@ -199,7 +236,8 @@ impl App {
             return self.show_browser_menu(pane, at);
         }
         bv.menu_pending = true;
-        self.browser_plain_text(pane, Box::new(move |app, pane, _| {
+        // M4 (Task 2 review): the one entry point for page text is `browser_page_content`.
+        self.browser_page_content(pane, Box::new(move |app, pane, _| {
             let Some(bv) = app.browser_views.get_mut(&pane) else { return };
             bv.menu_pending = false;
             // The answer can be late (Readability is slow, a busy page holds the runner): a pane that
@@ -223,6 +261,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     fn prod(src: &str) -> &str {
         src.split("\n#[cfg(test)]").next().unwrap_or(src)
     }
@@ -291,6 +331,45 @@ mod tests {
         assert!(app.contains("\"Reader Mode\" | \"Exit Reader Mode\" => return { self.toggle_reader_mode(pane); true }"));
         assert!(app.contains("\"Remove Distractions\" | \"Exit Distraction Removal\" => return { self.toggle_distraction_removal(pane); true }"));
         assert!(app.contains("self.browser_reader_menu(pane)"));
+    }
+
+    /// Task 4: the three producers. Markdown runs in the isolated world with no reader script and is
+    /// never cached; the page content comes from the cache or Readability and is page-derived.
+    #[test]
+    fn page_text_producers_follow_iterm2() {
+        let me = prod(include_str!("browser_reader_app.rs"));
+        let md = between(me, "pub(super) fn browser_page_markdown_with", "/// The page for the AI");
+        assert!(md.contains("self.browser_js_call(pane, &reader::markdown_body(skip_chrome)") && !md.contains("ensure_reader_scripts") && !md.contains("store_plain") && !md.contains("cached"));
+        assert!(md.contains("reader::bound_text(&reader::markdown_answer(&v))") && md.contains("display_text(&e, 200, false)"), "bounded; the page's error text cleaned");
+        let off = between(me, "pub(super) fn browser_page_markdown(", "/// The page as markdown (`RMM");
+        assert!(off.contains("browser_page_markdown_with(pane, false, done)"));
+        let content = between(me, "pub(super) fn browser_page_content", "/// Remove Element at a page point");
+        assert!(content.contains("url.is_empty()") && content.contains("self.browser_plain_text(") && content.contains("reader::page_content_json(&url, &title, plain.as_deref())"));
+        let text = between(me, "pub(super) fn browser_plain_text", "/// The page as markdown");
+        assert!(text.contains("reader::bound_text(&s)") && text.contains("store_plain(text.as_deref())"));
+        let press = between(me, "pub(super) fn browser_menu_press", "/// What the menu shows");
+        assert!(press.contains("self.browser_page_content(pane,") && !press.contains("browser_plain_text"), "M4");
+    }
+
+    /// `RMM:35-61` through `BM:607-618` (review M2): what the cache and the plain-text script give the
+    /// page content, step by step. An App cannot be built in a unit test; the producers' wiring is
+    /// pinned above and this follows the pure parts they call.
+    #[test]
+    fn plain_text_cache_follows_iterm2() {
+        use crate::browser_reader::{State, page_content_json};
+        let content = |s: &State, title: &str| page_content_json("https://a/", title, s.cached_plain().as_deref());
+        let mut s = State { cached: Some("cached text".into()), ..State::default() };
+        assert_eq!(content(&s, "T"), json!({"title": "T", "content": "cached text"}));
+        s.cached = Some(String::new());
+        assert_eq!(content(&s, "T"), json!({"title": "T", "content": ""}), "a cached empty text is answered");
+        s.cached = None;
+        assert_eq!(content(&s, "T"), Value::Null, "no text yet: the script runs");
+        assert_eq!(s.store_plain(Some("")), None, "an empty answer is null the first time");
+        assert_eq!(content(&s, "T"), json!({"title": "T", "content": ""}), "then \"\" from the cache, with no call");
+        s.reset();
+        assert_eq!(s.cached_plain(), None, "a navigation runs the scripts again");
+        assert_eq!(s.store_plain(Some("body")), Some("body".into()));
+        assert_eq!(content(&s, ""), json!({"title": "https://a/", "content": "body"}));
     }
 
     #[test]

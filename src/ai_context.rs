@@ -108,7 +108,7 @@ pub fn escape_html(s: &str) -> String {
 /// line break before its `>`. An opening tag keeps its own `>`. Line breaks elsewhere are kept
 /// (the screen's rows matter to the model).
 pub fn neutralize(s: &str) -> String {
-    const NAMES: [&str; 2] = ["visible-screen", "terminal-state"];
+    const NAMES: [&str; 3] = ["visible-screen", "terminal-state", "page-content"];
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(at) = rest.find('<') {
