@@ -239,6 +239,9 @@ impl App {
             return false;
         }
         let (pane, target) = (*pane, target.clone());
+        if matches!(target, PromptFor::Browser(_)) {
+            super::browser_marks_app::mark_window_refocused(&mut self.mark_guard, event);
+        }
         match event {
             WindowEvent::CloseRequested => self.prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {

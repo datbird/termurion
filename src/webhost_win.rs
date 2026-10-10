@@ -1561,7 +1561,6 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let (policy, by_tandem) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
-            i.last_main_nav = Some((capped.clone(), nav));
             i.nav_uris.push_back((nav, capped));
             while i.nav_uris.len() > MAX_NAV_URIS {
                 i.nav_uris.pop_front();
@@ -1613,6 +1612,11 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 return Ok(());
             }
         }
+        // The per-navigation hooks (13x5), only for a navigation that passed the verdict and the sync
+        // gate: the Document filter's method is matched to this start (a refused or parked one is not).
+        drop(i);
+        inner.borrow_mut().last_main_nav = Some((webhost::cap_url(&uri).0, nav));
+        let i = inner.borrow();
         // The single page-load-start event (ruling Q2).
         i.poster.post(Event::Starting { view: i.id, url: webhost::cap_url(&uri).0, kind: kind.0, user, redirect, nav });
         i.poster.post(Event::Loading(i.id, true));
@@ -2404,6 +2408,23 @@ mod tests {
         let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert_eq!(code.matches("webhost::nav_verdict(").count(), 1);
         assert!(!code.contains("navigation_allowed("), "the handler judges through nav_verdict only");
+    }
+
+    /// Merge of 13x5 and 13x6: the one NavigationStarting handler runs the verdict, then the permission
+    /// sync gate (which parks only a judged http/https target), then 13x5's per-navigation hook (the
+    /// Document filter's method is bound to a start that passed both), then the Starting post.
+    #[test]
+    fn the_navigation_handler_runs_verdict_then_gate_then_hooks() {
+        let this = include_str!("webhost_win.rs");
+        let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        let h = &code[code.find("fn starting_handler").unwrap()..code.find("fn register_navigation_rest").unwrap()];
+        let verdict = h.find("webhost::nav_verdict(").unwrap();
+        let gate = h.find("webhost::nav_gate(gate").unwrap();
+        let hook = h.find("last_main_nav = Some(").unwrap();
+        let start = h.find("Event::Starting {").unwrap();
+        assert!(verdict < gate && gate < hook && hook < start, "verdict, gate, 13x5 hooks, Starting");
+        assert_eq!(h.matches("last_main_nav = Some(").count(), 1, "a refused or parked navigation is never the Document filter's");
+        assert_eq!(code.matches("last_main_nav = Some(").count(), 1);
     }
 
     /// Final review round 1, item 2: the protected DACL is set when the folder is made, not on every

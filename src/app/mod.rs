@@ -550,9 +550,10 @@ pub struct App {
     pending_mark_prompt: Option<(PaneId, crate::app::browser_marks_app::MarkPrompt)>,
     mark_prompt_focused: bool,
     /// The delete confirm of a browser mark (a `ConfirmWindow`), its pane, mark and navigation epoch;
-    /// and when the last browser mark window opened (the input guard).
+    /// and the input guard of the browser mark windows (`prompt_ui::InputGuard`, the one guard every
+    /// window a page can raise uses: 1 s after it opens and again after it regains the focus).
     mark_confirm: Option<(crate::prompt_ui::ConfirmWindow, PaneId, String, Option<u64>)>,
-    mark_window_at: Option<Instant>,
+    mark_guard: Option<crate::prompt_ui::InputGuard>,
     /// The browser's named marks, newest first, one cache per store (normal, Dev Null); app-wide.
     browser_marks: HashMap<bool, crate::browser_marks::Cache>,
     /// Session > Run Coprocess's window.
@@ -2172,7 +2173,7 @@ pub fn run() {
         pending_mark_prompt: None,
         mark_prompt_focused: false,
         mark_confirm: None,
-        mark_window_at: None,
+        mark_guard: None,
         browser_marks: HashMap::new(),
         co_prompt: None,
         tmux_drag: None,

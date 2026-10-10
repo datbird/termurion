@@ -64,6 +64,14 @@ fn url_markable(url: &str) -> bool {
     !marks::is_local_page(url) && url.len() + 4 <= marks::MAX_URL
 }
 
+/// A browser mark window took the focus again: its guard (`mark_guard`) starts over. A free function
+/// so the window's own event handler can call it while it holds the window.
+pub(super) fn mark_window_refocused(guard: &mut Option<crate::prompt_ui::InputGuard>, event: &WindowEvent) {
+    if let (WindowEvent::Focused(true), Some(g)) = (event, guard.as_mut()) {
+        g.refocus(Instant::now());
+    }
+}
+
 impl App {
     /// A person asked for a named mark on browser pane `pane` (`BVC:1401-1425`). Nothing opens here: the
     /// request is queued and `about_to_wait` opens the window (review I2). A request the path's gate
@@ -122,7 +130,7 @@ impl App {
             (Err(e), _) => return self.banners.set("window", format!("Could not open the window: {e}")),
             _ => return,
         }
-        self.mark_window_at = Some(Instant::now());
+        self.mark_guard = Some(crate::prompt_ui::InputGuard::new(Instant::now()));
     }
 
     /// A mark window (name entry or delete confirm) of this pane is open.
@@ -141,11 +149,13 @@ impl App {
         }
     }
 
-    /// Whether a key or click is dropped: a mark window just opened (a keystroke meant for the page
-    /// must not answer it).
+    /// Whether a key or click is dropped: a mark window just opened or just took the focus again (a
+    /// keystroke meant for the page must not answer it). The guard is `prompt_ui::InputGuard`, the
+    /// one the permission prompt uses too.
     pub(super) fn mark_input_guarded(&self, event: &WindowEvent) -> bool {
-        matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && self.mark_window_at.is_some_and(|t| marks::input_ignored(t, Instant::now()))
+        matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && self.mark_guard.is_some_and(|g| !g.armed(Instant::now()))
     }
+
 
     /// Whether a rename or delete of `guid` may still act: this pane's page shows the mark, and it is
     /// the page (epoch) the window was opened for. Refuses a mark Tandem does not know.
@@ -182,6 +192,7 @@ impl App {
             return false;
         }
         let (pane, guid, epoch) = (*pane, guid.clone(), *epoch);
+        mark_window_refocused(&mut self.mark_guard, event);
         match event {
             WindowEvent::CloseRequested => self.mark_confirm = None,
             WindowEvent::RedrawRequested => match w.redraw() {
@@ -642,6 +653,39 @@ mod tests {
         &src[..src.find("#[cfg(test)]").unwrap()]
     }
 
+    /// One input guard for every window a page can raise (merge of 13x5 and 13x6): the mark rename
+    /// and delete windows use `prompt_ui::InputGuard` as the permission prompt does, so both wait the
+    /// same 1 s after they open and start over when they regain the focus. No second delay exists.
+    #[test]
+    fn mark_windows_share_the_permission_prompt_guard() {
+        use std::time::Duration;
+        let t0 = Instant::now();
+        let mut g = crate::prompt_ui::InputGuard::new(t0);
+        assert!(!g.armed(t0 + Duration::from_millis(999)), "the old 500 ms delay no longer arms it");
+        assert!(g.armed(t0 + crate::prompt_ui::GUARD_DELAY));
+        g.refocus(t0 + Duration::from_secs(3));
+        assert!(!g.armed(t0 + Duration::from_secs(3) + Duration::from_millis(500)), "regaining focus starts it over");
+        let p = prod();
+        let guarded = &p[p.find("pub(super) fn mark_input_guarded").unwrap()..p.find("fn mark_edit_valid").unwrap()];
+        assert!(guarded.contains("self.mark_guard.is_some_and(|g| !g.armed(Instant::now()))"));
+        let refocus = &p[p.find("pub(super) fn mark_window_refocused").unwrap()..p.find("impl App {").unwrap()];
+        assert!(refocus.contains("WindowEvent::Focused(true)") && refocus.contains("g.refocus(Instant::now())"));
+        // The delete confirm restarts the guard on focus; so does the name window, for browser marks only.
+        let confirm = &p[p.find("pub(super) fn mark_confirm_event").unwrap()..];
+        assert!(confirm[..confirm.find("match event").unwrap()].contains("mark_window_refocused(&mut self.mark_guard, event);"));
+        let ui = include_str!("marks_ui.rs");
+        let prompt = &ui[ui.find("pub(super) fn prompt_event").unwrap()..];
+        assert!(prompt[..prompt.find("match event").unwrap()].contains("if matches!(target, PromptFor::Browser(_)) {\n            super::browser_marks_app::mark_window_refocused(&mut self.mark_guard, event);"));
+        // The permission prompt (scripts_alerts) is guarded by the same type.
+        let alerts = include_str!("scripts_alerts.rs");
+        assert!(alerts.contains("w.guard_input()"));
+        let confirm_ui = include_str!("../prompt_ui.rs");
+        assert!(confirm_ui.contains("self.guard = Some(InputGuard::new(std::time::Instant::now()));"));
+        // No second guard: the 13x5 constant and helper are gone.
+        assert!(!include_str!("../browser_marks.rs").contains("WINDOW_GUARD_MS"));
+        assert!(!p.contains("input_ignored("));
+    }
+
     #[test]
     fn mark_prompt_queue_follows_iterm2() {
         // The context menu on about:blank after a POST queues (iTerm2 refuses only after OK, M11).
@@ -826,7 +870,7 @@ mod tests {
         let valid = &p[p.find("fn mark_edit_valid").unwrap()..p.find("fn marks_dismiss_windows").unwrap()];
         assert!(valid.contains("marks::request_valid(") && valid.contains("bv.marks_method.epoch()") && valid.contains("is_local_page"));
         let open = &p[p.find("pub(super) fn open_pending_mark_prompt").unwrap()..p.find("fn mark_window_open_for").unwrap()];
-        assert!(open.contains("self.mark_edit_valid(pane, guid, epoch)") && open.contains("mark_window_open_for(pane)") && open.contains("ConfirmWindow::choice") && open.contains("marks::delete_text(&stored)") && open.contains("self.mark_window_at = Some(Instant::now())"));
+        assert!(open.contains("self.mark_edit_valid(pane, guid, epoch)") && open.contains("mark_window_open_for(pane)") && open.contains("ConfirmWindow::choice") && open.contains("marks::delete_text(&stored)") && open.contains("self.mark_guard = Some(crate::prompt_ui::InputGuard::new(Instant::now()))"));
         assert!(!open.contains("page_text") && !open.contains("browser_js_call"), "only the stored name is shown");
         let done = &p[p.find("pub(super) fn browser_mark_prompt_done").unwrap()..p.find("fn mark_request_current").unwrap()];
         assert!(done.contains("MarkPrompt::Rename { guid, epoch }") && done.contains("self.mark_edit_valid(pane, &guid, epoch)"));
