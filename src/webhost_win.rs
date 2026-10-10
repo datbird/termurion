@@ -5201,17 +5201,20 @@ window.addEventListener('message', function (e) {
         assert!(page_uses_origin(PERM_PAGE, Some(&list), "https://frame.tandem-probe.invalid"), "a match reloads");
         assert!(!page_uses_origin(PERM_PAGE, Some(&list), "https://other.tandem-probe.invalid"), "no match, no reload");
         assert!(!page_uses_origin("https://c.d/", None, "https://frame.tandem-probe.invalid"), "a failed script compares the main origin only");
-        // 5000 resource entries: the answer is still bounded or refused, never trusted.
+        // 5000 performance entries that are not resources: the answer keeps its shape and its frame.
         p.page_eval("for (var i = 0; i < 5000; i++) { performance.mark('m' + i); } 1").expect("marks");
         let again = p.eval(None, &expr).expect("still answers");
-        assert!(frame_origins(&again).is_none_or(|l| l.len() <= 256));
-        // Task 5 fix: 300 distinct resource origins (failed image loads) push the answer over the
-        // cap; it then reloads the pane (fail closed), never reads as "this origin is not used".
-        p.page_eval("for (var i = 0; i < 300; i++) { var im = new Image(); im.src = 'https://h' + i + '.tandem-probe.invalid/x.png'; } 1").expect("images");
+        let kept = frame_origins(&again);
+        assert!(kept.as_ref().is_some_and(|l| l.iter().any(|o| o == "https://frame.tandem-probe.invalid")), "marks add no origin and the frame stays listed: {kept:?}");
+        // Task 5 fix: 300 distinct resource origins (images the probe answers 404) push the answer over
+        // the cap; it then reloads the pane (fail closed), never reads as "this origin is not used".
+        // The page raises its resource timing buffer first (the default 250 would keep it under the cap).
+        p.page_eval("performance.setResourceTimingBufferSize(1000); for (var i = 0; i < 300; i++) { var im = new Image(); im.src = 'https://h' + i + '.tandem-probe.invalid/x.png'; } 1").expect("images");
         p.settle(1500);
         let crowd = p.eval(None, &expr).expect("still answers");
         let other = "https://other.tandem-probe.invalid";
-        assert!(frame_origins(&crowd).is_some() || sweep_reloads(PERM_PAGE, Ok(&crowd), other), "an oversized answer reloads");
+        assert!(frame_origins(&crowd).is_none(), "over 256 origins is unacceptable: {}", crowd.as_array().map_or(0, Vec::len));
+        assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), other), "an oversized answer reloads even for an origin it does not name");
         assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), "https://frame.tandem-probe.invalid"), "the iframe's origin still reloads");
         p.finish();
     }
