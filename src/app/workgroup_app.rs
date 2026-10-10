@@ -725,6 +725,10 @@ impl App {
         let in_group = self.workgroup_of(pane).is_some();
         let d = run::disposition(self.workgroup_model.get(&id), None, self.is_restoring_anchor(pane));
         if !run::can_enter_from_ui(in_group, &d) {
+            // iTerm2 is silent for a terminal trigger in a session already in a workgroup; logging every pass would write a line per tick.
+            if in_group && what == "enterWorkgroupTrigger" {
+                return None;
+            }
             let guid = self.panes.get(&pane).map(|p| p.session_guid.clone()).unwrap_or_default();
             crate::rlog!("{}: refused for workgroup {} on session {}", what, crate::dlog::name(&id), crate::dlog::name(&guid));
             return None;

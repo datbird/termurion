@@ -114,6 +114,8 @@ impl App {
                     return;
                 }
                 let interpolated = self.profile_of(pane).is_some_and(|p| p.bool("Triggers Use Interpolated Strings"));
+                // An empty Enter Workgroup parameter means the first workgroup by name (EWB:53-63).
+                let workgroups: Vec<(String, String)> = self.workgroup_model.workgroups.iter().map(|w| (w.unique_identifier.clone(), w.name.clone())).collect();
                 for m in matches {
                     let Some((id, t)) = loaded.triggers.iter().find(|(i, _)| *i == m.identifier) else { continue };
                     // Only a trigger the person has on runs (imports of the risky actions stay off).
@@ -136,7 +138,7 @@ impl App {
                     } else {
                         t.parameter.clone()
                     };
-                    match bt::effect(t, &m, &param, &[]) {
+                    match bt::effect(t, &m, &param, &workgroups) {
                         Some(Effect::Stop) => break,
                         Some(e) => self.browser_trigger_effect(pane, e),
                         None => {}
@@ -286,5 +288,20 @@ mod tests {
         }
         assert!(wg.contains("due.len() < MAX_TRIGGER_QUEUE && !due.iter().any(|(p, w)| *p == pane && *w == work)"), "bounded, each request once");
         assert!(crate::triggers::MAX_WORKGROUP_ID <= 128);
+    }
+
+    /// Task 10 review I1: an Enter Workgroup trigger with an empty parameter means "the first workgroup
+    /// by name" (EWB:53-63), so the effect must be given the configured list, never `&[]`; and the
+    /// terminal Enter stays silent while its session is already in a workgroup (M1).
+    #[test]
+    fn enter_workgroup_with_no_parameter_reaches_the_queue() {
+        let me = prod(include_str!("browser_triggers_app.rs"));
+        let run = between(me, "Message::Matches(matches) =>", "pub(super) fn browser_trigger_effect");
+        assert!(!run.contains("&[])"), "the effect gets the real workgroup list");
+        assert!(run.contains("bt::effect(t, &m, &param, &workgroups)") && run.contains("self.workgroup_model.workgroups"));
+        let wg = prod(include_str!("workgroup_app.rs"));
+        let guard = between(wg, "fn trigger_enter_id", "\n    }\n");
+        assert!(guard.contains("in_group && what == \"enterWorkgroupTrigger\""), "terminal Enter is silent in a workgroup");
+        assert!(guard.find("in_group && what").unwrap() < guard.find("refused for workgroup").unwrap());
     }
 }
