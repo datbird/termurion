@@ -1094,10 +1094,44 @@ pub struct Geometry {
     /// Where the address text goes.
     pub text: Rect,
     pub menu: Rect,
+    /// The session indicators' strip between the field and the menu button (zero width when none
+    /// show or there is no room), and each shown indicator's whole button in it; the strip clips
+    /// what overflows (13x6 Task 10, `BT:217-238`, `BIV:113-156`).
+    pub strip: Rect,
+    pub status: [Rect; MAX_STATUS],
+    pub status_n: usize,
+}
+
+/// The most indicators a strip lays out (iTerm2's ten less the ones a pane never shows).
+pub const MAX_STATUS: usize = 11;
+/// The URL bar's least width, the strip's width range, the space before the menu button and the
+/// gap and size of one indicator button, in points (`BT:217-238`, `BIV:113-156`).
+pub const MIN_URL_BAR: f32 = 250.0;
+pub const MIN_STRIP: f32 = 24.0;
+pub const MAX_STRIP: f32 = 120.0;
+pub const STRIP_SPACING: f32 = 12.0;
+pub const BUTTON_GAP: f32 = 4.0;
+pub const BUTTON_W: f32 = 20.0;
+
+/// The strip's width in points for the room between `left` and `right`: None below 250 + 24 + 12
+/// points, else 30 percent of the spare room clamped to 24..120.
+pub fn strip_width(left: f32, right: f32) -> Option<f32> {
+    let room = right - left;
+    (room >= MIN_URL_BAR + MIN_STRIP + STRIP_SPACING).then(|| ((room - MIN_URL_BAR - STRIP_SPACING) * 0.3).clamp(MIN_STRIP, MAX_STRIP))
+}
+
+/// The left x of each of `n` buttons laid out in `strip` (left, right in points): right-aligned
+/// when they fit, else from the strip's left edge with the overflow clipped by the painter.
+pub fn place(n: usize, strip: (f32, f32)) -> Vec<f32> {
+    let total = if n == 0 { 0.0 } else { n as f32 * BUTTON_W + (n - 1) as f32 * BUTTON_GAP };
+    let start = if total <= strip.1 - strip.0 { strip.1 - total } else { strip.0 };
+    (0..n).map(|i| start + i as f32 * (BUTTON_W + BUTTON_GAP)).collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
+    /// The nth shown session indicator.
+    Status(usize),
     Button(Button),
     DevNull,
     Proxy,
@@ -1113,6 +1147,11 @@ pub fn geometry(bar: Rect, scale: f32, dev_null: bool) -> Geometry {
 
 /// `geometry` with the proxy indicator (Task 8, P15) when `proxy` is set.
 pub fn geometry_with(bar: Rect, scale: f32, dev_null: bool, proxy: bool) -> Geometry {
+    geometry_status(bar, scale, dev_null, proxy, 0)
+}
+
+/// `geometry_with` and the strip of `n` session indicators; the field takes the room left.
+pub fn geometry_status(bar: Rect, scale: f32, dev_null: bool, proxy: bool, n: usize) -> Geometry {
     let side = bar.h.max(1.0);
     let gap = 4.0 * scale;
     let right = bar.x + bar.w;
@@ -1134,11 +1173,27 @@ pub fn geometry_with(bar: Rect, scale: f32, dev_null: bool, proxy: bool) -> Geom
     let menu_x = (right - side).max(x);
     let menu = Rect { x: menu_x, y: bar.y, w: (right - menu_x).max(0.0), h: bar.h };
     let fx = x + gap;
-    let field = Rect { x: fx, y: bar.y + 4.0 * scale, w: (menu.x - gap - fx).max(0.0), h: (bar.h - 8.0 * scale).max(0.0) };
+    // The strip sits left of the menu button with its spacing between (`BT:233-234`).
+    let sc = scale.max(0.01);
+    let mut strip = Rect { x: menu.x, y: bar.y, w: 0.0, h: bar.h };
+    let mut status = [Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; MAX_STATUS];
+    let n = n.min(MAX_STATUS);
+    if n > 0 {
+        if let Some(w) = strip_width(fx / sc, menu.x / sc).map(|w| w * sc) {
+            let right = menu.x - STRIP_SPACING * sc;
+            strip = Rect { x: right - w, y: bar.y, w, h: bar.h };
+            for (i, px) in place(n, (strip.x / sc, right / sc)).into_iter().enumerate() {
+                status[i] = Rect { x: px * sc, y: bar.y, w: BUTTON_W * sc, h: bar.h };
+            }
+        }
+    }
+    let status_n = if strip.w > 0.0 { n } else { 0 };
+    let field_end = if strip.w > 0.0 { strip.x - gap } else { menu.x - gap };
+    let field = Rect { x: fx, y: bar.y + 4.0 * scale, w: (field_end - fx).max(0.0), h: (bar.h - 8.0 * scale).max(0.0) };
     let indicator = Rect { x: field.x, y: field.y, w: field.h.min(field.w), h: field.h };
     let mark = Rect { x: indicator.x + indicator.w, y: field.y, w: (field.h * 0.8).min((field.w - indicator.w).max(0.0)), h: field.h };
     let text = Rect { x: mark.x + mark.w, y: field.y, w: (field.w - indicator.w - mark.w - gap).max(0.0), h: field.h };
-    Geometry { back, forward, reload, dev_null: dn, proxy: px, field, indicator, mark, text, menu }
+    Geometry { back, forward, reload, dev_null: dn, proxy: px, field, indicator, mark, text, menu, strip, status, status_n }
 }
 
 /// The part of the toolbar under a point.
@@ -1146,6 +1201,12 @@ pub fn hit(g: &Geometry, x: f32, y: f32) -> Option<Hit> {
     let buttons = [(g.back, Button::Back), (g.forward, Button::Forward), (g.reload, Button::Reload), (g.menu, Button::Menu)];
     if let Some((_, b)) = buttons.iter().find(|(r, _)| r.w > 0.0 && r.contains(x, y)) {
         return Some(Hit::Button(*b));
+    }
+    // A button the strip clips away is not there.
+    if g.strip.w > 0.0 && g.strip.contains(x, y) {
+        if let Some(i) = g.status[..g.status_n].iter().position(|r| r.contains(x, y)) {
+            return Some(Hit::Status(i));
+        }
     }
     if g.dev_null.is_some_and(|r| r.contains(x, y)) {
         return Some(Hit::DevNull);
@@ -1218,6 +1279,11 @@ impl NavList {
         if let Some(e) = self.entries.get_mut(self.index) {
             e.1 = title.to_string();
         }
+    }
+
+    /// The step Tandem expected was cancelled (a parked navigation): nothing is pending.
+    pub fn forget_expected(&mut self) {
+        self.pending = None;
     }
 
     /// Tandem is about to go `steps` entries (negative is back).
@@ -1433,6 +1499,36 @@ pub fn web_context_items(short: Option<&str>, locally_openable: bool, quick_look
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn indicator_strip_follows_iterm2() {
+        assert_eq!(strip_width(0.0, 285.0), None);
+        assert_eq!(strip_width(0.0, 286.0), Some(24.0));
+        assert_eq!(strip_width(0.0, 562.0), Some(90.0));
+        assert_eq!(strip_width(0.0, 1000.0), Some(120.0));
+        // Two buttons end at the strip's right edge, 4 apart.
+        assert_eq!(place(2, (100.0, 220.0)), vec![176.0, 200.0]);
+        // 68 points of buttons in a 60-point strip start at the left edge.
+        assert_eq!(place(3, (100.0, 160.0)), vec![100.0, 124.0, 148.0]);
+        assert!(place(0, (0.0, 10.0)).is_empty());
+        // In the toolbar: the field gives way, the strip sits 12 left of the menu, a clipped button is not hit.
+        let bar = Rect { x: 0.0, y: 0.0, w: 800.0, h: 32.0 };
+        let none = geometry_status(bar, 1.0, false, false, 0);
+        let g = geometry_status(bar, 1.0, false, false, 2);
+        assert_eq!(g.status_n, 2);
+        assert_eq!(g.strip.x + g.strip.w, g.menu.x - 12.0);
+        assert!(g.field.w < none.field.w && g.field.x + g.field.w <= g.strip.x);
+        let b = g.status[1];
+        assert_eq!(hit(&g, b.x + 2.0, b.y + 2.0), Some(Hit::Status(1)));
+        let many = geometry_status(bar, 1.0, false, false, 8);
+        let last = many.status[7];
+        assert!(last.x + last.w > many.strip.x + many.strip.w, "overflow runs past the strip");
+        assert_ne!(hit(&many, last.x + last.w - 1.0, last.y + 2.0), Some(Hit::Status(7)), "clipped away");
+        // No room: no strip and the field keeps the old width.
+        let narrow = geometry_status(Rect { w: 280.0, ..bar }, 1.0, false, false, 2);
+        assert_eq!((narrow.status_n, narrow.strip.w), (0, 0.0));
+        assert_eq!(narrow.field, geometry_status(Rect { w: 280.0, ..bar }, 1.0, false, false, 0).field);
+    }
+
     use super::*;
 
     const T: &str = "https://google.com/search?q=%@";

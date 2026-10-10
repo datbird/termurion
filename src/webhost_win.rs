@@ -340,6 +340,10 @@ fn signed_by_microsoft(path: &Path) -> Result<(), String> {
 pub struct Env {
     pub store: Store,
     env: ICoreWebView2Environment,
+    /// Whether the profile's service worker registrations were cleared by the last start-up sync
+    /// read (last-gate LG-1); shared by every view of this environment. Notifications are offered
+    /// only while it holds.
+    workers_cleared: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Env {
@@ -387,7 +391,7 @@ impl Env {
         let (done_in, store_copy) = (done.clone(), store);
         let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |hr, env| guard(|| {
             let result = match (hr, env) {
-                (Ok(()), Some(env)) => Ok(Env { store: store_copy, env }),
+                (Ok(()), Some(env)) => Ok(Env { store: store_copy, env, workers_cleared: Default::default() }),
                 (Err(e), _) => Err(format!("the WebView2 environment could not be created: {e}")),
                 (Ok(()), None) => Err("the WebView2 environment was not created".to_string()),
             };
@@ -415,6 +419,10 @@ impl Env {
 /// How one view is made. Always built with `..Default::default()`: later plans add fields.
 #[derive(Clone, Debug, Default)]
 pub struct ViewSetup {
+    /// The browser pane's permission sync gate (`perm_queue::ProfileQueue::gate`): while it reads
+    /// false the main-frame NavigationStarting handler cancels and parks every navigation
+    /// (`webhost::nav_parked`). None: always open.
+    pub nav_gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// `WebUserAgent`'s setting: Some(setting) applies `webhost::user_agent(setting, engine)` (an
     /// empty setting keeps the engine's agent with "Tandem" appended); None leaves the engine's own.
     pub user_agent: Option<String>,
@@ -444,6 +452,11 @@ pub struct ViewSetup {
     /// The page's right-click menu is the app's to decorate: `ContextMenuRequested` posts
     /// `Event::ContextMenu` and waits for `answer_context_menu` (browser panes).
     pub context_menu: bool,
+    /// The app decides this view's permissions (browser panes): a request Tandem asks about is
+    /// posted as `Event::Permission` and held until `answer_permission`; a page's notification
+    /// is `Event::NotificationShown`; the audio state is `Event::AudioPlaying`. Off: every request
+    /// is denied on the spot (tool views, popovers, Quick Look, the icon rasterizer).
+    pub permissions: bool,
     /// The view reports the HTTP method of its main document requests (`Event::DocumentMethod`,
     /// 13x5): a second `WebResourceRequested` handler on a Document-context filter, no deferral.
     pub track_document_method: bool,
@@ -458,6 +471,20 @@ struct Core {
 struct Pending {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2WebResourceRequestedEventArgs,
+}
+
+/// A permission request held back until the app answers (`answer_permission`).
+struct PendingPerm {
+    deferral: ICoreWebView2Deferral,
+    args: ICoreWebView2PermissionRequestedEventArgs,
+}
+
+/// A page's notification the app may still report on (`notification_report`).
+struct HeldNote {
+    note: ICoreWebView2Notification,
+    close_token: i64,
+    /// The page's close was posted once; later ones are not.
+    closed_posted: bool,
 }
 
 /// A context menu held back until the app answers (`answer_context_menu`).
@@ -526,6 +553,28 @@ struct Inner {
     menus: HashMap<u64, PendingMenu>,
     /// Asked inside `AcceleratorKeyPressed` (Task 6).
     key_gate: webhost::KeyGate,
+    /// Permission requests waiting for an answer, by token (at most `MAX_PENDING_PERMISSIONS`).
+    perms: HashMap<u64, PendingPerm>,
+    perm_limit: webhost::PermissionLimiter,
+    /// Page notifications the app holds a token for (at most `MAX_HELD_NOTES`).
+    notes: HashMap<u64, HeldNote>,
+    note_limit: webhost::NotificationLimiter,
+    /// The registrations `shut` removes.
+    note_watch: Option<(ICoreWebView2_24, i64)>,
+    audio_watch: Option<(ICoreWebView2_8, i64)>,
+    /// What `set_muted` last asked for (the engine answers once the view exists).
+    muted: bool,
+}
+
+/// What the app tells the view about a notification it holds (`notification_report`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteReport {
+    /// Tandem showed it: `ReportShown`, the object stays held.
+    Shown,
+    /// It was closed (by the person, or the app took it away): `ReportClosed`, then released.
+    Closed,
+    /// Tandem will not show it: released without a report.
+    Release,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
@@ -572,6 +621,13 @@ impl WebView {
             frame_watch: None,
             menus: HashMap::new(),
             key_gate: webhost::KeyGate::default(),
+            perms: HashMap::new(),
+            perm_limit: webhost::PermissionLimiter::default(),
+            notes: HashMap::new(),
+            note_limit: webhost::NotificationLimiter::default(),
+            note_watch: None,
+            audio_watch: None,
+            muted: false,
         }));
         let weak = Rc::downgrade(&inner);
         // Every view is known to the process teardown (`close_all`), whatever owns it.
@@ -1022,8 +1078,187 @@ impl WebView {
         let _ = unsafe { p.deferral.Complete() };
     }
 
+    /// Completes the deferral taken when `Event::Permission { token, .. }` was posted. WebView2
+    /// never stores the answer itself (`SavesInProfile` false) and this never writes the profile:
+    /// a saved grant was mirrored by the app's write queue before it answered (`perm_queue`), so
+    /// the page works at once (a `new Notification` right after the Allow). Only `STATE_ALLOW`
+    /// allows. An unknown token (already answered, or the view dropped it) does nothing.
+    pub fn answer_permission(&self, token: u64, answer: webhost::PermAnswer) {
+        let pending = self.inner.borrow_mut().perms.remove(&token);
+        if let Some(p) = pending {
+            complete_permission(p, answer);
+        }
+    }
+
+    /// Tells the view what happened to the notification held under `token` (see `NoteReport`).
+    pub fn notification_report(&self, token: u64, r: NoteReport) {
+        if r == NoteReport::Shown {
+            if let Some(h) = self.inner.borrow().notes.get(&token) {
+                let _ = unsafe { h.note.ReportShown() };
+            }
+            return;
+        }
+        let held = self.inner.borrow_mut().notes.remove(&token);
+        let Some(h) = held else { return };
+        let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
+        if r == NoteReport::Closed {
+            let _ = unsafe { h.note.ReportClosed() };
+        }
+    }
+
+    /// Mutes or unmutes the whole view (`IsMuted`). The page keeps playing: `AudioPlaying` stays
+    /// true while muted.
+    pub fn set_muted(&self, on: bool) {
+        self.inner.borrow_mut().muted = on;
+        self.with(move |c| {
+            if let Ok(v8) = c.view.cast::<ICoreWebView2_8>() {
+                let _ = unsafe { v8.SetIsMuted(on) };
+            }
+        });
+    }
+
+    /// Whether the view is muted: the engine's answer once the view exists, else what was asked.
+    pub fn is_muted(&self) -> bool {
+        let (core, asked) = {
+            let i = self.inner.borrow();
+            (i.core.clone(), i.muted)
+        };
+        match core.and_then(|c| c.view.cast::<ICoreWebView2_8>().ok()) {
+            Some(v8) => bool_out(|b| unsafe { v8.IsMuted(b) }),
+            None => asked,
+        }
+    }
+
+    /// Sets one profile permission state (`SetPermissionState`); `Event::PermissionWritten` with
+    /// `seq` answers once, `ok` false when the runtime cannot set the profile or the call failed.
+    /// The app's write queue (`perm_queue`) sends one at a time, so writes land in the order they
+    /// were asked. A failure is logged with the kind and state (numbers), never the origin.
+    pub fn set_permission_state(&self, seq: u64, kind: i32, origin: &str, state: i32) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        let w = wide(origin);
+        self.with(move |c| {
+            let failed = |poster: &Poster| poster.post(Event::PermissionWritten { view: id, seq, ok: false });
+            let Some(p4) = profile4(&c.view) else {
+                crate::dlog!("webhost: this runtime has no profile permission states");
+                return failed(&poster);
+            };
+            let p2 = poster.clone();
+            let handler = webview2_com::SetPermissionStateCompletedHandler::create(Box::new(move |hr| guard(|| {
+                if hr.is_err() {
+                    crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
+                }
+                p2.post(Event::PermissionWritten { view: id, seq, ok: hr.is_ok() });
+                Ok(())
+            })));
+            if unsafe { p4.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND(kind), PCWSTR(w.as_ptr()), COREWEBVIEW2_PERMISSION_STATE(state), &handler) }.is_err() {
+                crate::dlog!("webhost: setting permission kind {} to state {} failed", kind, state);
+                failed(&poster);
+            }
+        });
+    }
+
+    /// Reads the profile's non-default permission states; `Event::PermissionStates` answers (at
+    /// most `MAX_PERMISSION_STATES`). Always posts: `complete` is false when the runtime cannot read
+    /// the profile, the read failed, an item could not be read or the list was cut.
+    ///
+    /// Last-gate LG-1: the read first clears the profile's service worker registrations (an older
+    /// build let sites install workers; one starts from its cache with no fetch, so the request
+    /// refusal never reaches it, and it could show WebView2's own toast). The read, and so the end of
+    /// the start-up sync that pages wait on, comes only after the clear answered; whether it worked
+    /// is kept on the environment, and kind 4 is not offered while it has not (fail closed); the answer carries it, so the sync also writes Default for every kind-4 entry (LG1-R).
+    pub fn read_permission_states(&self) {
+        let (poster, id, cleared) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id, i.env.workers_cleared.clone())
+        };
+        self.with(move |c| {
+            let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false, workers_cleared: false });
+            let Some(p4) = profile4(&c.view) else {
+                cleared.store(false, std::sync::atomic::Ordering::SeqCst);
+                crate::dlog!("webhost: this runtime has no profile permission states");
+                return incomplete(&poster);
+            };
+            let Ok(p2) = p4.cast::<ICoreWebView2Profile2>() else {
+                cleared.store(false, std::sync::atomic::Ordering::SeqCst);
+                crate::dlog!("webhost: this runtime cannot clear service workers; notifications are not offered");
+                return read_states(&p4, &poster, id, false);
+            };
+            let (p4c, posterc, c2) = (p4.clone(), poster.clone(), cleared.clone());
+            let done = webview2_com::ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| guard(|| {
+                c2.store(hr.is_ok(), std::sync::atomic::Ordering::SeqCst);
+                if hr.is_err() {
+                    crate::dlog!("webhost: clearing the profile's service workers failed; notifications are not offered");
+                }
+                read_states(&p4c, &posterc, id, hr.is_ok());
+                Ok(())
+            })));
+            if unsafe { p2.ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS, &done) }.is_err() {
+                cleared.store(false, std::sync::atomic::Ordering::SeqCst);
+                crate::dlog!("webhost: clearing the profile's service workers failed; notifications are not offered");
+                read_states(&p4, &poster, id, false);
+            }
+        });
+    }
+
+    /// Whether this view's environment cleared its profile's service workers (tests only).
+    #[cfg(test)]
+    pub fn workers_cleared(&self) -> bool {
+        self.inner.borrow().env.workers_cleared.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Closes the view (the same as dropping it).
     pub fn close(self) {}
+}
+
+/// The profile's non-default permission states, posted as `Event::PermissionStates` (always posts).
+fn read_states(p4: &ICoreWebView2Profile4, poster: &Poster, id: ViewId, workers_cleared: bool) {
+    let incomplete = |poster: &Poster| poster.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false, workers_cleared });
+    let p2 = poster.clone();
+    let handler = webview2_com::GetNonDefaultPermissionSettingsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
+        if hr.is_err() {
+            crate::dlog!("webhost: reading the profile permission states failed");
+            p2.post(Event::PermissionStates { view: id, states: Vec::new(), complete: false, workers_cleared });
+            return Ok(());
+        }
+        let mut states = Vec::new();
+        let mut complete = true;
+        if let Some(list) = list {
+            let mut n = 0u32;
+            complete &= unsafe { list.Count(&mut n) }.is_ok();
+            complete &= n as usize <= webhost::MAX_PERMISSION_STATES;
+            for k in 0..n.min(webhost::MAX_PERMISSION_STATES as u32) {
+                let Ok(item) = (unsafe { list.GetValueAtIndex(k) }) else {
+                    complete = false;
+                    continue;
+                };
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
+                let mut state = COREWEBVIEW2_PERMISSION_STATE(0);
+                let origin = pwstr_out(|p| unsafe { item.PermissionOrigin(p) });
+                if origin.is_some() && unsafe { item.PermissionKind(&mut kind) }.is_ok() && unsafe { item.PermissionState(&mut state) }.is_ok() {
+                    let (url, cut) = webhost::cap_url(&origin.unwrap_or_default());
+                    if cut {
+                        // A cut origin matches no key: skipped, and the read says it is partial.
+                        complete = false;
+                    } else {
+                        states.push((kind.0, url, state.0));
+                    }
+                } else {
+                    complete = false;
+                }
+            }
+        } else {
+            complete = false;
+        }
+        p2.post(Event::PermissionStates { view: id, states, complete, workers_cleared });
+        Ok(())
+    })));
+    if unsafe { p4.GetNonDefaultPermissionSettings(&handler) }.is_err() {
+        crate::dlog!("webhost: reading the profile permission states failed");
+        incomplete(poster);
+    }
 }
 
 impl Drop for WebView {
@@ -1037,6 +1272,26 @@ thread_local! {
     static LIVE: RefCell<Vec<std::rc::Weak<RefCell<Inner>>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The view's profile as `ICoreWebView2Profile4` (None on an older runtime).
+fn profile4(view: &ICoreWebView2) -> Option<ICoreWebView2Profile4> {
+    let v13 = view.cast::<ICoreWebView2_13>().ok()?;
+    unsafe { v13.Profile() }.ok()?.cast::<ICoreWebView2Profile4>().ok()
+}
+
+/// Sets the answer on a held request and completes its deferral. Only `STATE_ALLOW` allows; the
+/// profile is never written here (a saved grant was mirrored by the app's write queue before it
+/// answered, `perm_queue`), and WebView2 never stores the answer itself.
+fn complete_permission(p: PendingPerm, answer: webhost::PermAnswer) {
+    let allow = matches!(answer, webhost::PermAnswer::State { state, .. } if state == crate::browser_perms::STATE_ALLOW);
+    let state = if allow { COREWEBVIEW2_PERMISSION_STATE_ALLOW } else { COREWEBVIEW2_PERMISSION_STATE_DENY };
+    // SavesInProfile false on every answer, before the state and the completion.
+    if let Ok(a3) = p.args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+        let _ = unsafe { a3.SetSavesInProfile(false) };
+    }
+    let _ = unsafe { p.args.SetState(state) };
+    let _ = unsafe { p.deferral.Complete() };
+}
+
 /// Completes a view's pending requests with Continue and closes its controller (its browser
 /// process lets go of the user data folder). Twice is safe: the second finds nothing.
 fn shut(inner: &Rc<RefCell<Inner>>) {
@@ -1044,7 +1299,22 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     let (pending, core, receivers) = (std::mem::take(&mut i.pending), i.core.take(), std::mem::take(&mut i.devtools));
     let (frames, watch) = (std::mem::take(&mut i.frames), i.frame_watch.take());
     let menus = std::mem::take(&mut i.menus);
+    let (perms, notes) = (std::mem::take(&mut i.perms), std::mem::take(&mut i.notes));
+    let (note_watch, audio_watch) = (i.note_watch.take(), i.audio_watch.take());
     drop(i);
+    // A permission still waiting is refused, never left pending: nothing grants by the view going away.
+    for (_, p) in perms {
+        complete_permission(p, webhost::PermAnswer::Deny);
+    }
+    for (_, h) in notes {
+        let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
+    }
+    if let Some((v24, token)) = note_watch {
+        let _ = unsafe { v24.remove_NotificationReceived(token) };
+    }
+    if let Some((v8, token)) = audio_watch {
+        let _ = unsafe { v8.remove_IsDocumentPlayingAudioChanged(token) };
+    }
     // A menu still waiting shows WebView2's own.
     for (_, m) in menus {
         let _ = unsafe { m.deferral.Complete() };
@@ -1128,7 +1398,12 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     let mut token = 0i64;
     register_navigation(inner, view, &mut token).map_err(|x| e("navigation", x))?;
     register_page_events(inner, view, &mut token).map_err(|x| e("page events", x))?;
-    register_policy(inner, view, &mut token).map_err(|x| e("policy", x))?;
+    let workers_refused = register_worker_refusal(inner, view, &mut token);
+    register_policy(inner, view, workers_refused, &mut token).map_err(|x| e("policy", x))?;
+    if setup.permissions {
+        register_notifications(inner, view);
+        register_audio(inner, view);
+    }
     register_controller_events(inner, ctrl, &mut token).map_err(|x| e("focus", x))?;
     if setup.context_menu {
         register_context_menu(inner, view, &mut token).map_err(|x| e("context menu", x))?;
@@ -1338,7 +1613,6 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let (policy, by_tandem) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
-            i.last_main_nav = Some((capped.clone(), nav));
             i.nav_uris.push_back((nav, capped));
             while i.nav_uris.len() > MAX_NAV_URIS {
                 i.nav_uris.pop_front();
@@ -1368,11 +1642,34 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             return Ok(());
         }
         let i = inner.borrow();
-        // The single page-load-start event (ruling Q2): the kind needs a newer runtime (-1 without).
+        // The kind needs a newer runtime (-1 without).
         let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
         if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
             let _ = unsafe { a3.NavigationKind(&mut kind) };
         }
+        // The permission sync gate (13x6), AFTER the verdict (a refused navigation is never parked):
+        // a store whose profile was not synced from the table lets no page navigate (a stale profile
+        // grant would work with no question). Cancelled; a web page's TARGET is posted with how it
+        // was judged, for the app to judge again and load after the sync (`nav_gate`).
+        let gate = i.setup.nav_gate.as_ref().map(|g| g.load(std::sync::atomic::Ordering::SeqCst));
+        match webhost::nav_gate(gate, &uri, by_tandem, webhost::cap_url(&uri).1) {
+            webhost::GateAct::Open => {}
+            webhost::GateAct::Cancel => {
+                let _ = unsafe { args.SetCancel(true) };
+                return Ok(());
+            }
+            webhost::GateAct::Park => {
+                let _ = unsafe { args.SetCancel(true) };
+                i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0, user, redirect, by_tandem, history: kind.0 == 1, source });
+                return Ok(());
+            }
+        }
+        // The per-navigation hooks (13x5), only for a navigation that passed the verdict and the sync
+        // gate: the Document filter's method is matched to this start (a refused or parked one is not).
+        drop(i);
+        inner.borrow_mut().last_main_nav = Some((webhost::cap_url(&uri).0, nav));
+        let i = inner.borrow();
+        // The single page-load-start event (ruling Q2).
         i.poster.post(Event::Starting { view: i.id, url: webhost::cap_url(&uri).0, kind: kind.0, user, redirect, nav });
         i.poster.post(Event::Loading(i.id, true));
         Ok(())
@@ -1597,15 +1894,189 @@ fn read_stream(s: &windows::Win32::System::Com::IStream, max: usize) -> Option<V
     }
 }
 
-fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
-    // Permissions are denied (preflight P5): 13x6 asks the person as iTerm2 does.
-    let denied = PermissionRequestedEventHandler::create(Box::new(|_sender, args| guard(|| {
-        if let Some(args) = args {
-            let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
+/// `NotificationReceived` (needs `ICoreWebView2_24`): WebView2 shows none of its own; the app gets
+/// the notification (within the host's limits) and reports on it. An older runtime keeps its own
+/// toast (one debug line says so).
+fn register_notifications(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2) {
+    let Ok(v24) = view.cast::<ICoreWebView2_24>() else {
+        return crate::dlog!("webhost: this runtime has no notification events");
+    };
+    let weak = Rc::downgrade(inner);
+    let handler = webview2_com::NotificationReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let _ = unsafe { args.SetHandled(true) };
+        let Ok(note) = (unsafe { args.Notification() }) else { return Ok(()) };
+        let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
+        let held = i.notes.len();
+        if !i.note_limit.allow(Instant::now(), held) {
+            drop(i);
+            let _ = unsafe { note.ReportClosed() };
+            return Ok(());
+        }
+        let origin = pwstr_out(|p| unsafe { args.SenderOrigin(p) }).unwrap_or_default();
+        let title = pwstr_out(|p| unsafe { note.Title(p) }).unwrap_or_default();
+        let body = pwstr_out(|p| unsafe { note.Body(p) }).unwrap_or_default();
+        let t = i.next_token;
+        i.next_token += 1;
+        let w2 = Rc::downgrade(&inner);
+        let closed = webview2_com::NotificationCloseRequestedEventHandler::create(Box::new(move |_s, _a| guard(|| {
+            let Some(inner) = w2.upgrade() else { return Ok(()) };
+            let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
+            let id = i.id;
+            if let Some(h) = i.notes.get_mut(&t) {
+                if !h.closed_posted {
+                    h.closed_posted = true;
+                    i.poster.post(Event::NotificationClosed { view: id, token: t });
+                }
+            }
+            Ok(())
+        })));
+        let mut close_token = 0i64;
+        if unsafe { note.add_CloseRequested(&closed, &mut close_token) }.is_err() {
+            drop(i);
+            let _ = unsafe { note.ReportClosed() };
+            return Ok(());
+        }
+        i.notes.insert(t, HeldNote { note, close_token, closed_posted: false });
+        let id = i.id;
+        i.poster.post(Event::NotificationShown { view: id, token: t, origin: webhost::cap_url(&origin).0, title: webhost::cap_note_title(&title), body: webhost::cap_note_body(&body) });
+        Ok(())
+    })));
+    let mut t = 0i64;
+    if unsafe { v24.add_NotificationReceived(&handler, &mut t) }.is_ok() {
+        inner.borrow_mut().note_watch = Some((v24, t));
+    } else {
+        crate::dlog!("webhost: the notification handler could not be added");
+    }
+}
+
+/// `IsDocumentPlayingAudioChanged` (needs `ICoreWebView2_8`): posts the current value on each change.
+fn register_audio(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2) {
+    let Ok(v8) = view.cast::<ICoreWebView2_8>() else {
+        return crate::dlog!("webhost: this runtime has no audio state events");
+    };
+    let weak = Rc::downgrade(inner);
+    let handler = webview2_com::IsDocumentPlayingAudioChangedEventHandler::create(Box::new(move |sender, _args| guard(|| {
+        let (Some(inner), Some(sender)) = (weak.upgrade(), sender) else { return Ok(()) };
+        let Ok(v8) = sender.cast::<ICoreWebView2_8>() else { return Ok(()) };
+        let playing = bool_out(|b| unsafe { v8.IsDocumentPlayingAudio(b) });
+        let Ok(i) = inner.try_borrow() else { return Ok(()) };
+        i.poster.post(Event::AudioPlaying { view: i.id, playing });
+        Ok(())
+    })));
+    let mut t = 0i64;
+    if unsafe { v8.add_IsDocumentPlayingAudioChanged(&handler, &mut t) }.is_ok() {
+        inner.borrow_mut().audio_watch = Some((v8, t));
+    } else {
+        crate::dlog!("webhost: the audio state handler was not added");
+    }
+}
+
+/// The URLs `register_worker_refusal` refused (tests only): the probe's positive evidence that the
+/// refusal itself ran, not a DNS failure (last-gate LG-2).
+#[cfg(test)]
+static WORKER_REFUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Ruling R13x6-SW (`webhost::refuse_worker_request`): every request a service worker makes, its
+/// script fetch included, is answered 403 on the spot, so no worker installs and none can show a
+/// persistent notification through WebView2's own toast. WebView2 raises a worker's requests on every
+/// view with such a filter; each answers the same. True only when the refusal is in place (needs
+/// `ICoreWebView2_22`); notifications are not offered otherwise.
+fn register_worker_refusal(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> bool {
+    let Ok(v22) = view.cast::<ICoreWebView2_22>() else {
+        crate::dlog!("webhost: this runtime cannot filter service worker requests; notifications are not offered");
+        return false;
+    };
+    // The environment is held here: the handler never borrows the view, so a busy view cannot let a
+    // worker's request through (last-gate minor).
+    let env = inner.borrow().env.clone();
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let Some(args) = args else { return Ok(()) };
+        if !from_service_worker(&args) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Ok(mut l) = WORKER_REFUSED.lock() {
+            l.push(unsafe { args.Request() }.ok().and_then(|r| pwstr_out(|p| unsafe { r.Uri(p) })).unwrap_or_default());
+        }
+        if let Ok(resp) = unsafe { env.env.CreateWebResourceResponse(None::<&windows::Win32::System::Com::IStream>, 403, windows::core::w!("Blocked"), windows::core::w!("")) } {
+            let _ = unsafe { args.SetResponse(&resp) };
         }
         Ok(())
     })));
-    unsafe { view.add_PermissionRequested(&denied, token) }?;
+    if unsafe { view.add_WebResourceRequested(&handler, token) }.is_err() {
+        crate::dlog!("webhost: the service worker refusal could not be added; notifications are not offered");
+        return false;
+    }
+    let all = windows::core::w!("*");
+    if unsafe { v22.AddWebResourceRequestedFilterWithRequestSourceKinds(all, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER) }.is_err() {
+        crate::dlog!("webhost: the service worker filter could not be added; notifications are not offered");
+        return false;
+    }
+    true
+}
+
+/// A request a service worker made, or the fetch of a worker's script (`Service-Worker` header).
+fn from_service_worker(args: &ICoreWebView2WebResourceRequestedEventArgs) -> bool {
+    let mut kind = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(0);
+    if let Ok(a2) = args.cast::<ICoreWebView2WebResourceRequestedEventArgs2>() {
+        let _ = unsafe { a2.RequestedSourceKind(&mut kind) };
+    }
+    let header = unsafe { args.Request() }
+        .and_then(|r| unsafe { r.Headers() })
+        .is_ok_and(|h| bool_out(|b| unsafe { h.Contains(windows::core::w!("Service-Worker"), b) }));
+    webhost::refuse_worker_request(kind.0, header)
+}
+
+fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_refused: bool, token: &mut i64) -> windows::core::Result<()> {
+    // Permissions are denied unless the person allows (pre-flight B3). A view the app decides for
+    // (`ViewSetup::permissions`) holds the requests Tandem asks about and denies the rest on the
+    // spot; every other view denies everything.
+    let ask = inner.borrow().setup.permissions;
+    let events = view.cast::<ICoreWebView2_24>().is_ok();
+    // Whether the start-up sync cleared the profile's old service workers (LG-1), read at each request.
+    let cleared = inner.borrow().env.workers_cleared.clone();
+    let weak = Rc::downgrade(inner);
+    let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let Some(args) = args else { return Ok(()) };
+        let deny = || {
+            // WebView2 keeps a decision by default (SavesInProfile is TRUE): never store one.
+            if let Ok(a3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                let _ = unsafe { a3.SetSavesInProfile(false) };
+            }
+            let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
+        };
+        deny();
+        if !ask {
+            return Ok(());
+        }
+        let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
+        let _ = unsafe { args.PermissionKind(&mut kind) };
+        // Kinds Tandem never asks about (and any it does not know) stay denied.
+        if !matches!(crate::browser_perms::route_kind(kind.0), crate::browser_perms::KindRoute::Ask(_)) {
+            return Ok(());
+        }
+        // Without notification events, with service workers able to run, or before the profile's old
+        // registrations were cleared, WebView2 would show its own toast for a granted origin: refuse.
+        if kind.0 == 4 && !webhost::notifications_offered(events, workers_refused, cleared.load(std::sync::atomic::Ordering::SeqCst)) {
+            return Ok(());
+        }
+        let Some(inner) = weak.upgrade() else { return Ok(()) };
+        let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
+        let pending = i.perms.len();
+        if !i.perm_limit.allow(Instant::now(), pending) {
+            return Ok(());
+        }
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
+        let uri = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
+        let t = i.next_token;
+        i.next_token += 1;
+        i.perms.insert(t, PendingPerm { deferral, args: args.clone() });
+        let id = i.id;
+        i.poster.post(Event::Permission { view: id, token: t, kind: kind.0, uri: webhost::cap_url(&uri).0 });
+        Ok(())
+    })));
+    unsafe { view.add_PermissionRequested(&handler, token) }?;
 
     // A failed process is reported with its kind; the app acts on the kind (`webhost::failure_action`).
     let weak = Rc::downgrade(inner);
@@ -1698,6 +2169,10 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
     let weak = Rc::downgrade(inner);
     let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        // A service worker's request was refused by `register_worker_refusal`; the app never answers it.
+        if from_service_worker(&args) {
+            return Ok(());
+        }
         if inner.borrow().pending.len() >= MAX_PENDING_REQUESTS {
             return Ok(());
         }
@@ -1873,6 +2348,57 @@ mod tests {
         assert!(!s.track_document_method);
     }
 
+    /// Last-gate LG-1: the profile read the start-up sync begins with first clears the profile's
+    /// service worker registrations (an older build let sites install them; one runs from its cache
+    /// with no fetch) and records whether that worked on the store's environment; the policy offers
+    /// kind 4 only once it did. The refusal never borrows the view (a failed borrow fails open).
+    #[test]
+    fn the_sync_clears_old_service_workers_before_notifications_are_offered() {
+        let this = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/webhost_win.rs")).unwrap();
+        let live = this.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("impl Drop for WebView {").unwrap()];
+        let clear = read.find("ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS").expect("the read clears the registrations");
+        let get = read.find("GetNonDefaultPermissionSettings(").expect("then reads");
+        assert!(clear < get, "the clear comes first, so the sync (and the page gate) ends after it");
+        assert!(read.contains("c2.store(hr.is_ok(), "), "the store remembers whether the clear worked");
+        let done = &read[read.find("ClearBrowsingDataCompletedHandler::create").expect("a completion")..clear];
+        assert!(done.contains("read_states(&p4c"), "the read starts from the clear's completion");
+        let policy = &live[live.find("fn register_policy").unwrap()..live.find("// A failed process is reported").unwrap()];
+        assert!(policy.contains("webhost::notifications_offered(events, workers_refused, cleared.load("), "kind 4 is offered only after a successful clear, read at each request");
+        let refusal = &live[live.find("fn register_worker_refusal").unwrap()..live.find("fn from_service_worker").unwrap()];
+        assert!(!refusal.contains("try_borrow"), "the refusal holds its own environment: a busy view never lets a worker request through");
+    }
+
+    /// Pre-flight B3: every permission request is denied first, only the kinds Tandem asks about are
+    /// held, a held one is limited, and a view going away refuses what it still holds.
+    #[test]
+    fn the_permission_handler_denies_first_and_holds_only_asked_kinds() {
+        let this = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/webhost_win.rs")).unwrap();
+        let live = this.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let policy = &live[live.find("fn register_policy").unwrap()..live.find("// A failed process is reported").unwrap()];
+        let deny = policy.find("deny();").expect("denied first");
+        let ask = policy.find("route_kind").expect("only asked kinds");
+        let hold = policy.find("GetDeferral").expect("a deferral");
+        assert!(deny < ask && ask < hold, "deny, then the kind route, then the deferral");
+        assert!(policy.contains("perm_limit.allow"), "limited");
+        // Task 3 review I1: no answer lets WebView2 store a decision.
+        assert!(policy[..deny].contains("SetSavesInProfile(false)"), "the on-the-spot denial never saves");
+        let complete = &live[live.find("fn complete_permission").unwrap()..live.find("fn shut(").unwrap()];
+        assert!(complete.contains("SetSavesInProfile(false)") && !complete.contains("SetSavesInProfile(saves)"), "every answer sets SavesInProfile false");
+        assert!(!complete.contains("SetPermissionState") && !live.contains("fn set_state_then") && !live.contains("fn set_next_state"), "an answer never writes the profile: every write goes through the app's one queue (Task 5 fix)");
+        let write = &live[live.find("pub fn set_permission_state(").unwrap()..live.find("pub fn read_permission_states").unwrap()];
+        assert!(write.matches("PermissionWritten").count() >= 2 && write.contains("ok: hr.is_ok()") && write.contains("ok: false"), "every write answers once with its sequence");
+        assert!(!live.contains("pub fn set_permission_states"), "no batch write outside the queue");
+        let read = &live[live.find("pub fn read_permission_states").unwrap()..live.find("impl Drop for WebView {").unwrap()];
+        assert!(read.matches("complete: false").count() + read.matches("complete = false").count() >= 4 && read.contains("complete &="), "an incomplete read says so (I2)");
+        assert!(read.contains("webhost::cap_url(&origin.unwrap_or_default())") && read.contains("if cut {") && read.contains("complete = false;"), "a cut origin makes the read partial (re-review minor 3)");
+        assert!(!live.contains("Untouched"), "no answer leaves a request to WebView2's own prompt");
+        let shut = &live[live.find("fn shut(").unwrap()..live.find("pub fn close_all").unwrap()];
+        assert!(shut.contains("PermAnswer::Deny"), "a view going away refuses its pending requests");
+        let create = &live[live.find("if setup.permissions").unwrap()..];
+        assert!(create[..120].contains("register_notifications") , "notifications only where the app decides");
+    }
+
     /// Preflight P5: no host object reaches a page, anywhere in Tandem.
     #[test]
     fn no_host_objects_for_pages() {
@@ -1964,6 +2490,23 @@ mod tests {
         let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert_eq!(code.matches("webhost::nav_verdict(").count(), 1);
         assert!(!code.contains("navigation_allowed("), "the handler judges through nav_verdict only");
+    }
+
+    /// Merge of 13x5 and 13x6: the one NavigationStarting handler runs the verdict, then the permission
+    /// sync gate (which parks only a judged http/https target), then 13x5's per-navigation hook (the
+    /// Document filter's method is bound to a start that passed both), then the Starting post.
+    #[test]
+    fn the_navigation_handler_runs_verdict_then_gate_then_hooks() {
+        let this = include_str!("webhost_win.rs");
+        let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        let h = &code[code.find("fn starting_handler").unwrap()..code.find("fn register_navigation_rest").unwrap()];
+        let verdict = h.find("webhost::nav_verdict(").unwrap();
+        let gate = h.find("webhost::nav_gate(gate").unwrap();
+        let hook = h.find("last_main_nav = Some(").unwrap();
+        let start = h.find("Event::Starting {").unwrap();
+        assert!(verdict < gate && gate < hook && hook < start, "verdict, gate, 13x5 hooks, Starting");
+        assert_eq!(h.matches("last_main_nav = Some(").count(), 1, "a refused or parked navigation is never the Document filter's");
+        assert_eq!(code.matches("last_main_nav = Some(").count(), 1);
     }
 
     /// Final review round 1, item 2: the protected DACL is set when the folder is made, not on every
@@ -2558,6 +3101,16 @@ mod probe {
         new_windows: Vec<String>,
         /// Every `Runtime.executionContextCreated` event, in order, with its session.
         created_json: Vec<(Option<String>, String)>,
+        /// 13x6 Task 3: the permission requests the host posted (token, kind, uri), the notifications
+        /// (token, origin, title, body), the audio changes, and the profile state reads.
+        perm_reqs: Vec<(u64, i32, String)>,
+        notes: Vec<(u64, String, String, String)>,
+        audio: Vec<bool>,
+        state_reads: Vec<Vec<(i32, String, i32)>>,
+        /// `PermissionWritten` answers: (seq, ok).
+        writes: Vec<(u64, bool)>,
+        /// Each `PermissionStates`'s `complete`.
+        reads_complete: Vec<bool>,
     }
 
     impl Probe {
@@ -2575,6 +3128,21 @@ mod probe {
         /// `start_with`, with the custom schemes the environment registers (`iterm2-about` for the
         /// local pages, as the app's environment does).
         fn start_full(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool, schemes: &[&str]) -> Option<Probe> {
+            Probe::start_perms(pages, sources, new_windows, schemes, false)
+        }
+
+        /// `start_full`, with `permissions` as the view's setup (the browser pane's is on): permission
+        /// requests, notifications and the audio state reach the host's events.
+        fn start_perms(pages: &[(&str, String)], sources: Vec<String>, new_windows: bool, schemes: &[&str], permissions: bool) -> Option<Probe> {
+            let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, permissions, resource_filters: vec!["*".into()], ..Default::default() };
+            Probe::start_setup(pages, sources, schemes, setup)
+        }
+
+        /// A view with the given setup. With `permissions`, the profile is read once first, as the
+        /// app's start-up sync does: that read clears the profile's service workers, and kind 4 is
+        /// offered only after it did (last-gate LG-1).
+        fn start_setup(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup) -> Option<Probe> {
+            let permissions = setup.permissions;
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
                 return None;
@@ -2630,6 +3198,12 @@ mod probe {
                 page_graph_acts: 0,
                 new_windows: Vec::new(),
                 created_json: Vec::new(),
+                perm_reqs: Vec::new(),
+                notes: Vec::new(),
+                audio: Vec::new(),
+                state_reads: Vec::new(),
+                writes: Vec::new(),
+                reads_complete: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -2637,7 +3211,6 @@ mod probe {
             Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
-            let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows, resource_filters: vec!["*".into()], ..Default::default() };
             let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 400, 300), setup, tx);
             p.env = Some(env);
             p.view = Some(view);
@@ -2648,6 +3221,13 @@ mod probe {
             p.step_setup();
             assert!(p.wait(15, |p| *p.setup.state() != ClientWorld::Setting), "the setup finished within 15 s: {:?}", p.log.iter().map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>());
             assert_eq!(*p.setup.state(), ClientWorld::Ready, "the isolated world is unavailable: {:?}", p.setup.state());
+            if permissions {
+                p.view().read_permission_states();
+                assert!(p.wait(15, |p| !p.state_reads.is_empty()), "the start-up read within 15 s");
+                assert!(p.view().workers_cleared(), "the start-up read cleared the profile's service workers (LG-1)");
+                p.state_reads.clear();
+                p.reads_complete.clear();
+            }
             Some(p)
         }
 
@@ -2783,7 +3363,7 @@ mod probe {
                     let answer = match self.pages.get(&key) {
                         Some(body) => {
                             // A page by default; a stylesheet or an image by its extension (Save Page As).
-                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else if key.ends_with(".svg") { "image/svg+xml" } else { "text/html" };
+                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else if key.ends_with(".svg") { "image/svg+xml" } else if key.ends_with(".js") { "text/javascript" } else { "text/html" };
                             Answer::Respond { status: 200, mime: mime.into(), body: body.clone().into_bytes(), headers: vec![] }
                         }
                         None => {
@@ -2801,6 +3381,14 @@ mod probe {
                 }
                 Event::FrameCreated { frame, .. } => self.frames.push(frame),
                 Event::NewWindow { url, .. } => self.new_windows.push(url),
+                Event::Permission { token, kind, uri, .. } => self.perm_reqs.push((token, kind, uri)),
+                Event::NotificationShown { token, origin, title, body, .. } => self.notes.push((token, origin, title, body)),
+                Event::AudioPlaying { playing, .. } => self.audio.push(playing),
+                Event::PermissionStates { states, complete, .. } => {
+                    self.state_reads.push(states);
+                    self.reads_complete.push(complete);
+                }
+                Event::PermissionWritten { seq, ok, .. } => self.writes.push((seq, ok)),
                 Event::FrameMessage { frame, json, source, .. } => {
                     self.graph_page(&json, Some(frame), &source);
                     self.routed.push(Routed { via: Via::Page, frame: Some(frame), from: source, body: json });
@@ -4169,6 +4757,55 @@ mod probe {
         assert_eq!(back, Ok(()), "the load after the source page");
     }
 
+    /// 13x6 Task 9: the permissions page's buttons (adapted at load time: no inline handler) act on
+    /// a real click and on nothing a script made up. A synthetic `click()` posts no revoke; a trusted
+    /// press at the button (DevTools input) posts one, as the page's own message. Needs the console
+    /// session (probe-desktop.ps1 runs it; this build has not).
+    #[test]
+    #[ignore]
+    fn permissions_page_buttons_need_a_trusted_click() {
+        const PAGE: &str = "iterm2-about:permissions";
+        let (html, _) = crate::browser_pages::document("permissions", "probe-nonce").expect("the adapted page");
+        let pages = [(PAGE, html)];
+        // The bridge goes where the app puts it (`browser_setup`'s page scripts): the PAGE world.
+        // Probe run 2026-10-10b: given as a probe source it lands in the isolated world, so the
+        // page's own `window.webkit` was undefined and its post threw (the click itself arrived).
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, scripts: vec![crate::browser_pages::shim_js()], resource_filters: vec!["*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&pages, vec![wrapped("window.__tandemProbeWorld = 1;")], &["iterm2-about"], setup) else { return };
+        assert_eq!(p.try_load(PAGE), Ok(()));
+        // Positive control: with the bridge in place the page's own load request is posted.
+        assert!(p.wait(5, |p| p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("loadPermissions"))), "the page's loadPermissions reached the host: {:?}", p.routed.iter().map(|r| r.body.chars().take(80).collect::<String>()).collect::<Vec<_>>());
+        p.page_eval("window.confirm = function () { return true; }; window.onPermissionsLoaded({permissions: [{origin: 'https://a.b', permissionType: 'camera', decision: 'granted', createdAt: 1, updatedAt: 1}], hasMore: false}); 1").expect("a row");
+        let revokes = |p: &Probe| p.routed.iter().filter(|r| r.via == Via::Page).filter_map(|r| crate::browser_js::route(&r.body, crate::browser_js::World::Page, r.frame, &r.from)).filter(|r| r.handler == "iterm2-about:permissions" && r.body.get("action").and_then(Value::as_str) == Some("revokePermission")).count();
+        p.page_eval("document.querySelector('.revoke-button').click(); 1").expect("a synthetic click");
+        p.settle(800);
+        assert_eq!(revokes(&p), 0, "a click a script made posts nothing");
+        // The probe's view is 400 by 300: the first row sits below the page's header and filters, out
+        // of the viewport, where a dispatched press hits nothing (probe run 2026-10-10). It is scrolled
+        // into view first; the page records the trusted clicks it saw, so a press that missed is told
+        // apart from a click the page ignored.
+        p.page_eval("window.__trusted = []; window.__calls = []; window.__errs = []; window.addEventListener('error', function (e) { window.__errs.push(String(e.message)); }); var __rp = window.revokePermission; window.revokePermission = function (o, t) { window.__calls.push([o, t]); try { return __rp.apply(this, arguments); } catch (x) { window.__errs.push(String(x)); throw x; } }; document.addEventListener('click', function (e) { if (e.isTrusted) { window.__trusted.push(e.target && e.target.className); } }, true); document.querySelector('.revoke-button').scrollIntoView({block: 'center'}); 1").expect("scrolled");
+        p.settle(300);
+        let rect = p.page_eval("(function(){var r=document.querySelector('.revoke-button').getBoundingClientRect();return JSON.stringify([r.x+r.width/2,r.y+r.height/2,innerWidth,innerHeight]);})()").expect("the button");
+        let xy: Vec<f64> = serde_json::from_str(&serde_json::from_str::<String>(&rect).unwrap()).unwrap();
+        assert!(xy[0] >= 0.0 && xy[1] >= 0.0 && xy[0] < xy[2] && xy[1] < xy[3], "the button is in the viewport: {xy:?}");
+        for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": xy[0], "y": xy[1], "button": "left", "clickCount": 1})).expect("a trusted press");
+        }
+        let posted = p.wait(10, |p| revokes(p) == 1);
+        let seen = p.page_string("JSON.stringify([window.__trusted, window.__calls, window.__errs, typeof window.webkit, typeof confirm])");
+        if !posted {
+            // Where it stopped: what the page posted, and whether a direct call posts at all.
+            let msgs: Vec<String> = p.routed.iter().filter(|r| r.via == Via::Page).map(|r| r.body.chars().take(160).collect()).collect();
+            let _ = p.page_eval("window.revokePermission('https://a.b', 'camera'); 1");
+            let direct = p.wait(5, |p| revokes(p) >= 1);
+            panic!("the trusted click posts the revoke (the page saw [trusted clicks, calls, errors, webkit, confirm]: {seen:?}, button at {xy:?}; page messages {msgs:?}; a direct call posts: {direct})");
+        }
+        p.settle(500);
+        assert_eq!(revokes(&p), 1, "exactly one revoke");
+        p.finish();
+    }
+
     /// 13x4 Task 6: the View Source page, with a hostile page's source in it, runs its copied
     /// highlighter and linkifier and the source stays text: no element, handler or script comes out
     /// of it, `window.__pwn` is never set, and only parsed http(s) URLs become links. The probe
@@ -4966,6 +5603,436 @@ window.addEventListener('message', function (e) {
         real_key(&mut p, 'j');
         assert!(p.wait(5, |p| p.clients(cm::KEY_HANDLER).len() > n), "the late iframe reported the key");
         assert_eq!(p.rejected_bindings, 0);
+        p.finish();
+    }
+
+    // --- 13x6 Task 3: permissions, notifications and audio (runtime facts the bindings cannot confirm) ---
+
+    const PERM_HOST: &str = "https://perm.tandem-probe.invalid";
+    const PERM_PAGE: &str = "https://perm.tandem-probe.invalid/";
+
+    /// A page that asks for notification permission on demand (`ask()`), recording the answer.
+    fn perm_page(extra: &str) -> String {
+        format!("<!doctype html><title>perm</title><script>window.__r = 'none'; function ask() {{ return Notification.requestPermission().then(function (r) {{ window.__r = r; }}); }}</script>{extra}")
+    }
+
+    /// A 0.5 s 440 Hz tone as a WAV data URI (8 kHz, mono, 16 bit).
+    fn tone_wav_uri() -> String {
+        use base64::Engine as _;
+        let (rate, n) = (8000u32, 4000u32);
+        let mut d: Vec<u8> = Vec::new();
+        d.extend_from_slice(b"RIFF");
+        d.extend_from_slice(&(36 + n * 2).to_le_bytes());
+        d.extend_from_slice(b"WAVEfmt ");
+        d.extend_from_slice(&16u32.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&rate.to_le_bytes());
+        d.extend_from_slice(&(rate * 2).to_le_bytes());
+        d.extend_from_slice(&2u16.to_le_bytes());
+        d.extend_from_slice(&16u16.to_le_bytes());
+        d.extend_from_slice(b"data");
+        d.extend_from_slice(&(n * 2).to_le_bytes());
+        for i in 0..n {
+            let v = ((i as f64 * 440.0 * std::f64::consts::TAU / f64::from(rate)).sin() * 0.3 * 32767.0) as i16;
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        format!("data:audio/wav;base64,{}", base64::engine::general_purpose::STANDARD.encode(&d))
+    }
+
+    impl Probe {
+        /// Waits for the next permission request after `seen` and returns it.
+        #[track_caller]
+        fn next_permission(&mut self, seen: usize) -> (u64, i32, String) {
+            assert!(self.wait(10, |p| p.perm_reqs.len() > seen), "a permission request within 10 s");
+            self.perm_reqs[seen].clone()
+        }
+
+        /// Whether `page_string(js)` (or, with `raw`, `page_eval(js)`) becomes `want` within `secs`.
+        fn page_becomes(&mut self, secs: u64, js: &str, raw: bool, want: &str) -> bool {
+            let end = Instant::now() + Duration::from_secs(secs);
+            loop {
+                let got = if raw { self.page_eval(js) } else { self.page_string(js) };
+                if got.as_deref() == Ok(want) {
+                    return true;
+                }
+                if Instant::now() >= end {
+                    return false;
+                }
+                self.settle(200);
+            }
+        }
+    }
+
+    /// The request arrives with its kind and the requester's URI; `saves` decides whether the profile
+    /// keeps the answer; resetting the profile state and reading it back follow the same calls the app uses.
+    #[test]
+    #[ignore]
+    fn permission_request_reaches_the_app() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        use crate::webhost::PermAnswer;
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.page_eval("ask(); 1").expect("the page asks");
+        let (token, kind, uri) = p.next_permission(0);
+        assert_eq!(kind, 4, "notifications");
+        assert!(uri.starts_with(PERM_HOST), "the requester's URI: {uri}");
+        p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: false });
+        assert!(p.page_becomes(10, "window.__r", false, "granted"), "the promise resolves granted");
+        // Not saved: the same profile sees the default after a fresh load.
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "saves:false leaves the profile alone");
+        // Saved: the app's queue writes the profile first, then answers; it survives a reload.
+        p.page_eval("ask(); 1").expect("asks again");
+        let (token, ..) = p.next_permission(1);
+        p.view().set_permission_state(1, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(1, true))), "the write answered: {:?}", p.writes);
+        p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
+        assert!(p.page_becomes(10, "window.__r", false, "granted"));
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the mirrored grant is kept by the profile");
+        // Put back to default through the profile, and read the non-default states.
+        p.view().set_permission_state(2, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(2, true))), "the reset answered: {:?}", p.writes);
+        assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the state went back to default");
+        p.view().read_permission_states();
+        assert!(p.wait(10, |p| !p.state_reads.is_empty()), "PermissionStates within 10 s");
+        assert!(p.state_reads.iter().flatten().all(|(k, o, _)| !(*k == 4 && o.starts_with(PERM_HOST))), "no kind-4 entry for the origin: {:?}", p.state_reads);
+        p.finish();
+    }
+
+    /// Review I1 and ruling A: a saved Allow is mirrored into the profile (SetPermissionState)
+    /// BEFORE the request completes, so a `new Notification` in the `then` is raised at once. An
+    /// unsaved Allow is WebView2's for the document only (probe run 2026-10-10: it raises
+    /// `NotificationReceived` too): it leaves nothing in the profile, so a reload sees the default.
+    /// Whether any raised notification is SHOWN is the app's (`browser_notification`: a saved
+    /// Granted row or a quiet release), never this event's.
+    #[test]
+    #[ignore]
+    fn saved_grant_is_live_before_the_promise_resolves() {
+        use crate::browser_perms::STATE_ALLOW;
+        use crate::webhost::PermAnswer;
+        const OTHER: &str = "https://other.tandem-probe.invalid/";
+        let then = "<script>function go() { return Notification.requestPermission().then(function () { new Notification('T'); }); }</script>";
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(then)), (OTHER, perm_page(then))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.page_eval("go(); 1").expect("the page asks");
+        let (token, ..) = p.next_permission(0);
+        // The app's order (Task 5 fix): the queue's write, its completion, then the answer.
+        p.view().set_permission_state(1, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(1, true))), "the write answered: {:?}", p.writes);
+        p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
+        assert!(p.wait(10, |p| p.notes.iter().any(|n| n.2 == "T")), "the notification was raised: {:?}", p.notes);
+        // Ruling A: WebView2 stored nothing itself; the grant was mirrored with SetPermissionState before the request completed.
+        p.view().read_permission_states();
+        assert!(p.wait(10, |p| p.state_reads.iter().flatten().any(|(k, o, st)| *k == 4 && o.starts_with(PERM_HOST) && *st == 1)), "the mirrored grant is in the profile: {:?}", p.state_reads);
+        let t = p.notes[0].0;
+        p.view().notification_report(t, NoteReport::Release);
+        let before = p.notes.len();
+        p.load(OTHER);
+        p.page_eval("go(); 1").expect("the other origin asks");
+        let (token, ..) = p.next_permission(1);
+        p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: false });
+        // The document's own grant: WebView2 raises the event (the app releases it: no saved row).
+        p.settle(2000);
+        println!("probe: notifications raised after the unsaved Allow: {:?}", &p.notes[before..]);
+        for n in p.notes[before..].to_vec() {
+            p.view().notification_report(n.0, NoteReport::Release);
+        }
+        p.view().read_permission_states();
+        let reads = p.state_reads.len();
+        assert!(p.wait(10, |p| p.state_reads.len() > reads), "PermissionStates within 10 s");
+        assert!(p.state_reads[reads].iter().all(|(k, o, _)| !(*k == 4 && o.starts_with("https://other.tandem-probe.invalid"))), "an unsaved answer leaves nothing in the profile: {:?}", p.state_reads[reads]);
+        p.load(OTHER);
+        assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "a reload of the unsaved origin sees the default");
+        p.finish();
+    }
+
+    /// Task 5 fix (one write queue): every `set_permission_state` answers once with its own
+    /// sequence number, so the queue can send the next only after the last landed; an Allow then
+    /// a reset of the same entry leaves the profile at the reset.
+    #[test]
+    #[ignore]
+    fn profile_writes_answer_once_with_their_sequence() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.view().set_permission_state(11, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(11, true))), "the grant answered: {:?}", p.writes);
+        assert!(p.page_becomes(10, "Notification.permission", false, "granted"), "live at once");
+        p.view().set_permission_state(12, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(12, true))), "the reset answered: {:?}", p.writes);
+        assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the reset is the last word");
+        p.settle(500);
+        assert_eq!(p.writes, vec![(11, true), (12, true)], "each write answers exactly once");
+        p.finish();
+    }
+
+    /// Task 5 fix (sync done only on a complete answer): a read of a profile the probe has just
+    /// written answers once, complete, and holds the entry; the start-up sync trusts only such an
+    /// answer.
+    #[test]
+    #[ignore]
+    fn a_profile_read_says_it_is_complete() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.view().set_permission_state(21, 3, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(21, true))), "written: {:?}", p.writes);
+        p.view().read_permission_states();
+        assert!(p.wait(10, |p| !p.state_reads.is_empty()), "PermissionStates within 10 s");
+        assert_eq!(p.reads_complete, vec![true], "a plain profile reads complete");
+        assert!(p.state_reads[0].iter().any(|(k, o, st)| *k == 3 && o.starts_with(PERM_HOST) && *st == STATE_ALLOW), "{:?}", p.state_reads);
+        p.view().set_permission_state(22, 3, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(22, true))));
+        p.finish();
+    }
+
+    /// Task 5 fix (no first page before the sync): the hazard the gate closes. A grant the profile
+    /// holds is honored by the first page with NO `PermissionRequested`, so a stale grant from an
+    /// earlier run works until the sync has rewritten the profile from the table; after a reset
+    /// the page sees the default and must ask.
+    #[test]
+    #[ignore]
+    fn a_profile_grant_is_honored_with_no_request() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load("about:blank");
+        p.view().set_permission_state(31, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(31, true))), "written: {:?}", p.writes);
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the first page has the stale grant");
+        assert!(p.perm_reqs.is_empty(), "and nothing asked Tandem: {:?}", p.perm_reqs);
+        p.view().set_permission_state(32, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(32, true))));
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "synced: the page must ask");
+        p.finish();
+    }
+
+    /// Task 5 fix (revoke = reset confirmed, then reload): once the reset's `PermissionWritten`
+    /// came back, a reload sees the default state; the app reloads only then.
+    #[test]
+    #[ignore]
+    fn a_reload_after_the_confirmed_reset_sees_the_default() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.view().set_permission_state(41, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(41, true))));
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()));
+        p.view().set_permission_state(42, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(42, true))), "the reset is confirmed first");
+        p.view().reload();
+        assert!(p.page_becomes(10, "Notification.permission", false, "default"), "the reloaded page has no grant");
+        p.finish();
+    }
+
+    /// Task 5 (P-sweep): the revocation sweep script, run as the app runs it (isolated world,
+    /// `return (...)`), reads the frames' and resources' origins of a hostile page: a cross-origin
+    /// iframe, 5000 resource entries and a page that overrides `performance.getEntriesByType`.
+    /// The answer is bounded by `frame_origins` and a reload follows only a match.
+    #[test]
+    #[ignore]
+    fn revocation_reload_sweep_reads_the_frames_origins() {
+        use crate::browser_perms::{check_iframe_origins_js, frame_origins, page_uses_origin, sweep_reloads};
+        const FRAME: &str = "https://frame.tandem-probe.invalid/";
+        let hostile = perm_page(&format!("<iframe src=\"{FRAME}\"></iframe><script>performance.getEntriesByType = function () {{ return []; }}; Object.defineProperty(window.location, 'origin', {{get: function () {{ return 'https://forged.invalid'; }}}});</script>"));
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, hostile), (FRAME, "<!doctype html><title>f</title>".to_string())], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.settle(500);
+        let body = format!("return ({});", check_iframe_origins_js().trim_end().trim_end_matches(';'));
+        let expr = crate::browser_js::call_js(&body, &Value::Null).expect("the sweep assembles");
+        let got = p.eval(None, &expr).expect("the sweep runs in the isolated world");
+        let list = frame_origins(&got).expect("a bounded array of strings");
+        assert!(list.len() <= 256);
+        assert!(list.iter().any(|o| o == "https://frame.tandem-probe.invalid"), "the cross-origin iframe is listed: {list:?}");
+        assert!(page_uses_origin(PERM_PAGE, Some(&list), "https://frame.tandem-probe.invalid"), "a match reloads");
+        assert!(!page_uses_origin(PERM_PAGE, Some(&list), "https://other.tandem-probe.invalid"), "no match, no reload");
+        assert!(!page_uses_origin("https://c.d/", None, "https://frame.tandem-probe.invalid"), "a failed script compares the main origin only");
+        // 5000 performance entries that are not resources: the answer keeps its shape and its frame.
+        p.page_eval("for (var i = 0; i < 5000; i++) { performance.mark('m' + i); } 1").expect("marks");
+        let again = p.eval(None, &expr).expect("still answers");
+        let kept = frame_origins(&again);
+        assert!(kept.as_ref().is_some_and(|l| l.iter().any(|o| o == "https://frame.tandem-probe.invalid")), "marks add no origin and the frame stays listed: {kept:?}");
+        // Task 5 fix: 300 distinct resource origins (images the probe answers 404) push the answer over
+        // the cap; it then reloads the pane (fail closed), never reads as "this origin is not used".
+        // The page raises its resource timing buffer first (the default 250 would keep it under the cap).
+        p.page_eval("performance.setResourceTimingBufferSize(1000); for (var i = 0; i < 300; i++) { var im = new Image(); im.src = 'https://h' + i + '.tandem-probe.invalid/x.png'; } 1").expect("images");
+        p.settle(1500);
+        let crowd = p.eval(None, &expr).expect("still answers");
+        let other = "https://other.tandem-probe.invalid";
+        assert!(frame_origins(&crowd).is_none(), "over 256 origins is unacceptable: {}", crowd.as_array().map_or(0, Vec::len));
+        assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), other), "an oversized answer reloads even for an origin it does not name");
+        assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), "https://frame.tandem-probe.invalid"), "the iframe's origin still reloads");
+        // The 300 images are answered 404 on purpose (probe run 2026-10-10 failed only here): exactly
+        // those leave the not-served list; anything else still fails `finish`.
+        let crowd_url = |u: &String| u.strip_prefix("https://h").and_then(|r| r.strip_suffix(".tandem-probe.invalid/x.png")).is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 300));
+        p.not_served.retain(|u| !crowd_url(u));
+        p.finish();
+    }
+
+    /// Pre-flight B3: kinds Tandem never asks about are denied by the host and never posted, and the
+    /// page sees the refusal.
+    #[test]
+    #[ignore]
+    fn unasked_kinds_are_denied_by_the_host() {
+        let page = perm_page("<script>window.__c = 'pending'; navigator.requestMIDIAccess({ sysex: true }).then(function () { window.__c = 'ok'; }, function (e) { window.__c = 'denied:' + e.name; });</script>");
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page)], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.settle(2000);
+        let got = p.page_string("window.__c");
+        // A permission refusal, not any rejection (a MIDI "NotSupportedError" would pass otherwise).
+        assert!(got.as_deref().is_ok_and(|c| c == "denied:NotAllowedError" || c == "denied:SecurityError"), "the MIDI request was refused by permission: {got:?}");
+        assert!(p.perm_reqs.is_empty(), "a kind Tandem does not ask about never reaches the app: {:?}", p.perm_reqs);
+        assert_eq!(p.page_eval("1"), Ok("1".into()), "the view still answers");
+        p.finish();
+    }
+
+    /// Pre-flight B2: a request unanswered is bounded (at most 8 pending), a notification flood holds
+    /// at most 16 objects, and the view stays responsive.
+    #[test]
+    #[ignore]
+    fn permission_and_notification_floods_are_bounded() {
+        use crate::browser_perms::STATE_ALLOW;
+        use crate::webhost::{MAX_HELD_NOTES, MAX_PENDING_PERMISSIONS, PermAnswer};
+        let page = perm_page("<script>for (var i = 0; i < 5000; i++) { try { navigator.geolocation.getCurrentPosition(function () {}, function () {}); Notification.requestPermission(); } catch (e) {} }</script>");
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page)], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.settle(3000);
+        assert!(p.perm_reqs.len() <= MAX_PENDING_PERMISSIONS + crate::webhost::PERMISSIONS_PER_SECOND * 4, "bounded: {}", p.perm_reqs.len());
+        assert_eq!(p.page_eval("1"), Ok("1".into()), "still responsive");
+        // Grant notifications, then flood new Notification() without ever reporting on them.
+        let notif: Vec<(u64, i32)> = p.perm_reqs.iter().filter(|r| r.1 == 4).map(|r| (r.0, r.1)).collect();
+        let (token, _) = notif.first().copied().unwrap_or_else(|| panic!("a notification request arrived: {:?}", p.perm_reqs));
+        // The app's order (ruling A): mirror the grant into the profile, wait for the write, then answer.
+        // Without the mirror an Allow may raise no notification at all and the cap below would hold with 0.
+        p.view().set_permission_state(51, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(51, true))), "the write answered: {:?}", p.writes);
+        p.view().answer_permission(token, PermAnswer::State { state: STATE_ALLOW, saves: true });
+        p.settle(500);
+        p.page_eval("for (var i = 0; i < 5000; i++) { try { new Notification('n' + i); } catch (e) {} } 1").expect("the flood runs");
+        p.settle(3000);
+        // Review I2: the flood is held AT the cap, so a grant that raised nothing fails here.
+        assert_eq!(p.notes.len(), MAX_HELD_NOTES, "the flood fills the cap of {MAX_HELD_NOTES} and no more: {}", p.notes.len());
+        assert_eq!(p.page_eval("1"), Ok("1".into()), "still responsive after the flood");
+        p.finish();
+    }
+
+    /// Final review M5 (ruling R13x6-SW), last-gate LG-2: WebView2 raises `NotificationReceived` for
+    /// non-persistent notifications only, so a service worker's `showNotification` would reach
+    /// WebView2's own toast. The view has the SHIPPING filter set of a browser pane with ad blocking
+    /// off (`browser_setup`: `iterm2-about:*` plus the Document-method tracker), and the probe's page is
+    /// served through one exact-URL filter that does not match `/sw.js`. For a granted origin (mirrored
+    /// as the app does), the worker's script fetch is refused by `register_worker_refusal` itself (its
+    /// test-only record names `/sw.js`: positive evidence, not a DNS failure on `.invalid`), the
+    /// registration fails, no registration exists, no notification reaches Tandem and nothing served
+    /// the script.
+    #[test]
+    #[ignore]
+    fn service_worker_notifications_are_refused() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        let page = perm_page("<script>window.__sw = 'pending'; window.__regs = 'pending'; function reg() { return navigator.serviceWorker.register('/sw.js').then(function (r) { window.__sw = 'registered'; return r.showNotification('P').then(function () { window.__sw = 'shown'; }, function (e) { window.__sw = 'refused:' + e.name; }); }, function (e) { window.__sw = 'denied:' + e.name + ': ' + e.message; }).then(function () { return navigator.serviceWorker.getRegistrations(); }).then(function (l) { window.__regs = String(l.length); }); }</script>");
+        // `browser_setup(dev_null: false, adblock: false, ..)`, plus the exact URL of the probe's page.
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, new_windows: true, permissions: true, track_document_method: true, resource_filters: vec!["iterm2-about:*".into(), PERM_PAGE.into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[(PERM_PAGE, page)], Vec::new(), &["iterm2-about"], setup) else { return };
+        p.view().set_permission_state(61, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(61, true))), "the grant is mirrored: {:?}", p.writes);
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the origin is granted, as after Allow");
+        let before = WORKER_REFUSED.lock().map(|l| l.len()).unwrap_or(0);
+        p.page_eval("reg(); 1").expect("the page registers a worker");
+        assert!(p.page_becomes(15, "window.__regs", false, "0"), "no registration exists: {:?} / {:?}", p.page_string("window.__sw"), p.page_string("window.__regs"));
+        let got = p.page_string("window.__sw");
+        let refused: Vec<String> = WORKER_REFUSED.lock().map(|l| l[before..].to_vec()).unwrap_or_default();
+        println!("probe: the registration answered {got:?}; the refusal answered 403 to {refused:?}");
+        assert!(got.as_deref().is_ok_and(|c| c.starts_with("denied:")), "the worker never installs: {got:?}");
+        assert!(got.as_deref().is_ok_and(|c| c.contains("(403)")), "the registration failed on the refusal's 403: {got:?}");
+        assert!(refused.iter().any(|u| u == "https://perm.tandem-probe.invalid/sw.js"), "the refusal itself answered the script fetch (not a DNS failure): {refused:?} / {got:?}");
+        p.settle(1000);
+        assert!(p.notes.is_empty(), "no notification at all: {:?}", p.notes);
+        assert!(!p.order.iter().any(|o| o.ends_with("/sw.js")), "the script fetch never reached the app's handler: {:?}", p.order);
+        p.view().set_permission_state(62, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(62, true))));
+        p.finish();
+    }
+
+    /// A request from an iframe. Chromium delegates the powerful kinds (location, camera,
+    /// microphone): a cross-origin frame may ask only when the top page lets it (`allow=`), and the
+    /// request is the TOP page's, so WebView2 names the top page's URI (probe run 2026-10-10) and the
+    /// grant Chromium then enforces is keyed by the top origin too. The prompt names the site the
+    /// person is on, which chose to delegate (ruling R13x6-P3). A frame the top page did not
+    /// delegate to never reaches Tandem.
+    #[test]
+    #[ignore]
+    fn a_frame_request_names_the_top_page_and_an_undelegated_frame_asks_nothing() {
+        const CHILD: &str = "https://child.tandem-probe.invalid/c.html";
+        const OTHER: &str = "https://other.tandem-probe.invalid/";
+        let page = perm_page(&format!("<iframe allow=\"geolocation\" src=\"{CHILD}\"></iframe>"));
+        let undelegated = perm_page(&format!("<iframe src=\"{CHILD}\"></iframe>"));
+        let child = "<!doctype html><script>window.__g = 'pending'; navigator.geolocation.getCurrentPosition(function () { window.__g = 'ok'; }, function (e) { window.__g = 'denied:' + e.code; });</script>".to_string();
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page), (OTHER, undelegated), (CHILD, child)], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        let (token, kind, uri) = p.next_permission(0);
+        assert_eq!(kind, 3, "geolocation");
+        assert!(uri.starts_with(PERM_PAGE), "the delegating top page's URI: {uri}");
+        p.view().answer_permission(token, crate::webhost::PermAnswer::Deny);
+        p.load(OTHER);
+        p.settle(2000);
+        assert_eq!(p.perm_reqs.len(), 1, "a frame the top page did not delegate to asks nothing: {:?}", p.perm_reqs);
+        p.finish();
+    }
+
+    /// Review M12: a playing document is reported even while muted, and muting does not end it.
+    #[test]
+    #[ignore]
+    fn audio_state_reaches_the_app() {
+        let audio = format!("<audio id=a loop src=\"{}\"></audio>", tone_wav_uri());
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(&audio))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        p.page_eval("var a = document.getElementById('a'); a.muted = true; a.play(); a.muted = false; 1").expect("the page plays");
+        assert!(p.page_becomes(10, "!document.getElementById('a').paused", true, "true"), "the audio element is playing");
+        assert!(p.wait(10, |p| p.audio.contains(&true)), "AudioPlaying true arrives: {:?}", p.audio);
+        let n = p.audio.len();
+        p.view().set_muted(true);
+        assert!(p.view().is_muted(), "muted");
+        p.settle(2000);
+        assert!(!p.audio[n..].contains(&false), "muting does not report silence: {:?}", &p.audio[n..]);
+        p.finish();
+    }
+
+    /// Review M12: only a document-changing navigation raises `Event::Starting` (Task 7 relies on it).
+    #[test]
+    #[ignore]
+    fn same_document_navigation_starts_nothing() {
+        let other = "https://perm.tandem-probe.invalid/other";
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page("")), (other, perm_page(""))], Vec::new(), false, &[], true) else { return };
+        p.load(PERM_PAGE);
+        let starts = |p: &Probe| p.order.iter().filter(|o| o.starts_with("starting ")).count();
+        let n = starts(&p);
+        p.page_eval("location.hash = '#frag'; 1").expect("hash");
+        p.page_eval("history.pushState({}, '', '/next'); 1").expect("pushState");
+        p.settle(2000);
+        assert_eq!(starts(&p), n, "a fragment and a pushState start nothing: {:?}", p.order);
+        p.page_eval("location.href = '/other'; 1").expect("href");
+        assert!(p.wait(10, |p| starts(p) > n), "a real navigation starts one: {:?}", p.order);
+        p.finish();
+    }
+
+    /// Task 7: the view's mute is the person's: a page's own `muted = false`, a new play call and a
+    /// same-document navigation do not lift it, and muting still reports the document as playing.
+    #[test]
+    #[ignore]
+    fn a_page_cannot_unmute_itself() {
+        let audio = format!("<audio id=a loop src=\"{}\"></audio>", tone_wav_uri());
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(&audio))], Vec::new(), false, &[], true) else { return };
+        p.view().set_muted(true);
+        p.load(PERM_PAGE);
+        p.page_eval("var a = document.getElementById('a'); a.muted = false; a.volume = 1; a.play(); 1").expect("the page plays");
+        assert!(p.wait(10, |p| p.audio.contains(&true)), "AudioPlaying true arrives: {:?}", p.audio);
+        p.page_eval("var a = document.getElementById('a'); a.muted = false; a.play(); history.pushState({}, '', '/n'); 1").expect("the page tries again");
+        p.settle(500);
+        assert!(p.view().is_muted(), "the page cannot lift the view's mute");
         p.finish();
     }
 }

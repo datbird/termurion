@@ -71,6 +71,9 @@ pub(super) enum Answer {
 pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
     match then {
         Then::SlowScan => Answer::Button(1),
+        // A site's permission question: a closed window is no button. The close index (Cancel, else
+        // the first button) would be Allow (R13x67-1).
+        Then::BrowserPermission(_) => Answer::Closed,
         // Sparkle's question: a closed window answers neither (nothing is stored, it asks again).
         Then::UpdatePermission | Then::TipPermission => Answer::Closed,
         // A closed error alert is no answer: nothing is revealed (P21).
@@ -331,6 +334,10 @@ pub(super) enum Then {
     /// "Open file?" for a Smart Selection action from a page (`PSB:335-346`): OK (0) opens it as
     /// `open_file_run` plans (a program is revealed, never run); Cancel (1) nothing.
     BrowserOpenFile { pane: crate::layout::PaneId, file: String },
+    /// "Allow Notifications" (and the other permission questions) for the open ask `id`
+    /// (`browser_perms_app::Asks`): Allow (0) or Block (1). A closed window, or an ask that never
+    /// shows, blocks the request and saves nothing. A page raises it, so it is capped.
+    BrowserPermission(u64),
 }
 
 impl Then {
@@ -357,7 +364,7 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_))
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_) | Then::BrowserPermission(_))
             || matches!(self, Then::EnterWorkgroup { how: crate::workgroup_run::Mechanism::Trigger | crate::workgroup_run::Mechanism::BrowserTrigger, .. })
     }
 }
@@ -403,6 +410,7 @@ impl App {
     /// An alert closed with no button (`Answer::Closed`): nothing is remembered or recorded, and
     /// the ask counts as dropped.
     pub(super) fn scripts_closed(&mut self, then: Then) {
+        // `scripts_dropped` blocks a `BrowserPermission` (nothing granted, nothing saved).
         self.scripts_dropped(then);
     }
 
@@ -424,6 +432,9 @@ impl App {
             // The question could not open: a restored workgroup is not rebuilt unasked.
             Then::RestoreWorkgroup { token, workgroup, approved } => self.restore_answered(token, *workgroup, approved, false),
             Then::DynamicProfilesError(_) => self.dynamic_errors_pending = 0,
+            // The request is blocked and nothing is saved: a WebView2 request never keeps its
+            // deferral, and a closed window never grants.
+            Then::BrowserPermission(id) => self.browser_permission_answered(id, None),
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
             _ => {}
@@ -477,6 +488,15 @@ impl App {
         if self.scripts_alert.is_some() || self.scripts_alerts.is_empty() {
             return;
         }
+        // A page's question whose pane was hidden meanwhile does not open: it parks and is asked
+        // again when the pane is shown (final review M4).
+        if let Some(Then::BrowserPermission(id)) = self.scripts_alerts.front().map(|a| &a.then) {
+            let id = *id;
+            if !self.browser_permission_may_open(id) {
+                self.scripts_alerts.pop_front();
+                return;
+            }
+        }
         // After the last window has gone, the settings folder's quit question opens with the
         // GPU that window used.
         let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
@@ -488,6 +508,11 @@ impl App {
                 // The entry question's Enter waits until the whole body has been shown (13y1 review).
                 if matches!(ask.then, Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. }) {
                     w.require_read(crate::workgroup_run::ASK_ENTER);
+                }
+                // A page raised it: no default button, input ignored for a moment after it appears
+                // and after it regains focus (13x6 B1).
+                if matches!(ask.then, Then::BrowserPermission(_)) {
+                    w.guard_input();
                 }
                 self.scripts_alert = Some((w, ask));
             }
@@ -555,6 +580,7 @@ impl App {
                     _ => {}
                 }
             }
+            Then::BrowserPermission(id) => self.browser_permission_answered(id, Some(index)),
             Then::OpenLink { url, style, background, pane, file } => self.open_link_answered(&url, style, background, pane, file, index),
             Then::BrowserUpsell { url } => self.upsell_answered(&url, index),
             Then::BrowserRun { pane, command } => {
@@ -1006,5 +1032,19 @@ mod tests {
         let src = include_str!("scripts_alerts.rs");
         let body = &src[src.find("fn scripts_dropped").unwrap()..];
         assert!(body.contains("dropped_open_files(&then)"), "scripts_dropped counts them");
+    }
+
+    #[test]
+    fn closed_alert_is_no_button() {
+        assert_eq!(on_close(&Then::BrowserPermission(3), 0), Answer::Closed);
+        assert_eq!(on_close(&Then::BrowserPermission(3), 1), Answer::Closed, "the close index never leaks through");
+        assert_eq!(on_close(&Then::SlowScan, 0), Answer::Button(1));
+        assert_eq!(on_close(&Then::Nothing, 1), Answer::Button(1));
+        assert_eq!(crate::prompt_ui::close_index(&["Allow", "Block"]), 0, "unchanged: the permission alert must not use it");
+        assert!(Then::BrowserPermission(1).capped(), "a page cannot queue unlimited windows (B2)");
+        assert!(Then::BrowserPermission(1).never_remember().is_empty());
+        let src = include_str!("scripts_alerts.rs");
+        assert!(src.contains("Then::BrowserPermission(id) => self.browser_permission_answered(id, None)"), "dropped and closed block");
+        assert!(src.contains("w.guard_input()"), "the window is guarded");
     }
 }

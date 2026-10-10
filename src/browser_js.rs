@@ -55,6 +55,8 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
         "history-page.html" => include_str!("../resources/browser/history-page.html"),
         "history-page.js" => include_str!("../resources/browser/history-page.js"),
+        "permissions-page.html" => include_str!("../resources/browser/permissions-page.html"),
+        "permissions-page.js" => include_str!("../resources/browser/permissions-page.js"),
         "hover-link-detector.js" => include_str!("../resources/browser/hover-link-detector.js"),
         "insert-text.js" => include_str!("../resources/browser/insert-text.js"),
         "iterm-browser-common.css" => include_str!("../resources/browser/iterm-browser-common.css"),

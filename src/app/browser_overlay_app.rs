@@ -58,6 +58,10 @@ impl App {
     }
 
     /// The rectangle of pane `pane`'s shown web view in this window's pixels; None when it is not shown.
+    pub(super) fn browser_pane_visible(&self, pane: PaneId) -> bool {
+        self.browser_shown_rect(pane).is_some()
+    }
+
     fn browser_shown_rect(&self, pane: PaneId) -> Option<Rect> {
         let tab = self.tabs.get(self.active)?;
         let (_, r) = self.visible(tab).into_iter().find(|(id, _)| *id == pane)?;

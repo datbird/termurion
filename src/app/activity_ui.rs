@@ -105,7 +105,9 @@ impl App {
     /// An idle, new-output, or activity-after-idle event (notifications and event triggers).
     fn activity_event(&mut self, pane: PaneId, e: ActivityEvent) {
         match e {
-            ActivityEvent::Idle => self.post_alert(pane, crate::alerts::AlertKind::Idle),
+            ActivityEvent::Idle => {
+                self.post_alert(pane, crate::alerts::AlertKind::Idle);
+            }
             // No New Output alerts from a window that broadcasts (iTerm2): the echo of typing
             // would post one per keystroke.
             ActivityEvent::NewOutput => {

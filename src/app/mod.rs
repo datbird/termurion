@@ -160,6 +160,7 @@ mod browser_find_app;
 mod browser_copymode_app;
 mod adblock_app;
 mod browser_db_app;
+mod browser_perms_app;
 mod browser_reader_app;
 mod devtools_read_app;
 mod view_source_app;
@@ -551,9 +552,10 @@ pub struct App {
     pending_mark_prompt: Option<(PaneId, crate::app::browser_marks_app::MarkPrompt)>,
     mark_prompt_focused: bool,
     /// The delete confirm of a browser mark (a `ConfirmWindow`), its pane, mark and navigation epoch;
-    /// and when the last browser mark window opened (the input guard).
+    /// and the input guard of the browser mark windows (`prompt_ui::InputGuard`, the one guard every
+    /// window a page can raise uses: 1 s after it opens and again after it regains the focus).
     mark_confirm: Option<(crate::prompt_ui::ConfirmWindow, PaneId, String, Option<u64>)>,
-    mark_window_at: Option<Instant>,
+    mark_guard: Option<crate::prompt_ui::InputGuard>,
     /// The browser's named marks, newest first, one cache per store (normal, Dev Null); app-wide.
     browser_marks: HashMap<bool, crate::browser_marks::Cache>,
     /// Session > Run Coprocess's window.
@@ -1352,6 +1354,16 @@ pub struct App {
     uv_installed: bool,
     /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
+    /// Open site-permission questions and the tick's requests (app-wide, 13x6).
+    perm_asks: browser_perms_app::Asks,
+    /// The web notification on the tray balloon, and when each granted origin last showed one (13x6).
+    web_note: crate::browser_perms::NoteScreen,
+    /// The pane and origin the open toolbar menu's site items were built for (`representedObject`, `BT:397`).
+    perm_menu: Option<(PaneId, String)>,
+    web_note_limits: crate::triggers::RateLimit<String>,
+    /// The one ordered queue of profile permission writes of each browser store (`[Browser,
+    /// BrowserDevNull]`, 13x6 Task 5 fix): every mirror, sync, revoke and reset goes through it.
+    perm_queues: [crate::perm_queue::ProfileQueue; 2],
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
     /// Checking for updates (M13v2): the worker, the window, the next scheduled check, whether the
     /// check in flight is the person's, and the view waiting to show. App-wide, never per window.
@@ -2164,7 +2176,7 @@ pub fn run() {
         pending_mark_prompt: None,
         mark_prompt_focused: false,
         mark_confirm: None,
-        mark_window_at: None,
+        mark_guard: None,
         browser_marks: HashMap::new(),
         co_prompt: None,
         tmux_drag: None,
@@ -2547,6 +2559,11 @@ pub fn run() {
         backend_probes: Vec::new(),
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
+        perm_asks: Default::default(),
+        web_note: Default::default(),
+        perm_menu: None,
+        web_note_limits: Default::default(),
+        perm_queues: Default::default(),
         scripts_alert: None,
         update_checker: None,
         update_window: None,

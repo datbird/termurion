@@ -275,6 +275,12 @@ pub enum Event {
     /// A top-level navigation the view refused after a person's click (`refused_click`): the app
     /// judges the URL itself (a popover link goes through `guard_open`).
     Refused { view: ViewId, url: String, user: bool },
+    /// A main-frame navigation was cancelled because the store's profile permissions are not
+    /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
+    /// the app loads once the sync lands. Never dropped.
+    /// `by_tandem`, `user`, `redirect` and `source` are how the handler judged it (the app judges the
+    /// release again with them, never as Tandem's own); `history` is a back or forward step.
+    Parked { view: ViewId, url: String, user: bool, redirect: bool, by_tandem: bool, history: bool, source: Option<String> },
     /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
     /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
     /// `browser_world::Contexts` decides what a context is.
@@ -301,6 +307,64 @@ pub enum Event {
     ContextMenu { view: ViewId, token: u64, target: MenuTarget },
     /// A custom item of the answered menu was chosen: `id` is the `MenuEntry::Custom` id.
     ContextMenuPicked { view: ViewId, token: u64, id: u32 },
+    /// A page asked for a permission Tandem asks about (`browser_perms::route_kind`); the view holds
+    /// the request (a deferral) until `answer_permission(token, ..)`. `kind` is
+    /// `COREWEBVIEW2_PERMISSION_KIND`, `uri` the requesting frame's URI. Every other kind, and a
+    /// request over the limits (`PermissionLimiter`), is denied by the host and never posted.
+    Permission { view: ViewId, token: u64, kind: i32, uri: String },
+    /// A page's notification (`NotificationReceived`, marked handled so WebView2 shows none); the
+    /// view holds the notification object under `token` until `notification_report`. `origin` is
+    /// the sender's origin; `title` and `body` are cut by `cap_note_title` and `cap_note_body`.
+    NotificationShown { view: ViewId, token: u64, origin: String, title: String, body: String },
+    /// The page closed the notification held under `token`.
+    NotificationClosed { view: ViewId, token: u64 },
+    /// `IsDocumentPlayingAudio` changed (it stays true while the view is muted).
+    AudioPlaying { view: ViewId, playing: bool },
+    /// The answer to `read_permission_states`: kind, origin as WebView2 reports it, state. `complete`
+    /// is false when the read failed, an item could not be read or the list was cut at
+    /// `MAX_PERMISSION_STATES`: the start-up sync must then fail closed (revoke every profile
+    /// state the Tandem table does not hold), never treat the list as the whole profile.
+    PermissionStates { view: ViewId, states: Vec<(i32, String, i32)>, complete: bool, workers_cleared: bool },
+    /// The completion of `set_permission_state(seq, ..)`: `ok` is false when the runtime cannot
+    /// set the profile or the write failed. Always posted once per call while the view lives (the
+    /// app's write queue, `perm_queue`, waits for it).
+    PermissionWritten { view: ViewId, seq: u64, ok: bool },
+}
+
+/// How the app answers a `Event::Permission`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermAnswer {
+    /// Refuse (`COREWEBVIEW2_PERMISSION_STATE_DENY`, nothing saved in the profile). There is no
+    /// "leave it to WebView2": that would be a grant nobody asked Tandem about (pre-flight B3).
+    Deny,
+    /// `state` is a `browser_perms::STATE_*`. WebView2 never stores a decision (`SavesInProfile` is
+    /// always false). `saves` tells the APP to mirror an Allow of a notification or location
+    /// request into the profile through its write queue (`perm_queue`) and to answer only once
+    /// that write came back, so the page works at once; the host itself never writes the profile
+    /// on an answer. The Tandem table stays the only source; the start-up sync revokes whatever
+    /// it does not hold as Granted. A Deny is never mirrored.
+    State { state: i32, saves: bool },
+}
+
+/// A notification title is cut to this many characters before it is queued.
+pub const NOTE_TITLE_CHARS: usize = 256;
+/// A notification body likewise.
+pub const NOTE_BODY_CHARS: usize = 1024;
+/// Permission settings one `PermissionStates` carries.
+pub const MAX_PERMISSION_STATES: usize = 2048;
+
+fn cap_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// A page's notification title, cut (the app cleans it for display).
+pub fn cap_note_title(s: &str) -> String {
+    cap_chars(s, NOTE_TITLE_CHARS)
+}
+
+/// A page's notification body, cut.
+pub fn cap_note_body(s: &str) -> String {
+    cap_chars(s, NOTE_BODY_CHARS)
 }
 
 impl Event {
@@ -317,6 +381,7 @@ impl Event {
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
+            | Event::Parked { view, .. }
             | Event::ProcessFailed { view, .. }
             | Event::DevTools { view, .. }
             | Event::DevToolsHeld { view }
@@ -326,7 +391,13 @@ impl Event {
             | Event::Starting { view, .. }
             | Event::DocumentMethod { view, .. }
             | Event::ContextMenu { view, .. }
-            | Event::ContextMenuPicked { view, .. } => *view,
+            | Event::ContextMenuPicked { view, .. }
+            | Event::Permission { view, .. }
+            | Event::NotificationShown { view, .. }
+            | Event::NotificationClosed { view, .. }
+            | Event::AudioPlaying { view, .. }
+            | Event::PermissionStates { view, .. }
+            | Event::PermissionWritten { view, .. } => *view,
         }
     }
 
@@ -353,6 +424,12 @@ impl Event {
         if let Event::DevTools { name, .. } = self {
             return name == BINDING_EVENT;
         }
+        // A new audio state is corrected by the next change (and a new document resets it); the
+        // permission and notification events hold a COM object or answer a request, so none is
+        // dropped: the host bounds them where they are made (`PermissionLimiter`, `NotificationLimiter`).
+        if matches!(self, Event::AudioPlaying { .. }) {
+            return true;
+        }
         // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
         // lose the press to both (final review minor 6). Only a person's key makes one.
         matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { taken: false, .. } | Event::History { .. } | Event::Loading(..))
@@ -369,9 +446,12 @@ impl Event {
             Event::DocumentMethod { method, .. } => method.len(),
             Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
-            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } => url.len(),
+            Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } | Event::Parked { url, .. } => url.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
+            Event::Permission { uri, .. } => uri.len(),
+            Event::NotificationShown { origin, title, body, .. } => origin.len() + title.len() + body.len(),
+            Event::PermissionStates { states, .. } => states.iter().map(|(_, o, _)| o.len()).sum(),
             _ => 0,
         }
     }
@@ -579,6 +659,39 @@ pub fn scheme_of(url: &str) -> String {
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || b == b'.') { s.to_ascii_lowercase() } else { String::new() }
 }
 
+/// What the permission sync gate does with a main-frame navigation the one verdict ALLOWED.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateAct {
+    /// It proceeds.
+    Open,
+    /// Cancelled and forgotten: the page stays (a scheme that may not wait, or a URL cut short).
+    Cancel,
+    /// Cancelled and its target posted for the app to load after the sync, judged again then.
+    Park,
+}
+
+/// The permission sync gate of the one main-frame NavigationStarting handler (13x6), applied AFTER
+/// `nav_verdict` (a refused navigation is never parked): while the view's store is not synced
+/// (`gate` Some(false)) every allowed main-frame navigation is cancelled. Only a web page (http or
+/// https) of any initiator, or Tandem's own load, is parked; any other scheme (file:, iterm2-file:,
+/// iterm2-ssh:, data:, ...) is cancelled and forgotten, because a parked target is later loaded by
+/// Tandem and must never launder a page's choice. Tandem's own about:blank and Tandem's own
+/// `iterm2-about:` pages (they use no web permission) pass; a URL over the cap is never parked
+/// truncated. No gate (popovers, tools) is always open.
+pub fn nav_gate(gate: Option<bool>, uri: &str, by_tandem: bool, over_long: bool) -> GateAct {
+    if gate != Some(false) {
+        return GateAct::Open;
+    }
+    let scheme = scheme_of(uri);
+    if scheme == "iterm2-about" || (by_tandem && uri.eq_ignore_ascii_case("about:blank")) {
+        return GateAct::Open;
+    }
+    if over_long || !(by_tandem || matches!(scheme.as_str(), "http" | "https")) {
+        return GateAct::Cancel;
+    }
+    GateAct::Park
+}
+
 /// Whether a navigation of a SUBFRAME is cancelled: any `iterm2-about:` target. The local pages
 /// are never framed (their policy refuses framing), so only the main frame may request one; this
 /// leaves a frame no way to race the main frame for the View Source page.
@@ -742,6 +855,89 @@ impl NewWindowLimiter {
         self.in_window += 1;
         true
     }
+}
+
+/// Permission requests a view may raise per second, and may have waiting for an answer. The rest
+/// are denied at once and never queued (pre-flight B2).
+pub const PERMISSIONS_PER_SECOND: usize = 4;
+pub const MAX_PENDING_PERMISSIONS: usize = 8;
+
+/// `PermissionRequested` limiter, the `NewWindowLimiter` pattern.
+#[derive(Debug, Default)]
+pub struct PermissionLimiter {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl PermissionLimiter {
+    pub fn allow(&mut self, now: Instant, pending: usize) -> bool {
+        if pending >= MAX_PENDING_PERMISSIONS {
+            return false;
+        }
+        match self.window_start {
+            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= PERMISSIONS_PER_SECOND {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
+/// Notifications a view may raise per minute, and the objects it may hold (each is a COM object).
+pub const NOTES_PER_MINUTE: usize = 30;
+pub const MAX_HELD_NOTES: usize = 16;
+
+/// `NotificationReceived` limiter: what it refuses is reported closed to the page and released.
+#[derive(Debug, Default)]
+pub struct NotificationLimiter {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl NotificationLimiter {
+    pub fn allow(&mut self, now: Instant, held: usize) -> bool {
+        if held >= MAX_HELD_NOTES {
+            return false;
+        }
+        match self.window_start {
+            Some(t) if now.duration_since(t) < Duration::from_secs(60) => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= NOTES_PER_MINUTE {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
+/// `COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER`.
+pub const SOURCE_SERVICE_WORKER: i32 = 4;
+
+/// Ruling R13x6-SW (final review M5): WebView2 raises `NotificationReceived` on the view for
+/// non-persistent notifications only; a service worker's `showNotification` (a persistent one) goes
+/// to a profile event this SDK lacks and, unhandled, to WebView2's own toast, past Tandem's label,
+/// limits and table. Service workers are therefore refused: every request a service worker makes, and
+/// the script fetch that would install one (sent with a `Service-Worker` header), gets a 403.
+pub fn refuse_worker_request(source_kinds: i32, service_worker_header: bool) -> bool {
+    source_kinds & SOURCE_SERVICE_WORKER != 0 || service_worker_header
+}
+
+/// Notifications are asked about only when the view raises them to Tandem AND no service worker can
+/// raise one past it (fail closed): new workers are refused (`refuse_worker_request`) and the
+/// registrations an older build let sites make were cleared from the profile (last-gate LG-1; such
+/// a worker starts from its cache with no fetch, so the refusal alone never reaches it).
+pub fn notifications_offered(events: bool, workers_refused: bool, old_workers_cleared: bool) -> bool {
+    events && workers_refused && old_workers_cleared
 }
 
 /// What one view has queued: events, bytes and messages. Shared by the view's handlers and every
@@ -1768,6 +1964,16 @@ mod tests {
         assert!(!refused_click(&info(true, false), true), "an allowed navigation is not refused");
         let redirect = NavInfo { redirect: true, ..info(true, false) };
         assert!(!refused_click(&redirect, false), "a redirect is no click");
+        assert_eq!(nav_gate(Some(false), "https://a.example/", false, false), GateAct::Park, "a page's navigation waits for the sync");
+        assert_eq!(nav_gate(Some(false), "https://a.example/", true, false), GateAct::Park, "so does a Tandem load that slipped past its call site");
+        assert_eq!(nav_gate(Some(false), "about:blank", true, false), GateAct::Open, "Tandem's own blank page is the parking spot");
+        assert_eq!(nav_gate(Some(false), "about:blank", false, false), GateAct::Cancel, "a page's blank is not Tandem's, and is not parked");
+        assert_eq!(nav_gate(Some(false), "iterm2-about:permissions", false, false), GateAct::Open, "Tandem's own pages use no web permission");
+        assert_eq!(nav_gate(Some(false), "https://a.example/", false, true), GateAct::Cancel, "never parked truncated");
+        assert_eq!(nav_gate(Some(true), "https://a.example/", false, false), GateAct::Open);
+        assert_eq!(nav_gate(None, "https://a.example/", false, false), GateAct::Open);
+        let parked = Event::Parked { view: 4, url: "https://a.example/".into(), user: false, redirect: false, by_tandem: false, history: false, source: None };
+        assert_eq!((parked.view(), parked.droppable(), parked.weight()), (4, false, 18), "a parked target is never dropped");
         let ev = Event::Refused { view: 3, url: "https://a.example/".into(), user: true };
         assert_eq!(ev.view(), 3);
         assert!(ev.droppable());
@@ -1831,4 +2037,100 @@ mod tests {
         assert!(!filter_matches("https://t.test/a", "https://t.test/ab"));
     }
 
+    /// Task 3: the permission, notification and audio events are plain data (they cross the
+    /// channel as `Posted` values), and a deny answer differs from any state.
+    #[test]
+    fn permission_events_are_plain_data() {
+        let events = vec![
+            Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
+            Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1)], complete: true, workers_cleared: true },
+            Event::NotificationShown { view: 1, token: 3, origin: "https://a.b".into(), title: "T".into(), body: "B".into() },
+            Event::NotificationClosed { view: 1, token: 3 },
+            Event::AudioPlaying { view: 1, playing: true },
+            Event::PermissionWritten { view: 1, seq: 9, ok: false },
+        ];
+        for e in events {
+            let posted = Posted { env: None, event: Some(e.clone()), charge: None };
+            assert_eq!(posted.event, Some(e.clone()));
+            assert_eq!(e.view(), 1);
+        }
+        assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::Deny);
+        assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::State { state: 2, saves: true });
+    }
+
+    /// Pre-flight B2: the held ones are never dropped, the cheap state ones may be, and what a page
+    /// chose is counted, so a flood cannot grow the queue unseen.
+    #[test]
+    fn new_events_are_weighed_and_dropped_by_the_rules() {
+        let held = [
+            Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() },
+            Event::NotificationShown { view: 1, token: 3, origin: "o".into(), title: "t".into(), body: "b".into() },
+            Event::NotificationClosed { view: 1, token: 3 },
+            Event::PermissionStates { view: 1, states: vec![], complete: false, workers_cleared: false },
+            Event::PermissionWritten { view: 1, seq: 9, ok: true },
+        ];
+        for e in &held {
+            assert!(!e.droppable(), "{e:?} holds a COM object or answers a request");
+        }
+        assert!(Event::AudioPlaying { view: 1, playing: true }.droppable(), "a state change the next one corrects");
+        let shown = Event::NotificationShown { view: 1, token: 3, origin: "ooo".into(), title: "tt".into(), body: "b".into() };
+        assert_eq!(shown.weight(), 6);
+        assert_eq!(Event::Permission { view: 1, token: 2, kind: 4, uri: "https://a.b/".into() }.weight(), 12);
+        let states = Event::PermissionStates { view: 1, states: vec![(4, "https://a.b".into(), 1), (3, "x".into(), 2)], complete: true, workers_cleared: true };
+        assert_eq!(states.weight(), 12);
+    }
+
+    /// B2: a page's notification text is cut in characters before it is queued.
+    #[test]
+    fn notification_text_is_capped() {
+        let long = "\u{e9}".repeat(5000);
+        assert_eq!(cap_note_title(&long).chars().count(), NOTE_TITLE_CHARS);
+        assert_eq!(cap_note_body(&long).chars().count(), NOTE_BODY_CHARS);
+        assert_eq!(cap_note_title("short"), "short");
+    }
+
+    /// B2: at most 4 permission requests a second and 8 pending; the rest are denied at once.
+    #[test]
+    fn permission_requests_are_limited() {
+        let mut l = PermissionLimiter::default();
+        let t = Instant::now();
+        for _ in 0..PERMISSIONS_PER_SECOND {
+            assert!(l.allow(t, 0));
+        }
+        assert!(!l.allow(t, 0), "over the per-second budget");
+        assert!(l.allow(t + Duration::from_millis(1100), 0), "a new second");
+        assert!(!l.allow(t + Duration::from_secs(5), MAX_PENDING_PERMISSIONS), "too many pending");
+    }
+
+    /// B2: notifications are limited per minute and by how many the host holds.
+    #[test]
+    fn notifications_are_limited() {
+        let mut l = NotificationLimiter::default();
+        let t = Instant::now();
+        for _ in 0..NOTES_PER_MINUTE {
+            assert!(l.allow(t, 0));
+        }
+        assert!(!l.allow(t + Duration::from_secs(30), 0), "over the per-minute budget");
+        assert!(l.allow(t + Duration::from_secs(61), 0), "a new minute");
+        assert!(!l.allow(t + Duration::from_secs(200), MAX_HELD_NOTES), "too many held");
+    }
+
+    /// Final review M5 (ruling R13x6-SW): a service worker's request is refused, by its source kind or
+    /// by the `Service-Worker` header of its script fetch, so no worker runs and no persistent
+    /// notification reaches WebView2's own toast; notifications are offered only when both the
+    /// events and that refusal are in place.
+    #[test]
+    fn service_workers_are_refused() {
+        assert!(refuse_worker_request(SOURCE_SERVICE_WORKER, false), "a request from a service worker");
+        assert!(refuse_worker_request(SOURCE_SERVICE_WORKER | 1, false), "a mask holding the service worker bit");
+        assert!(refuse_worker_request(1, true), "a document request carrying the worker script header");
+        assert!(!refuse_worker_request(1, false), "a page's own request continues");
+        assert!(!refuse_worker_request(2, false), "a shared worker's request continues");
+        assert!(notifications_offered(true, true, true));
+        assert!(!notifications_offered(true, false, true), "events without the worker refusal: WebView2 would toast a persistent one itself");
+        assert!(!notifications_offered(false, true, true), "no events: WebView2 would toast every one itself");
+        // Last-gate LG-1: a worker an older build let install still runs from its cache until the
+        // profile's registrations are cleared; until that clear succeeded, kind 4 is not offered.
+        assert!(!notifications_offered(true, true, false), "registrations not cleared: an old worker could still toast");
+    }
 }

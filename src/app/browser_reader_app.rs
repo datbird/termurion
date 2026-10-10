@@ -45,6 +45,10 @@ impl App {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.reader.reset();
         }
+        // The page that asked is gone: its permission questions go with it (13x6 I3).
+        self.browser_permission_dismiss();
+        // ... and so does its notification still on the balloon.
+        self.browser_web_note_dropped(pane);
     }
 
     /// Loads Readability, then reader mode with its CSS, in the isolated world once per navigation

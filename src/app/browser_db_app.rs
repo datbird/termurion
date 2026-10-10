@@ -126,14 +126,23 @@ impl App {
             Some(db) => browser_pages::route(db, json, source),
             None => return,
         };
+        // The page's "revoked" confirmation follows its operation and runs only if that acted.
+        let mut confirmed = true;
         for reply in replies {
             match reply {
+                Reply::Script(_) if !confirmed => {}
                 Reply::Script(js) => {
                     if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                         v.execute_script(&js, 0);
                     }
                 }
                 Reply::Navigate(url) => self.browser_navigate(pane, &url),
+                Reply::Permission(op) => {
+                    confirmed = self.permission_page_op(pane, dev_null, op);
+                    if !confirmed {
+                        self.banners.set("action", "Could not remove the saved permission.");
+                    }
+                }
             }
         }
     }
@@ -227,5 +236,31 @@ mod tests {
         assert!(p.contains("\"http\" | \"https\""));
         assert!(p.contains("webhost_win::local_appdata()") && p.contains("crate::browser_db::path(&base, USER_ID)"));
         assert!(!p.contains("std::env::var"), "the folder is the known folder, never a variable a parent can redirect");
+    }
+}
+
+#[cfg(test)]
+mod permissions_page_tests {
+    fn prod() -> &'static str {
+        let src = include_str!("browser_db_app.rs");
+        &src[..src.find("#[cfg(test)]").unwrap()]
+    }
+
+    /// The page's actions go through the one write queue (`revoke_permission` and its siblings), and
+    /// only from a pane whose main frame (WebView2's `Source`, never the message) is the page.
+    #[test]
+    fn permissions_page_actions_follow_iterm2() {
+        let p = prod();
+        let f = &p[p.find("pub(super) fn local_page_message").unwrap()..p.find("pub(super) fn quickly_browser_sources").unwrap()];
+        assert!(f.contains("Reply::Permission(op)") && f.contains("confirmed = self.permission_page_op(pane, dev_null, op)") && f.contains("Reply::Script(_) if !confirmed"), "revoked is shown only when the operation acted");
+        let perms = include_str!("browser_perms_app.rs");
+        let perms = &perms[..perms.find("#[cfg(test)]").unwrap()];
+        let g = &perms[perms.find("pub(super) fn permission_page_op").unwrap()..];
+        let g = &g[..g.find("\n    }\n").unwrap()];
+        assert!(g.contains("bp::page_message_allowed(&url, None)"), "the pane's own main-frame URL decides");
+        assert!(g.contains("self.revoke_permission(dev_null, &origin, kind)") && g.contains("self.revoke_all_permissions(dev_null, &origin)"));
+        assert!(g.contains("bp::clear_origins("), "clear all revokes each origin through the same queue");
+        assert!(!g.contains("db.revoke") && !g.contains("set_permission_state"), "no write beside the queue");
+        assert!(!g.contains("serde_json") && !g.contains("body"), "no value from the page's JSON");
     }
 }

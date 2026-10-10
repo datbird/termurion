@@ -16,6 +16,8 @@ use crate::webhost_win::{ViewSetup, WebView};
 
 /// The view of one browser pane.
 pub(super) struct BrowserView {
+    /// Permission and audio state that belongs to the pane (13x6).
+    pub(super) perms: crate::app::browser_perms_app::PaneState,
     /// None until the environment exists (and again after a window closed its views).
     pub(super) view: Option<WebView>,
     pub(super) id: ViewId,
@@ -210,6 +212,7 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         resource_filters: filters,
         favicon: true,
         context_menu: true,
+        permissions: true,
         track_document_method: true,
         ..Default::default()
     }
@@ -258,7 +261,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -334,8 +337,11 @@ impl App {
             // A view made now starts with a new world: new secrets, no contexts, no pending call.
             self.browser_reset_world(pane);
             let (page_scripts, _) = self.browser_wrapped_scripts(pane);
+            let gate = self.perm_gate(io.dev_null);
             let Some(env) = self.web_env(browser::store_of(io.dev_null)) else { return };
-            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), browser_setup(io.dev_null, adblock, page_scripts), sink);
+            let mut setup = browser_setup(io.dev_null, adblock, page_scripts);
+            setup.nav_gate = Some(gate);
+            let view = WebView::create(env, hwnd, id, webhost::physical_bounds(rect), setup, sink);
             view.set_zoom(if io.zoom > 0.0 { io.zoom / 100.0 } else { 1.0 });
             if focus_now {
                 view.focus();
@@ -446,6 +452,11 @@ impl App {
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
+        if self.perm_menu.as_ref().is_some_and(|(p, _)| *p == pane) {
+            self.perm_menu = None;
+        }
+        self.browser_permission_pane_gone(pane);
+        self.browser_web_note_dropped(pane);
         self.browser_bars_end(pane);
         self.browser_reset_world(pane);
         if let Some(bv) = self.browser_views.remove(&pane) {
@@ -625,6 +636,11 @@ impl App {
                     bv.world.controller_ready(Instant::now());
                     bv.restarts.succeeded();
                 }
+                // The first view of an environment rewrites the profile's permission states (13x6).
+                let dev_null = self.pane_dev_null(pane);
+                self.sync_permission_states(dev_null);
+                // A new view starts unmuted: the pane's page is muted until its origin is allowed (13x6).
+                self.browser_audio_created(pane);
             }
             // The view could not be made: remade from the URL within the budget.
             Event::Failed(view, _) => {
@@ -651,6 +667,17 @@ impl App {
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
                 self.browser_script_event(pane, e);
             }
+            // Permissions, notifications and audio (13x6). A permission request is held for the tick's
+            // flush (Task 4); until Tasks 6 and 7 a notification is released unshown.
+            Event::Parked { url, user, redirect, by_tandem, history, source, .. } => {
+                self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy { user: *user, redirect: *redirect, by_tandem: *by_tandem, history: *history, source: source.clone() })
+            }
+            Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
+            Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
+            Event::NotificationClosed { token, .. } => self.browser_notification_closed(pane, *token),
+            Event::AudioPlaying { playing, .. } => self.browser_audio_playing(pane, *playing),
+            Event::PermissionStates { view, states, complete, workers_cleared } => self.permission_states_read(pane, *view, states, *complete, *workers_cleared),
+            Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok),
             // The method of the document request (13x5): the Edit menu's gate and the prompt's OK.
             Event::DocumentMethod { .. } => self.marks_method_event(pane, e),
             // Everything a page's script says, the world's events and the calls' answers: the router.
@@ -672,9 +699,8 @@ impl App {
         match webhost::pane_step(kind, &mut bv.restarts, now) {
             webhost::PaneStep::Nothing => return,
             webhost::PaneStep::Reload => {
-                if let Some(v) = &bv.view {
-                    v.reload();
-                }
+                // Through the permission sync gate like every reload (13x6).
+                self.reload_browser_view(pane);
                 // Its world is checked in a few seconds (whether the DevTools state survives is not known).
                 self.browser_world_expect(pane);
                 return;
@@ -742,7 +768,7 @@ impl App {
             return Vec::new();
         }
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        let g = self.browser_geom(bar, dev_null);
+        let g = self.browser_geom(pane, bar, dev_null);
         let row_h = self.cell().1 + 6.0 * self.scale();
         browser::suggestion_rects(&g, row_h, bv.bar.suggestions.len(), area.y + area.h)
     }
@@ -754,6 +780,37 @@ impl App {
             let bar = self.browser_strip(tab, id)?;
             (bar.contains(x, y) || self.browser_suggest_rects(id, bar, rect).iter().any(|r| r.contains(x, y))).then_some(id)
         })
+    }
+
+    /// The session indicators a browser pane shows, in iTerm2's order. Every fact is Tandem's own
+    /// state (the tab, the broadcast model, copy mode, the globals); nothing a page says reaches
+    /// it, so a page can neither fake nor hide one (13x6 Task 10, `PTYTextView.m:2325-2390`).
+    pub(super) fn browser_indicators(&self, pane: PaneId) -> Vec<(char, scene::IndicatorKind)> {
+        let Some(p) = self.panes.get(&pane) else { return Vec::new() };
+        let view = self.broadcast_view_in(true);
+        let (ai_linked, ai_streaming) = self.chat_pane_state(pane);
+        let facts = scene::IndicatorFacts {
+            maximized: self.tabs.iter().any(|t| t.zoomed == Some(pane)),
+            sends: self.broadcast.sends(&view, pane),
+            receives: self.broadcast.receives(&view, pane),
+            coprocess: false,
+            alert_next: p.own().marks.alert_next,
+            copy_mode: self.is_browser_copy_mode(pane),
+            debug_logging: crate::dlog::is_on(),
+            pinned: self.in_pinned_hotkey_window(),
+            ai_linked,
+            ai_streaming,
+            show_remembered: self.show_remembered,
+        };
+        scene::session_indicators(&facts, self.globals.bool("disableTopRightIndicators"))
+    }
+
+    /// A click on an indicator: Tandem's own help text in the one text popover below the glyph
+    /// (360 by 80 points, links reduced to their labels). Nothing else happens.
+    fn open_indicator_popover(&mut self, pane: PaneId, kind: scene::IndicatorKind, glyph: Rect, event_loop: &ActiveEventLoop) {
+        let text = scene::plain_markdown(kind.help_markdown());
+        let below = glyph.y + glyph.h + 80.0 * self.scale();
+        self.open_text_popover_at(pane, &text, (360.0, 80.0), Some((glyph.x + glyph.w / 2.0, below)), event_loop);
     }
 
     /// Draws a browser pane's toolbar across `bar` and, while the field has the keyboard, the
@@ -768,7 +825,7 @@ impl App {
         let (bar_bg, field_bg, dim, line) = (mix(bg, fg, 0.08), mix(bg, fg, 0.16), mix(bg, fg, 0.45), mix(bg, fg, 0.3));
         let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
         let row = |x: f32, y: f32, spans: Vec<Span>, clip: Rect| TextRow { x, y, spans, clip, scale: 1.0, face: crate::render::DEFAULT_FACE };
-        let g = self.browser_geom(bar, io.dev_null);
+        let g = self.browser_geom(pane, bar, io.dev_null);
         frame.quads.push(Quad { rect: bar, color: scene::rgba(bar_bg, 1.0) });
         frame.quads.push(Quad { rect: Rect { y: bar.y + bar.h - 1.0, h: 1.0, ..bar }, color: scene::rgba(line, 1.0) });
         let centered = |r: Rect| (r.x + (r.w - cw) / 2.0, r.y + (r.h - ch) / 2.0);
@@ -792,6 +849,11 @@ impl App {
         if let Some(r) = g.proxy {
             let (x, y) = centered(r);
             frame.rows.push(row(x, y, vec![span(browser::GLYPH_PROXY.to_string(), fg, true)], r));
+        }
+        // The session indicators, in the toolbar's text color, clipped to the strip (no scrolling).
+        for (r, (glyph, _)) in g.status[..g.status_n].iter().zip(self.browser_indicators(pane)) {
+            let (x, y) = centered(*r);
+            frame.rows.push(row(x, y, vec![span(glyph.to_string(), fg, true)], g.strip));
         }
         frame.quads.push(Quad { rect: g.field, color: scene::rgba(field_bg, 1.0) });
         // The favicon, a globe until one loads.
@@ -870,7 +932,7 @@ impl App {
             return true;
         }
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-        let g = self.browser_geom(bar, dev_null);
+        let g = self.browser_geom(pane, bar, dev_null);
         match browser::hit(&g, x, y) {
             Some(Hit::Field) => {
                 let keys = self.browser_views.get(&pane).is_some_and(|b| b.bar.keys);
@@ -906,7 +968,7 @@ impl App {
     }
 
     /// The release of a toolbar press: the button acts when the pointer is still over it.
-    pub(super) fn browser_toolbar_release(&mut self, button: MouseButton, _event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn browser_toolbar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         if button != MouseButton::Left {
             return false;
         }
@@ -918,7 +980,7 @@ impl App {
         let (x, y) = self.cursor;
         let Some((bar, _)) = self.browser_bar_rects(pane) else { return true };
         let io = self.panes.get(&pane).and_then(|p| p.browser_io()).cloned().unwrap_or_default();
-        let g = self.browser_geom(bar, io.dev_null);
+        let g = self.browser_geom(pane, bar, io.dev_null);
         let still = browser::hit(&g, x, y).is_some_and(|h| h == press.hit || (matches!(h, Hit::Button(Button::Reload)) && matches!(press.hit, Hit::Button(Button::Reload | Button::Stop))));
         if !still {
             return true;
@@ -943,6 +1005,12 @@ impl App {
                     browser::Security::Local => "This is one of Tandem's own pages.",
                 };
                 self.banners.set("action", text);
+            }
+            // Only Tandem's own help popover opens: no page action, nothing from the page.
+            Hit::Status(i) => {
+                if let (Some((_, kind)), Some(r)) = (self.browser_indicators(pane).get(i).copied(), g.status.get(i).copied()) {
+                    self.open_indicator_popover(pane, kind, r, event_loop);
+                }
             }
             Hit::Indicator | Hit::Field => {}
         }
@@ -985,9 +1053,7 @@ impl App {
                         self.redraw();
                     }
                 }
-                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
-                    v.reload();
-                }
+                self.reload_browser_view_by_person(pane);
             }
             Button::Stop => {
                 if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
@@ -1007,12 +1073,38 @@ impl App {
         // Add or Remove Bookmark: the page's own state, enabled for a web page.
         let (marked, can_mark) = self.browser_bookmark_state(pane);
         let items = browser::menu_items(marked, can_mark, dev_null, self.browser_reader_menu(pane));
+        // The current site's saved permissions and Unmute, between the last separator and Settings
+        // (`BT:381-415`). Spliced here so `menu_items` keeps its shape for the other milestones.
+        let site = self.browser_site_menu(pane, dev_null);
         let menu = muda::Menu::new();
         let mut failed = None;
-        for item in items {
+        // (label, id, enabled); None is a separator.
+        type Row = Option<(String, String, bool)>;
+        let mut rows: Vec<Row> = Vec::new();
+        let at_settings = items.iter().position(|i| matches!(i, Some(("Settings", _)))).unwrap_or(items.len());
+        let splice = |rows: &mut Vec<Row>| {
+            if !site.is_empty() {
+                if rows.last().is_some_and(|r| r.is_some()) {
+                    rows.push(None);
+                }
+                rows.extend(site.iter().cloned());
+            }
+        };
+        for (n, item) in items.into_iter().enumerate() {
+            if n == at_settings {
+                splice(&mut rows);
+            }
+            rows.push(item.map(|(l, e)| (l.to_string(), format!("{MENU_ID}{pane}:{l}"), e)));
+        }
+        if at_settings >= rows.len() {
+            splice(&mut rows);
+        }
+        for item in rows {
             let r = match item {
                 None => menu.append(&muda::PredefinedMenuItem::separator()),
-                Some((label, enabled)) => menu.append(&muda::MenuItem::with_id(format!("{MENU_ID}{pane}:{label}"), label, enabled, None)),
+                // Site rows' texts are fixed words plus a type name or the normalized origin,
+                // never page text; `&` is escaped as in the history menu.
+                Some((label, id, enabled)) => menu.append(&muda::MenuItem::with_id(id, label.replace('&', "&&"), enabled, None)),
             };
             if let Err(e) = r {
                 failed = Some(e.to_string());
@@ -1025,6 +1117,26 @@ impl App {
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
         unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
         self.popup_menu = Some(menu);
+    }
+
+    /// The site rows of the toolbar menu (Task 8): a disabled line naming the origin (punycode, the
+    /// end of the host kept), the saved permissions to reset, Unmute when Tandem muted the page.
+    /// Records (pane, origin) in `perm_menu` for the pick. Empty when the page has no usable origin.
+    fn browser_site_menu(&mut self, pane: PaneId, dev_null: bool) -> Vec<Option<(String, String, bool)>> {
+        self.perm_menu = None;
+        let Some(origin) = self.panes.get(&pane).and_then(|p| p.browser_io()).and_then(|io| crate::browser_perms::normalize_origin(&io.url)) else { return Vec::new() };
+        let saved: Vec<_> = match self.browser_db(dev_null) {
+            Some(db) => db.permissions_for_origin(&origin).into_iter().map(|r| (r.kind, r.decision)).collect(),
+            None => Vec::new(),
+        };
+        let items = crate::browser_perms::site_menu_items(&saved, self.browser_page_muted(pane));
+        if items.is_empty() {
+            return Vec::new();
+        }
+        self.perm_menu = Some((pane, origin.clone()));
+        let mut out = vec![Some((crate::browser_perms::menu_origin_line(&origin), format!("{MENU_ID}{pane}:origin"), false))];
+        out.extend(items.into_iter().map(|i| i.map(|(t, id)| (t, format!("{MENU_ID}{pane}:{id}"), true))));
+        out
     }
 
     /// The history menu of Back or Forward: the pane's own list (WebView2 has none).
@@ -1064,6 +1176,9 @@ impl App {
         }
         let Some(rest) = id.strip_prefix(MENU_ID) else { return false };
         let Some((pane, label)) = rest.split_once(':').and_then(|(p, l)| Some((p.parse::<PaneId>().ok()?, l))) else { return true };
+        if self.browser_perm_menu_picked_in(pane, label) {
+            return true;
+        }
         if matches!(label, "Add Bookmark" | "Remove Bookmark") {
             self.browser_toggle_bookmark(pane);
             return true;
@@ -1099,7 +1214,7 @@ impl App {
                     }
                     if let Some((bar, _)) = self.browser_bar_rects(pane) {
                         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
-                        let g = self.browser_geom(bar, dev_null);
+                        let g = self.browser_geom(pane, bar, dev_null);
                         let r = if b == Button::Back { g.back } else { g.forward };
                         self.show_browser_history(pane, b == Button::Back, (r.x, bar.y + bar.h));
                     }
@@ -1217,16 +1332,25 @@ impl App {
 
     /// Loads `url` in the pane's view (Tandem's own load: the person typed it).
     pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
+        // Before the store's permissions were synced no page loads (13x6): the URL waits.
+        let synced = self.perm_synced(pane);
+        let dev_null = self.pane_dev_null(pane);
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
             bv.bar.nav_state.will_load(url);
             // A person's own load ends the wait of a restored page.
             bv.world.restore_load = None;
+            bv.world.restore_from = None;
             // While the world is being set up nothing loads (review I2): the URL waits.
             if bv.view.is_some() && bv.world.defer_load(url) {
                 return;
             }
             match &bv.view {
+                Some(_) if !synced => {
+                    bv.world.restore_load = Some(url.to_string());
+                    // A sync that gave up starts over.
+                    self.sync_permission_states(dev_null);
+                }
                 Some(v) => v.navigate_tandem(url),
                 None => {
                     bv.pending_url = Some(url.to_string());
@@ -1610,6 +1734,23 @@ pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 10: the indicators come from Tandem's own state only, the click opens only the help.
+    #[test]
+    fn browser_indicators_follow_iterm2() {
+        let src = include_str!("browser_app.rs");
+        let p = &src[..src.find("#[cfg(test)]").unwrap()];
+        let f = &p[p.find("pub(super) fn browser_indicators(").unwrap()..p.find("fn open_indicator_popover").unwrap()];
+        for needle in ["t.zoomed == Some(pane)", "self.broadcast.sends(&view, pane)", "self.broadcast.receives(&view, pane)", "marks.alert_next", "self.is_browser_copy_mode(pane)", "crate::dlog::is_on()", "self.in_pinned_hotkey_window()", "self.chat_pane_state(pane)", "self.show_remembered", "\"disableTopRightIndicators\""] {
+            assert!(f.contains(needle), "{needle}");
+        }
+        assert!(!f.contains("browser_views") && !f.contains("io.") && !f.contains("url"), "nothing a page says is read");
+        let o = &p[p.find("fn open_indicator_popover").unwrap()..p.find("pub(super) fn draw_browser_bar").unwrap()];
+        assert!(o.contains("plain_markdown(kind.help_markdown())") && o.contains("open_text_popover_at") && !o.contains("browser_eval") && !o.contains("shell_open"));
+        let a = include_str!("adblock_app.rs");
+        assert!(a.contains("geometry_status(bar, self.scale(), dev_null, self.browser_proxy_label().is_some(), self.browser_indicators(pane).len())"), "one geometry");
+        assert!(include_str!("mod.rs").contains("self.text_popover = None;"), "pane_gone drops the one popover");
+    }
+
     use super::*;
     use crate::pane::Pane;
 

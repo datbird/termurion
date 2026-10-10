@@ -300,6 +300,32 @@ pub fn window_height(text: &str) -> f64 {
     (110.0 + lines as f64 * 16.0).clamp(130.0, 560.0)
 }
 
+/// How long a guarded window ignores input after it appears and after it regains focus, so a key
+/// or click already in flight for the page behind it cannot answer it.
+pub const GUARD_DELAY: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// The arming delay of a window that a web page can raise (13x6 B1). Pure: the caller passes `now`.
+#[derive(Clone, Copy, Debug)]
+pub struct InputGuard {
+    since: std::time::Instant,
+}
+
+impl InputGuard {
+    pub fn new(now: std::time::Instant) -> InputGuard {
+        InputGuard { since: now }
+    }
+
+    /// The window appeared or took the focus again: the delay starts over.
+    pub fn refocus(&mut self, now: std::time::Instant) {
+        self.since = now;
+    }
+
+    /// Whether input counts yet.
+    pub fn armed(&self, now: std::time::Instant) -> bool {
+        now.saturating_duration_since(self.since) >= GUARD_DELAY
+    }
+}
+
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
 /// (`iTermWarning.m:400-406,517-520`: "Suppress this message permanently", remembered only on
 /// OK). Enter is OK and Escape Cancel.
@@ -330,6 +356,10 @@ pub struct ConfirmWindow {
     /// The action that waits until the body has been scrolled to its end, and whether it has been.
     gated: Option<usize>,
     read: bool,
+    /// A guarded window (raised by a web page): input is ignored for `GUARD_DELAY` after it appears
+    /// and after it regains focus, Enter and Space press nothing, no button has the focus, and only
+    /// a pointer click or an Alt access key answers.
+    guard: Option<InputGuard>,
 }
 
 impl ConfirmWindow {
@@ -347,7 +377,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, gated: None, read: false })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, gated: None, read: false, guard: None })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -445,6 +475,11 @@ impl ConfirmWindow {
         self.gated = Some(index);
     }
 
+    /// Guards the window against a stray key or click (see `guard`). Call right after opening.
+    pub fn guard_input(&mut self) {
+        self.guard = Some(InputGuard::new(std::time::Instant::now()));
+    }
+
     pub fn id(&self) -> WindowId {
         self.host.id()
     }
@@ -454,6 +489,9 @@ impl ConfirmWindow {
     }
 
     pub fn event(&mut self, event: &WindowEvent) -> bool {
+        if let (WindowEvent::Focused(true), Some(g)) = (event, self.guard.as_mut()) {
+            g.refocus(std::time::Instant::now());
+        }
         self.host.event(event)
     }
 
@@ -462,6 +500,8 @@ impl ConfirmWindow {
         let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
         let (shortcuts, underline, forget, close) = (&self.shortcuts, self.underline, self.forget, &self.close);
         let (gated, read) = (self.gated, &mut self.read);
+        let guard = self.guard;
+        let guard_armed = guard.is_none_or(|g| g.armed(std::time::Instant::now()));
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 // The body scrolls inside the window and the buttons stay below it, so no text or
@@ -482,17 +522,35 @@ impl ConfirmWindow {
                     ui.add_space(6.0);
                 }
                 let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                // A guarded window has no default button and no focused widget (Enter and Space
+                // would press it), and says why its buttons wait.
+                let (enter, escape) = if guard.is_some() {
+                    let ctx = ui.ctx().clone();
+                    ctx.memory_mut(|m| {
+                        if let Some(f) = m.focused() {
+                            m.surrender_focus(f);
+                        }
+                    });
+                    if !guard_armed {
+                        ui.label("The buttons turn on in a moment.");
+                    }
+                    (false, false)
+                } else {
+                    (enter, escape)
+                };
                 ui.horizontal(|ui| {
                     if !actions.is_empty() {
                         let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
                         let enter_index = action_keys(&labels).0;
                         let escape_index = escape_index(&labels, close.as_deref());
                         for (index, label) in button_labels(&labels, forget).iter().enumerate() {
-                            let open = gate_open(gated, *read, index);
-                            let clicked = match shortcuts.get(index).copied().flatten() {
-                                Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))).clicked(),
-                                _ => ui.add_enabled(open, egui::Button::new(label.as_str())).clicked(),
+                            let open = gate_open(gated, *read, index) && guard_armed;
+                            let response = match shortcuts.get(index).copied().flatten() {
+                                Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))),
+                                _ => ui.add_enabled(open, egui::Button::new(label.as_str())),
                             };
+                            // A guarded window counts only a real pointer release over the button.
+                            let clicked = response.clicked() && (guard.is_none() || (response.hovered() && ui.input(|i| i.pointer.primary_released())));
                             if clicked {
                                 result = ConfirmResult::Action { index, suppress: *suppress };
                             }
@@ -511,7 +569,7 @@ impl ConfirmWindow {
                                 _ => None,
                             })
                         });
-                        let pressed = pressed.filter(|i| gate_open(gated, *read, *i));
+                        let pressed = pressed.filter(|i| gate_open(gated, *read, *i) && guard_armed);
                         if let Some(index) = pressed {
                             result = ConfirmResult::Action { index, suppress: *suppress };
                         } else if enter && gate_open(gated, *read, enter_index) {
@@ -544,6 +602,9 @@ impl ConfirmWindow {
                 });
             });
         });
+        if guard.is_some() && !guard_armed {
+            self.host.request_redraw();
+        }
         result
     }
 }
@@ -551,6 +612,25 @@ impl ConfirmWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guarded_window_waits_after_it_appears_and_after_it_regains_focus() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut g = InputGuard::new(t0);
+        assert!(!g.armed(t0), "a key already in flight cannot answer it");
+        assert!(!g.armed(t0 + GUARD_DELAY - Duration::from_millis(1)));
+        assert!(g.armed(t0 + GUARD_DELAY));
+        g.refocus(t0 + Duration::from_secs(5));
+        assert!(!g.armed(t0 + Duration::from_secs(5)), "regaining focus starts it over");
+        assert!(g.armed(t0 + Duration::from_secs(5) + GUARD_DELAY));
+        let src = include_str!("prompt_ui.rs");
+        let f = &src[src.find("pub fn redraw(&mut self) -> ConfirmResult").unwrap()..src.find("mod tests {").unwrap()];
+        assert!(f.contains("guard_armed"), "buttons and access keys ask the guard");
+        assert!(f.contains("(false, false)"), "a guarded window ignores Enter and Escape");
+        assert!(f.contains("surrender_focus"), "no widget holds the focus for Enter or Space");
+        assert!(f.contains("primary_released"), "only a pointer release counts");
+    }
 
     /// A long body scrolls, the buttons never leave the window, and a gated button (the entry
     /// question's Enter) is offered only once the person has seen to the end of the text.

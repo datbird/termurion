@@ -14,6 +14,9 @@ pub enum AlertKind {
     Terminal { title: Option<String>, message: String },
     /// A Post Notification trigger's message.
     Trigger(String),
+    /// A granted site's web notification (13x6). Its text is the page's; `text` labels it with
+    /// the origin so it can never read as a Tandem message.
+    Web { origin: String, title: String, body: String },
 }
 
 /// The profile's notification switches.
@@ -34,6 +37,11 @@ pub struct AlertPrefs {
 /// Whether an alert posts: notifications on, the filter on, not suppressed in the active
 /// session, and (except for escape-sequence alerts) the user not looking at the session.
 pub fn should_post(kind: &AlertKind, prefs: AlertPrefs, looking: bool, active: bool) -> bool {
+    // The person granted the site: the profile's alert switches do not apply; only a suppressed
+    // active session holds it back.
+    if matches!(kind, AlertKind::Web { .. }) {
+        return !(prefs.suppress_active && active);
+    }
     if !prefs.enabled || (prefs.suppress_active && active) {
         return false;
     }
@@ -43,6 +51,7 @@ pub fn should_post(kind: &AlertKind, prefs: AlertPrefs, looking: bool, active: b
         AlertKind::NewOutput => prefs.new_output,
         AlertKind::SessionEnded => prefs.session_ended,
         AlertKind::Terminal { .. } => return prefs.terminal,
+        AlertKind::Web { .. } => return true,
         AlertKind::Trigger(_) => true,
     };
     filter && !looking
@@ -62,6 +71,7 @@ pub fn text(kind: &AlertKind, session: &str, tab: usize, simple: bool, end_text:
         AlertKind::Terminal { title: Some(t), message } => (t.clone(), message.clone()),
         AlertKind::Terminal { title: None, message } => ("Alert".into(), if simple { message.clone() } else { format!("Session {session} #{tab}: {message}") }),
         AlertKind::Trigger(m) => (m.clone(), format!("A trigger fired in session \u{201c}{session}\u{201d} in tab #{tab}.")),
+        AlertKind::Web { origin, title, body } => crate::browser_perms::notification_text(title, body, origin),
     }
 }
 
@@ -115,6 +125,14 @@ mod tests {
         assert_eq!(text(&AlertKind::Terminal { title: None, message: "hi".into() }, "bash", 2, true, "").1, "hi", "simpleNotifications");
         assert_eq!(t(&AlertKind::Terminal { title: Some("Build".into()), message: "done".into() }), ("Build".into(), "done".into()), "OSC 1337 Notification's own title");
         assert_eq!(t(&AlertKind::Trigger("done".into())), ("done".into(), "A trigger fired in session \u{201c}bash\u{201d} in tab #2.".into()));
+    }
+
+    #[test]
+    fn a_web_alert_is_labelled_with_its_origin() {
+        let k = AlertKind::Web { origin: "https://a.b".into(), title: "Session Ended".into(), body: "bye".into() };
+        assert_eq!(text(&k, "bash", 2, false, ""), ("https://a.b".into(), "Session Ended: bye".into()));
+        assert!(should_post(&k, AlertPrefs { enabled: false, ..ALL }, true, false), "a granted site is shown even while looking");
+        assert!(!should_post(&k, AlertPrefs { suppress_active: true, ..ALL }, true, true));
     }
 
     #[test]

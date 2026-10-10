@@ -257,7 +257,9 @@ impl App {
         if webhost::failure_action(kind) != webhost::FailAction::Environment {
             return false;
         }
-        self.web_envs.env_lost(store, Instant::now());
+        if self.web_envs.env_lost(store, Instant::now()) {
+            self.perm_store_lost(store == Store::BrowserDevNull);
+        }
         true
     }
 
@@ -301,6 +303,8 @@ impl App {
                 self.web_route(event, event_loop);
             }
         }
+        // Grouping works across one drain (a camera and microphone request may be two events).
+        self.flush_permission_requests();
     }
 
     /// A held focus (a web view has keyboard focus, so the parent saw `Focused(false)` while still the
@@ -333,6 +337,8 @@ impl App {
     /// window is known to have it, the hold ends, the 13u hook is told (Tandem's Win chords and
     /// remaps act again in that window, never on the shell) and the window takes the keyboard back.
     pub(super) fn web_view_dropped(&mut self, view: ViewId, parent: isize) {
+        // A profile write or read in flight on it is sent again on another view (13x6).
+        self.perm_view_gone(view);
         let held = self.web_focus_held.and_then(|w| self.window_hwnd(w));
         if !webhost::drop_returns_focus(held, parent, self.web_focus_view, view) {
             return;
@@ -386,6 +392,9 @@ impl App {
             return;
         }
         match event {
+            // A view that raised one of these has no pane to answer it (the pane went first): the
+            // view's drop completes the request refused (`shut`), so only the fact is logged.
+            Event::Permission { view, .. } | Event::NotificationShown { view, .. } => crate::dlog!("webhost: view {} raised a permission event with no pane", *view),
             Event::Created(v) => crate::dlog!("webhost: view {} created", *v),
             // A view's process failed: which view, never the reason's text (13w B8).
             Event::Failed(v, _) => crate::rlog!("webhost: view {} failed", *v),

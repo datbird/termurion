@@ -651,14 +651,6 @@ pub fn reveal_step(mark_url: &str, current: &str) -> Reveal {
     }
 }
 
-/// How long a mark window ignores keys and clicks after it opens (a keystroke or click meant for the
-/// page must not answer it).
-pub const WINDOW_GUARD_MS: u64 = 500;
-
-pub fn input_ignored(opened: std::time::Instant, now: std::time::Instant) -> bool {
-    now.saturating_duration_since(opened) < std::time::Duration::from_millis(WINDOW_GUARD_MS)
-}
-
 /// Whether a rename or delete may still act: the mark is one this page shows (the cache, the page's
 /// URL) and the page is the one the window opened for (the navigation epoch).
 pub fn request_valid(cache: &[Mark], page_url: &str, guid: &str, opened_epoch: u64, epoch: u64) -> bool {
@@ -802,9 +794,6 @@ mod tests {
         assert!(!request_valid(&cache, "https://a.b/p", "nope", 3, 3), "an unknown mark");
         assert!(person_edit_valid(&cache, "g2"), "a person may edit a mark of another page");
         assert!(!person_edit_valid(&cache, "nope"), "an unknown mark");
-        let t = std::time::Instant::now();
-        assert!(input_ignored(t, t));
-        assert!(!input_ignored(t, t + std::time::Duration::from_millis(WINDOW_GUARD_MS)));
         assert_eq!(delete_text("a\u{202e}b"), "Delete the named mark \"ab\"?");
         assert_eq!(delete_text(""), "Delete the named mark \"Unnamed Mark\"?");
         assert_eq!(rename_text(&"x".repeat(MAX_NAME + 9)).chars().count(), MAX_NAME);

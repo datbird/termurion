@@ -33,11 +33,12 @@ impl App {
     }
 
     /// Posts an alert when the profile and the user's view allow it.
-    pub(super) fn post_alert(&mut self, pane: PaneId, kind: AlertKind) {
+    /// True when the balloon was shown.
+    pub(super) fn post_alert(&mut self, pane: PaneId, kind: AlertKind) -> bool {
         let shown = self.tabs.get(self.active).is_some_and(|t| t.layout.panes().contains(&pane));
         let looking = alerts::looked_at(self.focused, shown);
         if !alerts::should_post(&kind, self.alert_prefs(pane), looking, self.looking_at(pane)) {
-            return;
+            return false;
         }
         let (name, tab) = self.session_label(pane);
         let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("simpleNotifications"), &self.globals.string("sessionEndMessageText"));
@@ -46,8 +47,14 @@ impl App {
                 self.last_notified = Some(pane);
                 self.last_notified_script = None;
                 self.last_notified_debug = None;
+                // The balloon holds one notification: a web one it replaces is told it closed.
+                self.web_note_replaced();
+                true
             }
-            Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
+            Err(e) => {
+                self.banners.set("notify", format!("Could not show a notification: {e}"));
+                false
+            }
         }
     }
 

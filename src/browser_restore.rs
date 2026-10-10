@@ -166,6 +166,28 @@ pub fn own_load(url: &str, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
     crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
 }
 
+/// How the one NavigationStarting handler judged a navigation it parked (13x6): the app judges the
+/// release again with exactly this, never as Tandem's own load.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParkedFrom {
+    pub user: bool,
+    pub redirect: bool,
+    pub source: Option<String>,
+}
+
+/// Whether a parked page navigation may load now: a web page (http or https) only, and the verdict
+/// the handler gave it, with its ORIGINAL initiator (`by_tandem` false), is still yes. A `file:`,
+/// `iterm2-file:`, `iterm2-ssh:`, `data:` or any other scheme never passes, so parking cannot
+/// launder a page's choice into a load Tandem started. None: dropped.
+pub fn parked_load(url: &str, from: &ParkedFrom, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
+    if !matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https") {
+        return None;
+    }
+    let info = crate::webhost::NavInfo { target: url, source: from.source.as_deref(), user: from.user, redirect: from.redirect, by_tandem: false };
+    let policy = crate::webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+    crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +306,26 @@ mod tests {
         assert_eq!(target_text("a\u{202e}b"), None, "a bidi override spoofs");
         assert_eq!(target_text("a\u{0}b"), None);
         assert_eq!(target_text("a\nb"), None);
+    }
+
+    /// Gate re-review r3: a parked page navigation is judged again as the PAGE's, and no scheme the
+    /// guard protects can pass through parking, from any initiator or source.
+    #[test]
+    fn parking_cannot_launder_a_page_s_choice() {
+        let from = |user: bool, redirect: bool, source: Option<&str>| ParkedFrom { user, redirect, source: source.map(String::from) };
+        let judge = |_: &str| true; // even a judge that accepts every file URL
+        let web = from(false, false, Some("https://a.example/"));
+        assert_eq!(parked_load("https://b.example/x", &web, &judge).as_deref(), Some("https://b.example/x"));
+        assert_eq!(parked_load("HTTP://b.example/", &web, &judge).as_deref(), Some("HTTP://b.example/"));
+        for scheme_url in ["file:///C:/Users/x/x.html", "iterm2-file:C:/x", "iterm2-ssh://host", "data:text/html,<script>1</script>", "javascript:alert(1)", "about:blank", "iterm2-about:history", "ms-msdt:id", "blob:https://a.example/1", "view-source:https://a.example/"] {
+            for (user, redirect, source) in [(false, false, Some("https://a.example/")), (true, false, Some("https://a.example/")), (false, true, None), (true, true, Some("iterm2-about:welcome")), (false, false, Some("iterm2-about:welcome")), (false, false, None)] {
+                assert_eq!(parked_load(scheme_url, &from(user, redirect, source), &judge), None, "{scheme_url} user={user} redirect={redirect} source={source:?}");
+            }
+        }
+        // The gate itself parks none of them either: only http(s) or Tandem's own load waits.
+        for u in ["file:///C:/x", "iterm2-file:C:/x", "iterm2-ssh://h", "data:text/html,x", "javascript:1"] {
+            assert_eq!(crate::webhost::nav_gate(Some(false), u, false, false), crate::webhost::GateAct::Cancel, "{u}");
+        }
     }
 
     #[test]
