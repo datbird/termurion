@@ -574,6 +574,7 @@ pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]
 pub mod ai_key_ui;
+pub mod autofill_card_ui;
 #[cfg(windows)]
 pub mod ai_engage_ui;
 pub mod transparency;

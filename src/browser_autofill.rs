@@ -294,6 +294,170 @@ pub fn fill_all_outcome(v: &Value) -> Option<(bool, i64)> {
     Some((v.get("success")?.as_bool()?, v.get("fieldsFound")?.as_i64()?))
 }
 
+// --- The contact card at rest (B13) ---
+
+/// The card's file name, in `%LOCALAPPDATA%\Tandem` (machine-local). Not the settings folder
+/// (`%APPDATA%\Tandem`, which Export/Import All Settings and the roaming profile touch), and never
+/// in the globals: the card is personal data and is never exported, imported or synced (B13).
+pub const CARD_FILE: &str = "autofill-contact.dat";
+/// A field's most characters (kept on save, load and in the editor; a larger file is no card).
+pub const MAX_VALUE: usize = 256;
+/// The most bytes read from a card file.
+const MAX_CARD_FILE: u64 = 64 * 1024;
+/// The entropy the card is protected with (as 13y1's approval key has its own): a blob made for one
+/// use never unprotects as the other.
+#[cfg(windows)]
+const CARD_ENTROPY: &[u8] = b"tandem autofill contact card\0v1";
+
+pub const CARD_TITLE: &str = "Autofill Contact Card";
+pub const CARD_TEXT: &str = "Tandem fills web forms from this card. It stays on this computer.";
+/// The card's fields in `FIELD_TYPES` order: the field type and the label the editor shows.
+pub const CARD_LABELS: [(&str, &str); 12] = [
+    ("firstName", "First name"),
+    ("lastName", "Last name"),
+    ("fullName", "Full name"),
+    ("email", "Email"),
+    ("phone", "Phone"),
+    ("address1", "Address line 1"),
+    ("address2", "Address line 2"),
+    ("city", "City"),
+    ("state", "State or province"),
+    ("zip", "ZIP or postal code"),
+    ("country", "Country"),
+    ("company", "Company"),
+];
+
+/// Where the card lives under the machine-local application data folder.
+pub fn card_path(local_appdata: &std::path::Path) -> std::path::PathBuf {
+    local_appdata.join("Tandem").join(CARD_FILE)
+}
+
+impl Card {
+    /// The twelve fields in `FIELD_TYPES` order.
+    pub fn fields_mut(&mut self) -> [&mut String; 12] {
+        [
+            &mut self.first_name,
+            &mut self.last_name,
+            &mut self.full_name,
+            &mut self.email,
+            &mut self.phone,
+            &mut self.address1,
+            &mut self.address2,
+            &mut self.city,
+            &mut self.state,
+            &mut self.zip,
+            &mut self.country,
+            &mut self.company,
+        ]
+    }
+
+    /// A copy with every value stripped of hidden characters (`inert_files::display_text`) and cut to
+    /// `MAX_VALUE` characters.
+    pub fn bounded(&self) -> Card {
+        let mut c = self.clone();
+        for f in c.fields_mut() {
+            let clean = crate::inert_files::display_text(f, MAX_VALUE, false);
+            wipe(f);
+            *f = clean;
+        }
+        c
+    }
+}
+
+/// Overwrites a byte buffer with zeros.
+fn wipe_bytes(b: &mut [u8]) {
+    for x in b.iter_mut() {
+        // SAFETY: a valid, aligned byte of the slice.
+        unsafe { std::ptr::write_volatile(x, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The card as the bytes that get protected (bounded values; JSON with the snake-case field names).
+fn card_to_bytes(card: &Card) -> Result<Vec<u8>, String> {
+    let mut b = card.bounded();
+    let out = serde_json::to_vec(&b).map_err(|_| "the card could not be encoded".to_string());
+    b.wipe();
+    out
+}
+
+/// The card those bytes hold, all of it or nothing (a missing field, trailing text or anything but a
+/// card is None); the values are bounded.
+fn card_from_bytes(bytes: &[u8]) -> Option<Card> {
+    let mut c: Card = serde_json::from_slice(bytes).ok()?;
+    let b = c.bounded();
+    c.wipe();
+    Some(b)
+}
+
+/// The judged folder and file entry of a card path (the file is opened as itself, never through a link).
+#[cfg(windows)]
+fn card_entry(path: &std::path::Path) -> Option<(crate::localfs::LocalPath, crate::localfs::Unfollowed)> {
+    let dir = crate::localfs::LocalPath::judge(path.parent()?)?;
+    let file = dir.unfollowed(path.file_name()?)?;
+    Some((dir, file))
+}
+
+/// The saved card, or an empty one: a missing file, a file that is not this user's own owner-only
+/// file, one that is too large, that this user's DPAPI does not unprotect with the card's entropy, or
+/// whose text is not a whole card all give `Card::default()` (never an error, never part of a card).
+#[cfg(windows)]
+pub fn load_card(path: &std::path::Path) -> Card {
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    let Some((_, file)) = card_entry(path) else { return Card::default() };
+    let opened = crate::localfs::open_unfollowed(&file, |o| {
+        o.access_mode(windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL).share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+    });
+    let Ok(mut f) = opened else { return Card::default() };
+    if !crate::localfs::is_owner_only(&f) {
+        return Card::default();
+    }
+    let mut blob = Vec::new();
+    if (&mut f).take(MAX_CARD_FILE + 1).read_to_end(&mut blob).is_err() || blob.len() as u64 > MAX_CARD_FILE {
+        return Card::default();
+    }
+    let Some(mut plain) = crate::workgroup_restore::dpapi_with(&blob, false, CARD_ENTROPY) else { return Card::default() };
+    let card = card_from_bytes(&plain);
+    wipe_bytes(&mut plain);
+    card.unwrap_or_default()
+}
+
+/// Saves the card: bounded, protected with DPAPI for this user, written whole to an owner-only
+/// temporary file beside it and then renamed over it (a reader never sees half a card). The error
+/// text names no value.
+#[cfg(windows)]
+pub fn save_card(path: &std::path::Path, card: &Card) -> Result<(), String> {
+    use std::io::Write;
+    let (dir, file) = card_entry(path).ok_or_else(|| "the folder is not a local one".to_string())?;
+    crate::localfs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut plain = card_to_bytes(card)?;
+    let blob = crate::workgroup_restore::dpapi_with(&plain, true, CARD_ENTROPY);
+    wipe_bytes(&mut plain);
+    let blob = blob.ok_or_else(|| "Windows could not protect the card".to_string())?;
+    let temp = dir.unfollowed(format!("{CARD_FILE}.{}.tmp", uuid::Uuid::new_v4())).ok_or_else(|| "no usable file name".to_string())?;
+    let written = crate::localfs::create_owner_only(&temp).and_then(|mut f| f.write_all(&blob).and_then(|()| f.sync_all()));
+    if let Err(e) = written {
+        let _ = crate::localfs::remove_unfollowed(&temp);
+        return Err(e.to_string());
+    }
+    crate::localfs::rename_unfollowed(&temp, &file).map_err(|e| {
+        let _ = crate::localfs::remove_unfollowed(&temp);
+        e.to_string()
+    })
+}
+
+#[cfg(not(windows))]
+pub fn load_card(_path: &std::path::Path) -> Card {
+    Card::default()
+}
+
+#[cfg(not(windows))]
+pub fn save_card(_path: &std::path::Path, _card: &Card) -> Result<(), String> {
+    Err("the contact card is stored with Windows data protection".to_string())
+}
+
 // --- The operation queue (iTerm2's AsyncMutex) ---
 
 /// One operation at a time per pane; the rest wait in order. Past `MAX_QUEUE` waiting, the oldest
@@ -359,6 +523,110 @@ mod tests {
 
     fn raw(name: &str) -> &'static str {
         crate::browser_js::resource(name).unwrap()
+    }
+
+    fn sample() -> Card {
+        Card { first_name: "Alice".into(), last_name: "Zed".into(), email: "alice.zed@example.test".into(), address1: "12 Quux Lane".into(), phone: "555-0100".into(), ..Card::default() }
+    }
+
+    #[test]
+    fn card_labels_follow_field_types() {
+        assert!(CARD_LABELS.iter().map(|(k, _)| *k).eq(FIELD_TYPES.iter().copied()));
+        let mut c = sample();
+        assert_eq!(c.fields_mut().len(), CARD_LABELS.len());
+        assert_eq!(card_path(std::path::Path::new(r"C:\a")), std::path::Path::new(r"C:\a").join("Tandem").join("autofill-contact.dat"));
+        assert!(!format!("{:?}", sample()).contains("Alice"));
+    }
+
+    #[test]
+    fn card_bytes_are_whole_and_bounded() {
+        let long = "x".repeat(MAX_VALUE + 50);
+        let c = Card { city: long, first_name: "A\u{202e}b\u{0}c".into(), ..Card::default() };
+        let back = card_from_bytes(&card_to_bytes(&c).unwrap()).unwrap();
+        assert_eq!(back.city.chars().count(), MAX_VALUE);
+        assert_eq!(back.first_name, "Abc");
+        let json = String::from_utf8(card_to_bytes(&sample()).unwrap()).unwrap();
+        assert!(json.contains("\"first_name\":\"Alice\"") && json.contains("\"address1\""), "snake-case keys");
+        assert_eq!(card_from_bytes(b"{"), None);
+        assert_eq!(card_from_bytes(br#"{"first_name":"Alice"}"#), None, "a partial card is no card");
+        assert_eq!(card_from_bytes(b""), None);
+    }
+
+    #[test]
+    fn card_file_is_in_no_export_list() {
+        for (name, src) in [
+            ("settings_export", include_str!("settings_export.rs")),
+            ("remote_prefs", include_str!("remote_prefs.rs")),
+            ("settings_keys", include_str!("settings_keys.rs")),
+            ("store", include_str!("store.rs")),
+        ] {
+            let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+            assert!(!code.contains(CARD_FILE) && !code.contains("autofill-contact") && !code.contains("browser_autofill"), "{name} must not list the card");
+        }
+        assert!(!crate::globals::default_path().ends_with(CARD_FILE));
+        let local = card_path(std::path::Path::new(r"C:\L"));
+        assert!(local.starts_with(r"C:\L"), "the card sits under the local application data folder");
+    }
+
+    #[cfg(windows)]
+    fn temp_card_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tandem-card-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn card_file_round_trips() {
+        let dir = temp_card_dir();
+        let path = dir.join(CARD_FILE);
+        assert_eq!(load_card(&path), Card::default(), "a missing file is an empty card");
+        save_card(&path, &sample()).unwrap();
+        assert_eq!(load_card(&path), sample());
+        let raw = std::fs::read(&path).unwrap();
+        let text = String::from_utf8_lossy(&raw).to_string();
+        assert!(!text.contains("Alice") && !text.contains("example.test") && !text.contains("first_name"), "the file holds no plain text");
+        let f = std::fs::File::open(&path).unwrap();
+        drop(f);
+        // Owner-only, one link, no leftover temporary file.
+        let (_, entry) = card_entry(&path).unwrap();
+        assert!(crate::localfs::dacl_sddl(&entry).unwrap().starts_with("D:P(A;;FA;;;"), "protected owner-only DACL");
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        assert_eq!(names, vec![CARD_FILE.to_string()]);
+        // A second save replaces it.
+        let other = Card { city: "Oslo".into(), ..Card::default() };
+        save_card(&path, &other).unwrap();
+        assert_eq!(load_card(&path), other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bad_card_files_load_empty() {
+        let dir = temp_card_dir();
+        let path = dir.join(CARD_FILE);
+        save_card(&path, &sample()).unwrap();
+        let good = std::fs::read(&path).unwrap();
+        // Plain JSON a person or program dropped in: not protected, not owner-only, no card.
+        for bad in [b"{".to_vec(), serde_json::to_vec(&sample()).unwrap(), Vec::new(), good[..good.len() / 2].to_vec(), vec![0u8; 100_000]] {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, &bad).unwrap();
+            assert_eq!(load_card(&path), Card::default());
+        }
+        // A protected blob from another use (other entropy) is no card either, nor is a partial card.
+        std::fs::remove_file(&path).unwrap();
+        let f = crate::localfs::create_owner_only(&card_entry(&path).unwrap().1).unwrap();
+        let mut f = f;
+        use std::io::Write;
+        f.write_all(&crate::workgroup_restore::dpapi_with(&card_to_bytes(&sample()).unwrap(), true, b"another entropy").unwrap()).unwrap();
+        drop(f);
+        assert_eq!(load_card(&path), Card::default(), "wrong entropy");
+        std::fs::remove_file(&path).unwrap();
+        let mut f = crate::localfs::create_owner_only(&card_entry(&path).unwrap().1).unwrap();
+        f.write_all(&crate::workgroup_restore::dpapi_with(br#"{"first_name":"Alice"}"#, true, CARD_ENTROPY).unwrap()).unwrap();
+        drop(f);
+        assert_eq!(load_card(&path), Card::default(), "a partial card");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
