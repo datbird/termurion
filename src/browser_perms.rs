@@ -770,6 +770,77 @@ pub fn menu_origin_line(origin: &str) -> String {
     origin_label(origin, 48)
 }
 
+// --- The iterm2-about:permissions page (Task 9) ---
+
+/// The page's URL and its message handler (`BPVH:18`).
+pub const PAGE_URL: &str = "iterm2-about:permissions";
+pub const PAGE_HANDLER: &str = "iterm2-about:permissions";
+/// Rows per page (`BPVH:66-70`).
+pub const PAGE_LIMIT: usize = 50;
+const PAGE_MAX_OFFSET: u64 = 100_000;
+const PAGE_MAX_LIMIT: u64 = 100;
+
+/// Whether a page message counts: the pane's main frame (WebView2's own `Source`, never a value
+/// from the message) is exactly the page and the sender is that main frame (review M6).
+pub fn page_message_allowed(main_url: &str, frame: Option<u64>) -> bool {
+    main_url == PAGE_URL && frame.is_none()
+}
+
+/// What `loadPermissions` asks for (`BPVH:66-70`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageQuery {
+    pub offset: usize,
+    pub limit: usize,
+    pub search: String,
+    pub type_filter: String,
+    pub status_filter: String,
+}
+
+impl PageQuery {
+    /// iTerm2's defaults for anything missing or of the wrong type; Tandem clamps the numbers so a
+    /// page cannot ask for an absurd slice.
+    pub fn from_message(body: &serde_json::Value) -> PageQuery {
+        let num = |key: &str, default: u64, hi: u64| body.get(key).and_then(|v| v.as_i64()).map_or(default, |n| (n.max(0) as u64).min(hi));
+        let text = |key: &str| body.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        PageQuery {
+            offset: num("offset", 0, PAGE_MAX_OFFSET) as usize,
+            limit: num("limit", PAGE_LIMIT as u64, PAGE_MAX_LIMIT).max(1) as usize,
+            search: text("searchQuery"),
+            type_filter: text("permissionTypeFilter"),
+            status_filter: text("statusFilter"),
+        }
+    }
+}
+
+/// The page's rows and whether more follow (`BPVH:100-158`): filters (an unknown type or status
+/// filters nothing), a lower-cased search over the origin and the type's display name, newest
+/// first, then the slice (an offset past the end is empty, where iTerm2 would trap).
+pub fn page_rows(rows: &[crate::browser_db_perms::PermissionRow], q: &PageQuery) -> (Vec<serde_json::Value>, bool) {
+    let type_filter = PermissionType::parse(&q.type_filter);
+    let status_filter = Decision::parse(&q.status_filter);
+    let needle = q.search.to_lowercase();
+    let mut kept: Vec<&crate::browser_db_perms::PermissionRow> = rows
+        .iter()
+        .filter(|r| type_filter.is_none_or(|t| r.kind == t))
+        .filter(|r| status_filter.is_none_or(|d| r.decision == d))
+        .filter(|r| needle.is_empty() || r.origin.to_lowercase().contains(&needle) || r.kind.display_name().to_lowercase().contains(&needle))
+        .collect();
+    kept.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
+    let start = q.offset.min(kept.len());
+    let end = start.saturating_add(q.limit).min(kept.len());
+    let page = kept[start..end]
+        .iter()
+        .map(|r| serde_json::json!({"origin": r.origin, "permissionType": r.kind.raw(), "decision": r.decision.raw(), "createdAt": r.created_at, "updatedAt": r.updated_at}))
+        .collect();
+    (page, end < kept.len())
+}
+
+/// Every origin that has a saved row, once each: what Clear All Permissions revokes one by one.
+pub fn clear_origins(rows: &[crate::browser_db_perms::PermissionRow]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    rows.iter().filter(|r| seen.insert(r.origin.as_str())).map(|r| r.origin.clone()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1384,5 +1455,96 @@ mod tests {
         p.playing(true);
         assert_eq!(p.announces, 2);
         assert!(p.bar.is_some() && p.muted && !p.st.disabled && p.saved.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+    use crate::browser_db_perms::PermissionRow;
+    use serde_json::json;
+
+    fn row(origin: &str, kind: PermissionType, decision: Decision, created: f64) -> PermissionRow {
+        PermissionRow { origin: origin.to_string(), kind, decision, created_at: created, updated_at: created + 0.5 }
+    }
+
+    fn five() -> Vec<PermissionRow> {
+        use Decision::*;
+        use PermissionType::*;
+        vec![
+            row("https://a.b", Notification, Granted, 1.0),
+            row("https://c.d", Camera, Denied, 2.0),
+            row("https://e.f", Geolocation, Granted, 3.0),
+            row("https://a.b", Camera, Granted, 4.0),
+            row("https://g.h", Microphone, Denied, 5.0),
+        ]
+    }
+
+    fn q(offset: usize, limit: usize, search: &str, ty: &str, status: &str) -> PageQuery {
+        PageQuery { offset, limit, search: search.into(), type_filter: ty.into(), status_filter: status.into() }
+    }
+
+    fn created(v: &[serde_json::Value]) -> Vec<i64> {
+        v.iter().map(|r| r["createdAt"].as_f64().unwrap() as i64).collect()
+    }
+
+    #[test]
+    fn permissions_page_follows_iterm2() {
+        assert_eq!(PAGE_URL, "iterm2-about:permissions");
+        assert_eq!(PAGE_HANDLER, "iterm2-about:permissions");
+        assert_eq!(PageQuery::from_message(&json!({"action": "loadPermissions"})), q(0, 50, "", "", ""));
+        let full = json!({"action": "loadPermissions", "offset": 4, "limit": 2, "searchQuery": "x", "permissionTypeFilter": "camera", "statusFilter": "denied"});
+        assert_eq!(PageQuery::from_message(&full), q(4, 2, "x", "camera", "denied"));
+        let rows = five();
+        let (page, more) = page_rows(&rows, &q(0, 2, "", "", ""));
+        assert_eq!((created(&page), more), (vec![5, 4], true));
+        let (page, more) = page_rows(&rows, &q(4, 2, "", "", ""));
+        assert_eq!((created(&page), more), (vec![1], false));
+        let (page, _) = page_rows(&rows, &q(0, 50, "", "camera", ""));
+        assert_eq!(created(&page), vec![4, 2], "only camera rows");
+        let (page, _) = page_rows(&rows, &q(0, 50, "", "x", ""));
+        assert_eq!(page.len(), 5, "an unknown type filter filters nothing (BPVH:114-118)");
+        let (page, _) = page_rows(&rows, &q(0, 50, "", "", "denied"));
+        assert_eq!(created(&page), vec![5, 2]);
+        let (page, _) = page_rows(&rows, &q(0, 50, "", "", "nope"));
+        assert_eq!(page.len(), 5, "an unknown status filter filters nothing");
+        let (page, _) = page_rows(&rows, &q(0, 50, "LOCA", "", ""));
+        assert_eq!(created(&page), vec![3], "the display name Location matches a geolocation row");
+        let (page, _) = page_rows(&rows, &q(0, 50, "A.b", "", ""));
+        assert_eq!(created(&page), vec![4, 1], "lower-cased contains on the origin");
+        let (page, more) = page_rows(&rows, &q(9, 2, "", "", ""));
+        assert!(page.is_empty() && !more, "an offset past the end is empty, never a trap");
+        let (page, _) = page_rows(&rows, &q(0, 1, "", "", ""));
+        assert_eq!(page[0], json!({"origin": "https://g.h", "permissionType": "microphone", "decision": "denied", "createdAt": 5.0, "updatedAt": 5.5}));
+        assert_eq!(page[0].as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn a_hostile_query_is_bounded() {
+        let bad = json!({"offset": -3, "limit": 0, "searchQuery": 5, "permissionTypeFilter": ["camera"], "statusFilter": null});
+        assert_eq!(PageQuery::from_message(&bad), q(0, 1, "", "", ""), "wrong types are defaults, the limit is at least 1");
+        let big = json!({"offset": 9_000_000_000_i64, "limit": 9_000_000_000_i64});
+        let p = PageQuery::from_message(&big);
+        assert!(p.offset <= 100_000 && p.limit <= 100);
+        let (page, _) = page_rows(&five(), &q(usize::MAX, usize::MAX, "", "", ""));
+        assert!(page.is_empty(), "no overflow on a huge offset or limit");
+    }
+
+    #[test]
+    fn page_messages_come_only_from_the_page() {
+        assert!(page_message_allowed("iterm2-about:permissions", None));
+        assert!(!page_message_allowed("iterm2-about:history", None));
+        assert!(!page_message_allowed("iterm2-about:permissions", Some(3)), "an iframe");
+        assert!(!page_message_allowed("iterm2-about:permissions?x", None));
+        assert!(!page_message_allowed("ITERM2-ABOUT:permissions", None));
+        assert!(!page_message_allowed("https://a.b/iterm2-about:permissions", None));
+        assert!(!page_message_allowed("", None));
+    }
+
+    #[test]
+    fn clear_all_visits_each_origin_once() {
+        let got = clear_origins(&five());
+        assert_eq!(got.len(), 4, "a.b once");
+        assert_eq!(got.iter().filter(|o| *o == "https://a.b").count(), 1);
     }
 }

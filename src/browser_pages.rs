@@ -50,6 +50,16 @@ pub enum Reply {
     Script(String),
     /// Load this URL in the pane (Tandem's own load).
     Navigate(String),
+    /// A change to the saved permissions, applied by the app through the one write queue (Task 9).
+    Permission(PermissionOp),
+}
+
+/// What the permissions page asked for, already typed: the origin is a normalized one.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PermissionOp {
+    Revoke { origin: String, kind: crate::browser_perms::PermissionType },
+    RevokeAll { origin: String },
+    ClearAll,
 }
 
 const COMMON_CSS: &str = include_str!("../resources/browser/iterm-browser-common.css");
@@ -61,7 +71,7 @@ pub fn page_name(url: &str) -> Option<&str> {
     if !scheme.eq_ignore_ascii_case("iterm2-about") || rest.is_empty() || rest.len() > 64 {
         return None;
     }
-    matches!(rest, "welcome" | "history" | "bookmarks" | "iterm-browser-common.css").then_some(rest)
+    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "iterm-browser-common.css").then_some(rest)
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
@@ -78,9 +88,61 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
         }
         "history" => (page(resource("history-page.html")?, "HISTORY_SCRIPT", resource("history-page.js")?), HTML),
         "bookmarks" => (page(resource("bookmarks-page.html")?, "BOOKMARKS_SCRIPT", resource("bookmarks-page.js")?), HTML),
+        "permissions" => (permissions_document(nonce)?, HTML),
         "iterm-browser-common.css" => (COMMON_CSS.to_string(), "text/css; charset=utf-8"),
         _ => return None,
     })
+}
+
+/// The copied permissions page stays byte-identical on disk. The nonce policy forbids its bare
+/// `<script>` and the inline `onclick` handlers (three in the HTML, two built from data in the JS),
+/// so they are adapted at load time (R13x3-1/-2 pattern, the 13x4 view-source precedent): each
+/// target must be found exactly once or no page is served. (name, iTerm2's text, Tandem's text)
+pub const HTML_PATCHES: [(&str, &str, &str); 4] = [
+    ("SCRIPT", "    <script>\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n", "    <script nonce=\"{{NONCE}}\">\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n"),
+    ("CLEAR_ALL", "onclick=\"clearAllPermissions()\"", "data-tandem-action=\"clearAll\""),
+    ("CLEAR_SEARCH", "onclick=\"clearSearch()\"", "data-tandem-action=\"clearSearch\""),
+    // The page's own load handler already listens to this button's click.
+    ("LOAD_MORE", "onclick=\"loadMore()\" ", ""),
+];
+pub const JS_PATCHES: [(&str, &str, &str); 2] = [
+    ("REVOKE_ALL", "onclick=\"revokeAllPermissions('${escapeAttribute(origin)}')\"", "data-tandem-action=\"revokeAll\""),
+    ("REVOKE", "onclick=\"revokePermission('${escapeAttribute(permission.origin)}', '${escapeAttribute(permission.permissionType)}')\"", "data-tandem-action=\"revoke\""),
+];
+
+/// Tandem's own script for the page: one delegated click listener. It ignores a click a script
+/// made up (`isTrusted`), and reads the origin and type from attributes the page set with
+/// `setAttribute`, never from markup built from data. The page's own functions still ask `confirm()`.
+pub const TANDEM_SCRIPT: &str = "document.addEventListener('click', function (e) {
+            if (!e.isTrusted || !e.target || !e.target.closest) { return; }
+            var el = e.target.closest('[data-tandem-action]');
+            if (!el) { return; }
+            var act = el.getAttribute('data-tandem-action');
+            var entry = el.closest('.permission-entry');
+            var section = el.closest('.origin-section');
+            if (act === 'revoke' && entry) {
+                revokePermission(entry.getAttribute('data-permission-origin'), entry.getAttribute('data-permission-type'));
+            } else if (act === 'revokeAll' && section) {
+                revokeAllPermissions(section.getAttribute('data-origin'));
+            } else if (act === 'clearAll') {
+                clearAllPermissions();
+            } else if (act === 'clearSearch') {
+                clearSearch();
+            }
+        });";
+
+/// The permissions page as served, or None (a patch missed: the page is a 404, fail closed).
+fn permissions_document(nonce: &str) -> Option<String> {
+    use crate::browser_js::{fill_template, resource};
+    use crate::view_source::apply_patches;
+    let patched = apply_patches(resource("permissions-page.html")?, &HTML_PATCHES).and_then(|h| apply_patches(resource("permissions-page.js").unwrap_or_default(), &JS_PATCHES).map(|j| (h, j)));
+    match patched {
+        Ok((html, js)) => Some(fill_template(&html, &[("NONCE", nonce), ("PERMISSIONS_SCRIPT", &js), ("TANDEM_SCRIPT", TANDEM_SCRIPT)])),
+        Err(e) => {
+            crate::rlog!("{}", crate::dlog::name(&e));
+            None
+        }
+    }
 }
 
 pub fn response_headers(nonce: &str) -> Vec<(String, String)> {
@@ -174,6 +236,7 @@ pub fn route(db: &Db, json: &str, source: &str) -> Vec<Reply> {
         "history" => history(db, body, page),
         "bookmarks" => bookmarks(db, body, page),
         "welcome" => welcome(db, body, page),
+        "permissions" => permissions(db, body, page),
         _ => None,
     };
     out.unwrap_or_default()
@@ -213,6 +276,53 @@ fn history(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>>
             keys_within(body, &["action"])?;
             db.clear_history();
             Some(script(page, "window.onHistoryCleared && window.onHistoryCleared()"))
+        }
+        _ => None,
+    }
+}
+
+/// An origin a page names: exactly the normalized form (the database's keys), else rejected.
+fn origin_arg(body: &Map<String, Value>) -> Option<String> {
+    let origin = required_text(body, "origin")?;
+    (crate::browser_perms::normalize_origin(&origin).as_deref() == Some(origin.as_str())).then_some(origin)
+}
+
+fn permissions(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
+    use crate::browser_perms as bp;
+    match body.get("action")?.as_str()? {
+        "loadPermissions" => {
+            keys_within(body, &["action", "offset", "limit", "searchQuery", "permissionTypeFilter", "statusFilter"])?;
+            int(body, "offset", 0, 0, MAX_OFFSET)?;
+            int(body, "limit", 50, 1, MAX_PAGE)?;
+            for key in ["searchQuery", "permissionTypeFilter", "statusFilter"] {
+                text(body, key)?;
+            }
+            let q = bp::PageQuery::from_message(&Value::Object(body.clone()));
+            let (rows, more) = bp::page_rows(&db.all_permissions(), &q);
+            Some(script(page, &call("onPermissionsLoaded", &json!({"permissions": rows, "hasMore": more}))))
+        }
+        "revokePermission" => {
+            keys_within(body, &["action", "origin", "permissionType"])?;
+            let origin = origin_arg(body)?;
+            let kind = bp::PermissionType::parse(&required_text(body, "permissionType")?)?;
+            let reply = format!("window.onPermissionRevoked && window.onPermissionRevoked({}, {})", Value::String(origin.clone()), Value::String(kind.raw().to_string()));
+            let mut out = vec![Reply::Permission(PermissionOp::Revoke { origin, kind })];
+            out.extend(script(page, &reply));
+            Some(out)
+        }
+        "revokeAllPermissions" => {
+            keys_within(body, &["action", "origin"])?;
+            let origin = origin_arg(body)?;
+            let reply = call("onAllPermissionsRevoked", &Value::String(origin.clone()));
+            let mut out = vec![Reply::Permission(PermissionOp::RevokeAll { origin })];
+            out.extend(script(page, &reply));
+            Some(out)
+        }
+        "clearAllPermissions" => {
+            keys_within(body, &["action"])?;
+            let mut out = vec![Reply::Permission(PermissionOp::ClearAll)];
+            out.extend(script(page, "window.onAllPermissionsCleared && window.onAllPermissionsCleared()"));
+            Some(out)
         }
         _ => None,
     }
@@ -634,5 +744,138 @@ mod tests {
         // One path: the document is filled by the template loader, nonce and slots included.
         let (html, _) = document("history", "N0NCE").unwrap();
         assert!(html.contains("nonce=\"N0NCE\"") && !html.contains("{{"), "every slot is filled");
+    }
+}
+
+#[cfg(test)]
+mod permissions_tests {
+    use super::*;
+    use crate::browser_perms::{Decision, PermissionType};
+    use serde_json::json;
+
+    const SRC: &str = "iterm2-about:permissions";
+
+    fn msg(body: serde_json::Value) -> String {
+        json!({"handler": SRC, "body": body}).to_string()
+    }
+
+    fn db() -> Db {
+        let db = Db::open_in_memory();
+        db.save_permission("https://a.b", PermissionType::Camera, Decision::Granted, 10.0);
+        db.save_permission("https://c.d", PermissionType::Geolocation, Decision::Denied, 20.0);
+        db
+    }
+
+    fn only_script(r: &[Reply]) -> &str {
+        match r {
+            [Reply::Script(s)] => s,
+            other => panic!("one script expected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_permissions_page_is_a_local_page_under_the_nonce_policy() {
+        assert_eq!(page_name(SRC), Some("permissions"));
+        assert_eq!(page_name("iterm2-about:permissions?x"), None);
+        let (html, mime) = document("permissions", "n0nce").expect("served");
+        assert_eq!(mime, "text/html; charset=utf-8");
+        assert!(html.contains("<title>Site Permissions</title>") && html.contains("window.onPermissionsLoaded = function(data)"));
+        assert!(!html.contains("{{"), "every slot is filled");
+        assert_eq!(html.matches("<script").count(), html.matches("<script nonce=\"n0nce\">").count(), "every script carries the nonce");
+        let handler = regex::Regex::new(r#"(?is)<[a-z][^<>]*?\son[a-z]+\s*="#).unwrap();
+        assert!(!handler.is_match(&html), "no inline handler attribute: {:?}", handler.find(&html).map(|m| m.as_str()));
+        assert!(!html.contains("onclick=") && !html.contains("javascript:"), "the data-built buttons use no inline handler either");
+        let Answer::Respond { status, headers, .. } = answer(SRC, CONTEXT_DOCUMENT, "") else { panic!() };
+        assert_eq!(status, 200);
+        let csp = headers.iter().find(|(k, _)| k == "Content-Security-Policy").map(|(_, v)| v.as_str()).unwrap();
+        assert!(csp.contains("frame-ancestors 'none'") && csp.contains("script-src 'nonce-") && !csp.contains("unsafe-inline'; style") );
+        let Answer::Respond { status, .. } = answer(SRC, 3, "https://evil.test/") else { panic!() };
+        assert_eq!(status, 404, "a web page cannot fetch it");
+    }
+
+    /// The copied files stay byte-identical on disk; the adaptations are load-time and fail closed.
+    #[test]
+    fn the_copies_are_patched_at_load_time_exactly_once() {
+        use crate::browser_js::resource;
+        let html = resource("permissions-page.html").unwrap();
+        let js = resource("permissions-page.js").unwrap();
+        for (name, raw, _) in HTML_PATCHES.iter().chain(JS_PATCHES.iter()) {
+            let in_html = html.matches(raw).count();
+            let in_js = js.matches(raw).count();
+            assert_eq!(in_html + in_js, 1, "{name} is found exactly once in the copy");
+        }
+        let broken = html.replace("onclick=\"clearSearch()\"", "onclick=\"clearSearch( )\"");
+        assert!(crate::view_source::apply_patches(&broken, &HTML_PATCHES).is_err(), "a moved target serves no page");
+        let broken_js = js.replace("revokeAllPermissions('${escapeAttribute(origin)}')", "revokeAllPermissions('${origin}')");
+        assert!(crate::view_source::apply_patches(&broken_js, &JS_PATCHES).is_err());
+        let patched = crate::view_source::apply_patches(js, &JS_PATCHES).unwrap();
+        assert!(!patched.contains("onclick=") && patched.contains("data-tandem-action=\"revoke\"") && patched.contains("data-tandem-action=\"revokeAll\""));
+        // The delegated listener ignores a click a script made up and reads its data from attributes
+        // the page set with setAttribute, never from markup.
+        assert!(TANDEM_SCRIPT.contains("e.isTrusted") && TANDEM_SCRIPT.contains("closest("));
+        assert!(!TANDEM_SCRIPT.contains("innerHTML") && !TANDEM_SCRIPT.contains("eval("));
+    }
+
+    #[test]
+    fn permissions_reply_scripts_follow_iterm2_and_stay_on_the_page() {
+        let r = route(&db(), &msg(json!({"action": "loadPermissions"})), SRC);
+        let s = only_script(&r);
+        assert!(s.contains("location.href.split('#')[0] !== \"iterm2-about:permissions\""), "the reply runs only if the page is still the permissions page");
+        let call = s.split("window.onPermissionsLoaded && window.onPermissionsLoaded(").nth(1).expect("the call");
+        let arg = &call[..call.find(");").unwrap()];
+        let v: serde_json::Value = serde_json::from_str(arg).expect("the argument is JSON");
+        assert_eq!(v["hasMore"], json!(false));
+        assert_eq!(v["permissions"].as_array().unwrap().len(), 2);
+        assert_eq!(v["permissions"][0]["origin"], json!("https://c.d"), "newest first");
+        // Paging goes through the one query type.
+        let r = route(&db(), &msg(json!({"action": "loadPermissions", "limit": 1, "permissionTypeFilter": "camera"})), SRC);
+        assert!(only_script(&r).contains("\"https://a.b\""));
+        // Revoke: the side effect first, then the page's reply with the origin as a JSON string.
+        let r = route(&db(), &msg(json!({"action": "revokePermission", "origin": "https://a.b", "permissionType": "camera"})), SRC);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], Reply::Permission(PermissionOp::Revoke { origin: "https://a.b".into(), kind: PermissionType::Camera }));
+        assert!(matches!(&r[1], Reply::Script(s) if s.contains("window.onPermissionRevoked && window.onPermissionRevoked(\"https://a.b\", \"camera\")")));
+        let r = route(&db(), &msg(json!({"action": "revokeAllPermissions", "origin": "https://a.b"})), SRC);
+        assert_eq!(r[0], Reply::Permission(PermissionOp::RevokeAll { origin: "https://a.b".into() }));
+        assert!(matches!(&r[1], Reply::Script(s) if s.contains("window.onAllPermissionsRevoked && window.onAllPermissionsRevoked(\"https://a.b\")")));
+        let r = route(&db(), &msg(json!({"action": "clearAllPermissions"})), SRC);
+        assert_eq!(r[0], Reply::Permission(PermissionOp::ClearAll));
+        assert!(matches!(&r[1], Reply::Script(s) if s.contains("window.onAllPermissionsCleared && window.onAllPermissionsCleared()")));
+        // Routing itself changes no row: the app applies the operation.
+        assert_eq!(db().all_permissions().len(), 2);
+    }
+
+    #[test]
+    fn permission_messages_are_closed_and_typed() {
+        let db = db();
+        let go = |source: &str, handler: &str, body: serde_json::Value| route(&db, &json!({"handler": handler, "body": body}).to_string(), source);
+        let revoke = json!({"action": "revokePermission", "origin": "https://a.b", "permissionType": "camera"});
+        assert!(!go(SRC, SRC, revoke.clone()).is_empty());
+        for (source, handler) in [("iterm2-about:history", SRC), ("https://evil.test/", SRC), (SRC, "iterm2-about:history"), ("iterm2-about:history", "iterm2-about:history")] {
+            let r = go(source, handler, revoke.clone());
+            assert!(r.iter().all(|r| !matches!(r, Reply::Permission(_))), "{source} {handler}");
+        }
+        for bad in [
+            json!({"action": "revokePermission", "origin": "https://a.b", "permissionType": "Camera"}),
+            json!({"action": "revokePermission", "origin": "https://a.b", "permissionType": "x"}),
+            json!({"action": "revokePermission", "origin": "https://a.b/path", "permissionType": "camera"}),
+            json!({"action": "revokePermission", "origin": "https://A.B", "permissionType": "camera"}),
+            json!({"action": "revokePermission", "origin": "https://a.b'); alert(1);//", "permissionType": "camera"}),
+            json!({"action": "revokePermission", "origin": 5, "permissionType": "camera"}),
+            json!({"action": "revokePermission", "origin": "https://a.b"}),
+            json!({"action": "revokePermission", "origin": "https://a.b", "permissionType": "camera", "extra": 1}),
+            json!({"action": "revokeAllPermissions", "origin": "javascript:alert(1)"}),
+            json!({"action": "revokeAllPermissions"}),
+            json!({"action": "clearAllPermissions", "origin": "https://a.b"}),
+            json!({"action": "loadPermissions", "offset": "x"}),
+            json!({"action": "loadPermissions", "limit": 1000}),
+            json!({"action": "loadPermissions", "surprise": true}),
+            json!({"action": "unknown"}),
+            json!({}),
+        ] {
+            assert!(go(SRC, SRC, bad.clone()).is_empty(), "{bad}");
+        }
+        // A pane that is not the permissions page gets nothing (the app also checks its main frame).
+        assert!(route(&db, &msg(json!({"action": "loadPermissions"})), "iterm2-about:welcome").is_empty());
     }
 }

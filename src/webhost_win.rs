@@ -4080,6 +4080,33 @@ mod probe {
         assert_eq!(back, Ok(()), "the load after the source page");
     }
 
+    /// 13x6 Task 9: the permissions page's buttons (adapted at load time: no inline handler) act on
+    /// a real click and on nothing a script made up. A synthetic `click()` posts no revoke; a trusted
+    /// press at the button (DevTools input) posts one, as the page's own message. Needs the console
+    /// session (probe-desktop.ps1 runs it; this build has not).
+    #[test]
+    #[ignore]
+    fn permissions_page_buttons_need_a_trusted_click() {
+        const PAGE: &str = "iterm2-about:permissions";
+        let (html, _) = crate::browser_pages::document("permissions", "probe-nonce").expect("the adapted page");
+        let pages = [(PAGE, html)];
+        let sources = vec![crate::browser_js::wrap(&crate::browser_js::local_page_script()), wrapped("window.__tandemProbeWorld = 1;")];
+        let Some(mut p) = Probe::start_full(&pages, sources, false, &["iterm2-about"]) else { return };
+        assert_eq!(p.try_load(PAGE), Ok(()));
+        p.page_eval("window.confirm = function () { return true; }; window.onPermissionsLoaded({permissions: [{origin: 'https://a.b', permissionType: 'camera', decision: 'granted', createdAt: 1, updatedAt: 1}], hasMore: false}); 1").expect("a row");
+        let revokes = |p: &Probe| p.routed.iter().filter(|r| r.via == Via::Page).filter_map(|r| crate::browser_js::route(&r.body, crate::browser_js::World::Page, r.frame, &r.from)).filter(|r| r.handler == "iterm2-about:permissions" && r.body.get("action").and_then(Value::as_str) == Some("revokePermission")).count();
+        p.page_eval("document.querySelector('.revoke-button').click(); 1").expect("a synthetic click");
+        p.settle(800);
+        assert_eq!(revokes(&p), 0, "a click a script made posts nothing");
+        let rect = p.page_eval("(function(){var r=document.querySelector('.revoke-button').getBoundingClientRect();return JSON.stringify([r.x+r.width/2,r.y+r.height/2]);})()").expect("the button");
+        let xy: Vec<f64> = serde_json::from_str(&serde_json::from_str::<String>(&rect).unwrap()).unwrap();
+        for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            p.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": xy[0], "y": xy[1], "button": "left", "clickCount": 1})).expect("a trusted press");
+        }
+        assert!(p.wait(10, |p| revokes(p) == 1), "the trusted click posts the revoke");
+        p.finish();
+    }
+
     /// 13x4 Task 6: the View Source page, with a hostile page's source in it, runs its copied
     /// highlighter and linkifier and the source stays text: no element, handler or script comes out
     /// of it, `window.__pwn` is never set, and only parsed http(s) URLs become links. The probe

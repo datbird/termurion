@@ -741,8 +741,28 @@ impl App {
         }
     }
 
+    /// An operation the permissions page asked for (Task 9), through the one write queue, and only
+    /// when the pane's own main-frame URL (WebView2's `Source`, kept in `BrowserIo.url`) is the page.
+    /// The operation is already typed by `browser_pages::route`; nothing from the message is read here.
+    pub(super) fn permission_page_op(&mut self, pane: PaneId, dev_null: bool, op: crate::browser_pages::PermissionOp) {
+        use crate::browser_pages::PermissionOp;
+        let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+        if !bp::page_message_allowed(&url, None) {
+            return;
+        }
+        match op {
+            PermissionOp::Revoke { origin, kind } => self.revoke_permission(dev_null, &origin, kind),
+            PermissionOp::RevokeAll { origin } => self.revoke_all_permissions(dev_null, &origin),
+            PermissionOp::ClearAll => {
+                let origins = self.browser_db(dev_null).map(|db| bp::clear_origins(&db.all_permissions())).unwrap_or_default();
+                for origin in origins {
+                    self.revoke_all_permissions(dev_null, &origin);
+                }
+            }
+        }
+    }
+
     /// The page's Revoke: the row goes, the profile state is reset, and every pane using the origin reloads.
-    #[allow(dead_code)] // Task 9's page calls it
     pub(super) fn revoke_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) {
         let Some(db) = self.browser_db(dev_null) else { return };
         db.revoke_permission(origin, t);
@@ -750,7 +770,6 @@ impl App {
     }
 
     /// Revoke all of an origin: every row goes, each saved mirrored kind is reset, panes reload.
-    #[allow(dead_code)] // Task 9's page calls it
     pub(super) fn revoke_all_permissions(&mut self, dev_null: bool, origin: &str) {
         let Some(db) = self.browser_db(dev_null) else { return };
         let types: Vec<PermissionType> = db.permissions_for_origin(origin).into_iter().map(|r| r.kind).collect();
