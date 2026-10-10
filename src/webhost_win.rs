@@ -2206,30 +2206,62 @@ mod tests {
         let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
         let page = b"<title>m</title><a id=l href='/next'>next</a><form method=post action='/post'><input name=a value=b></form>".to_vec();
-        // Answers every request the filter holds; returns the first DocumentMethod that arrives.
-        let serve = || -> Option<(u64, String)> {
-            let end = Instant::now() + Duration::from_secs(10);
-            let mut seen = None;
-            while Instant::now() < end && seen.is_none() {
+        // The POST result holds an iframe loading the page's own URL with GET (R13x5-7, checklist A).
+        let post_page = b"<title>p</title><a id=l href='/next'>next</a><iframe src='/post'></iframe>".to_vec();
+        // Answers every request the filter holds (the first request for `first`'s URL with its body, the
+        // rest with `page`); returns every DocumentMethod and every requested URL, pumping `extra`
+        // seconds past the first method.
+        let serve = |first: Option<(&str, &[u8])>, extra: u64| -> (Vec<(u64, String)>, Vec<String>) {
+            let mut first = first;
+            let mut end = Instant::now() + Duration::from_secs(10);
+            let (mut methods, mut urls) = (Vec::new(), Vec::new());
+            while Instant::now() < end {
                 match pump_until(&rx, 1, |e| matches!(e, Event::Request { view: 1, .. } | Event::DocumentMethod { view: 1, .. })) {
-                    Some(Event::Request { token, .. }) => view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: page.clone(), headers: vec![] }),
-                    Some(Event::DocumentMethod { nav, method, .. }) => seen = Some((nav, method)),
+                    Some(Event::Request { token, url, .. }) => {
+                        let body = match first {
+                            Some((u, b)) if url == u => {
+                                first = None;
+                                b.to_vec()
+                            }
+                            _ => page.clone(),
+                        };
+                        urls.push(url);
+                        view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body, headers: vec![] });
+                    }
+                    Some(Event::DocumentMethod { nav, method, .. }) => {
+                        if methods.is_empty() {
+                            end = Instant::now() + Duration::from_secs(extra);
+                        }
+                        methods.push((nav, method));
+                    }
                     _ => {}
                 }
             }
-            seen
+            (methods, urls)
         };
         view.navigate_tandem("https://tandem.test/start");
-        let first = serve();
-        assert_eq!(first.map(|f| f.1), Some("GET".to_string()), "the first load reports GET");
+        let (first, _) = serve(None, 0);
+        assert_eq!(first.first().map(|f| f.1.as_str()), Some("GET"), "the first load reports GET");
         let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
         view.execute_script("document.forms[0].submit()", 1);
-        let posted = serve();
-        assert_eq!(posted.map(|f| f.1), Some("POST".to_string()), "a form submit reports POST");
+        let (posted, urls) = serve(Some(("https://tandem.test/post", &post_page)), 3);
+        assert_eq!(posted.first().map(|f| f.1.as_str()), Some("POST"), "a form submit reports POST: {posted:?}");
+        // The control: the iframe really loaded the same URL (two requests for /post).
+        assert_eq!(urls.iter().filter(|u| u.as_str() == "https://tandem.test/post").count(), 2, "the iframe loaded the page's own URL: {urls:?}");
+        // Whatever the iframe's request reported, the app's state keeps the main document's POST.
+        let nav = posted[0].0;
+        assert!(posted.iter().all(|(n, _)| *n == nav), "one navigation: {posted:?}");
+        let mut state = crate::browser_marks::MethodState::default();
+        state.starting(nav);
+        for (n, m) in &posted {
+            state.document(*n, m);
+        }
+        assert_eq!(state.method(), "POST", "an iframe loading the same URL does not change the answer: {posted:?}");
+        println!("document methods after the POST (the iframe's included): {posted:?}");
         let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
         view.execute_script("document.getElementById('l').click()", 2);
-        let linked = serve();
-        assert_eq!(linked.map(|f| f.1), Some("GET".to_string()), "a link click reports GET");
+        let (linked, _) = serve(None, 0);
+        assert_eq!(linked.first().map(|f| f.1.as_str()), Some("GET"), "a link click reports GET");
         drop(view);
         drop(env);
         let _ = unsafe { DestroyWindow(hwnd) };
@@ -3494,7 +3526,8 @@ mod probe {
         p.load(PAGE);
         let at = marks_body(&mut p, &bm::xpath_script(10, 90).expect("the script")).expect("the point script");
         let loc = bm::Location::from_json(&at).expect("a location");
-        assert!(loc.xpath.contains("p"), "{at}");
+        // get-xpath-at-point.js names an element that has an id by its id (`//*[@id='...']`).
+        assert_eq!((loc.xpath.as_str(), at["elementTag"].as_str(), loc.text_fragment.as_deref()), ("//*[@id='target']", Some("p"), Some("Hello marked world")), "{at}");
         // The monitor starts before any position update (the update calls it; task-1 review).
         assert!(marks_body(&mut p, &format!("return {}", bm::LAYOUT_MONITOR_JS.trim())).is_ok());
         let nav = bm::navigate_call(&loc).expect("navigate");
@@ -3514,6 +3547,12 @@ mod probe {
         assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.tandemMarkRoot + typeof window.tandemMarkHost"), Ok("\"undefinedundefinedundefined\"".into()));
         assert_eq!(p.page_eval("document.body.innerText.includes('first')"), Ok("false".into()), "the name is not in the page's text");
         assert_eq!(p.page_eval("window.find('first')"), Ok("false".into()), "nor findable by the page");
+        // A select-all in the page world (R13x5-6, R13x5-42, checklist A): neither the Selection API's
+        // select-all nor a range over the body picks the name up. The control: the page's own text is
+        // in the same selection, so a selection that read nothing cannot pass.
+        assert_eq!(p.page_string("(document.execCommand('selectAll'), window.getSelection().toString())").map(|t| (t.contains("Hello marked world"), t.contains("first"))), Ok((true, false)), "select-all reads the page, not the name");
+        assert_eq!(p.page_string("(function(){ var s = getSelection(); s.removeAllRanges(); var r = document.createRange(); r.selectNodeContents(document.body); s.addRange(r); return s.toString(); })()").map(|t| (t.contains("Hello marked world"), t.contains("first"))), Ok((true, false)), "a body range reads the page, not the name");
+        p.page_eval("getSelection().removeAllRanges(); 0").expect("clear the selection");
         // Page CSS cannot displace the host (all: initial and inline important rules).
         p.page_eval("document.head.insertAdjacentHTML('beforeend', '<style>div { position: relative !important; transform: translateY(900px) !important; opacity: 0 !important; }</style>'); 0").expect("style");
         assert_eq!(p.page_eval("(function(){ var r = document.body.lastElementChild.getBoundingClientRect(); return r.top + ':' + getComputedStyle(document.body.lastElementChild).opacity; })()"), Ok("\"0:1\"".into()), "page rules do not move or hide the host");
@@ -3549,14 +3588,26 @@ mod probe {
         p.load(PAGE);
         assert!(marks_body(&mut p, &bm::monitor_body().unwrap()).is_ok());
         assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()));
-        p.page_eval("document.body.appendChild(document.createElement('div')); 0").expect("mutate");
+        // iTerm2's monitor counts only a visible change: an added element over 10 px high or a text node
+        // over 20 characters (layout-change-monitor.js). An empty div is not one, and stays silent.
+        const EMPTY: &str = "document.body.appendChild(document.createElement('div')); 0";
+        const TALL: &str = "var d = document.createElement('div'); d.style.height = '50px'; document.body.appendChild(d); 0";
+        p.page_eval(EMPTY).expect("mutate");
         p.settle(900);
-        assert!(!p.clients(bm::LAYOUT_HANDLER).is_empty(), "a mutation posts a layout change");
+        assert!(p.clients(bm::LAYOUT_HANDLER).is_empty(), "an invisible mutation posts nothing");
+        p.page_eval(TALL).expect("mutate");
+        assert!(p.wait(5, |p| !p.clients(bm::LAYOUT_HANDLER).is_empty()), "a visible mutation posts a layout change");
+        // The monitor disabled itself to post; the host brings it back (`marks_layout_message`).
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
         assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
         let seen = p.clients(bm::LAYOUT_HANDLER).len();
-        p.page_eval("document.body.appendChild(document.createElement('div')); 0").expect("mutate");
+        p.page_eval(TALL).expect("mutate");
         p.settle(900);
         assert_eq!(p.clients(bm::LAYOUT_HANDLER).len(), seen, "silent while disabled");
+        assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
+        // The control for "silent": enabled again, the same mutation posts.
+        p.page_eval(TALL).expect("mutate");
+        assert!(p.wait(5, |p| p.clients(bm::LAYOUT_HANDLER).len() > seen), "enabled again, a visible mutation posts");
         assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());
         let loc = bm::Location { xpath: "//p".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
         let show = bm::show_call(&[loc.js_dict(Some("x"), "g1")], "mark-secret").expect("a call");
@@ -3635,9 +3686,17 @@ mod probe {
         assert!(p.wait(15, |p| p.clients(bt::MESSAGE_HANDLER).iter().any(|(_, b)| b.get("requestTriggers").is_some())), "the engine asks");
         let sources: Vec<String> = p.routed.iter().filter(|r| r.via == Via::Client).map(|r| r.from.clone()).collect();
         assert!(!sources.is_empty());
+        // A Client message's source is its isolated context's origin, and Chromium gives an
+        // `iterm2-about:` document an opaque one ("://", probe run 2026-10-10b), so the source names no
+        // local page. The pane's URL carries the rule (B5): `accepted` refuses on it, as the app calls
+        // it (`browser_trigger_message` passes the pane's URL), and `marks_page` refuses a local URL
+        // before any Marks message is read. The control: the same source is heard on a web page.
         for s in &sources {
-            assert!(!bt::accepted(crate::browser_js::World::Client, None, s, "https://other.example/"), "source {s:?} must be refused");
+            assert!(!crate::browser::local_source_ok(s), "a Client source is an origin, not a local URL: {s:?}");
+            assert!(!bt::accepted(crate::browser_js::World::Client, None, s, LOCAL), "source {s:?} on the local page must be refused");
+            assert!(bt::accepted(crate::browser_js::World::Client, None, s, "https://other.example/"), "the control: {s:?} on a web page is heard");
         }
+        assert!(crate::browser_marks::is_local_page(LOCAL), "the Marks gate refuses the page by its URL");
         assert!(!bt::resend_allowed(LOCAL));
         p.finish();
     }
@@ -3655,6 +3714,10 @@ mod probe {
         p.load(PAGE);
         let matches = trigger_serve(&mut p, &l);
         assert!(!matches.is_empty() && matches.len() <= bt::MAX_MATCHES * 2, "{} matches", matches.len());
+        // The page-side cap, read before `message_of` (which cuts to 64 itself): every raw matchEvent
+        // the engine posted holds at most 64 matches (final review M5).
+        let raw: Vec<usize> = p.clients(bt::MESSAGE_HANDLER).iter().filter_map(|(_, b)| b.get("matchEvent").and_then(Value::as_str).map(str::to_string)).map(|t| serde_json::from_str::<Value>(&t).expect("a matchEvent is JSON")["matches"].as_array().expect("a matches array").len()).collect();
+        assert!(!raw.is_empty() && raw.iter().all(|n| *n <= bt::MAX_MATCHES), "raw matches per event: {raw:?}");
         for r in p.routed.iter().filter(|r| r.via == Via::Client) {
             assert!(r.body.len() <= crate::webhost::MAX_MESSAGE);
         }
@@ -3680,18 +3743,24 @@ mod probe {
         let matches = trigger_serve(&mut p, &l);
         let m = matches.iter().find(|m| m.match_id.is_some()).expect("a content match");
         let (_, t) = l.triggers.iter().find(|(i, _)| *i == m.identifier).expect("loaded");
-        if let Some(bt::Effect::Highlight { match_id, text, background }) = bt::effect(t, m, &t.parameter, &[]) {
-            marks_run(&mut p, &bt::highlight_call(&match_id, text.as_deref(), background.as_deref())).expect("highlightText");
-        }
+        let Some(bt::Effect::Highlight { match_id, text, background }) = bt::effect(t, m, &t.parameter, &[]) else { panic!("the trigger is a highlight") };
+        marks_run(&mut p, &bt::highlight_call(&match_id, text.as_deref(), background.as_deref())).expect("highlightText");
         let loc = bm::Location { xpath: "//p[1]".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
         let show = bm::show_call(&[loc.js_dict(Some("m"), "g1")], "MARKS-SECRET-13x5").expect("a call");
         marks_run(&mut p, &show).expect("annotations");
         marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
         p.settle(500);
+        // Tandem's code runs in the isolated world, which has its own `Function.prototype` and
+        // `chrome.webview`, so the spy normally reports nothing. The proof it is alive and posting is the
+        // page's own call, made last (the 13x4 precedent; a silent spy proves nothing).
+        assert!(!p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"")), "Tandem called nothing the page replaced");
+        p.page_eval("window.chrome.webview.postMessage({control: 'spy-alive'}); 0").expect("the control post");
+        assert!(p.wait(5, |p| p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"") && r.body.contains("spy-alive"))), "the spy is alive: the page's own post went through it");
         for r in p.routed.iter().filter(|r| r.via == Via::Page) {
             assert!(!r.body.contains("TRIG-SECRET-13x5") && !r.body.contains("MARKS-SECRET-13x5"), "a page-world message holds a secret: {}", r.body);
         }
-        assert!(p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"")), "the spy was alive");
+        // Nothing Tandem wrote into the shared DOM holds either secret.
+        assert_eq!(p.page_eval("document.documentElement.outerHTML.includes('SECRET-13x5')"), Ok("false".into()), "no secret in the page's DOM");
         assert_eq!(p.page_eval("typeof window.iTerm2Triggers + typeof window.iTermLayoutChangeMonitor"), Ok("\"undefinedundefined\"".into()));
         p.finish();
     }

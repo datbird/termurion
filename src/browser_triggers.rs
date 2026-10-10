@@ -438,7 +438,9 @@ pub fn effect(t: &Trigger, m: &Match, param: &str, workgroups: &[(String, String
 /// Whether a trigger message may be acted on (B5): from the isolated world (the transport says so), from
 /// the main frame, and neither the message's source nor the pane's page is one of Tandem's own
 /// `iterm2-about:` pages (their text is chosen by hostile sites, and the page world there holds the
-/// local-page bridge).
+/// local-page bridge). A Client source is the context's origin, and Chromium gives an `iterm2-about:`
+/// document an opaque one ("://", probe run 2026-10-10b), so `page_url` (the pane's URL) is what
+/// refuses a local page; the source half is kept for a source that does name one.
 pub fn accepted(world: browser_js::World, frame: Option<u64>, source: &str, page_url: &str) -> bool {
     world == browser_js::World::Client && frame.is_none() && !crate::browser::local_source_ok(source) && !crate::browser::local_source_ok(page_url)
 }

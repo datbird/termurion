@@ -479,8 +479,9 @@ impl App {
         }
     }
 
-    /// Queues the rename window for mark `guid` (the page's box, Edit > Named Marks and the Named
-    /// Marks tool all come here). Refused for a mark that is not on this pane's page.
+    /// Queues the rename window for mark `guid` asked for by the page's box (the person's paths, Edit >
+    /// Named Marks and the Named Marks tool, use `browser_rename_prompt_person`). Refused for a mark
+    /// that is not on this pane's page.
     pub(super) fn browser_rename_prompt(&mut self, pane: PaneId, guid: &str) {
         self.queue_mark_edit(pane, guid, false, true);
     }
