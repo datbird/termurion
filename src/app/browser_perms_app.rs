@@ -779,6 +779,9 @@ impl App {
         let Some(db) = self.browser_db(dev_null) else { return false };
         db.revoke_permission(origin, t);
         self.apply_op(dev_null, origin, Op::Revoke(t));
+        if t == PermissionType::Notification {
+            self.drop_origin_note(origin);
+        }
         true
     }
 
@@ -787,7 +790,11 @@ impl App {
         let Some(db) = self.browser_db(dev_null) else { return false };
         let types: Vec<PermissionType> = db.permissions_for_origin(origin).into_iter().map(|r| r.kind).collect();
         db.revoke_all_permissions(origin);
+        let note = types.contains(&PermissionType::Notification);
         self.apply_op(dev_null, origin, Op::RevokeAll(types));
+        if note {
+            self.drop_origin_note(origin);
+        }
         true
     }
 
@@ -798,12 +805,17 @@ impl App {
         let granted = db.get_permission(origin, t).is_some_and(|r| r.decision == Decision::Granted);
         db.reset_permission(origin, t);
         self.apply_op(dev_null, origin, Op::Reset { t, granted });
-        // Its notification on the balloon goes too (Task 6 review minor 3).
         if t == PermissionType::Notification {
-            if let Some(gone) = self.web_note.take_origin(origin) {
-                crate::notify::clear_if_shown(gone.shown_at);
-                self.note_report(gone.pane, gone.token, NoteReport::Closed);
-            }
+            self.drop_origin_note(origin);
+        }
+    }
+
+    /// A revoked or reset Notification row: the origin's notification on the balloon goes too (Task 6
+    /// review minor 3, final review M1), whichever of Reset, Revoke, Revoke All or Clear All did it.
+    fn drop_origin_note(&mut self, origin: &str) {
+        if let Some(gone) = self.web_note.take_origin(origin) {
+            crate::notify::clear_if_shown(gone.shown_at);
+            self.note_report(gone.pane, gone.token, NoteReport::Closed);
         }
     }
 
@@ -1459,6 +1471,20 @@ mod tests {
         // Newest-first rows: the newest wins.
         let rows = [("https://a.b".to_string(), Notification, Decision::Denied), ("https://a.b".to_string(), Notification, Decision::Granted)];
         assert_eq!(sync_for(&[], Some(&rows)), vec![(4, "https://a.b".to_string(), 2)]);
+    }
+
+    /// Final review M1: the page's Revoke, Revoke All and Clear All clear the origin's notification
+    /// from the balloon, as the toolbar's Reset does, through the one helper.
+    #[test]
+    fn every_revoke_clears_the_origins_balloon() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let body = |name: &str| prod.split(&format!("pub(super) fn {name}(")).nth(1).unwrap().split("\n    }\n").next().unwrap().to_string();
+        assert!(body("revoke_permission").contains("if t == PermissionType::Notification {\n            self.drop_origin_note(origin);"), "the page's Revoke of a Notification row");
+        let all = body("revoke_all_permissions");
+        assert!(all.contains("let note = types.contains(&PermissionType::Notification);") && all.contains("if note {\n            self.drop_origin_note(origin);"), "Revoke All and Clear All");
+        assert!(body("reset_permission").contains("if t == PermissionType::Notification {\n            self.drop_origin_note(origin);"), "the toolbar's Reset");
+        assert_eq!(prod.matches("self.web_note.take_origin(").count(), 1, "one place takes an origin's note");
     }
 
     #[test]
