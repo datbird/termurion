@@ -187,10 +187,18 @@ pub fn js_literal_inner(s: &str) -> String {
 
 /// A script body and its typed arguments, for `App::browser_js_call` (the runner declares each
 /// argument as a constant before the body).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Call {
     pub body: String,
     pub args: Value,
+}
+
+/// The args can hold a secret (a card value, a password): `Debug` names them and prints no value.
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.args.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+        f.debug_struct("Call").field("body_len", &self.body.len()).field("args", &names).finish()
+    }
 }
 
 /// Replaces `from` by `to` when `from` occurs exactly once (a load-time patch fails closed).

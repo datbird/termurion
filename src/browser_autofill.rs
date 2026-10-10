@@ -57,8 +57,11 @@ fn patch_n(src: &str, from: &str, to: &str, n: usize) -> Result<String, String> 
 
 /// `autofill-detector.js` with Tandem's patches, every one exact and fail closed (the copy in
 /// `resources/` stays iTerm2's, byte for byte). The buttons are built in a closed shadow root held by
-/// the isolated world under a host styled with `!important` inline rules, so a page can neither see,
-/// restyle nor cover them with a decoy; a click counts only when it is a person's (`isTrusted`) and
+/// the isolated world under a host styled with `!important` inline rules, so a page cannot `.click()` a
+/// button, read its values or restyle the host directly. It CAN still find the host, hide, move or lure
+/// (an invisible button over a decoy; R13x5-6), so a press only REQUESTS: nothing fills until the
+/// person confirms in a native Tandem window that names the page origin and each field type (I1; Task 3).
+/// Only visible, enabled fields are collected (`isFieldInteractable`). A click counts only when it is a person's (`isTrusted`) and
 /// the trusted pointer's point holds that very button (`elementFromPoint` on the shadow root), or,
 /// for a keyboard activation (`detail` 0), when that button has focus (13x5's `tandemReal`).
 pub(crate) fn detector_patched(src: &str) -> Result<String, String> {
@@ -72,6 +75,9 @@ pub(crate) fn detector_patched(src: &str) -> Result<String, String> {
         "btn.addEventListener('click', e => {",
         "btn.addEventListener('click', e => {\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            if (!e.isTrusted) return;\n            if (!tandemReal(e, btn)) return;",
     )?;
+    // Only fields a person can see and use are collected (iTerm2 gathers every input of the form: hidden
+    // ones would be filled by one lured click, I1).
+    let s = patch_once(&s, "const type = detectFieldType(input);\n                    if (type) {", "const type = detectFieldType(input);\n                    if (type && isFieldInteractable(input)) {")?;
     let s = patch_once(&s, "document.body.appendChild(btn);", "tandemRoot().appendChild(btn);")?;
     let s = patch_once(&s, "document.body.appendChild(meas);", "tandemRoot().appendChild(meas);")?;
     let s = patch_once(&s, "document.body.removeChild(meas);", "meas.remove();")?;
@@ -630,6 +636,25 @@ mod tests {
     }
 
     #[test]
+    fn secrets_never_debug_print() {
+        let c = write_call("id1", "name1", "SECRETVALUE-12 Quux Lane");
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("SECRETVALUE") && !shown.contains("Quux"), "{shown}");
+        assert!(shown.contains("valueArg") && shown.contains("fieldIdArg"), "the arg names still show");
+        let us = crate::browser_js::UserScript { id: "x", code: "const sessionSecret = \"HUNTER2\";".into(), inject: crate::browser_js::Inject::DocumentStart, main_frame_only: true, world: crate::browser_js::World::Client };
+        assert!(!format!("{us:?}").contains("HUNTER2"));
+        let f = Fill { id: None, name: None, value: "PRIVATE".into() };
+        assert!(!format!("{f:?}").contains("PRIVATE"));
+        assert!(!format!("{:?}", detector_js().map(|_| ())).contains("sessionSecret"));
+    }
+
+    #[test]
+    fn hidden_fields_are_not_collected() {
+        let d = detector_js().unwrap();
+        assert!(d.contains("if (type && isFieldInteractable(input)) {"), "the form loop skips fields a person cannot see");
+    }
+
+    #[test]
     fn autofill_request_follows_iterm2() {
         let body = json!({"type":"autofillRequest","sessionSecret":"s1","activeField":{"type":"email"},
             "fields":[{"type":"email","id":"e","name":null,"value":""},{"type":"zip","id":null,"name":"postal"}]});
@@ -718,6 +743,7 @@ mod tests {
         for target in [
             "const fieldButtons = new WeakMap();",
             "btn.addEventListener('click', e => {",
+            "const type = detectFieldType(input);\n                    if (type) {",
             "document.body.appendChild(btn);",
             "document.body.appendChild(meas);",
             "document.body.removeChild(meas);",

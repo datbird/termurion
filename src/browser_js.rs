@@ -186,13 +186,20 @@ pub enum Inject {
     DocumentEnd,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct UserScript {
     pub id: &'static str,
     pub code: String,
     pub inject: Inject,
     pub main_frame_only: bool,
     pub world: World,
+}
+
+/// A Client script's code holds the view's secrets: `Debug` prints its length, never its text.
+impl std::fmt::Debug for UserScript {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserScript").field("id", &self.id).field("code_len", &self.code.len()).field("inject", &self.inject).field("main_frame_only", &self.main_frame_only).field("world", &self.world).finish()
+    }
 }
 
 fn is_ident(b: u8) -> bool {
