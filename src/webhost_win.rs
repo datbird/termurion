@@ -5082,7 +5082,7 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn revocation_reload_sweep_reads_the_frames_origins() {
-        use crate::browser_perms::{check_iframe_origins_js, frame_origins, page_uses_origin};
+        use crate::browser_perms::{check_iframe_origins_js, frame_origins, page_uses_origin, sweep_reloads};
         const FRAME: &str = "https://frame.tandem-probe.invalid/";
         let hostile = perm_page(&format!("<iframe src=\"{FRAME}\"></iframe><script>performance.getEntriesByType = function () {{ return []; }}; Object.defineProperty(window.location, 'origin', {{get: function () {{ return 'https://forged.invalid'; }}}});</script>"));
         let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, hostile), (FRAME, "<!doctype html><title>f</title>".to_string())], Vec::new(), false, &[], true) else { return };
@@ -5101,6 +5101,14 @@ window.addEventListener('message', function (e) {
         p.page_eval("for (var i = 0; i < 5000; i++) { performance.mark('m' + i); } 1").expect("marks");
         let again = p.eval(None, &expr).expect("still answers");
         assert!(frame_origins(&again).is_none_or(|l| l.len() <= 256));
+        // Task 5 fix: 300 distinct resource origins (failed image loads) push the answer over the
+        // cap; it then reloads the pane (fail closed), never reads as "this origin is not used".
+        p.page_eval("for (var i = 0; i < 300; i++) { var im = new Image(); im.src = 'https://h' + i + '.tandem-probe.invalid/x.png'; } 1").expect("images");
+        p.settle(1500);
+        let crowd = p.eval(None, &expr).expect("still answers");
+        let other = "https://other.tandem-probe.invalid";
+        assert!(frame_origins(&crowd).is_some() || sweep_reloads(PERM_PAGE, Ok(&crowd), other), "an oversized answer reloads");
+        assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), "https://frame.tandem-probe.invalid"), "the iframe's origin still reloads");
         p.finish();
     }
 

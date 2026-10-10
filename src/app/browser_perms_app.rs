@@ -740,7 +740,8 @@ impl App {
 
     /// iTerm2's revocation sweep (`BPM:230-241`, `BM:518-586`): a pane whose main origin matches
     /// reloads at once, every other pane of the store asks the page for its frames' and resources'
-    /// origins (isolated world) and reloads on a match; a failed script compares the main origin only.
+    /// origins (isolated world) and reloads on a match; a failed script compares the main origin
+    /// only, and an unacceptable answer (over a cap) reloads the pane (`bp::sweep_reloads`).
     pub(super) fn reload_panes_using(&mut self, dev_null: bool, origin: &str) {
         let panes: Vec<(PaneId, String)> = self
             .browser_views
@@ -759,9 +760,10 @@ impl App {
                         &body,
                         serde_json::json!({}),
                         Box::new(move |app, pane, r| {
-                            let frames = r.ok().and_then(|v| bp::frame_origins(&v));
+                            // A failed script compares the main origin only; an answer over a cap
+                            // or of the wrong shape reloads the whole pane (fail closed).
                             let url = app.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
-                            if bp::page_uses_origin(&url, frames.as_deref(), &origin) {
+                            if bp::sweep_reloads(&url, r.as_ref().map_err(|_| ()), &origin) {
                                 app.reload_browser_view(pane);
                             }
                         }),
@@ -1153,7 +1155,7 @@ mod tests {
         let me = include_str!("browser_perms_app.rs");
         let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         assert!(prod.contains("db.revoke_permission(origin, t)") && prod.contains("db.reset_permission(origin, t)") && prod.contains("db.revoke_all_permissions(origin)"));
-        assert!(prod.contains("self.browser_js_call(") && prod.contains("bp::frame_origins(&v)") && prod.contains("bp::check_iframe_origins_js()"), "the one sweep script runs in the isolated world");
+        assert!(prod.contains("self.browser_js_call(") && prod.contains("bp::sweep_reloads(&url, r.as_ref().map_err(|_| ()), &origin)") && prod.contains("bp::check_iframe_origins_js()"), "the one sweep script runs in the isolated world");
         let ev = include_str!("browser_app.rs");
         assert!(ev.contains("self.sync_permission_states(dev_null)") && ev.contains("self.permission_states_read(pane, *view, states, *complete)"));
         let rd = include_str!("browser_reader_app.rs");

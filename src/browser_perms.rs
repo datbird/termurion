@@ -416,7 +416,7 @@ const MAX_FRAME_ORIGINS: usize = 256;
 const MAX_FRAME_ORIGIN_LEN: usize = 2048;
 
 /// The sweep script's answer as the page-chosen strings it is: an array of at most 256 strings of
-/// at most 2048 bytes, else None (a failed script, which compares the main origin only).
+/// at most 2048 bytes, else None (unacceptable: `sweep_reloads` then reloads the page).
 pub fn frame_origins(v: &serde_json::Value) -> Option<Vec<String>> {
     let items = v.as_array()?;
     if items.len() > MAX_FRAME_ORIGINS {
@@ -434,6 +434,20 @@ pub fn page_uses_origin(main_url: &str, frame_origins: Option<&[String]>, origin
         return true;
     }
     frame_origins.is_some_and(|list| list.iter().any(|o| normalize_origin(o).as_deref() == Some(want.as_str())))
+}
+
+/// Whether the revocation sweep reloads a page whose main URL is `main_url`. `answer` is the sweep
+/// script's result: Err when the script failed (iTerm2 then compares the main origin only,
+/// `BM:576-583`). An answer the page made unacceptable (over a cap, not an array, a non-string)
+/// reloads the page (fail closed): the page controls it, so it must never mean "not used".
+pub fn sweep_reloads(main_url: &str, answer: Result<&serde_json::Value, ()>, origin: &str) -> bool {
+    match answer {
+        Err(()) => page_uses_origin(main_url, None, origin),
+        Ok(v) => match frame_origins(v) {
+            Some(list) => page_uses_origin(main_url, Some(&list), origin),
+            None => true,
+        },
+    }
 }
 
 /// The script behind the revocation sweep (13x2's file, read through its table).
@@ -785,6 +799,18 @@ mod tests {
     #[test]
     fn the_sweeps_answer_is_bounded_and_typed() {
         use serde_json::json;
+        // An answer over a cap, or of the wrong shape, reloads (fail closed); a failed script
+        // compares the main origin only (iTerm2); a good answer reloads only on a match.
+        let o = "https://a.b";
+        let main = "https://c.d/";
+        assert!(sweep_reloads(main, Ok(&json!(vec!["https://x.y"; 257])), o), "more than 256 entries: reload the whole pane");
+        assert!(sweep_reloads(main, Ok(&json!([format!("https://{}", "a".repeat(2050))])), o), "an entry over 2048: reload");
+        assert!(sweep_reloads(main, Ok(&json!("https://x.y")), o), "not an array: reload");
+        assert!(sweep_reloads(main, Ok(&json!(["https://x.y", 4])), o), "a non-string: reload");
+        assert!(!sweep_reloads(main, Ok(&json!(vec!["https://x.y"; 256])), o), "256 others: no match, no reload");
+        assert!(sweep_reloads(main, Ok(&json!(["https://a.b"])), o));
+        assert!(!sweep_reloads(main, Err(()), o), "a failed script: main origin only");
+        assert!(sweep_reloads("https://a.b/x", Err(()), o));
         assert_eq!(frame_origins(&json!(["https://a.b", "null"])), Some(vec!["https://a.b".to_string(), "null".to_string()]));
         assert_eq!(frame_origins(&json!([])), Some(vec![]));
         assert_eq!(frame_origins(&json!("https://a.b")), None, "not an array");
