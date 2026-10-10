@@ -875,8 +875,7 @@ mod tests {
         assert!(me.contains("Update::Global(results) => self.browser_global_results(pane, results)"));
     }
 
-    /// 13y1 merge seam S4: a hidden workgroup peer (in no layout) gets no find state. Find Globally
-    /// searches the layouts only, and a row picked after a peer swap hid its pane reveals nothing.
+    /// A peer hidden while the global search ran gets no find state when its answer arrives.
     #[test]
     fn a_peer_hidden_mid_search_gets_no_find_state() {
         let me = prod(include_str!("browser_find_app.rs"));
@@ -894,6 +893,8 @@ mod tests {
         assert!(focus.find("self.reveal_as_peer(id)").expect("the peer is shown") < focus.find("self.enter_pane_window(id)").unwrap(), "shown before its window and tab are found");
     }
 
+    /// 13y1 merge seam S4: a hidden workgroup peer (in no layout) gets no find state. Find Globally
+    /// searches the layouts only, and a row picked after a peer swap hid its pane reveals nothing.
     #[test]
     fn hidden_peers_get_no_find_state() {
         let me = prod(include_str!("browser_find_app.rs"));

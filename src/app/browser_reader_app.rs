@@ -11,7 +11,12 @@ use serde_json::{Value, json};
 /// The reader's failure on the log: the line of `RMM`, with the runner's error KIND (a script's
 /// error text is the page's and is never logged, as `log_js_failure`).
 fn log_failure(f: Failure, e: &str) {
-    let line = reader::failure_line(f, super::browser_scripts_app::failure_kind(e));
+    log_failure_as(f, super::browser_scripts_app::failure_kind(e));
+}
+
+/// `log_failure` with the text to show already chosen: a kind, or Tandem's own error text.
+fn log_failure_as(f: Failure, what: &str) {
+    let line = reader::failure_line(f, what);
     crate::rlog!("{}", crate::dlog::name(&line));
 }
 
@@ -49,7 +54,8 @@ impl App {
         let [first, second] = match reader::loader_bodies() {
             Ok(b) => b,
             Err(e) => {
-                log_failure(Failure::Inject, &e);
+                // Tandem's own text (a missing resource, a patch that did not apply), never the page's.
+                log_failure_as(Failure::Inject, &e);
                 return then(self, pane, Err(e));
             }
         };
@@ -196,7 +202,11 @@ impl App {
         self.browser_plain_text(pane, Box::new(move |app, pane, _| {
             let Some(bv) = app.browser_views.get_mut(&pane) else { return };
             bv.menu_pending = false;
-            app.show_browser_menu(pane, at);
+            // The answer can be late (Readability is slow, a busy page holds the runner): a pane that
+            // is no longer in the shown tab of the live window gets no popup.
+            if app.tabs.get(app.active).is_some_and(|t| t.layout.panes().contains(&pane)) {
+                app.show_browser_menu(pane, at);
+            }
         }));
     }
 
@@ -274,6 +284,8 @@ mod tests {
         let me = prod(include_str!("browser_reader_app.rs"));
         let press = between(me, "pub(super) fn browser_menu_press", "/// What the menu shows");
         assert!(press.contains("if bv.menu_pending {\n            return;") && press.contains("bv.menu_pending = true") && press.contains("bv.menu_pending = false") && press.contains("app.browser_views.get_mut(&pane) else { return }"));
+        let late = &press[press.find("bv.menu_pending = false").unwrap()..];
+        assert!(late.contains("app.tabs.get(app.active).is_some_and(|t| t.layout.panes().contains(&pane))") && late.find("is_some_and").unwrap() < late.find("show_browser_menu").unwrap(), "a late menu opens only for a pane in the shown tab");
         let app = prod(include_str!("browser_app.rs"));
         assert!(app.contains("Button::Menu => self.browser_menu_press(pane, menu_at)"));
         assert!(app.contains("\"Reader Mode\" | \"Exit Reader Mode\" => return { self.toggle_reader_mode(pane); true }"));

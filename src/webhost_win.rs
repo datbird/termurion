@@ -3298,7 +3298,8 @@ mod probe {
         reader_load(&mut p);
         // The original page's own onerror fires at load; only growth after entering counts.
         p.settle(500);
-        let hit_count = |p: &mut Probe| p.page_eval("(window.__hits || []).length").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0);
+        // A failed read fails the probe: it never counts as 0 hits.
+        let hit_count = |p: &mut Probe| p.page_eval("(window.__hits || []).length").expect("the hit count").trim().parse::<usize>().expect("the hit count is a number");
         let before = hit_count(&mut p);
         assert_eq!(reader_run(&mut p, &crate::browser_reader::enter_reader_body()), Ok(json!(true)));
         let mut grew = false;
@@ -3322,6 +3323,63 @@ mod probe {
         assert_eq!(reader_actions(&p), vec!["entered".to_string()], "a page-world post is no Client message: nothing but the reader's own");
         assert!(p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("distractionRemovalEntered")), "the forged post arrived as a page message");
         assert!(p.routed.iter().filter(|r| r.via == Via::Client).all(|r| r.client().map_or(true, |(h, _)| h == crate::browser_reader::HANDLER)));
+        p.finish();
+    }
+
+    /// 13x4 Review Focus 6 (B7): a hostile page replaces `Function.prototype.bind`,
+    /// `JSON.stringify` and `chrome.webview.postMessage` before anything runs, then the reader, the
+    /// plain text and Remove Distractions run (twice) with a canary secret in the isolated world. The
+    /// spy sees no canary, no result token and no session secret, and the reader objects are not in
+    /// the page world. The spy is proved alive by the page's own post. Needs the console session.
+    #[test]
+    #[ignore]
+    fn page_never_sees_the_view_secret() {
+        let canary = hex32();
+        let spy = r#"(function () {
+            window.__spy = [];
+            let busy = false;
+            const text = (v) => { try { return typeof v === 'string' ? v : String(v) + ' ' + JSON.stringify(v); } catch (e) { return '?'; } };
+            const log = (k, v) => { if (busy) { return; } busy = true; try { window.__spy.push(k + ':' + text(v)); } finally { busy = false; } };
+            const ob = Function.prototype.bind;
+            Function.prototype.bind = function () { log('bind', Array.prototype.slice.call(arguments).map(text).join(',')); return ob.apply(this, arguments); };
+            const os = JSON.stringify;
+            JSON.stringify = function (v) { log('stringify', v); return os.apply(this, arguments); };
+            try {
+                const w = window.chrome.webview, op = w.postMessage;
+                w.postMessage = function (m) { log('post', m); return op.apply(this, arguments); };
+            } catch (e) { window.__spy.push('postMessage not replaceable'); }
+            window.addEventListener('message', (e) => log('message', e.data), true);
+        })();"#.to_string();
+        let sources = vec![spy, wrapped(&format!("window.__canary = '{canary}';"))];
+        let Some(mut p) = Probe::start(&[(PAGE, article_page("An article", ""))], sources) else { return };
+        p.load(PAGE);
+        reader_load(&mut p);
+        let plain = reader_run(&mut p, &crate::browser_reader::plain_text_body()).expect("the plain text");
+        assert!(plain.as_str().is_some_and(|t| t.chars().count() > 10), "the article's text came back: {plain}");
+        assert_eq!(reader_run(&mut p, "return window.__canary"), Ok(json!(canary)), "the canary is in the isolated world");
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::enter_reader_body()), Ok(json!(true)));
+        p.page_eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))").expect("the page's Escape");
+        p.settle(300);
+        for kind in ["rawKeyDown", "keyUp"] {
+            p.call_wait(None, "Input.dispatchKeyEvent", &json!({"type": kind, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})).expect("the real Escape");
+        }
+        assert!(p.wait(10, |p| reader_actions(p).contains(&"exited".to_string())), "a real Escape leaves");
+        let [load, enter] = crate::browser_reader::distraction_bodies();
+        for _ in 0..2 {
+            assert_eq!(reader_run(&mut p, &load), Ok(json!(true)));
+            assert_eq!(reader_run(&mut p, &enter), Ok(json!(true)));
+            assert_eq!(reader_run(&mut p, &crate::browser_reader::exit_distraction_body()), Ok(json!(true)));
+        }
+        assert_eq!(p.page_eval("typeof window.iTermReaderMode + typeof window.Readability + typeof window.iTermDistractionRemoval"), Ok("\"undefinedundefinedundefined\"".into()));
+        // Proof the spy works: the page's own post is in its log.
+        p.page_eval("window.chrome.webview.postMessage({control: 'spy-alive'})").expect("the control post");
+        let log = p.page_eval("window.__spy.join('\\n')").expect("the spy log");
+        assert!(log.contains("spy-alive"), "the spy is alive (a log that cannot fail proves nothing): {log}");
+        assert!(!log.contains("postMessage not replaceable"), "the spy replaced postMessage: {log}");
+        for bad in [canary.as_str(), "__tandemResult", "sessionSecret", "__tandemPost"] {
+            assert!(!log.contains(bad), "the page saw {bad}");
+        }
+        p.settle(300);
         p.finish();
     }
 
