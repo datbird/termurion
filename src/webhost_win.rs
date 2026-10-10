@@ -3374,11 +3374,11 @@ mod probe {
         let page = "<!doctype html><html><body style=\"margin:0\"><div style=\"height:80px\"></div><p id=\"target\" style=\"margin:0;height:40px\">Hello marked world</p><div style=\"height:2000px\"></div></body></html>".to_string();
         let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
         p.load(PAGE);
-        let at = marks_body(&mut p, &bm::xpath_script(10, 90)).expect("the point script");
+        let at = marks_body(&mut p, &bm::xpath_script(10, 90).expect("the script")).expect("the point script");
         let loc = bm::Location::from_json(&at).expect("a location");
         assert!(loc.xpath.contains("p"), "{at}");
-        // The page world never sees the isolated world's objects.
-        assert_eq!(marks_body(&mut p, &bm::update_positions_script("sec")).map(|v| v.is_array()), Ok(true));
+        // The monitor starts before any position update (the update calls it; task-1 review).
+        assert!(marks_body(&mut p, &format!("return {}", bm::LAYOUT_MONITOR_JS.trim())).is_ok());
         let nav = bm::navigate_call(&loc).expect("navigate");
         assert!(matches!(marks_run(&mut p, &nav), Ok(Value::Bool(_))));
         let hostile = bm::Location { xpath: "//p[@id=\"x\\\"]</script>');window.__pwned=1;('\"]".into(), text_fragment: Some("\");window.__pwned=1;(\"".into()), ..loc.clone() };
@@ -3389,14 +3389,19 @@ mod probe {
         let marks = vec![loc.js_dict(Some("first"), "g1")];
         let show = bm::show_call(&marks, "mark-secret").expect("a call");
         assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
-        assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("1".into()));
-        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.locateMark"), Ok("\"undefinedundefined\"".into()));
-        p.page_eval("document.querySelectorAll('.iterm-mark-annotation button').forEach(b => b.click()); 1").expect("synthetic clicks");
+        // The annotations are in a closed shadow root: the page sees only the host.
+        assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("0".into()));
+        assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations').shadowRoot === null"), Ok("true".into()));
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.locateMark + typeof window.tandemMarkRoot"), Ok("\"undefinedundefinedundefined\"".into()));
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation button').length"), Ok(json!(3)));
+        // The isolated world's own synthetic clicks are untrusted too.
+        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
         p.settle(300);
-        assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "a page's synthetic Delete, Save or Enter posts nothing");
-        assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("1".into()), "and removes nothing");
-        // The layout monitor.
-        assert!(marks_body(&mut p, &format!("return {}", bm::LAYOUT_MONITOR_JS.trim())).is_ok());
+        assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "an untrusted Delete or Save posts nothing");
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "and removes nothing");
+        // The layout monitor (running already); positions now answer.
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
+        assert_eq!(marks_body(&mut p, &bm::update_positions_script("sec").expect("the script")).map(|v| v.is_array()), Ok(true));
         assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
         assert!(marks_body(&mut p, bm::DISABLE_MONITOR_JS).is_ok());
         assert!(marks_body(&mut p, bm::ENABLE_MONITOR_JS).is_ok());

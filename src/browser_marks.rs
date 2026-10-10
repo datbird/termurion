@@ -19,7 +19,7 @@ pub const LAYOUT_HANDLER: &str = "iTerm2MarkLayoutUpdate";
 pub const FRAGMENT_PREFIX: &str = "iterm-mark:";
 
 /// Bounds on page-derived data (B8): a longer value is refused, not cut, so no half-location exists.
-pub const MAX_XPATH: usize = 4096;
+pub const MAX_XPATH: usize = 2048;
 pub const MAX_TEXT: usize = 2048;
 pub const MAX_NAME: usize = 256;
 pub const MAX_GUID: usize = 128;
@@ -192,14 +192,42 @@ pub(crate) fn patch_once(src: &str, from: &str, to: &str) -> Result<String, Stri
     }
 }
 
-/// The annotation box acts only on events the person caused (B2, the carried rule: page listeners
-/// ignore untrusted events). The Enter key's own `saveButton.click()` is untrusted, so it carries a
-/// flag that only this world's wrapper of the button holds.
+/// The annotation box acts only on events the person caused, aimed at the real button (B2, the
+/// carried rule plus the task-1 review's clickjacking ruling). Three layers: the box is built in a
+/// closed shadow root made in the isolated world (a page cannot reach its input or styles, nor
+/// listen inside it); a handler ignores an untrusted event; and Save and Delete act only when the
+/// trusted pointer event's point holds that very button (`elementFromPoint` on the shadow root,
+/// which answers the host, not the button, when a page overlay covers it) or, for a keyboard
+/// activation (`detail` 0), when that button has focus. The Enter key's own `saveButton.click()` is
+/// untrusted, so it carries a flag that only this world's wrapper of the button holds.
 pub(crate) fn trust_patched(src: &str) -> Result<String, String> {
     let s = patch_once(src, "if (e.key === 'Enter') {", "if (e.isTrusted && e.key === 'Enter') {")?;
     let s = patch_once(&s, "saveButton.click(); // Trigger the save button click", "saveButton.tandemKey = true; saveButton.click(); saveButton.tandemKey = false; // Trigger the save button click")?;
-    let s = patch_once(&s, "deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(e) { if (!e.isTrusted) { return; }")?;
-    patch_once(&s, "saveButton.addEventListener('click', function(e) {", "saveButton.addEventListener('click', function(e) { if (!e.isTrusted && !saveButton.tandemKey) { return; }")
+    let s = patch_once(&s, "deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(e) { if (!tandemReal(e, deleteButton)) { return; }")?;
+    let s = patch_once(&s, "saveButton.addEventListener('click', function(e) {", "saveButton.addEventListener('click', function(e) { if (!saveButton.tandemKey && !tandemReal(e, saveButton)) { return; }")?;
+    shadow_patched(&s)
+}
+
+/// The annotations live in a closed shadow root under a host with the old container's id; the root
+/// is kept as `window.tandemMarkRoot` (the isolated world's window, which a page cannot see) for
+/// `update-mark-positions.js`. `tandemReal` is the real-button test.
+fn shadow_patched(src: &str) -> Result<String, String> {
+    let s = patch_once(
+        src,
+        "var container = document.createElement('div');",
+        "var host = document.createElement('div');\n    host.id = 'iterm-mark-annotations';\n    var shadow = host.attachShadow({mode: 'closed'});\n    window.tandemMarkRoot = shadow;\n    function tandemReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
+    )?;
+    let s = patch_once(&s, "container.id = 'iterm-mark-annotations';", "")?;
+    patch_once(&s, "document.body.appendChild(container);", "shadow.appendChild(container);\n        document.body.appendChild(host);")
+}
+
+/// `update-mark-positions.js` finds the annotations in the shadow root, or none.
+fn positions_patched(src: &str) -> Result<String, String> {
+    patch_once(
+        src,
+        "document.querySelectorAll('.iterm-mark-annotation[data-mark-guid]')",
+        "(window.tandemMarkRoot ? window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation[data-mark-guid]') : [])",
+    )
 }
 
 /// A copied script is an expression; the runner wants a body.
@@ -212,9 +240,9 @@ fn file(name: &str) -> Result<&'static str, String> {
 }
 
 /// `get-xpath-at-point` at a page point (`NMM:408-418`); the coordinates are integers.
-pub fn xpath_script(x: i64, y: i64) -> String {
-    let src = resource("get-xpath-at-point.js").unwrap_or_default();
-    as_body(&fill_template(src, &[("CLICK_X", &x.to_string()), ("CLICK_Y", &y.to_string())]))
+pub fn xpath_script(x: i64, y: i64) -> Option<String> {
+    let src = resource("get-xpath-at-point.js")?;
+    Some(as_body(&fill_template(src, &[("CLICK_X", &x.to_string()), ("CLICK_Y", &y.to_string())])))
 }
 
 /// `navigate-to-named-mark` (`NMM:444-462`). The XPath and text fragment come from the page's DOM,
@@ -245,10 +273,13 @@ pub fn show_call(marks: &[Value], secret: &str) -> Option<Call> {
     Some(Call { body: as_body(&filled), args: json!({ "marksArg": shown }) })
 }
 
-/// `update-mark-positions` (`NMM:509-515`).
-pub fn update_positions_script(secret: &str) -> String {
-    let src = resource("update-mark-positions.js").unwrap_or_default();
-    as_body(&fill_template(src, &[("SECRET", &js_literal_inner(secret))]))
+/// `update-mark-positions` (`NMM:509-515`). Rule (task-1 review): the layout monitor must be
+/// running in the isolated world before this runs (the script calls
+/// `window.iTermLayoutChangeMonitor.reenableLayoutChangeMonitoring()` and throws without it), after
+/// every navigation and after every world rebuild. None when a patch target is missing.
+pub fn update_positions_script(secret: &str) -> Option<String> {
+    let src = positions_patched(resource("update-mark-positions.js")?).ok()?;
+    Some(as_body(&fill_template(&src, &[("SECRET", &js_literal_inner(secret))])))
 }
 
 /// The layout monitor (`NMM:431-433`).
@@ -373,7 +404,7 @@ mod tests {
 
     #[test]
     fn scripts_follow_iterm2() {
-        let x = xpath_script(10, 20);
+        let x = xpath_script(10, 20).unwrap();
         assert!(x.contains("parseInt(\"10\")") && x.contains("parseInt(\"20\")"), "{x}");
         assert!(x.contains("getTextFragmentData") && !x.contains("{{"));
         assert!(x.starts_with("return (function"));
@@ -397,10 +428,13 @@ mod tests {
         assert!(!shown.body.contains("{{") && shown.body.contains("var marks = marksArg;"));
         assert_eq!(shown.args["marksArg"][0]["name"], "{{SECRET}}");
         assert!(!shown.args.to_string().contains("s3cr3t"));
-        let u = update_positions_script("s");
+        let u = update_positions_script("s").unwrap();
         assert!(u.contains("var secret = \"s\"") && u.contains("locateMark") && !u.contains("{{"));
         assert!(u.starts_with("return (function"));
-        let tricky = update_positions_script("a\"b");
+        assert!(u.contains("window.tandemMarkRoot ? window.tandemMarkRoot.querySelectorAll") && !u.contains("document.querySelectorAll('.iterm-mark-annotation"), "the annotations are read from the shadow root");
+        assert_eq!(LAYOUT_MONITOR_JS, resource("layout-change-monitor.js").unwrap(), "one copy of the file");
+        assert!(positions_patched("nothing").is_err());
+        let tricky = update_positions_script("a\"b").unwrap();
         assert!(tricky.contains("var secret = \"a\\\"b\""), "the secret is escaped too");
         assert!(LAYOUT_MONITOR_JS.contains("iTerm2MarkLayoutUpdate") && LAYOUT_MONITOR_JS.contains("iTermLayoutChangeMonitor"));
         assert!(DISABLE_MONITOR_JS.contains("disableLayoutChangeMonitoring()") && ENABLE_MONITOR_JS.contains("reenableLayoutChangeMonitoring()"));
@@ -412,7 +446,11 @@ mod tests {
     #[test]
     fn annotation_buttons_ignore_untrusted_events() {
         let shown = show_call(&[json!({"name":"n","guid":"g"})], "s").unwrap().body;
-        assert_eq!(shown.matches("e.isTrusted").count(), 3, "keydown, Delete and Save are guarded");
+        assert_eq!(shown.matches("e.isTrusted").count(), 2, "keydown and the real-button test");
+        assert_eq!(shown.matches("tandemReal(e, ").count(), 3, "the definition, Delete and Save");
+        assert_eq!(shown.matches("attachShadow({mode: 'closed'})").count(), 1, "the box is in a closed shadow root");
+        assert!(shown.contains("shadow.elementFromPoint(e.clientX, e.clientY) === button") && shown.contains("shadow.appendChild(container)"));
+        assert!(!shown.contains("container.id") && shown.contains("host.id = 'iterm-mark-annotations'"));
         // The patch fails closed: a target that moved or repeats is an error, not a silent skip.
         let src = crate::browser_js::resource("show-named-mark-annotations.js").unwrap();
         assert!(trust_patched(src).is_ok());
