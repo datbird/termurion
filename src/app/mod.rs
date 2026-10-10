@@ -162,6 +162,7 @@ mod adblock_app;
 mod browser_db_app;
 mod browser_reader_app;
 mod devtools_read_app;
+mod view_source_app;
 mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;

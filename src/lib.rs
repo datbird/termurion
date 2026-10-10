@@ -79,6 +79,7 @@ pub mod browser_frames;
 pub mod browser_find;
 pub mod browser_copymode;
 pub mod browser_reader;
+pub mod view_source;
 pub mod devtools;
 pub mod browser_db;
 pub mod browser_pages;

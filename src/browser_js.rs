@@ -63,6 +63,7 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "pointer-gate.js" => include_str!("../resources/browser/pointer-gate.js"),
         "selection-gesture.js" => include_str!("../resources/browser/selection-gesture.js"),
         "tandem-cloak.js" => include_str!("../resources/browser/tandem-cloak.js"),
+        "view-source.html" => include_str!("../resources/browser/view-source.html"),
         "welcome-page.html" => include_str!("../resources/browser/welcome-page.html"),
         "welcome-page.js" => include_str!("../resources/browser/welcome-page.js"),
         "Readability.js" => include_str!("../resources/browser/Readability.js"),

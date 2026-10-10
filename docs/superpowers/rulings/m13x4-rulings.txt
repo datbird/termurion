@@ -14,3 +14,24 @@ Task 4 finding I1 (ruled: fix, safer than iTerm2): a navigation cancels a pendin
 page-content or reader-loader call. `browser_reader::State.epoch` is bumped by `reset()`; a call
 captures it first, and its answer is dropped (nothing cached, null page content, "the page changed"
 for the loaders) when it moved. iTerm2 (`RMM:35-61`) caches the late answer for the new page.
+
+Task 6 (View Source page, preflight B2, P12, P13):
+- `browser_pages::{new_nonce, response_headers}` are pub; the source page is answered by
+  `App::browser_source_answer` (called first by `browser_local_request`) under the same per-response
+  nonce CSP as the other local pages. `resources/browser/view-source.html` is the iTerm2 file with
+  recorded edits: `<script nonce="{{NONCE}}">`, `const currentURL = {{URL_JSON}};` (a JSON string with
+  `<`, `>`, `&` as \u escapes, P12), and the link maker turns only a parsed http(s) URL into a link
+  (`resolveURL` returns null otherwise; was: any text starting with `http` raw, which let an
+  `http://x onmouseover=...` value add an attribute through the page's own second linkify pass).
+- `view_source::request` takes the pending source only for a document request of exactly
+  `iterm2-about:source` (B2); any other context is a 404 that leaves it, `source?x`/`source#f` is a
+  404 that logs "Invalid source URL". A document request from a frame cannot be told from the main
+  frame here; `frame-ancestors 'none'` refuses the frame, and the pending source is per pane and set
+  just before the navigation.
+- `BrowserView.pending_source` is `Option<view_source::Pending {raw, url}>` (not `Option<String>`):
+  the page needs the viewed URL and the per-load nonce, so it is built at serve time. `Pending::new`
+  refuses a source over `MAX_SOURCE` (= devtools::MAX_RESOURCE, 4 MiB); the escaped page can be up to
+  about 6x that (P13). Own one-pass filler instead of `fill_template` (which fills its own CSS first
+  and takes the common css as a parameter here).
+- The page gets no bridge use: `browser_pages::route` knows no `source` page (tested). `NewWindow`
+  links go through the existing `nav_gate_tab`; it already refuses every listed URL, no change.

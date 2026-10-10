@@ -3495,6 +3495,35 @@ mod probe {
         p.finish();
     }
 
+    /// 13x4 Task 6: the View Source page, with a hostile page's source in it, runs its copied
+    /// highlighter and linkifier and the source stays text: no element, handler or script comes out
+    /// of it, `window.__pwn` is never set, and only parsed http(s) URLs become links. The probe
+    /// serves the page with no policy header, so only the escaping and the page script are tested
+    /// here (the policy and the nonce are `browser_pages` and `view_source` unit tests). Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn view_source_shows_the_page() {
+        let raw = "<a href=\"JAVASCRIPT:window.__pwn=1\">j</a> <img src=x onerror=\"window.__pwn=1\"> </script><script nonce=\"FAKE\">window.__pwn=1</script> <a href=\"http://x.test/ onmouseover=window.__pwn=1\">h</a> <a href=\"/rel?a=1\">r</a> <a href=\"data:text/html,<b>\">d</a> {{NONCE}}";
+        let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
+        let html = crate::view_source::page(raw, "https://tandem.test/orig?x='1'&y=\\", css, "REALNONCE");
+        let Some(mut p) = Probe::start(&[(PAGE, html)], Vec::new()) else { return };
+        p.load(PAGE);
+        p.settle(500);
+        let text = p.page_eval("document.querySelector('.source-code').textContent").expect("the text");
+        assert_eq!(text, serde_json::to_string(raw).unwrap(), "the source is shown as text, whole");
+        assert_eq!(p.page_eval("String(window.__pwn === undefined)"), Ok("\"true\"".into()), "nothing in the source ran");
+        assert_eq!(p.page_eval("String(document.querySelectorAll('.source-code img, .source-code script, .source-code [onerror], .source-code [onmouseover]').length)"), Ok("\"0\"".into()), "no element of the source's own");
+        assert_eq!(p.page_eval("String(document.querySelectorAll('script').length)"), Ok("\"1\"".into()), "only the template's script");
+        let links = p.page_eval("JSON.stringify([...document.querySelectorAll('a.source-link')].map(a => a.getAttribute('href')))").expect("links");
+        let links: Vec<String> = serde_json::from_str::<String>(&links).ok().and_then(|s| serde_json::from_str(&s).ok()).expect("a list of links");
+        assert!(!links.is_empty() && links.iter().all(|l| l.starts_with("http://") || l.starts_with("https://")), "only web links: {links:?}");
+        assert!(links.iter().any(|l| l == "https://tandem.test/rel?a=1"), "a relative link resolves against the viewed page: {links:?}");
+        assert!(links.iter().all(|l| !l.contains(' ')), "no link holds a space: {links:?}");
+        assert_eq!(p.page_eval("String(document.querySelector('p.url').textContent)"), Ok("\"https://tandem.test/orig?x='1'&y=\\\\\"".into()), "the visible URL");
+        p.finish();
+    }
+
     /// Main bug from the 13x3 probe review: Chromium's Windows editing behavior extends forward by
     /// word to the start of the next word, so the iTerm2 script selected "hello " (trailing space).
     /// The assembled script (`browser_keys::extend_script`, load-time patch) selects "hello", then

@@ -21,7 +21,7 @@ pub fn csp(nonce: &str) -> String {
 }
 
 /// A fresh nonce for one response: a v4 UUID's 122 random bits, hex.
-fn new_nonce() -> String {
+pub fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
@@ -83,7 +83,7 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
     })
 }
 
-fn response_headers(nonce: &str) -> Vec<(String, String)> {
+pub fn response_headers(nonce: &str) -> Vec<(String, String)> {
     vec![
         ("Content-Security-Policy".to_string(), csp(nonce)),
         ("X-Content-Type-Options".to_string(), "nosniff".to_string()),

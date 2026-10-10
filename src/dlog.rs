@@ -257,6 +257,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/tmux_ui.rs", 2),
     ("app/tool_web_ui.rs", 2),
     ("app/triggers_ui.rs", 1),
+    ("app/view_source_app.rs", 1),
     ("app/web_popover_app.rs", 4),
     ("app/webhost_app.rs", 7),
     ("app/windows_ui.rs", 3),

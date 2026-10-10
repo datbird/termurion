@@ -107,7 +107,10 @@ impl App {
     /// A request for an `iterm2-about:` URL: the page under the policy, or a 404 (P8).
     pub(super) fn browser_local_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
         // Tandem's own scheme keeps its answer; every other request is the ad blocker's to judge.
-        let answer: Answer = if crate::webhost::scheme_of(url) == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
+        let source = if crate::webhost::scheme_of(url) == "iterm2-about" { self.browser_source_answer(pane, url, context) } else { None };
+        let answer: Answer = if let Some(source) = source {
+            source
+        } else if crate::webhost::scheme_of(url) == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
         if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
             v.answer_request(token, answer);
         }
