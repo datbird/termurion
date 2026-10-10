@@ -639,6 +639,12 @@ pub fn request_valid(cache: &[Mark], page_url: &str, guid: &str, opened_epoch: u
     opened_epoch == epoch && page_guids(cache, page_url).iter().any(|g| g == guid)
 }
 
+/// Whether a person's rename or delete may act: any mark the cache knows, on any page (iTerm2 lets the
+/// menus and the tool edit every mark). An unknown id is refused.
+pub fn person_edit_valid(cache: &[Mark], guid: &str) -> bool {
+    cache.iter().any(|m| m.guid == guid)
+}
+
 /// The stored name as the rename window starts it: Tandem's sanitizer, never page text.
 pub fn rename_text(stored: &str) -> String {
     crate::inert_files::display_text(stored, MAX_NAME, false)
@@ -768,6 +774,8 @@ mod tests {
         assert!(!request_valid(&cache, "https://a.b/p", "g1", 3, 4), "a new navigation");
         assert!(!request_valid(&cache, "https://a.b/p", "g2", 3, 3), "a mark of another page");
         assert!(!request_valid(&cache, "https://a.b/p", "nope", 3, 3), "an unknown mark");
+        assert!(person_edit_valid(&cache, "g2"), "a person may edit a mark of another page");
+        assert!(!person_edit_valid(&cache, "nope"), "an unknown mark");
         let t = std::time::Instant::now();
         assert!(input_ignored(t, t));
         assert!(!input_ignored(t, t + std::time::Duration::from_millis(WINDOW_GUARD_MS)));

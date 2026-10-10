@@ -47,6 +47,25 @@ pub(super) const CHECKS: [(&str, &str); 5] = [
     ("enableMarkAlertRingsBell:", "Ring Bell"),
 ];
 
+/// Menu ids of a browser session's marks: this prefix and the mark's guid.
+pub(super) const BROWSER_MARK_ID: &str = "tandem.browsermark.";
+
+/// Most browser marks Edit > Named Marks lists (the cache can hold a million).
+const BROWSER_MENU_MARKS: usize = 200;
+
+/// Edit > Named Marks for a browser session: each cached mark's guid and menu text, cache order kept
+/// (`AD:4310-4316`), "Unnamed Mark" for an empty name, names cleaned by Tandem's sanitizer and capped.
+pub(super) fn browser_mark_items(marks: &[crate::browser_marks::Mark]) -> Vec<(String, String)> {
+    marks
+        .iter()
+        .take(BROWSER_MENU_MARKS)
+        .map(|m| {
+            let name = crate::browser_marks::rename_text(&m.name);
+            (m.guid.clone(), if name.trim().is_empty() { "Unnamed Mark".to_string() } else { name })
+        })
+        .collect()
+}
+
 /// Edit > Named Marks: each named mark's id and menu text, top first ("Unnamed Mark" for
 /// an empty name).
 pub(super) fn named_marks(marks: &[(i32, crate::marks::Mark)]) -> Vec<(u32, String)> {
@@ -323,20 +342,30 @@ impl App {
     pub(super) fn refresh_named_marks(&mut self) {
         // The buffer scan runs only when the focused pane or its named marks changed.
         let focused = self.focused_id();
+        // A browser session lists its store's whole cache; the key is the rows themselves.
+        let browser: Option<Vec<(String, String)>> = focused.filter(|&id| self.is_browser_pane(id)).map(|id| {
+            let dev_null = self.panes.get(&id).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
+            browser_mark_items(self.browser_marks_cache(dev_null))
+        });
         let key: (Option<PaneId>, Vec<(u32, Option<String>)>) = (
             focused,
-            focused
-                .and_then(|id| self.panes.get(&id))
-                .map(|p| p.screen.marks.records.values().filter(|m| m.name.is_some()).map(|m| (m.id, m.name.clone())).collect())
-                .unwrap_or_default(),
+            match &browser {
+                Some(rows) => rows.iter().enumerate().map(|(i, (g, t))| (i as u32, Some(format!("{g}\u{0}{t}")))).collect(),
+                None => focused
+                    .and_then(|id| self.panes.get(&id))
+                    .map(|p| p.screen.marks.records.values().filter(|m| m.name.is_some()).map(|m| (m.id, m.name.clone())).collect())
+                    .unwrap_or_default(),
+            },
         );
         if self.menu_bar.as_ref().is_some_and(|b| b.named_key == key) {
             return;
         }
-        let items = focused.and_then(|id| self.panes.get_mut(&id)).map(|p| named_marks(&p.screen.marks_in_order())).unwrap_or_default();
+        let browser_rows = browser.unwrap_or_default();
+        let browser_pane = !browser_rows.is_empty() || focused.is_some_and(|id| self.is_browser_pane(id));
+        let items = if browser_pane { Vec::new() } else { focused.and_then(|id| self.panes.get_mut(&id)).map(|p| named_marks(&p.screen.marks_in_order())).unwrap_or_default() };
         let Some(bar) = &mut self.menu_bar else { return };
         bar.named_key = key;
-        if bar.named_items == items {
+        if bar.named_items == items && bar.named_browser == browser_rows {
             return;
         }
         let Some(sub) = &bar.named else { return };
@@ -347,11 +376,25 @@ impl App {
                 self.banners.set("menu", format!("Named Marks menu: {e}"));
             }
         }
+        for (guid, label) in &browser_rows {
+            let entry = muda::MenuItem::with_id(format!("{BROWSER_MARK_ID}{guid}"), label.replace('&', "&&"), true, None);
+            if let Err(e) = sub.append(&entry) {
+                self.banners.set("menu", format!("Named Marks menu: {e}"));
+            }
+        }
         bar.named_items = items;
+        bar.named_browser = browser_rows;
     }
 
     /// A pick from Edit > Named Marks. Returns false for other menu ids.
     pub(super) fn named_mark_picked(&mut self, menu_id: &str) -> bool {
+        if let Some(guid) = menu_id.strip_prefix(BROWSER_MARK_ID) {
+            // The only way in is Task 5's reveal (load gate, epoch-bound); a terminal pane ignores it.
+            if let Some(id) = self.focused_id().filter(|&id| self.is_browser_pane(id)) {
+                self.browser_reveal_named_mark(id, guid);
+            }
+            return true;
+        }
         let Some(mark) = menu_id.strip_prefix(NAMED_MARK_ID).and_then(|n| n.parse::<u32>().ok()) else { return false };
         let Some(id) = self.focused_id() else { return true };
         let line = self.panes.get_mut(&id).and_then(|p| p.screen.marks_in_order().into_iter().find(|(_, m)| m.id == mark).map(|(l, _)| l));
@@ -367,6 +410,29 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bmark(guid: &str, name: &str) -> crate::browser_marks::Mark {
+        crate::browser_marks::Mark { guid: guid.into(), url: "https://a.b/".into(), name: name.into(), sort: 0 }
+    }
+
+    #[test]
+    fn browser_mark_menu_follows_iterm2() {
+        let cache = vec![bmark("g2", ""), bmark("g1", "a")];
+        assert_eq!(browser_mark_items(&cache), vec![("g2".to_string(), "Unnamed Mark".to_string()), ("g1".to_string(), "a".to_string())], "cache order kept");
+        // Names are cleaned (bidi, controls) and capped; the list is bounded.
+        let shown = browser_mark_items(&[bmark("g", "a\u{202e}b\u{7}c")]);
+        assert_eq!(shown[0].1, "abc");
+        let long = browser_mark_items(&[bmark("g", &"x".repeat(5000))]);
+        assert_eq!(long[0].1.chars().count(), crate::browser_marks::MAX_NAME);
+        let many: Vec<_> = (0..1000).map(|i| bmark(&format!("g{i}"), "n")).collect();
+        assert_eq!(browser_mark_items(&many).len(), BROWSER_MENU_MARKS);
+        // A pick reveals only through Task 5's reveal, on a browser pane; the prefixes never collide.
+        assert!(!BROWSER_MARK_ID.starts_with(NAMED_MARK_ID) && !NAMED_MARK_ID.starts_with(BROWSER_MARK_ID));
+        let src = include_str!("marks_ui.rs");
+        let pick = &src[src.find("pub(super) fn named_mark_picked").unwrap()..];
+        let pick = &pick[..pick.find("let Some(mark) =").unwrap()];
+        assert!(pick.contains("strip_prefix(BROWSER_MARK_ID)") && pick.contains("is_browser_pane(id)") && pick.contains("self.browser_reveal_named_mark(id, guid)"));
+    }
 
     #[test]
     fn named_marks_sort_by_row() {

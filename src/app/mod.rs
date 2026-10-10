@@ -549,7 +549,7 @@ pub struct App {
     mark_prompt_focused: bool,
     /// The delete confirm of a browser mark (a `ConfirmWindow`), its pane, mark and navigation epoch;
     /// and when the last browser mark window opened (the input guard).
-    mark_confirm: Option<(crate::prompt_ui::ConfirmWindow, PaneId, String, u64)>,
+    mark_confirm: Option<(crate::prompt_ui::ConfirmWindow, PaneId, String, Option<u64>)>,
     mark_window_at: Option<Instant>,
     /// The browser's named marks, newest first, one cache per store (normal, Dev Null); app-wide.
     browser_marks: HashMap<bool, crate::browser_marks::Cache>,

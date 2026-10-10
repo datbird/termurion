@@ -9,6 +9,8 @@ use crate::open_quickly_ui::{self as ui, OpenQuicklyWindow, PaletteEvent, Palett
 
 /// The most commands, directories and hosts a session offers for scoring.
 const HISTORY_LIMIT: usize = 100;
+/// Marks one browser session lists in Open Quickly (the cache can hold a million).
+const OPEN_QUICKLY_BROWSER_MARKS: usize = 2000;
 
 /// An open palette: its window, the preview, what its rows are, and the picture of each pane
 /// shown so far (dropped when the palette closes, as iTerm2 tears the preview down).
@@ -39,7 +41,7 @@ fn icon(kind: &ItemKind) -> char {
         ItemKind::Tip(_) => '\u{E946}',
         ItemKind::Action(_) => '\u{E945}',
         ItemKind::Snippet(_) => '\u{E8BD}',
-        ItemKind::NamedMark { .. } => '\u{E8A4}',
+        ItemKind::NamedMark { .. } | ItemKind::BrowserMark { .. } => '\u{E8A4}',
         ItemKind::MenuItem(_) => '\u{E700}',
         // Code, iTerm2's script icon.
         ItemKind::Script(_) => '\u{E943}',
@@ -271,6 +273,21 @@ impl App {
             }
         }
 
+        // A browser session's marks: the whole cache of its store, newest first, names cleaned and capped,
+        // at most OPEN_QUICKLY_BROWSER_MARKS per session (the search stays bounded).
+        for src in &s.sessions {
+            if !self.is_browser_pane(src.pane) {
+                continue;
+            }
+            let Some(dev_null) = self.panes.get(&src.pane).and_then(|p| p.browser_io()).map(|io| io.dev_null) else { continue };
+            for m in self.browser_marks_cache(dev_null).iter().filter(|m| !m.name.is_empty()).take(OPEN_QUICKLY_BROWSER_MARKS) {
+                let name = crate::browser_marks::rename_text(&m.name);
+                if !name.is_empty() {
+                    s.browser_marks.push((src.pane, m.guid.clone(), name, Some(src.pane) == current));
+                }
+            }
+        }
+
         // Every menu command Tandem runs, then the Scripts menu's script items.
         s.menu_items = crate::menus::shown_items()
             .filter(|i| !i.separator && !i.submenu && !i.selector.is_empty() && crate::commands::status(i) == crate::commands::Status::Done)
@@ -319,7 +336,7 @@ impl App {
     /// The session a row previews: a session's, a window's current one, a named mark's.
     fn preview_pane(&self, kind: &ItemKind) -> Option<PaneId> {
         match kind {
-            ItemKind::Session(p) | ItemKind::NamedMark { pane: p, .. } => Some(*p),
+            ItemKind::Session(p) | ItemKind::NamedMark { pane: p, .. } | ItemKind::BrowserMark { pane: p, .. } => Some(*p),
             ItemKind::Window(k) => {
                 if self.windows.current() == Some(*k) {
                     return self.focused_id();
@@ -480,6 +497,13 @@ impl App {
                     self.send_snippet(guid, alt, event_loop);
                 }
                 self.bring_forward();
+            }
+            ItemKind::BrowserMark { pane, guid } => {
+                // The pane may be gone since the list was built; the reveal is Task 5's gated one.
+                if self.is_browser_pane(*pane) {
+                    self.reveal_pane(*pane);
+                    self.browser_reveal_named_mark(*pane, guid);
+                }
             }
             ItemKind::NamedMark { pane, mark } => {
                 self.reveal_pane(*pane);

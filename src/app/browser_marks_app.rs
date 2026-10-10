@@ -20,19 +20,26 @@ pub(super) enum MarkPrompt {
     /// A new mark; `at` is the context menu's click in page pixels, None for the viewport centre.
     /// `epoch` is the navigation epoch the request began in (`MethodState::epoch`).
     Add { at: Option<(f64, f64)>, epoch: u64 },
-    /// A rename of the stored mark `guid`, opened for the page of navigation epoch `epoch`.
-    Rename { guid: String, epoch: u64 },
-    /// A delete confirm for the stored mark `guid` (a Tandem window outside the page, B2).
-    Delete { guid: String, epoch: u64 },
+    /// A rename of the stored mark `guid`. `epoch` is Some(navigation epoch) for a request the page
+    /// made (bound to that page), None for a person's request from the menus, the tool or Open Quickly
+    /// (any known mark, on any page, as iTerm2).
+    Rename { guid: String, epoch: Option<u64> },
+    /// A delete confirm for the stored mark `guid` (a Tandem window outside the page, B2); `epoch` as above.
+    Delete { guid: String, epoch: Option<u64> },
 }
 
 impl MarkPrompt {
-    /// A rename or delete: windows a navigation or a closing pane dismisses.
+    /// A rename or delete: windows a pane closing dismisses.
     fn is_edit(&self) -> bool {
         matches!(self, MarkPrompt::Rename { .. } | MarkPrompt::Delete { .. })
     }
 
-    fn guid(&self) -> Option<(&str, u64)> {
+    /// A rename or delete the page asked for: a navigation dismisses it (a person's stays).
+    fn is_page_edit(&self) -> bool {
+        matches!(self, MarkPrompt::Rename { epoch: Some(_), .. } | MarkPrompt::Delete { epoch: Some(_), .. })
+    }
+
+    fn guid(&self) -> Option<(&str, Option<u64>)> {
         match self {
             MarkPrompt::Rename { guid, epoch } | MarkPrompt::Delete { guid, epoch } => Some((guid, *epoch)),
             MarkPrompt::Add { .. } => None,
@@ -142,22 +149,26 @@ impl App {
 
     /// Whether a rename or delete of `guid` may still act: this pane's page shows the mark, and it is
     /// the page (epoch) the window was opened for. Refuses a mark Tandem does not know.
-    fn mark_edit_valid(&self, pane: PaneId, guid: &str, epoch: u64) -> bool {
+    fn mark_edit_valid(&self, pane: PaneId, guid: &str, epoch: Option<u64>) -> bool {
         let Some(bv) = self.browser_views.get(&pane) else { return false };
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return false };
-        !marks::is_local_page(&io.url) && marks::request_valid(self.browser_marks_cache(io.dev_null), &io.url, guid, epoch, bv.marks_method.epoch())
+        match epoch {
+            // A person's request: any known mark, whatever the page shows.
+            None => marks::person_edit_valid(self.browser_marks_cache(io.dev_null), guid),
+            Some(e) => !marks::is_local_page(&io.url) && marks::request_valid(self.browser_marks_cache(io.dev_null), &io.url, guid, e, bv.marks_method.epoch()),
+        }
     }
 
     /// A rename or delete window of `pane` (all of its mark windows when `all`) is closed with no
     /// change: the page navigated, or the pane closed.
     fn marks_dismiss_windows(&mut self, pane: PaneId, all: bool) {
-        if self.pending_mark_prompt.as_ref().is_some_and(|(p, m)| *p == pane && (all || m.is_edit())) {
+        if self.pending_mark_prompt.as_ref().is_some_and(|(p, m)| *p == pane && (all || m.is_page_edit())) {
             self.pending_mark_prompt = None;
         }
-        if self.prompt.as_ref().is_some_and(|(_, p, t)| *p == pane && matches!(t, super::marks_ui::PromptFor::Browser(m) if all || m.is_edit())) {
+        if self.prompt.as_ref().is_some_and(|(_, p, t)| *p == pane && matches!(t, super::marks_ui::PromptFor::Browser(m) if all || m.is_page_edit())) {
             self.prompt = None;
         }
-        if self.mark_confirm.as_ref().is_some_and(|(_, p, ..)| *p == pane) {
+        if self.mark_confirm.as_ref().is_some_and(|(_, p, _, e)| *p == pane && (all || e.is_some())) {
             self.mark_confirm = None;
         }
     }
@@ -335,7 +346,8 @@ impl App {
                 let host = self.panes.get(&pane).and_then(|p| p.browser_io()).and_then(|io| crate::ai_policy::host_of(&io.url)).unwrap_or_default();
                 crate::rlog!("Navigation failed for {} with pending mark {}", crate::dlog::name(&host), crate::dlog::name(&guid));
             }
-            return;
+            // A navigation that never completed leaves the old document: its monitor goes on again.
+            return self.marks_reenable(pane);
         }
         // The pending reveal runs only on the end of the navigation it is bound to (B9), after the
         // monitor exists (below), so a stale or foreign end of navigation scrolls nothing.
@@ -391,7 +403,7 @@ impl App {
                 // A navigation since the call began: this document is not the one the call was made
                 // for, so nothing runs in it (its monitor is gone with the old document).
                 if !app.marks_epoch_is(pane, epoch) {
-                    return;
+                    return app.marks_reenable(pane);
                 }
                 app.browser_js_call(
                     pane,
@@ -399,11 +411,31 @@ impl App {
                     call.args,
                     Box::new(move |app, pane, r| {
                         if !app.marks_epoch_is(pane, epoch) {
-                            return;
+                            return app.marks_reenable(pane);
                         }
                         app.browser_js_call(pane, marks::ENABLE_MONITOR_JS, json!({}), Box::new(move |app, pane, _| done(app, pane, r)));
                     }),
                 );
+            }),
+        );
+    }
+
+    /// The monitor of the document the pane still shows goes on again: a navigation began while a DOM
+    /// change had it off and then never completed (a download link, Stop), so no later start will do it.
+    /// In a new document the monitor does not exist yet and the error is ignored (`try?`).
+    fn marks_reenable(&mut self, pane: PaneId) {
+        if !self.client_open(pane) {
+            return;
+        }
+        // A navigation's start cleared the monitor flag: an answer from a live monitor sets it again.
+        self.browser_js_call(
+            pane,
+            marks::ENABLE_MONITOR_JS,
+            json!({}),
+            Box::new(|app, pane, r| {
+                if let (Ok(_), Some(bv)) = (r, app.browser_views.get_mut(&pane)) {
+                    bv.marks_page.monitor = true;
+                }
             }),
         );
     }
@@ -446,16 +478,23 @@ impl App {
     /// Queues the rename window for mark `guid` (the page's box, Edit > Named Marks and the Named
     /// Marks tool all come here). Refused for a mark that is not on this pane's page.
     pub(super) fn browser_rename_prompt(&mut self, pane: PaneId, guid: &str) {
-        self.queue_mark_edit(pane, guid, false);
+        self.queue_mark_edit(pane, guid, false, true);
+    }
+
+    /// A person's rename (Edit > Named Marks, the Named Marks tool): any known mark, on any page.
+    pub(super) fn browser_rename_prompt_person(&mut self, pane: PaneId, guid: &str) {
+        self.queue_mark_edit(pane, guid, false, false);
     }
 
     /// Queues the delete confirm for mark `guid`.
     pub(super) fn browser_remove_prompt(&mut self, pane: PaneId, guid: &str) {
-        self.queue_mark_edit(pane, guid, true);
+        self.queue_mark_edit(pane, guid, true, true);
     }
 
-    fn queue_mark_edit(&mut self, pane: PaneId, guid: &str, delete: bool) {
-        let Some(epoch) = self.browser_views.get(&pane).map(|b| b.marks_method.epoch()) else { return };
+
+    fn queue_mark_edit(&mut self, pane: PaneId, guid: &str, delete: bool, from_page: bool) {
+        let Some(page_epoch) = self.browser_views.get(&pane).map(|b| b.marks_method.epoch()) else { return };
+        let epoch = from_page.then_some(page_epoch);
         if !self.mark_edit_valid(pane, guid, epoch) {
             return;
         }
@@ -553,7 +592,9 @@ impl App {
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         if !bv.marks_page.monitor {
-            return;
+            // A navigation's start cleared the flag; if that navigation never completed the old
+            // document's monitor is still there and still off: bring it back.
+            return self.marks_reenable(pane);
         }
         // The monitor disables itself before every post and waits for the host to bring it back, so a
         // message the rate gate refuses still gets the monitor re-enabled (never dropped silently).
@@ -738,11 +779,33 @@ mod tests {
         let sc = include_str!("browser_scripts_app.rs");
         let fin = &sc[sc.find("fn browser_world_finish").unwrap()..sc.find("pub(super) fn browser_world_navigated").unwrap()];
         assert!(fin.contains("was_restart") && fin.contains("self.browser_marks_start(pane, None)"), "a rebuilt world restarts the marks (R13x5-3)");
+        // The branch that normally runs: a restart carries the pane's URL as `load_after`, the finish loads
+        // it, and that load's own Navigated starts the marks (so `loads` is true and the finish call above
+        // is only the no-load case; do not remove the Navigated path).
+        let restart = &sc[sc.find("fn browser_world_restart").unwrap()..sc.find("fn browser_world_restart").unwrap() + 1500];
+        assert!(restart.contains("browser_world_start(") && fin.contains("self.browser_load_own(pane, &url)"), "a restart reloads the page");
+        assert!(include_str!("browser_app.rs").contains("self.browser_marks_navigated(pane, *ok, *nav);"), "the reload's Navigated starts the marks");
+        let ok = &p[p.find("pub(super) fn browser_marks_navigated").unwrap()..p.find("pub(super) fn browser_marks_start").unwrap()];
+        assert!(ok.contains("return self.marks_reenable(pane)"), "a navigation that never completes re-enables the monitor (M1)");
         let lay = &p[p.find("pub(super) fn marks_layout_message").unwrap()..p.find("/// A pane that closed takes").unwrap()];
         assert!(lay.contains("layout_action(") && lay.matches("ENABLE_MONITOR_JS").count() == 2, "a refused or empty message re-enables the monitor");
         let dom = &p[p.find("pub(super) fn marks_modify_dom").unwrap()..p.find("pub(super) fn marks_message").unwrap()];
         assert_eq!(dom.matches("marks_epoch_is(pane, epoch)").count(), 2, "checked at every async step");
         assert!(dom.find("marks_epoch_is").unwrap() < dom.find("&call.body").unwrap());
+    }
+
+    /// A person's request from the menus, the tool or Open Quickly may act on any known mark on any page;
+    /// the page's own request keeps the page and epoch binding. Unknown ids are refused for both.
+    #[test]
+    fn person_and_page_edits_are_checked_by_origin() {
+        let p = prod();
+        let valid = &p[p.find("fn mark_edit_valid").unwrap()..p.find("fn marks_dismiss_windows").unwrap()];
+        assert!(valid.contains("None => marks::person_edit_valid(") && valid.contains("Some(e) => !marks::is_local_page(&io.url) && marks::request_valid("));
+        assert!(p.contains("queue_mark_edit(pane, guid, false, true)") && p.contains("queue_mark_edit(pane, guid, false, false)"));
+        let q = &p[p.find("fn queue_mark_edit").unwrap()..p.find("// --- Reveal, rename, remove").unwrap()];
+        assert!(q.contains("from_page.then_some(page_epoch)") && q.contains("self.mark_edit_valid(pane, guid, epoch)"), "an unknown id is refused for both");
+        let dismiss = &p[p.find("fn marks_dismiss_windows").unwrap()..p.find("pub(super) fn mark_confirm_event").unwrap()];
+        assert!(dismiss.contains("is_page_edit()"), "a navigation leaves a person's window");
     }
 
     /// Source shape (B1, B2, B9): the rename and delete happen in Tandem windows outside the page, the

@@ -68,6 +68,8 @@ pub(super) enum Shown {
     Actions(Vec<String>),
     /// The focused session's named marks, top first: id and name.
     Marks(Vec<(u32, String)>),
+    /// A browser session's marks: the store's whole cache, newest first, as guid and row text.
+    BrowserMarks(Vec<(String, String)>),
     Captured(CapturedShown),
     Status(StatusShown),
     Jobs(JobsShown),
@@ -86,6 +88,7 @@ impl Shown {
             Shown::Snippets { rows, .. } => rows.len(),
             Shown::Actions(v) => v.len(),
             Shown::Marks(v) => v.len(),
+            Shown::BrowserMarks(v) => v.len(),
             Shown::Captured(c) => c.entries.len(),
             Shown::Status(st) => st.items.len(),
             Shown::Jobs(j) => j.rows.len(),
@@ -314,10 +317,14 @@ impl App {
     }
 
     /// The focused session's named marks in buffer order (`namedMarkSort`).
-    fn mark_shown(&mut self) -> Vec<(u32, String)> {
-        let Some(p) = self.focused_id().and_then(|id| self.panes.get_mut(&id)) else { return Vec::new() };
+    fn mark_shown(&mut self) -> Shown {
+        if let Some(pane) = self.focused_id().filter(|&id| self.is_browser_pane(id)) {
+            let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
+            return Shown::BrowserMarks(browser_mark_rows(self.browser_marks_cache(dev_null)));
+        }
+        let Some(p) = self.focused_id().and_then(|id| self.panes.get_mut(&id)) else { return Shown::Marks(Vec::new()) };
         let named: Vec<(i32, crate::marks::Mark)> = p.screen.marks_in_order().into_iter().filter(|(_, m)| m.name.is_some()).collect();
-        tt::mark_rows(&named)
+        Shown::Marks(tt::mark_rows(&named))
     }
 
     /// What else `tool` reads, hashed for its `ShownKey`: the focused session's named marks
@@ -329,7 +336,11 @@ impl App {
             // The live rows, not the records: a mark cleared or trimmed from the scrollback
             // leaves the list at once. The scan runs only while Named Marks shows.
             ToolId::NamedMarks => {
-                if let Some(p) = pane.and_then(|id| self.panes.get(&id)) {
+                if let Some(id) = pane.filter(|&id| self.is_browser_pane(id)) {
+                    // A browser session's rows come from its store's cache: its generation is the key.
+                    let dev_null = self.panes.get(&id).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
+                    (dev_null, self.browser_marks.get(&dev_null).map_or(0, |c| c.generation)).hash(&mut h);
+                } else if let Some(p) = pane.and_then(|id| self.panes.get(&id)) {
                     p.screen.live_named_marks().hash(&mut h);
                 }
             }
@@ -398,7 +409,7 @@ impl App {
             }
             ToolId::Snippets => self.snippet_shown(&query),
             ToolId::Actions => Shown::Actions(tt::action_rows(&user_actions::load(self.globals.get("Actions").as_ref()))),
-            ToolId::NamedMarks => Shown::Marks(self.mark_shown()),
+            ToolId::NamedMarks => self.mark_shown(),
             ToolId::CapturedOutput => self.captured_shown(&query),
             ToolId::SessionStatus => self.status_shown(),
             ToolId::Jobs => self.jobs_shown(),
@@ -473,6 +484,7 @@ impl App {
                 }
                 Shown::Actions(v) => plain(v[i].clone(), false),
                 Shown::Marks(v) => plain(v[i].1.clone(), false),
+                Shown::BrowserMarks(v) => plain(v[i].1.clone(), false),
                 Shown::Captured(c) => more::captured_list_row(c.wraps.borrow().lines.get(i).map_or(&[][..], Vec::as_slice)),
                 Shown::Status(st) => more::status_list_row(&st.items[i], st.wraps.borrow().lines.get(i).map_or(&[][..], Vec::as_slice), st.separator == Some(i), avail, scale, dark, &width),
                 Shown::Jobs(j) => more::job_list_row(&j.rows[i], collapsed.contains(&j.rows[i].pid), avail, glyph_w, scale, &width),
@@ -751,6 +763,15 @@ impl App {
         if tool == ToolId::NamedMarks {
             let Some(row) = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied()) else { return };
             let shown = self.tool_shown(tool);
+            if let Shown::BrowserMarks(marks) = &*shown {
+                // The mark is shown through Task 5's reveal, and the page takes the keyboard (`PT:15689-15692`).
+                let (Some((guid, _)), Some(pane)) = (marks.get(row), self.focused_id()) else { return };
+                if self.is_browser_pane(pane) {
+                    self.browser_reveal_named_mark(pane, guid);
+                    self.belt.focus = None;
+                }
+                return;
+            }
             let Shown::Marks(marks) = &*shown else { return };
             let (Some(&(mark, _)), Some(pane)) = (marks.get(row), self.focused_id()) else { return };
             let line = self.panes.get_mut(&pane).and_then(|p| p.screen.marks_in_order().into_iter().find(|(_, m)| m.id == mark).map(|(l, _)| l));
@@ -808,7 +829,7 @@ impl App {
             Shown::Snippets { .. } => return self.apply_snippets(tt::snippet_pick(alt, shift), false, event_loop),
             Shown::Actions(_) => return self.apply_actions(event_loop),
             Shown::Captured(_) => return self.run_captured(first),
-            Shown::Marks(_) | Shown::Status(_) | Shown::Jobs(_) | Shown::Notes | Shown::Codecierge(_) => return,
+            Shown::Marks(_) | Shown::BrowserMarks(_) | Shown::Status(_) | Shown::Jobs(_) | Shown::Notes | Shown::Codecierge(_) => return,
         }
         self.belt.focus = None;
         self.redraw();
@@ -1327,7 +1348,20 @@ impl App {
             }
             ToolId::NamedMarks => {
                 let rows = self.belt.tools.get(&tool).map(|t| t.selection.rows.clone()).unwrap_or_default();
-                let Shown::Marks(marks) = &*self.tool_shown(tool) else { return };
+                let shown = self.tool_shown(tool);
+                if let Shown::BrowserMarks(marks) = &*shown {
+                    // Each selected mark goes at once, as iTerm2's tool removes them (`TNM:185-190`); a
+                    // person's click in Tandem's own list, so no page is involved.
+                    let Some(pane) = self.focused_id().filter(|&id| self.is_browser_pane(id)) else { return };
+                    let guids: Vec<String> = rows.iter().filter_map(|&r| marks.get(r).map(|(g, _)| g.clone())).collect();
+                    for guid in guids {
+                        self.browser_remove_named_mark(pane, &guid);
+                    }
+                    self.tool_state(tool).selection.rows.clear();
+                    self.redraw();
+                    return;
+                }
+                let Shown::Marks(marks) = &*shown else { return };
                 let ids: Vec<u32> = rows.iter().filter_map(|&r| marks.get(r).map(|(id, _)| *id)).collect();
                 let Some(p) = self.focused_id().and_then(|id| self.panes.get_mut(&id)) else { return };
                 for id in ids {
@@ -1384,6 +1418,11 @@ impl App {
                 }
                 let Some(row) = row else { return };
                 let shown = self.tool_shown(tool);
+                if let Shown::BrowserMarks(marks) = &*shown {
+                    // The rename window opens with the stored name filled; any known mark may be renamed.
+                    let Some((guid, _)) = marks.get(row).cloned() else { return };
+                    return self.browser_rename_prompt_person(pane, &guid);
+                }
                 let Shown::Marks(marks) = &*shown else { return };
                 let Some((mark, _)) = marks.get(row).cloned() else { return };
                 let name = self.panes.get(&pane).and_then(|p| p.screen.marks.records.get(&mark)).and_then(|m| m.name.clone()).unwrap_or_default();
@@ -1585,8 +1624,41 @@ fn drop_slot(shown: &Shown, rows: &[Rect], y: f32) -> Option<usize> {
     }
 }
 
+/// Most rows the Named Marks tool lists for a browser session (the cache can hold a million).
+const BROWSER_TOOL_MARKS: usize = 2000;
+
+/// The Named Marks tool's rows for a browser session: guid and text, cache order kept (`TNM:128-140`),
+/// "(Unnamed)" for an empty name (`TNM:163`), names cleaned by Tandem's sanitizer and capped.
+fn browser_mark_rows(marks: &[crate::browser_marks::Mark]) -> Vec<(String, String)> {
+    marks
+        .iter()
+        .take(BROWSER_TOOL_MARKS)
+        .map(|m| {
+            let name = crate::browser_marks::rename_text(&m.name);
+            (m.guid.clone(), if name.trim().is_empty() { "(Unnamed)".to_string() } else { name })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn browser_mark_tool_follows_iterm2() {
+        use crate::browser_marks::Mark;
+        let m = |g: &str, n: &str| Mark { guid: g.into(), url: "https://a.b/".into(), name: n.into(), sort: 0 };
+        let rows = super::browser_mark_rows(&[m("g2", ""), m("g1", "a\u{202e}b")]);
+        assert_eq!(rows, vec![("g2".to_string(), "(Unnamed)".to_string()), ("g1".to_string(), "ab".to_string())], "cache order kept, placeholder, cleaned");
+        assert_eq!(super::browser_mark_rows(&(0..5000).map(|i| m(&format!("g{i}"), "n")).collect::<Vec<_>>()).len(), super::BROWSER_TOOL_MARKS);
+        let src = include_str!("toolbelt_tools_ui.rs");
+        let sel = &src[src.find("fn tool_selected").unwrap()..src.find("pub(super) fn tool_activate").unwrap()];
+        assert!(sel.contains("self.browser_reveal_named_mark(pane, guid)") && sel.contains("self.belt.focus = None"), "select reveals and gives the page the keyboard");
+        let rem = &src[src.find("fn tool_remove").unwrap()..src.find("fn tool_edit").unwrap()];
+        assert!(rem.contains("for guid in guids") && rem.contains("self.browser_remove_named_mark(pane, &guid)"), "each selected mark is removed");
+        let edit = &src[src.find("fn tool_edit").unwrap()..src.find("pub(super) fn settle_action_undo").unwrap()];
+        assert!(edit.contains("browser_add_named_mark(pane, None, crate::browser_marks::AddPath::Tool)"), "Add has no menu gate");
+        assert!(edit.contains("self.browser_rename_prompt_person(pane, &guid)"), "Edit queues the rename prompt");
+    }
+
     use super::*;
 
     fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
