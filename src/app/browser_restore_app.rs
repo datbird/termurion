@@ -53,6 +53,10 @@ impl App {
         if bv.world.setup.is_some() {
             return;
         }
+        // The main frame's own navigation to the source page arms its one document request (Task 7).
+        if !redirect {
+            bv.source_nav = crate::view_source::is_source_url(url);
+        }
         let t = bv.bar.nav_state.starting(url, kind, user, redirect);
         bv.bar.transition = Some(t);
     }

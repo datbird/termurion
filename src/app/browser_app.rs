@@ -528,8 +528,9 @@ impl App {
             }
             // The navigation of the world's isolation check: it answers the check and is nothing else.
             Event::Navigated { ok, nav, .. } if self.browser_world_navigated(pane, *ok, *nav) => {}
-            Event::Navigated { ok, status, .. } => {
-                if let Some(bv) = self.browser_views.get_mut(&pane) {
+            Event::Navigated { ok, .. } => {
+                // The main document's answer, for View Source's choice (a failed load has none).
+                if let (Some(bv), Event::Navigated { status, .. }) = (self.browser_views.get_mut(&pane), e) {
                     bv.status = if *ok { *status } else { 0 };
                 }
                 // `BM:1390`: a failed navigation turns copy mode off.

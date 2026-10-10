@@ -230,7 +230,7 @@ mod tests {
             assert_eq!(n, if name == "browser_ctx_app.rs" { 1 } else { 0 }, "{name}: only the menu pick starts View Source");
         }
         let app = include_str!("browser_app.rs");
-        assert!(app.contains("bv.status = if *ok { *status } else { 0 };"));
+        assert!(app.contains("bv.status = if *ok { *status } else { 0 };") && app.contains("Event::Navigated { status, .. }"));
     }
 
     /// The log of an invalid source URL is rate-limited, and the source is taken only after the main
@@ -241,10 +241,10 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(prod.contains("if invalid_log_due() {") && prod.contains("from_secs(1)"));
         assert!(prod.contains("std::mem::take(&mut b.source_nav)") && prod.contains("request(pending, url, context, top_level,"));
-        let r = include_str!("browser_scripts_app.rs");
+        let r = include_str!("browser_restore_app.rs");
         let r = &r[..r.find("#[cfg(test)]").unwrap()];
-        let starting = &r[r.find("Event::Starting { redirect: false, url, .. } => {").unwrap()..];
-        let starting = &starting[..starting.find("self.browser_copy_mode_set(pane, false)").unwrap()];
-        assert!(starting.contains("bv.source_nav = crate::view_source::is_source_url(url);"));
+        let starting = &r[r.find("pub(super) fn browser_nav_starting").unwrap()..];
+        assert!(starting.contains("bv.source_nav = crate::view_source::is_source_url(url);") && starting.contains("if !redirect {"));
+        assert!(!starting.contains("source_nav") || starting.find("source_nav").unwrap() < starting.find("nav_state.starting").unwrap());
     }
 }
