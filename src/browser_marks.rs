@@ -295,6 +295,13 @@ pub fn show_call(marks: &[Value], secret: &str) -> Option<Call> {
     Some(Call { body: as_body(&filled), args: json!({ "marksArg": shown }) })
 }
 
+/// The annotations taken off the page when no mark is left for it (the show script returns early on
+/// an empty list, `NMM:480-483`, so its own removal never runs): by Tandem's reference to the host,
+/// never a lookup in the page.
+pub fn clear_call() -> Call {
+    Call { body: "if (window.tandemMarkHost) { window.tandemMarkHost.remove(); }\nwindow.tandemMarkHost = null;\nwindow.tandemMarkRoot = null;\nreturn true;".into(), args: json!({}) }
+}
+
 /// `update-mark-positions` (`NMM:509-515`). Rule (task-1 review): the layout monitor must be
 /// running in the isolated world before this runs (the script calls
 /// `window.iTermLayoutChangeMonitor.reenableLayoutChangeMonitoring()` and throws without it), after
@@ -358,7 +365,8 @@ pub const MIN_GAP_MS: u64 = 1000;
 pub struct PageState {
     pub secret: String,
     pub monitor: bool,
-    pub pending: Option<String>,
+    /// The reveal waiting for its page (B9): the mark and the navigation it is bound to.
+    pub pending: Option<Pending>,
     layout_at: Option<std::time::Instant>,
     request_at: Option<std::time::Instant>,
 }
@@ -375,6 +383,40 @@ impl PageState {
         self.monitor = false;
         self.layout_at = None;
         self.request_at = None;
+        self.pending = None;
+    }
+
+    /// A reveal that loads a page: the mark waits, armed for the Starting of the load it began (B9).
+    pub fn arm_reveal(&mut self, mark: Mark) {
+        self.pending = Some(Pending { mark, stage: Stage::Armed });
+    }
+
+    /// A reveal that needs no load: the mark is taken at once (`NMM:183-195`).
+    pub fn take_pending(&mut self) -> Option<Mark> {
+        self.pending.take().map(|p| p.mark)
+    }
+
+    /// A main-frame start (`redirect`: a hop of the navigation before it; `user`: the page's own
+    /// gesture). The first start Tandem made after the reveal armed is the reveal's own navigation;
+    /// a redirect hop of it moves the binding; any other start is a different navigation and ends
+    /// the wait (B9).
+    pub fn reveal_starting(&mut self, nav: u64, redirect: bool, user: bool) {
+        let Some(p) = self.pending.as_mut() else { return };
+        match p.stage {
+            Stage::Armed if !redirect && !user => p.stage = Stage::Bound(nav),
+            Stage::Bound(_) if redirect => p.stage = Stage::Bound(nav),
+            _ => self.pending = None,
+        }
+    }
+
+    /// The main frame finished navigation `nav`: the pending mark when it is the bound navigation
+    /// and it loaded. A failed load keeps the mark (`NMM:223-225`); another navigation's end
+    /// (stale, a back or forward) does nothing.
+    pub fn reveal_navigated(&mut self, nav: u64, ok: bool) -> Option<Mark> {
+        match self.pending.as_ref()?.stage {
+            Stage::Bound(n) if n == nav && ok => self.take_pending(),
+            _ => None,
+        }
     }
 
     /// A new document or Tandem context: its scripts, monitor included, are gone.
@@ -399,6 +441,21 @@ impl PageState {
     pub fn request_allowed(&mut self, now: std::time::Instant) -> bool {
         Self::gate(&mut self.request_at, now)
     }
+}
+
+/// A reveal waiting for its page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pending {
+    pub mark: Mark,
+    stage: Stage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stage {
+    /// The load was asked for; its start has not been seen.
+    Armed,
+    /// Bound to the navigation with this id.
+    Bound(u64),
 }
 
 /// Why an add is refused (`BVC:591-606`, `NMM:142-145`; `Local` is Tandem's: B5).
@@ -540,6 +597,48 @@ pub const PROMPT_TITLE: &str = "Set Named Mark";
 /// The prompt's label (`BDV:16`).
 pub const PROMPT_LABEL: &str = "Enter Mark Name";
 
+/// What reveal does (`NMM:183-195`): scroll at once on the same page (the fragment is ignored), else
+/// load the mark's URL and scroll when that load finishes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reveal {
+    SamePage,
+    Load(String),
+}
+
+pub fn reveal_step(mark_url: &str, current: &str) -> Reveal {
+    if same_page(mark_url, current) {
+        Reveal::SamePage
+    } else {
+        Reveal::Load(mark_url.to_string())
+    }
+}
+
+/// How long a mark window ignores keys and clicks after it opens (a keystroke or click meant for the
+/// page must not answer it).
+pub const WINDOW_GUARD_MS: u64 = 500;
+
+pub fn input_ignored(opened: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(opened) < std::time::Duration::from_millis(WINDOW_GUARD_MS)
+}
+
+/// Whether a rename or delete may still act: the mark is one this page shows (the cache, the page's
+/// URL) and the page is the one the window opened for (the navigation epoch).
+pub fn request_valid(cache: &[Mark], page_url: &str, guid: &str, opened_epoch: u64, epoch: u64) -> bool {
+    opened_epoch == epoch && page_guids(cache, page_url).iter().any(|g| g == guid)
+}
+
+/// The stored name as the rename window starts it: Tandem's sanitizer, never page text.
+pub fn rename_text(stored: &str) -> String {
+    crate::inert_files::display_text(stored, MAX_NAME, false)
+}
+
+/// The delete window's question: the stored name only.
+pub fn delete_text(stored: &str) -> String {
+    let name = rename_text(stored);
+    let shown = if name.trim().is_empty() { "Unnamed Mark".to_string() } else { name };
+    format!("Delete the named mark \"{shown}\"?")
+}
+
 /// One mark of the app-wide cache (`NM:8-21`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
@@ -556,10 +655,105 @@ pub struct Cache {
     pub generation: u64,
 }
 
+impl Cache {
+    /// `mutate` (`NMM:172`, `:294-299`): the mark renamed in place, order kept; false for an unknown guid.
+    pub fn rename(&mut self, guid: &str, name: &str) -> bool {
+        let Some(m) = self.marks.iter_mut().find(|m| m.guid == guid) else { return false };
+        m.name = name.to_string();
+        self.generation += 1;
+        true
+    }
+
+    /// `removeFirst`: false for an unknown guid.
+    pub fn remove(&mut self, guid: &str) -> bool {
+        let Some(i) = self.marks.iter().position(|m| m.guid == guid) else { return false };
+        self.marks.remove(i);
+        self.generation += 1;
+        true
+    }
+
+    pub fn get(&self, guid: &str) -> Option<&Mark> {
+        self.marks.iter().find(|m| m.guid == guid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn mark(g: &str, url: &str) -> Mark {
+        Mark { guid: g.into(), url: url.into(), name: format!("n{g}"), sort: 1 }
+    }
+
+    #[test]
+    fn reveal_follows_iterm2() {
+        assert_eq!(reveal_step("https://a.b/p#iterm-mark:x", "https://a.b/p#other"), Reveal::SamePage);
+        assert_eq!(reveal_step("https://a.b/p#iterm-mark:x", "https://a.b/q"), Reveal::Load("https://a.b/p#iterm-mark:x".into()));
+        assert_eq!(reveal_step("https://a.b/p?x=1#iterm-mark:x", "https://a.b/p"), Reveal::Load("https://a.b/p?x=1#iterm-mark:x".into()));
+    }
+
+    #[test]
+    fn cache_follows_iterm2() {
+        let mut c = Cache { marks: vec![mark("g2", "u"), mark("g1", "u")], generation: 4 };
+        assert!(c.rename("g1", "z"));
+        assert_eq!((c.marks[0].guid.as_str(), c.marks[1].name.as_str(), c.generation), ("g2", "z", 5));
+        assert!(c.remove("g2"));
+        assert_eq!(c.marks.len(), 1);
+        assert_eq!(c.generation, 6);
+        assert!(!c.remove("x") && !c.rename("x", "q"));
+        assert_eq!(c.generation, 6);
+        assert!(c.get("g1").is_some() && c.get("g2").is_none());
+    }
+
+    /// B9: a reveal that loads runs only on the end of its own navigation.
+    #[test]
+    fn a_reveal_is_bound_to_its_navigation() {
+        let mut s = PageState::new("s".into());
+        s.arm_reveal(mark("g", "https://a.b/p#iterm-mark:x"));
+        // A stale end before any start does nothing.
+        assert_eq!(s.reveal_navigated(7, true), None);
+        s.reveal_starting(8, false, false);
+        // Another navigation's end (stale, a hop it never saw) does nothing and keeps the wait.
+        assert_eq!(s.reveal_navigated(7, true), None);
+        // A failed load keeps the mark (`NMM:223-225`).
+        assert_eq!(s.reveal_navigated(8, false), None);
+        assert!(s.pending.is_some());
+        // A redirect hop moves the binding.
+        s.reveal_starting(9, true, false);
+        assert_eq!(s.reveal_navigated(8, true), None);
+        assert_eq!(s.reveal_navigated(9, true).map(|m| m.guid), Some("g".to_string()));
+        assert!(s.pending.is_none());
+        // A different navigation starting ends the wait.
+        s.arm_reveal(mark("g", "u"));
+        s.reveal_starting(10, false, false);
+        s.reveal_starting(11, false, true);
+        assert!(s.pending.is_none());
+        // The person's own click before the reveal's start cancels it.
+        s.arm_reveal(mark("g", "u"));
+        s.reveal_starting(12, false, true);
+        assert!(s.pending.is_none());
+        // A rebuilt world drops it.
+        s.arm_reveal(mark("g", "u"));
+        s.rotate("t".into());
+        assert!(s.pending.is_none());
+        assert_eq!(s.take_pending(), None);
+    }
+
+    #[test]
+    fn mark_windows_follow_the_native_rules() {
+        let cache = vec![mark("g1", "https://a.b/p#iterm-mark:x"), mark("g2", "https://a.b/q#iterm-mark:y")];
+        assert!(request_valid(&cache, "https://a.b/p", "g1", 3, 3));
+        assert!(!request_valid(&cache, "https://a.b/p", "g1", 3, 4), "a new navigation");
+        assert!(!request_valid(&cache, "https://a.b/p", "g2", 3, 3), "a mark of another page");
+        assert!(!request_valid(&cache, "https://a.b/p", "nope", 3, 3), "an unknown mark");
+        let t = std::time::Instant::now();
+        assert!(input_ignored(t, t));
+        assert!(!input_ignored(t, t + std::time::Duration::from_millis(WINDOW_GUARD_MS)));
+        assert_eq!(delete_text("a\u{202e}b"), "Delete the named mark \"ab\"?");
+        assert_eq!(delete_text(""), "Delete the named mark \"Unnamed Mark\"?");
+        assert_eq!(rename_text(&"x".repeat(MAX_NAME + 9)).chars().count(), MAX_NAME);
+    }
 
     fn first() -> Location {
         Location { xpath: "//p[1]".into(), offset_y: 4, scroll_y: 100, text_fragment: Some("a".into()), y: 120 }

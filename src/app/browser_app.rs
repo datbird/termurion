@@ -537,7 +537,7 @@ impl App {
             }
             // The navigation of the world's isolation check: it answers the check and is nothing else.
             Event::Navigated { ok, nav, .. } if self.browser_world_navigated(pane, *ok, *nav) => {}
-            Event::Navigated { ok, .. } => {
+            Event::Navigated { ok, nav, .. } => {
                 // The main document's answer, for View Source's choice (a failed load has none).
                 if let (Some(bv), Event::Navigated { status, .. }) = (self.browser_views.get_mut(&pane), e) {
                     bv.status = if *ok { *status } else { 0 };
@@ -568,7 +568,7 @@ impl App {
                     self.browser_color_read(pane);
                 }
                 self.browser_name(pane);
-                self.browser_marks_navigated(pane, *ok);
+                self.browser_marks_navigated(pane, *ok, *nav);
             }
             Event::History { back, forward, .. } => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {

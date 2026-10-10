@@ -214,6 +214,7 @@ impl App {
 
     /// Handles an event for the Set Named Mark window. False when `window` is not it.
     pub(super) fn prompt_event(&mut self, window: winit::window::WindowId, event: &WindowEvent) -> bool {
+        let guarded = self.mark_input_guarded(event);
         let Some((w, pane, target)) = self.prompt.as_mut() else { return false };
         if w.id() != window {
             return false;
@@ -252,7 +253,10 @@ impl App {
                 }
             },
             other => {
-                w.event(other);
+                // A browser mark window just opened takes no key or click yet.
+                if !(guarded && matches!(target, PromptFor::Browser(_))) {
+                    w.event(other);
+                }
             }
         }
         true

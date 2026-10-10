@@ -20,8 +20,30 @@ pub(super) enum MarkPrompt {
     /// A new mark; `at` is the context menu's click in page pixels, None for the viewport centre.
     /// `epoch` is the navigation epoch the request began in (`MethodState::epoch`).
     Add { at: Option<(f64, f64)>, epoch: u64 },
-    /// A rename (Task 5).
-    Rename { guid: String },
+    /// A rename of the stored mark `guid`, opened for the page of navigation epoch `epoch`.
+    Rename { guid: String, epoch: u64 },
+    /// A delete confirm for the stored mark `guid` (a Tandem window outside the page, B2).
+    Delete { guid: String, epoch: u64 },
+}
+
+impl MarkPrompt {
+    /// A rename or delete: windows a navigation or a closing pane dismisses.
+    fn is_edit(&self) -> bool {
+        matches!(self, MarkPrompt::Rename { .. } | MarkPrompt::Delete { .. })
+    }
+
+    fn guid(&self) -> Option<(&str, u64)> {
+        match self {
+            MarkPrompt::Rename { guid, epoch } | MarkPrompt::Delete { guid, epoch } => Some((guid, *epoch)),
+            MarkPrompt::Add { .. } => None,
+        }
+    }
+}
+
+/// A window just made.
+enum Made {
+    Confirm(crate::prompt_ui::ConfirmWindow),
+    Name(crate::prompt_ui::PromptWindow),
 }
 
 /// The prompt a request opens, or None when the path's gate refuses it (review M11, B5).
@@ -47,16 +69,28 @@ impl App {
         self.mark_prompt_focused = false;
     }
 
-    /// Opens the queued mark window in the shared prompt slot, or focuses the one that is open (once)
-    /// and keeps the request queued until the slot is free. A request for a pane that is gone is dropped.
+    /// Opens the queued mark window, or focuses the one that is open (once) and keeps the request
+    /// queued until the slot is free. A request for a pane that is gone, one that a window of the
+    /// same pane already answers (one window per pane), and a rename or delete whose mark or page
+    /// is no longer the one it was asked for are dropped. The name entry is the shared `prompt`
+    /// slot; the delete confirm is `ConfirmWindow` (`mark_confirm`); either ignores input briefly.
     pub(super) fn open_pending_mark_prompt(&mut self, event_loop: &ActiveEventLoop) {
         let Some((pane, prompt)) = self.pending_mark_prompt.take() else { return };
         if !self.is_browser_pane(pane) {
             return;
         }
-        if let Some((w, ..)) = &self.prompt {
+        if let Some((guid, epoch)) = prompt.guid() {
+            if !self.mark_edit_valid(pane, guid, epoch) {
+                return;
+            }
+        }
+        if self.mark_window_open_for(pane) {
+            self.focus_mark_window(pane);
+            return;
+        }
+        if self.prompt.is_some() || self.mark_confirm.is_some() {
             if !self.mark_prompt_focused {
-                w.focus();
+                self.focus_mark_window(pane);
                 self.mark_prompt_focused = true;
             }
             self.pending_mark_prompt = Some((pane, prompt));
@@ -66,17 +100,111 @@ impl App {
             self.pending_mark_prompt = Some((pane, prompt));
             return;
         };
-        let stamp = crate::prompt_ui::local_stamp();
-        match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, marks::PROMPT_TITLE, marks::PROMPT_LABEL, &stamp) {
-            Ok(w) => self.prompt = Some((w, pane, super::marks_ui::PromptFor::Browser(prompt))),
-            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
+        let stored = prompt.guid().and_then(|(guid, _)| self.browser_marks_cache(dev_null).iter().find(|m| m.guid == guid).map(|m| m.name.clone())).unwrap_or_default();
+        let made = match &prompt {
+            MarkPrompt::Delete { .. } => crate::prompt_ui::ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Delete Named Mark", &marks::delete_text(&stored), "Cancel", "Delete").map(Made::Confirm),
+            _ => {
+                let text = if prompt.is_edit() { marks::rename_text(&stored) } else { crate::prompt_ui::local_stamp() };
+                crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, marks::PROMPT_TITLE, marks::PROMPT_LABEL, &text).map(|w| Made::Name(if prompt.is_edit() { w.with_selected() } else { w }))
+            }
+        };
+        match (made, prompt) {
+            (Ok(Made::Confirm(w)), MarkPrompt::Delete { guid, epoch }) => self.mark_confirm = Some((w, pane, guid, epoch)),
+            (Ok(Made::Name(w)), prompt) => self.prompt = Some((w, pane, super::marks_ui::PromptFor::Browser(prompt))),
+            (Err(e), _) => return self.banners.set("window", format!("Could not open the window: {e}")),
+            _ => return,
         }
+        self.mark_window_at = Some(Instant::now());
+    }
+
+    /// A mark window (name entry or delete confirm) of this pane is open.
+    fn mark_window_open_for(&self, pane: PaneId) -> bool {
+        self.prompt.as_ref().is_some_and(|(_, p, t)| *p == pane && matches!(t, super::marks_ui::PromptFor::Browser(_))) || self.mark_confirm.as_ref().is_some_and(|(_, p, ..)| *p == pane)
+    }
+
+    fn focus_mark_window(&self, pane: PaneId) {
+        if let Some((w, p, _)) = &self.prompt {
+            if *p == pane || self.mark_confirm.is_none() {
+                return w.focus();
+            }
+        }
+        if let Some((w, ..)) = &self.mark_confirm {
+            w.focus();
+        }
+    }
+
+    /// Whether a key or click is dropped: a mark window just opened (a keystroke meant for the page
+    /// must not answer it).
+    pub(super) fn mark_input_guarded(&self, event: &WindowEvent) -> bool {
+        matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && self.mark_window_at.is_some_and(|t| marks::input_ignored(t, Instant::now()))
+    }
+
+    /// Whether a rename or delete of `guid` may still act: this pane's page shows the mark, and it is
+    /// the page (epoch) the window was opened for. Refuses a mark Tandem does not know.
+    fn mark_edit_valid(&self, pane: PaneId, guid: &str, epoch: u64) -> bool {
+        let Some(bv) = self.browser_views.get(&pane) else { return false };
+        let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return false };
+        !marks::is_local_page(&io.url) && marks::request_valid(self.browser_marks_cache(io.dev_null), &io.url, guid, epoch, bv.marks_method.epoch())
+    }
+
+    /// A rename or delete window of `pane` (all of its mark windows when `all`) is closed with no
+    /// change: the page navigated, or the pane closed.
+    fn marks_dismiss_windows(&mut self, pane: PaneId, all: bool) {
+        if self.pending_mark_prompt.as_ref().is_some_and(|(p, m)| *p == pane && (all || m.is_edit())) {
+            self.pending_mark_prompt = None;
+        }
+        if self.prompt.as_ref().is_some_and(|(_, p, t)| *p == pane && matches!(t, super::marks_ui::PromptFor::Browser(m) if all || m.is_edit())) {
+            self.prompt = None;
+        }
+        if self.mark_confirm.as_ref().is_some_and(|(_, p, ..)| *p == pane) {
+            self.mark_confirm = None;
+        }
+    }
+
+    /// The delete confirm's events (`ConfirmWindow`). False when `window` is not it. Enter and Escape
+    /// cancel; only the Delete button removes, and only if the mark and page are still the ones asked.
+    pub(super) fn mark_confirm_event(&mut self, window: winit::window::WindowId, event: &WindowEvent) -> bool {
+        let guarded = self.mark_input_guarded(event);
+        let Some((w, pane, guid, epoch)) = self.mark_confirm.as_mut() else { return false };
+        if w.id() != window {
+            return false;
+        }
+        let (pane, guid, epoch) = (*pane, guid.clone(), *epoch);
+        match event {
+            WindowEvent::CloseRequested => self.mark_confirm = None,
+            WindowEvent::RedrawRequested => match w.redraw() {
+                crate::prompt_ui::ConfirmResult::Open => {}
+                crate::prompt_ui::ConfirmResult::Ok { .. } | crate::prompt_ui::ConfirmResult::Action { .. } => {
+                    self.mark_confirm = None;
+                    if self.mark_edit_valid(pane, &guid, epoch) {
+                        self.browser_remove_named_mark(pane, &guid);
+                    }
+                }
+                crate::prompt_ui::ConfirmResult::Cancel => self.mark_confirm = None,
+            },
+            other => {
+                if !guarded {
+                    w.event(other);
+                }
+            }
+        }
+        true
     }
 
     /// OK in the window with a non-empty name (`BDV:34-36`). A refusal here logs nothing and adds
     /// nothing (`NMM:142-145`); otherwise the point is found in the isolated world, then the XPath.
     pub(super) fn browser_mark_prompt_done(&mut self, pane: PaneId, prompt: MarkPrompt, name: String) {
-        let MarkPrompt::Add { at, epoch } = prompt else { return };
+        let (at, epoch) = match prompt {
+            MarkPrompt::Add { at, epoch } => (at, epoch),
+            MarkPrompt::Rename { guid, epoch } => {
+                if self.mark_edit_valid(pane, &guid, epoch) {
+                    self.browser_rename_named_mark(pane, &guid, &marks::rename_text(&name));
+                }
+                return;
+            }
+            MarkPrompt::Delete { .. } => return,
+        };
         if !self.mark_request_current(pane, epoch) {
             return;
         }
@@ -140,10 +268,20 @@ impl App {
         if e.view() != bv.id {
             return;
         }
+        let starting = matches!(e, Event::Starting { .. });
         match e {
-            Event::Starting { nav, .. } => bv.marks_method.starting(*nav),
+            Event::Starting { nav, redirect, user, .. } => {
+                bv.marks_method.starting(*nav);
+                if bv.world.setup.is_none() {
+                    bv.marks_page.reveal_starting(*nav, *redirect, *user);
+                }
+            }
             Event::DocumentMethod { nav, method, .. } => bv.marks_method.document(*nav, method),
             _ => {}
+        }
+        // A new navigation closes a rename or delete window for the old page with no change.
+        if starting {
+            self.marks_dismiss_windows(pane, false);
         }
     }
 
@@ -190,16 +328,18 @@ impl App {
     /// A main-frame navigation finished (`NMM:213-225`). Success: Task 5's pending reveal, then the
     /// layout monitor, and only after it the annotations (R13x5-3: the monitor first, so the position
     /// update never runs without it). Failure: logged by host, the pending mark kept for the next reveal.
-    pub(super) fn browser_marks_navigated(&mut self, pane: PaneId, ok: bool) {
+    pub(super) fn browser_marks_navigated(&mut self, pane: PaneId, ok: bool, nav: u64) {
         if !ok {
-            let pending = self.browser_views.get(&pane).and_then(|b| b.marks_page.pending.clone());
+            let pending = self.browser_views.get(&pane).and_then(|b| b.marks_page.pending.as_ref().map(|p| p.mark.guid.clone()));
             if let Some(guid) = pending {
                 let host = self.panes.get(&pane).and_then(|p| p.browser_io()).and_then(|io| crate::ai_policy::host_of(&io.url)).unwrap_or_default();
                 crate::rlog!("Navigation failed for {} with pending mark {}", crate::dlog::name(&host), crate::dlog::name(&guid));
             }
             return;
         }
-        // Task 5: `marks_navigate_pending(pane)` runs the pending reveal here (`NMM:213-216`).
+        // The pending reveal runs only on the end of the navigation it is bound to (B9), after the
+        // monitor exists (below), so a stale or foreign end of navigation scrolls nothing.
+        let reveal = self.browser_views.get_mut(&pane).and_then(|b| b.marks_page.reveal_navigated(nav, true));
         if self.marks_page(pane).is_none() {
             return;
         }
@@ -214,6 +354,9 @@ impl App {
                         bv.marks_page.monitor = true;
                     }
                     app.browser_marks_reload_annotations(pane);
+                    if let Some(mark) = &reveal {
+                        app.marks_run_reveal(pane, mark);
+                    }
                 }
             }),
         );
@@ -225,7 +368,7 @@ impl App {
         let Some((url, dev_null)) = self.marks_page(pane) else { return };
         let rows: Vec<(String, String, String)> = self.browser_db(dev_null).map(|db| db.named_marks_for_url(&url).into_iter().map(|r| (r.guid, r.url, r.name)).collect()).unwrap_or_default();
         let secret = self.marks_secret(pane);
-        let Some(call) = marks::show_call(&marks::annotation_marks(&rows), &secret) else { return };
+        let Some(call) = marks::show_call(&marks::annotation_marks(&rows), &secret).or_else(|| (rows.is_empty() && self.browser_views.get(&pane).is_some_and(|b| b.marks_page.monitor)).then(marks::clear_call)) else { return };
         self.marks_modify_dom(pane, call, Box::new(|_, _, _| {}));
     }
 
@@ -271,10 +414,109 @@ impl App {
         self.browser_mark_requested(pane, update);
     }
 
-    /// Task 5 hook: opens the native name prompt (rename) or the native Delete confirm. The request
-    /// has been checked against this pane's marks and rate-limited; until Task 5 it does nothing.
+    /// The box's request (B2): the native name prompt (rename) or the native Delete confirm. The
+    /// request has been checked against this pane's marks and rate-limited; the window shows only the
+    /// stored name, and its answer is checked again against the mark and the page.
     fn browser_mark_requested(&mut self, pane: PaneId, update: Update) {
-        let _ = (pane, update);
+        match update {
+            Update::RequestRename { guid } => self.browser_rename_prompt(pane, &guid),
+            Update::RequestDelete { guid } => self.browser_remove_prompt(pane, &guid),
+        }
+    }
+
+    /// Queues the rename window for mark `guid` (the page's box, Edit > Named Marks and the Named
+    /// Marks tool all come here). Refused for a mark that is not on this pane's page.
+    pub(super) fn browser_rename_prompt(&mut self, pane: PaneId, guid: &str) {
+        self.queue_mark_edit(pane, guid, false);
+    }
+
+    /// Queues the delete confirm for mark `guid`.
+    pub(super) fn browser_remove_prompt(&mut self, pane: PaneId, guid: &str) {
+        self.queue_mark_edit(pane, guid, true);
+    }
+
+    fn queue_mark_edit(&mut self, pane: PaneId, guid: &str, delete: bool) {
+        let Some(epoch) = self.browser_views.get(&pane).map(|b| b.marks_method.epoch()) else { return };
+        if !self.mark_edit_valid(pane, guid, epoch) {
+            return;
+        }
+        let guid = guid.to_string();
+        let prompt = if delete { MarkPrompt::Delete { guid, epoch } } else { MarkPrompt::Rename { guid, epoch } };
+        self.pending_mark_prompt = Some((pane, prompt));
+        self.mark_prompt_focused = false;
+    }
+
+    // --- Reveal, rename, remove (Task 5) ---
+
+    /// Reveals mark `guid` in pane `pane` (`BVC:577-589`, `NMM:183-195`): on the same page it scrolls at
+    /// once, on another it loads the mark's URL (through the load gate, then Tandem's own navigation)
+    /// and scrolls when that very navigation finishes (B9).
+    pub(super) fn browser_reveal_named_mark(&mut self, pane: PaneId, guid: &str) {
+        let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return };
+        let (dev_null, current) = (io.dev_null, io.url.clone());
+        let Some(mark) = self.browser_marks_cache(dev_null).iter().find(|m| m.guid == guid).cloned() else { return };
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        match marks::reveal_step(&mark.url, &current) {
+            marks::Reveal::SamePage => {
+                bv.marks_page.arm_reveal(mark);
+                self.marks_navigate_pending(pane);
+            }
+            marks::Reveal::Load(url) => {
+                let Some(url) = crate::browser_restore::load_gate(&url) else {
+                    bv.marks_page.pending = None;
+                    return crate::rlog!("Failed to navigate to mark - the page may not be loaded");
+                };
+                bv.marks_page.arm_reveal(mark);
+                self.browser_navigate(pane, &url);
+            }
+        }
+    }
+
+    /// `navigateToMark` (`NMM:315-331`): the pending mark is taken (cleared in every case) and shown.
+    pub(super) fn marks_navigate_pending(&mut self, pane: PaneId) {
+        let Some(mark) = self.browser_views.get_mut(&pane).and_then(|b| b.marks_page.take_pending()) else { return };
+        self.marks_run_reveal(pane, &mark);
+    }
+
+    fn marks_run_reveal(&mut self, pane: PaneId, mark: &Mark) {
+        let Some(loc) = Location::from_url(&mark.url) else { return crate::rlog!("Invalid URL") };
+        if self.marks_page(pane).is_none() {
+            return;
+        }
+        let Ok(call) = marks::navigate_call(&loc) else { return crate::rlog!("Failed to navigate to mark - element not found") };
+        let epoch = self.browser_views.get(&pane).map_or(0, |b| b.marks_method.epoch());
+        self.marks_modify_dom(
+            pane,
+            call,
+            Box::new(move |app, pane, r| {
+                let same = app.browser_views.get(&pane).is_some_and(|b| b.marks_method.epoch() == epoch);
+                if same && !matches!(r, Ok(Value::Bool(true))) {
+                    crate::rlog!("Failed to navigate to mark - element not found");
+                }
+            }),
+        );
+    }
+
+    /// `renameNamedMark` (`NMM:197-211`): the store, the cache, the menus and the page's annotations.
+    pub(super) fn browser_rename_named_mark(&mut self, pane: PaneId, guid: &str, name: &str) {
+        let Some(dev_null) = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.dev_null) else { return };
+        if !self.browser_db(dev_null).is_some_and(|db| db.rename_named_mark(guid, name)) {
+            return crate::rlog!("updateNamedMarkName failed");
+        }
+        self.browser_marks.entry(dev_null).or_default().rename(guid, name);
+        self.browser_marks_changed();
+        self.browser_marks_reload_annotations(pane);
+    }
+
+    /// `removeNamedMark` (`NMM:168-181`).
+    pub(super) fn browser_remove_named_mark(&mut self, pane: PaneId, guid: &str) {
+        let Some(dev_null) = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.dev_null) else { return };
+        if !self.browser_db(dev_null).is_some_and(|db| db.remove_named_mark(guid)) {
+            return crate::rlog!("removeNamedMark failed");
+        }
+        self.browser_marks.entry(dev_null).or_default().remove(guid);
+        self.browser_marks_changed();
+        self.browser_marks_reload_annotations(pane);
     }
 
     /// The layout monitor's message (`LAYOUT_HANDLER`, `NMM:254-264`, `:367-381`): when the cache holds
@@ -316,9 +558,7 @@ impl App {
     /// A pane that closed takes its queued mark window request with it (an open window for it adds
     /// nothing: `mark_request_current` finds no pane).
     pub(super) fn marks_pane_gone(&mut self, pane: PaneId) {
-        if self.pending_mark_prompt.as_ref().is_some_and(|(p, _)| *p == pane) {
-            self.pending_mark_prompt = None;
-        }
+        self.marks_dismiss_windows(pane, true);
     }
 }
 
@@ -365,7 +605,7 @@ mod tests {
         assert!(located.contains("db.add_named_mark(&guid, &url, &name, \"\", now)"));
         assert!(located.find("Location::from_json").unwrap() < located.find("add_named_mark").unwrap());
         let open = &p[p.find("pub(super) fn open_pending_mark_prompt").unwrap()..p.find("pub(super) fn browser_mark_prompt_done").unwrap()];
-        assert!(open.contains("marks::PROMPT_TITLE, marks::PROMPT_LABEL, &stamp") && open.contains("PromptFor::Browser(prompt)") && open.contains("w.focus()"));
+        assert!(open.contains("marks::PROMPT_TITLE, marks::PROMPT_LABEL, &text") && open.contains("PromptFor::Browser(prompt)") && open.contains("focus_mark_window"));
     }
 
     /// Who may ask: the Edit menu commands, the context menu pick and the Named Marks tool's Add, each
@@ -442,7 +682,7 @@ mod tests {
         let router = &router[router.find("pub(super) fn browser_message").unwrap()..router.find("pub(super) fn browser_page_open").unwrap()];
         assert!(router.contains("crate::browser_marks::MESSAGE_HANDLER => self.marks_message(pane, &r)") && router.contains("crate::browser_marks::LAYOUT_HANDLER => self.marks_layout_message(pane, &r)"));
         let app = include_str!("browser_app.rs");
-        assert!(app.contains("self.browser_marks_navigated(pane, *ok);"));
+        assert!(app.contains("self.browser_marks_navigated(pane, *ok, *nav);"));
         // Secrets rotate with the world; the monitor flag dies with the document.
         let sc = include_str!("browser_scripts_app.rs");
         assert!(sc.matches("marks_page.rotate(browser_js::new_secret())").count() == 2);
@@ -459,5 +699,37 @@ mod tests {
             assert!(body.contains("MARKS-SECRET-13x5") && !body.contains("VIEW-SECRET-13x5"));
         }
         assert!(!marks::monitor_body().contains("SECRET-13x5") && !marks::DISABLE_MONITOR_JS.contains("SECRET") && !marks::ENABLE_MONITOR_JS.contains("SECRET"));
+    }
+
+    /// Source shape (B1, B2, B9): the rename and delete happen in Tandem windows outside the page, the
+    /// page's request only queues them, every answer is checked again against the mark and the page,
+    /// a navigation or a closing pane dismisses them, and a reveal is gated and bound to its navigation.
+    #[test]
+    fn rename_remove_and_reveal_follow_the_rules() {
+        let p = prod();
+        let req = &p[p.find("fn browser_mark_requested").unwrap()..p.find("// --- Reveal, rename, remove").unwrap()];
+        assert!(req.contains("browser_rename_prompt(pane, &guid)") && req.contains("browser_remove_prompt(pane, &guid)"));
+        assert!(!req.contains("rename_named_mark") && !req.contains("remove_named_mark"), "the page's request changes nothing");
+        assert!(req.contains("self.mark_edit_valid(pane, guid, epoch)") && req.contains("pending_mark_prompt = Some"));
+        let valid = &p[p.find("fn mark_edit_valid").unwrap()..p.find("fn marks_dismiss_windows").unwrap()];
+        assert!(valid.contains("marks::request_valid(") && valid.contains("bv.marks_method.epoch()") && valid.contains("is_local_page"));
+        let open = &p[p.find("pub(super) fn open_pending_mark_prompt").unwrap()..p.find("fn mark_window_open_for").unwrap()];
+        assert!(open.contains("self.mark_edit_valid(pane, guid, epoch)") && open.contains("mark_window_open_for(pane)") && open.contains("ConfirmWindow::choice") && open.contains("marks::delete_text(&stored)") && open.contains("self.mark_window_at = Some(Instant::now())"));
+        assert!(!open.contains("page_text") && !open.contains("browser_js_call"), "only the stored name is shown");
+        let done = &p[p.find("pub(super) fn browser_mark_prompt_done").unwrap()..p.find("fn mark_request_current").unwrap()];
+        assert!(done.contains("MarkPrompt::Rename { guid, epoch }") && done.contains("self.mark_edit_valid(pane, &guid, epoch)"));
+        assert!(p.contains("if self.mark_edit_valid(pane, &guid, epoch) {\n                        self.browser_remove_named_mark(pane, &guid);"));
+        assert!(p.contains("if starting {\n            self.marks_dismiss_windows(pane, false);"));
+        assert!(p.contains("self.marks_dismiss_windows(pane, true);"));
+        let reveal = &p[p.find("pub(super) fn browser_reveal_named_mark").unwrap()..p.find("pub(super) fn marks_navigate_pending").unwrap()];
+        assert!(reveal.contains("crate::browser_restore::load_gate(&url)") && reveal.contains("self.browser_navigate(pane, &url)") && !reveal.contains(".navigate("));
+        assert!(reveal.find("arm_reveal(mark);\n                self.browser_navigate").is_some(), "armed before the load starts");
+        let nav = &p[p.find("pub(super) fn browser_marks_navigated").unwrap()..p.find("pub(super) fn browser_marks_reload_annotations").unwrap()];
+        assert!(nav.contains("reveal_navigated(nav, true)") && nav.find("marks::monitor_body()").unwrap() < nav.find("marks_run_reveal").unwrap());
+        assert!(p.contains("bv.marks_page.reveal_starting(*nav, *redirect, *user)"));
+        let ui = include_str!("marks_ui.rs");
+        assert!(ui.contains("let guarded = self.mark_input_guarded(event);") && ui.contains("guarded && matches!(target, PromptFor::Browser(_))"));
+        assert!(include_str!("mod.rs").contains("self.mark_confirm_event(id, &event)"));
+        assert!(p.contains("\"updateNamedMarkName failed\"") && p.contains("\"removeNamedMark failed\"") && p.contains("\"Invalid URL\"") && p.contains("\"Failed to navigate to mark - element not found\""));
     }
 }
