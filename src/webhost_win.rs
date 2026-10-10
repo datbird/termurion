@@ -1283,6 +1283,11 @@ fn source_of(view: &ICoreWebView2) -> Option<String> {
     pwstr_out(|p| unsafe { view.Source(p) }).map(|s| webhost::cap_url(&s).0)
 }
 
+/// Subframe navigations the frame handler cancelled (tests only): the probe's positive control that
+/// the cancel itself ran, not some other block (final review minor 4).
+#[cfg(test)]
+static FRAME_CANCELS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
     unsafe { view.add_NavigationStarting(&starting_handler(inner, false), token) }?;
     // The same handler body, in frame mode, for FrameNavigationStarting: a subframe may not go to an
@@ -1302,6 +1307,8 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         if frame {
             if webhost::frame_nav_cancelled(&uri) {
                 let _ = unsafe { args.SetCancel(true) };
+                #[cfg(test)]
+                FRAME_CANCELS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
             return Ok(());
         }
@@ -2545,12 +2552,36 @@ mod probe {
             self.answers.remove(&t).unwrap()
         }
 
+        /// `page_eval` of a script whose answer is a string, decoded: ExecuteScript's JSON writes `<`
+        /// as `\u003C` (probe run 2026-10-10), so a raw comparison with markup can never match.
+        fn page_string(&mut self, js: &str) -> Result<String, String> {
+            let text = self.page_eval(js)?;
+            serde_json::from_str::<String>(&text).map_err(|e| format!("not a string ({e}): {text}"))
+        }
+
+        #[track_caller]
         fn load(&mut self, url: &str) {
+            if let Err(e) = self.try_load(url) {
+                panic!("{e}");
+            }
+        }
+
+        /// `load`, answering what failed instead of panicking (with the world's state, the
+        /// contexts the probe holds and the host's event order, for a failure to be read).
+        fn try_load(&mut self, url: &str) -> Result<(), String> {
             let n = self.navigated.len();
             self.view().navigate_tandem(url);
-            assert!(self.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s");
-            assert!(self.navigated[n].1, "the navigation to {url} failed");
-            assert!(self.wait(5, |p| browser_world::world_usable(p.setup.state(), &p.contexts)), "the main frame has a Tandem context after loading {url}");
+            if !self.wait(15, |p| p.navigated.len() > n) {
+                return Err(format!("Navigated within 15 s: {:?}", self.order));
+            }
+            if !self.navigated[n].1 {
+                return Err(format!("the navigation to {url} failed"));
+            }
+            if !self.wait(5, |p| browser_world::world_usable(p.setup.state(), &p.contexts)) {
+                let created: Vec<String> = self.created_json.iter().map(|(s, j)| format!("{s:?} {}", j.chars().take(240).collect::<String>())).collect();
+                return Err(format!("the main frame has a Tandem context after loading {url}: setup {:?}, contexts {:?}, navigated {:?}, created {created:?}", self.setup.state(), self.contexts, self.navigated));
+            }
+            Ok(())
         }
 
         fn step_setup(&mut self) {
@@ -2595,7 +2626,7 @@ mod probe {
                     let answer = match self.pages.get(&key) {
                         Some(body) => {
                             // A page by default; a stylesheet or an image by its extension (Save Page As).
-                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else { "text/html" };
+                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else if key.ends_with(".svg") { "image/svg+xml" } else { "text/html" };
                             Answer::Respond { status: 200, mime: mime.into(), body: body.clone().into_bytes(), headers: vec![] }
                         }
                         None => {
@@ -3442,7 +3473,8 @@ mod probe {
     #[ignore]
     fn markdown_is_turndowns() {
         let page = "<!doctype html><html><body><nav>Menu</nav><main><h1>Title</h1><p>a <b>b</b></p><img src=\"x.png\"><pre><code>let x;</code></pre></main><footer>F</footer></body></html>";
-        let Some(mut p) = Probe::start(&[(PAGE, page.to_string())], Vec::new()) else { return };
+        // The page's image is served too (probe run 2026-10-10: an unserved x.png failed `finish`).
+        let Some(mut p) = Probe::start(&[(PAGE, page.to_string()), ("https://probe.tandem-probe.invalid/x.png", "x".to_string())], Vec::new()) else { return };
         p.load(PAGE);
         let skip = reader_run(&mut p, &crate::browser_reader::markdown_body(true)).expect("the markdown");
         let skip = skip.as_str().expect("a string").to_string();
@@ -3568,17 +3600,17 @@ mod probe {
         p.page_eval("document.querySelector('p.k').textContent = 'changed'; 1").expect("the change");
         let cached = view_source_cached(&mut p, TEST_PAGE).expect("the cached source");
         assert!(cached.contains("<p class=\"k\">x</p>"), "the original: {cached}");
-        let dom = p.page_eval(&crate::browser_js::page_call_script(crate::view_source::DOM_BODY, &json!({})).expect("the DOM script")).expect("the DOM text");
-        assert!(dom.contains("changed") && !dom.contains("class=\\\"k\\\">x</p>"), "the DOM differs: {dom}");
+        let dom = p.page_string(&crate::browser_js::page_call_script(crate::view_source::DOM_BODY, &json!({})).expect("the DOM script")).expect("the DOM text");
+        assert!(dom.contains("<p class=\"k\">changed</p>") && !dom.contains("<p class=\"k\">x</p>"), "the DOM differs: {dom}");
         p.finish();
         let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
         let page = crate::view_source::page(&cached, TEST_PAGE, css, "N").expect("the page");
         let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
         p.load(PAGE);
         p.settle(500);
-        let text = p.page_eval("document.querySelector('.source-code').textContent").expect("the text");
-        assert!(text.contains("<p class=\\\"k\\\">x</p>"), "{text}");
-        assert_eq!(p.page_eval("String(document.querySelector('p.url').textContent)"), Ok("\"https://tandem.test/\"".into()));
+        let text = p.page_string("document.querySelector('.source-code').textContent").expect("the text");
+        assert!(text.contains("<p class=\"k\">x</p>"), "{text}");
+        assert_eq!(p.page_string("String(document.querySelector('p.url').textContent)"), Ok("https://tandem.test/".into()));
         p.finish();
     }
 
@@ -3591,10 +3623,17 @@ mod probe {
     #[ignore]
     fn view_source_arming_facts() {
         const TEST_PAGE: &str = "https://tandem.test/";
+        const FRAME_PAGE: &str = "https://tandem.test/f";
         const SOURCE: &str = "iterm2-about:source";
-        let pages = [(TEST_PAGE, "<html><body><p>x</p></body></html>".to_string()), (SOURCE, "<html><body><p id=\"s\">SOURCE-SHOWN</p></body></html>".to_string())];
-        let Some(mut p) = Probe::start_full(&pages, Vec::new(), false, &["iterm2-about"]) else { return };
-        p.load(TEST_PAGE);
+        let pages = [(TEST_PAGE, "<html><body><p>x</p></body></html>".to_string()), (FRAME_PAGE, "<html><body>frame</body></html>".to_string()), (SOURCE, "<html><body><p id=\"s\">SOURCE-SHOWN</p></body></html>".to_string())];
+        // One world script, as the app always has (its canary): with none, Chromium made no named
+        // world for the document after the iterm2-about round trip (probe run 2026-10-10b: no new
+        // isolated context; the binding alone does not make the world). A browser pane never runs
+        // without one, so the load after the source page must have the world back.
+        let Some(mut p) = Probe::start_full(&pages, vec![wrapped("window.__tandemProbeWorld = 1;")], false, &["iterm2-about"]) else { return };
+        // The facts below need no Tandem world; whether each load has one is recorded and asserted
+        // last, so one run shows every fact (probe run 2026-10-10 stopped at a load).
+        let first = p.try_load(TEST_PAGE);
         // The main frame: Starting first, then the document Request, and the page shows.
         p.order.clear();
         let n = p.navigated.len();
@@ -3605,13 +3644,22 @@ mod probe {
         assert!(s.is_some() && r.is_some() && s < r, "Starting before the document Request: {:?}", p.order);
         p.settle(300);
         assert_eq!(p.page_eval("document.getElementById('s') && document.getElementById('s').textContent"), Ok("\"SOURCE-SHOWN\"".into()));
-        // A subframe: cancelled before any request.
-        p.load(TEST_PAGE);
+        let back = p.try_load(TEST_PAGE);
+        // A subframe to iterm2-about: is cancelled by the frame handler (the counter is the positive
+        // control: an iframe blocked for any other reason would also send no request, final review
+        // minor 4), and no request reaches the host.
         p.order.clear();
+        let cancels = FRAME_CANCELS.load(std::sync::atomic::Ordering::SeqCst);
         p.page_eval("var f = document.createElement('iframe'); f.src = 'iterm2-about:source'; document.body.appendChild(f); 1").expect("the iframe");
-        p.settle(1500);
+        assert!(p.wait(5, |_| FRAME_CANCELS.load(std::sync::atomic::Ordering::SeqCst) > cancels), "the frame handler cancelled the subframe navigation: {:?}", p.order);
+        p.settle(1000);
         assert!(!p.order.iter().any(|o| o.contains(SOURCE)), "a subframe reached the host: {:?}", p.order);
+        // Control: a subframe's request is seen by the host when nothing cancels it.
+        p.page_eval(&format!("var g = document.createElement('iframe'); g.src = '{FRAME_PAGE}'; document.body.appendChild(g); 1")).expect("the control iframe");
+        assert!(p.wait(5, |p| p.order.iter().any(|o| o.starts_with("request ") && o.ends_with(FRAME_PAGE))), "the control subframe's request reached the host: {:?}", p.order);
         p.finish();
+        assert_eq!(first, Ok(()), "the first load");
+        assert_eq!(back, Ok(()), "the load after the source page");
     }
 
     /// 13x4 Task 6: the View Source page, with a hostile page's source in it, runs its copied
@@ -3629,8 +3677,8 @@ mod probe {
         let Some(mut p) = Probe::start(&[(PAGE, html)], Vec::new()) else { return };
         p.load(PAGE);
         p.settle(500);
-        let text = p.page_eval("document.querySelector('.source-code').textContent").expect("the text");
-        assert_eq!(text, serde_json::to_string(raw).unwrap(), "the source is shown as text, whole");
+        let text = p.page_string("document.querySelector('.source-code').textContent").expect("the text");
+        assert_eq!(text, raw, "the source is shown as text, whole");
         assert_eq!(p.page_eval("String(window.__pwn === undefined)"), Ok("\"true\"".into()), "nothing in the source ran");
         assert_eq!(p.page_eval("String(document.querySelectorAll('.source-code img, .source-code script, .source-code [onerror], .source-code [onmouseover]').length)"), Ok("\"0\"".into()), "no element of the source's own");
         assert_eq!(p.page_eval("String(document.querySelectorAll('script').length)"), Ok("\"1\"".into()), "only the template's script");
@@ -3639,24 +3687,28 @@ mod probe {
         assert!(!links.is_empty() && links.iter().all(|l| l.starts_with("http://") || l.starts_with("https://")), "only web links: {links:?}");
         assert!(links.iter().any(|l| l == "https://tandem.test/rel?a=1"), "a relative link resolves against the viewed page: {links:?}");
         assert!(links.iter().all(|l| !l.contains(' ')), "no link holds a space: {links:?}");
-        assert_eq!(p.page_eval("String(document.querySelector('p.url').textContent)"), Ok("\"https://tandem.test/orig?x='1'&y=\\\\\"".into()), "the visible URL");
+        assert_eq!(p.page_string("String(document.querySelector('p.url').textContent)"), Ok("https://tandem.test/orig?x='1'&y=\\".into()), "the visible URL");
         p.finish();
     }
 
     /// 13x4 Task 10 (R13x45-2): Save Page As writes a folder. A page answered from memory at
-    /// `https://tandem.test/` references `s.css` (which has `url(bg.png)`) and `i.png`; the real saver
+    /// `https://tandem.test/` references `s.css` (which has `url(bg.svg)`) and `i.svg`; the real saver
     /// scripts run in the page world, the resources are read from the page's own loaded copy through
     /// the two DevTools reads, and the job's steps are carried out as the app does (create-new through
     /// `inert_files::write_new_checked`, `localfs::create_dir`). The folder holds an `index.html` whose
-    /// `<style>` has `resources/bg.png` and whose `<img>` is `resources/i.png`, and the two files hold
-    /// exactly the served bytes. Needs the console session.
+    /// `<style>` has `resources/bg.svg` and whose `<img>` is `resources/i.svg`, and the two files hold
+    /// exactly the served bytes. The images are real SVG: Chromium keeps no content for an image it
+    /// cannot decode ("Content unavailable. Resource was not cached", measured 2026-10-10), so the
+    /// first run's text-as-PNG bytes were never readable. Needs the console session.
     #[test]
     #[ignore]
     fn save_page_writes_a_folder() {
         use crate::page_saver::{Job, Step};
         const TEST_PAGE: &str = "https://tandem.test/";
-        let html = "<html><head><title>T</title><link rel=\"stylesheet\" href=\"s.css\"></head><body><img src=\"i.png\"><p>hi</p></body></html>";
-        let pages = [(TEST_PAGE, html.to_string()), ("https://tandem.test/s.css", "body { background: url(bg.png); }".to_string()), ("https://tandem.test/i.png", "IMAGE-BYTES-I".to_string()), ("https://tandem.test/bg.png", "IMAGE-BYTES-BG".to_string())];
+        let html = "<html><head><title>T</title><link rel=\"stylesheet\" href=\"s.css\"></head><body><img src=\"i.svg\"><p>hi</p></body></html>";
+        const SVG_I: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><desc>IMAGE-I</desc></svg>";
+        const SVG_BG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><desc>IMAGE-BG</desc></svg>";
+        let pages = [(TEST_PAGE, html.to_string()), ("https://tandem.test/s.css", "body { background: url(bg.svg); }".to_string()), ("https://tandem.test/i.svg", SVG_I.to_string()), ("https://tandem.test/bg.svg", SVG_BG.to_string())];
         let Some(mut p) = Probe::start(&pages, Vec::new()) else { return };
         p.load(TEST_PAGE);
         p.settle(800);
@@ -3668,6 +3720,8 @@ mod probe {
         let mut queue: std::collections::VecDeque<Step> = job.start().into();
         let mut tree: Option<Value> = None;
         let mut done = None;
+        // What each read answered, named in a failure.
+        let mut fetched: Vec<String> = Vec::new();
         let page_world = |p: &mut Probe, body: &str| -> Value {
             let script = crate::browser_js::page_call_script(body, &json!({})).expect("the script");
             let text = p.page_eval(&script).expect("the page answers");
@@ -3693,11 +3747,17 @@ mod probe {
                         tree = Some(p.call_wait(None, "Page.getResourceTree", &json!({})).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({})));
                     }
                     let t = tree.as_ref().unwrap();
-                    let got = crate::devtools::frame_for(t, &u).and_then(|f| {
-                        let r = p.call_wait(None, "Page.getResourceContent", &crate::devtools::resource_content_params(&f, &u)).ok()?;
-                        let bytes = crate::devtools::content_bytes(&serde_json::from_str(&r).ok()?)?;
+                    let frame = crate::devtools::frame_for(t, &u);
+                    let reply = frame.as_ref().map(|f| p.call_wait(None, "Page.getResourceContent", &crate::devtools::resource_content_params(f, &u)));
+                    let got = reply.as_ref().and_then(|r| r.as_ref().ok()).and_then(|r| {
+                        let bytes = crate::devtools::content_bytes(&serde_json::from_str(r).ok()?)?;
                         Some((bytes, crate::devtools::resource_mime(t, &u)))
                     });
+                    fetched.push(format!("{u}: frame {frame:?}, {}", match (&reply, &got) {
+                        (_, Some((b, m))) => format!("{} bytes {m:?}", b.len()),
+                        (Some(Err(e)), None) => format!("error {e}"),
+                        _ => "no content".to_string(),
+                    }));
                     queue.extend(job.on_resource(&u, got, &|_| false));
                 }
                 Step::Write { path, bytes } => {
@@ -3721,10 +3781,10 @@ mod probe {
         p.finish();
         assert_eq!(done, Some(Ok(folder.join("index.html"))), "the save finished");
         let index = std::fs::read_to_string(folder.join("index.html")).expect("index.html");
-        assert!(index.contains("resources/i.png"), "the img points at the saved file: {index}");
-        assert!(index.contains("<style") && index.contains("resources/bg.png"), "the stylesheet is inlined with its url rewritten: {index}");
-        assert_eq!(std::fs::read(folder.join("resources").join("i.png")).expect("i.png"), b"IMAGE-BYTES-I");
-        assert_eq!(std::fs::read(folder.join("resources").join("bg.png")).expect("bg.png"), b"IMAGE-BYTES-BG");
+        assert!(index.contains("resources/i.svg"), "the img points at the saved file: {index}; reads {fetched:?}");
+        assert!(index.contains("<style") && index.contains("resources/bg.svg"), "the stylesheet is inlined with its url rewritten: {index}; reads {fetched:?}");
+        assert_eq!(std::fs::read(folder.join("resources").join("i.svg")).expect("i.svg"), SVG_I.as_bytes());
+        assert_eq!(std::fs::read(folder.join("resources").join("bg.svg")).expect("bg.svg"), SVG_BG.as_bytes());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4240,7 +4300,8 @@ window.addEventListener('message', function (e) {
         // A key the listener reported twice would add a second message; the probe applies one step
         // per press, so the count (after a settle) is what shows a double delivery.
         p.settle(300);
-        assert_eq!(p.clients(cm::KEY_HANDLER).len(), before + 1, "one trusted j is reported exactly once");
+        let reported = p.clients(cm::KEY_HANDLER);
+        assert_eq!(reported.len(), before + 1, "one trusted j is reported exactly once: {:?}; key log {:?}", &reported[before.min(reported.len())..], p.log.iter().filter(|l| l.starts_with("Input.dispatchKeyEvent")).collect::<Vec<_>>());
         assert_eq!(line(&mut p), start + 1, "one j is one line");
         copy_press(&mut p, &mut m, &secret, 'k');
         assert_eq!(line(&mut p), start, "one k is one line back");
