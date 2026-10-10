@@ -888,16 +888,12 @@ pub fn open_url_run(text: &str, has_code: bool) -> Run {
     guard_open(text, has_code)
 }
 
-/// Programs and scripts: "open" would run them, so Tandem shows them instead. The one list is
-/// `inert_files::high_risk` (the name as Windows opens it, `inert_files::opened_name`: a stream
-/// suffix, trailing dots and spaces dropped, and any stream fails closed), plus the machine's own
-/// PATHEXT.
+/// Programs and scripts: "open" would run them, so Tandem shows them instead. The one rule is the
+/// write door's, `inert_files::high_risk`: the name as Windows opens it (`inert_files::opened_name`:
+/// a stream suffix, trailing dots and spaces dropped, and any stream fails closed), the one list,
+/// and the machine's own PATHEXT.
 pub(crate) fn runnable(path: &str) -> bool {
-    if crate::inert_files::high_risk(path) {
-        return true;
-    }
-    let Some(ext) = crate::inert_files::extension(path) else { return false };
-    std::env::var("PATHEXT").is_ok_and(|p| p.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext)))
+    crate::inert_files::high_risk(path)
 }
 
 /// A local file: link as a Windows path. None for a link to another machine.

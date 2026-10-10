@@ -89,9 +89,16 @@ pub fn dangerous_extension(ext: &str) -> bool {
 }
 
 /// Whether this name's type is on the one dangerous list (run, installed, followed or parsed by
-/// the shell), or it names a stream (`opened_name`: fail closed).
+/// the shell, or on the machine's PATHEXT), or it names a stream (`opened_name`: fail closed).
 pub fn high_risk(name: &str) -> bool {
-    opened_name(name).stream || extension(name).is_some_and(|e| dangerous_extension(&e))
+    high_risk_with(name, std::env::var("PATHEXT").ok().as_deref())
+}
+
+/// `high_risk` with the PATHEXT text given: a type the machine runs by name (`.RB` added by a
+/// Ruby install) is high risk too, for the writer as for `semantic::runnable` (findings r2 M5).
+pub fn high_risk_with(name: &str, pathext: Option<&str>) -> bool {
+    let on_pathext = |e: &str| pathext.is_some_and(|p| p.split(';').map(|x| x.trim().trim_start_matches('.')).any(|x| !x.is_empty() && x.eq_ignore_ascii_case(e)));
+    opened_name(name).stream || extension(name).is_some_and(|e| dangerous_extension(&e) || on_pathext(&e))
 }
 
 /// What `neutralized` appends: a type with no shell action whose first three characters are
@@ -104,7 +111,12 @@ pub const NEUTRAL_SUFFIX: &str = ".download";
 /// click); any other name is unchanged. Trailing dots and spaces are dropped first, as Windows
 /// drops them.
 pub fn neutralized(name: &str) -> String {
-    if high_risk(name) { format!("{}{NEUTRAL_SUFFIX}", name.trim_end_matches([' ', '.'])) } else { name.to_string() }
+    neutralized_with(name, std::env::var("PATHEXT").ok().as_deref())
+}
+
+/// `neutralized` with the PATHEXT text given.
+pub fn neutralized_with(name: &str, pathext: Option<&str>) -> String {
+    if high_risk_with(name, pathext) { format!("{}{NEUTRAL_SUFFIX}", name.trim_end_matches([' ', '.'])) } else { name.to_string() }
 }
 
 /// Whether writing a file with this final name is refused: its type is read by the shell on
@@ -329,6 +341,22 @@ mod tests {
             write_checked(&dir.join(fine), b"ok").unwrap_or_else(|e| panic!("{fine:?}: {e}"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The door reads PATHEXT as `semantic::runnable` does (findings r2 M5): a type the machine
+    /// runs by name is high risk for the writer too.
+    #[test]
+    fn the_door_reads_pathext() {
+        let pathext = Some(".COM;.EXE;.BAT;.RB;.Pl ;tcl");
+        for bad in ["x.rb", "X.RB", "a.pl", "b.tcl", "x.rb. ", r"C:\d\x.Rb"] {
+            assert!(high_risk_with(bad, pathext), "{bad:?}");
+            assert_eq!(neutralized_with(bad, pathext), format!("{}.download", bad.trim_end_matches(['.', ' '])), "{bad:?}");
+        }
+        for fine in ["x.rb", "a.pl"] {
+            assert!(!high_risk_with(fine, None) && !high_risk_with(fine, Some("")), "{fine:?}");
+        }
+        assert!(!high_risk_with("x.txt", pathext) && !high_risk_with("x.rbx", pathext));
+        assert!(high_risk_with("x.exe", None), "the list holds without PATHEXT");
     }
 
     /// A neutralized name ends in `.download` (findings r2 M1): its 8.3 short name is `X~1.DOW`,
