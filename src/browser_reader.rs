@@ -89,9 +89,9 @@ fn coordinate(v: f64) -> String {
 }
 
 /// Remove Element (`RMM:109-123`): the overlay under a page point, without the backdrop sweep.
-pub fn remove_element_body(x: f64, y: f64) -> String {
+pub fn remove_element_body(x: f64, y: f64) -> Result<String, String> {
     let (x, y) = (coordinate(x), coordinate(y));
-    statement_body(&fill_template(file("remove-element-at-point.js"), &[("POINT_X", &x), ("POINT_Y", &y)]))
+    Ok(statement_body(&fill_template(try_file("remove-element-at-point.js")?, &[("POINT_X", &x), ("POINT_Y", &y)])))
 }
 
 /// Readability's article text, whitespace collapsed (`RMM:35-61`); needs the loaders to have run.
@@ -306,7 +306,7 @@ mod tests {
     fn on_demand_bodies_carry_no_secret() {
         let [l0, l1] = loader_bodies().unwrap();
         let [d0, d1] = distraction_bodies();
-        let bodies = [l0, l1, enter_reader_body(), exit_reader_body(), d0, d1, exit_distraction_body(), remove_element_body(1.0, 2.0), plain_text_body(), markdown_body(true), markdown_body(false)];
+        let bodies = [l0, l1, enter_reader_body(), exit_reader_body(), d0, d1, exit_distraction_body(), remove_element_body(1.0, 2.0).unwrap(), plain_text_body(), markdown_body(true), markdown_body(false)];
         for (i, b) in bodies.iter().enumerate() {
             for bad in ["__tandemResult", "sessionSecret", "chrome.webview", "__tandemPost"] {
                 assert!(!b.contains(bad), "body {i} holds {bad}");
@@ -316,13 +316,13 @@ mod tests {
 
     #[test]
     fn remove_element_follows_iterm2() {
-        let b = remove_element_body(12.0, 30.5);
+        let b = remove_element_body(12.0, 30.5).unwrap();
         assert!(b.contains("const point = { x: 12.0, y: 30.5 };"), "{b}");
         assert!(b.contains("function removeElementAtPoint("), "the helpers were included");
         assert!(b.contains("removeElementAtPoint(point.x, point.y, mainContainer, removed, true);"), "no backdrop sweep");
         assert!(!b.contains("{{") && b.ends_with("return true;"));
-        assert!(remove_element_body(f64::NAN, 1.0).contains("x: 0.0"));
-        assert!(remove_element_body(f64::INFINITY, f64::NEG_INFINITY).contains("{ x: 0.0, y: 0.0 }"));
+        assert!(remove_element_body(f64::NAN, 1.0).unwrap().contains("x: 0.0"));
+        assert!(remove_element_body(f64::INFINITY, f64::NEG_INFINITY).unwrap().contains("{ x: 0.0, y: 0.0 }"));
     }
 
     #[test]

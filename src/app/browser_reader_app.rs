@@ -218,7 +218,11 @@ impl App {
     /// coordinates, and reaches the script only through `remove_element_body`'s number formatting.
     /// The body posts nothing and needs no reader script; an error is logged and nothing is shown.
     pub(super) fn remove_element(&mut self, pane: PaneId, x: f64, y: f64) {
-        self.browser_js_call(pane, &reader::remove_element_body(x, y), json!({}), Box::new(|_, _, r| {
+        let body = match reader::remove_element_body(x, y) {
+            Ok(b) => b,
+            Err(e) => return log_failure_as(Failure::RemoveElement, &e),
+        };
+        self.browser_js_call(pane, &body, json!({}), Box::new(|_, _, r| {
             if let Err(e) = r {
                 log_failure(Failure::RemoveElement, &e);
             }

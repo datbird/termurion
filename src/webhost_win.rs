@@ -3224,9 +3224,14 @@ mod probe {
 
     /// A page Readability accepts: a title, and enough paragraphs to pass its character threshold.
     fn article_page(title: &str, extra_body: &str) -> String {
+        article_page_with_head(title, extra_body, "")
+    }
+
+    /// `article_page` with `head` markup first in the page's `<head>` (a hostile page's script).
+    fn article_page_with_head(title: &str, extra_body: &str, head: &str) -> String {
         let para = "Tandem reads the article text of a page and shows it alone, in a quiet column, so that a person can read it without the clutter around it. ";
         let body: String = (0..12).map(|i| format!("<p>Paragraph {i}. {para}{para}</p>")).collect();
-        format!("<!doctype html><html><head><title>{title}</title></head><body><nav>menu</nav><article>{body}{extra_body}</article><footer>footer</footer></body></html>")
+        format!("<!doctype html><html><head>{head}<title>{title}</title></head><body><nav>menu</nav><article>{body}{extra_body}</article><footer>footer</footer></body></html>")
     }
 
     /// What `App::browser_js_call` does with a body: the isolated-world runner's expression.
@@ -3350,8 +3355,10 @@ mod probe {
             } catch (e) { window.__spy.push('postMessage not replaceable'); }
             window.addEventListener('message', (e) => log('message', e.data), true);
         })();"#.to_string();
-        let sources = vec![spy, wrapped(&format!("window.__canary = '{canary}';"))];
-        let Some(mut p) = Probe::start(&[(PAGE, article_page("An article", ""))], sources) else { return };
+        // The spy is the page's first script, in the page world (`hostile_page`); `sources` all run in
+        // the isolated world, so only the canary goes there.
+        let sources = vec![wrapped(&format!("window.__canary = '{canary}';"))];
+        let Some(mut p) = Probe::start(&[(PAGE, article_page_with_head("An article", "", &format!("<script>{spy}</script>")))], sources) else { return };
         p.load(PAGE);
         reader_load(&mut p);
         let plain = reader_run(&mut p, &crate::browser_reader::plain_text_body()).expect("the plain text");
@@ -3364,6 +3371,11 @@ mod probe {
             p.call_wait(None, "Input.dispatchKeyEvent", &json!({"type": kind, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})).expect("the real Escape");
         }
         assert!(p.wait(10, |p| reader_actions(p).contains(&"exited".to_string())), "a real Escape leaves");
+        // Task 4: the markdown, with and without chrome, runs the same way.
+        for skip in [false, true] {
+            let md = reader_run(&mut p, &crate::browser_reader::markdown_body(skip)).expect("the markdown");
+            assert!(md.as_str().is_some_and(|t| t.contains("Paragraph 0")), "markdown came back: {md}");
+        }
         let [load, enter] = crate::browser_reader::distraction_bodies();
         for _ in 0..2 {
             assert_eq!(reader_run(&mut p, &load), Ok(json!(true)));
@@ -3380,6 +3392,64 @@ mod probe {
             assert!(!log.contains(bad), "the page saw {bad}");
         }
         p.settle(300);
+        p.finish();
+    }
+
+    /// Task 4 (B7): turndown's markdown of a page, with and without chrome; the plain text has single
+    /// spaces only. Needs the console session.
+    #[test]
+    #[ignore]
+    fn markdown_is_turndowns() {
+        let page = "<!doctype html><html><body><nav>Menu</nav><main><h1>Title</h1><p>a <b>b</b></p><img src=\"x.png\"><pre><code>let x;</code></pre></main><footer>F</footer></body></html>";
+        let Some(mut p) = Probe::start(&[(PAGE, page.to_string())], Vec::new()) else { return };
+        p.load(PAGE);
+        let skip = reader_run(&mut p, &crate::browser_reader::markdown_body(true)).expect("the markdown");
+        let skip = skip.as_str().expect("a string").to_string();
+        assert!(skip.starts_with("# Title\n\na **b**"), "{skip}");
+        assert!(skip.contains("```\nlet x;\n```"), "{skip}");
+        assert!(!skip.contains("Menu") && !skip.contains("x.png") && !skip.trim_end().ends_with('F'), "{skip}");
+        let all = reader_run(&mut p, &crate::browser_reader::markdown_body(false)).expect("the markdown");
+        let all = all.as_str().expect("a string");
+        assert!(all.contains("Menu") && all.trim_end().ends_with('F'), "{all}");
+        assert!(!all.contains("x.png"), "media is removed");
+        p.finish();
+        let para = "word ".repeat(80);
+        let five: String = (0..5).map(|_| format!("<p>{para}</p>")).collect();
+        let Some(mut p) = Probe::start(&[(PAGE, format!("<!doctype html><html><head><title>t</title></head><body><article>{five}</article></body></html>"))], Vec::new()) else { return };
+        p.load(PAGE);
+        reader_load(&mut p);
+        let plain = reader_run(&mut p, &crate::browser_reader::plain_text_body()).expect("the plain text");
+        let plain = plain.as_str().expect("a string");
+        assert!(plain.chars().count() > 10 && !plain.contains("  ") && !plain.contains('\n'), "single spaces only: {plain}");
+        p.finish();
+    }
+
+    /// Task 3 findings I1 (B7): Remove Element hides the overlay under a point and nothing else: not
+    /// the backdrop (no sweep), not the article. A point on the article removes nothing; a non-finite
+    /// point is 0,0. The body posts nothing, and a page's synthetic click removes nothing. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn remove_element_runs_in_a_page() {
+        let extra = "<div id=backdrop style=\"position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,.4);z-index:50\"></div><div id=overlay style=\"position:fixed;left:100px;top:100px;width:300px;height:200px;background:white;z-index:100\">Subscribe</div>";
+        let Some(mut p) = Probe::start(&[(PAGE, article_page("An article", extra))], Vec::new()) else { return };
+        p.load(PAGE);
+        let shown = |p: &mut Probe, id: &str| p.page_eval(&format!("getComputedStyle(document.getElementById('{id}')).display")).expect("computed display");
+        // A synthetic click on the page is no menu pick: nothing is removed.
+        p.page_eval("document.getElementById('overlay').dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, clientX: 150, clientY: 150})); document.getElementById('overlay').click(); 1").expect("synthetic");
+        p.settle(200);
+        assert_ne!(shown(&mut p, "overlay"), "\"none\"", "a synthetic click removes nothing");
+        // A point inside the overlay.
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::remove_element_body(150.0, 150.0).expect("the body")), Ok(json!(true)));
+        assert_eq!(shown(&mut p, "overlay"), "\"none\"", "the overlay under the point is hidden");
+        assert_ne!(shown(&mut p, "backdrop"), "\"none\"", "no backdrop sweep");
+        let article = |p: &mut Probe| p.page_eval("getComputedStyle(document.querySelector('article')).display").expect("the article");
+        assert_ne!(article(&mut p), "\"none\"", "the article stays");
+        // Non-finite points are 0,0 (the backdrop lies there but is the main-container-level sweep's
+        // target only; the answer is true and the article stays).
+        assert_eq!(reader_run(&mut p, &crate::browser_reader::remove_element_body(f64::NAN, f64::NAN).expect("the body")), Ok(json!(true)));
+        assert_ne!(article(&mut p), "\"none\"", "a non-finite point removes no article");
+        assert!(reader_actions(&p).is_empty(), "the body posts nothing");
         p.finish();
     }
 

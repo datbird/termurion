@@ -136,7 +136,8 @@ mod tests {
     #[test]
     fn picks_focus_first_and_open_through_the_funnel() {
         let p = prod();
-        let run = &p[p.find("pub(super) fn browser_ctx_picked").unwrap()..];
+        let from = p.find("pub(super) fn browser_ctx_picked").unwrap();
+        let run = &p[from..from + p[from..].find("Item::RemoveElement").unwrap() + 80];
         assert!(run.find("t.focused = pane;").unwrap() < run.find("match item").unwrap());
         assert_eq!(run.matches("a.browser_page_open(").count(), 1);
         for banned in ["open_url_in_browser(", "open_link(", "execute(", "execute_with(", "Command::new(", "guard_open(", "shell_open("] {
@@ -161,14 +162,16 @@ mod tests {
     #[test]
     fn remove_element_is_picked() {
         let p = prod();
-        let run = &p[p.find("pub(super) fn browser_ctx_picked").unwrap()..];
+        let from = p.find("pub(super) fn browser_ctx_picked").unwrap();
+        let run = &p[from..from + p[from..].find("Item::RemoveElement").unwrap() + 80];
         assert!(run.contains("Item::RemoveElement => a.remove_element(pane, ctx.x, ctx.y),"));
         assert!(!run.contains("ctx.x /") && !run.contains("zoom"));
         let built = &p[p.find("fn browser_ctx_built").unwrap()..p.find("/// A right-click").unwrap()];
         assert!(built.contains("remove_element: true"));
         let rea = include_str!("browser_reader_app.rs");
         let rea = &rea[..rea.find("#[cfg(test)]").unwrap()];
-        let f = &rea[rea.find("pub(super) fn remove_element").unwrap()..];
-        assert!(f.contains("self.browser_js_call(pane, &reader::remove_element_body(x, y)") && !f.contains("browser_page_call"));
+        let at = rea.find("pub(super) fn remove_element").unwrap();
+        let f = &rea[at..at + rea[at..].find("/// The Menu button").unwrap()];
+        assert!(f.contains("self.browser_js_call(pane, &body,") && f.contains("reader::remove_element_body(x, y)") && !f.contains("browser_page_call"));
     }
 }
