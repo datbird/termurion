@@ -3547,7 +3547,7 @@ mod probe {
         let page = "<!doctype html><html><body><p id=\"t\">Hello marked world</p></body></html>".to_string();
         let Some(mut p) = Probe::start(&[(PAGE, page)], Vec::new()) else { return };
         p.load(PAGE);
-        assert!(marks_body(&mut p, &bm::monitor_body()).is_ok());
+        assert!(marks_body(&mut p, &bm::monitor_body().unwrap()).is_ok());
         assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()));
         p.page_eval("document.body.appendChild(document.createElement('div')); 0").expect("mutate");
         p.settle(900);

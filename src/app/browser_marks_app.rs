@@ -362,9 +362,13 @@ impl App {
             return;
         }
         let epoch = self.browser_views.get(&pane).map_or(0, |b| b.marks_method.epoch());
+        let Some(monitor) = marks::monitor_body() else {
+            crate::rlog!("The layout monitor patch did not apply");
+            return;
+        };
         self.browser_js_call(
             pane,
-            &marks::monitor_body(),
+            &monitor,
             json!({}),
             Box::new(move |app, pane, r| {
                 if app.browser_views.get(&pane).is_some_and(|b| b.marks_method.epoch() == epoch) {
@@ -764,7 +768,7 @@ mod tests {
         for body in [&show.body, &upd] {
             assert!(body.contains("MARKS-SECRET-13x5") && !body.contains("VIEW-SECRET-13x5"));
         }
-        assert!(!marks::monitor_body().contains("SECRET-13x5") && !marks::DISABLE_MONITOR_JS.contains("SECRET") && !marks::ENABLE_MONITOR_JS.contains("SECRET"));
+        assert!(!marks::monitor_body().unwrap().contains("SECRET-13x5") && !marks::DISABLE_MONITOR_JS.contains("SECRET") && !marks::ENABLE_MONITOR_JS.contains("SECRET"));
     }
 
     /// Task 4 review fixes: a rebuilt world restarts the marks, a refused layout message re-enables

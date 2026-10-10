@@ -343,9 +343,18 @@ pub fn page_guids(marks: &[Mark], url: &str) -> Vec<String> {
     marks.iter().filter(|m| same_page(&m.url, url)).map(|m| m.guid.clone()).collect()
 }
 
-/// The layout monitor as a runner body (`NMM:431-433`): the copied file is an expression.
-pub fn monitor_body() -> String {
-    as_body(LAYOUT_MONITOR_JS)
+/// The monitor's enable/disable counter must never go below 0 (task-5 re-review): the file rebuilds
+/// its observer only when the counter is exactly 0, so an enable with no disable outstanding (a
+/// navigation that never completed after the monitor was already on) would leave it at -1 and the
+/// observer never back. The clamp is an exact-once patch that fails closed.
+pub(crate) fn monitor_patched(src: &str) -> Result<String, String> {
+    patch_once(src, "disabledCount -= 1;", "if (disabledCount > 0) { disabledCount -= 1; }")
+}
+
+/// The layout monitor as a runner body (`NMM:431-433`): the copied file is an expression. None when
+/// the clamp patch does not apply (the monitor then does not run).
+pub fn monitor_body() -> Option<String> {
+    monitor_patched(LAYOUT_MONITOR_JS).ok().map(|s| as_body(&s))
 }
 
 /// Whether a page message of a Marks handler may be acted on: the isolated world's (the transport
@@ -1081,7 +1090,27 @@ mod tests {
         assert!(!page_has_marks(&[], "https://a.b/p"));
         assert_eq!(page_guids(&marks, "https://a.b/p"), vec!["g".to_string()]);
         assert!(page_guids(&marks, "https://a.b/q").is_empty());
-        assert!(monitor_body().starts_with("return "));
+        assert!(monitor_body().unwrap().starts_with("return "));
+    }
+
+    /// Cancel-then-layout: a navigation that never completes sends an enable with no disable
+    /// outstanding. The counter is modelled as the patched file keeps it; unpatched it reaches -1 and
+    /// the next layout message's disable/enable pair (count 0 then 1 then 0 is fine only from 0).
+    #[test]
+    fn the_monitor_counter_never_goes_below_zero() {
+        let p = monitor_patched(LAYOUT_MONITOR_JS).unwrap();
+        assert!(p.contains("if (disabledCount > 0) { disabledCount -= 1; }") && !p.contains("\n        disabledCount -= 1;"));
+        assert_eq!(p.matches("disabledCount -= 1").count(), 1);
+        assert!(monitor_patched("nothing").is_err() && monitor_patched("disabledCount -= 1; disabledCount -= 1;").is_err(), "fails closed");
+        // The model of the two counters: cancel (enable at 0), then a layout message (disable, host enable).
+        let step = |c: i32, enable: bool, clamp: bool| if enable { if clamp && c <= 0 { c } else { c - 1 } } else { c + 1 };
+        let run = |clamp: bool| {
+            let c = step(0, true, clamp); // cancelled navigation: enable with nothing outstanding
+            let c = step(c, false, clamp); // the monitor posts layoutChange and disables itself
+            step(c, true, clamp) // the host brings it back
+        };
+        assert_ne!(run(false), 0, "unpatched: the observer never comes back");
+        assert_eq!(run(true), 0, "patched: the observer is rebuilt");
     }
 
     #[test]
