@@ -889,6 +889,24 @@ impl NotificationLimiter {
     }
 }
 
+/// `COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER`.
+pub const SOURCE_SERVICE_WORKER: i32 = 4;
+
+/// Ruling R13x6-SW (final review M5): WebView2 raises `NotificationReceived` on the view for
+/// non-persistent notifications only; a service worker's `showNotification` (a persistent one) goes
+/// to a profile event this SDK lacks and, unhandled, to WebView2's own toast, past Tandem's label,
+/// limits and table. Service workers are therefore refused: every request a service worker makes, and
+/// the script fetch that would install one (sent with a `Service-Worker` header), gets a 403.
+pub fn refuse_worker_request(source_kinds: i32, service_worker_header: bool) -> bool {
+    source_kinds & SOURCE_SERVICE_WORKER != 0 || service_worker_header
+}
+
+/// Notifications are asked about only when the view raises them to Tandem AND no service worker can
+/// raise one past it (fail closed).
+pub fn notifications_offered(events: bool, workers_refused: bool) -> bool {
+    events && workers_refused
+}
+
 /// What one view has queued: events, bytes and messages. Shared by the view's handlers and every
 /// `Charge` they make.
 #[derive(Debug, Default)]
@@ -2039,5 +2057,21 @@ mod tests {
         assert!(!l.allow(t + Duration::from_secs(30), 0), "over the per-minute budget");
         assert!(l.allow(t + Duration::from_secs(61), 0), "a new minute");
         assert!(!l.allow(t + Duration::from_secs(200), MAX_HELD_NOTES), "too many held");
+    }
+
+    /// Final review M5 (ruling R13x6-SW): a service worker's request is refused, by its source kind or
+    /// by the `Service-Worker` header of its script fetch, so no worker runs and no persistent
+    /// notification reaches WebView2's own toast; notifications are offered only when both the
+    /// events and that refusal are in place.
+    #[test]
+    fn service_workers_are_refused() {
+        assert!(refuse_worker_request(SOURCE_SERVICE_WORKER, false), "a request from a service worker");
+        assert!(refuse_worker_request(SOURCE_SERVICE_WORKER | 1, false), "a mask holding the service worker bit");
+        assert!(refuse_worker_request(1, true), "a document request carrying the worker script header");
+        assert!(!refuse_worker_request(1, false), "a page's own request continues");
+        assert!(!refuse_worker_request(2, false), "a shared worker's request continues");
+        assert!(notifications_offered(true, true));
+        assert!(!notifications_offered(true, false), "events without the worker refusal: WebView2 would toast a persistent one itself");
+        assert!(!notifications_offered(false, true), "no events: WebView2 would toast every one itself");
     }
 }

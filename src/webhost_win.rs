@@ -1340,7 +1340,8 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     let mut token = 0i64;
     register_navigation(inner, view, &mut token).map_err(|x| e("navigation", x))?;
     register_page_events(inner, view, &mut token).map_err(|x| e("page events", x))?;
-    register_policy(inner, view, &mut token).map_err(|x| e("policy", x))?;
+    let workers_refused = register_worker_refusal(inner, view, &mut token);
+    register_policy(inner, view, workers_refused, &mut token).map_err(|x| e("policy", x))?;
     if setup.permissions {
         register_notifications(inner, view);
         register_audio(inner, view);
@@ -1905,12 +1906,61 @@ fn register_audio(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2) {
     }
 }
 
-fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+/// Ruling R13x6-SW (`webhost::refuse_worker_request`): every request a service worker makes, its
+/// script fetch included, is answered 403 on the spot, so no worker installs and none can show a
+/// persistent notification through WebView2's own toast. WebView2 raises a worker's requests on every
+/// view with such a filter; each answers the same. True only when the refusal is in place (needs
+/// `ICoreWebView2_22`); notifications are not offered otherwise.
+fn register_worker_refusal(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> bool {
+    let Ok(v22) = view.cast::<ICoreWebView2_22>() else {
+        crate::dlog!("webhost: this runtime cannot filter service worker requests; notifications are not offered");
+        return false;
+    };
+    let weak = Rc::downgrade(inner);
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        if !from_service_worker(&args) {
+            return Ok(());
+        }
+        let env = match inner.try_borrow() {
+            Ok(i) => i.env.clone(),
+            Err(_) => return Ok(()),
+        };
+        if let Ok(resp) = unsafe { env.env.CreateWebResourceResponse(None::<&windows::Win32::System::Com::IStream>, 403, windows::core::w!("Blocked"), windows::core::w!("")) } {
+            let _ = unsafe { args.SetResponse(&resp) };
+        }
+        Ok(())
+    })));
+    if unsafe { view.add_WebResourceRequested(&handler, token) }.is_err() {
+        crate::dlog!("webhost: the service worker refusal could not be added; notifications are not offered");
+        return false;
+    }
+    let all = windows::core::w!("*");
+    if unsafe { v22.AddWebResourceRequestedFilterWithRequestSourceKinds(all, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER) }.is_err() {
+        crate::dlog!("webhost: the service worker filter could not be added; notifications are not offered");
+        return false;
+    }
+    true
+}
+
+/// A request a service worker made, or the fetch of a worker's script (`Service-Worker` header).
+fn from_service_worker(args: &ICoreWebView2WebResourceRequestedEventArgs) -> bool {
+    let mut kind = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(0);
+    if let Ok(a2) = args.cast::<ICoreWebView2WebResourceRequestedEventArgs2>() {
+        let _ = unsafe { a2.RequestedSourceKind(&mut kind) };
+    }
+    let header = unsafe { args.Request() }
+        .and_then(|r| unsafe { r.Headers() })
+        .is_ok_and(|h| bool_out(|b| unsafe { h.Contains(windows::core::w!("Service-Worker"), b) }));
+    webhost::refuse_worker_request(kind.0, header)
+}
+
+fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_refused: bool, token: &mut i64) -> windows::core::Result<()> {
     // Permissions are denied unless the person allows (pre-flight B3). A view the app decides for
     // (`ViewSetup::permissions`) holds the requests Tandem asks about and denies the rest on the
     // spot; every other view denies everything.
     let ask = inner.borrow().setup.permissions;
-    let notes_supported = view.cast::<ICoreWebView2_24>().is_ok();
+    let notes_supported = webhost::notifications_offered(view.cast::<ICoreWebView2_24>().is_ok(), workers_refused);
     let weak = Rc::downgrade(inner);
     let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
         let Some(args) = args else { return Ok(()) };
@@ -1931,7 +1981,8 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut
         if !matches!(crate::browser_perms::route_kind(kind.0), crate::browser_perms::KindRoute::Ask(_)) {
             return Ok(());
         }
-        // Without notification events WebView2 would show its own toast for a granted origin: refuse.
+        // Without notification events, or with service workers able to run, WebView2 would show its own
+        // toast for a granted origin: refuse.
         if kind.0 == 4 && !notes_supported {
             return Ok(());
         }
@@ -2043,6 +2094,10 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
     let weak = Rc::downgrade(inner);
     let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| guard(|| {
         let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        // A service worker's request was refused by `register_worker_refusal`; the app never answers it.
+        if from_service_worker(&args) {
+            return Ok(());
+        }
         if inner.borrow().pending.len() >= MAX_PENDING_REQUESTS {
             return Ok(());
         }
@@ -3044,7 +3099,7 @@ mod probe {
                     let answer = match self.pages.get(&key) {
                         Some(body) => {
                             // A page by default; a stylesheet or an image by its extension (Save Page As).
-                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else if key.ends_with(".svg") { "image/svg+xml" } else { "text/html" };
+                            let mime = if key.ends_with(".css") { "text/css" } else if key.ends_with(".png") { "image/png" } else if key.ends_with(".svg") { "image/svg+xml" } else if key.ends_with(".js") { "text/javascript" } else { "text/html" };
                             Answer::Respond { status: 200, mime: mime.into(), body: body.clone().into_bytes(), headers: vec![] }
                         }
                         None => {
@@ -5204,6 +5259,35 @@ window.addEventListener('message', function (e) {
         // Review I2: the flood is held AT the cap, so a grant that raised nothing fails here.
         assert_eq!(p.notes.len(), MAX_HELD_NOTES, "the flood fills the cap of {MAX_HELD_NOTES} and no more: {}", p.notes.len());
         assert_eq!(p.page_eval("1"), Ok("1".into()), "still responsive after the flood");
+        p.finish();
+    }
+
+    /// Final review M5 (ruling R13x6-SW): WebView2 raises `NotificationReceived` for non-persistent
+    /// notifications only, so a service worker's `showNotification` would reach WebView2's own toast.
+    /// For a granted origin (mirrored as the app does), the worker's script fetch is refused, the
+    /// registration fails, no registration exists, no notification reaches Tandem and the probe's
+    /// server never saw the script request.
+    #[test]
+    #[ignore]
+    fn service_worker_notifications_are_refused() {
+        use crate::browser_perms::{STATE_ALLOW, STATE_DEFAULT};
+        const SW: &str = "https://perm.tandem-probe.invalid/sw.js";
+        let worker = "self.addEventListener('install', function () { self.registration.showNotification('W'); });".to_string();
+        let page = perm_page("<script>window.__sw = 'pending'; window.__regs = 'pending'; function reg() { return navigator.serviceWorker.register('/sw.js').then(function (r) { window.__sw = 'registered'; return r.showNotification('P').then(function () { window.__sw = 'shown'; }, function (e) { window.__sw = 'refused:' + e.name; }); }, function (e) { window.__sw = 'denied:' + e.name; }).then(function () { return navigator.serviceWorker.getRegistrations(); }).then(function (l) { window.__regs = String(l.length); }); }</script>");
+        let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, page), (SW, worker)], Vec::new(), false, &[], true) else { return };
+        p.view().set_permission_state(61, 4, PERM_HOST, STATE_ALLOW);
+        assert!(p.wait(10, |p| p.writes.contains(&(61, true))), "the grant is mirrored: {:?}", p.writes);
+        p.load(PERM_PAGE);
+        assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the origin is granted, as after Allow");
+        p.page_eval("reg(); 1").expect("the page registers a worker");
+        assert!(p.page_becomes(15, "window.__regs", false, "0"), "no registration exists: {:?} / {:?}", p.page_string("window.__sw"), p.page_string("window.__regs"));
+        let got = p.page_string("window.__sw");
+        assert!(got.as_deref().is_ok_and(|c| c.starts_with("denied:")), "the worker never installs: {got:?}");
+        p.settle(1000);
+        assert!(p.notes.is_empty(), "no notification at all: {:?}", p.notes);
+        assert!(!p.order.iter().any(|o| o.ends_with("/sw.js")), "the script fetch never reached the server: {:?}", p.order);
+        p.view().set_permission_state(62, 4, PERM_HOST, STATE_DEFAULT);
+        assert!(p.wait(10, |p| p.writes.contains(&(62, true))));
         p.finish();
     }
 

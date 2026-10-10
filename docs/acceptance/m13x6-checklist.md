@@ -27,8 +27,8 @@ or a button calling `play()`), and `paste.html` (a button calling `navigator.cli
 
 ## A. The desktop probe (the controller runs it with Robert's yes)
 
-The 14 new tests are all in `webhost_win::probe::` (none has run; the default run is 47 probe
-tests, 33 inherited and 14 new, plus `webhost_win::tests::menu_gets_our_items`):
+The 15 new tests are all in `webhost_win::probe::` (none has run; the default run is 48 probe
+tests, 33 inherited and 15 new, plus `webhost_win::tests::menu_gets_our_items`):
 
 - [ ] `permissions_page_buttons_need_a_trusted_click`
 - [ ] `permission_request_reaches_the_app`
@@ -44,6 +44,7 @@ tests, 33 inherited and 14 new, plus `webhost_win::tests::menu_gets_our_items`):
 - [ ] `audio_state_reaches_the_app`
 - [ ] `same_document_navigation_starts_nothing`
 - [ ] `a_page_cannot_unmute_itself`
+- [ ] `service_worker_notifications_are_refused` (ruling R13x6-SW: a granted origin's service worker never installs, so no persistent notification reaches WebView2's own toast)
 
 Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must
@@ -71,7 +72,8 @@ $f = @(
  'webhost_win::probe::a_frame_request_names_the_frame',
  'webhost_win::probe::audio_state_reaches_the_app',
  'webhost_win::probe::same_document_navigation_starts_nothing',
- 'webhost_win::probe::a_page_cannot_unmute_itself'
+ 'webhost_win::probe::a_page_cannot_unmute_itself',
+ 'webhost_win::probe::service_worker_notifications_are_refused'
 )
 & C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
 ```
