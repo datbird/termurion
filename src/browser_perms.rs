@@ -71,7 +71,9 @@ impl PermissionType {
         }
     }
 
-    /// `BP:59-69`. `origin` is a normalized origin's host part as the caller chooses to show it.
+    /// `BP:59-69`. `origin` is the normalized origin exactly as `normalize_origin` returns it. It
+    /// is always ASCII, so the dialog shows punycode (`xn--...`); it must never be decoded to
+    /// Unicode for display (homograph spoofing).
     pub fn request_message(self, origin: &str) -> String {
         let what = match self {
             Self::Notification => "wants to send you notifications.",
@@ -241,6 +243,11 @@ pub fn normalize_origin(url: &str) -> Option<String> {
     }
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..end];
+    // The browser reads `\` as a path separator in a special URL, so `a.b\@evil.com` is host `a.b`
+    // to it; this function would say `evil.com`. Refuse rather than disagree.
+    if authority.contains('\\') {
+        return None;
+    }
     let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let (host, port) = if hostport.starts_with('[') {
         let close = hostport.find(']')?;
@@ -339,6 +346,19 @@ mod tests {
         assert_eq!(n(&long), None);
         let label64 = format!("https://{}.example/", "a".repeat(64));
         assert_eq!(n(&label64), None);
+    }
+
+    #[test]
+    fn backslash_and_trailing_dot_fail_closed() {
+        // A backslash in the authority: the browser and this function could disagree on the host.
+        for u in ["https://a.b\\@evil.com/", "https://evil.com\\@a.b/", "https://a.b\\x/"] {
+            assert_eq!(n(u), None, "{u}");
+        }
+        // A trailing dot is REFUSED, not canonicalized: `example.com.` and `example.com` are
+        // different keys to the browser, and refusing means a deny, never a shared grant.
+        for u in ["https://example.com./", "https://example.com.:8443/", "https://.example.com/"] {
+            assert_eq!(n(u), None, "{u}");
+        }
     }
 
     #[test]

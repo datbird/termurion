@@ -1,0 +1,27 @@
+m13x6 rulings (browser permissions and notifications). Entries are appended as tasks land.
+
+Task 1 review minors (security review of 4a114be):
+
+R13x6-O1 (ports 80 and 443). iTerm2's origin string drops port 80 and 443 for ANY scheme
+(BPM:260), and Tandem keeps that rule: `http://a.b:443` and `http://a.b` share one key, and so do
+`https://a.b:80` and `https://a.b`. Two services on one host (same host, different one of these
+two ports) therefore share saved grants. Accepted cost for parity; the host is the same machine
+name. Dropping only the scheme's own default port is the stricter alternative and is Robert's call.
+
+R13x6-O2 (punycode). Tandem's origin is always ASCII (`normalize_origin` refuses Unicode hosts).
+The permission prompt, the bar, the menu and the permissions page show the normalized origin as it
+is, with punycode (`xn--...`). They must never convert punycode to Unicode for display: that
+would reopen homograph spoofing.
+
+R13x6-O3 (authority). An authority containing a backslash is refused (None): the browser parses
+`https://a.b\@evil.com/` as host `a.b`, a lax parser as `evil.com`. A trailing-dot host
+(`example.com.`) is refused, not canonicalized, so it can only be denied and never shares a key
+with `example.com`. Both are pinned by `backslash_and_trailing_dot_fail_closed`.
+
+R13x6-T2 (the table). `BrowserPermissions` is the person's own data. No import, export, sync,
+remote-prefs, it2 / API or dynamic-profile path reads or writes it (pinned by
+`no_import_export_or_sync_path_names_the_table`). The schema is iTerm2's, so it has no Imported
+column; because nothing can fill it but the person's own dialog answer, no row is an imported grant.
+Readers skip any row that is not exactly a "granted" / "denied" decision of a known type with a
+canonical origin of at most 300 bytes and finite dates; a corrupt file is set aside by
+`Db::open` and replaced by an empty table (deny). The table holds at most 10,000 rows.
