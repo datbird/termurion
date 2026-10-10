@@ -223,6 +223,12 @@ pub(crate) fn trust_patched(src: &str) -> Result<String, String> {
     let s = patch_once(&s, "input.type = 'text';", "input.type = 'hidden';")?;
     let s = patch_once(&s, "saveButton.textContent = 'Save';", "saveButton.textContent = 'Rename';")?;
     let s = patch_once(&s, "collapsedView.title = 'Click to expand and edit name';", "collapsedView.title = 'Click to expand';")?;
+    // The name is drawn, never page text (R13x5-43): `window.find` and a select-all read text nodes
+    // inside a closed shadow root; generated content (the `::before` rule `shadow_patched` adds) is
+    // neither found nor selected.
+    let s = patch_once(&s, "collapsedView.textContent = mark.name;", "collapsedView.setAttribute('data-tandem-name', mark.name);")?;
+    let s = patch_once(&s, "markTitle.textContent = mark.name;", "markTitle.setAttribute('data-tandem-name', mark.name);")?;
+    let s = patch_once(&s, "input.value = mark.name || '';", "input.value = '';")?;
     shadow_patched(&s)
 }
 
@@ -235,7 +241,7 @@ fn shadow_patched(src: &str) -> Result<String, String> {
     let s = patch_once(
         src,
         "var container = document.createElement('div');",
-        "var host = document.createElement('div');\n    host.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n    var shadow = host.attachShadow({mode: 'closed'});\n    window.tandemMarkRoot = shadow;\n    window.tandemMarkHost = host;\n    function tandemReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
+        "var host = document.createElement('div');\n    host.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n    var shadow = host.attachShadow({mode: 'closed'});\n    var tandemNames = document.createElement('style');\n    tandemNames.textContent = '[data-tandem-name]::before { content: attr(data-tandem-name) !important; }';\n    shadow.appendChild(tandemNames);\n    window.tandemMarkRoot = shadow;\n    window.tandemMarkHost = host;\n    function tandemReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
     )?;
     let s = patch_once(&s, "container.id = 'iterm-mark-annotations';", "")?;
     let s = patch_once(&s, "document.getElementById('iterm-mark-annotations')", "window.tandemMarkHost")?;
@@ -359,6 +365,9 @@ pub fn monitor_body() -> Option<String> {
 
 /// Whether a page message of a Marks handler may be acted on: the isolated world's (the transport
 /// says so; a Page message never), the main frame's, and not from one of Tandem's own pages (B5).
+/// A Client source is the context's origin, which Chromium gives an `iterm2-about:` document as an
+/// opaque "://" (probe run 2026-10-10b), so the source half never names a local page; the rule is
+/// carried by the pane's URL (`marks_page` refuses a local page before any Marks message is read).
 pub fn message_accepted(world: World, frame: Option<u64>, source: &str) -> bool {
     world == World::Client && frame.is_none() && !is_local_page(source)
 }
@@ -968,6 +977,24 @@ mod tests {
         }
         assert!(trust_patched(&format!("{src}\n{src}")).is_err());
         assert!(patch_once("abc", "b", "x").is_ok() && patch_once("abcb", "b", "x").is_err() && patch_once("ac", "b", "x").is_err());
+    }
+
+    /// Probe run 2026-10-10b (R13x5-43): a closed shadow root keeps the name out of `innerText`, but
+    /// Chromium's `window.find` and a select-all selection still read text nodes inside it (measured in
+    /// Chromium: both found "first"). The name is drawn as generated content (`::before` with
+    /// `attr()`), which neither finds nor selects; no text node holds it.
+    #[test]
+    fn annotation_names_are_not_page_text() {
+        let shown = show_call(&[json!({"name":"n","guid":"g"})], "s").unwrap().body;
+        assert!(!shown.contains("textContent = mark.name"), "no text node holds the name");
+        assert_eq!(shown.matches("setAttribute('data-tandem-name', mark.name)").count(), 2, "the collapsed view and the title");
+        assert_eq!(shown.matches("[data-tandem-name]::before { content: attr(data-tandem-name) !important; }").count(), 1);
+        assert!(shown.find("shadow.appendChild(tandemNames)").unwrap() < shown.find("shadow.appendChild(container)").unwrap(), "the rule lives in the closed root");
+        assert!(shown.contains("input.value = '';") && !shown.contains("input.value = mark.name"), "the hidden input holds no name either");
+        let src = crate::browser_js::resource("show-named-mark-annotations.js").unwrap();
+        for target in ["collapsedView.textContent = mark.name;", "markTitle.textContent = mark.name;", "input.value = mark.name || '';"] {
+            assert!(trust_patched(&src.replace(target, "")).is_err(), "{target}: a moved target fails closed");
+        }
     }
 
     /// Minor 5: the fragment is `&`-split and `&` survives its encoding, so an XPath holding one is
