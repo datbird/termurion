@@ -434,6 +434,9 @@ impl App {
 
     /// A pane was closed for good: its view closes.
     pub(super) fn close_browser_view(&mut self, pane: PaneId) {
+        if self.perm_menu.as_ref().is_some_and(|(p, _)| *p == pane) {
+            self.perm_menu = None;
+        }
         self.browser_permission_pane_gone(pane);
         self.browser_web_note_dropped(pane);
         self.browser_bars_end(pane);
@@ -1001,12 +1004,38 @@ impl App {
         // Add or Remove Bookmark: the page's own state, enabled for a web page.
         let (marked, can_mark) = self.browser_bookmark_state(pane);
         let items = browser::menu_items(marked, can_mark, dev_null, self.browser_reader_menu(pane));
+        // The current site's saved permissions and Unmute, between the last separator and Settings
+        // (`BT:381-415`). Spliced here so `menu_items` keeps its shape for the other milestones.
+        let site = self.browser_site_menu(pane, dev_null);
         let menu = muda::Menu::new();
         let mut failed = None;
-        for item in items {
+        // (label, id, enabled); None is a separator.
+        type Row = Option<(String, String, bool)>;
+        let mut rows: Vec<Row> = Vec::new();
+        let at_settings = items.iter().position(|i| matches!(i, Some(("Settings", _)))).unwrap_or(items.len());
+        let mut splice = |rows: &mut Vec<Row>| {
+            if !site.is_empty() {
+                if rows.last().is_some_and(|r| r.is_some()) {
+                    rows.push(None);
+                }
+                rows.extend(site.iter().cloned());
+            }
+        };
+        for (n, item) in items.into_iter().enumerate() {
+            if n == at_settings {
+                splice(&mut rows);
+            }
+            rows.push(item.map(|(l, e)| (l.to_string(), format!("{MENU_ID}{pane}:{l}"), e)));
+        }
+        if at_settings >= rows.len() {
+            splice(&mut rows);
+        }
+        for item in rows {
             let r = match item {
                 None => menu.append(&muda::PredefinedMenuItem::separator()),
-                Some((label, enabled)) => menu.append(&muda::MenuItem::with_id(format!("{MENU_ID}{pane}:{label}"), label, enabled, None)),
+                // Site rows' texts are fixed words plus a type name or the normalized origin,
+                // never page text; `&` is escaped as in the history menu.
+                Some((label, id, enabled)) => menu.append(&muda::MenuItem::with_id(id, label.replace('&', "&&"), enabled, None)),
             };
             if let Err(e) = r {
                 failed = Some(e.to_string());
@@ -1019,6 +1048,26 @@ impl App {
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
         unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
         self.popup_menu = Some(menu);
+    }
+
+    /// The site rows of the toolbar menu (Task 8): a disabled line naming the origin (punycode, the
+    /// end of the host kept), the saved permissions to reset, Unmute when Tandem muted the page.
+    /// Records (pane, origin) in `perm_menu` for the pick. Empty when the page has no usable origin.
+    fn browser_site_menu(&mut self, pane: PaneId, dev_null: bool) -> Vec<Option<(String, String, bool)>> {
+        self.perm_menu = None;
+        let Some(origin) = self.panes.get(&pane).and_then(|p| p.browser_io()).and_then(|io| crate::browser_perms::normalize_origin(&io.url)) else { return Vec::new() };
+        let saved: Vec<_> = match self.browser_db(dev_null) {
+            Some(db) => db.permissions_for_origin(&origin).into_iter().map(|r| (r.kind, r.decision)).collect(),
+            None => Vec::new(),
+        };
+        let items = crate::browser_perms::site_menu_items(&saved, self.browser_page_muted(pane));
+        if items.is_empty() {
+            return Vec::new();
+        }
+        self.perm_menu = Some((pane, origin.clone()));
+        let mut out = vec![Some((crate::browser_perms::menu_origin_line(&origin), format!("{MENU_ID}{pane}:origin"), false))];
+        out.extend(items.into_iter().map(|i| i.map(|(t, id)| (t, format!("{MENU_ID}{pane}:{id}"), true))));
+        out
     }
 
     /// The history menu of Back or Forward: the pane's own list (WebView2 has none).
@@ -1058,6 +1107,9 @@ impl App {
         }
         let Some(rest) = id.strip_prefix(MENU_ID) else { return false };
         let Some((pane, label)) = rest.split_once(':').and_then(|(p, l)| Some((p.parse::<PaneId>().ok()?, l))) else { return true };
+        if self.browser_perm_menu_picked_in(pane, label) {
+            return true;
+        }
         if matches!(label, "Add Bookmark" | "Remove Bookmark") {
             self.browser_toggle_bookmark(pane);
             return true;

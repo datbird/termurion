@@ -760,7 +760,6 @@ impl App {
 
     /// The toolbar's Reset: the row goes and the profile state is reset; the pages using the origin
     /// reload when the row was a Granted camera, microphone or location one (R13x6-T5d).
-    #[allow(dead_code)] // Task 8's menu calls it
     pub(super) fn reset_permission(&mut self, dev_null: bool, origin: &str, t: PermissionType) {
         let Some(db) = self.browser_db(dev_null) else { return };
         let granted = db.get_permission(origin, t).is_some_and(|r| r.decision == Decision::Granted);
@@ -1010,8 +1009,34 @@ impl App {
         }
     }
 
+    /// A pick of the toolbar menu's site rows, `label` being the id after the pane. Only a pick
+    /// from the menu built for `pane` counts; the person chose it, a page cannot reach it.
+    pub(super) fn browser_perm_menu_picked_in(&mut self, pane: PaneId, label: &str) -> bool {
+        if bp::menu_pick(label).is_none() {
+            return false;
+        }
+        if self.perm_menu.as_ref().is_some_and(|(p, _)| *p == pane) {
+            self.browser_perm_menu_picked(label);
+        }
+        true
+    }
+
+    /// The toolbar's Reset and Unmute (`BT:397-409`): Reset goes through `reset_permission` (the
+    /// one serialized write queue, then the reloads), for the origin the menu was built for.
+    pub(super) fn browser_perm_menu_picked(&mut self, id: &str) -> bool {
+        let Some(pick) = bp::menu_pick(id) else { return false };
+        let Some((pane, origin)) = self.perm_menu.clone() else { return true };
+        match pick {
+            bp::MenuPick::Reset(t) => {
+                let dev_null = self.pane_dev_null(pane);
+                self.reset_permission(dev_null, &origin, t);
+            }
+            bp::MenuPick::Unmute => self.browser_unmute(pane),
+        }
+        true
+    }
+
     /// "Unmute Current Page" (`BM:594-600`).
-    #[allow(dead_code)] // Task 8's menu
     pub(super) fn browser_unmute(&mut self, pane: PaneId) {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.perms.audio.unmute();
@@ -1020,7 +1045,6 @@ impl App {
     }
 
     /// Whether Tandem muted the current page on a play event (`currentPageIsMuted`, `BM:590-592`).
-    #[allow(dead_code)] // Task 8's menu
     pub(super) fn browser_page_muted(&self, pane: PaneId) -> bool {
         self.browser_views.get(&pane).is_some_and(|b| b.perms.audio.muted_by_us)
     }
@@ -1057,6 +1081,26 @@ mod tests {
 
     fn alive(_: PaneId) -> Option<u64> {
         Some(7)
+    }
+
+    #[test]
+    fn site_menu_picks_follow_iterm2() {
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let pick = &prod[prod.find("pub(super) fn browser_perm_menu_picked(").unwrap()..prod.find("/// \"Unmute Current Page\"").unwrap()];
+        assert!(pick.contains("let Some(pick) = bp::menu_pick(id) else { return false }"), "an unknown id answers false and changes nothing");
+        assert!(pick.contains("self.reset_permission(dev_null, &origin, t)"), "Reset goes through the one write path, for the origin the menu was built for");
+        assert!(pick.contains("self.browser_unmute(pane)"));
+        assert!(!pick.contains("db.") && !pick.contains("perm_queue"), "no second write path");
+        let inn = &prod[prod.find("pub(super) fn browser_perm_menu_picked_in(").unwrap()..prod.find("pub(super) fn browser_perm_menu_picked(").unwrap()];
+        assert!(inn.contains("*p == pane"), "a pick counts only from the menu built for that pane");
+        let app = include_str!("browser_app.rs");
+        let picked = &app[app.find("pub(super) fn browser_menu_picked(").unwrap()..];
+        assert!(picked.find("browser_perm_menu_picked_in(pane, label)").unwrap() < picked.find("\"Add Bookmark\"").unwrap(), "the site rows are tried first");
+        let site = &app[app.find("fn browser_site_menu(").unwrap()..];
+        assert!(site[..1500].contains("normalize_origin(&io.url)") && site[..1500].contains("menu_origin_line"), "the menu names the normalized origin");
+        let close = &app[app.find("pub(super) fn close_browser_view(").unwrap()..];
+        assert!(close[..400].contains("self.perm_menu = None"));
     }
 
     #[test]

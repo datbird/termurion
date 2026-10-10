@@ -720,6 +720,56 @@ impl AudioState {
     }
 }
 
+// --- The toolbar menu's site items (Task 8, `BT:381-409`) ---
+
+/// A reset item's id is this and the type's raw value.
+pub const RESET_PREFIX: &str = "browser-menu:reset-permission:";
+pub const UNMUTE_ID: &str = "browser-menu:unmute";
+pub const UNMUTE_TITLE: &str = "Unmute Current Page";
+
+/// `BT:388-392`.
+pub fn reset_title(t: PermissionType, d: Decision) -> String {
+    format!("Reset {} Permission ({})", t.display_name(), d.display_name())
+}
+
+/// The site items of the toolbar menu: (title, id), None a separator. One reset item for every
+/// saved row, every type included (audio playback too, `BVC:1063-1070`), sorted by display name
+/// (`BT:386`); a separator after them; then Unmute and a separator when the page is muted.
+pub fn site_menu_items(saved: &[(PermissionType, Decision)], muted: bool) -> Vec<Option<(String, String)>> {
+    let mut rows: Vec<(PermissionType, Decision)> = saved.to_vec();
+    rows.sort_by(|a, b| a.0.display_name().cmp(b.0.display_name()));
+    rows.dedup_by_key(|r| r.0);
+    let mut out: Vec<Option<(String, String)>> = rows.iter().map(|(t, d)| Some((reset_title(*t, *d), format!("{RESET_PREFIX}{}", t.raw())))).collect();
+    if !out.is_empty() {
+        out.push(None);
+    }
+    if muted {
+        out.push(Some((UNMUTE_TITLE.to_string(), UNMUTE_ID.to_string())));
+        out.push(None);
+    }
+    out
+}
+
+/// What a site item's id asks for. Anything else is not ours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuPick {
+    Reset(PermissionType),
+    Unmute,
+}
+
+pub fn menu_pick(id: &str) -> Option<MenuPick> {
+    if id == UNMUTE_ID {
+        return Some(MenuPick::Unmute);
+    }
+    PermissionType::parse(id.strip_prefix(RESET_PREFIX)?).map(MenuPick::Reset)
+}
+
+/// The menu's line naming the site the items are for: the normalized (punycode) origin, hidden
+/// characters dropped, the END of a long host kept (R13x6-O2).
+pub fn menu_origin_line(origin: &str) -> String {
+    origin_label(origin, 48)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +779,41 @@ mod tests {
     }
     fn s(x: &str) -> Option<String> {
         Some(x.to_string())
+    }
+
+    #[test]
+    fn site_menu_follows_iterm2() {
+        use Decision::*;
+        use PermissionType::*;
+        let r = |t: PermissionType| format!("{RESET_PREFIX}{}", t.raw());
+        let some = |a: &str, b: String| Some((a.to_string(), b));
+        assert_eq!(
+            site_menu_items(&[(Notification, Granted), (Camera, Denied), (Geolocation, Granted)], false),
+            vec![some("Reset Camera Permission (Blocked)", r(Camera)), some("Reset Location Permission (Allowed)", r(Geolocation)), some("Reset Notifications Permission (Allowed)", r(Notification)), None]
+        );
+        let muted = site_menu_items(&[(Camera, Denied)], true);
+        assert_eq!(muted[1..], [None, some("Unmute Current Page", UNMUTE_ID.to_string()), None]);
+        assert_eq!(site_menu_items(&[], true), vec![some("Unmute Current Page", UNMUTE_ID.to_string()), None]);
+        assert!(site_menu_items(&[], false).is_empty());
+        assert_eq!(
+            site_menu_items(&[(Notification, Granted), (AudioPlayback, Granted)], false),
+            vec![some("Reset Audio Playback Permission (Allowed)", r(AudioPlayback)), some("Reset Notifications Permission (Allowed)", r(Notification)), None]
+        );
+    }
+
+    #[test]
+    fn menu_ids_are_closed_and_the_origin_line_keeps_the_host_end() {
+        use PermissionType::*;
+        assert_eq!(menu_pick(&format!("{RESET_PREFIX}camera")), Some(MenuPick::Reset(Camera)));
+        assert_eq!(menu_pick(&format!("{RESET_PREFIX}audioPlayback")), Some(MenuPick::Reset(AudioPlayback)));
+        assert_eq!(menu_pick(UNMUTE_ID), Some(MenuPick::Unmute));
+        for bad in ["", "browser-menu:reset-permission:", "browser-menu:reset-permission:Camera", "browser-menu:reset-permission:all", "Settings"] {
+            assert_eq!(menu_pick(bad), None, "{bad:?}");
+        }
+        assert_eq!(menu_origin_line("https://xn--e1afmkfd.xn--p1ai"), "https://xn--e1afmkfd.xn--p1ai", "punycode as it is");
+        let long = format!("https://{}.example.com", "a".repeat(80));
+        let line = menu_origin_line(&long);
+        assert!(line.chars().count() <= 48 && line.ends_with("example.com") && line.contains('\u{2026}'));
     }
 
     #[test]

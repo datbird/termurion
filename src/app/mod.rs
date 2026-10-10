@@ -1343,6 +1343,8 @@ pub struct App {
     perm_asks: browser_perms_app::Asks,
     /// The web notification on the tray balloon, and when each granted origin last showed one (13x6).
     web_note: crate::browser_perms::NoteScreen,
+    /// The pane and origin the open toolbar menu's site items were built for (`representedObject`, `BT:397`).
+    perm_menu: Option<(PaneId, String)>,
     web_note_limits: crate::triggers::RateLimit<String>,
     /// The one ordered queue of profile permission writes of each browser store (`[Browser,
     /// BrowserDevNull]`, 13x6 Task 5 fix): every mirror, sync, revoke and reset goes through it.
@@ -2538,6 +2540,7 @@ pub fn run() {
         scripts_alerts: VecDeque::new(),
         perm_asks: Default::default(),
         web_note: Default::default(),
+        perm_menu: None,
         web_note_limits: Default::default(),
         perm_queues: Default::default(),
         scripts_alert: None,
