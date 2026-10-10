@@ -488,6 +488,15 @@ impl App {
         if self.scripts_alert.is_some() || self.scripts_alerts.is_empty() {
             return;
         }
+        // A page's question whose pane was hidden meanwhile does not open: it parks and is asked
+        // again when the pane is shown (final review M4).
+        if let Some(Then::BrowserPermission(id)) = self.scripts_alerts.front().map(|a| &a.then) {
+            let id = *id;
+            if !self.browser_permission_may_open(id) {
+                self.scripts_alerts.pop_front();
+                return;
+            }
+        }
         // After the last window has gone, the settings folder's quit question opens with the
         // GPU that window used.
         let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));

@@ -105,6 +105,12 @@ pub(super) struct Ask {
     pub(super) kind: PermissionType,
     pub(super) dev_null: bool,
     waiting: Vec<Waiter>,
+    /// The window's heading and text, kept to ask again after a park.
+    heading: String,
+    text: String,
+    /// Its pane was hidden when the window would open or when it was answered (final review M4):
+    /// no window shows until the pane is shown again.
+    parked: bool,
 }
 
 /// What the `App` carries out.
@@ -230,8 +236,9 @@ impl Asks {
         let id = self.next;
         let clean = |s: &str| crate::inert_files::display_text(s, 300, false);
         let text = clean(&t.request_message(&shown));
-        self.open.insert(id, Ask { pane: p.req.pane, origin, shown, kind: t, dev_null: p.dev_null, waiting: vec![waiter] });
-        acts.push(Act::Ask { id, heading: t.dialog_title().to_string(), text });
+        let heading = t.dialog_title().to_string();
+        self.open.insert(id, Ask { pane: p.req.pane, origin, shown, kind: t, dev_null: p.dev_null, waiting: vec![waiter], heading: heading.clone(), text: text.clone(), parked: false });
+        acts.push(Act::Ask { id, heading, text });
     }
 
     /// Question `id` was answered by button `index` (None: closed, or never shown).
@@ -249,6 +256,30 @@ impl Asks {
             self.cooldown.insert((a.pane, a.origin.clone(), a.kind, a.dev_null), self.now_ms + COOLDOWN_MS);
         }
         Some(Settled { origin: a.origin, t: a.kind, d, save, dev_null: a.dev_null, waiters: a.waiting })
+    }
+
+    /// The pane question `id` was asked for.
+    pub(super) fn pane_of(&self, id: u64) -> Option<PaneId> {
+        self.open.get(&id).map(|a| a.pane)
+    }
+
+    /// Question `id`'s pane is hidden as its window would open or as its answer arrives: it waits,
+    /// unanswered and unsaved, with no cooldown, still holding its pane's queue (final review M4).
+    pub(super) fn park(&mut self, id: u64) -> bool {
+        self.open.get_mut(&id).map(|a| a.parked = true).is_some()
+    }
+
+    /// The parked questions whose pane is shown now open again, with the same text.
+    pub(super) fn unpark(&mut self, shown: &dyn Fn(PaneId) -> bool) -> Vec<Act> {
+        let mut ids: Vec<u64> = self.open.iter().filter(|(_, a)| a.parked && shown(a.pane)).map(|(id, _)| *id).collect();
+        ids.sort();
+        ids.into_iter()
+            .filter_map(|id| {
+                let a = self.open.get_mut(&id)?;
+                a.parked = false;
+                Some(Act::Ask { id, heading: a.heading.clone(), text: a.text.clone() })
+            })
+            .collect()
     }
 
     /// The requests that were waiting behind `pane`'s question and can ask now.
@@ -549,6 +580,9 @@ impl App {
             let again = self.perm_asks.take_later(pane);
             self.perm_asks.tick.extend(again);
         }
+        // Questions parked while their pane was hidden open again once it is shown (final review M4).
+        let unparked = self.perm_asks.unpark(&|p| shown.get(&p).copied().unwrap_or(false));
+        self.perm_acts(unparked);
         if self.perm_asks.tick.is_empty() {
             return;
         }
@@ -593,6 +627,12 @@ impl App {
     /// Question `ask` was answered (None: closed or never shown, which blocks and saves nothing).
     pub(super) fn browser_permission_answered(&mut self, ask: u64, index: Option<usize>) {
         self.perm_asks.now_ms = now_ms();
+        // A button pressed while the pane is hidden (the person moved to another tab) is not an
+        // answer about a page they see: the question waits and is asked again when the pane is
+        // shown (final review M4). A close still blocks, as before.
+        if index.is_some() && !self.browser_permission_pane_shown(ask) && self.perm_asks.park(ask) {
+            return;
+        }
         let Some(s) = self.perm_asks.answered(ask, index) else { return };
         let epochs: HashMap<PaneId, u64> = self.browser_views.iter().filter(|(_, b)| b.view.is_some()).map(|(p, b)| (*p, b.reader.epoch)).collect();
         // A late click for a page that has gone saves nothing (I3).
@@ -1006,6 +1046,20 @@ impl App {
         }
     }
 
+    /// Whether question `ask`'s pane is shown now (false for a question no longer open).
+    pub(super) fn browser_permission_pane_shown(&self, ask: u64) -> bool {
+        self.perm_asks.pane_of(ask).is_some_and(|p| self.browser_pane_shown(p))
+    }
+
+    /// The queued window of question `ask` is about to open: when its pane is hidden now, the
+    /// question parks instead (no window) and opens when the pane is shown (final review M4).
+    pub(super) fn browser_permission_may_open(&mut self, ask: u64) -> bool {
+        if self.perm_asks.pane_of(ask).is_none() || self.browser_permission_pane_shown(ask) {
+            return true;
+        }
+        !self.perm_asks.park(ask)
+    }
+
     /// Whether pane `pane` is shown to the person: this window's active tab, in a layout (not buried
     /// or a hidden peer).
     fn browser_pane_shown(&self, pane: PaneId) -> bool {
@@ -1387,6 +1441,39 @@ mod tests {
         };
         let acts = asks.plan_flush(vec![mk(1, "https://a.b/"), mk(2, "https://a.b/x"), mk(3, "https://c.d/")], SYS);
         assert_eq!(answers(&acts), vec![(2, PermAnswer::Deny)], "a second request of one origin is denied, not queued");
+    }
+
+    /// Final review M4: the shown-pane rule holds when the queued window would open and when its
+    /// answer arrives, not only when the request was planned. A question whose pane is hidden then
+    /// is parked (no window, no answer, nothing saved, no cooldown) and asked again, the same text,
+    /// once the pane is shown; it still blocks the pane's later requests.
+    #[test]
+    fn a_question_whose_pane_was_hidden_is_parked_until_shown() {
+        let mut asks = Asks::default();
+        let q = asked(&asks.plan_flush(vec![prep(req(1, 1, 4, "https://a.b/"), &[])], SYS));
+        assert_eq!(q.len(), 1);
+        let (id, heading, text) = q[0].clone();
+        assert_eq!(asks.pane_of(id), Some(1));
+        assert!(asks.park(id), "an open question parks");
+        assert!(!asks.park(99), "an unknown one does not");
+        assert!(asks.unpark(&|_| false).is_empty(), "still hidden: no window");
+        assert!(asked(&asks.plan_flush(vec![prep(req(1, 2, 3, "https://c.d/"), &[])], SYS)).is_empty(), "one question per pane, parked or not");
+        assert!(asks.take_later(1).is_empty(), "the parked question still holds the pane's queue");
+        let again = asks.unpark(&|p| p == 1);
+        assert_eq!(asked(&again), vec![(id, heading, text)], "shown: the same question opens again");
+        assert!(asks.unpark(&|p| p == 1).is_empty(), "once");
+        // Parking is not a close, and a parked question keeps its waiter for the answer once shown.
+        assert!(asks.park(id));
+        assert!(asks.cooldown.is_empty(), "parking is not a close: no cooldown");
+        let s = asks.answered(id, Some(0)).expect("still open");
+        assert_eq!(s.waiters.len(), 1);
+        // Wired: the queued window checks before it opens, a button answer checks as it arrives, and
+        // each drain opens the parked questions of shown panes.
+        assert!(include_str!("scripts_alerts.rs").contains("if !self.browser_permission_may_open(id) {"));
+        let me = include_str!("browser_perms_app.rs");
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(prod.contains("if index.is_some() && !self.browser_permission_pane_shown(ask) && self.perm_asks.park(ask) {"));
+        assert!(prod.contains("let unparked = self.perm_asks.unpark(&|p| shown.get(&p).copied().unwrap_or(false));"));
     }
 
     #[test]
