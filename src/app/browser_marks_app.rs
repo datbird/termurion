@@ -340,6 +340,12 @@ impl App {
         // The pending reveal runs only on the end of the navigation it is bound to (B9), after the
         // monitor exists (below), so a stale or foreign end of navigation scrolls nothing.
         let reveal = self.browser_views.get_mut(&pane).and_then(|b| b.marks_page.reveal_navigated(nav, true));
+        self.browser_marks_start(pane, reveal);
+    }
+
+    /// The monitor first, then the annotations (and a reveal), for the document the pane shows now:
+    /// after every successful navigation and after a world rebuilt under a loaded page (R13x5-3).
+    pub(super) fn browser_marks_start(&mut self, pane: PaneId, reveal: Option<Mark>) {
         if self.marks_page(pane).is_none() {
             return;
         }
@@ -376,21 +382,34 @@ impl App {
     /// when the call failed. Every step is the isolated-world runner (`.defaultClient`); the monitor
     /// calls' errors are ignored (`try?`, `NMM:273-279`). `done` gets the call's own answer.
     pub(super) fn marks_modify_dom(&mut self, pane: PaneId, call: Call, done: JsDone) {
+        let epoch = self.browser_views.get(&pane).map_or(0, |b| b.marks_method.epoch());
         self.browser_js_call(
             pane,
             marks::DISABLE_MONITOR_JS,
             json!({}),
             Box::new(move |app, pane, _| {
+                // A navigation since the call began: this document is not the one the call was made
+                // for, so nothing runs in it (its monitor is gone with the old document).
+                if !app.marks_epoch_is(pane, epoch) {
+                    return;
+                }
                 app.browser_js_call(
                     pane,
                     &call.body,
                     call.args,
                     Box::new(move |app, pane, r| {
+                        if !app.marks_epoch_is(pane, epoch) {
+                            return;
+                        }
                         app.browser_js_call(pane, marks::ENABLE_MONITOR_JS, json!({}), Box::new(move |app, pane, _| done(app, pane, r)));
                     }),
                 );
             }),
         );
+    }
+
+    fn marks_epoch_is(&self, pane: PaneId, epoch: u64) -> bool {
+        self.browser_views.get(&pane).is_some_and(|b| b.marks_method.epoch() == epoch)
     }
 
     /// The annotation box's request (`MESSAGE_HANDLER`, `NMM:228-252`, changed: B2). Only the isolated
@@ -529,11 +548,17 @@ impl App {
         let Some((url, dev_null)) = self.marks_page(pane) else { return };
         let known = marks::page_guids(self.browser_marks_cache(dev_null), &url);
         if known.is_empty() {
-            return;
+            // Nothing to move, but the monitor disabled itself to post: bring it back.
+            return self.browser_js_call(pane, marks::ENABLE_MONITOR_JS, json!({}), Box::new(|_, _, _| {}));
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
-        if !bv.marks_page.monitor || !bv.marks_page.layout_allowed(Instant::now()) {
+        if !bv.marks_page.monitor {
             return;
+        }
+        // The monitor disables itself before every post and waits for the host to bring it back, so a
+        // message the rate gate refuses still gets the monitor re-enabled (never dropped silently).
+        if marks::layout_action(bv.marks_page.layout_allowed(Instant::now())) == marks::LayoutAction::Reenable {
+            return self.browser_js_call(pane, marks::ENABLE_MONITOR_JS, json!({}), Box::new(|_, _, _| {}));
         }
         let epoch = bv.marks_method.epoch();
         let secret = bv.marks_page.secret.clone();
@@ -699,6 +724,25 @@ mod tests {
             assert!(body.contains("MARKS-SECRET-13x5") && !body.contains("VIEW-SECRET-13x5"));
         }
         assert!(!marks::monitor_body().contains("SECRET-13x5") && !marks::DISABLE_MONITOR_JS.contains("SECRET") && !marks::ENABLE_MONITOR_JS.contains("SECRET"));
+    }
+
+    /// Task 4 review fixes: a rebuilt world restarts the marks, a refused layout message re-enables
+    /// the monitor, and the modify-DOM chain stops when the document changed.
+    #[test]
+    fn marks_survive_rebuilds_gates_and_navigations() {
+        let p = prod();
+        let start = &p[p.find("pub(super) fn browser_marks_start").unwrap()..p.find("pub(super) fn browser_marks_reload_annotations").unwrap()];
+        assert!(start.find("marks::monitor_body()").unwrap() < start.find("browser_marks_reload_annotations").unwrap(), "monitor first");
+        let nav = &p[p.find("pub(super) fn browser_marks_navigated").unwrap()..p.find("pub(super) fn browser_marks_start").unwrap()];
+        assert!(nav.contains("self.browser_marks_start(pane, reveal)"));
+        let sc = include_str!("browser_scripts_app.rs");
+        let fin = &sc[sc.find("fn browser_world_finish").unwrap()..sc.find("pub(super) fn browser_world_navigated").unwrap()];
+        assert!(fin.contains("was_restart") && fin.contains("self.browser_marks_start(pane, None)"), "a rebuilt world restarts the marks (R13x5-3)");
+        let lay = &p[p.find("pub(super) fn marks_layout_message").unwrap()..p.find("/// A pane that closed takes").unwrap()];
+        assert!(lay.contains("layout_action(") && lay.matches("ENABLE_MONITOR_JS").count() == 2, "a refused or empty message re-enables the monitor");
+        let dom = &p[p.find("pub(super) fn marks_modify_dom").unwrap()..p.find("pub(super) fn marks_message").unwrap()];
+        assert_eq!(dom.matches("marks_epoch_is(pane, epoch)").count(), 2, "checked at every async step");
+        assert!(dom.find("marks_epoch_is").unwrap() < dom.find("&call.body").unwrap());
     }
 
     /// Source shape (B1, B2, B9): the rename and delete happen in Tandem windows outside the page, the

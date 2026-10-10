@@ -443,6 +443,18 @@ impl PageState {
     }
 }
 
+/// What a layout message from the monitor gets: the position update, or (the rate gate refused it)
+/// only the monitor brought back, because the monitor disabled itself to post and waits for the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutAction {
+    Update,
+    Reenable,
+}
+
+pub fn layout_action(allowed: bool) -> LayoutAction {
+    if allowed { LayoutAction::Update } else { LayoutAction::Reenable }
+}
+
 /// A reveal waiting for its page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pending {
@@ -738,6 +750,15 @@ mod tests {
         s.rotate("t".into());
         assert!(s.pending.is_none());
         assert_eq!(s.take_pending(), None);
+    }
+
+    #[test]
+    fn the_rate_gate_never_strands_the_monitor() {
+        let mut s = PageState::new("s".into());
+        let t = std::time::Instant::now();
+        assert_eq!(layout_action(s.layout_allowed(t)), LayoutAction::Update);
+        assert_eq!(layout_action(s.layout_allowed(t + std::time::Duration::from_millis(550))), LayoutAction::Reenable);
+        assert_eq!(layout_action(s.layout_allowed(t + std::time::Duration::from_millis(1600))), LayoutAction::Update);
     }
 
     #[test]

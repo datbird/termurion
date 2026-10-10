@@ -354,6 +354,7 @@ impl App {
         let restoring = self.browser_restoring();
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         let Some(setup) = bv.world.setup.take() else { return };
+        let was_restart = bv.world.restarted;
         bv.client_world = setup.state().clone();
         bv.world.reload_wait = false;
         bv.world.world_check = None;
@@ -379,8 +380,14 @@ impl App {
         for id in ids {
             self.devtools_send(pane, None, "Page.removeScriptToEvaluateOnNewDocument", &json!({"identifier": id}), Box::new(|_, _, _| {}));
         }
+        let loads = load.is_some() || restoring;
         if let Some(url) = load {
             self.browser_load_own(pane, &url);
+        }
+        // A world rebuilt under a page that is already loaded gets no Navigated: its monitor and
+        // annotations start now, monitor first (R13x5-3).
+        if was_restart && !loads && self.client_open(pane) {
+            self.browser_marks_start(pane, None);
         }
     }
 
