@@ -745,6 +745,13 @@ impl App {
         let granted = db.get_permission(origin, t).is_some_and(|r| r.decision == Decision::Granted);
         db.reset_permission(origin, t);
         self.apply_op(dev_null, origin, Op::Reset { t, granted });
+        // Its notification on the balloon goes too (Task 6 review minor 3).
+        if t == PermissionType::Notification {
+            if let Some(gone) = self.web_note.take_origin(origin) {
+                crate::notify::clear_if_shown(gone.shown_at);
+                self.note_report(gone.pane, gone.token, NoteReport::Closed);
+            }
+        }
     }
 
     /// iTerm2's revocation sweep (`BPM:230-241`, `BM:518-586`): a pane whose main origin matches
@@ -808,7 +815,7 @@ impl App {
         let kind = crate::alerts::AlertKind::Web { origin: origin.clone(), title: title.to_string(), body: body.to_string() };
         if self.post_alert(pane, kind) {
             // `post_alert` took the balloon from any older web notification; this one is on screen now.
-            self.web_note.shown(pane, token, &origin);
+            self.web_note.shown(pane, token, &origin, crate::notify::shown_count());
             self.note_report(pane, token, NoteReport::Shown);
         } else {
             self.note_report(pane, token, NoteReport::Release);
@@ -822,23 +829,25 @@ impl App {
         if !bp::close_honored(self.saved_notification(pane, &origin)) {
             return;
         }
-        self.web_note.take();
-        crate::notify::clear_info();
+        // Only its own balloon: anything shown since is not the page's to clear (Task 6 I1).
+        if let Some(gone) = self.web_note.take() {
+            crate::notify::clear_if_shown(gone.shown_at);
+        }
         self.note_report(pane, token, NoteReport::Closed);
     }
 
     /// Another alert took the balloon: the web notification on it, if any, is reported closed.
     pub(super) fn web_note_replaced(&mut self) {
-        if let Some((pane, token)) = self.web_note.take() {
-            self.note_report(pane, token, NoteReport::Closed);
+        if let Some(gone) = self.web_note.take() {
+            self.note_report(gone.pane, gone.token, NoteReport::Closed);
         }
     }
 
     /// A navigation or a closed pane: that pane's notification on the balloon goes.
     pub(super) fn browser_web_note_dropped(&mut self, pane: PaneId) {
-        if let Some((pane, token)) = self.web_note.take_pane(pane) {
-            crate::notify::clear_info();
-            self.note_report(pane, token, NoteReport::Closed);
+        if let Some(gone) = self.web_note.take_pane(pane) {
+            crate::notify::clear_if_shown(gone.shown_at);
+            self.note_report(gone.pane, gone.token, NoteReport::Closed);
         }
     }
 
@@ -1053,7 +1062,10 @@ mod tests {
         assert!(body.contains("NoteReport::Release") && body.contains("NoteReport::Shown"));
         assert!(body.contains("web_note_limits.allow"), "a per-origin cap");
         let closed = me.split("pub(super) fn browser_notification_closed").nth(1).unwrap().split("pub(super) fn web_note_replaced").next().unwrap();
-        assert!(closed.contains("bp::close_honored(") && closed.contains("clear_info()") && closed.contains("NoteReport::Closed"));
+        assert!(closed.contains("bp::close_honored(") && closed.contains("clear_if_shown(gone.shown_at)") && closed.contains("NoteReport::Closed"));
+        let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(!prod.contains(concat!("clear_", "info(")) && prod.matches("clear_if_shown(gone.shown_at)").count() >= 2, "a page clears only its own balloon (Task 6 I1)");
+        assert!(prod.contains("self.web_note.shown(pane, token, &origin, crate::notify::shown_count())"), "the count right after it was shown");
         let ev = include_str!("browser_app.rs");
         assert!(ev.contains("self.browser_notification(pane, *token, origin, title, body)") && ev.contains("self.browser_notification_closed(pane, *token)"));
         let alerts = include_str!("alerts_ui.rs");

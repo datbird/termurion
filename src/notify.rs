@@ -170,8 +170,20 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Dismisses the balloon on screen (an empty `szInfo` removes it). Nothing when no icon was added.
-pub fn clear_info() {
+/// Whether the balloon shown when `shown_count()` was `at` is still the one on screen, now that
+/// it is `now`: nothing was shown since (whoever showed it).
+pub fn still_shown(at: u64, now: u64) -> bool {
+    at == now
+}
+
+/// Dismisses the balloon (an empty `szInfo` removes it), but only while it is still the one shown
+/// when `shown_count()` was `at`: a web notification can only ever close ITSELF, never a Tandem
+/// alert (or another site's) shown after it. True when it was cleared. Nothing when no icon was
+/// added.
+pub fn clear_if_shown(at: u64) -> bool {
+    if !still_shown(at, shown_count()) {
+        return false;
+    }
     let w = WINDOW.load(Ordering::SeqCst);
     if w != 0 && ADDED.load(Ordering::SeqCst) {
         let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
@@ -181,6 +193,7 @@ pub fn clear_info() {
         nid.uFlags = NIF_INFO;
         unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
     }
+    true
 }
 
 /// Shows a notification (the mark alert's older entry point; `_owner` is not needed).
@@ -212,5 +225,18 @@ mod tests {
         assert_eq!(click_of(0x0205), Some(true));
         assert_eq!(click_of(BALLOON_CLICK), None);
         assert_eq!(click_of(0x0200), None);
+    }
+
+    /// Task 6 review I1: the balloon is cleared only by the one who showed the last notification.
+    #[test]
+    fn only_the_last_shown_may_be_cleared() {
+        assert!(still_shown(5, 5));
+        assert!(!still_shown(5, 6), "something was shown since: not ours to clear");
+        assert!(!still_shown(6, 5));
+        let me = include_str!("notify.rs");
+        let prod = me.split("#[cfg(test)]").next().unwrap();
+        assert!(!prod.contains(concat!("pub fn clear_", "info(")), "no unguarded clear");
+        let clear = &prod[prod.find("pub fn clear_if_shown(").unwrap()..];
+        assert!(clear[..200].contains("if !still_shown(at, shown_count())"), "the guard comes first");
     }
 }

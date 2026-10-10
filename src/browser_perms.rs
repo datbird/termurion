@@ -489,37 +489,48 @@ pub fn notification_text(title: &str, body: &str, origin: &str) -> (String, Stri
     (head, crate::inert_files::display_text(&text, NOTE_BODY_CHARS, false))
 }
 
-/// The one web notification on Tandem's balloon: the pane, the page's token and the origin. The
-/// balloon holds one notification, so a newer one (or any other Tandem alert) replaces it, and the
-/// page is told the old one closed.
+/// A web notification taken off Tandem's record: whom to tell it closed, and `notify::shown_count()`
+/// right after it was shown (the balloon is cleared only while that is still the count:
+/// `notify::clear_if_shown`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteGone {
+    pub pane: crate::layout::PaneId,
+    pub token: u64,
+    pub shown_at: u64,
+}
+
+/// The one web notification on Tandem's balloon: the pane, the page's token, the origin and the
+/// show count it was shown at. The balloon holds one notification, so a newer one (or any other
+/// Tandem alert) replaces it, and the page is told the old one closed.
 #[derive(Debug, Default)]
 pub struct NoteScreen {
-    on: Option<(crate::layout::PaneId, u64, String)>,
+    on: Option<(NoteGone, String)>,
 }
 
 impl NoteScreen {
-    /// A web notification is now on the balloon; returns the one it replaced.
-    pub fn shown(&mut self, pane: crate::layout::PaneId, token: u64, origin: &str) -> Option<(crate::layout::PaneId, u64)> {
-        self.on.replace((pane, token, origin.to_string())).map(|(p, t, _)| (p, t))
+    /// A web notification is now on the balloon (shown at `shown_at`); returns the one it replaced.
+    pub fn shown(&mut self, pane: crate::layout::PaneId, token: u64, origin: &str, shown_at: u64) -> Option<NoteGone> {
+        self.on.replace((NoteGone { pane, token, shown_at }, origin.to_string())).map(|(g, _)| g)
     }
 
-    /// Another alert took the balloon (or the person navigated away): the one on screen, taken.
-    pub fn take(&mut self) -> Option<(crate::layout::PaneId, u64)> {
-        self.on.take().map(|(p, t, _)| (p, t))
+    /// Another alert took the balloon (or the person navigated away): the one on record, taken.
+    pub fn take(&mut self) -> Option<NoteGone> {
+        self.on.take().map(|(g, _)| g)
     }
 
-    /// The origin of the notification on screen under `token`, when it is that one.
+    /// The origin of the notification on record under `token`, when it is that one.
     pub fn origin_of(&self, pane: crate::layout::PaneId, token: u64) -> Option<&str> {
-        self.on.as_ref().filter(|(p, t, _)| *p == pane && *t == token).map(|(_, _, o)| o.as_str())
+        self.on.as_ref().filter(|(g, _)| g.pane == pane && g.token == token).map(|(_, o)| o.as_str())
     }
 
-    /// The pane's notification, taken, when it is the one on screen.
-    pub fn take_pane(&mut self, pane: crate::layout::PaneId) -> Option<(crate::layout::PaneId, u64)> {
-        if self.on.as_ref().is_some_and(|(p, _, _)| *p == pane) { self.take() } else { None }
+    /// The pane's notification, taken, when it is the one on record.
+    pub fn take_pane(&mut self, pane: crate::layout::PaneId) -> Option<NoteGone> {
+        if self.on.as_ref().is_some_and(|(g, _)| g.pane == pane) { self.take() } else { None }
     }
 
-    pub fn on_screen(&self) -> bool {
-        self.on.is_some()
+    /// The notification of `origin`, taken, when it is the one on record (its row was reset).
+    pub fn take_origin(&mut self, origin: &str) -> Option<NoteGone> {
+        if self.on.as_ref().is_some_and(|(_, o)| o == origin) { self.take() } else { None }
     }
 }
 
@@ -848,13 +859,30 @@ mod tests {
     #[test]
     fn one_web_note_is_on_screen() {
         let mut n = NoteScreen::default();
-        assert_eq!(n.shown(1, 1, "https://a.b"), None);
+        let g = |pane, token, shown_at| NoteGone { pane, token, shown_at };
+        assert_eq!(n.shown(1, 1, "https://a.b", 4), None);
         assert_eq!(n.origin_of(1, 1), Some("https://a.b"));
         assert_eq!(n.origin_of(1, 2), None, "an older or other token is not on screen");
-        assert_eq!(n.shown(1, 2, "https://c.d"), Some((1, 1)), "the replaced one is returned to be reported closed");
+        assert_eq!(n.shown(1, 2, "https://c.d", 5), Some(g(1, 1, 4)), "the replaced one is returned to be reported closed");
         assert_eq!(n.take_pane(9), None);
-        assert_eq!(n.take_pane(1), Some((1, 2)));
-        assert!(!n.on_screen());
+        assert_eq!(n.take_origin("https://a.b"), None);
+        assert_eq!(n.take_origin("https://c.d"), Some(g(1, 2, 5)), "a reset origin's note is taken");
         assert_eq!(n.take(), None);
+        n.shown(1, 3, "https://c.d", 6);
+        assert_eq!(n.take_pane(1), Some(g(1, 3, 6)));
+        assert_eq!(n.take(), None);
+    }
+
+    /// Task 6 review I1: a page can close only its OWN notification. A Tandem alert shown after it
+    /// (any caller of `notify::show_with`, not only `post_alert`) moves the show count, so the
+    /// page's close clears nothing; the page is still told its note closed.
+    #[test]
+    fn a_web_note_closes_only_itself() {
+        let mut n = NoteScreen::default();
+        n.shown(1, 7, "https://a.b", 10);
+        // A Tandem alert ("debug logging was turned on") is shown: the count is 11 now.
+        let gone = n.take().unwrap();
+        assert!(!crate::notify::still_shown(gone.shown_at, 11), "the Tandem alert is not the page's to clear");
+        assert!(crate::notify::still_shown(gone.shown_at, 10), "its own still is");
     }
 }
