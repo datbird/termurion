@@ -487,6 +487,7 @@ impl App {
 
     /// A DevTools call for a later plan: the method must be in `browser_world::ALLOWED`.
     pub(super) fn browser_devtools(&mut self, pane: PaneId, method: &str, params: Value, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::DevTools, &format!("{method} {params}"), done) else { return };
         self.devtools_send(pane, None, method, &params, done);
     }
 
@@ -635,6 +636,7 @@ impl App {
     /// `callAsyncJavaScript` in the Tandem world of the main frame. `Err("isolated world unavailable")`
     /// at once when the view has none. The script and the arguments are never logged.
     pub(super) fn browser_js_call(&mut self, pane: PaneId, body: &str, args: Value, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::World, body, done) else { return };
         self.browser_js_call_in_frame(pane, None, body, args, done);
     }
 
@@ -667,6 +669,7 @@ impl App {
 
     /// The page-world runner of later plans: no bridge, no secret, no argument.
     pub(super) fn browser_page_call(&mut self, pane: PaneId, body: &str, args: Value, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::Page, body, done) else { return };
         match browser_js::page_call_script(body, &args) {
             Ok(script) => self.browser_eval(pane, &script, done),
             Err(e) => done(self, pane, Err(e)),
@@ -764,9 +767,9 @@ impl App {
                     bv.selection = None;
                     bv.selection_gate.reset();
                     bv.graph.will_navigate();
-                    // `RMM:216-221`: a new page has no reader and no cached text.
-                    bv.reader.reset();
                 }
+                // `RMM:216-221`, `BM:1252`: a new page has no reader and no cached text.
+                self.reader_navigation_started(pane);
                 // `BM:1254`: a navigation that starts turns copy mode off (the page's cursor is gone).
                 self.browser_copy_mode_set(pane, false);
                 // The rows Find Globally holds for this pane are the old page's text.

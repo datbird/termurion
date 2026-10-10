@@ -109,6 +109,33 @@ pub fn offers_reader(plain: Option<&str>) -> bool {
     plain.is_some_and(|t| t.chars().count() > 10)
 }
 
+/// What failed, for the log lines of `RMM` (`:93`, `:105`, `:152`, `:164`, `:200`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Enter,
+    Exit,
+    EnterDistraction,
+    ExitDistraction,
+    Inject,
+}
+
+/// The log line for a failure; `e` is the runner's error kind, never page text.
+pub fn failure_line(f: Failure, e: &str) -> String {
+    let what = match f {
+        Failure::Enter => "entering reader mode",
+        Failure::Exit => "exiting reader mode",
+        Failure::EnterDistraction => "entering distraction removal mode",
+        Failure::ExitDistraction => "exiting distraction removal mode",
+        Failure::Inject => "injecting reader mode scripts",
+    };
+    format!("Error {what}: {e}")
+}
+
+/// Whether an enter script's answer turns its mode on: only JSON `true` (`RMM:88-91`, `:147-149`).
+pub fn answered_true(answer: &serde_json::Value) -> bool {
+    answer == &serde_json::Value::Bool(true)
+}
+
 /// What a pane knows of its reader (`RMM:20-23`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct State {
@@ -168,6 +195,19 @@ mod tests {
         "Readability.js", "reader-mode.css", "reader-mode-with-styles.js", "load-readability.js", "load-reader-mode.js", "enter-reader-mode.js", "exit-reader-mode.js", "distraction-removal.js",
         "distraction-removal-helpers.js", "enter-distraction-removal.js", "exit-distraction-removal.js", "remove-element-at-point.js", "extract-plain-text.js", "convert-to-markdown.js", "turndown.browser.umd.js",
     ];
+
+    #[test]
+    fn reader_logs_and_answers_follow_iterm2() {
+        assert_eq!(failure_line(Failure::Enter, "boom"), "Error entering reader mode: boom");
+        assert_eq!(failure_line(Failure::Exit, "boom"), "Error exiting reader mode: boom");
+        assert_eq!(failure_line(Failure::EnterDistraction, "boom"), "Error entering distraction removal mode: boom");
+        assert_eq!(failure_line(Failure::ExitDistraction, "boom"), "Error exiting distraction removal mode: boom");
+        assert_eq!(failure_line(Failure::Inject, "boom"), "Error injecting reader mode scripts: boom");
+        assert!(answered_true(&serde_json::json!(true)));
+        for no in [serde_json::json!(false), serde_json::json!("true"), serde_json::json!(1), serde_json::Value::Null] {
+            assert!(!answered_true(&no), "{no}");
+        }
+    }
 
     #[test]
     fn a_missing_loader_resource_is_an_error() {

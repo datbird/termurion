@@ -525,11 +525,28 @@ pub fn submitted_url(text: &str, template: &str) -> String {
     normalize_url(text).unwrap_or_else(|| search_url(template, text.trim()))
 }
 
+/// What the toolbar menu knows of the reader when Reader Mode is offered (`BT:313-343`): whether each
+/// mode is on (the entry then offers its exit) and whether the page has a URL (the entries' enabling).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReaderMenu {
+    pub reader: bool,
+    pub distraction: bool,
+    pub has_url: bool,
+}
+
 /// The toolbar menu: None is a separator, the flag is whether the item is enabled (`BT:306-420`).
 /// Dev Null hides the bookmark and history items; Settings stays disabled until 13x8 builds the
 /// page.
-pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool) -> Vec<Option<(&'static str, bool)>> {
+pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool, reader: Option<ReaderMenu>) -> Vec<Option<(&'static str, bool)>> {
     let mut out = Vec::new();
+    // The reader block does not depend on Dev Null (`BT:313-345`). Ask AI waits for the AI browser
+    // tools plan, so it is shown disabled.
+    if let Some(r) = reader {
+        out.push(Some((if r.reader { "Exit Reader Mode" } else { "Reader Mode" }, r.has_url)));
+        out.push(Some((if r.distraction { "Exit Distraction Removal" } else { "Remove Distractions" }, r.has_url)));
+        out.push(None);
+        out.push(Some(("Ask AI\u{2026}", false)));
+    }
     if !dev_null {
         out.push(Some((if bookmarked { "Remove Bookmark" } else { "Add Bookmark" }, has_url)));
         out.push(None);
@@ -552,6 +569,9 @@ pub fn menu_selector(label: &str) -> &'static str {
         "Manage Bookmarks" => "manageBookmarksMenuItemSelected:",
         "History" => "historyMenuItemSelected:",
         "Settings" => "settingsMenuItemSelected:",
+        "Reader Mode" | "Exit Reader Mode" => "readerModeMenuItemSelected",
+        "Remove Distractions" | "Exit Distraction Removal" => "distractionRemovalMenuItemSelected",
+        "Ask AI\u{2026}" => "askAIMenuItemSelected",
         "Debug Autofill Fields" => "debugAutofillMenuItemSelected:",
         _ => "",
     }
@@ -1505,16 +1525,16 @@ mod tests {
 
     #[test]
     fn toolbar_menus_follow_iterm2() {
-        let m = menu_items(true, true, false);
+        let m = menu_items(true, true, false, None);
         assert_eq!(m[0], Some(("Remove Bookmark", true)));
-        assert_eq!(menu_items(false, false, false)[0], Some(("Add Bookmark", false)));
+        assert_eq!(menu_items(false, false, false, None)[0], Some(("Add Bookmark", false)));
         fn names<'a>(v: &[Option<(&'a str, bool)>]) -> Vec<&'a str> {
             v.iter().flatten().map(|(n, _)| *n).collect()
         }
         assert_eq!(names(&m), vec!["Remove Bookmark", "Manage Bookmarks", "History", "Settings"]);
         assert_eq!(m[1], None);
         assert_eq!(m.last().copied().flatten(), Some(("Settings", false)), "Settings stays disabled until 13x8");
-        let dev = menu_items(false, true, true);
+        let dev = menu_items(false, true, true, None);
         assert_eq!(names(&dev), vec!["Settings"], "Dev Null hides the bookmark and history items (`BT:344`)");
         assert_eq!(history_menu(&[("T".into(), "https://a/".into()), ("".into(), "https://b/".into()), ("x\u{202e}y".into(), "u".into())], 80), vec!["T", "https://b/", "xy"]);
         let io = BrowserIo { can_back: true, loading: true, ..Default::default() };
@@ -1665,7 +1685,7 @@ mod tests {
         assert!(crate::menus::hidden_in_menu(menu_selector("Debug Autofill Fields"), false), "debug builds only (iTermBrowserToolbar.swift:370-378)");
         assert!(!crate::menus::hidden_in_menu(menu_selector("Debug Autofill Fields"), true));
         for dev_null in [false, true] {
-            for (label, _) in menu_items(false, true, dev_null).into_iter().flatten() {
+            for (label, _) in menu_items(false, true, dev_null, Some(ReaderMenu { reader: false, distraction: true, has_url: true })).into_iter().flatten() {
                 assert!(!menu_selector(label).is_empty(), "{label} has its iTerm2 action");
                 assert!(!crate::menus::hidden_in_menu(menu_selector(label), false), "{label} shows in release");
             }
@@ -1673,6 +1693,26 @@ mod tests {
         let live = include_str!("browser.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
         let body = &live[live.find("pub fn menu_items(").unwrap()..];
         assert!(body[..body.find("\n}\n").unwrap()].contains("crate::menus::hidden_in_menu(menu_selector(label), cfg!(debug_assertions))"));
+    }
+
+    /// Review Focus 1 (`BT:313-345`): the reader block comes first, whatever Dev Null says, and only
+    /// when Reader Mode is offered.
+    #[test]
+    fn reader_menu_follows_iterm2() {
+        let rm = |reader, distraction, has_url| Some(ReaderMenu { reader, distraction, has_url });
+        let m = menu_items(false, true, false, rm(false, false, true));
+        assert_eq!(m[..5], [Some(("Reader Mode", true)), Some(("Remove Distractions", true)), None, Some(("Ask AI\u{2026}", false)), Some(("Add Bookmark", true))]);
+        let on = menu_items(false, true, false, rm(true, true, true));
+        assert_eq!((on[0], on[1]), (Some(("Exit Reader Mode", true)), Some(("Exit Distraction Removal", true))));
+        let none = menu_items(false, true, false, rm(false, false, false));
+        assert_eq!((none[0], none[1], none[3]), (Some(("Reader Mode", false)), Some(("Remove Distractions", false)), Some(("Ask AI\u{2026}", false))), "both wait for a URL");
+        assert_eq!(menu_items(false, true, false, None)[0], Some(("Add Bookmark", true)), "None keeps the list as 13x built it");
+        let dev = menu_items(false, true, true, rm(false, false, true));
+        let names: Vec<&str> = dev.iter().flatten().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["Reader Mode", "Remove Distractions", "Ask AI\u{2026}", "Settings"], "Dev Null keeps the reader block and drops the bookmark items");
+        for label in ["Reader Mode", "Exit Reader Mode", "Remove Distractions", "Exit Distraction Removal", "Ask AI\u{2026}"] {
+            assert!(!menu_selector(label).is_empty(), "{label} has its iTerm2 action");
+        }
     }
 
     #[test]

@@ -2,8 +2,21 @@
 //! handler only: the reader scripts run in Tandem's isolated world and post their state through the
 //! `readerMode` handler, which arrives as a Client message from the world's binding and nowhere else.
 
+use super::browser_scripts_app::JsDone;
 use super::*;
 use crate::browser_js::{Routed, World};
+use crate::browser_reader::{self as reader, Failure};
+use serde_json::{Value, json};
+
+/// The reader's failure on the log: the line of `RMM`, with the runner's error KIND (a script's
+/// error text is the page's and is never logged, as `log_js_failure`).
+fn log_failure(f: Failure, e: &str) {
+    let line = reader::failure_line(f, super::browser_scripts_app::failure_kind(e));
+    crate::rlog!("{}", crate::dlog::name(&line));
+}
+
+/// The plain text of a page, or None (`RMM:35-61`).
+pub(super) type TextDone = Box<dyn FnOnce(&mut App, PaneId, Option<String>)>;
 
 impl App {
     /// One `readerMode` message. Advisory: only the isolated world's, only with a proven world, and
@@ -17,6 +30,172 @@ impl App {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.reader.on_message(action);
         }
+    }
+
+    /// A main-frame navigation began: the new page has no reader and no cached text (`BM:1252`).
+    pub(super) fn reader_navigation_started(&mut self, pane: PaneId) {
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.reader.reset();
+        }
+    }
+
+    /// Loads Readability, then reader mode with its CSS, in the isolated world once per navigation
+    /// (`RMM:168-203`). `then` gets `Ok(true)` or the error (already logged). Every body goes
+    /// through `browser_js_call`, never the page world.
+    pub(super) fn ensure_reader_scripts(&mut self, pane: PaneId, then: JsDone) {
+        if self.browser_views.get(&pane).is_some_and(|b| b.reader.injected) {
+            return then(self, pane, Ok(json!(true)));
+        }
+        let [first, second] = match reader::loader_bodies() {
+            Ok(b) => b,
+            Err(e) => {
+                log_failure(Failure::Inject, &e);
+                return then(self, pane, Err(e));
+            }
+        };
+        self.browser_js_call(pane, &first, json!({}), Box::new(move |app, pane, r| {
+            if let Err(e) = r {
+                log_failure(Failure::Inject, &e);
+                return then(app, pane, Err(e));
+            }
+            app.browser_js_call(pane, &second, json!({}), Box::new(move |app, pane, r| match r {
+                Ok(_) => {
+                    if let Some(bv) = app.browser_views.get_mut(&pane) {
+                        bv.reader.injected = true;
+                    }
+                    then(app, pane, Ok(json!(true)))
+                }
+                Err(e) => {
+                    log_failure(Failure::Inject, &e);
+                    then(app, pane, Err(e))
+                }
+            }));
+        }));
+    }
+
+    /// Reader Mode from the menu: exit when on, else enter (`RMM:29-107`).
+    pub(super) fn toggle_reader_mode(&mut self, pane: PaneId) {
+        if !self.browser_views.get(&pane).is_some_and(|b| b.reader.reader) {
+            return self.enter_reader_mode(pane);
+        }
+        // Exit clears the flag only after the script ran without error (`RMM:97-107`).
+        self.browser_js_call(pane, &reader::exit_reader_body(), json!({}), Box::new(|app, pane, r| match r {
+            Ok(_) => {
+                if let Some(bv) = app.browser_views.get_mut(&pane) {
+                    bv.reader.reader = false;
+                }
+            }
+            Err(e) => log_failure(Failure::Exit, &e),
+        }));
+    }
+
+    /// iTerm2's `enterReaderMode` (ruling Q48): nothing when already on, else load the scripts and
+    /// enter; the flag goes on only when the script answers true (`RMM:78-95`). The Enter Reader Mode
+    /// trigger (13x5) calls this.
+    pub(super) fn enter_reader_mode(&mut self, pane: PaneId) {
+        if self.browser_views.get(&pane).is_none_or(|b| b.reader.reader) {
+            return;
+        }
+        self.ensure_reader_scripts(pane, Box::new(|app, pane, r| {
+            if r.is_err() {
+                return;
+            }
+            app.browser_js_call(pane, &reader::enter_reader_body(), json!({}), Box::new(|app, pane, r| match r {
+                Ok(v) if reader::answered_true(&v) => {
+                    if let Some(bv) = app.browser_views.get_mut(&pane) {
+                        bv.reader.reader = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log_failure(Failure::Enter, &e),
+            }));
+        }));
+    }
+
+    /// Remove Distractions from the menu (`RMM:125-166`).
+    pub(super) fn toggle_distraction_removal(&mut self, pane: PaneId) {
+        if self.browser_views.get(&pane).is_some_and(|b| b.reader.distraction) {
+            return self.browser_js_call(pane, &reader::exit_distraction_body(), json!({}), Box::new(|app, pane, r| match r {
+                Ok(_) => {
+                    if let Some(bv) = app.browser_views.get_mut(&pane) {
+                        bv.reader.distraction = false;
+                    }
+                }
+                Err(e) => log_failure(Failure::ExitDistraction, &e),
+            }));
+        }
+        self.ensure_reader_scripts(pane, Box::new(|app, pane, r| {
+            if r.is_err() {
+                return;
+            }
+            let [load, enter] = reader::distraction_bodies();
+            app.browser_js_call(pane, &load, json!({}), Box::new(move |app, pane, r| {
+                if let Err(e) = r {
+                    return log_failure(Failure::EnterDistraction, &e);
+                }
+                app.browser_js_call(pane, &enter, json!({}), Box::new(|app, pane, r| match r {
+                    Ok(v) if reader::answered_true(&v) => {
+                        if let Some(bv) = app.browser_views.get_mut(&pane) {
+                            bv.reader.distraction = true;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => log_failure(Failure::EnterDistraction, &e),
+                }));
+            }));
+        }));
+    }
+
+    /// The page's plain text, cached per navigation, "" included (`RMM:35-61`): a cached text is
+    /// answered at once; otherwise Readability's article text, or None. An error is not cached
+    /// (the page may have changed under the call).
+    pub(super) fn browser_plain_text(&mut self, pane: PaneId, done: TextDone) {
+        if let Some(cached) = self.browser_views.get(&pane).and_then(|b| b.reader.cached_plain()) {
+            return done(self, pane, Some(cached));
+        }
+        self.ensure_reader_scripts(pane, Box::new(move |app, pane, r| {
+            // `ensure` logged a failure; there is no text.
+            if r.is_err() {
+                return done(app, pane, None);
+            }
+            app.browser_js_call(pane, &reader::plain_text_body(), json!({}), Box::new(move |app, pane, r| {
+                let text = match r {
+                    Ok(Value::String(s)) => Some(s),
+                    Ok(_) => None,
+                    Err(_) => return done(app, pane, None),
+                };
+                let answer = app.browser_views.get_mut(&pane).and_then(|b| b.reader.store_plain(text.as_deref()));
+                done(app, pane, answer)
+            }));
+        }));
+    }
+
+    /// The Menu button (`BT:306-345`): the offer needs the page's plain text, so the menu opens after
+    /// it is known. A second press while waiting is ignored; a pane gone meanwhile shows nothing.
+    pub(super) fn browser_menu_press(&mut self, pane: PaneId, at: (f32, f32)) {
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        if bv.menu_pending {
+            return;
+        }
+        if bv.reader.cached.is_some() {
+            return self.show_browser_menu(pane, at);
+        }
+        bv.menu_pending = true;
+        self.browser_plain_text(pane, Box::new(move |app, pane, _| {
+            let Some(bv) = app.browser_views.get_mut(&pane) else { return };
+            bv.menu_pending = false;
+            app.show_browser_menu(pane, at);
+        }));
+    }
+
+    /// What the menu shows of the reader: None unless the plain text offers it (`BVC:1053-1055`).
+    pub(super) fn browser_reader_menu(&self, pane: PaneId) -> Option<crate::browser::ReaderMenu> {
+        let bv = self.browser_views.get(&pane)?;
+        if !reader::offers_reader(bv.reader.cached.as_deref()) {
+            return None;
+        }
+        let has_url = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| !io.url.is_empty());
+        Some(crate::browser::ReaderMenu { reader: bv.reader.reader, distraction: bv.reader.distraction, has_url })
     }
 }
 
@@ -47,6 +226,49 @@ mod tests {
         assert!(include_str!("browser_scripts_app.rs").contains("\"browser_copy_mode_key\", \"browser_reader_message\"]"), "listed in the router test");
     }
 
+    /// Security (Review Focus 6, R13x45-1): every call this file makes is the isolated-world runner's;
+    /// the page-world runners, the view secret and the bridge never appear.
+    #[test]
+    fn reader_calls_use_the_isolated_world() {
+        let me = prod(include_str!("browser_reader_app.rs"));
+        assert!(me.matches(".browser_js_call(").count() >= 7);
+        for bad in ["browser_page_call", "browser_eval", "browser_devtools", "secret", "chrome.webview", "execute_script"] {
+            assert!(!me.contains(bad), "{bad}");
+        }
+    }
+
+    /// `RMM:78-107`, `:125-166`: the flags follow the scripts' answers, and an error is logged by kind.
+    #[test]
+    fn reader_flows_follow_iterm2() {
+        let me = prod(include_str!("browser_reader_app.rs"));
+        let enter = between(me, "pub(super) fn enter_reader_mode", "/// Remove Distractions");
+        assert!(enter.contains("b.reader.reader) {\n            return;") && enter.contains("answered_true(&v)") && enter.contains("bv.reader.reader = true"), "enter: nothing when on, on only for true");
+        assert!(enter.contains("Failure::Enter"));
+        let toggle = between(me, "pub(super) fn toggle_reader_mode", "/// iTerm2's `enterReaderMode`");
+        assert!(toggle.contains("self.enter_reader_mode(pane)") && toggle.contains("Ok(_) => {\n                if let Some(bv)") && toggle.contains("bv.reader.reader = false") && toggle.contains("Failure::Exit"), "exit clears only after success");
+        let dr = between(me, "pub(super) fn toggle_distraction_removal", "/// The page's plain text");
+        assert!(dr.contains("exit_distraction_body") && dr.contains("distraction_bodies") && dr.contains("answered_true(&v)") && dr.contains("Failure::ExitDistraction") && dr.contains("Failure::EnterDistraction"));
+        assert!(dr.find("ensure_reader_scripts").unwrap() < dr.find("distraction_bodies").unwrap());
+        let ensure = between(me, "pub(super) fn ensure_reader_scripts", "/// Reader Mode from the menu");
+        assert!(ensure.contains("bv.reader.injected = true") && ensure.contains("Failure::Inject") && ensure.contains("loader_bodies()"));
+        let text = between(me, "pub(super) fn browser_plain_text", "/// The Menu button");
+        assert!(text.contains("cached_plain()") && text.contains("Err(_) => return done(app, pane, None)"), "an error is not cached");
+    }
+
+    /// B11: the press waits for the plain text, a second press is ignored, a gone pane shows nothing,
+    /// and the entries are picked by their labels.
+    #[test]
+    fn the_menu_press_waits_for_the_offer() {
+        let me = prod(include_str!("browser_reader_app.rs"));
+        let press = between(me, "pub(super) fn browser_menu_press", "/// What the menu shows");
+        assert!(press.contains("if bv.menu_pending {\n            return;") && press.contains("bv.menu_pending = true") && press.contains("bv.menu_pending = false") && press.contains("app.browser_views.get_mut(&pane) else { return }"));
+        let app = prod(include_str!("browser_app.rs"));
+        assert!(app.contains("Button::Menu => self.browser_menu_press(pane, menu_at)"));
+        assert!(app.contains("\"Reader Mode\" | \"Exit Reader Mode\" => return { self.toggle_reader_mode(pane); true }"));
+        assert!(app.contains("\"Remove Distractions\" | \"Exit Distraction Removal\" => return { self.toggle_distraction_removal(pane); true }"));
+        assert!(app.contains("self.browser_reader_menu(pane)"));
+    }
+
     #[test]
     fn the_reader_state_dies_with_the_world() {
         let r = prod(include_str!("browser_scripts_app.rs"));
@@ -56,7 +278,7 @@ mod tests {
         let tick = between(r, "pub(super) fn browser_world_tick", "let late =");
         assert!(tick.contains("bv.reader.reset()"), "lost after a process failure");
         let starting = between(r, "Event::Starting { redirect: false, .. } => {", "self.browser_copy_mode_set(pane, false)");
-        assert!(starting.contains("bv.reader.reset()"), "a navigation start");
+        assert!(starting.contains("self.reader_navigation_started(pane)"), "a navigation start");
         let created = between(r, "\"Runtime.executionContextCreated\" => {", "\"Runtime.executionContextDestroyed\"");
         assert!(created.contains("bv.reader.reset()") && created.contains("is_main_context"), "the main frame's new Tandem context");
     }

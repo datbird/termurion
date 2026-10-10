@@ -68,6 +68,8 @@ pub(super) struct BrowserView {
     /// Reader Mode and Remove Distractions (13x4): the scripts live in the isolated world, so the state
     /// dies with it (`State::reset` wherever the world restarts, is lost or a navigation starts).
     pub(super) reader: crate::browser_reader::State,
+    /// The Menu press is waiting for the page's plain text; a second press is ignored (B11).
+    pub(super) menu_pending: bool,
     /// The pointer table last given to the page (`browser_input_app`), and the press of a bound
     /// button that is down (button, clicks): its release runs the binding.
     pub(super) pointer_sig: Option<(Vec<String>, bool)>,
@@ -231,7 +233,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         true
     }
 
@@ -955,19 +957,19 @@ impl App {
                     v.stop();
                 }
             }
-            Button::Menu => self.show_browser_menu(pane, menu_at),
+            Button::Menu => self.browser_menu_press(pane, menu_at),
         }
     }
 
     /// The Menu button's menu (`BT:306-420`); Add and Remove Bookmark, Manage Bookmarks and History
     /// act with Task 7's database and pages, Settings with 13x8.
-    fn show_browser_menu(&mut self, pane: PaneId, at: (f32, f32)) {
+    pub(super) fn show_browser_menu(&mut self, pane: PaneId, at: (f32, f32)) {
         use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
         // Add or Remove Bookmark: the page's own state, enabled for a web page.
         let (marked, can_mark) = self.browser_bookmark_state(pane);
-        let items = browser::menu_items(marked, can_mark, dev_null);
+        let items = browser::menu_items(marked, can_mark, dev_null, self.browser_reader_menu(pane));
         let menu = muda::Menu::new();
         let mut failed = None;
         for item in items {
@@ -1028,6 +1030,11 @@ impl App {
         if matches!(label, "Add Bookmark" | "Remove Bookmark") {
             self.browser_toggle_bookmark(pane);
             return true;
+        }
+        match label {
+            "Reader Mode" | "Exit Reader Mode" => return { self.toggle_reader_mode(pane); true },
+            "Remove Distractions" | "Exit Distraction Removal" => return { self.toggle_distraction_removal(pane); true },
+            _ => {}
         }
         let target = match label {
             "Manage Bookmarks" => Some("iterm2-about:bookmarks"),
