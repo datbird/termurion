@@ -1111,6 +1111,8 @@ impl App {
     /// Brings pane `id` to the front and focuses it, as a Find Globally pick does (the terminal's
     /// reveal and the browser's both follow).
     fn global_focus_pane(&mut self, id: PaneId) {
+        // A workgroup peer hidden since the search takes its slot back first (iTerm2 shows it).
+        self.reveal_as_peer(id);
         self.enter_pane_window(id);
         if let Some(w) = self.current_window() {
             self.last_window = Some(w);

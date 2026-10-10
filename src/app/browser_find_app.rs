@@ -888,6 +888,13 @@ mod tests {
     }
 
     #[test]
+    fn a_picked_row_shows_its_hidden_peer() {
+        let f = prod(include_str!("find_ui.rs"));
+        let focus = between(f, "fn global_focus_pane", "/// The Find Globally list");
+        assert!(focus.find("self.reveal_as_peer(id)").expect("the peer is shown") < focus.find("self.enter_pane_window(id)").unwrap(), "shown before its window and tab are found");
+    }
+
+    #[test]
     fn hidden_peers_get_no_find_state() {
         let me = prod(include_str!("browser_find_app.rs"));
         let start = between(me, "pub(super) fn browser_global_start", "pub(super) fn browser_global_results");
