@@ -390,6 +390,8 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String, workgroup
             }
             changed
         }
+        // The browser-mode editor (Task 8) draws this one; a terminal list never holds it.
+        Kind::BrowserColors => false,
     }
 }
 

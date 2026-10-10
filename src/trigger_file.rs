@@ -290,7 +290,7 @@ pub fn action_description(t: &Table) -> String {
             }
             _ => "Set Profile Setting".into(),
         },
-        other => crate::triggers::action_info(other).map_or_else(|| other.to_string(), |a| a.title.to_string()),
+        other => crate::triggers::action_info(other).or_else(|| crate::triggers::browser_action_info(other)).map_or_else(|| other.to_string(), |a| a.title.to_string()),
     }
 }
 
@@ -462,14 +462,14 @@ mod tests {
 
     #[test]
     fn every_catalog_class_is_classified() {
-        use crate::triggers::{CATALOG, IMPORT_ENABLED, IMPORT_OFF, SYNONYMS};
-        let synonyms: Vec<&str> = SYNONYMS.iter().map(|(old, _)| *old).collect();
-        for class in CATALOG.iter().map(|a| a.class).chain(synonyms.iter().copied()) {
+        use crate::triggers::{BROWSER_CATALOG, BROWSER_SYNONYMS, CATALOG, IMPORT_ENABLED, IMPORT_OFF, SYNONYMS};
+        let synonyms: Vec<&str> = SYNONYMS.iter().chain(BROWSER_SYNONYMS).map(|(old, _)| *old).collect();
+        for class in CATALOG.iter().chain(BROWSER_CATALOG).map(|a| a.class).chain(synonyms.iter().copied()) {
             let n = IMPORT_ENABLED.iter().chain(IMPORT_OFF).filter(|c| **c == class).count();
             assert_eq!(n, 1, "{class} must be in exactly one of IMPORT_ENABLED and IMPORT_OFF");
         }
         for c in IMPORT_ENABLED.iter().chain(IMPORT_OFF) {
-            assert!(CATALOG.iter().any(|a| a.class == *c) || synonyms.contains(c), "{c} is not a catalog class");
+            assert!(CATALOG.iter().chain(BROWSER_CATALOG).any(|a| a.class == *c) || synonyms.contains(c), "{c} is not a catalog class");
         }
     }
 

@@ -26,7 +26,13 @@ fn notify_allowed(limits: &mut crate::triggers::RateLimit<(PaneId, usize)>, pane
 
 /// A profile's triggers and switches.
 pub(super) fn triggers_of(p: &crate::profile::Profile) -> (Vec<Trigger>, TriggerPrefs) {
-    let list = p.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default();
+    // A terminal screen never evaluates a browser action, and a browser pane's screen evaluates
+    // nothing (the browser list is read by the page engine).
+    let list = if crate::browser::is_browser(&p.string("Custom Command")) {
+        Vec::new()
+    } else {
+        p.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default().into_iter().filter(|t| !triggers::is_browser_action(&t.action)).collect()
+    };
     let prefs = TriggerPrefs { interactive: p.bool("Enable Triggers in Interactive Apps"), interpolated: p.bool("Triggers Use Interpolated Strings"), ..TriggerPrefs::default() };
     (list, prefs)
 }
@@ -331,6 +337,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_actions_skip_terminals() {
+        let t = |a: &str| triggers::Trigger { regex: "x".into(), action: a.into(), parameter: String::new(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() };
+        let mut p = crate::profile::Profile::new("t");
+        p.set("Triggers", triggers::to_value(&[t("HighlightTrigger"), t("iTerm2SharedARC.HighlightBrowserTrigger"), t("ReloadBrowserTrigger")]));
+        let (list, _) = triggers_of(&p);
+        assert_eq!(list.iter().map(|t| t.action.as_str()).collect::<Vec<_>>(), ["HighlightTrigger"]);
+        p.set("Custom Command", toml::Value::String("Browser".into()));
+        assert!(triggers_of(&p).0.is_empty());
+    }
 
     /// T7 m3: a trigger refused by its own limit does not spend the pane's floor.
     #[test]

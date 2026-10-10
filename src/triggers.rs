@@ -97,6 +97,8 @@ pub enum Kind {
     /// A workgroup's id, from a pop-up of the configured workgroups sorted by name
     /// (`EnterWorkgroupTrigger.paramIsPopupButton`).
     Workgroup,
+    /// A browser Highlight Text's `text;background` pair of hex colors (`HighlightBrowserTrigger`).
+    BrowserColors,
 }
 
 /// An action as iTerm2's Triggers editor lists it.
@@ -168,6 +170,79 @@ pub const SYNONYMS: &[(&str, &str)] = &[("GrowlTrigger", "iTermUserNotificationT
 pub fn action_info(class: &str) -> Option<&'static ActionInfo> {
     let class = SYNONYMS.iter().find(|(old, _)| *old == class).map_or(class, |(_, new)| new);
     CATALOG.iter().find(|a| a.class == class)
+}
+
+/// Match types a browser trigger stores (`matchType`): 0 is a regex (terminal), 1 the page URL,
+/// 2 the page content.
+pub const URL_REGEX: i64 = 1;
+pub const PAGE_CONTENT_REGEX: i64 = 2;
+
+const fn bact(class: &'static str, title: &'static str, kind: Kind, placeholder: &'static str, idempotent: bool) -> ActionInfo {
+    act(class, title, kind, placeholder, idempotent)
+}
+
+/// Every browser action, in iTerm2's menu order (by title). Enter Reader Mode and the two
+/// workgroup actions wait for their milestone (13): `later` is cleared when Task 10 lands.
+pub const BROWSER_CATALOG: &[ActionInfo] = &[
+    ActionInfo { later: Some(13), ..bact("iTerm2SharedARC.ReaderModeBrowserTrigger", "Enter Reader Mode", Kind::None, "", false) },
+    ActionInfo { later: Some(13), live_session_only: false, ..bact("iTermEnterWorkgroupBrowserTrigger", "Enter Workgroup\u{2026}", Kind::Workgroup, "", true) },
+    ActionInfo { later: Some(13), ..bact("iTermExitWorkgroupBrowserTrigger", "Exit Workgroup", Kind::None, "", true) },
+    bact("iTerm2SharedARC.HighlightBrowserTrigger", "Highlight Text", Kind::BrowserColors, "", false),
+    bact("InjectJavascriptContentTrigger", "Inject Javascript (Content Regex)", Kind::Text, "Javascript", false),
+    bact("InjectJavascriptURLTrigger", "Inject Javascript (URL Regex)", Kind::Text, "Javascript", false),
+    bact("iTerm2SharedARC.HyperlinkBrowserTrigger", "Make Hyperlink\u{2026}", Kind::Text, "https://\\0", true),
+    bact("ReloadBrowserTrigger", "Reload After Delay", Kind::Text, "Delay in seconds", false),
+];
+
+/// The bare Swift names iTerm2 may also have written.
+pub const BROWSER_SYNONYMS: &[(&str, &str)] = &[
+    ("ReaderModeBrowserTrigger", "iTerm2SharedARC.ReaderModeBrowserTrigger"),
+    ("HighlightBrowserTrigger", "iTerm2SharedARC.HighlightBrowserTrigger"),
+    ("HyperlinkBrowserTrigger", "iTerm2SharedARC.HyperlinkBrowserTrigger"),
+];
+
+pub fn browser_action_info(class: &str) -> Option<&'static ActionInfo> {
+    let class = BROWSER_SYNONYMS.iter().find(|(bare, _)| *bare == class).map_or(class, |(_, full)| full);
+    BROWSER_CATALOG.iter().find(|a| a.class == class)
+}
+
+pub fn is_browser_action(class: &str) -> bool {
+    browser_action_info(class).is_some()
+}
+
+/// The match type each browser action is fixed to.
+pub fn browser_match_type(class: &str) -> Option<i64> {
+    let a = browser_action_info(class)?;
+    Some(match a.class {
+        "iTerm2SharedARC.HighlightBrowserTrigger" | "iTerm2SharedARC.HyperlinkBrowserTrigger" | "InjectJavascriptContentTrigger" => PAGE_CONTENT_REGEX,
+        _ => URL_REGEX,
+    })
+}
+
+/// Highlight's `text;background`: split on ";" when there are at least two parts, an empty part
+/// is None (`HGT:36-41`).
+pub fn browser_colors(param: &str) -> (Option<String>, Option<String>) {
+    let parts: Vec<&str> = param.split(';').collect();
+    if parts.len() < 2 {
+        return (None, None);
+    }
+    let some = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+    (some(parts[0]), some(parts[1]))
+}
+
+/// A stored color as CSS: "#rrggbb" kept, "p3#rrrrggggbbbb" as `color(display-p3 r g b)`;
+/// anything else None, so no stored text other than these two shapes reaches a style.
+pub fn css_color(stored: &str) -> Option<String> {
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if let Some(h) = stored.strip_prefix('#') {
+        return hex(h, 6).then(|| stored.to_string());
+    }
+    let h = stored.strip_prefix("p3#")?;
+    if !hex(h, 12) {
+        return None;
+    }
+    let part = |i: usize| u32::from_str_radix(&h[i * 4..i * 4 + 4], 16).map(|v| format!("{:.4}", f64::from(v) / 65535.0));
+    Some(format!("color(display-p3 {} {} {})", part(0).ok()?, part(1).ok()?, part(2).ok()?))
 }
 
 /// The key Exit Workgroup keeps its leader-only flag under, in the trigger's event params
@@ -265,6 +340,11 @@ pub const IMPORT_ENABLED: &[&str] = &[
     "iTermHighlightLineTrigger",
     "HighlightTrigger",
     "iTermHyperlinkTrigger",
+    // Browser: drawn-only (Highlight validates its colors, Hyperlink's click is the person's).
+    "iTerm2SharedARC.HighlightBrowserTrigger",
+    "HighlightBrowserTrigger",
+    "iTerm2SharedARC.HyperlinkBrowserTrigger",
+    "HyperlinkBrowserTrigger",
     "iTermUserNotificationTrigger",
     "GrowlTrigger",
     "iTermShellPromptTrigger",
@@ -281,6 +361,15 @@ pub const IMPORT_ENABLED: &[&str] = &[
 /// sequences, held keystrokes, workgroups, the reported folder, host and user, user variables,
 /// settings, scripts). An imported trigger of these is stored turned off until the person enables it.
 pub const IMPORT_OFF: &[&str] = &[
+    // Browser: page text is untrusted and these run script in the page, reload it, change the
+    // view or start/end a workgroup, so an import is stored off and never counts as consent.
+    "iTerm2SharedARC.ReaderModeBrowserTrigger",
+    "ReaderModeBrowserTrigger",
+    "iTermEnterWorkgroupBrowserTrigger",
+    "iTermExitWorkgroupBrowserTrigger",
+    "InjectJavascriptContentTrigger",
+    "InjectJavascriptURLTrigger",
+    "ReloadBrowserTrigger",
     "iTermBufferInputTrigger",
     "CaptureTrigger",
     "iTermEnterWorkgroupTrigger",
@@ -791,5 +880,82 @@ mod tests {
         let list = parse_list(&v["list"]);
         assert_eq!(list[0].parameter, "1");
         assert_eq!(list[1].parameter, "2");
+    }
+
+    #[test]
+    fn browser_catalog_follows_iterm2() {
+        let want = [
+            ("iTerm2SharedARC.ReaderModeBrowserTrigger", "Enter Reader Mode", 1),
+            ("iTermEnterWorkgroupBrowserTrigger", "Enter Workgroup\u{2026}", 1),
+            ("iTermExitWorkgroupBrowserTrigger", "Exit Workgroup", 1),
+            ("iTerm2SharedARC.HighlightBrowserTrigger", "Highlight Text", 2),
+            ("InjectJavascriptContentTrigger", "Inject Javascript (Content Regex)", 2),
+            ("InjectJavascriptURLTrigger", "Inject Javascript (URL Regex)", 1),
+            ("iTerm2SharedARC.HyperlinkBrowserTrigger", "Make Hyperlink\u{2026}", 2),
+            ("ReloadBrowserTrigger", "Reload After Delay", 1),
+        ];
+        assert_eq!(BROWSER_CATALOG.len(), 8);
+        for (a, (class, title, mt)) in BROWSER_CATALOG.iter().zip(want) {
+            assert_eq!((a.class, a.title), (class, title));
+            assert_eq!(browser_match_type(class), Some(mt), "{class}");
+            assert!(is_browser_action(class) && action_info(class).is_none());
+        }
+        assert_eq!(browser_action_info("HighlightBrowserTrigger").map(|a| a.class), Some("iTerm2SharedARC.HighlightBrowserTrigger"));
+        assert_eq!(browser_action_info("HyperlinkBrowserTrigger").map(|a| a.title), Some("Make Hyperlink\u{2026}"));
+        assert_eq!(browser_action_info("ReaderModeBrowserTrigger").map(|a| a.title), Some("Enter Reader Mode"));
+        assert!(is_browser_action("HighlightBrowserTrigger"));
+        let k = |c| browser_action_info(c).unwrap();
+        assert_eq!(k("iTerm2SharedARC.ReaderModeBrowserTrigger").kind, Kind::None);
+        assert_eq!(k("iTermExitWorkgroupBrowserTrigger").kind, Kind::None);
+        assert_eq!(k("iTermEnterWorkgroupBrowserTrigger").kind, Kind::Workgroup);
+        assert_eq!(k("HighlightBrowserTrigger").kind, Kind::BrowserColors);
+        assert_eq!(k("ReloadBrowserTrigger").kind, Kind::Text);
+        assert_eq!(k("ReloadBrowserTrigger").placeholder, "Delay in seconds");
+        assert_eq!(k("InjectJavascriptURLTrigger").placeholder, "Javascript");
+        assert_eq!(k("InjectJavascriptContentTrigger").placeholder, "Javascript");
+        assert_eq!(k("HyperlinkBrowserTrigger").placeholder, "https://\\0");
+        for (c, idem) in [("ReloadBrowserTrigger", false), ("InjectJavascriptURLTrigger", false), ("InjectJavascriptContentTrigger", false), ("HyperlinkBrowserTrigger", true), ("iTermEnterWorkgroupBrowserTrigger", true), ("iTermExitWorkgroupBrowserTrigger", true)] {
+            assert_eq!(k(c).idempotent, idem, "{c}");
+        }
+        for t in CATALOG {
+            assert!(browser_action_info(t.class).is_none() && !is_browser_action(t.class), "{}", t.class);
+            assert_eq!(browser_match_type(t.class), None);
+        }
+        assert_eq!((URL_REGEX, PAGE_CONTENT_REGEX), (1, 2));
+        for c in ["iTerm2SharedARC.ReaderModeBrowserTrigger", "iTermEnterWorkgroupBrowserTrigger", "iTermExitWorkgroupBrowserTrigger"] {
+            assert_eq!(k(c).later, Some(13), "{c}");
+        }
+    }
+
+    #[test]
+    fn browser_import_classification_is_recorded() {
+        // Page text is untrusted: only the inert, drawn-only actions import turned on.
+        for c in ["iTerm2SharedARC.HighlightBrowserTrigger", "HighlightBrowserTrigger", "iTerm2SharedARC.HyperlinkBrowserTrigger", "HyperlinkBrowserTrigger"] {
+            assert!(imports_enabled(c), "{c}");
+        }
+        for c in ["iTerm2SharedARC.ReaderModeBrowserTrigger", "ReaderModeBrowserTrigger", "iTermEnterWorkgroupBrowserTrigger", "iTermExitWorkgroupBrowserTrigger", "InjectJavascriptContentTrigger", "InjectJavascriptURLTrigger", "ReloadBrowserTrigger"] {
+            assert!(!imports_enabled(c), "{c}");
+        }
+        for a in BROWSER_CATALOG {
+            let n = IMPORT_ENABLED.iter().chain(IMPORT_OFF).filter(|c| **c == a.class).count();
+            assert_eq!(n, 1, "{}", a.class);
+        }
+    }
+
+    #[test]
+    fn highlight_colors_follow_iterm2() {
+        assert_eq!(browser_colors("#ff0000;#00ff00"), (Some("#ff0000".into()), Some("#00ff00".into())));
+        assert_eq!(browser_colors(";#00ff00"), (None, Some("#00ff00".into())));
+        assert_eq!(browser_colors("#ff0000"), (None, None));
+        assert_eq!(css_color("#0a0b0c"), Some("#0a0b0c".into()));
+        assert_eq!(css_color("p3#ffff00000000"), Some("color(display-p3 1.0000 0.0000 0.0000)".into()));
+        assert_eq!(css_color("red"), None);
+        // Page-facing CSS never carries anything but these two shapes.
+        for bad in ["#ff0000;color:red", "#ff000", "#ff00000", "#gggggg", "p3#ffff", "p3#ffff0000000g", "#ff0000}", "url(x)", "", "#ff0000 ", "#FF0000\n"] {
+            let ok = css_color(bad).is_some();
+            assert!(!ok || bad == "#FF0000\n", "{bad:?}");
+        }
+        assert_eq!(css_color("#ABCDEF"), Some("#ABCDEF".into()));
+        assert_eq!(css_color("#ff0000\n"), None);
     }
 }
