@@ -928,7 +928,9 @@ mod tests {
         assert!(ctx.contains("Item::SavePageAs =>") && ctx.contains("save_page: true") && ctx.contains("self.save_page_as(pane)"));
         // The dialog opens after the window closure, never inside it.
         assert!(ctx.find("self.save_page_as(pane)").unwrap() > ctx.find("self.in_pane_window(pane,").unwrap());
-        assert!(prod.contains("self.reveal_in_explorer"), "the one Explorer reveal; nothing is opened or run");
+        // The one Explorer reveal, for the job's own Done path; nothing is opened or run.
+        assert_eq!(prod.matches("self.reveal_in_explorer(").count(), 1);
+        assert!(prod.contains("Act::Reveal(path) => {\n                    self.page_saves.remove(&pane);\n                    self.reveal_in_explorer(&path.to_string_lossy());"));
         let m = include_str!("mod.rs");
         assert!(m.contains("self.page_save_cancel(id);") && m.contains("UserEvent::PageSaveFile { pane, id, done }"));
     }

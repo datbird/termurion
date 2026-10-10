@@ -435,12 +435,15 @@ pub const NETWORK_TEXT: &str = "Network locations are not supported for Save Pag
 /// Whether the folder the person named may be written: the judge's rule for the path and for every
 /// folder above it (a link or junction to a network path is followed by `read_link`). Judged before
 /// anything is written; refusing a share the person typed into the dialog is stronger than
-/// `localfs::save_file`'s own rule (preflight B3).
+/// `localfs::save_file`'s own rule (preflight B3). Test-only: it is `destination`'s rule
+/// (`netpath::judge`) with a reparse reader a test can fake; production calls `destination`.
+#[cfg(test)]
 pub fn destination_ok(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), String> {
     crate::netpath::judge(path, read_link, &crate::netpath::LocalDrives).then_some(()).ok_or_else(|| NETWORK_TEXT.to_string())
 }
 
-/// `destination_ok` with the real reparse reader and device map: the judged folder, or the refusal.
+/// The folder the person named, judged with the real reparse reader and device map
+/// (`LocalPath::judge`, the rule `destination_ok` tests): the judged folder, or the refusal.
 pub fn destination(path: &Path) -> Result<crate::localfs::LocalPath, String> {
     crate::localfs::LocalPath::judge(path).ok_or_else(|| NETWORK_TEXT.to_string())
 }
@@ -898,6 +901,16 @@ mod tests {
 
     fn u(s: &str) -> usize {
         units(s)
+    }
+
+    /// The production door itself, with the real drives (Task 10 review minor 8).
+    #[test]
+    fn the_real_destination_refuses_shares() {
+        let ok = std::env::temp_dir().join(format!("tandem-dest-{}", std::process::id())).join("www.ex.com");
+        assert!(destination(&ok).is_ok(), "{ok:?}");
+        for bad in [r"\\h\s\x", "//h/s/x", r"\\?\UNC\h\s\x", r"\\.\UNC\h\s\x", r"\\h\s"] {
+            assert_eq!(destination(Path::new(bad)).err(), Some(NETWORK_TEXT.to_string()), "{bad}");
+        }
     }
 
     #[test]
