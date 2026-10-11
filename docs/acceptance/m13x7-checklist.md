@@ -105,7 +105,7 @@ $f = @(
 - [ ] Over plain http: the cleartext warning shows, nothing is looked up, nothing is offered to remember (no Remember box saves for http).
 - [ ] Dev Null Mode: no Remember checkbox, no Password Manager button, no lookup.
 - [ ] The Password Manager button on the prompt lists only accounts for the challenge's exact https origin and a pick fills the prompt.
-- [ ] Windows integrated sign-in is never automatic: against an intranet site that offers NTLM or Negotiate (if you have one) Tandem prompts or fails, it never signs in with your Windows account by itself.
+- [ ] Windows integrated sign-in is never automatic: against an intranet site that offers NTLM or Negotiate (if you have one) Tandem prompts or fails, it never signs in with your Windows account by itself. A PROXY that asks for NTLM or Negotiate does get your Windows sign-in automatically, as in Edge (R13x710-1, flags 3 and 15): that is not a failure of this line.
 - [ ] With BrowserProxyEnabled on and a proxy that asks for a password: the prompt names the proxy, nothing is looked up or remembered for any site, and Remember does not offer to save.
 - [ ] Terminal password manager unaffected: in a terminal pane Password Manager still works as in 10b and lists only terminal accounts.
 
