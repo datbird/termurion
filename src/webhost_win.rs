@@ -4404,7 +4404,9 @@ mod probe {
         assert_eq!(run(&mut p, &origin, true, "h"), Ok(json!(false)), "a transparent field takes nothing");
         assert_eq!(vals(&mut p), Ok("\"||\"".into()), "nothing was written");
         assert_eq!(run(&mut p, &origin, true, "p"), Ok(json!(true)), "the visible password field takes it");
-        assert_eq!(vals(&mut p), Ok("\"|pw\\\"1\\n</script>|\"".into()));
+        // An input's value drops line breaks (HTML value sanitization, probe run 2026-10-11b), and
+        // ExecuteScript's JSON writes `<` as `\u003C`: compared decoded.
+        assert_eq!(p.page_string("['u','p','h'].map(i => document.getElementById(i).value).join('|')"), Ok("|pw\"1</script>|".into()));
         assert_eq!(p.page_eval("Object.keys(window).filter(k => /pw|text|secret/i.test(k)).length"), Ok("0".into()), "no page global holds it");
         p.finish();
     }
@@ -6462,10 +6464,20 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(20, |p| p.auth_log[before..].iter().any(|l| l.starts_with("navigated ") && l.ends_with("status=200"))), "signed in: {:?}", p.auth_log);
         p.settle(500);
         println!("basic auth after the answer: events {:?}; server saw {:?}", p.auth_log, server.seen.lock().unwrap());
+        // WebView2's order (probe run 2026-10-11b, what `NavTracker` models): the 401 response and its
+        // commit come first, then the challenge, then the navigation ends ok=false with status 17
+        // (credentials required) while the deferral is held; the answer is retried as a new
+        // navigation to the same URL, whose 200 response and commit carry ITS id.
         let start = p.starts[0];
-        assert!(p.auth_log.contains(&format!("navigated {start} ok=true status=200")), "the starting navigation finishes signed in: {:?}", p.auth_log);
-        assert!(p.responses.iter().any(|r| r.0 == start && r.1 == 200), "the response carries the navigation id: {:?} / {start}", p.responses);
-        assert!(p.commits.contains(&start), "ContentLoading carries it too: {:?}", p.commits);
+        let at = |p: &Probe, l: &str| p.auth_log.iter().position(|x| x == l);
+        let challenged = p.auth_log.iter().position(|l| l.starts_with("basic-auth ")).expect("the challenge");
+        assert!(at(&p, &format!("response {start} 401")).is_some_and(|i| i < challenged), "the 401 is the first navigation's: {:?}", p.auth_log);
+        assert!(at(&p, &format!("navigated {start} ok=false status=17")).is_some_and(|i| i > challenged && i < before), "it ends for credentials while held: {:?}", p.auth_log);
+        let retry = *p.starts.last().unwrap();
+        assert_ne!(retry, start, "the retry is a new navigation");
+        assert!(at(&p, &format!("starting {retry} {url}")).is_some_and(|i| i >= before), "to the same URL, after the answer: {:?}", p.auth_log);
+        assert!(p.responses.contains(&(retry, 200)) && p.commits.contains(&retry), "its response and commit carry its id: {:?}", p.auth_log);
+        assert!(p.auth_log.contains(&format!("navigated {retry} ok=true status=200")), "{:?}", p.auth_log);
         assert!(p.auths.is_empty(), "no second challenge for an accepted answer: {:?}", p.auths);
         // A fragment on another path is the same document request: its response is posted too.
         let n = p.responses.len();
@@ -6552,13 +6564,21 @@ window.addEventListener('message', function (e) {
         for row in &table {
             println!("integrated auth: {} {:9} credential {} challenges posted {} server saw {:?}", row.0, row.1, row.2, row.4, row.5);
         }
-        for case in ["NTLM site", "Negotiate site", "NTLM proxy", "Negotiate proxy"] {
+        for case in ["NTLM site", "Negotiate site"] {
+            let control = table.iter().find(|r| r.0 == case && r.1 == "control").expect("ran");
             let tandem = table.iter().find(|r| r.0 == case && r.1 == "tandem").expect("ran");
+            // The probe can fail: without Tandem's argument the engine signs in to the site by itself.
+            assert!(control.3, "{case}: the control environment sent no integrated credential, so the probe could not tell: {:?}", control.5);
             assert!(!tandem.3, "{case}: Tandem's environment sent an integrated credential by itself: {:?}", tandem.5);
+            assert!(tandem.4 == 1, "{case}: the challenge reaches the app (prompt-only): {}", tandem.4);
         }
-        // The probe can fail: the engine's own behavior sends one somewhere (the proxy at least, which
-        // Chromium's server allowlist never covers).
-        assert!(table.iter().any(|r| r.1 == "control" && r.3), "the control environment sent no integrated credential anywhere: the probe could not tell");
+        // Residual (R13x710-1, probe run 2026-10-11b): a proxy's NTLM/Negotiate 407 is answered by the
+        // engine itself in every environment (the allowlist passes proxies; `--auth-schemes` is
+        // ignored). Printed, not asserted: no browser argument changes it.
+        for case in ["NTLM proxy", "Negotiate proxy"] {
+            let tandem = table.iter().find(|r| r.0 == case && r.1 == "tandem").expect("ran");
+            println!("integrated auth RESIDUAL: {case}: Tandem's environment {}", if tandem.3 { "answers a proxy with Windows credentials by itself" } else { "sent nothing (the residual is gone: update R13x710-1)" });
+        }
     }
 
     /// Review I10: a proxy's 407 reaches the app as a challenge, and the URI WebView2 reports tells the

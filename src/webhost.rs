@@ -178,9 +178,13 @@ pub struct EnvOptions {
 
 /// The one browser argument beyond the proxy's: the Windows integrated-authentication allowlist (NTLM,
 /// Negotiate/Kerberos default credentials) holds a single host that cannot exist, so WebView2 never
-/// sends the person's Windows credentials to any site by itself (Chromium otherwise allows them to
-/// intranet-zone hosts when the list is empty). An NTLM or Negotiate challenge then reaches the
-/// coordinator like any other and is prompt-only (R13x710-1).
+/// sends the person's Windows credentials to a SITE by itself (Chromium otherwise allows them to
+/// intranet-zone hosts when the list is empty). An NTLM or Negotiate challenge from a site then
+/// reaches the coordinator like any other and is prompt-only (R13x710-1).
+/// Not covered (probe run 2026-10-11b, `integrated_auth_is_never_sent_by_itself`): a PROXY's NTLM or
+/// Negotiate 407 is still answered by the engine with the person's Windows credentials (Chromium's
+/// allowlist passes every proxy), and `--auth-schemes` is ignored by this runtime, so no browser
+/// argument removes the schemes. Recorded as a residual for Robert (R13x710-1).
 pub const INTEGRATED_AUTH_ARG: &str = "--auth-server-allowlist=tandem-no-integrated-auth.invalid";
 
 /// `AdditionalBrowserArguments` as the environment is made: `args` (the proxy's, already checked by
