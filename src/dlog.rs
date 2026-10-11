@@ -268,6 +268,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/windows_ui.rs", 3),
     ("app/workgroup_app.rs", 3),
     ("app/workgroup_restore_app.rs", 3),
+    ("browser_onboarding.rs", 1),
     ("browser_pages.rs", 3),
     ("file_serve.rs", 1),
     ("globals.rs", 1),

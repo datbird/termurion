@@ -67,6 +67,12 @@ fn markup(mime: &str) -> bool {
     mime == "text/html" || mime.contains("xml")
 }
 
+/// Whether the path an open handle names may be served: never a share or device form, and, for a
+/// subresource, strictly inside its page's resolved tree (`base`). Pure, so the order is tested.
+pub fn confined(base: Option<&Path>, final_path: &Path) -> bool {
+    browser_pages::link_target_ok(final_path) && base.is_none_or(|b| inside(b, final_path))
+}
+
 /// The answer to a request for `url` under `root` (the page's tree; None for a request that has none,
 /// which only a Document request may). Pure of any App state, so a worker thread runs it.
 pub fn serve(url: &str, context: i32, root: Option<&PageRoot>) -> Answer {
@@ -79,33 +85,45 @@ pub fn serve_with(url: &str, context: i32, root: Option<&PageRoot>, max_file: u6
     let Ok(path) = browser_pages::file_path_of(url) else { return not_found() };
     let Some(canon) = resolve(&path) else { return not_found() };
     // A subresource resolves inside its page's tree, links and junctions followed: one that leads out
-    // is not served, and neither is one when the page has no root.
-    if !document {
+    // is not served, and neither is one when the page has no root. The root is resolved once here and
+    // checked again against the OPEN handle below.
+    let base = if document {
+        None
+    } else {
         let Some(root) = root else { return not_found() };
         let Some(base) = resolve(&root_path(root)) else { return not_found() };
         if !inside(base.path(), canon.path()) {
             return not_found();
         }
-    }
+        Some(base)
+    };
     let Ok(stat) = localfs::stat(&canon) else { return not_found() };
     if stat.is_dir {
         return if document { listing(&path, &canon) } else { not_found() };
     }
+    // Open ONCE. What the handle really names is checked (inside the root, no share or device form),
+    // and the kind, the size, the bytes and the Mark of the Web all come from that handle or its final
+    // path, never from a second look at a path that may have been swapped since (review I1).
+    let Ok(mut file) = localfs::open(&canon) else { return not_found() };
+    let Some(final_path) = localfs::final_path(&file) else { return not_found() };
+    if !confined(base.as_ref().map(|b| b.path()), &final_path) {
+        return not_found();
+    }
+    let Ok(stat) = localfs::file_stat(&file) else { return not_found() };
     if !stat.is_file || stat.len > max_file {
         if stat.len > max_file {
             crate::rlog!("browser: a local file over the size cap was not served");
         }
         return not_found();
     }
-    let Ok(mut file) = localfs::open(&canon) else { return not_found() };
     let mut bytes = Vec::with_capacity(stat.len.min(1 << 20) as usize);
     // Read one byte past the cap: a file that grew after the check is refused, not cut.
     if (&mut file).take(max_file + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > max_file {
         return not_found();
     }
-    // The Mark of the Web is read from the resolved path: a copy of a downloaded file keeps it.
-    let marked = crate::inert_files::has_mark(canon.path());
-    let mime = crate::mime_ext::mime_for_extension(&extension(&path)).unwrap_or("application/octet-stream");
+    // The Mark of the Web is read from the handle's verified final path: a copy of a downloaded file keeps it.
+    let marked = crate::inert_files::has_mark(&final_path);
+    let mime = crate::mime_ext::mime_for_extension(&extension(&final_path)).unwrap_or("application/octet-stream");
     file_answer(&path, document, mime, marked, bytes)
 }
 
@@ -376,14 +394,46 @@ mod tests {
         std::fs::write(t.join("m.html"), "<script>1</script>").unwrap();
         std::fs::write(t.join("n.html"), "<script>1</script>").unwrap();
         crate::inert_files::mark(&t.join("m.html"));
-        if !crate::inert_files::has_mark(&t.join("m.html")) {
-            std::fs::remove_dir_all(&t).unwrap();
-            return; // a drive that keeps no streams
-        }
+        // The test host keeps streams (NTFS): a missing mark is a regression, never a skip.
+        assert!(crate::inert_files::has_mark(&t.join("m.html")), "the mark was not written or cannot be read");
         let (_, _, text, h) = body(&serve(&url(&t.join("m.html"), false), CONTEXT_DOCUMENT, None));
         assert_eq!((text.as_str(), csp(&h)), ("<script>1</script>", browser_pages::UNTRUSTED_CSP));
         let (_, _, _, h) = body(&serve(&url(&t.join("n.html"), false), CONTEXT_DOCUMENT, None));
         assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    /// The check is on what the open handle names, in the order: share or device form first, then
+    /// the tree (review I1, pure).
+    #[test]
+    fn confinement_is_judged_on_the_final_path() {
+        let base = Path::new(r"\\?\C:\T\site");
+        assert!(confined(Some(base), Path::new(r"\\?\C:\T\site\a.png")));
+        assert!(!confined(Some(base), Path::new(r"\\?\C:\T\other\secret.txt")), "a file that left the tree");
+        assert!(!confined(Some(base), Path::new(r"\\?\C:\T\site2\a.png")), "whole components only");
+        assert!(!confined(None, Path::new(r"\\?\UNC\host\share\a.txt")), "a share is never served");
+        assert!(confined(None, Path::new(r"\\?\C:\T\site\a.png")), "a document has no tree to stay in");
+    }
+
+    /// A file opened through a junction names its real place, which is outside the tree: the check
+    /// on the handle refuses what a check on the requested path would have passed.
+    #[cfg(windows)]
+    #[test]
+    fn a_handle_through_a_junction_names_the_target() {
+        let t = temp("handle");
+        let site = t.join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::create_dir_all(t.join("other")).unwrap();
+        std::fs::write(t.join("other").join("secret.txt"), "s3cret").unwrap();
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(site.join("j")).arg(t.join("other")).output().unwrap();
+        assert!(made.status.success());
+        let f = std::fs::File::open(site.join("j").join("secret.txt")).unwrap();
+        let real = localfs::final_path(&f).expect("final path");
+        let base = resolve(&site).unwrap();
+        assert!(inside(base.path(), &site.join("j").join("secret.txt")), "the requested path looks inside");
+        assert!(!confined(Some(base.path()), &real), "the handle's own path is outside");
+        drop(f);
+        std::fs::remove_dir(site.join("j")).unwrap();
         std::fs::remove_dir_all(&t).unwrap();
     }
 

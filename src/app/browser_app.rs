@@ -698,7 +698,7 @@ impl App {
                     if let Some(bv) = self.browser_views.get_mut(&pane) {
                         bv.stopped = true;
                     }
-                    self.banners.set("window", webhost::OLD_RUNTIME_TEXT);
+                    self.banners.set("webview2-old", webhost::OLD_RUNTIME_TEXT);
                     return;
                 }
                 self.browser_view_failed(pane, webhost::PROCESS_RENDER_EXITED);

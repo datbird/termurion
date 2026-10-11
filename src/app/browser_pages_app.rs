@@ -459,7 +459,7 @@ mod tests {
         // M4: a runtime without the event returns the cast error (the view is not made) and the pane says why.
         let reg = &win[win.find("fn register_cert_cancel").unwrap()..];
         assert!(reg.contains("view.cast::<ICoreWebView2_14>()?;") && win.contains("e(webhost::OLD_RUNTIME_WHAT, x)"));
-        assert!(prod_app.contains("why.starts_with(webhost::OLD_RUNTIME_WHAT)") && prod_app.contains("self.banners.set(\"window\", webhost::OLD_RUNTIME_TEXT);"));
+        assert!(prod_app.contains("why.starts_with(webhost::OLD_RUNTIME_WHAT)") && prod_app.contains("self.banners.set(\"webview2-old\", webhost::OLD_RUNTIME_TEXT);"));
         // The blocker's refusal of a main document is remembered for the error page.
         let dbs = include_str!("browser_db_app.rs");
         assert!(dbs.contains("bv.blocked_url = Some(url.to_string());"));

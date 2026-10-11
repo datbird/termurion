@@ -398,6 +398,25 @@ pub fn file_stat(f: &File) -> io::Result<Stat> {
     f.metadata().map(|m| Stat::of(&m))
 }
 
+/// The path an OPEN handle really names (`GetFinalPathNameByHandleW`, every link followed), so a
+/// check on it is a check on what a read of that handle returns, whatever was swapped meanwhile.
+/// None when the system cannot say (and on other hosts).
+#[cfg(windows)]
+pub fn final_path(f: &File) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let mut buf = vec![0u16; 4096];
+    // SAFETY: an open handle and a buffer of the length given.
+    let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+    (n != 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
+}
+
+#[cfg(not(windows))]
+pub fn final_path(_f: &File) -> Option<PathBuf> {
+    None
+}
+
 pub fn open(p: &LocalPath) -> io::Result<File> {
     File::open(&p.0)
 }
