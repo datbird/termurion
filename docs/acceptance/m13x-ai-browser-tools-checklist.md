@@ -38,7 +38,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 | 13 | Ask "what is on this page?": the model asks to read it; the approval is Tandem's text naming the action and the site the tab shows ("read the web page on example.com", host end kept, never the page title); Allow Once; it quotes the page. Ask again, and before answering move the tab to another site (or reload it): Allow Once answers "Page changed" and nothing is read. | |
 | 14 | Ask it to find a word on the page: Allow Once; it answers with line numbers and the matching lines. | |
 | 15 | Ask it to read one section by line numbers: Allow Once; it returns that slice; a start past the end answers out of bounds. | |
-| 16 | Ask for the current URL: it answers with the page's address without credentials, query secrets cut as designed. | |
+| 16 | Ask for the current URL: it answers with the page's address without credentials (user name and password removed); the query string is kept whole, as iTerm2 does (B9 cuts only credentials). | |
 | 17 | Ask it to open example.com: it asks ("leave the web page on <site> and load a page on example.com"); Always Allow; the page loads in that tab. The next browser call while the tab shows that same site does not ask; once the tab shows another site, it asks again (Always Allow is per site, not per tab). | |
 | 18 | Ask it to open `file:///C:/Windows/win.ini`: it gets the not-well-formed answer ("Navigation failed") and the tab does not move. Same for `iterm2-file:`, `javascript:` and `about:` URLs. Ask it to open `http://127.0.0.1:631/`, `http://localhost/`, a LAN address such as `http://192.168.1.1/` and `http://nas/`: each answers "on this computer or the local network" and the tab does not move. Open a LAN page yourself and ask it to read it: refused the same way. | |
 | 19 | Ask for a web search: the tab shows the search results page and the model summarizes it. | |
@@ -81,15 +81,15 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 
 | # | Check | Result |
 |---|---|---|
-| 39 | The sic "availble" text is kept in the not-linked wording (iTerm2's own spelling). | |
-| 40 | Cancel is disabled on the executing bubble of a browser call. | |
+| 39 | The sic "availble" text is kept where iTerm2 has it: the web search answer when the results page loads but cannot be read ("Web search is not currently availble", iTerm2's own spelling); every other unavailable text is spelled right. | |
+| 40 | A running browser call shows a status notice ("View the current web page..." and the like), not the executing bubble; Stop ends a call that waits on a load. | |
 | 41 | A fragment-only `load_url` waits until Stop (row 32). | |
 
 ## Probe (webhost_win::probe)
 
 One probe test belongs to this milestone:
 
-- [ ] `webhost_win::probe::ai_browser_tools_run_on_a_page` (the pure answer functions over the real markdown script on a 127.0.0.1 page, loads through the guarded `navigate`, secret fields absent from the page text, find and section answers)
+- [ ] `webhost_win::probe::ai_browser_tools_run_on_a_page` (the pure answer functions over the real markdown script on a 127.0.0.1 page, loads through the guarded `navigate`; secret fields, a `[hidden]` element, a password-autocomplete textarea and a Tandem mark annotation absent from the page text while their unmarked twins are present; a `</page-content>` line in the page cannot close the fence; a model may not read the 127.0.0.1 page itself (final review I3); find and section answers). Changed in the final wave after the 2026-10-11 PASS: run it again.
 
 Run it from an ssh session on EXTREME with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show

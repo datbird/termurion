@@ -316,6 +316,8 @@ mod tests {
             assert!(file(script).contains(needle), "{script} creates {needle}");
         }
         assert!(TANDEM_UI.contains("#iterm-copy-mode-cursor") && file("copy-mode-cursor.js").contains("iterm-copy-mode-cursor") && TANDEM_UI.contains("[data-tandem-ui]"));
+        // Task 8 re-review minor: the list is spliced into a single-quoted JS string.
+        assert!(!TANDEM_UI.contains(['\'', '\\']), "no quote or backslash in the selector list");
         // Both readers fill the one list in, and neither carries a copy of it.
         let plain = file("extract-plain-text.js");
         for script in [conv, plain] {
