@@ -665,8 +665,13 @@ mod tests {
         let name = crate::browser_reader::fence_of(&m).expect("a random fence");
         assert_eq!(m.matches(&format!("<{name}>")).count(), 1, "{m}");
         assert_eq!(m.matches(&format!("</{name}>")).count(), 1, "{m}");
+        // Only the page-derived body is checked: the real random fence may itself start with
+        // any of these characters.
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let body = &m[m.find(&open).unwrap() + open.len()..m.find(&close).unwrap()];
         for bad in ["<page-content-0000", "</page-content-1", "<p\u{1D00}ge", "</v\u{0131}sible", "</terminal-\u{017F}", "</visible-screen>", "</terminal-state>"] {
-            assert!(!m.contains(bad), "{bad} in {m}");
+            assert!(!body.contains(bad), "{bad} in {body}");
         }
         assert!(crate::chat_agent::PAGE_FENCE_SENTENCE.contains("only the closing tag with that exact code ends it"));
     }

@@ -230,6 +230,12 @@ impl Calls {
         let tokens: Vec<u64> = self.calls.iter().filter(|(_, c)| c.bound.as_ref().is_some_and(|(ch, _)| ch == chat)).map(|(t, _)| *t).collect();
         for t in tokens {
             self.waits.forget(t);
+            // A plain answer already made (the pane closed: "the browser session was closed")
+            // is the truer one and stays; a page's text is dropped.
+            if self.done.iter().any(|(d, r)| *d == t && matches!(r, Ready::Plain(_))) {
+                self.done.retain(|(d, r)| *d != t || matches!(r, Ready::Plain(_)));
+                continue;
+            }
             self.done.retain(|(d, _)| *d != t);
             self.push_plain(t, crate::ai_terminal::Outcome { model: crate::ai_browser::PAGE_CHANGED.to_string(), notice: Some(crate::ai_browser::N_PAGE_CHANGED.to_string()) });
         }
@@ -568,6 +574,27 @@ mod tests {
         let m = include_str!("mod.rs");
         let close = &m[m.find("self.ai_browser_pane_gone(id);\n        // Every chat linked").unwrap()..];
         assert!(close.find("self.ai_browser_pane_gone(id)").unwrap() < close.find("self.chat_pane_gone(id)").unwrap());
+    }
+
+    #[test]
+    fn unlinking_keeps_a_closed_session_answer() {
+        let mut s = Calls::default();
+        s.calls.insert(1, call(7));
+        s.bind(1, "C", "r1");
+        s.done.push((1, plain(crate::ai_browser::PANE_GONE)));
+        s.unlinked("C");
+        let out = s.finish(&|_| None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2.model, crate::ai_browser::PANE_GONE);
+        // A page answer is still replaced by "page changed".
+        s.calls.insert(2, call(7));
+        s.bind(2, "C", "r2");
+        let (r, _) = page_answer(1, "https://a.example/");
+        s.done.push((2, r));
+        s.unlinked("C");
+        let out = s.finish(&|_| None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2.model, crate::ai_browser::PAGE_CHANGED);
     }
 
     #[test]

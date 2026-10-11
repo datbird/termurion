@@ -45,6 +45,27 @@ pub(super) fn choice_of(a: Answer) -> Choice {
 
 /// Whether a pane shows the picker's button for a pick: a terminal pick on every terminal pane, a
 /// browser pick on a linkable browser pane only (`SS:35-40`, `SV:1203-1210`).
+/// Whether a picker button is drawn on `pane` (the cover over a browser pane's strip).
+pub(super) fn cover_over(hits: &[(PaneId, Rect)], pane: PaneId) -> bool {
+    hits.iter().any(|(p, _)| *p == pane)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CoverKey {
+    Pass,
+    Swallow,
+    Cancel,
+}
+
+/// What a key does while the cover may be shown.
+pub(super) fn cover_key(covered: bool, pressed: bool, escape: bool) -> CoverKey {
+    match (covered, pressed && escape) {
+        (false, _) => CoverKey::Pass,
+        (true, true) => CoverKey::Cancel,
+        (true, false) => CoverKey::Swallow,
+    }
+}
+
 pub(super) fn pane_gets_picker(terminal_pick: bool, browser_pane: bool, linkable: bool) -> bool {
     if terminal_pick { !browser_pane } else { browser_pane && linkable }
 }
@@ -238,6 +259,25 @@ impl App {
         let p = self.panes.get(&id)?;
         let (fg, bg) = (p.own().palette.fg, p.own().palette.bg);
         Some((id, scene::browser_picker_button(frame, bar, chat_buttons::PICK_REASON, fg, bg, cell, self.scale())))
+    }
+
+    /// Whether the picker's cover is drawn over `pane`'s strip now (its button is in this
+    /// window's hits). The hidden address field and buttons under it take no input.
+    pub(super) fn picker_covers(&self, pane: PaneId) -> bool {
+        cover_over(&self.picker_hits, pane)
+    }
+
+    /// A key while the cover is shown: Escape cancels the pick, every other key is swallowed so
+    /// it never reaches the hidden address field. True when taken.
+    pub(super) fn picker_cover_key(&mut self, pane: PaneId, ev: &KeyEvent) -> bool {
+        match cover_key(self.picker_covers(pane), ev.state == ElementState::Pressed, matches!(ev.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))) {
+            CoverKey::Pass => false,
+            CoverKey::Swallow => true,
+            CoverKey::Cancel => {
+                self.picked(None);
+                true
+            }
+        }
     }
 
     /// A left press: on a picker's button it picks that pane; anywhere else the pick keeps
@@ -881,6 +921,25 @@ mod tests {
     /// pick on browser panes only, and a browser pane that is not linkable (Dev Null, a Tandem or
     /// local page) never shows one. A browser pane's button is Tandem's, drawn in the toolbar strip
     /// from `picker_in_toolbar`, and its press is the one `picker_press`.
+    #[test]
+    fn the_picker_cover_takes_the_strips_input() {
+        let r = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+        assert!(cover_over(&[(3, r)], 3) && !cover_over(&[(3, r)], 4) && !cover_over(&[], 3));
+        // Uncovered: keys go on. Covered: every key is swallowed (press and release), Escape cancels.
+        assert_eq!(cover_key(false, true, true), CoverKey::Pass);
+        assert_eq!(cover_key(true, true, false), CoverKey::Swallow);
+        assert_eq!(cover_key(true, false, false), CoverKey::Swallow);
+        assert_eq!(cover_key(true, false, true), CoverKey::Swallow, "the release of Escape");
+        assert_eq!(cover_key(true, true, true), CoverKey::Cancel);
+        // The wiring: the press check follows the button check, the key check is first in browser_key.
+        let b = include_str!("browser_app.rs");
+        let press = &b[b.find("pub(super) fn browser_toolbar_press").unwrap()..];
+        assert!(press.find("self.picker_press(x, y)").unwrap() < press.find("self.picker_covers(pane) && bar.contains(x, y)").unwrap());
+        assert!(press.find("self.picker_covers(pane)").unwrap() < press.find("t.focused = pane").unwrap());
+        let key = &b[b.find("pub(super) fn browser_key").unwrap()..];
+        assert!(key.find("picker_cover_key(pane, ev)").unwrap() < key.find("b.bar.keys").unwrap());
+    }
+
     #[test]
     fn picker_kind_follows_iterm2() {
         // (terminal pick, browser pane, linkable)

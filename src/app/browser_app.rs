@@ -1009,6 +1009,10 @@ impl App {
         if self.picker_press(x, y) {
             return true;
         }
+        // The cover owns the strip: a press off its button reaches no hidden control.
+        if self.picker_covers(pane) && bar.contains(x, y) {
+            return true;
+        }
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.focused = pane;
         }
@@ -1522,6 +1526,9 @@ impl App {
     /// The field's keys (it has the keyboard) and the accelerators that focus it. True when taken.
     pub(super) fn browser_key(&mut self, ev: &KeyEvent) -> bool {
         let Some(pane) = self.focused_id().filter(|p| self.is_browser_pane(*p)) else { return false };
+        if self.picker_cover_key(pane, ev) {
+            return true;
+        }
         let keys = self.browser_views.get(&pane).is_some_and(|b| b.bar.keys);
         if ev.state != ElementState::Pressed {
             return keys;
