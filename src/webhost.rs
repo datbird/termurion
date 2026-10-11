@@ -860,6 +860,21 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
     if t == "file" && !file_ok {
         return false;
     }
+    // A `file:` link in a local page becomes an `iterm2-file:` page at the redirect, so the rule judges
+    // the FINAL target, not the typed scheme (13x8 Task 9 re-review I1 r1). A `file:` URL that cannot
+    // become one (UNC, no drive) goes nowhere from a local page.
+    let mapped;
+    let (target, t) = if t == "file" && !by_tandem && source.is_some_and(local_page) {
+        match iterm2_file_url(target) {
+            Some(m) => {
+                mapped = m;
+                (mapped.as_str(), "iterm2-file".to_string())
+            }
+            None => return false,
+        }
+    } else {
+        (target, t)
+    };
     if redirect && local_scheme(&t) {
         return false;
     }
@@ -910,7 +925,10 @@ pub fn file_redirect_allowed(source: Option<&str>, by_tandem: bool) -> bool {
     }
     match source.map(scheme_of).as_deref() {
         None | Some("") => true,
-        Some(s) => matches!(s, "iterm2-about" | "iterm2-file" | "iterm2-ssh"),
+        // An ssh page and a served file (path not ending in `/`) never start a local page, not even
+        // through `file:` (13x8 Task 9 re-review I1 r1); only a Tandem listing does.
+        Some("iterm2-file") => source.and_then(crate::browser_pages::local_parts).is_some_and(|(_, _, path)| path.ends_with('/')),
+        Some(s) => s == "iterm2-about",
     }
 }
 
@@ -2392,6 +2410,19 @@ mod tests {
         assert!(!n("iterm2-file:///C:/T/", "iterm2-file://host/C:/T/x", true, r), "another authority");
         assert!(!n("iterm2-file:///C:/T/", "iterm2-ssh://box/x", true, r), "file to ssh");
         assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", false, r), "a script's navigation");
+        // The same links spelled `file:` (the redirect makes them iterm2-file: pages): judged by the final target.
+        for src in [ssh, "iterm2-file:///C:/T/a.html"] {
+            for target in ["file:///C:/Users/u/.ssh/id_rsa", "file:///C:/T/b.txt", "file:///C:/", "file://host/share/x", "file:///C:/T/"] {
+                assert!(!n(src, target, true, r) && !n(src, target, false, r), "{target} from {src}");
+            }
+        }
+        assert!(n("iterm2-file:///C:/T/", "file:///C:/T/b.txt", true, r), "a listing link inside the root");
+        assert!(!n("iterm2-file:///C:/T/", "file:///C:/Users/u/x", true, r), "a listing link above the root");
+        assert!(!n("iterm2-file:///C:/T/", "file://host/share/x", true, r), "a UNC file link");
+        assert!(file_redirect_allowed(Some("iterm2-file:///C:/T/"), false), "a listing may redirect");
+        assert!(!file_redirect_allowed(Some("iterm2-file:///C:/T/a.html"), false), "a served file may not");
+        assert!(!file_redirect_allowed(Some("iterm2-ssh://box/a.html"), false), "an ssh page may not");
+        assert!(file_redirect_allowed(Some("iterm2-ssh://box/a.html"), true), "Tandem's own load may");
         assert!(n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", true, None), "no root: inside the listing's own folder");
         assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, None));
         // The same through the handler's own entry point.
