@@ -1041,12 +1041,11 @@ impl App {
     }
 
     /// The scope a write to `pane` claims under: its instance for a member (approving a workgroup
-    /// once approves all its roles, `claimScope(forSessionGuid:)`), else its own `session:` scope.
+    /// once approves all its roles, `claimScope(forSessionGuid:)`), else its own `session:` scope; a
+    /// web browser pane always its own (`orch_tools::session_claim_scope`, Task 9 review I1).
     pub(super) fn claim_scope_of(&self, pane: PaneId) -> String {
-        match self.workgroup_of(pane) {
-            Some(i) => i.id.clone(),
-            None => crate::orch_tools::session_scope(&self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default()),
-        }
+        let stable = self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default();
+        crate::orch_tools::session_claim_scope(self.workgroup_of(pane).map(|i| i.id.as_str()), self.is_browser_pane(pane), &stable)
     }
 
     /// The live instances, in the order they were entered, with their live members (a member whose

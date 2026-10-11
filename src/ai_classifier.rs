@@ -536,7 +536,7 @@ mod tests {
         let messages = vec![
             msg(Participant::User, Content::PlainText { text: "do it".into(), context: Some("ctx".into()) }),
             msg(Participant::Agent, Content::Markdown("sure".into())),
-            msg(Participant::User, Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: Value::Null, call }), safe: None }),
+            msg(Participant::User, Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(Value::Null, call)), safe: None }),
             msg(
                 Participant::User,
                 Content::TerminalCommand(crate::chat_message::TerminalCommand { username: None, hostname: None, directory: None, command: "ls".into(), output: "o".into(), exit_code: 0, url: String::new() }),

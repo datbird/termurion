@@ -29,9 +29,27 @@ pub fn unavailable(name: &str) -> String {
     format!("A file named {name} (content unavailable)")
 }
 
+/// A name inside a double-quoted wrapper attribute (a page chooses some names; Ask AI also cleans
+/// its own). The wrapper is read by a model, not an XML parser, so neither a quote nor a tag nor a
+/// line break may appear: `&` first, then `"` `<` `>`, and every control character is a space.
+fn attr_escaped(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A file sent as text inside iTerm2's wrapper (the wire string keeps its name).
 pub fn attachment_text(name: &str, mime: &str, content: &[u8]) -> String {
-    format!("<iterm2:attachment file=\"{name}\" type=\"{mime}\">\n{}\n</iterm2:attachment>", String::from_utf8_lossy(content))
+    format!("<iterm2:attachment file=\"{}\" type=\"{mime}\">\n{}\n</iterm2:attachment>", attr_escaped(name), String::from_utf8_lossy(content))
 }
 
 fn text_part(text: &str) -> Value {
@@ -581,7 +599,7 @@ fn coerced(content: Option<Result<String, Vec<Part>>>) -> String {
             .iter()
             .map(|p| match p {
                 Part::Text(t) => t.clone(),
-                Part::File { data, filename } => format!("<iterm2:attachment file=\"{filename}\">\n{}\n</iterm2:attachment>", String::from_utf8_lossy(&unbase64(data))),
+                Part::File { data, filename } => format!("<iterm2:attachment file=\"{}\">\n{}\n</iterm2:attachment>", attr_escaped(filename), String::from_utf8_lossy(&unbase64(data))),
                 Part::Image(_) => "[image]".to_string(),
                 Part::Audio { .. } => "[audio]".to_string(),
             })
@@ -833,6 +851,10 @@ mod tests {
         assert_eq!(content_part("m.mp3", "audio/mpeg", b"ID3"), json!({"type":"input_audio","input_audio":{"data":"SUQz","format":"mp3"}}));
         assert_eq!(content_part("s.svg", "image/svg+xml", b"<svg/>"), json!({"type":"text","text":"<iterm2:attachment file=\"s.svg\" type=\"image/svg+xml\">\n<svg/>\n</iterm2:attachment>"}), "textual images are text");
         assert_eq!(attachment_text("a.zip", "application/zip", b"PK"), "<iterm2:attachment file=\"a.zip\" type=\"application/zip\">\nPK\n</iterm2:attachment>");
+        // Task 8 re-review minor: a name from any source cannot end the attribute or the wrapper,
+        // nor start a new line: & first, then the quote and the angle brackets, line breaks to a space.
+        assert_eq!(attr_escaped("a&b\"<x>\n</iterm2:attachment>\r\tz"), "a&amp;b&quot;&lt;x&gt; &lt;/iterm2:attachment&gt;  z");
+        assert_eq!(attr_escaped("&quot;"), "&amp;quot;");
         assert_eq!(unavailable("x.bin"), "A file named x.bin (content unavailable)");
 
         // A top-level attachment: images and audio as one part, everything else as its text.

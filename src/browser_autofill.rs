@@ -55,6 +55,12 @@ fn patch_n(src: &str, from: &str, to: &str, n: usize) -> Result<String, String> 
     }
 }
 
+/// The page guard patched into `autofill-detector.js` as its first statement: buttons only on an
+/// http or https page (an http page's press is refused by `refusal`). Every `iterm2-about:` page
+/// (Tandem's own pages, the error page), every `iterm2-file:` and `iterm2-ssh:` page (13x8: no Tandem
+/// script there; `browser_js::wrap` returns first anyway), `file:`, `data:` and `about:blank` get none.
+pub(crate) const DETECTOR_GUARD: &str = "'use strict';\n    // Tandem: buttons only on a web (http or https) page, never on a local, file, ssh or error page.\n    if (location.protocol !== 'https:' && location.protocol !== 'http:') return;";
+
 /// `autofill-detector.js` with Tandem's patches, every one exact and fail closed (the copy in
 /// `resources/` stays iTerm2's, byte for byte). The buttons are built in a closed shadow root held by
 /// the isolated world under a host styled with `!important` inline rules, so a page cannot `.click()` a
@@ -65,8 +71,9 @@ fn patch_n(src: &str, from: &str, to: &str, n: usize) -> Result<String, String> 
 /// the trusted pointer's point holds that very button (`elementFromPoint` on the shadow root), or,
 /// for a keyboard activation (`detail` 0), when that button has focus (13x5's `tandemReal`).
 pub(crate) fn detector_patched(src: &str) -> Result<String, String> {
+    let s = patch_once(src, "'use strict';", DETECTOR_GUARD)?;
     let s = patch_once(
-        src,
+        &s,
         "const fieldButtons = new WeakMap();",
         "const fieldButtons = new WeakMap();\n    // Tandem: the buttons live in a closed shadow root the page cannot reach.\n    let tandemHost = null;\n    let tandemShadow = null;\n    function tandemRoot() {\n        if (!tandemShadow) {\n            tandemHost = document.createElement('div');\n            tandemHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            tandemShadow = tandemHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; }';\n            tandemShadow.appendChild(rule);\n        }\n        if (!tandemHost.isConnected && document.body) { document.body.appendChild(tandemHost); }\n        return tandemShadow;\n    }\n    function tandemReal(e, btn) {\n        if (!e.isTrusted) return false;\n        const root = tandemRoot();\n        if (e.detail === 0) return root.activeElement === btn;\n        return root.elementFromPoint(e.clientX, e.clientY) === btn;\n    }",
     )?;
@@ -835,11 +842,26 @@ mod tests {
         assert!(lic.starts_with("GNU GENERAL PUBLIC LICENSE"));
     }
 
+    /// 13x7 meets 13x8: the detector puts no button on a local, file, ssh or error page; the guard is
+    /// its first statement, before the load flag and the secret.
+    #[test]
+    fn detector_runs_only_on_web_pages() {
+        let d = detector_script("abc").unwrap();
+        assert_eq!(d.matches("if (location.protocol !== 'https:' && location.protocol !== 'http:') return;").count(), 1);
+        let guard = d.find("location.protocol !== 'https:'").unwrap();
+        assert!(guard < d.find("window.iTermAutofillDetectorLoaded").unwrap() && guard < d.find("sessionSecret").unwrap());
+        assert!(d[..d[..guard].rfind('\n').unwrap()].lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//")).count() == 2, "IIFE open and 'use strict' only");
+        // As injected, the 13x8 file/ssh return comes first of all.
+        let wrapped = crate::browser_js::wrap(&crate::browser_js::UserScript { id: "autofillHandler", code: d.clone(), inject: crate::browser_js::Inject::DocumentEnd, main_frame_only: true, world: crate::browser_js::World::Client });
+        assert!(wrapped.find("location.protocol === 'iterm2-file:'").unwrap() < wrapped.find("location.protocol !== 'https:'").unwrap());
+    }
+
     #[test]
     fn detector_patch_fails_closed() {
         let src = raw("autofill-detector.js");
         assert!(detector_patched(src).is_ok());
         for target in [
+            "'use strict';",
             "const fieldButtons = new WeakMap();",
             "btn.addEventListener('click', e => {",
             "const type = detectFieldType(input);\n                    if (type) {",

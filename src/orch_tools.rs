@@ -568,6 +568,23 @@ pub fn claim_text(name: &str) -> String {
     format!("The agent is asking to send keystrokes and interrupt running commands in session \u{201C}{name}\u{201D}. Approval is sticky for the rest of this chat. Deny to refuse this and future control of this session until you explicitly approve.")
 }
 
+/// The scope a write to a session claims under (`claimScope(forSessionGuid:)`): a workgroup
+/// member's instance, else the session's own scope. A web browser session is always claimed on its
+/// own (Task 9 review I1, a deviation from iTerm2): a workgroup's claim never covers a browser member.
+pub fn session_claim_scope(instance: Option<&str>, browser: bool, stable_id: &str) -> String {
+    match instance {
+        Some(i) if !browser => i.to_string(),
+        _ => session_scope(stable_id),
+    }
+}
+
+/// The claim bubble for a web browser session (Task 9 review I1, Tandem's text in place of
+/// `DI:1640-1644`'s keystrokes): `action` is the call's approval text naming the action and the site
+/// (`ai_browser::approval_text`), then what the sticky claim allows.
+pub fn browser_claim_text(action: &str) -> String {
+    format!("{action}. Approving lets the agent use this web browser session for the rest of this chat, whatever site it shows: read the page, find text on it, get its address, load URLs and search the web. Deny to refuse this and future use of this session until you explicitly approve.")
+}
+
 /// The notice after Revoke (`DI:1806-1808`).
 pub fn revoked_text(name: &str) -> String {
     format!("Revoked this chat\u{2019}s permission to control \u{201C}{name}\u{201D}. The agent will ask before its next action there.")
@@ -710,7 +727,42 @@ pub const LEFT_ORCHESTRATION: &str = "This chat is no longer in orchestration mo
 
 #[cfg(test)]
 mod tests {
+
+    /// Task 9 (Review Focus 5): 12f's browser mirrors, checked here and not changed.
+    #[test]
+    fn browser_mirrors_follow_iterm2() {
+        let mirrored: Vec<String> = crate::ai_tools::ALL_NAMES.iter().filter(|n| !NOT_MIRRORED.contains(n)).map(|n| format!("session_{n}")).collect();
+        let decls = all_decls();
+        let names: Vec<String> = decls.iter().skip(TOOLS.len()).map(|d| d.name.clone()).collect();
+        assert_eq!(names, mirrored);
+        assert_eq!(names.len(), 23);
+        for b in ["session_find_on_page", "session_load_url", "session_web_search_in_browser", "session_get_current_url", "session_read_web_page_section"] {
+            assert!(names.iter().any(|n| n == b), "{b}");
+        }
+        let load = decls.iter().find(|d| d.name == "session_load_url").unwrap();
+        let req: Vec<&str> = load.parameters["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req.contains(&"session_guid") && req.contains(&"url"));
+        assert!(mirror_needs_claim(crate::ai_permissions::Category::ActInWebBrowser));
+    }
     use super::*;
+
+    /// Task 9 review I1: a web browser session is claimed on its own, never through its workgroup,
+    /// so a workgroup's claim (an approval for a terminal role, a bare @-pick of a terminal member)
+    /// never covers a browser member; a terminal member keeps iTerm2's instance scope.
+    #[test]
+    fn a_browser_session_is_claimed_on_its_own() {
+        assert_eq!(session_claim_scope(Some("WG-1"), false, "S1"), "WG-1");
+        assert_eq!(session_claim_scope(Some("WG-1"), true, "S2"), session_scope("S2"));
+        assert_eq!(session_claim_scope(None, true, "S2"), session_scope("S2"));
+        assert_eq!(session_claim_scope(None, false, "S3"), session_scope("S3"));
+        // A workgroup's claim does not grant the browser member.
+        assert_eq!(claim_needed(&["WG-1".to_string()], &session_claim_scope(Some("WG-1"), true, "S2"), &[]), Claim::Ask);
+        // The bubble names the action and the site in Tandem's words, never keystrokes.
+        let t = browser_claim_text("The AI agent would like to read the web page on a\\.test");
+        assert!(t.starts_with("The AI agent would like to read the web page on a\\.test."), "{t}");
+        assert!(t.contains("web browser session") && t.contains("load") && t.contains("search the web"), "{t}");
+        assert!(!t.contains("keystrokes"), "{t}");
+    }
     use serde_json::json;
 
     fn props(d: &ToolDecl) -> &Map<String, Value> {

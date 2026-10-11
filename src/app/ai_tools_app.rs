@@ -97,6 +97,14 @@ impl App {
         if !self.panes.contains_key(&pane) {
             return ToolStart::Done(Outcome { model: NO_SESSION.to_string(), notice: None });
         }
+        // The kind first: a browser call never touches a terminal and the reverse (`PS:326-336`).
+        let browser_call = call.category().is_browser();
+        if let Some(o) = crate::ai_browser::kind_refusal(browser_call, self.is_browser_pane(pane)) {
+            return ToolStart::Done(o);
+        }
+        if browser_call {
+            return self.ai_browser_start(pane, call);
+        }
         if let Some(started) = self.ai_write_tool(pane, call) {
             return started;
         }

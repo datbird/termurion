@@ -313,10 +313,6 @@ pub enum ViewChoice {
     Ask { mime: String },
 }
 
-/// Tandem has no built-in browser, so nothing is offered for viewing (iTerm2's own path when
-/// its browser is off): the mime type is never consulted.
-pub const BROWSER_ALLOWED: bool = false;
-
 pub const VIEW_HEADING: &str = "Download or View File?";
 pub const DOWNLOAD: &str = "Download";
 pub const VIEW: &str = "View";
@@ -578,7 +574,6 @@ mod tests {
         assert_eq!((VIEW_HEADING, DOWNLOAD, VIEW), ("Download or View File?", "Download", "View"));
         let to = ScpPath { path: "/a".into(), hostname: "h".into(), username: "u".into() };
         assert_eq!(view_id("image/png", &to), "DownloadOrViewInBrowser_image/png u@h");
-        assert!(!BROWSER_ALLOWED);
     }
 
     #[test]

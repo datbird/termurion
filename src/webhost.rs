@@ -174,6 +174,9 @@ pub struct EnvOptions {
     pub args: String,
     /// Custom scheme registrations (`iterm2-about` for the browser stores).
     pub custom_schemes: Vec<String>,
+    /// `AreBrowserExtensionsEnabled` (13x8 Task 10): only the persistent browser store sets it, never
+    /// Dev Null or the default store. An extension is still added only after the person approved it.
+    pub extensions: bool,
 }
 
 /// The one browser argument beyond the proxy's: the Windows integrated-authentication allowlist (NTLM,
@@ -271,7 +274,9 @@ pub enum Event {
     ProcessFailed { view: ViewId, kind: i32 },
     /// A finished navigation: `url` is the URI of the matching NavigationStarting (iTerm2's
     /// `lastRequestedURL`), `nav` its `NavigationId`.
-    Navigated { view: ViewId, ok: bool, status: i32, url: String, nav: u64 },
+    /// `status`: the HTTP status on success, `COREWEBVIEW2_WEB_ERROR_STATUS` on failure. `http`: the
+    /// HTTP status whenever a response arrived (a server's 4xx or 5xx fails with one), else 0.
+    Navigated { view: ViewId, ok: bool, status: i32, http: i32, url: String, nav: u64 },
     Source(ViewId, String),
     Title(ViewId, String),
     Favicon(ViewId, Vec<u8>),
@@ -292,6 +297,13 @@ pub enum Event {
     /// A top-level navigation the view refused after a person's click (`refused_click`): the app
     /// judges the URL itself (a popover link goes through `guard_open`).
     Refused { view: ViewId, url: String, user: bool },
+    /// A main-frame navigation to a `file:` URL was cancelled because the view shows local files as
+    /// `iterm2-file:` pages (`ViewSetup.redirect_file_urls`, 13x8 Task 3) and the one verdict, then
+    /// `file_redirect_allowed`, let it go. The app loads `iterm2_file_url(uri)` as Tandem's own load.
+    FileRedirect { view: ViewId, uri: String },
+    /// `WebView::clear_browsing_data` finished (13x8 Task 5); `ok` is whether the web view cleared it.
+    /// Never dropped: the settings page waits on it.
+    DataCleared { view: ViewId, ok: bool },
     /// A main-frame navigation was cancelled because the store's profile permissions are not
     /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
     /// the app loads once the sync lands. Never dropped.
@@ -358,7 +370,29 @@ pub enum Event {
     /// permissions) or a view without `basic_auth` is cancelled by the host and never posted.
     /// `uri` is the URI WebView2 reports, `challenge` the header text; both are capped.
     BasicAuth { view: ViewId, token: u64, uri: String, challenge: String },
+    /// A download is starting (`DownloadStarting`; browser panes with `ViewSetup::downloads`). The
+    /// view holds it (a deferral, cancelled until answered) until `answer_download(token, id, ..)`;
+    /// beyond the view's limits it is cancelled by the host and never posted. `url` is capped.
+    /// Never dropped.
+    DownloadStarting { view: ViewId, token: u64, url: String, total: Option<u64> },
+    /// Bytes received so far by download `id` (the id `answer_download` was given). A later one
+    /// corrects a dropped one.
+    DownloadProgress { view: ViewId, id: u64, received: u64, total: Option<u64> },
+    /// Download `id` ended: Ok when complete; Err holds fixed words, never the page's text. Never dropped.
+    DownloadDone { view: ViewId, id: u64, result: Result<(), String> },
+    /// The view's own caps cancelled a download (too many running, or too fast): the app says so. Carries nothing.
+    DownloadRefused { view: ViewId },
+    /// `WebView::list_extensions` answered (13x8 Task 10): (id, name, enabled) of the profile's
+    /// extensions, at most `MAX_EXTENSIONS`, names cut. Never dropped: a sync waits on it.
+    Extensions { view: ViewId, list: Vec<(String, String, bool)> },
+    /// `WebView::add_extension` finished for `folder`: the id and name WebView2 gave it, or a short
+    /// reason (never a path). Never dropped: the order of completions matters to the sync.
+    ExtensionAdded { view: ViewId, folder: std::path::PathBuf, result: Result<(String, String), String> },
 }
+
+/// Extensions one `Event::Extensions` carries, and the longest name or id kept.
+pub const MAX_EXTENSIONS: usize = 64;
+pub const MAX_EXTENSION_TEXT: usize = 128;
 
 /// Longest challenge header text an event carries (characters); the rest is cut, and a cut
 /// challenge is cancelled by the host.
@@ -414,6 +448,8 @@ impl Event {
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
+            | Event::FileRedirect { view, .. }
+            | Event::DataCleared { view, .. }
             | Event::Parked { view, .. }
             | Event::ProcessFailed { view, .. }
             | Event::DevTools { view, .. }
@@ -433,7 +469,13 @@ impl Event {
             | Event::PermissionWritten { view, .. }
             | Event::Committed { view, .. }
             | Event::Response { view, .. }
-            | Event::BasicAuth { view, .. } => *view,
+            | Event::BasicAuth { view, .. }
+            | Event::DownloadStarting { view, .. }
+            | Event::DownloadProgress { view, .. }
+            | Event::DownloadDone { view, .. }
+            | Event::DownloadRefused { view }
+            | Event::Extensions { view, .. }
+            | Event::ExtensionAdded { view, .. } => *view,
         }
     }
 
@@ -463,7 +505,7 @@ impl Event {
         // A new audio state is corrected by the next change (and a new document resets it); the
         // permission and notification events hold a COM object or answer a request, so none is
         // dropped: the host bounds them where they are made (`PermissionLimiter`, `NotificationLimiter`).
-        if matches!(self, Event::AudioPlaying { .. }) {
+        if matches!(self, Event::AudioPlaying { .. } | Event::DownloadProgress { .. }) {
             return true;
         }
         // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
@@ -483,10 +525,15 @@ impl Event {
             Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } | Event::Parked { url, .. } => url.len(),
+            Event::FileRedirect { uri, .. } => uri.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             Event::Permission { uri, .. } => uri.len(),
             Event::BasicAuth { uri, challenge, .. } => uri.len() + challenge.len(),
+            Event::DownloadStarting { url, .. } => url.len(),
+            Event::DownloadDone { result: Err(why), .. } => why.len(),
+            Event::Extensions { list, .. } => list.iter().map(|(i, n, _)| i.len() + n.len()).sum(),
+            Event::ExtensionAdded { folder, result, .. } => folder.as_os_str().len() + result.as_ref().map_or_else(|e| e.len(), |(i, n)| i.len() + n.len()),
             Event::NotificationShown { origin, title, body, .. } => origin.len() + title.len() + body.len(),
             Event::PermissionStates { states, .. } => states.iter().map(|(_, o, _)| o.len()).sum(),
             _ => 0,
@@ -733,11 +780,148 @@ pub fn nav_gate(gate: Option<bool>, uri: &str, by_tandem: bool, over_long: bool)
 /// are never framed (their policy refuses framing), so only the main frame may request one; this
 /// leaves a frame no way to race the main frame for the View Source page.
 pub fn frame_nav_cancelled(uri: &str) -> bool {
-    scheme_of(uri) == "iterm2-about"
+    matches!(scheme_of(uri).as_str(), "iterm2-about" | "iterm2-file" | "iterm2-ssh")
+}
+
+/// How a custom scheme is registered (`ICoreWebView2CustomSchemeRegistration`; 13x8 review I4):
+/// the allowed origins and whether its URLs carry a host. None of them is secure-origin. `iterm2-file`
+/// pages link to folders and ".." (their own scheme) and may be opened from Tandem's pages;
+/// `iterm2-ssh` URLs carry a host.
+pub fn scheme_registration(scheme: &str) -> (Vec<String>, bool) {
+    let own = |other: &str| vec![format!("{other}:"), format!("{scheme}:")];
+    match scheme {
+        "iterm2-file" => (own("iterm2-about"), false),
+        "iterm2-ssh" => (own("iterm2-about"), true),
+        _ => (Vec::new(), false),
+    }
+}
+
+/// Whether `url` is an `iterm2-about:` page whose buttons change settings: the settings page and the
+/// two onboarding steps that write.
+pub fn power_page(url: &str) -> bool {
+    let (scheme, rest) = match url.split_once(':') {
+        Some(p) => p,
+        None => return false,
+    };
+    scheme.eq_ignore_ascii_case("iterm2-about") && ["settings", "downloads", "onboarding-setup", "onboarding-profile"].iter().any(|n| rest.eq_ignore_ascii_case(n) || rest.get(..n.len()).is_some_and(|h| h.eq_ignore_ascii_case(n)) && matches!(rest.as_bytes().get(n.len()), Some(b'#' | b'?' | b'/')))
 }
 
 fn local_scheme(s: &str) -> bool {
     matches!(s, "file" | "iterm2-file" | "iterm2-ssh")
+}
+
+/// The one owner of "a page that is not the web's" (13x AI browser tools seam S5, B4): a power page
+/// (`power_page`), a local page (`local_scheme`: `file:`, `iterm2-file:`, `iterm2-ssh:`), any other
+/// Tandem page (`iterm2-about:`) or an extension's own page (`chrome-extension:`). The nav judge's
+/// atoms are `power_page` and `local_scheme`; the AI browser tools never offer, read or drive such a
+/// page (`ai_browser::offerable`, `ai_browser::Page::open`). Schemes compare ignoring ASCII case.
+pub fn tandem_or_local_page(url: &str) -> bool {
+    let s = scheme_of(url.trim_start_matches(|c: char| c <= ' '));
+    power_page(url) || local_scheme(&s) || matches!(s.as_str(), "iterm2-about" | "chrome-extension")
+}
+
+/// Final review I3 (13x AI browser tools): whether `url` names this computer or the local network by
+/// its host literal: loopback, unspecified, RFC1918, CGNAT (100.64/10), link-local, multicast and
+/// reserved IPv4, in every form a browser reads as IPv4 (one to four parts, decimal, octal or hex);
+/// IPv6 loopback, unspecified, ULA, link-local, site-local, multicast and an IPv4 mapped, compatible or
+/// NAT64 one of those; a single-label name, `localhost` and `*.localhost`, `*.local` (mDNS) and
+/// `*.home.arpa`. Fail closed: a percent sign in the host, an empty host, an unparsable IPv6 literal or
+/// an IPv4 form a browser rejects counts as private. Fullwidth digits, letters and dots (which a
+/// browser folds) are folded first. A URL with no `scheme://` authority is not judged here. A public
+/// name that resolves to a private address (DNS rebinding) is NOT caught: a residual.
+pub fn private_host(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else { return false };
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    let host = if hostport.starts_with('[') {
+        match hostport.find(']') {
+            Some(end) => &hostport[..=end],
+            None => return true,
+        }
+    } else {
+        hostport.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(hostport, |(h, _)| h)
+    };
+    host_is_private(host)
+}
+
+fn host_is_private(host: &str) -> bool {
+    if host.contains('%') {
+        return true;
+    }
+    let folded: String = host
+        .chars()
+        .map(|c| match c {
+            '\u{3002}' | '\u{ff0e}' | '\u{ff61}' => '.',
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
+            c => c,
+        })
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if let Some(inner) = folded.strip_prefix('[') {
+        let Some(inner) = inner.strip_suffix(']') else { return true };
+        return inner.parse::<std::net::Ipv6Addr>().map_or(true, private_v6);
+    }
+    let name = folded.strip_suffix('.').unwrap_or(&folded);
+    if name.is_empty() {
+        return true;
+    }
+    match ipv4_of(name) {
+        Some(Some(v4)) => return private_v4(v4),
+        Some(None) => return true,
+        None => {}
+    }
+    !name.contains('.') || name == "localhost" || [".localhost", ".local", ".home.arpa"].iter().any(|s| name.ends_with(s))
+}
+
+/// The WHATWG IPv4 parser: None when `host` is a domain (its last label is not a number), Some(None)
+/// for an IPv4 form a browser rejects, else the address.
+fn ipv4_of(host: &str) -> Option<Option<std::net::Ipv4Addr>> {
+    let number = |p: &str| -> Option<u64> {
+        if let Some(h) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            return if h.is_empty() { Some(0) } else { u64::from_str_radix(h, 16).ok() };
+        }
+        if p.is_empty() {
+            return None;
+        }
+        if p.len() > 1 && p.starts_with('0') {
+            return u64::from_str_radix(&p[1..], 8).ok();
+        }
+        p.parse::<u64>().ok()
+    };
+    let parts: Vec<&str> = host.split('.').collect();
+    let last = parts.last().copied().unwrap_or("");
+    let numeric = (!last.is_empty() && last.bytes().all(|b| b.is_ascii_digit())) || number(last).is_some();
+    if !numeric {
+        return None;
+    }
+    if parts.len() > 4 {
+        return Some(None);
+    }
+    let Some(nums) = parts.iter().map(|p| number(p)).collect::<Option<Vec<u64>>>() else { return Some(None) };
+    let (head, tail) = nums.split_at(nums.len() - 1);
+    if head.iter().any(|n| *n > 255) || tail[0] >= 256u64.pow(5 - nums.len() as u32) {
+        return Some(None);
+    }
+    let mut v = tail[0];
+    for (i, n) in head.iter().enumerate() {
+        v += n << (8 * (3 - i));
+    }
+    Some(u32::try_from(v).ok().map(std::net::Ipv4Addr::from))
+}
+
+fn private_v4(a: std::net::Ipv4Addr) -> bool {
+    let [b0, b1, ..] = a.octets();
+    b0 == 0 || b0 == 10 || b0 == 127 || b0 >= 224 || (b0 == 169 && b1 == 254) || (b0 == 172 && (16..32).contains(&b1)) || (b0 == 192 && b1 == 168) || (b0 == 100 && (64..128).contains(&b1))
+}
+
+fn private_v6(a: std::net::Ipv6Addr) -> bool {
+    let s = a.segments();
+    if a.is_loopback() || a.is_unspecified() || s[0] & 0xfe00 == 0xfc00 || s[0] & 0xffc0 == 0xfe80 || s[0] & 0xffc0 == 0xfec0 || s[0] & 0xff00 == 0xff00 {
+        return true;
+    }
+    let nat64 = s[..6] == [0x64, 0xff9b, 0, 0, 0, 0];
+    let embedded = if nat64 { Some(std::net::Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8)) } else { a.to_ipv4() };
+    embedded.is_some_and(private_v4)
 }
 
 /// The one rule every guarded view's NavigationStarting asks (R13x8ai item 3, B4): may this
@@ -745,30 +929,155 @@ fn local_scheme(s: &str) -> bool {
 /// - a `file:` target that is not `file_ok` (a share, a mapped or remote drive, a link, a
 ///   verbatim form: `file_url_local`) is refused for every source and initiator;
 /// - a redirect to `file:`, `iterm2-file:` or `iterm2-ssh:` is refused;
-/// - a navigation Tandem started (`navigate_tandem`) or the person started is allowed;
-/// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere;
+/// - a redirect onto a power page is refused, and a web page's `file:` link is refused;
+/// - a navigation Tandem started (`navigate_tandem`) is allowed;
+/// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere but a reload of itself and a
+///   listing's click inside its root, whatever WebView2's user-initiated flag says (R13x8-P2);
+/// - a navigation the person started (as WebView2 reports it) is allowed;
 /// - a `file:`, `iterm2-file:` or `iterm2-ssh:` target is allowed only from an `iterm2-about:`
-///   source;
+///   source, or from a folder listing to an entry inside the committed root (`listing_click_ok`; a
+///   served file and an ssh page navigate to no local page, except a reload of themselves);
 /// - everything else is allowed. Schemes compare ignoring ASCII case.
 pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool) -> bool {
+    navigation_allowed_in(source, target, user, redirect, by_tandem, file_ok, None)
+}
+
+/// Whether `url` is a page of the file or ssh scheme (`iterm2-file:` / `iterm2-ssh:`).
+fn local_page(url: &str) -> bool {
+    matches!(scheme_of(url).as_str(), "iterm2-file" | "iterm2-ssh")
+}
+
+/// `url` without its fragment: the same document.
+fn bare(url: &str) -> &str {
+    url.split('#').next().unwrap_or("")
+}
+
+/// A click on a Tandem-made folder LISTING (`iterm2-file:` whose path ends in `/`) may go to an entry of
+/// the same scheme and authority, inside the committed `root` (else inside the listing's own folder), and
+/// nowhere else. A served file (remote or local content) and every `iterm2-ssh:` page may navigate to no
+/// local page at all; the caller allows a reload of the same URL first (13x8 Task 9 review I1).
+pub fn listing_click_ok(source: &str, target: &str, root: Option<&crate::browser_pages::PageRoot>) -> bool {
+    use crate::browser_pages::{FILE_SCHEME, local_parts};
+    let (Some((ss, sa, sp)), Some((ts, ta, tp))) = (local_parts(source), local_parts(target)) else { return false };
+    if ss != FILE_SCHEME || ts != ss || !sa.eq_ignore_ascii_case(&ta) || !sp.ends_with('/') {
+        return false;
+    }
+    let own = sp.trim_start_matches('/').to_lowercase();
+    let bound = match root {
+        Some(r) if r.scheme == ss && r.host.is_none() => r.folder.trim_start_matches('/').to_lowercase(),
+        _ => own,
+    };
+    let tp = tp.trim_start_matches('/').to_lowercase();
+    let bound = if bound.ends_with('/') { bound } else { format!("{bound}/") };
+    tp == bound.trim_end_matches('/') || tp.starts_with(&bound)
+}
+
+pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool, root: Option<&crate::browser_pages::PageRoot>) -> bool {
     let t = scheme_of(target);
     if t == "file" && !file_ok {
         return false;
     }
+    let s = source.map(scheme_of).unwrap_or_default();
+    // A web page's `file:` link (a click included) starts nothing, here in the one judge, not only at
+    // the `file:` redirect after it (13x8 final review M2, R13x8-5).
+    if t == "file" && !by_tandem && !matches!(s.as_str(), "" | "iterm2-about" | "iterm2-file" | "iterm2-ssh") {
+        return false;
+    }
+    // A `file:` link in a local page becomes an `iterm2-file:` page at the redirect, so the rule judges
+    // the FINAL target, not the typed scheme (13x8 Task 9 re-review I1 r1). A `file:` URL that cannot
+    // become one (UNC, no drive) goes nowhere from a local page.
+    let mapped;
+    let (target, t) = if t == "file" && !by_tandem && source.is_some_and(local_page) {
+        match iterm2_file_url(target) {
+            Some(m) => {
+                mapped = m;
+                (mapped.as_str(), "iterm2-file".to_string())
+            }
+            None => return false,
+        }
+    } else {
+        (target, t)
+    };
     if redirect && local_scheme(&t) {
         return false;
     }
-    if by_tandem || user {
+    // A reload of the page itself (Try Again, F5) goes on, whoever asks.
+    if !by_tandem && source.is_some_and(|src| local_page(src) && bare(src) == bare(target)) {
         return true;
     }
-    let s = source.map(scheme_of).unwrap_or_default();
+    // A page that acts with power (settings, onboarding steps) is opened by Tandem, by the person
+    // (no source: the address bar) or from a Tandem page, never from a web page, whether by a click,
+    // a script or a redirect (preflight B5, 13x8 Task 5). A redirect never lands on one, whatever page
+    // the navigation left: Tandem's own pages never redirect, so a 302 there is a server's (final
+    // review I1; the source is still the old page while a redirect is judged).
+    if !by_tandem && power_page(target) {
+        return !redirect && (s == "iterm2-about" || (s.is_empty() && user));
+    }
+    // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
+    // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
+    if user && !by_tandem && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
+        return match s.as_str() {
+            "iterm2-about" => true,
+            "iterm2-file" | "iterm2-ssh" => source.is_some_and(|src| listing_click_ok(src, target, root)),
+            _ => false,
+        };
+    }
+    if by_tandem {
+        return true;
+    }
+    // A file or ssh page leaves for no other page, click or not: WebView2 reports a script's
+    // `location.href` from such a page as user-initiated (probe run 2026-10-11b, R13x8-P2), so the
+    // flag cannot tell the person's click from a hostile file's script sending what it read.
     if s == "iterm2-file" || s == "iterm2-ssh" {
         return false;
+    }
+    if user {
+        return true;
     }
     if local_scheme(&t) {
         return s == "iterm2-about";
     }
     true
+}
+
+/// The step a view's setup fails at when the runtime has no `ServerCertificateErrorDetected`, and what
+/// the person is told (13x8 Task 2 review M4).
+pub const OLD_RUNTIME_WHAT: &str = "certificate errors";
+pub const OLD_RUNTIME_TEXT: &str = "This WebView2 runtime is too old; update Microsoft Edge WebView2.";
+
+/// Whether a `file:` navigation the one verdict allowed may become an `iterm2-file:` page (13x8 Task 3,
+/// preflight B5): Tandem's own load, or a source that is not a web page (an `iterm2-about:` or
+/// `iterm2-file:` page, or no source at all). A person's click on a link of a WEB page is refused: a
+/// clickjacked click must not make Tandem list or read a local path.
+pub fn file_redirect_allowed(source: Option<&str>, by_tandem: bool) -> bool {
+    if by_tandem {
+        return true;
+    }
+    match source.map(scheme_of).as_deref() {
+        None | Some("") => true,
+        // An ssh page and a served file (path not ending in `/`) never start a local page, not even
+        // through `file:` (13x8 Task 9 re-review I1 r1); only a Tandem listing does.
+        Some("iterm2-file") => source.and_then(crate::browser_pages::local_parts).is_some_and(|(_, _, path)| path.ends_with('/')),
+        Some(s) => s == "iterm2-about",
+    }
+}
+
+/// `file:///C:/a%20b/` as the `iterm2-file:` URL of the same path (13x8 Task 3); None for a host
+/// other than empty or `localhost`, a UNC path, or a path that does not start at a drive letter.
+/// Nothing is probed. The escapes stay as they are, so the one decoder (`browser_pages::file_path_of`)
+/// reads both forms alike.
+pub fn iterm2_file_url(file_url: &str) -> Option<String> {
+    if scheme_of(file_url) != "file" {
+        return None;
+    }
+    let rest = file_url.get("file:".len()..)?.strip_prefix("//")?;
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' && (b.len() == 3 || matches!(b[3], b'/' | b'?' | b'#'));
+    drive.then(|| format!("iterm2-file://{path}"))
 }
 
 /// Whether a `file:` URL names a local file the one path judge accepts (B4): no host other than
@@ -840,6 +1149,46 @@ pub fn clean_title(t: &str) -> String {
     crate::inert_files::display_text(&spaced, MAX_TITLE, false)
 }
 
+/// Whether a main-document request must be refused where it is made: the view's committed page is
+/// an `iterm2-file:` or `iterm2-ssh:` page and the request is not the navigation the one verdict
+/// allowed last (`allowed_main`, the view's last main-frame NavigationStarting that passed; fragment
+/// ignored). Probe run 2026-10-11d: a cancelled NavigationStarting did not stop a file page's script
+/// navigation from sending its request (the listener read "GET /nav"), so the verdict alone cannot
+/// keep what a hostile file read from leaving in a URL (R13x8-P2). Local schemes are the app's own
+/// answers and are judged by the verdict; a web page is not judged here.
+pub fn local_page_exit_refused(top: &str, target: &str, allowed_main: Option<&str>) -> bool {
+    if !local_page(top) || matches!(scheme_of(target).as_str(), "iterm2-file" | "iterm2-ssh" | "iterm2-about") {
+        return false;
+    }
+    !allowed_main.is_some_and(|a| bare(a) == bare(target))
+}
+
+/// The source a main-frame navigation is judged from: the view's current page, except for a redirect
+/// of Tandem's own load (`tandem_chain`: the same navigation id `navigate_tandem` started), which is
+/// judged as from no page (the address bar), so a Tandem load from a file page that the server
+/// redirects goes on (R13x8-P2) while a redirect onto a power or local page is still refused.
+pub fn redirect_source(source: Option<&str>, tandem_chain: bool) -> Option<&str> {
+    if tandem_chain { None } else { source }
+}
+
+/// The HTTP status a main-frame `NavigationCompleted` reports: WebView2's own `HttpStatusCode`, or,
+/// when that is 0, the status of the main document's response that arrived for the same navigation
+/// (`response`: its id and status). A 204 ends the load with IsSuccess false, WebErrorStatus 9
+/// (connection aborted) and HttpStatusCode 0 (probe run 2026-10-11b); the server answered, so the
+/// app shows no error page for it (`browser_pages::server_answered`). A 3xx, WebView2's own or the
+/// recorded one, is a redirect's hop, not the answer: a 302 to a dead host is a network failure with
+/// Tandem's error page, not a blank pane (last-gate review 7).
+pub fn completed_http(http: i32, response: Option<(u64, i32)>, nav: u64) -> i32 {
+    let hop = |status: i32| (300..400).contains(&status);
+    // WebView2's own HttpStatusCode is the hop's 3xx when the redirect's target cannot be reached
+    // (probe run 2026-10-11f): no server answered the page.
+    let http = if hop(http) { 0 } else { http };
+    match response {
+        Some((n, status)) if http == 0 && n == nav && !hop(status) => status,
+        _ => http,
+    }
+}
+
 /// A URL a page gave, cut to 8192 bytes at a character boundary; the flag says it was cut (a cut
 /// URL is never stored whole and never navigated).
 pub fn cap_url(u: &str) -> (String, bool) {
@@ -866,12 +1215,38 @@ pub fn favicon_ok(bytes: &[u8]) -> bool {
         .is_some_and(|(w, h)| w > 0 && h > 0 && w <= MAX_FAVICON_SIDE && h <= MAX_FAVICON_SIDE)
 }
 
+/// The one fixed-window counter the view's limiters share (and the browser pane's error-page cap,
+/// `browser_pages::ErrorBurst`, 13x8 final review M4): at most `limit` in each `span` from the
+/// window's first event.
+#[derive(Debug, Default)]
+pub struct WindowCount {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl WindowCount {
+    /// Whether one more may go at `now` (counted when it may).
+    pub fn allow(&mut self, now: Instant, span: Duration, limit: usize) -> bool {
+        match self.window_start {
+            Some(t) if now.saturating_duration_since(t) < span => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= limit {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
 /// `NewWindowRequested` limiter (P20): only a user-initiated request, at most 4 a second, never
 /// more than 8 pending.
 #[derive(Debug, Default)]
 pub struct NewWindowLimiter {
-    window_start: Option<Instant>,
-    in_window: usize,
+    count: WindowCount,
 }
 
 impl NewWindowLimiter {
@@ -879,18 +1254,7 @@ impl NewWindowLimiter {
         if !user_initiated || pending >= MAX_PENDING_NEW_WINDOWS {
             return false;
         }
-        match self.window_start {
-            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
-            _ => {
-                self.window_start = Some(now);
-                self.in_window = 0;
-            }
-        }
-        if self.in_window >= NEW_WINDOWS_PER_SECOND {
-            return false;
-        }
-        self.in_window += 1;
-        true
+        self.count.allow(now, Duration::from_secs(1), NEW_WINDOWS_PER_SECOND)
     }
 }
 
@@ -902,8 +1266,7 @@ pub const MAX_PENDING_PERMISSIONS: usize = 8;
 /// `PermissionRequested` limiter, the `NewWindowLimiter` pattern.
 #[derive(Debug, Default)]
 pub struct PermissionLimiter {
-    window_start: Option<Instant>,
-    in_window: usize,
+    count: WindowCount,
 }
 
 impl PermissionLimiter {
@@ -911,18 +1274,7 @@ impl PermissionLimiter {
         if pending >= MAX_PENDING_PERMISSIONS {
             return false;
         }
-        match self.window_start {
-            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
-            _ => {
-                self.window_start = Some(now);
-                self.in_window = 0;
-            }
-        }
-        if self.in_window >= PERMISSIONS_PER_SECOND {
-            return false;
-        }
-        self.in_window += 1;
-        true
+        self.count.allow(now, Duration::from_secs(1), PERMISSIONS_PER_SECOND)
     }
 }
 
@@ -933,8 +1285,7 @@ pub const MAX_HELD_NOTES: usize = 16;
 /// `NotificationReceived` limiter: what it refuses is reported closed to the page and released.
 #[derive(Debug, Default)]
 pub struct NotificationLimiter {
-    window_start: Option<Instant>,
-    in_window: usize,
+    count: WindowCount,
 }
 
 impl NotificationLimiter {
@@ -942,18 +1293,7 @@ impl NotificationLimiter {
         if held >= MAX_HELD_NOTES {
             return false;
         }
-        match self.window_start {
-            Some(t) if now.duration_since(t) < Duration::from_secs(60) => {}
-            _ => {
-                self.window_start = Some(now);
-                self.in_window = 0;
-            }
-        }
-        if self.in_window >= NOTES_PER_MINUTE {
-            return false;
-        }
-        self.in_window += 1;
-        true
+        self.count.allow(now, Duration::from_secs(60), NOTES_PER_MINUTE)
     }
 }
 
@@ -981,6 +1321,8 @@ pub fn notifications_offered(events: bool, workers_refused: bool, old_workers_cl
 /// `Charge` they make.
 #[derive(Debug, Default)]
 pub struct ViewGate {
+    /// The tree the app committed for the view's file page (see `NavPolicy.local_root`).
+    local_root: std::sync::Mutex<Option<crate::browser_pages::PageRoot>>,
     events: AtomicUsize,
     bytes: AtomicUsize,
     messages: AtomicUsize,
@@ -1019,6 +1361,14 @@ impl Drop for Charge {
 impl ViewGate {
     pub fn new() -> Arc<ViewGate> {
         Arc::new(ViewGate::default())
+    }
+
+    pub fn set_local_root(&self, root: Option<crate::browser_pages::PageRoot>) {
+        *self.local_root.lock().unwrap_or_else(|e| e.into_inner()) = root;
+    }
+
+    pub fn local_root(&self) -> Option<crate::browser_pages::PageRoot> {
+        self.local_root.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Room for `event`? A droppable event over the caps is refused and counted (the newest is
@@ -1090,6 +1440,23 @@ pub fn scheme_ok(url: &str, allowed: &[String]) -> bool {
 
 /// Whether the URI WebView2 reports for a navigation is the one Tandem asked for: equal, or equal
 /// once WebView2's own added `/` after a bare host is ignored (P19).
+/// The `NavigationKind` value of a history step (Back, Forward, `history.go`).
+pub const NAV_KIND_HISTORY: i32 = 1;
+
+/// A history step never lands on a power page, whoever started it and whatever the source (13x8 Task 5
+/// review I1, redesigned): no flag a page could take. Tandem's own Back, Forward and history pick look
+/// at the pane's record first and, for such a target, load the page fresh (`needs_fresh_load`).
+pub fn history_refused(kind: i32, target: &str) -> bool {
+    kind == NAV_KIND_HISTORY && power_page(target)
+}
+
+/// Whether Tandem loads a history target as a fresh Tandem navigation instead of stepping to it: a
+/// power page or a local (`file:`, `iterm2-file:`, `iterm2-ssh:`) page, which only Tandem's own load
+/// may open.
+pub fn needs_fresh_load(target: &str) -> bool {
+    power_page(target) || local_scheme(&scheme_of(target))
+}
+
 pub fn same_navigation_uri(requested: &str, started: &str) -> bool {
     let norm = |u: &str| {
         let u = u.trim();
@@ -1213,6 +1580,8 @@ pub struct NavInfo<'a> {
     pub redirect: bool,
     /// Tandem's own load (`navigate_tandem`).
     pub by_tandem: bool,
+    /// A model's load (`navigate_model`) or a redirect of it (13x AI browser tools, final review I3).
+    pub by_model: bool,
 }
 
 /// The view's navigation policy, from its `ViewSetup`.
@@ -1222,12 +1591,20 @@ pub struct NavPolicy {
     pub guard_local_schemes: bool,
     /// Only these schemes may load (a Tandem load is exempt); None allows any the guard allows.
     pub allowed_schemes: Option<Vec<String>>,
+    /// The tree the person opened a file page in (set by the app at the commit): a click on a listing
+    /// may go only inside it (13x8 Task 9 review I1).
+    pub local_root: Option<crate::browser_pages::PageRoot>,
 }
 
 /// The whole decision of the one NavigationStarting handler: true lets the navigation go, false
 /// cancels it. `file_ok` judges a `file:` target (the one path judge); it runs only when the guard
 /// asks, since it touches the disk.
 pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) -> bool) -> bool {
+    // A model's load and each redirect of it never reach this computer or the local network (13x AI
+    // browser tools final review I3); a refused one is never parked.
+    if info.by_model && private_host(info.target) {
+        return false;
+    }
     if let Some(list) = &policy.allowed_schemes {
         if !info.by_tandem && !scheme_ok(info.target, list) {
             return false;
@@ -1237,7 +1614,7 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
         return true;
     }
     let file_ok = scheme_of(info.target) == "file" && file_ok(info.target);
-    navigation_allowed(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok)
+    navigation_allowed_in(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok, policy.local_root.as_ref())
 }
 
 /// Whether a refused navigation is offered to the app: a person's own click on a link (not a
@@ -1703,10 +2080,74 @@ mod tests {
     }
 
     #[test]
+    fn history_never_lands_on_a_power_page() {
+        for target in ["iterm2-about:settings", "ITERM2-ABOUT:Settings#x", "iterm2-about:onboarding-setup", "iterm2-about:downloads"] {
+            assert!(history_refused(NAV_KIND_HISTORY, target), "{target}");
+            assert!(!history_refused(0, target), "a typed or Tandem load is the verdict's, not this rule's: {target}");
+            assert!(needs_fresh_load(target));
+        }
+        assert!(!history_refused(NAV_KIND_HISTORY, "https://a.example/") && !needs_fresh_load("https://a.example/"));
+        assert!(needs_fresh_load("iterm2-file:///C:/x") && needs_fresh_load("iterm2-ssh://h/x") && needs_fresh_load("file:///C:/x"));
+        // A web page's script navigation to a power page stays refused by the verdict as before.
+        assert!(!navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, false, true));
+        assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true), "Tandem's own load");
+    }
+
+    #[test]
+    fn a_local_page_sends_no_document_request_the_verdict_did_not_allow() {
+        // Probe run 2026-10-11d: the verdict cancelled a file page's script navigation and the
+        // listener still got "GET /nav", so the request itself is refused where it is made.
+        let file = "iterm2-file:///C:/T/a.html";
+        assert!(local_page_exit_refused(file, "http://127.0.0.1:1/nav?d=x", Some(file)));
+        assert!(local_page_exit_refused("iterm2-ssh://box/a.html", "https://evil.test/", Some("iterm2-ssh://box/a.html")));
+        assert!(local_page_exit_refused(file, "https://evil.test/", None));
+        assert!(!local_page_exit_refused(file, "https://a.test/x#f", Some("https://a.test/x")), "the navigation the verdict allowed (Tandem's load)");
+        assert!(!local_page_exit_refused("https://a.test/", "https://evil.test/", Some("https://a.test/")), "a web page is not judged here");
+        assert!(!local_page_exit_refused(file, "iterm2-file:///C:/T/b.html", Some(file)), "local schemes are the app's own answers");
+        assert!(!local_page_exit_refused(file, "iterm2-about:error", Some(file)));
+    }
+
+    #[test]
+    fn a_redirect_of_tandems_own_load_is_judged_from_no_page() {
+        // A Tandem load from a file page that a server redirects (http to https) goes on; a redirect of
+        // it onto a power page or a local page still does not.
+        let n = |s: Option<&str>, t: &str| navigation_allowed(s, t, false, true, false, true);
+        assert!(!n(Some("iterm2-file:///C:/T/a.html"), "https://a.test/"), "judged from the file page it is refused");
+        assert!(n(redirect_source(Some("iterm2-file:///C:/T/a.html"), true), "https://a.test/"));
+        assert!(!n(redirect_source(Some("iterm2-file:///C:/T/a.html"), true), "iterm2-about:settings"));
+        assert!(!n(redirect_source(Some("iterm2-about:bookmarks"), true), "iterm2-file:///C:/"));
+        assert_eq!(redirect_source(Some("iterm2-file:///C:/T/a.html"), false), Some("iterm2-file:///C:/T/a.html"));
+    }
+
+    #[test]
+    fn a_failed_load_that_got_a_response_reports_its_status() {
+        // Probe run 2026-10-11b: a 204 ends the navigation with IsSuccess false, WebErrorStatus 9 and
+        // HttpStatusCode 0, after the main document's response arrived with 204.
+        assert_eq!(completed_http(0, Some((6, 204)), 6), 204);
+        assert_eq!(completed_http(0, Some((5, 204)), 6), 0, "another navigation's response");
+        assert_eq!(completed_http(0, None, 6), 0, "no response: a network failure");
+        assert_eq!(completed_http(404, Some((6, 204)), 6), 404, "WebView2's own status wins");
+        // Last-gate review 7: the 3xx hop of a redirect is no answer to the page; a 302 to a dead host is
+        // a network failure (Tandem's error page), not a blank pane.
+        for hop in [301, 302, 303, 307, 308] {
+            assert_eq!(completed_http(0, Some((6, hop)), 6), 0, "{hop}");
+            // Probe run 2026-10-11f: WebView2's own HttpStatusCode is the hop's 302 when the redirect's
+            // target cannot be reached (ok=false, http=302).
+            assert_eq!(completed_http(hop, None, 6), 0, "WebView2's own {hop}");
+            assert_eq!(completed_http(hop, Some((6, hop)), 6), 0, "both {hop}");
+        }
+    }
+
+    #[test]
     fn navigation_guard_follows_the_rules() {
         let n = |s: Option<&str>, t: &str, user, redirect, tandem| navigation_allowed(s, t, user, redirect, tandem, true);
         assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", false, false, false));
-        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, false));
+        // A click the person makes on a hostile page still starts nothing (B5); a local page's link does.
+        assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, false));
+        assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/etc/shadow", true, false, false));
+        assert!(!n(Some("about:blank"), "iterm2-file:///C:/", true, false, false));
+        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, true), "Tandem's own load");
+        assert!(n(Some("iterm2-about:welcome"), "iterm2-file:///C:/", true, false, false));
         assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/dev/zero", false, false, false));
         assert!(!n(Some("https://evil.test/"), "file:///C:/Windows/", false, false, false));
         assert!(n(Some("iterm2-about:welcome"), "iterm2-file:///C:/", false, false, false));
@@ -1716,6 +2157,60 @@ mod tests {
         assert!(!n(Some("iterm2-ssh://box/a.html"), "https://evil.test/", false, false, false));
         assert!(!n(Some("https://a/"), "iterm2-file:///C:/x", true, true, false));
         assert!(!n(Some("https://a/"), "file:///C:/x", false, true, true));
+        // The settings and onboarding pages: not from a web page by any road; Tandem, the address bar and
+        // Tandem's own pages may.
+        for t in ["iterm2-about:settings", "ITERM2-ABOUT:Settings#x", "iterm2-about:onboarding-setup", "iterm2-about:onboarding-profile?x"] {
+            for (user, redirect) in [(true, false), (false, false), (false, true), (true, true)] {
+                assert!(!n(Some("https://evil.test/"), t, user, redirect, false), "{t} {user} {redirect}");
+                assert!(!n(Some("about:blank"), t, user, redirect, false));
+                assert!(!n(Some("iterm2-file:///C:/T/a.html"), t, user, redirect, false));
+            }
+            assert!(n(Some("https://evil.test/"), t, true, false, true), "Tandem's own load");
+            assert!(n(Some("iterm2-about:welcome"), t, true, false, false) && n(Some("iterm2-about:permissions"), t, false, false, false));
+            assert!(n(None, t, true, false, false), "typed by the person");
+            assert!(!n(None, t, false, false, false));
+        }
+        assert!(n(Some("https://evil.test/"), "iterm2-about:permissions", true, false, false), "other pages keep ruling 4");
+        // Final review I1: a redirect never lands on a power page, whatever page the navigation left.
+        for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-about:onboarding-setup", "iterm2-about:onboarding-profile?x"] {
+            assert!(!n(Some("iterm2-about:bookmarks"), t, false, true, false), "{t}");
+            assert!(!n(Some("iterm2-about:error"), t, true, true, false), "{t}");
+            assert!(!n(None, t, true, true, false), "{t}");
+        }
+        // Probe run 2026-10-11b: WebView2 reports a script's `location.href` from a file page as
+        // user-initiated, so a file or ssh page leaves for no other scheme, click or not (R13x8-P2).
+        for src in ["iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/", "iterm2-ssh://box/a.html"] {
+            for (user, redirect) in [(true, false), (false, false), (true, true)] {
+                assert!(!n(Some(src), "http://127.0.0.1:1/nav?d=x", user, redirect, false), "{src} {user} {redirect}");
+                assert!(!n(Some(src), "https://evil.test/", user, redirect, false), "{src} {user} {redirect}");
+                assert!(!n(Some(src), "iterm2-about:history", user, redirect, false), "{src} {user} {redirect}");
+            }
+            assert!(n(Some(src), "https://a/", true, false, true), "Tandem's own load");
+        }
+        // Final review M2: a web page's file: link is refused by the one judge itself.
+        for src in ["https://evil.test/", "about:blank", "data:text/html,x"] {
+            assert!(!n(Some(src), "file:///C:/ok", true, false, false), "{src}");
+            assert!(!n(Some(src), "file:///C:/ok", false, false, false), "{src}");
+        }
+        assert!(n(Some("iterm2-file:///C:/T/"), "file:///C:/T/b.txt", true, false, false), "a listing's file: link inside its root");
+        assert!(!power_page("iterm2-about:settingsx") && !power_page("iterm2-about:onboarding-intro") && !power_page("https://a/settings"));
+        // Seam S5: one predicate for "not a web page", built from the judge's own atoms.
+        for u in ["iterm2-about:settings", "ITERM2-ABOUT:history", "iterm2-file:///C:/T/", "iterm2-ssh://box/a", "file:///C:/x", "FILE:///C:/x", " file:///C:/x", "chrome-extension://abcdefghijklmnopabcdefghijklmnop/p.html", "Chrome-Extension://a/b"] {
+            assert!(tandem_or_local_page(u), "{u}");
+        }
+        for u in ["https://a/", "http://127.0.0.1:1/", "about:blank", "https://a/iterm2-about:settings", ""] {
+            assert!(!tandem_or_local_page(u), "{u}");
+        }
+        assert!(["iterm2-about:settings", "iterm2-about:downloads#x"].iter().all(|u| power_page(u) && tandem_or_local_page(u)), "every power page is one");
+        // 13x AI browser tools B6: a model's load is a guarded `navigate` (not Tandem's, not the
+        // person's), so a redirect or script from the page it loaded lands on no power or local page.
+        for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-file:///C:/Users/", "iterm2-ssh://box/etc", "file:///C:/x"] {
+            assert!(!n(Some("https://model-loaded.test/"), t, false, true, false), "redirect {t}");
+            // WebView2 reports a navigation started through its API as user-initiated: a redirect
+            // it causes is refused just the same.
+            assert!(!n(Some("https://model-loaded.test/"), t, true, true, false), "user redirect {t}");
+            assert!(!n(Some("https://model-loaded.test/"), t, false, false, false), "script {t}");
+        }
         assert!(n(None, "iterm2-ssh://box/a.png", false, false, true));
         assert!(n(Some("https://a/"), "https://b/", false, false, false));
         assert!(!n(Some("https://evil.test/"), "FILE:///C:/x", false, false, false));
@@ -1796,7 +2291,7 @@ mod tests {
         assert!(gate.take_dropped() >= 9_950);
         // A lifecycle event is admitted even when the queue is full.
         post(Event::Created(1));
-        post(Event::Navigated { view: 1, ok: true, status: 200, url: "https://a/".into(), nav: 1 });
+        post(Event::Navigated { view: 1, ok: true, status: 200, http: 200, url: "https://a/".into(), nav: 1 });
         let mut kinds = 0;
         while let Ok(p) = rx.try_recv() {
             if matches!(p.event, Some(Event::Created(1)) | Some(Event::Navigated { .. })) {
@@ -1986,6 +2481,39 @@ mod tests {
         assert_eq!(pane_focus_reports(None, Some((1, false))), Vec::<(u64, bool)>::new());
     }
 
+    /// 13x AI browser tools final review I3: a host literal that is this computer or the local
+    /// network (loopback, unspecified, RFC1918, CGNAT, link-local, ULA, IPv4 in any form Chromium
+    /// accepts, single-label and localhost names, mDNS) is private; public hosts are not.
+    #[test]
+    fn private_hosts_are_recognized_in_every_form() {
+        for u in [
+            "http://127.0.0.1:8080/x", "http://127.1/", "http://2130706433/", "http://0x7f.1/", "http://0177.0.0.1/", "http://0x7f000001/",
+            "http://0.0.0.0/", "http://10.1.2.3/", "http://172.16.0.1/", "http://172.31.255.255/", "http://192.168.1.1/", "http://100.64.0.1/",
+            "http://169.254.169.254/latest", "http://[::1]/", "http://[::]/", "http://[fd00::1]/", "http://[fe80::1]/", "http://[::ffff:192.168.1.1]/",
+            "http://[::ffff:7f00:1]/", "http://localhost/", "http://LOCALHOST:3000/", "http://a.localhost/", "http://printer.local/", "http://nas/",
+            "http://router./", "http://user:pw@192.168.0.1/", "http://127.0.0.%31/", "http://\u{ff11}\u{ff12}\u{ff17}.0.0.1/", "http://localhost\u{3002}/",
+            "http://1.2.3.4.5/", "http://256.1.1.1/", "http://box.home.arpa/", "https://224.0.0.1/",
+        ] {
+            assert!(private_host(u), "{u}");
+        }
+        for u in ["https://example.com/", "https://a.example/x", "http://8.8.8.8/", "http://172.32.0.1/", "http://100.128.0.1/", "http://[2001:db8::1]/", "https://xn--bcher-kva.example/", "http://1.2.3.example/", "http://router.example.com./", "iterm2-about:settings", "about:blank"] {
+            assert!(!private_host(u), "{u}");
+        }
+    }
+
+    /// Final review I3: a model's load, and every redirect of it, may not reach a private host; the
+    /// person's own navigation and Tandem's are judged as before.
+    #[test]
+    fn a_model_load_never_reaches_a_private_host() {
+        let policy = NavPolicy { guard_local_schemes: true, ..Default::default() };
+        let yes = |_: &str| true;
+        let nav = |target, redirect, by_model| NavInfo { target, source: Some("https://a.example/"), user: true, redirect, by_tandem: false, by_model };
+        assert!(!nav_verdict(&nav("http://192.168.1.1/admin", false, true), &policy, &yes), "the load itself");
+        assert!(!nav_verdict(&nav("http://127.0.0.1:631/", true, true), &policy, &yes), "a redirect of it");
+        assert!(nav_verdict(&nav("https://b.example/", true, true), &policy, &yes), "a public redirect goes on");
+        assert!(nav_verdict(&nav("http://192.168.1.1/admin", false, false), &policy, &yes), "the person's own navigation");
+    }
+
     /// Final review round 1, item 3: the policy function itself cancels a page's navigation into a
     /// local scheme. Called with the guard off it lets the same navigation through, so the test
     /// fails when the guard is removed.
@@ -1994,7 +2522,7 @@ mod tests {
     /// neither is a navigation Tandem itself made.
     #[test]
     fn a_refused_click_is_offered_to_the_app() {
-        let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem };
+        let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem, by_model: false };
         assert!(refused_click(&info(true, false), false));
         assert!(!refused_click(&info(false, false), false), "a script's navigation");
         assert!(!refused_click(&info(true, true), false), "Tandem's own load");
@@ -2018,8 +2546,15 @@ mod tests {
     }
 
     #[test]
+    fn local_schemes_register_with_their_own_origins() {
+        assert_eq!(scheme_registration("iterm2-about"), (Vec::new(), false));
+        assert_eq!(scheme_registration("iterm2-file"), (vec!["iterm2-about:".to_string(), "iterm2-file:".to_string()], false));
+        assert_eq!(scheme_registration("iterm2-ssh"), (vec!["iterm2-about:".to_string(), "iterm2-ssh:".to_string()], true));
+    }
+
+    #[test]
     fn subframes_never_navigate_to_local_pages() {
-        for u in ["iterm2-about:source", "ITERM2-ABOUT:history", "iterm2-about:blank"] {
+        for u in ["iterm2-about:source", "ITERM2-ABOUT:history", "iterm2-about:blank", "iterm2-file:///C:/T/", "ITERM2-SSH://box/etc/passwd"] {
             assert!(frame_nav_cancelled(u), "{u}");
         }
         for u in ["https://a/", "about:blank", "iterm2-aboutx:y", "data:text/html,x", "https://a/iterm2-about:source"] {
@@ -2027,11 +2562,35 @@ mod tests {
         }
     }
 
+    /// 13x8 Task 3 (Review Focus 2): a `file:` URL becomes the `iterm2-file:` URL of the same drive
+    /// path; a host, a UNC path or a non-drive path answers None.
+    #[test]
+    fn file_urls_follow_windows() {
+        assert_eq!(iterm2_file_url("file:///C:/Users/u/a%20b.txt").as_deref(), Some("iterm2-file:///C:/Users/u/a%20b.txt"));
+        assert_eq!(iterm2_file_url("file://localhost/C:/x").as_deref(), Some("iterm2-file:///C:/x"));
+        assert_eq!(iterm2_file_url("FILE:///d:/").as_deref(), Some("iterm2-file:///d:/"));
+        assert_eq!(iterm2_file_url("file:///C:").as_deref(), Some("iterm2-file:///C:"));
+        for none in ["file://server/share/x", "file:////server/share", "file:///x", "file:///", "file:", "file:C:/x", "file:///C:x", "https://a/", "iterm2-file:///C:/x", ""] {
+            assert_eq!(iterm2_file_url(none), None, "{none}");
+        }
+    }
+
+    /// 13x8 Task 3 (preflight B5): only Tandem's load or a local page's click becomes a file page; a
+    /// click on a link of a web page does not.
+    #[test]
+    fn a_web_page_cannot_start_a_file_page() {
+        assert!(file_redirect_allowed(None, false) && file_redirect_allowed(Some("https://a/"), true));
+        assert!(file_redirect_allowed(Some("iterm2-about:welcome"), false) && file_redirect_allowed(Some("iterm2-file:///C:/"), false));
+        for web in ["https://a/", "http://a/", "about:blank", "data:text/html,x", "file:///C:/a.html", "blob:https://a/1"] {
+            assert!(!file_redirect_allowed(Some(web), false), "{web}");
+        }
+    }
+
     #[test]
     fn nav_verdict_guard_cancels_local_navigations_from_a_page() {
-        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false };
+        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false, by_model: false };
         let yes = |_: &str| true;
-        let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+        let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
         let open = NavPolicy::default();
         for target in ["file:///C:/Windows/", "iterm2-file:///x", "iterm2-ssh:host"] {
             assert!(!nav_verdict(&from_page(target), &guarded, &yes), "{target} from a web page");
@@ -2039,15 +2598,15 @@ mod tests {
         }
         assert!(nav_verdict(&from_page("https://example.test/next"), &guarded, &yes));
         // A file target that the path judge refuses is cancelled even for a person's click.
-        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false };
+        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false, by_model: false };
         assert!(!nav_verdict(&click, &guarded, &|_| false));
         // A redirect into a local scheme is cancelled even for Tandem's own load.
-        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true };
+        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true, by_model: false };
         assert!(!nav_verdict(&redirected, &guarded, &yes));
         // The scheme list cancels what it does not name, except Tandem's own load.
-        let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]) };
+        let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]), local_root: None };
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
-        let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true };
+        let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true, by_model: false };
         assert!(nav_verdict(&own, &only_https, &yes));
     }
 
@@ -2095,6 +2654,93 @@ mod tests {
         assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::State { state: 2, saves: true });
     }
 
+    /// 13x8 Task 7: a download that is starting or ended holds a deferral or a result and is never
+    /// dropped; progress is corrected by the next one; the page's URL is weighed.
+    #[test]
+    fn download_events_are_classed() {
+        let start = Event::DownloadStarting { view: 2, token: 1, url: "https://h/f".into(), total: Some(5) };
+        let done = Event::DownloadDone { view: 2, id: 9, result: Err("The download was interrupted".into()) };
+        let progress = Event::DownloadProgress { view: 2, id: 9, received: 1, total: None };
+        assert!(!start.droppable() && !done.droppable() && progress.droppable());
+        let refused = Event::DownloadRefused { view: 2 };
+        assert!(!refused.droppable() && refused.view() == 2 && refused.weight() == 0, "a refusal is always said");
+        assert_eq!((start.view(), done.view(), progress.view()), (2, 2, 2));
+        assert_eq!((start.weight(), done.weight()), (11, 28));
+    }
+
+    /// 13x8 Task 9 review I1: a click in a served file (remote or local) or an ssh page goes to no local
+    /// page; a folder listing's links stay inside the committed root and the same scheme; a reload of
+    /// the page itself always goes on (Try Again).
+    #[test]
+    fn local_pages_link_only_inside_the_listing_root() {
+        let n = |s: &str, t: &str, user: bool, root: Option<&crate::browser_pages::PageRoot>| navigation_allowed_in(Some(s), t, user, false, false, true, root);
+        let ssh = "iterm2-ssh://box/a.html";
+        for target in ["iterm2-ssh://other/x", "iterm2-ssh://box/b.txt", "iterm2-ssh://u@box:2222/a.html", "iterm2-file:///C:/Users/u/x.txt", "iterm2-file:///C:/"] {
+            assert!(!n(ssh, target, true, None), "{target} from an ssh page");
+            assert!(!n("iterm2-file:///C:/T/a.html", target, true, None), "{target} from a served file");
+        }
+        assert!(!n("iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/b.txt", true, None), "a served file links nowhere");
+        for (src, same) in [(ssh, ssh), ("iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/a.html"), ("iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/a.html#top")] {
+            assert!(n(src, same, true, None) && n(src, same, false, None), "a reload of {src}");
+        }
+        assert!(!navigation_allowed_in(Some(ssh), ssh, true, true, false, true, None), "a redirect to a local page stays refused");
+        let root = crate::browser_pages::page_root("iterm2-file:///C:/T/").unwrap();
+        let r = Some(&root);
+        assert!(n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", true, r));
+        assert!(n("iterm2-file:///C:/T/sub/", "iterm2-file:///C:/T/", true, r), "up to the root");
+        assert!(n("iterm2-file:///C:/T/sub/", "iterm2-file:///c:/t/Sub/x.txt", true, r), "Windows paths ignore case");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, r), ".. above the root");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/Tx/a", true, r), "a prefix is not a folder");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///D:/x", true, r));
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file://host/C:/T/x", true, r), "another authority");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-ssh://box/x", true, r), "file to ssh");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", false, r), "a script's navigation");
+        // The same links spelled `file:` (the redirect makes them iterm2-file: pages): judged by the final target.
+        for src in [ssh, "iterm2-file:///C:/T/a.html"] {
+            for target in ["file:///C:/Users/u/.ssh/id_rsa", "file:///C:/T/b.txt", "file:///C:/", "file://host/share/x", "file:///C:/T/"] {
+                assert!(!n(src, target, true, r) && !n(src, target, false, r), "{target} from {src}");
+            }
+        }
+        assert!(n("iterm2-file:///C:/T/", "file:///C:/T/b.txt", true, r), "a listing link inside the root");
+        assert!(!n("iterm2-file:///C:/T/", "file:///C:/Users/u/x", true, r), "a listing link above the root");
+        assert!(!n("iterm2-file:///C:/T/", "file://host/share/x", true, r), "a UNC file link");
+        assert!(file_redirect_allowed(Some("iterm2-file:///C:/T/"), false), "a listing may redirect");
+        assert!(!file_redirect_allowed(Some("iterm2-file:///C:/T/a.html"), false), "a served file may not");
+        assert!(!file_redirect_allowed(Some("iterm2-ssh://box/a.html"), false), "an ssh page may not");
+        assert!(file_redirect_allowed(Some("iterm2-ssh://box/a.html"), true), "Tandem's own load may");
+        assert!(n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", true, None), "no root: inside the listing's own folder");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, None));
+        // The same through the handler's own entry point.
+        let policy = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: Some(root.clone()) };
+        let info = |source, target| NavInfo { target, source: Some(source), user: true, redirect: false, by_tandem: false, by_model: false };
+        assert!(nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/T/x"), &policy, &|_| true));
+        assert!(!nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/"), &policy, &|_| true));
+    }
+
+    /// 13x8 Task 10: an extension's page (`chrome-extension:`) cannot start a power page, a file page or
+    /// an ssh page, by a script, a redirect or a click, and loading its own pages stays the engine's.
+    #[test]
+    fn an_extension_page_starts_no_local_page() {
+        let src = Some("chrome-extension://abcdefghijklmnopabcdefghijklmnop/p.html");
+        for target in ["iterm2-about:settings", "iterm2-about:onboarding-setup", "iterm2-file:///C:/x", "iterm2-ssh://h/x"] {
+            for (user, redirect) in [(false, false), (true, false), (false, true)] {
+                assert!(!navigation_allowed(src, target, user, redirect, false, true), "{target} user={user} redirect={redirect}");
+            }
+        }
+        assert!(!file_redirect_allowed(src, false), "a click in an extension page does not open a local path");
+    }
+
+    /// 13x8 Task 10: the extension answers are never dropped and are weighed.
+    #[test]
+    fn extension_events_are_classed() {
+        let list = Event::Extensions { view: 3, list: vec![("a".into(), "Name".into(), true)] };
+        let added = Event::ExtensionAdded { view: 3, folder: "D:\\e".into(), result: Ok(("id".into(), "N".into())) };
+        assert!(!list.droppable() && !added.droppable());
+        assert_eq!((list.view(), added.view()), (3, 3));
+        assert_eq!((list.weight(), added.weight()), (5, 7));
+        assert!(!EnvOptions::default().extensions, "off unless the store asks");
+    }
+
     /// 13x7 Task 10: the HTTP authentication events are never dropped (a challenge holds a COM
     /// deferral), what the server chose is weighed, and the navigation ids reach the tracker unchanged.
     #[test]
@@ -2115,7 +2761,7 @@ mod tests {
         assert_eq!((auth.view(), Event::Committed { view: 3, nav: 7 }.view(), Event::Response { view: 4, nav: 7, status: 401 }.view()), (1, 3, 4));
         let (start, done) = (
             Event::Starting { view: 1, url: "https://a.b/".into(), kind: 0, user: true, redirect: false, nav: 7 },
-            Event::Navigated { view: 1, ok: true, status: 0, url: "https://a.b/".into(), nav: 7 },
+            Event::Navigated { view: 1, ok: true, status: 0, http: 0, url: "https://a.b/".into(), nav: 7 },
         );
         let mut t = crate::browser_basic_auth::NavTracker::default();
         let (Event::Starting { url, redirect, nav, .. }, Event::Navigated { ok, nav: done_nav, .. }) = (&start, &done) else { unreachable!() };

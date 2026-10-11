@@ -724,6 +724,22 @@ mod tests {
         assert!(p.response(3, 200).is_empty(), "another URL is not the retry");
     }
 
+    /// 13x7 meets 13x8: a local page (Tandem's own, a file, an ssh file, the error page) never raises a
+    /// sign-in. Whatever the engine says, a challenge for a local scheme is cancelled on the spot: no
+    /// prompt, no lookup, no picker.
+    #[test]
+    fn a_local_scheme_never_raises_a_sign_in() {
+        for (n, url) in ["iterm2-file:///C:/x/a.html", "iterm2-ssh://box/etc/motd", "iterm2-about:error", "iterm2-about:welcome", "file:///C:/x/a.html"].into_iter().enumerate() {
+            let mut p = AuthPane::new(1, 1, true);
+            p.starting(2, url, false);
+            let token = 90 + n as u64;
+            let acts = p.challenge(token, url, BASIC, &cx(false, true));
+            assert_eq!(answers(&acts), vec![(token, false)], "{url}: cancelled at once");
+            assert!(acts.iter().all(|a| matches!(a, Action::Answer { .. })), "{url}: {acts:?}");
+            assert!(p.want.is_none(), "{url}: no prompt");
+        }
+    }
+
     /// Final review M3: the retry continues the coordinator's awaiting credential, so once that is gone
     /// (the navigation was parked, or the world reset) the next load of the same URL is a new
     /// navigation, never the retry.

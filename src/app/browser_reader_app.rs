@@ -191,7 +191,7 @@ impl App {
     /// The page as markdown with chrome kept (`PTS:1009`, `BVC:687`): iTerm2's read-a-section and
     /// find-for-AI path. No caller until the AI browser tools plan (its read-a-section tool); kept
     /// with its tests so that plan has the one markdown entry.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // The AI tools use the `_with` form (they pass skip_chrome themselves).
     pub(super) fn browser_page_markdown(&mut self, pane: PaneId, done: JsDone) {
         self.browser_page_markdown_with(pane, false, done)
     }
@@ -201,7 +201,6 @@ impl App {
     /// markdown (bounded), `NO_CONTENT` when the script answered no string, or the script's error text
     /// cleaned for display. The markdown is page-derived data: a caller that gives it to a model wraps
     /// it with `page_derived_block`. No caller until the AI browser tools plan (web search).
-    #[allow(dead_code)]
     pub(super) fn browser_page_markdown_with(&mut self, pane: PaneId, skip_chrome: bool, done: JsDone) {
         self.browser_js_call(pane, &reader::markdown_body(skip_chrome), json!({}), Box::new(move |app, pane, r| {
             let answer = match r {
@@ -278,8 +277,11 @@ impl App {
         if !reader::offers_reader(bv.reader.cached.as_deref()) {
             return None;
         }
-        let has_url = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| !io.url.is_empty());
-        Some(crate::browser::ReaderMenu { reader: bv.reader.reader, distraction: bv.reader.distraction, has_url })
+        let (has_url, ask_ai) = match self.panes.get(&pane).and_then(|p| p.browser_io()) {
+            Some(io) => (!io.url.is_empty(), !io.url.is_empty() && crate::ai_browser::offerable(&io.url, io.dev_null)),
+            None => (false, false),
+        };
+        Some(crate::browser::ReaderMenu { reader: bv.reader.reader, distraction: bv.reader.distraction, has_url, ask_ai })
     }
 }
 

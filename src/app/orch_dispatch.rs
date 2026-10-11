@@ -342,6 +342,10 @@ impl App {
 
     /// A session's name as the person reads it, else its stable id.
     pub(super) fn orch_name(&self, pane: PaneId) -> String {
+        // A browser pane goes by a constant and its host, never its page title (final review I2).
+        if let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) {
+            return crate::ai_browser::session_name(&io.url, io.dev_null);
+        }
         let n = crate::inert_files::shown_name(&self.session_label(pane).0);
         if n.is_empty() { self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default() } else { n }
     }
@@ -575,8 +579,21 @@ impl App {
             ot::Claim::Denied => Some(done(Self::claim_refusal(mirror_guid))),
             ot::Claim::Ask => {
                 let shown = self.orch_scope_name(scope);
+                // Task 9 review I1: a browser session's bubble is Tandem's text naming the action and
+                // the site it shows (never keystrokes, never the page title).
+                let text = match self.orch_scope_browser_url(scope) {
+                    Some(url) => {
+                        let host = crate::browser::display_host(&url);
+                        let action = match mirror_call(name, args) {
+                            Ok((_, call, _)) if call.category().is_browser() => crate::ai_browser::approval_text(&call, &host),
+                            _ => crate::ai_browser::session_use_text(&host),
+                        };
+                        ot::browser_claim_text(&action)
+                    }
+                    None => ot::claim_text(&shown),
+                };
                 let wait = Wait::Claim { scope: scope.to_string(), name: name.to_string(), args: args.clone(), mirror_guid: mirror_guid.map(str::to_string) };
-                Some(self.orch_ask(chat_id, call_id, scope, &shown, &ot::claim_text(&shown), wait))
+                Some(self.orch_ask(chat_id, call_id, scope, &shown, &text, wait))
             }
         }
     }
@@ -586,6 +603,12 @@ impl App {
             Some(g) => ot::declined_session(g),
             None => ot::error_json(&OrchError::PermissionDenied),
         }
+    }
+
+    /// The page URL of the browser pane a session scope names; None for any other scope.
+    fn orch_scope_browser_url(&self, scope: &str) -> Option<String> {
+        let pane = scope.strip_prefix(orch::SYNTHETIC_PREFIX).and_then(|id| self.pane_by_reference(id))?;
+        self.panes.get(&pane)?.browser_io().map(|io| io.url.clone())
     }
 
     /// A scope's name for the person: the session's name, else the scope itself.
@@ -1016,11 +1039,13 @@ impl App {
 
     /// A mirror's answer from 12c's one return path; false when the request is not a mirror.
     pub(super) fn orch_mirror_finished(&mut self, chat: &str, request_id: &str, model: &str) -> bool {
-        if self.orch_mirrors.remove(&(chat.to_string(), request_id.to_string())).is_none() {
-            return false;
-        }
-        // Program output reaches the model inert (Task 9 fix round 1).
-        self.orch_resume(chat, request_id, ToolResult::Ok(orch::inert_json(model)));
+        let Some((pane, _)) = self.orch_mirrors.remove(&(chat.to_string(), request_id.to_string())) else { return false };
+        let pane = Some(pane);
+        // Program output reaches the model inert (Task 9 fix round 1). A page answer arrives fenced
+        // by the one fence; orchestration's prompt does not describe it, so the sentence rides along.
+        let inert = orch::inert_json(model);
+        let answer = if pane.is_some_and(|p| self.is_browser_pane(p)) { format!("{}\n{inert}", crate::chat_agent::PAGE_FENCE_SENTENCE) } else { inert };
+        self.orch_resume(chat, request_id, ToolResult::Ok(answer));
         true
     }
 
@@ -1040,13 +1065,21 @@ impl App {
         };
         let Ok(pane) = self.orch_resolve(&guid) else { return done(ot::no_session(&guid)) };
         let category = call.category();
-        // No browser pane before milestone 13: nothing to claim for.
-        if category.is_browser() {
-            return done(orch::UNAVAILABLE.to_string());
+        // B5: a browser mirror takes the same path as a direct call after the person's claim:
+        // the wrong kind and an unoffered pane (Dev Null, a Tandem or local page) answer before
+        // any claim bubble; the one dispatcher then gates, binds, fences, caps and rate limits.
+        let is_browser = category.is_browser();
+        if let Some(o) = crate::ai_browser::kind_refusal(is_browser, self.is_browser_pane(pane)) {
+            return done(crate::ai_browser::orch_kind_error(&o.model));
+        }
+        if is_browser && !self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| crate::ai_browser::offerable(&io.url, io.dev_null)) {
+            return done(crate::ai_browser::NOT_OFFERED.to_string());
         }
         if ot::mirror_needs_claim(category) {
-            if let Err(e) = typeable(&guid, self.orch_pane_state(pane)) {
-                return done(e.message());
+            if !category.is_browser() {
+                if let Err(e) = typeable(&guid, self.orch_pane_state(pane)) {
+                    return done(e.message());
+                }
             }
             let scope = self.claim_scope_of(pane);
             if let Some(o) = self.orch_claim(chat, call_id, &scope, name, args, Some(&guid)) {
@@ -1307,6 +1340,44 @@ mod tests {
         assert!(claim_at < mirror.find("match call {").unwrap(), "the claim comes before any action");
     }
 
+    /// Task 9 (B5): a browser mirror is claimed and run through 12c's one dispatcher, which
+    /// binds, gates, caps and rate limits it like a direct call; its answer resumes orchestration.
+    #[test]
+    fn browser_mirror_waits_and_resumes() {
+        let mirror = body(code(), "fn orch_mirror(");
+        assert!(!mirror.contains("orch::UNAVAILABLE"), "no browser mirror is refused outright any more");
+        let browser = mirror.find("is_browser()").expect("a browser branch");
+        let claim = mirror.find("self.orch_claim(").unwrap();
+        let offered = mirror.find("offerable(").expect("the offered rule applies to a mirror");
+        let kind = mirror.find("kind_refusal(").expect("a wrong kind answers before any claim");
+        assert!(kind < claim && offered < claim && browser < claim, "no claim bubble for a pane nothing can act on");
+        assert!(mirror.contains("orch_kind_error(") && mirror.contains("self.orch_run_mirror("));
+        let typed = &mirror[..mirror.find("Call::ExecuteCommand").unwrap()];
+        assert!(typed.contains("if !category.is_browser()"), "the terminal-state check is for terminal panes");
+        let run = include_str!("chat_app.rs").split("#[cfg(test)]").next().unwrap();
+        let run = &run[run.find("fn ai_run_tool(").unwrap()..];
+        assert!(run.contains("mirror_kind(o, self.orch_mirrors.keys().any(|(c, r)| c == chat && r == request_id))"), "a kind refusal for a mirror is wrapped");
+        assert!(run.contains("ToolStart::Waiting(token) => self.ai_browser_bind(token, chat, request_id)"), "one dispatcher binds the mirror");
+        let finished = body(code(), "fn orch_mirror_finished(");
+        assert!(finished.contains("PAGE_FENCE_SENTENCE") && finished.contains("is_browser_pane("), "a page answer carries the fence sentence orchestration's prompt lacks");
+        let sweep = include_str!("ai_browser_app.rs").split("#[cfg(test)]").next().unwrap();
+        let sweep = &sweep[sweep.find("fn ai_browser_sweep(").unwrap()..];
+        assert!(sweep.contains("sweep_orphans(") && sweep.contains("orch_mirrors"), "a timed-out mirror's token is forgotten");
+    }
+
+    /// Task 9 (review I2, R12f-1): page text is only ever a tool answer; typing stays gated.
+    #[test]
+    fn browser_mirrors_keep_the_typed_gate() {
+        let mirror = body(code(), "fn orch_mirror(");
+        let browser_arm = &mirror[mirror.find("is_browser()").unwrap()..mirror.find("Call::ExecuteCommand").unwrap()];
+        for typed in ["user_write(", "orch_type_gated(", "orch_typed_finish(", "typed_payload("] {
+            assert!(!browser_arm.contains(typed), "{typed}");
+        }
+        assert!(mirror.contains("Call::ExecuteCommand { .. } => match ot::typed_payload(name, args)") && mirror.contains("self.orch_type_gated("));
+        let finished = body(code(), "fn orch_mirror_finished(");
+        assert!(finished.contains("orch_resume(") && !finished.contains("user_write(") && !finished.contains("orch_type_gated("), "an answer is resumed as text, never typed");
+    }
+
     /// Guard row 17 and ruling P7: an answer acts once, only for its own chat.
     #[test]
     fn answer_twice_types_once() {
@@ -1495,6 +1566,17 @@ mod tests {
             assert!(body(c, tool).contains("self.claim_scope_of(pane)"), "{tool}");
         }
         assert!(body(c, "fn orch_mirror(").contains("self.claim_scope_of(pane)"));
+        // Task 9 review I1: a browser pane is claimed on its own, with Tandem's text naming the
+        // action and the site; the page title never names it.
+        let wc_scope = body_of(app, "pub(super) fn claim_scope_of(");
+        assert!(wc_scope.contains("session_claim_scope(") && wc_scope.contains("self.is_browser_pane(pane)"), "{wc_scope}");
+        let claim = body(c, "pub(super) fn orch_claim(");
+        assert!(claim.contains("self.orch_scope_browser_url(scope)") && claim.contains("ot::browser_claim_text(") && claim.contains("crate::ai_browser::approval_text(&call, &host)"), "{claim}");
+        assert!(body(c, "pub(super) fn orch_name(").contains("crate::ai_browser::session_name(&io.url, io.dev_null)"));
+        // Final review I2: the snapshot every orchestration request carries names browser panes by
+        // ai_browser::snapshot_name (no page title, Dev Null left out).
+        let facts = body_of(include_str!("orch_app.rs"), "pub(super) fn orch_facts(");
+        assert!(facts.contains("crate::ai_browser::snapshot_name(browser, &s.name)?") && !facts.contains("name: s.name.clone()"), "{facts}");
         // start_code_review needs the claim first, then only the member's own restart runs.
         let review = body(c, "\"start_code_review\" => {");
         assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review_with(").unwrap(), "a model starts a review only where the person let it act");

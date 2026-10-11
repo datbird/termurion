@@ -194,6 +194,17 @@ pub fn trivially_empty(messages: &[Message]) -> bool {
     messages.iter().all(|m| matches!(m.content, Content::UserCommand(_) | Content::SetPermissions(_) | Content::WatcherEvent(_)))
 }
 
+/// Whether a chat is linked to a session whose key is among `keys` (`CTS:18-26`): either
+/// binding counts, a terminal one or a browser one.
+pub fn is_linked(terminal: Option<&str>, browser: Option<&str>, keys: &[&str]) -> bool {
+    [terminal, browser].into_iter().flatten().any(|g| keys.contains(&g))
+}
+
+/// The name an entry point shows for a session: blank is "Unnamed session" (`CVC:2677`).
+pub fn entry_name(name: &str) -> String {
+    if name.trim().is_empty() { "Unnamed session".to_string() } else { name.to_string() }
+}
+
 /// What AI Chats does on opening (`CWC:322-337`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reuse {
@@ -341,6 +352,19 @@ mod tests {
         assert!(trivially_empty(&[]));
         empty.push(msg(Content::ClientLocal(ClientLocal::Notice("n".into()))));
         assert!(!trivially_empty(&empty));
+    }
+
+    #[test]
+    fn a_chat_linked_to_a_browser_counts_as_linked() {
+        assert!(is_linked(None, Some("9"), &["9"]));
+        assert!(!is_linked(Some("7"), None, &["9"]));
+        assert!(is_linked(Some("7"), Some("8"), &["9", "7"]));
+        assert!(!is_linked(None, None, &["9"]));
+        assert!(!is_linked(Some("7"), Some("8"), &[]));
+        // The reuse rule shows the chat the session's key finds, whichever binding holds it.
+        assert_eq!(ai_chats_reuse(2, Some("9"), Some("c1"), false, None), Reuse::Select("c1".into()));
+        assert_eq!(entry_name("  "), "Unnamed session");
+        assert_eq!(entry_name("Docs"), "Docs");
     }
 
     #[test]

@@ -15,6 +15,13 @@ pub const PUT_TERMINAL: &str = "Put Chat in Linked Terminal Session";
 pub const SEND_AUTOMATICALLY: &str = "Send Commands & Output to AI Automatically";
 pub const LINK_TERMINAL: &str = "Link Terminal Session";
 pub const LINK_BROWSER: &str = "Link Browser Session";
+pub const REVEAL_BROWSER: &str = "Reveal Linked Web Browser Session";
+pub const UNLINK_BROWSER: &str = "Unlink Web Browser Session";
+pub const PUT_BROWSER: &str = "Put Chat in Linked Browser Session";
+/// A browser pane in Dev Null writes nothing and is private: it is never linked to a chat.
+pub const LINK_DEV_NULL: &str = "A Dev Null browser session cannot be linked to a chat.";
+/// An orchestration chat links no browser session (`LM:403-408`).
+pub const LINK_ORCHESTRATION: &str = "An orchestrating chat cannot be linked to a web browser session.";
 pub const HELP: &str = "Help";
 pub const HELP_TEXT: &str = "When a terminal session is linked to this chat, the AI may view terminal contents and run commands in that session. You will be prompted to grant permission before it is able to view, type to, or modify a terminal session.";
 pub const CONFIRM_HEADING: &str = "Confirm Change";
@@ -51,7 +58,43 @@ pub enum Action {
     Stream,
     Link,
     LinkBrowser,
+    RevealBrowser,
+    UnlinkBrowser,
+    PutBrowser,
     Help,
+}
+
+/// Which stored guid a link writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkField {
+    Terminal,
+    Browser,
+}
+
+/// What linking pane of a kind to a chat does (`CVC:1277-1289`, `LM:403-408`): the field it
+/// writes, or the refusal. Only the person links (the menu, the picker, the offer's button);
+/// a Dev Null browser pane and an orchestration chat's browser link are refused.
+pub fn link_field(browser_pane: bool, dev_null: bool, orchestrating: bool) -> Result<LinkField, &'static str> {
+    if !browser_pane {
+        return Ok(LinkField::Terminal);
+    }
+    if dev_null {
+        return Err(LINK_DEV_NULL);
+    }
+    if orchestrating {
+        return Err(LINK_ORCHESTRATION);
+    }
+    Ok(LinkField::Browser)
+}
+
+/// The notice that tells the person which site a link shows now (the host end kept, nothing
+/// the page chose beyond it).
+pub fn linked_site_notice(host: &str) -> String {
+    if host.is_empty() {
+        "The linked web browser session shows no site yet.".to_string()
+    } else {
+        format!("The linked web browser session shows {host}.")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +109,7 @@ pub struct MenuFacts {
     pub orchestrating: bool,
     /// The chat's linked terminal is a live pane.
     pub terminal_live: bool,
-    /// Always false before milestone 13 (no browser pane exists); kept for the 13x plan.
+    /// The chat's linked browser is a live browser pane.
     pub browser_live: bool,
     /// The menu is the inline panel's: it is already in its session, so no Put item.
     pub inline: bool,
@@ -86,8 +129,7 @@ pub fn item_title(c: Category, p: Permission) -> String {
     }
 }
 
-/// The menu for the chat's state (`CVC:3369-3483`). The browser items are shown disabled until
-/// milestone 13.
+/// The menu for the chat's state (`CVC:3369-3483`, the browser section `CVC:3443-3475`).
 pub fn session_menu(f: &MenuFacts, perm: &dyn Fn(Category) -> Permission) -> Vec<Entry> {
     if f.orchestrating {
         return vec![item(DISABLE_ORCHESTRATION, Action::Orchestration, None, true), Entry::Separator, item(HELP, Action::Help, None, true)];
@@ -111,7 +153,19 @@ pub fn session_menu(f: &MenuFacts, perm: &dyn Fn(Category) -> Permission) -> Vec
         out.push(item(LINK_TERMINAL, Action::Link, None, true));
         out.push(Entry::Separator);
     }
-    out.push(item(LINK_BROWSER, Action::LinkBrowser, None, false));
+    if f.browser_live {
+        out.push(item(REVEAL_BROWSER, Action::RevealBrowser, None, true));
+        out.push(item(UNLINK_BROWSER, Action::UnlinkBrowser, None, true));
+        if !f.inline {
+            out.push(item(PUT_BROWSER, Action::PutBrowser, None, true));
+        }
+        out.push(Entry::Separator);
+        let c = Category::ActInWebBrowser;
+        let p = perm(c);
+        out.push(item(&item_title(c, p), Action::Toggle(c), Some(tri(p)), true));
+    } else {
+        out.push(item(LINK_BROWSER, Action::LinkBrowser, None, true));
+    }
     out.push(Entry::Separator);
     out.push(item(HELP, Action::Help, None, true));
     out
@@ -248,13 +302,15 @@ pub fn menu_id(a: &Action, chat: &str) -> String {
         Action::Stream => "stream".to_string(),
         Action::Link => "link".to_string(),
         Action::LinkBrowser => "link-browser".to_string(),
+        Action::RevealBrowser => "reveal-browser".to_string(),
+        Action::UnlinkBrowser => "unlink-browser".to_string(),
+        Action::PutBrowser => "put-browser".to_string(),
         Action::Help => "help".to_string(),
     };
     format!("{MENU_PREFIX}{verb}:{chat}")
 }
 
-/// The action and chat of a pick. The disabled item (the browser link) and a
-/// browser category are never a pick.
+/// The action and chat of a pick.
 pub fn parse_menu_id(id: &str) -> Option<(Action, String)> {
     let (verb, chat) = id.strip_prefix(MENU_PREFIX)?.split_once(':')?;
     if chat.is_empty() {
@@ -266,13 +322,14 @@ pub fn parse_menu_id(id: &str) -> Option<(Action, String)> {
         "put" => Action::Put,
         "stream" => Action::Stream,
         "link" => Action::Link,
+        "link-browser" => Action::LinkBrowser,
+        "reveal-browser" => Action::RevealBrowser,
+        "unlink-browser" => Action::UnlinkBrowser,
+        "put-browser" => Action::PutBrowser,
         "help" => Action::Help,
         "orchestration" => Action::Orchestration,
         v => {
             let c = *Category::ALL.get(v.strip_prefix("toggle-")?.parse::<usize>().ok()?)?;
-            if c.is_browser() {
-                return None;
-            }
             Action::Toggle(c)
         }
     };
@@ -356,7 +413,7 @@ mod tests {
             ]
         );
         assert!(enabled(&m, "Enable Orchestration"));
-        assert!(!enabled(&m, "Link Browser Session"), "no browser pane before milestone 13");
+        assert!(enabled(&m, "Link Browser Session"), "a browser pane can be linked");
         assert!(enabled(&m, "Help") && enabled(&m, "Unlink Terminal Session"));
         assert_eq!(state(&m, "AI can Check Terminal State"), Some(Tri::Mixed));
         assert_eq!(state(&m, "AI can Run Commands"), Some(Tri::On));
@@ -385,6 +442,39 @@ mod tests {
         assert_eq!(item_title(Category::ViewContents, Permission::Always), "Provide Screen Contents Automatically");
         assert_eq!(item_title(Category::RunCommands, Permission::Always), "AI can Run Commands");
         assert_eq!(item_title(Category::ViewContents, Permission::Never), "AI can View Contents");
+    }
+
+    #[test]
+    fn session_menu_has_the_browser_section() {
+        let always = |c: Category| if c == Category::ActInWebBrowser { Permission::Always } else { Permission::Ask };
+        let live = MenuFacts { terminal_live: true, browser_live: true, ..MenuFacts::default() };
+        let m = session_menu(&live, &run_always);
+        let t = titles(&m);
+        let at = t.iter().position(|x| x == "Reveal Linked Web Browser Session").unwrap();
+        assert_eq!(t[at - 1], "-");
+        assert_eq!(t[at - 2], "Send Commands & Output to AI Automatically");
+        assert_eq!(&t[at..], ["Reveal Linked Web Browser Session", "Unlink Web Browser Session", "Put Chat in Linked Browser Session", "-", "AI can Act in Web Browser", "-", "Help"]);
+        assert_eq!(state(&m, "AI can Act in Web Browser"), Some(Tri::Mixed));
+        assert!(!t.contains(&"Link Browser Session".to_string()));
+        let inline = session_menu(&MenuFacts { inline: true, ..live.clone() }, &run_always);
+        assert!(!titles(&inline).contains(&"Put Chat in Linked Browser Session".to_string()));
+        let on = session_menu(&live, &always);
+        assert_eq!(state(&on, "AI can Act in Web Browser"), Some(Tri::On));
+        let only = session_menu(&MenuFacts { browser_live: true, ..MenuFacts::default() }, &always);
+        assert_eq!(titles(&only)[..4], ["Enable Orchestration", "-", "Link Terminal Session", "-"]);
+        assert_eq!(REVEAL_BROWSER, "Reveal Linked Web Browser Session");
+        assert_eq!(UNLINK_BROWSER, "Unlink Web Browser Session");
+        assert_eq!(PUT_BROWSER, "Put Chat in Linked Browser Session");
+    }
+
+    #[test]
+    fn only_the_person_links_a_live_ordinary_browser_pane() {
+        assert_eq!(link_field(false, false, true), Ok(LinkField::Terminal));
+        assert_eq!(link_field(true, false, false), Ok(LinkField::Browser));
+        assert_eq!(link_field(true, true, false), Err(LINK_DEV_NULL));
+        assert_eq!(link_field(true, false, true), Err(LINK_ORCHESTRATION));
+        assert_eq!(linked_site_notice("example.com"), "The linked web browser session shows example.com.");
+        assert_eq!(linked_site_notice(""), "The linked web browser session shows no site yet.");
     }
 
     #[test]
@@ -471,8 +561,9 @@ mod tests {
         assert_eq!(menu_id(&Action::Toggle(Category::RunCommands), "c"), "aichat:menu:toggle-1:c");
         // The disabled items are never a pick, nor is a browser toggle, an unknown verb or no chat.
         assert_eq!(parse_menu_id("aichat:menu:orchestration:c"), Some((Action::Orchestration, "c".to_string())));
-        assert_eq!(parse_menu_id("aichat:menu:link-browser:c"), None);
-        assert_eq!(parse_menu_id("aichat:menu:toggle-7:c"), None, "Act in Web Browser has no item");
+        for a in [Action::LinkBrowser, Action::RevealBrowser, Action::UnlinkBrowser, Action::PutBrowser, Action::Toggle(Category::ActInWebBrowser)] {
+            assert_eq!(parse_menu_id(&menu_id(&a, "c")), Some((a, "c".to_string())));
+        }
         assert_eq!(parse_menu_id("aichat:menu:toggle-99:c"), None);
         assert_eq!(parse_menu_id("aichat:menu:unlink:"), None);
         assert_eq!(parse_menu_id("aichat:menu:nope:c"), None);

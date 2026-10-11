@@ -54,6 +54,15 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
         "history-page.html" => include_str!("../resources/browser/history-page.html"),
+        "file-page.html" => include_str!("../resources/browser/file-page.html"),
+        "file-page.css" => include_str!("../resources/browser/file-page.css"),
+        "ssh-page-no-conductor.html" => include_str!("../resources/browser/ssh-page-no-conductor.html"),
+        "error-page.html" => include_str!("../resources/browser/error-page.html"),
+        "onboarding-intro.html" => include_str!("../resources/browser/onboarding-intro.html"),
+        "onboarding-features.html" => include_str!("../resources/browser/onboarding-features.html"),
+        "onboarding-setup.html" => include_str!("../resources/browser/onboarding-setup.html"),
+        "onboarding-profile.html" => include_str!("../resources/browser/onboarding-profile.html"),
+        "settings-page.html" => include_str!("../resources/browser/settings-page.html"),
         "history-page.js" => include_str!("../resources/browser/history-page.js"),
         "permissions-page.html" => include_str!("../resources/browser/permissions-page.html"),
         "permissions-page.js" => include_str!("../resources/browser/permissions-page.js"),
@@ -287,6 +296,9 @@ pub fn wrap(script: &UserScript) -> String {
     let mut s = String::from("(function () {\n");
     s.push_str(capture(script.world));
     s.push('\n');
+    // No Tandem script runs in a file or ssh page: its content is the file's, not the web's, and
+    // gets none of the bridge, the buttons or the world (13x8).
+    s.push_str("if (location.protocol === 'iterm2-file:' || location.protocol === 'iterm2-ssh:') return;\n");
     if script.main_frame_only {
         s.push_str("if (window.top !== window) return;\n");
     }
@@ -750,6 +762,10 @@ pub fn nav_gate(url: &str) -> NavGate {
     }
     if let Some(why) = gate_refusal(t) {
         return NavGate::Blocked(why);
+    }
+    // A page, page text or an arrangement never opens the settings or an onboarding step (Task 5).
+    if crate::webhost::power_page(t) {
+        return NavGate::Blocked("Tandem does not open that page from a link.".into());
     }
     if plain_navigation(t) {
         return NavGate::Navigate(t.to_string());

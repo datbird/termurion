@@ -189,7 +189,6 @@ const STREAM_STOPPED_AUTO: &str = "Terminal commands will no longer be sent to A
 const PERMISSIONS_HELP: &str = "You can use these buttons or the info button menu at the top of the chat window to control AI permissions for this chat.";
 const ORCHESTRATION_OFFER: &str = "**Enable orchestration for this chat?**\n\n**Orchestration** lets the AI coordinate across multiple terminal sessions. It can read the contents of any session, and you grant a one-time approval before it controls a session instead of approving every call. It also runs in **auto mode**: each command the AI proposes is checked for safety by your AI provider, and anything risky is held for your review.";
 pub const ENABLE_ORCHESTRATION: &str = "**Enable orchestration?**\n\nOrchestration mode lets the agent read screen contents from any session. To type into a session still requires your permission.\n\nThis is a more permissive model than when an agent is linked to a single session, where there are very fine-grained permission settings.\n\nEnabling will detach any linked terminal or browser session and switch the chat to Orchestration mode.";
-const NEEDS_BROWSER: &str = "The AI agent needs to run commands in a live web browser session, but none is attached to this chat.";
 /// The orchestration ids that pick a prompt's heading (`WorkgroupIntrospection.swift`).
 pub const SPAWN_ID: &str = "spawn";
 pub const COMMAND_APPROVAL_ID: &str = "command-approval";
@@ -241,7 +240,7 @@ fn explanation_request_text(r: &crate::ai_explain::Request) -> String {
 
 /// The offer to link a session (`CVC:2665-2680`). The name is a terminal program's to set, so it
 /// is escaped (ruling F20).
-fn offer_link(terminal: bool, name: Option<&str>) -> String {
+pub fn offer_link_body(terminal: bool, name: Option<&str>) -> String {
     let name = name.map_or_else(|| "Unnamed session".to_string(), |n| consent_field(n, Field::Text));
     let kind = if terminal { "terminal" } else { "browser" };
     format!(
@@ -265,14 +264,14 @@ pub fn body(content: &Content) -> Body {
             Some((_, _, markdown)) => Body::Markdown(markdown),
             None => Body::Plain(UNSUPPORTED_TEXT.to_string()),
         },
-        Content::RemoteCommandRequest { payload: Payload::Classic(rc), safe } => Body::Markdown(crate::ai_permissions::parked_text(&rc.call.consent_description(), rc.call.category().title(), *safe)),
+        Content::RemoteCommandRequest { payload: Payload::Classic(rc), safe } => Body::Markdown(crate::ai_permissions::parked_text(&rc.consent_text(), rc.call.category().title(), *safe)),
         Content::RemoteCommandRequest { payload: Payload::External(v), .. } => Body::Markdown(v.get("markdownDescription").and_then(serde_json::Value::as_str).unwrap_or_default().to_string()),
         Content::RemoteCommandResponse { result: Err(e), .. } => Body::Markdown(e.message.clone()),
         Content::RemoteCommandResponse { .. } => Body::Plain(String::new()),
         // The detail is Tandem's text around a program's words: it opens no link or span.
         Content::WatcherEvent(v) => Body::Markdown(chat_json::watcher(v).map(|(_, detail)| field(&detail)).unwrap_or_default()),
         Content::Unsupported(_) => system(UNSUPPORTED_TEXT),
-        Content::SelectSessionRequest { terminal, .. } => system(if *terminal { crate::ai_permissions::NEEDS_SESSION } else { NEEDS_BROWSER }),
+        Content::SelectSessionRequest { terminal, .. } => system(crate::ai_permissions::needs_session(*terminal)),
         Content::ClientLocal(action) => match action {
             ClientLocal::PickingSession => system(WAITING_TEXT),
             ClientLocal::ExecutingCommand(rc) => Body::Markdown(rc.call.markdown_description()),
@@ -280,7 +279,7 @@ pub fn body(content: &Content) -> Body {
             ClientLocal::StreamingChanged(Streaming::Active) => system(STREAM_ACTIVE),
             ClientLocal::StreamingChanged(Streaming::Stopped) => system(STREAM_STOPPED),
             ClientLocal::StreamingChanged(Streaming::StoppedAutomatically) => system(STREAM_STOPPED_AUTO),
-            ClientLocal::OfferLink { terminal, name, .. } => Body::Markdown(offer_link(*terminal, name.as_deref())),
+            ClientLocal::OfferLink { terminal, name, .. } => Body::Markdown(offer_link_body(*terminal, name.as_deref())),
             ClientLocal::OfferOrchestration => system(ORCHESTRATION_OFFER),
             ClientLocal::Permissions { .. } => system(PERMISSIONS_HELP),
             ClientLocal::Other(v) => Body::Markdown(orchestration_body(v)),
@@ -657,7 +656,7 @@ mod tests {
     }
 
     fn classic(call: Call, safe: Option<bool>) -> Content {
-        Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: json!({"role":"assistant"}), call }), safe }
+        Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(json!({"role":"assistant"}), call)), safe }
     }
 
     fn ids(v: &[&Message]) -> Vec<String> {
@@ -745,6 +744,23 @@ mod tests {
 
     fn attachment(id: &str, kind: serde_json::Value) -> Subpart {
         Subpart::Attachment(json!({"id": id, "type": kind}))
+    }
+
+    #[test]
+    fn entry_points_follow_iterm2() {
+        let want = "**Link this chat to browser session \u{201C}Docs\u{201D}, or enable orchestration?**\n\nLinking gives the AI access to this browser session subject to your per-call permission. **Orchestration** is an alternative mode where the AI can coordinate multiple sessions. It uses automatic safety checking and one-time per-session approval instead of fine-grained permissions.";
+        let offer = |name: Option<&str>| Content::ClientLocal(ClientLocal::OfferLink { terminal: false, guid: "g".into(), name: name.map(str::to_string) });
+        assert_eq!(body(&offer(Some("Docs"))), Body::Markdown(want.into()));
+        assert_eq!(offer_link_body(false, Some("Docs")), want);
+        let Body::Markdown(unnamed) = body(&offer(None)) else { panic!() };
+        assert!(unnamed.starts_with("**Link this chat to browser session \u{201C}Unnamed session\u{201D}, or enable"));
+        // A page's title cannot open a link or close the quotes: it is escaped like any program text.
+        let Body::Markdown(forged) = body(&offer(Some("[x](https://evil.example)**"))) else { panic!() };
+        assert!(!forged.contains("[x](https://evil.example)"), "{forged}");
+        let select = |terminal| body(&Content::SelectSessionRequest { original: Box::new(msg(Participant::Agent, plain("x"), 1.0)), terminal });
+        assert_eq!(select(false), Body::Markdown(crate::ai_permissions::NEEDS_SESSION_BROWSER.into()));
+        assert_eq!(select(true), Body::Markdown(crate::ai_permissions::NEEDS_SESSION.into()));
+        assert!(offer_link_body(true, Some("zsh")).starts_with("**Link this chat to terminal session \u{201C}zsh\u{201D}"));
     }
 
     #[test]

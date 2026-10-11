@@ -38,8 +38,12 @@ impl App {
     }
 
     /// Where pane `id`'s web view goes: `r` below the announcement bar and the find bar's row.
+    ///
+    /// A pane with a visible inline chat panel (or Clippings) gives the panel its gutter through
+    /// `gutter_split`, the one split a terminal pane uses: a child window hides what the scene
+    /// draws under it, so the view must not cover the panel.
     pub(super) fn browser_web_rect(&self, id: PaneId, r: Rect) -> Rect {
-        self.browser_split(id, r).1
+        self.gutter_split(id, self.browser_split(id, r).1).0
     }
 
     /// Whether browser pane `id` has a find bar open above its page: open, and not shown by a status
@@ -326,6 +330,7 @@ mod tests {
         let strip = &prod()[prod().find("pub(super) fn browser_strip").expect("one helper cuts the strip")..];
         assert!(strip.contains("visible_rects(") && strip.contains("pane_chrome(tab, id, full)"), "from the full rectangle");
         let web = &prod()[prod().find("pub(super) fn browser_web_rect").unwrap()..prod().find("pub(super) fn browser_strip").unwrap()];
+        assert!(web.contains("self.gutter_split(id, self.browser_split(id, r).1).0"), "the panel's gutter is 12d's split, not a second rule");
         assert!(!web.contains("pane_chrome("), "visible() is already the web view's rectangle");
         let app = include_str!("browser_app.rs");
         let app = &app[..app.find("#[cfg(test)]").unwrap()];

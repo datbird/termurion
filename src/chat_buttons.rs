@@ -252,7 +252,7 @@ mod tests {
     }
 
     fn request(safe: Option<bool>) -> Content {
-        Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: json!({}), call: Call::IsAtPrompt }), safe }
+        Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(json!({}), Call::IsAtPrompt)), safe }
     }
 
     fn none(_: Category) -> Permission {
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn button_sets_follow_iterm2() {
         assert_eq!(buttons(&local(ClientLocal::PickingSession), &none), vec![b("Cancel", true, "")]);
-        let running = RemoteCommand { llm_message: json!({}), call: Call::IsAtPrompt };
+        let running = RemoteCommand::of(json!({}), Call::IsAtPrompt);
         assert_eq!(buttons(&local(ClientLocal::ExecutingCommand(running)), &none), vec![b("Cancel", true, "")]);
         assert_eq!(buttons(&local(ClientLocal::StreamingChanged(Streaming::Active)), &none), vec![b("Stop", true, "")]);
         assert_eq!(buttons(&local(ClientLocal::StreamingChanged(Streaming::Stopped)), &none), vec![]);
@@ -332,7 +332,7 @@ mod tests {
         assert!(enabled(&picking, &EnableFacts { picking: true, ..last() }));
         assert!(!enabled(&picking, &EnableFacts { picking: true, is_last: false, ..EnableFacts::default() }));
 
-        let exec = local(ClientLocal::ExecutingCommand(RemoteCommand { llm_message: json!({}), call: Call::IsAtPrompt }));
+        let exec = local(ClientLocal::ExecutingCommand(RemoteCommand::of(json!({}), Call::IsAtPrompt)));
         assert!(!enabled(&exec, &last()), "the command is no longer executing");
         assert!(enabled(&exec, &EnableFacts { executing: true, ..last() }));
 
@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(all(&Content::PlainText { text: "allowOnce".into(), context: None }, "allowOnce"), None);
 
         assert_eq!(all(&local(ClientLocal::PickingSession), ""), Some(Press::CancelPick));
-        let running = ClientLocal::ExecutingCommand(RemoteCommand { llm_message: json!({}), call: Call::IsAtPrompt });
+        let running = ClientLocal::ExecutingCommand(RemoteCommand::of(json!({}), Call::IsAtPrompt));
         assert_eq!(all(&local(running), ""), Some(Press::CancelTool));
         assert_eq!(all(&local(ClientLocal::StreamingChanged(Streaming::Active)), ""), Some(Press::StopStreaming));
         assert_eq!(all(&local(ClientLocal::StreamingChanged(Streaming::Stopped)), ""), None);

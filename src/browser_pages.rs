@@ -11,6 +11,7 @@ use crate::browser;
 use crate::browser_db::Db;
 use crate::webhost::{scheme_of, Answer};
 use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
 
 /// The policy every local page response carries (B3b, tightened by the Task 7 review ruling): no
 /// remote script, frame, fetch or form. Script runs only with this response's nonce (no
@@ -23,6 +24,749 @@ pub fn csp(nonce: &str) -> String {
 /// A fresh nonce for one response: a v4 UUID's 122 random bits, hex.
 pub fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+// --- Local pages' scheme names, templates, glyphs and the static pages (13x8 Task 1) ---
+
+/// The scheme of Tandem's own pages (`LPM:58-64`), and of the file and ssh pages.
+pub const ABOUT: &str = "iterm2-about";
+pub const SSH_SCHEME: &str = "iterm2-ssh";
+pub const FILE_SCHEME: &str = "iterm2-file";
+
+/// The empty body of a refusal or a missing page (iTerm2 answers a 404 with no text).
+pub const NOT_FOUND_HTML: &str = "";
+
+/// The glyph spans' rule, appended to the common CSS wherever a page gets it (inlined by `page`,
+/// or served as `iterm-browser-common.css`).
+pub const GLYPH_CSS: &str = "\n.tandem-glyph { font-family: \"Segoe Fluent Icons\"; font-style: normal; }\n";
+
+/// iTerm2's emoji and the Segoe Fluent Icons glyph each becomes (the m12 "UI glyphs" ruling). A key
+/// ends in U+FE0F where iTerm2's text does; one without it takes a following U+FE0F with it. The
+/// check marks (U+2713), the trigram (U+2630) and a bare U+26A0 stay text.
+pub const GLYPHS: &[(&str, char)] = &[
+    ("\u{1F512}", '\u{E72E}'),
+    ("\u{1F4E6}", '\u{E7B8}'),
+    ("\u{1F511}", '\u{E8D7}'),
+    ("\u{1F310}", '\u{E774}'),
+    ("\u{1F4C1}", '\u{E8B7}'),
+    ("\u{1F4C4}", '\u{E8A5}'),
+    ("\u{2B06}\u{FE0F}", '\u{E74A}'),
+    ("\u{1F464}", '\u{E77B}'),
+    ("\u{1F6E1}\u{FE0F}", '\u{EA18}'),
+    ("\u{1F3AC}", '\u{E714}'),
+    ("\u{1F680}", '\u{E768}'),
+    ("\u{2728}", '\u{E734}'),
+    ("\u{26A0}\u{FE0F}", '\u{E7BA}'),
+];
+
+const VARIATION_SELECTOR: char = '\u{FE0F}';
+
+/// The glyph entry whose emoji starts `at`, with the bytes it and its selector take.
+fn glyph_at(at: &str) -> Option<(char, usize)> {
+    GLYPHS.iter().find_map(|(emoji, glyph)| {
+        let rest = at.strip_prefix(emoji)?;
+        let selector = if emoji.ends_with(VARIATION_SELECTOR) { 0 } else { rest.starts_with(VARIATION_SELECTOR) as usize * VARIATION_SELECTOR.len_utf8() };
+        Some((*glyph, emoji.len() + selector))
+    })
+}
+
+/// Whether `before` ends in a CSS `content: "` and `after` goes on with `"` and `;`: the emoji
+/// between them is a pseudo-element's content, not text.
+fn css_content(before: &str, after: &str) -> bool {
+    let Some(head) = before.strip_suffix('"') else { return false };
+    let head = head.trim_end();
+    let Some(head) = head.strip_suffix(':') else { return false };
+    head.trim_end().ends_with("content") && after.strip_prefix('"').is_some_and(|a| a.trim_start().starts_with(';'))
+}
+
+/// iTerm2's emoji in a template become Segoe Fluent Icons glyphs, scanned once: a CSS
+/// `content: "<emoji>";` keeps the glyph as the content and gains the icon font, any other emoji
+/// becomes a `tandem-glyph` span. Only template and included text goes through here, never a
+/// substituted value.
+pub fn glyph_page(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let rest = &html[i..];
+        let ch = rest.chars().next().unwrap_or('\0');
+        // Every emoji of the table starts with a non-ASCII character; skip the rest cheaply.
+        match Some(ch).filter(|c| !c.is_ascii()).and_then(|_| glyph_at(rest)) {
+            Some((glyph, taken)) => {
+                let after = &html[i + taken..];
+                if css_content(&html[..i], after) {
+                    // `"` + optional spaces + `;` follow: keep them, add the font after the `;`.
+                    let semi = after.find(';').map_or(0, |n| n + 1);
+                    out.push(glyph);
+                    out.push_str(&after[..semi]);
+                    out.push_str(" font-family: \"Segoe Fluent Icons\";");
+                    i += taken + semi;
+                } else {
+                    out.push_str("<span class=\"tandem-glyph\">");
+                    out.push(glyph);
+                    out.push_str("</span>");
+                    i += taken;
+                }
+            }
+            _ => {
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+/// The one template loader (ruling Q2): the common CSS (with the glyph rule) and every
+/// `{{INCLUDE:...}}` first, then the glyph step over template and included text only, then the
+/// `{{KEY}}` substitutions, so a substituted value is never rewritten (`TL:29-74`; review I9).
+pub fn page(template: &str, subs: &[(&str, &str)]) -> String {
+    use crate::browser_js::{fill_template, resource};
+    let css = format!("{}{GLYPH_CSS}", resource("iterm-browser-common.css").unwrap_or_default());
+    let with_css = template.replace("{{COMMON_CSS}}", &css);
+    fill_template(&glyph_page(&fill_template(&with_css, &[])), subs)
+}
+
+/// The copied intro page as served: iTerm2's file with Tandem's visible names, each target found
+/// exactly once or no page is served (R13x3-1/-2 pattern). (name, iTerm2's text, Tandem's text)
+pub const INTRO_PATCHES: [(&str, &str, &str); 4] = [
+    ("TITLE", "<title>Welcome to iTerm2 Browser</title>", "<title>Welcome to Tandem Browser</title>"),
+    ("HEADING", "Meet the iTerm2 Browser", "Meet the Tandem Browser"),
+    ("PROFILES", "In iTerm2, profiles define", "In Tandem, profiles define"),
+    ("EXPERIENCE", "same iTerm2 experience", "same Tandem experience"),
+];
+
+pub const FEATURES_PATCHES: [(&str, &str, &str); 5] = [
+    ("TITLE", "<title>iTerm2 Browser - Features</title>", "<title>Tandem Browser - Features</title>"),
+    ("SUPERPOWERS", "<strong>iTerm2 Superpowers:</strong>", "<strong>Tandem Superpowers:</strong>"),
+    ("PRODUCTIVITY", "bring iTerm2 features into the browser", "bring Tandem features into the browser"),
+    ("PASSWORDS", "Integrates with the iTerm2 password manager, Webkit adblock lists, and iTerm2\u{2019}s AI chat feature.", "Integrates with the Tandem password manager, Webkit adblock lists, and Tandem\u{2019}s AI chat feature."),
+    ("SECONDARY", "iTerm2 doesn\u{2019}t expect", "Tandem doesn\u{2019}t expect"),
+];
+
+/// The template of a static `iterm2-about:` page, patched, or None (iTerm2's debug-only pages
+/// answer None too: Tandem has no debug build of the browser, `SPH:170-187`).
+pub fn static_page(url: &str) -> Option<String> {
+    use crate::view_source::apply_patches;
+    let (file, patches): (&str, Vec<_>) = match page_name(url)? {
+        "onboarding-intro" => ("onboarding-intro.html", INTRO_PATCHES.to_vec()),
+        "onboarding-features" => ("onboarding-features.html", FEATURES_PATCHES.to_vec()),
+        _ => return None,
+    };
+    match apply_patches(crate::browser_js::resource(file)?, &patches) {
+        Ok(html) => Some(page(&html, &[])),
+        Err(e) => {
+            crate::rlog!("{}", crate::dlog::name(&e));
+            None
+        }
+    }
+}
+
+// --- The error page (13x8 Task 2; EH, EP, BM) ---
+
+/// The error page's URL (`EH:15`). Its content is never read from this URL: it is Tandem's state
+/// for the pane that asked (`BrowserView.pending_error`), served by the app (`browser_error_answer`),
+/// so a web page that navigates here shows only the generic page.
+pub const ERROR_URL: &str = "iterm2-about:error";
+
+/// Why a load failed, in iTerm2's cases (`EH:89-133`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Offline,
+    HostNotFound,
+    TimedOut,
+    CannotConnect,
+    ConnectionLost,
+    TooManyRedirects,
+    Certificate(i32),
+    Cancelled,
+    Other(i32),
+}
+
+/// `COREWEBVIEW2_WEB_ERROR_STATUS` to iTerm2's case.
+pub fn failure_of(status: i32) -> Failure {
+    match status {
+        1..=5 => Failure::Certificate(status),
+        6 | 12 => Failure::CannotConnect,
+        7 => Failure::TimedOut,
+        9 | 10 => Failure::ConnectionLost,
+        11 => Failure::Offline,
+        13 => Failure::HostNotFound,
+        14 => Failure::Cancelled,
+        15 => Failure::TooManyRedirects,
+        other => Failure::Other(other),
+    }
+}
+
+/// Tandem's stand-in for Apple's `localizedDescription` (no Windows source for it).
+pub fn describe(status: i32) -> &'static str {
+    match status {
+        1 => "The certificate's common name does not match the host name.",
+        2 => "The certificate has expired.",
+        3 => "The client certificate contains errors.",
+        4 => "The certificate has been revoked.",
+        5 => "The certificate is invalid.",
+        6 => "The server is unreachable.",
+        7 => "The connection timed out.",
+        8 => "The server returned an invalid response.",
+        9 => "The connection was aborted.",
+        10 => "The connection was reset.",
+        11 => "The internet connection was lost.",
+        12 => "Could not connect to the server.",
+        13 => "The host name could not be resolved.",
+        14 => "The operation was canceled.",
+        15 => "The redirect failed.",
+        16 => "An unexpected error occurred.",
+        17 => "Authentication credentials are required.",
+        18 => "Proxy authentication is required.",
+        _ => "An unknown error occurred.",
+    }
+}
+
+/// The message HTML of a case: `<strong>` text `</strong><br/><br/>` detail (`EH:131-132`). The
+/// text is Tandem's own; the detail is escaped (it may be a caller's description).
+fn message_html(text: &str, detail: &str) -> String {
+    format!("<strong>{text}</strong><br/><br/>{}", escape_slot(detail))
+}
+
+/// A value for an HTML slot: escaped, and `{` as `&#123;` so no later fill (the nonce) can match in it.
+fn escape_slot(s: &str) -> String {
+    crate::view_source::escape_html(s).replace('{', "&#123;")
+}
+
+/// Whether a failed navigation still got a server's answer (an HTTP status, `http` of
+/// `Event::Navigated`): its own page is shown, never Tandem's error page (Task 2 review I1;
+/// iTerm2's `didFailProvisionalNavigation` never fires for an HTTP error response).
+pub fn server_answered(http: i32) -> bool {
+    http >= 100
+}
+
+/// The title and message HTML of a failure, None for a cancelled load (`BM:781-800`).
+pub fn error_texts(f: Failure) -> Option<(&'static str, String)> {
+    Some(match f {
+        Failure::Offline => ("No Internet Connection", message_html("Your computer appears to be offline. Check your internet connection and try again.", describe(11))),
+        Failure::HostNotFound => ("Server Not Found", message_html("Tandem can\u{2019}t find the server. Check that the web address is correct and try again.", describe(13))),
+        Failure::TimedOut => ("The Connection Timed Out", message_html("The server didn\u{2019}t respond in time. The site may be temporarily unavailable or overloaded.", describe(7))),
+        Failure::CannotConnect => ("Can\u{2019}t Connect to Server", message_html("Tandem can\u{2019}t establish a secure connection to the server. The server may be down or unreachable.", describe(12))),
+        Failure::ConnectionLost => ("Network Connection Lost", message_html("The network connection was lost. Check your internet connection and try again.", describe(10))),
+        Failure::TooManyRedirects => ("Too Many Redirects", message_html("Tandem can\u{2019}t open the page because the server redirected too many times.", describe(15))),
+        Failure::Certificate(n) => {
+            let detail = match n {
+                1 => "The hostname does not match the certificate.",
+                2 => "The certificate is expired.",
+                5 => "The presented chain is not valid (e.g., self-signed without trust).",
+                other => describe(other),
+            };
+            ("Secure Connection Failed", message_html("Tandem can\u{2019}t verify the identity of the website. The connection may not be secure.", detail))
+        }
+        Failure::Cancelled => return None,
+        Failure::Other(n) => described(describe(n)),
+    })
+}
+
+/// The default case for an error whose description is `description` (`EH:127-133`).
+fn described(description: &str) -> (&'static str, String) {
+    let text = format!("An error occurred while loading this page. {}", escape_slot(description));
+    ("Page Can\u{2019}t Be Loaded", message_html(&text, description))
+}
+
+/// The longest URL shown on the page, and the longest one a retry is given (a URL the host cut at
+/// 8192 bytes is never navigated, so the retry target stops short of it).
+pub const SHOWN_URL_MAX: usize = 512;
+pub const RETRY_URL_MAX: usize = 8000;
+
+/// A URL as the error page shows it: hidden characters removed, at most `SHOWN_URL_MAX`
+/// characters, and the END of the host kept (`inert_files::display_text`'s removal set): a long
+/// user-info or host part shows its tail, a long path loses its tail, so what the person reads
+/// still ends where the real host ends.
+pub fn shown_url(url: &str) -> String {
+    let clean = crate::inert_files::display_text(url, usize::MAX, false);
+    let chars: Vec<char> = clean.chars().collect();
+    if chars.len() <= SHOWN_URL_MAX {
+        return clean;
+    }
+    let scheme_end = clean.find("://").map_or(0, |n| clean[..n].chars().count() + 3);
+    let auth_end = chars[scheme_end..].iter().position(|c| matches!(c, '/' | '?' | '#')).map_or(chars.len(), |n| scheme_end + n);
+    let room = SHOWN_URL_MAX - 1;
+    let (head, tail_from) = if auth_end <= room {
+        (&chars[..auth_end], None)
+    } else {
+        // The authority alone is over the cap: its start gives way, its end stays.
+        (&chars[..0], Some(auth_end - room))
+    };
+    let mut out = String::new();
+    match tail_from {
+        None => {
+            out.extend(head);
+            out.extend(&chars[auth_end..auth_end + (room - head.len())]);
+            out.push('\u{2026}');
+        }
+        Some(from) => {
+            out.push('\u{2026}');
+            out.extend(&chars[from..auth_end]);
+        }
+    }
+    out
+}
+
+/// `s` inside a single-quoted JavaScript string in a `<script>` element: backslash, quotes, `<`,
+/// `>`, `&`, `{`, line and control characters escaped as `\uXXXX`.
+fn js_single_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '\'' | '"' | '<' | '>' | '&' | '{' | '}' | '`' | '\u{2028}' | '\u{2029}') || c.is_control() {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether the retry button may take the person to `url`: a scheme Tandem loads itself.
+fn retry_target(url: &str) -> bool {
+    url.len() <= RETRY_URL_MAX && matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https" | "file" | "iterm2-ssh")
+}
+
+/// The copied template's load-time patches (R13x3-1/-2 pattern; each target exactly once, else no
+/// page): the script carries the response's nonce, the inline `onclick` becomes a listener that
+/// counts only a click the person made (`isTrusted`), and so does the key handler. (name, iTerm2's
+/// text, Tandem's text)
+pub const ERROR_PATCHES: [(&str, &str, &str); 4] = [
+    ("SCRIPT", "    <script>\n        function retryLoad() {", "    <script nonce=\"{{NONCE}}\">\n        function retryLoad() {"),
+    ("BUTTON", "<button class=\"button retry-button\" onclick=\"retryLoad()\">", "<button class=\"button retry-button\" id=\"tandem-retry\">"),
+    ("LISTENER", "        // Add keyboard support\n", "        document.getElementById('tandem-retry').addEventListener('click', function(event) {\n            if (event.isTrusted) { retryLoad(); }\n        });\n\n        // Add keyboard support\n"),
+    ("KEYS", "if (event.key === 'Enter' || event.key === ' ') {", "if (event.isTrusted && (event.key === 'Enter' || event.key === ' ')) {"),
+];
+
+/// The template filled (`EH:73-87`). The title and message are Tandem's text; the URL is escaped
+/// for its HTML slot and for its script slot, `{` is escaped in both so no `{{` of a URL can be
+/// read as a slot, and the nonce is left as `{{NONCE}}` for `with_nonce`. An empty string when a
+/// patch missed (no page is served).
+fn error_html(title: &str, message: &str, url: Option<&str>) -> String {
+    let template = match crate::view_source::apply_patches(crate::browser_js::resource("error-page.html").unwrap_or_default(), &ERROR_PATCHES) {
+        Ok(t) => t,
+        Err(e) => {
+            crate::rlog!("{}", crate::dlog::name(&e));
+            return String::new();
+        }
+    };
+    let url = url.filter(|u| !u.is_empty());
+    let shown = url.map(|u| format!("<div class=\"error-url\">{}</div>", escape_slot(&shown_url(u)))).unwrap_or_default();
+    let original = url.filter(|u| retry_target(u)).map(js_single_quoted).unwrap_or_default();
+    page(&template, &[("TITLE", title), ("MESSAGE", message), ("URL_DISPLAY", &shown), ("ORIGINAL_URL", &original)])
+}
+
+/// The page for a failure and the URL that failed (`EH:73-87`); a cancelled load has no page, so
+/// the generic one.
+pub fn error_page(f: Failure, failed_url: Option<&str>) -> String {
+    match error_texts(f) {
+        Some((title, message)) => error_html(title, &message, failed_url),
+        None => default_error_page(),
+    }
+}
+
+/// `iterm2-about:error` with nothing pending (`EH:52-58`): "Page Not Available" as
+/// `NSURLErrorResourceUnavailable`.
+pub fn default_error_page() -> String {
+    error_html("Page Unavailable", &message_html("The requested page is currently unavailable. Try again later.", "Page Not Available"), None)
+}
+
+/// The default case for an error described by `description` (`EH:127-133`): "Invalid file path"
+/// and a failed `iterm2-ssh:` transfer. The description is escaped and cut.
+pub fn described_error_page(description: &str, failed_url: Option<&str>) -> String {
+    let description = crate::inert_files::display_text(description, 512, false);
+    let (title, message) = described(&description);
+    error_html(title, &message, failed_url)
+}
+
+/// The served page: this response's nonce in the script (the only place `{{NONCE}}` can be).
+pub fn with_nonce(html: &str, nonce: &str) -> String {
+    html.replace("{{NONCE}}", nonce)
+}
+
+/// Whether to show the page for a failed URL: not the one that failed last (`BM:1348-1352`).
+pub fn should_show_error(failed: Option<&str>, last_failed: Option<&str>) -> bool {
+    failed.is_some() && failed != last_failed
+}
+
+/// The pane's cap on error pages (preflight P6): the loop guard keys on the URL, so a page that
+/// redirects to a fresh failing URL each time would load a page for each; at most `LIMIT` in each
+/// `WINDOW` (the view limiters' one counter, `webhost::WindowCount`).
+#[derive(Debug, Default)]
+pub struct ErrorBurst {
+    count: crate::webhost::WindowCount,
+}
+
+impl ErrorBurst {
+    pub const LIMIT: usize = 5;
+    pub const WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Whether one more error page may be shown at `now` (counted when it may).
+    pub fn allow(&mut self, now: std::time::Instant) -> bool {
+        self.count.allow(now, Self::WINDOW, Self::LIMIT)
+    }
+}
+
+// --- File and ssh pages: what a page of those schemes may load (R13x8-1) ---
+
+/// The policy of every `iterm2-file:` and `iterm2-ssh:` response, whatever it holds (a file the person
+/// opened, a subresource, a listing, Tandem's own waiting and error pages, a 404): a sandbox with no
+/// token (an opaque origin with no script, popup, form or top navigation) and no script at all
+/// (R13x8-NS, Robert 2026-10-11). Probe runs d and e showed a cancelled navigation still sends its
+/// request, and WebRTC and script-inserted DNS hints are governed by neither CSP nor the request filter,
+/// so a page that can run script can send what it read; a page with none has nothing to send. Only the
+/// page's own styles and images, media and fonts of the local schemes remain; the request filter keeps
+/// those to the page's own tree (`page_request_allowed`). HTML files show without their scripts,
+/// stricter than iTerm2.
+pub const FILE_CSP: &str = "sandbox; default-src 'none'; script-src 'none'; style-src 'unsafe-inline' iterm2-file: iterm2-ssh:; img-src iterm2-file: iterm2-ssh: data:; media-src iterm2-file: iterm2-ssh:; font-src iterm2-file: iterm2-ssh:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'";
+
+/// The headers of every `iterm2-file:` and `iterm2-ssh:` answer: `FILE_CSP`, `nosniff`, no DNS
+/// prefetch and no referrer (as the web popover's, `webhost`).
+pub fn file_headers() -> Vec<(String, String)> {
+    vec![
+        ("Content-Security-Policy".to_string(), FILE_CSP.to_string()),
+        ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
+        ("X-DNS-Prefetch-Control".to_string(), "off".to_string()),
+        ("Referrer-Policy".to_string(), "no-referrer".to_string()),
+    ]
+}
+
+/// `COREWEBVIEW2_WEB_RESOURCE_CONTEXT` values this module judges.
+pub const CONTEXT_SCRIPT: i32 = 6;
+pub const CONTEXT_XML_HTTP_REQUEST: i32 = 7;
+pub const CONTEXT_FETCH: i32 = 8;
+pub const CONTEXT_EVENT_SOURCE: i32 = 10;
+pub const CONTEXT_WEBSOCKET: i32 = 11;
+
+/// The tree a file or ssh page may load from: its scheme, its host (ssh) and its folder, decoded,
+/// `/`-separated and ending in `/` (a listing's own folder, a file's parent).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageRoot {
+    pub scheme: &'static str,
+    pub host: Option<String>,
+    pub folder: String,
+}
+
+/// A local-scheme URL taken apart: (scheme, authority, decoded path). None for another scheme, a
+/// path that does not decode to UTF-8, or one holding `\`, a control character or a `..` segment.
+pub(crate) fn local_parts(url: &str) -> Option<(&'static str, String, String)> {
+    let (scheme, rest) = url.split_once(':')?;
+    let scheme = if scheme.eq_ignore_ascii_case(FILE_SCHEME) {
+        FILE_SCHEME
+    } else if scheme.eq_ignore_ascii_case(SSH_SCHEME) {
+        SSH_SCHEME
+    } else {
+        return None;
+    };
+    let rest = rest.strip_prefix("//")?;
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (authority, raw_path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    let path = percent_decode(raw_path)?;
+    let bad = path.chars().any(|c| c == '\\' || c.is_control()) || path.split('/').any(|seg| seg == "..");
+    (!bad && path.len() <= MAX_STRING).then(|| (scheme, authority.to_string(), path))
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = s.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The folder part of a decoded path in the form the roots use: a file page's path loses its
+/// leading `/` (`C:/T/a.html`), an ssh path keeps it.
+fn folder_of(scheme: &str, path: &str) -> String {
+    let path = if scheme == FILE_SCHEME { path.strip_prefix('/').unwrap_or(path) } else { path };
+    match path.rfind('/') {
+        Some(at) => path[..=at].to_string(),
+        None => String::new(),
+    }
+}
+
+/// The root of an `iterm2-file:` or `iterm2-ssh:` page (a trailing `/` marks a folder), or None.
+/// A file page has no host; an ssh page must have one.
+pub fn page_root(url: &str) -> Option<PageRoot> {
+    let (scheme, authority, path) = local_parts(url)?;
+    let host = match scheme {
+        FILE_SCHEME if authority.is_empty() => None,
+        SSH_SCHEME if !authority.is_empty() => Some(authority),
+        _ => return None,
+    };
+    let folder = folder_of(scheme, &path);
+    // A file page's folder starts at an explicit drive (`C:/`): `iterm2-file:///` and `///C:` would
+    // otherwise admit every path of every drive (Task 1 review, minor 1).
+    let drive = |f: &str| f.as_bytes().get(..3).is_some_and(|b| b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/');
+    if scheme == FILE_SCHEME && !drive(&folder) {
+        return None;
+    }
+    Some(PageRoot { scheme, host, folder })
+}
+
+/// Whether a page rooted at `root` may load `url` as a subresource: the same scheme and host, a
+/// path inside the root folder (a path prefix, not a string prefix), and never a script-driven
+/// request (fetch, XHR, WebSocket, EventSource).
+pub fn subresource_allowed(root: Option<&PageRoot>, url: &str, context: i32) -> bool {
+    let Some(root) = root else { return false };
+    if matches!(context, CONTEXT_FETCH | CONTEXT_XML_HTTP_REQUEST | CONTEXT_WEBSOCKET | CONTEXT_EVENT_SOURCE | CONTEXT_DOCUMENT) {
+        return false;
+    }
+    let Some((scheme, authority, path)) = local_parts(url) else { return false };
+    if scheme != root.scheme {
+        return false;
+    }
+    let host_ok = match &root.host {
+        Some(host) => authority.eq_ignore_ascii_case(host),
+        None => authority.is_empty(),
+    };
+    let shown = if scheme == FILE_SCHEME { path.strip_prefix('/').unwrap_or(&path) } else { path.as_str() };
+    let inside = shown.get(..root.folder.len()).is_some_and(|head| if scheme == FILE_SCHEME { head.eq_ignore_ascii_case(&root.folder) } else { head == root.folder });
+    host_ok && inside && shown.len() > root.folder.len()
+}
+
+/// Whether a request for a file or ssh URL may be answered at all. A Document request only for the
+/// URL of the pane's pending main-frame navigation (`pending`, set from `Event::Starting`, so a
+/// frame or a script cannot ask for a page the person did not open). Every other context only as a
+/// subresource of the COMMITTED page's tree, and only when the document making the request
+/// (`top_url`, the view's Source) is itself a page of that same root: a web page that still holds
+/// the main frame because a file navigation never committed gets a 403 (Task 1 review, I1).
+pub fn page_request_allowed(pending: Option<(&PageRoot, &str)>, committed: Option<&PageRoot>, top_url: &str, url: &str, context: i32) -> bool {
+    if context == CONTEXT_DOCUMENT {
+        return pending.is_some_and(|(_, nav_url)| nav_url == url);
+    }
+    committed.is_some() && page_root(top_url).as_ref() == committed && subresource_allowed(committed, url, context)
+}
+
+// --- File pages: the path an `iterm2-file:` URL names, and the pages made of it (13x8 Task 3) ---
+
+/// The Try Again of a Tandem page served with no script: a link to the page itself (`href=""`), a reload
+/// the verdict allows, styled as the button it replaces.
+pub const SCRIPTLESS_RETRY: &str = r#"<a class="button retry-button" href="" style="display:inline-block;text-decoration:none">Try Again</a>"#;
+
+/// A Tandem page (the error page, the ssh page's waiting page) as served at an `iterm2-file:` or
+/// `iterm2-ssh:` URL under `FILE_CSP` (R13x8-NS): its script blocks dropped, its Try Again button a
+/// link that needs none.
+pub fn scriptless_page(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    // Every Try Again button (the copied pages' onclick ones and the patched error page's) becomes the link.
+    while let Some(a) = rest.find(r#"<button class="button retry-button""#) {
+        let Some(b) = rest[a..].find("</button>") else { break };
+        out.push_str(&rest[..a]);
+        out.push_str(SCRIPTLESS_RETRY);
+        rest = &rest[a + b + "</button>".len()..];
+    }
+    out.push_str(rest);
+    while let Some(a) = out.find("<script") {
+        match out[a..].find("</script>") {
+            Some(b) => out.replace_range(a..a + b + "</script>".len(), ""),
+            None => out.truncate(a),
+        }
+    }
+    out
+}
+
+/// The most entries of one folder a listing shows.
+pub const MAX_LISTED: usize = 5000;
+
+/// What the error page says of a main document the ad blocker refused.
+pub const BLOCKED_TEXT: &str = "This page was blocked by ad blocking.";
+
+/// "Invalid file path: <path>" (`LPM:192`).
+pub fn invalid_path_text(path: &str) -> String {
+    format!("Invalid file path: {path}")
+}
+
+/// "File not found: <path>" (`FH:70`).
+pub fn file_not_found_text(path: &str) -> String {
+    format!("File not found: {path}")
+}
+
+/// The longest name of one path component.
+const MAX_COMPONENT: usize = 255;
+
+/// The Windows path an `iterm2-file:` URL names, decoded: `iterm2-file:///C:/a%20b/` is `C:\a b`.
+/// Pure: nothing is probed. Refused (Err) are an empty path (`FH:31`), a host (so `//srv/share`), a
+/// path that is not a drive path (`/C:/...`), a backslash or control character after decoding, an
+/// empty, `.` or `..` component, a component that ends in a dot or a space (Windows would read it
+/// as another name), holds `<>:"|?*` (a stream `name:stream` too), or is a device name
+/// (`inline_file::is_device_name`). Whatever this accepts cannot climb out of the drive or reach
+/// a share; the filesystem steps (`file_serve`) add the link checks.
+pub fn file_path_of(url: &str) -> Result<PathBuf, &'static str> {
+    const INVALID: &str = "Invalid file path";
+    let (scheme, rest) = url.split_once(':').ok_or(INVALID)?;
+    if !scheme.eq_ignore_ascii_case(FILE_SCHEME) {
+        return Err(INVALID);
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    if rest.is_empty() {
+        return Err("No path specified");
+    }
+    let rest = rest.strip_prefix("//").ok_or(INVALID)?;
+    let (authority, raw) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    if !authority.is_empty() {
+        return Err(INVALID);
+    }
+    if raw.is_empty() {
+        return Err("No path specified");
+    }
+    let path = percent_decode(raw).ok_or(INVALID)?;
+    if path.len() > MAX_STRING || path.chars().any(|c| c == '\\' || c.is_control()) {
+        return Err(INVALID);
+    }
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' && (b.len() == 3 || b[3] == b'/');
+    if !drive {
+        return Err(INVALID);
+    }
+    let mut out = format!("{}:\\", path[1..2].to_string());
+    let tail = path.get(4..).unwrap_or("");
+    // One trailing slash is dropped (`FH:35-38`); any other empty component is refused.
+    let tail = tail.strip_suffix('/').unwrap_or(tail);
+    if !tail.is_empty() {
+        for (n, comp) in tail.split('/').enumerate() {
+            let bad = comp.is_empty()
+                || comp == "."
+                || comp == ".."
+                || comp.chars().count() > MAX_COMPONENT
+                || comp.ends_with(['.', ' '])
+                || comp.contains(['<', '>', ':', '"', '|', '?', '*'])
+                || crate::inert_files::is_device_name(comp);
+            if bad {
+                return Err(INVALID);
+            }
+            if n > 0 {
+                out.push('\\');
+            }
+            out.push_str(comp);
+        }
+    }
+    Ok(PathBuf::from(out))
+}
+
+/// Whether a link's target may be followed at all: a drive path (plain or `\\?\C:\` verbatim) or a
+/// relative target, never a UNC, `\\?\UNC\`, `\\.\` or other `\\` or `//` form, and no device name in it.
+pub fn link_target_ok(target: &Path) -> bool {
+    let s = target.to_string_lossy();
+    let verbatim_drive = s.strip_prefix(r"\\?\").is_some_and(|r| {
+        let b = r.as_bytes();
+        b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\')
+    });
+    if (s.starts_with(r"\\") || s.starts_with("//")) && !verbatim_drive {
+        return false;
+    }
+    !s.split(['\\', '/']).any(|c| !c.is_empty() && crate::inert_files::is_device_name(c))
+}
+
+/// `%XX` for every byte that is not an unreserved URL character.
+fn encode_segment(s: &str, out: &mut String) {
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+}
+
+/// The `iterm2-file:` URL of a path: `C:\x\y` is `iterm2-file:///C:/x/y`, a folder gets a trailing `/`
+/// (`FH:118-127`; a drive root is always one). Every byte but unreserved characters is escaped.
+pub fn file_url_of(path: &Path, dir: bool) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/');
+    let mut out = String::from("iterm2-file:///");
+    let mut segments = text.split('/');
+    let first = segments.next().unwrap_or("");
+    let drive = first.len() == 2 && first.as_bytes()[1] == b':' && first.as_bytes()[0].is_ascii_alphabetic();
+    if drive {
+        out.push_str(first);
+    } else {
+        encode_segment(first, &mut out);
+    }
+    let mut rest = false;
+    for seg in segments {
+        out.push('/');
+        encode_segment(seg, &mut out);
+        rest = true;
+    }
+    if dir || (drive && !rest) {
+        out.push('/');
+    }
+    out
+}
+
+/// One entry of a folder as the listing needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub dir: bool,
+    pub hidden: bool,
+}
+
+/// A drive root (`C:\`), which has no parent row.
+fn drive_root(path: &Path) -> bool {
+    path.parent().is_none_or(|p| p.as_os_str().is_empty())
+}
+
+/// A name as the page shows it: the one sanitizer (`inert_files::display_text`), then escaped.
+fn shown(name: &str) -> String {
+    escape_slot(&crate::inert_files::display_text(name, MAX_COMPONENT, false))
+}
+
+/// The listing page of a folder (`FH:78-141`): `..` first (not at a drive root), folders then files,
+/// each ignoring case, hidden entries skipped, every name sanitized and escaped, every link an
+/// absolute `iterm2-file:` URL built by `file_url_of`. More than `MAX_LISTED` entries end in a note.
+pub fn directory_page(path: &Path, entries: &[Entry]) -> String {
+    let mut items = String::new();
+    if !drive_root(path) {
+        if let Some(parent) = path.parent() {
+            items.push_str(&format!("<li><a href=\"{}\">..</a></li>\n", escape_slot(&file_url_of(parent, true))));
+        }
+    }
+    let mut shown_entries: Vec<&Entry> = entries.iter().filter(|e| !e.hidden).collect();
+    shown_entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.name.cmp(&b.name)));
+    for e in shown_entries.iter().take(MAX_LISTED) {
+        let href = file_url_of(&path.join(&e.name), e.dir);
+        items.push_str(&format!("<li><a href=\"{}\">{}</a></li>\n", escape_slot(&href), shown(&e.name)));
+    }
+    if shown_entries.len() > MAX_LISTED {
+        items.push_str(&format!("<li>Only the first {MAX_LISTED} items are shown.</li>\n"));
+    }
+    let content = format!("<ul>\n{items}</ul>");
+    let text = path.to_string_lossy();
+    let title = if drive_root(path) { text.to_string() } else { path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+    let (title, shown_path) = (shown(&title), shown(&text));
+    page(crate::browser_js::resource("file-page.html").unwrap_or_default(), &[("TITLE", &title), ("PATH", &shown_path), ("CONTENT", &content)])
+}
+
+/// A file as a page (`FH:143-157`): `.html` and `.htm` as they are (lossy UTF-8), any other file as
+/// escaped text in a `<pre>`, UTF-8 or else Latin-1 (every byte string is Latin-1, so iTerm2's
+/// hexadecimal branch never runs and is not built).
+pub fn file_page(path: &Path, bytes: &[u8]) -> String {
+    let html = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if html {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    };
+    format!("<pre>{}</pre>", crate::view_source::escape_html(&text))
 }
 
 /// The script that makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call
@@ -52,6 +796,14 @@ pub enum Reply {
     Navigate(String),
     /// A change to the saved permissions, applied by the app through the one write queue (Task 9).
     Permission(PermissionOp),
+    /// An onboarding page's request, already typed and judged to belong to that page; the app
+    /// acts on it only if the pane's own main frame is that page (Task 4).
+    Onboarding(crate::browser_onboarding::Action),
+    /// A settings page request, typed and bounded; the app acts only if the pane's main frame is
+    /// the settings page (Task 5).
+    Settings(crate::browser_settings_page::Msg),
+    /// A downloads page request (Task 7), typed; the app acts only if the pane's main frame is that page.
+    Downloads(crate::browser_download::Msg),
 }
 
 /// What the permissions page asked for, already typed: the origin is a normalized one.
@@ -71,7 +823,7 @@ pub fn page_name(url: &str) -> Option<&str> {
     if !scheme.eq_ignore_ascii_case("iterm2-about") || rest.is_empty() || rest.len() > 64 {
         return None;
     }
-    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "iterm-browser-common.css").then_some(rest)
+    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "onboarding-intro" | "onboarding-features" | "onboarding-setup" | "onboarding-profile" | "settings" | "downloads" | "iterm-browser-common.css").then_some(rest)
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
@@ -89,7 +841,11 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
         "history" => (page(resource("history-page.html")?, "HISTORY_SCRIPT", resource("history-page.js")?), HTML),
         "bookmarks" => (page(resource("bookmarks-page.html")?, "BOOKMARKS_SCRIPT", resource("bookmarks-page.js")?), HTML),
         "permissions" => (permissions_document(nonce)?, HTML),
-        "iterm-browser-common.css" => (COMMON_CSS.to_string(), "text/css; charset=utf-8"),
+        "onboarding-intro" | "onboarding-features" => (static_page(&format!("{SCHEME_PREFIX}{name}"))?, HTML),
+        "onboarding-setup" | "onboarding-profile" => (crate::browser_onboarding::document(name, nonce)?, HTML),
+        // "settings" is served by the app (`browser_settings_answer`): its page shows live state.
+        "downloads" => (crate::browser_download::document(nonce), HTML),
+        "iterm-browser-common.css" => (format!("{COMMON_CSS}{GLYPH_CSS}"), "text/css; charset=utf-8"),
         _ => return None,
     })
 }
@@ -179,7 +935,7 @@ fn navigate_known(db: &Db, url: &str) -> Option<Vec<Reply>> {
 
 /// A script that runs `call` only on the page that asked: a page that navigated away since gets
 /// nothing (the data is the person's history).
-fn script(page: &str, call: &str) -> Vec<Reply> {
+pub(crate) fn script(page: &str, call: &str) -> Vec<Reply> {
     let src = Value::String(format!("{SCHEME_PREFIX}{page}"));
     vec![Reply::Script(format!("(function () {{ if (location.protocol !== 'iterm2-about:' || location.href.split('#')[0] !== {src}) {{ return 0; }} {call}; return 1; }})()"))]
 }
@@ -237,6 +993,9 @@ pub fn route(db: &Db, json: &str, source: &str) -> Vec<Reply> {
         "bookmarks" => bookmarks(db, body, page),
         "welcome" => welcome(db, body, page),
         "permissions" => permissions(db, body, page),
+        "onboarding-setup" | "onboarding-profile" => onboarding(body, page),
+        "settings" => crate::browser_settings_page::parse(&Value::Object(body.clone())).map(|m| vec![Reply::Settings(m)]),
+        "downloads" => crate::browser_download::parse(body).map(|m| vec![Reply::Downloads(m)]),
         _ => None,
     };
     out.unwrap_or_default()
@@ -340,26 +1099,27 @@ fn bookmarks(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply
                 Some(Value::String(s)) if matches!(s.as_str(), "dateAdded" | "title" | "url") => s.as_str(),
                 _ => return None,
             };
-            let tags: Vec<&Value> = match body.get("tags") {
+            // At most 16 tags of 64 characters (13x8 P9); the database cleans them again.
+            let tags: Vec<String> = match body.get("tags") {
                 None => Vec::new(),
-                Some(Value::Array(a)) if a.len() <= 16 && a.iter().all(|t| t.as_str().is_some_and(|t| t.len() <= 128)) => a.iter().collect(),
+                Some(Value::Array(a)) if a.len() <= 16 && a.iter().all(|t| t.as_str().is_some_and(|t| t.chars().count() <= 64)) => a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
                 _ => return None,
             };
-            // Tags are not kept (the tag table is not created), so a tag filter finds nothing.
-            let rows: Vec<(String, Option<String>, i64)> = if !tags.is_empty() {
-                Vec::new()
-            } else if query.trim().is_empty() {
-                db.all_bookmarks(sort, offset, limit + 1).into_iter().map(|b| (b.url, b.title, b.date_added)).collect()
+            let rows: Vec<(String, Option<String>, i64)> = if !tags.is_empty() || !query.trim().is_empty() {
+                db.search_bookmarks_with_tags(&query, &tags, offset, limit + 1)
             } else {
-                db.search_bookmarks(&query, offset, limit + 1)
+                db.all_bookmarks(sort, offset, limit + 1).into_iter().map(|b| (b.url, b.title, b.date_added)).collect()
             };
             let more = rows.len() > limit;
-            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| json!({"displayUrl": page_url(&url), "url": url, "title": title.unwrap_or_default(), "dateAdded": added})).collect();
+            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| {
+                let tags = db.tags_for(&url);
+                json!({"displayUrl": page_url(&url), "url": url, "title": title.unwrap_or_default(), "dateAdded": added, "tags": tags})
+            }).collect();
             Some(script(page, &call("onBookmarksLoaded", &json!({"bookmarks": list, "hasMore": more}))))
         }
         "loadTags" => {
             keys_within(body, &["action"])?;
-            Some(script(page, &call("onTagsLoaded", &json!({"tags": []}))))
+            Some(script(page, &call("onTagsLoaded", &json!({"tags": db.all_tags()}))))
         }
         "deleteBookmark" => {
             keys_within(body, &["action", "url"])?;
@@ -377,6 +1137,15 @@ fn bookmarks(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply
         }
         _ => None,
     }
+}
+
+/// An onboarding page's message: iTerm2's `action` and `sessionSecret` (typed, never compared), and the
+/// action must be one this page's own buttons send.
+fn onboarding(body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
+    keys_within(body, &["action", "sessionSecret"])?;
+    text(body, "sessionSecret")?;
+    let action = crate::browser_onboarding::parse(&Value::Object(body.clone()))?;
+    (action.page() == page).then(|| vec![Reply::Onboarding(action)])
 }
 
 fn welcome(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
@@ -572,6 +1341,24 @@ mod tests {
         assert_eq!(b.matches("data-url=\"${escapeAttr(url)}\"").count(), 2);
     }
 
+    /// Task 7: the downloads page is a closed page of its own: served under the nonce policy, its messages
+    /// parsed only from its own source and handler, a power page for navigation.
+    #[test]
+    fn the_downloads_page_is_closed() {
+        let db = Db::open_in_memory();
+        assert_eq!(page_name("iterm2-about:downloads"), Some("downloads"));
+        let (html, mime) = document("downloads", "n0nce").expect("served");
+        assert!(mime.starts_with("text/html") && html.contains("nonce=\"n0nce\""));
+        let ok = serde_json::json!({"handler": "iterm2-about:downloads", "body": {"action": "cancel", "id": 4}}).to_string();
+        assert_eq!(route(&db, &ok, "iterm2-about:downloads"), vec![Reply::Downloads(crate::browser_download::Msg::Cancel(4))]);
+        for source in ["iterm2-about:history", "https://evil/", "iterm2-about:downloads?x", ""] {
+            assert!(route(&db, &ok, source).is_empty(), "{source:?}");
+        }
+        let wrong = serde_json::json!({"handler": "iterm2-about:history", "body": {"action": "cancel", "id": 4}}).to_string();
+        assert!(route(&db, &wrong, "iterm2-about:downloads").is_empty());
+        assert!(crate::webhost::power_page("iterm2-about:downloads") && crate::webhost::power_page("iterm2-about:downloads#x"));
+    }
+
     /// Final residual 1 (the URL display class): the history, bookmarks and welcome pages draw a URL
     /// or a host from the one display (`displayUrl`: display_url through fit_address at PAGE_URL_CELLS;
     /// `displayHost`: the display host), and their CSS wraps it: no line of theirs clips a URL's end.
@@ -718,11 +1505,28 @@ mod tests {
         let s = scripts(&r)[0];
         assert!(s.contains("onBookmarkDeleted") && s.contains("\\\"q") && !s.contains("('https://"), "{s}");
         assert!(!db.is_bookmarked(EVIL_URL));
-        // Tags: none are kept; a tag filter finds nothing.
+        // Tags (13x8): none yet; a tag filter finds nothing.
         let r = route(&db, &msg(b, serde_json::json!({"action": "loadTags"})), b);
         assert!(scripts(&r)[0].contains("onTagsLoaded") && scripts(&r)[0].contains("\"tags\":[]"));
         let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "title", "tags": ["x"]})), b);
         assert!(scripts(&r)[0].contains("\"bookmarks\":[]"));
+        // With tags on a bookmark: the page lists them, filters by them (every tag must match), rows carry them.
+        db.add_bookmark("https://tg.test/", Some("Tagged"), 400);
+        assert!(db.add_tag("https://tg.test/", "x") && db.add_tag("https://tg.test/", "<b>y</b>"));
+        let r = route(&db, &msg(b, serde_json::json!({"action": "loadTags"})), b);
+        assert!(scripts(&r)[0].contains("window.onTagsLoaded && window.onTagsLoaded({\"tags\":[\"<b>y</b>\",\"x\"]})"), "{}", scripts(&r)[0]);
+        let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "title", "tags": ["x"]})), b);
+        assert!(scripts(&r)[0].contains("https://tg.test/") && scripts(&r)[0].contains("\"tags\":[\"<b>y</b>\",\"x\"]") && !scripts(&r)[0].contains("bk.test"));
+        let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "title", "tags": ["x", "nope"]})), b);
+        assert!(scripts(&r)[0].contains("\"bookmarks\":[]"));
+        // The typed bounds: 16 tags of 64 characters.
+        let many: Vec<String> = (0..17).map(|i| format!("t{i}")).collect();
+        assert!(route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "tags": many})), b).is_empty());
+        assert!(route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "tags": ["z".repeat(65)]})), b).is_empty());
+        assert!(!route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "tags": ["z".repeat(64)]})), b).is_empty());
+        // Deleting the bookmark takes its tags with it.
+        let r = route(&db, &msg(b, serde_json::json!({"action": "deleteBookmark", "url": "https://tg.test/"})), b);
+        assert!(!scripts(&r).is_empty() && db.all_tags().is_empty());
         let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "dateAdded", "tags": []})), b);
         assert!(scripts(&r)[0].contains("https://bk.test/"));
         assert!(route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "sortBy": "'; drop"})), b).is_empty());
@@ -878,4 +1682,435 @@ mod permissions_tests {
         // A pane that is not the permissions page gets nothing (the app also checks its main frame).
         assert!(route(&db, &msg(json!({"action": "loadPermissions"})), "iterm2-about:welcome").is_empty());
     }
+}
+
+#[cfg(test)]
+mod onboarding_route_tests {
+    use super::*;
+
+    fn go(source: &str, handler: &str, body: serde_json::Value) -> Vec<Reply> {
+        route(&Db::open_in_memory(), &json!({"handler": handler, "body": body}).to_string(), source)
+    }
+
+    #[test]
+    fn onboarding_messages_need_their_own_page() {
+        let (setup, profile) = (crate::browser_onboarding::SETUP_URL, crate::browser_onboarding::PROFILE_URL);
+        let ask = json!({"action": "enableAdBlocker", "sessionSecret": ""});
+        assert_eq!(go(setup, setup, ask.clone()), vec![Reply::Onboarding(crate::browser_onboarding::Action::EnableAdBlocker)]);
+        for (source, handler) in [(profile, profile), (profile, setup), ("https://evil.test/", setup), ("iterm2-about:welcome", setup), (setup, profile)] {
+            assert!(go(source, handler, ask.clone()).is_empty(), "{source} {handler}");
+        }
+        assert!(go(setup, setup, json!({"action": "createBrowserProfile", "sessionSecret": ""})).is_empty(), "another page's action");
+        assert!(go(setup, setup, json!({"action": "enableAdBlocker", "sessionSecret": "", "x": 1})).is_empty());
+        assert!(go(setup, setup, json!({"action": "nope"})).is_empty());
+        assert_eq!(page_name(setup), Some("onboarding-setup"));
+        let (_, mime) = document("onboarding-profile", "n").unwrap();
+        assert!(mime.starts_with("text/html"));
+    }
+}
+
+#[cfg(test)]
+mod plumbing_tests {
+    use super::*;
+
+    #[test]
+    fn glyph_page_follows_the_ui_glyph_ruling() {
+        assert_eq!(glyph_page("<h3>\u{1F512} /dev/null Mode Active</h3>"), "<h3><span class=\"tandem-glyph\">\u{E72E}</span> /dev/null Mode Active</h3>");
+        assert_eq!(glyph_page("a::before { content: \"\u{1F4C1}\"; }"), "a::before { content: \"\u{E8B7}\"; font-family: \"Segoe Fluent Icons\"; }");
+        assert_eq!(glyph_page("\u{26A0}\u{FE0F}"), "<span class=\"tandem-glyph\">\u{E7BA}</span>");
+        for kept in ["\u{26A0}", "\u{2713}", "\u{2630}"] {
+            assert_eq!(glyph_page(kept), kept);
+        }
+        for (emoji, glyph) in GLYPHS {
+            let out = glyph_page(&format!("<b>{emoji}</b>"));
+            assert_eq!(out, format!("<b><span class=\"tandem-glyph\">{glyph}</span></b>"), "{emoji:?}");
+        }
+        // A selector after an emoji whose entry has none goes with it.
+        assert_eq!(glyph_page("\u{1F512}\u{FE0F}"), "<span class=\"tandem-glyph\">\u{E72E}</span>");
+        assert!(page("{{COMMON_CSS}}x", &[]).starts_with(crate::browser_js::resource("iterm-browser-common.css").unwrap()));
+        assert!(page("<style>{{INCLUDE:file-page.css}}</style>", &[]).contains(".directory-content"));
+        assert_eq!(page("{{A}}", &[("A", "b")]), "b");
+        assert!(GLYPH_CSS.contains("font-family: \"Segoe Fluent Icons\"") && GLYPH_CSS.contains(".tandem-glyph"));
+        assert!(document("iterm-browser-common.css", "n").unwrap().0.contains(".tandem-glyph"));
+        assert!(page("{{COMMON_CSS}}", &[]).contains(".tandem-glyph"), "a page that inlines the common CSS draws its glyph spans");
+        assert_eq!(page("<p>{{U}}</p>", &[("U", "\u{1F512}")]), "<p>\u{1F512}</p>", "a substituted value is never rewritten");
+        // The CSS content of an included file is rewritten, too.
+        let css = page("{{INCLUDE:file-page.css}}", &[]);
+        assert!(!css.contains('\u{1F4C1}') && !css.contains('\u{2B06}') && css.contains("content: \"\u{E8B7}\"; font-family: \"Segoe Fluent Icons\";"));
+    }
+
+    #[test]
+    fn static_pages_follow_iterm2() {
+        let intro = static_page("iterm2-about:onboarding-intro").unwrap();
+        assert!(intro.contains("Meet the Tandem Browser") && !intro.contains("iTerm2"));
+        let features = static_page("iterm2-about:onboarding-features").unwrap();
+        assert!(!features.contains("iTerm2") && features.contains("Tandem"));
+        for none in ["iterm2-about:dev", "iterm2-about:notifications-demo", "iterm2-about:nope", "https://a/"] {
+            assert!(static_page(none).is_none(), "{none}");
+        }
+        // Served through the one nonce path: the policy header, no inline handler, glyphs drawn.
+        for name in ["onboarding-intro", "onboarding-features"] {
+            let url = format!("iterm2-about:{name}");
+            assert_eq!(page_name(&url), Some(name));
+            let Answer::Respond { status, mime, body, headers } = answer(&url, CONTEXT_DOCUMENT, "") else { panic!() };
+            let body = String::from_utf8(body).unwrap();
+            assert_eq!((status, mime.as_str()), (200, "text/html; charset=utf-8"));
+            assert!(headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("frame-ancestors 'none'") && v.contains("script-src 'nonce-")));
+            assert!(!body.contains("onclick") && !body.contains("<script") && !body.contains("{{") && !body.contains('\u{1F310}') && !body.contains('\u{2728}'), "{name}");
+            assert!(body.contains("class=\"tandem-glyph\""));
+        }
+        // The copies hold iTerm2's text; the changes are load-time, exactly once, and fail closed.
+        let raw = crate::browser_js::resource("onboarding-intro.html").unwrap();
+        assert!(raw.contains("iTerm2 Browser") && raw.contains('\u{1F310}'));
+        assert!(crate::view_source::apply_patches(&raw.replace("Meet the iTerm2 Browser", "x"), &INTRO_PATCHES).is_err());
+        assert!(crate::view_source::apply_patches(&format!("{raw}Meet the iTerm2 Browser"), &INTRO_PATCHES).is_err(), "a second copy of a target is a miss, too");
+    }
+
+    const IMG: i32 = 3;
+
+    #[test]
+    fn page_requests_follow_the_main_frame_navigation() {
+        let url = "iterm2-file:///C:/T/site/a.html";
+        let root = page_root(url).unwrap();
+        let pending = Some((&root, url));
+        let none: Option<(&PageRoot, &str)> = None;
+        assert!(page_request_allowed(pending, None, "", url, CONTEXT_DOCUMENT));
+        assert!(!page_request_allowed(pending, None, "", "iterm2-file:///C:/T/site/b.html", CONTEXT_DOCUMENT), "a document nobody navigated to");
+        assert!(!page_request_allowed(none, None, "", url, CONTEXT_DOCUMENT));
+        // A subresource: the committed root, and a top document of that root.
+        assert!(page_request_allowed(None, Some(&root), url, "iterm2-file:///C:/T/site/i.png", IMG));
+        assert!(!page_request_allowed(None, Some(&root), url, "iterm2-file:///C:/T/x/i.png", IMG));
+        // Never committed: a web page holds the main frame while the root is the navigation's (or stale).
+        assert!(!page_request_allowed(pending, None, "https://evil.example/", "iterm2-file:///C:/T/site/i.png", IMG), "no committed root");
+        assert!(!page_request_allowed(None, Some(&root), "https://evil.example/", "iterm2-file:///C:/T/site/i.png", IMG), "a web top document");
+        assert!(!page_request_allowed(None, Some(&root), "iterm2-file:///C:/T/other/a.html", "iterm2-file:///C:/T/site/i.png", IMG), "a top document of another folder");
+        assert!(!page_request_allowed(None, Some(&root), "", "iterm2-file:///C:/T/site/i.png", IMG));
+    }
+
+    #[test]
+    fn a_file_root_names_a_drive() {
+        for bad in ["iterm2-file:///", "iterm2-file:///C:", "iterm2-file:///a.html", "iterm2-file:////a.html"] {
+            assert_eq!(page_root(bad), None, "{bad}");
+        }
+        assert!(page_root("iterm2-file:///C:/a.html").is_some_and(|r| r.folder == "C:/"));
+    }
+
+    #[test]
+    fn pages_are_sandboxed() {
+        assert_eq!(file_headers()[0], ("Content-Security-Policy".to_string(), FILE_CSP.to_string()));
+        let file = PageRoot { scheme: "iterm2-file", host: None, folder: "C:/T/site/".to_string() };
+        assert_eq!(page_root("iterm2-file:///C:/T/site/a.html"), Some(file.clone()));
+        assert_eq!(page_root("iterm2-file:///C:/T/site/"), Some(file.clone()));
+        assert_eq!(page_root("https://a/"), None);
+        assert_eq!(page_root("iterm2-file:///C:/T/site/../a.html"), None);
+        assert_eq!(page_root("iterm2-file:///C:/T/s%5Cx/a.html"), None);
+        assert_eq!(page_root("iterm2-file:///C:/T/s%00x/a.html"), None);
+        assert_eq!(page_root("iterm2-file://host/C:/T/a.html"), None, "a file page has no host");
+        let r = Some(&file);
+        for (url, ok) in [
+            ("iterm2-file:///C:/T/site/img/a.png", true),
+            ("iterm2-file:///C:/T/other/secret.txt", false),
+            ("iterm2-file:///C:/T/site/../other/secret.txt", false),
+            ("iterm2-file:///C:/T/site/%2E%2E/other/secret.txt", false),
+            ("iterm2-file:///C:/T/site/..%5Cother%5Csecret.txt", false),
+            ("iterm2-file:///C:/T/sitex/a.png", false),
+            ("iterm2-ssh://box/C:/T/site/a.png", false),
+            ("http://127.0.0.1/x", false),
+            ("iterm2-file:///C:/T/site/a%00.png", false),
+        ] {
+            assert_eq!(subresource_allowed(r, url, IMG), ok, "{url}");
+        }
+        for (ctx, ok) in [(CONTEXT_FETCH, false), (CONTEXT_XML_HTTP_REQUEST, false), (CONTEXT_WEBSOCKET, false), (CONTEXT_EVENT_SOURCE, false), (CONTEXT_SCRIPT, true)] {
+            assert_eq!(subresource_allowed(r, "iterm2-file:///C:/T/site/a.js", ctx), ok, "{ctx}");
+        }
+        assert!(!subresource_allowed(None, "iterm2-file:///C:/T/site/a.png", IMG));
+        let ssh = page_root("iterm2-ssh://box/home/u/a.html");
+        assert_eq!(ssh, Some(PageRoot { scheme: "iterm2-ssh", host: Some("box".to_string()), folder: "/home/u/".to_string() }));
+        let s = ssh.as_ref();
+        for (url, ok) in [
+            ("iterm2-ssh://box/home/u/i/a.png", true),
+            ("iterm2-ssh://BOX/home/u/a.png", true),
+            ("iterm2-ssh://other/home/u/a.png", false),
+            ("iterm2-ssh://box/etc/passwd", false),
+            ("iterm2-file:///C:/a.png", false),
+            ("iterm2-ssh://box/home/u/../../etc/passwd", false),
+        ] {
+            assert_eq!(subresource_allowed(s, url, IMG), ok, "{url}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn error_pages_follow_iterm2() {
+        for (status, want) in [(13, Failure::HostNotFound), (7, Failure::TimedOut), (6, Failure::CannotConnect), (12, Failure::CannotConnect), (9, Failure::ConnectionLost), (10, Failure::ConnectionLost), (11, Failure::Offline), (15, Failure::TooManyRedirects), (1, Failure::Certificate(1)), (2, Failure::Certificate(2)), (3, Failure::Certificate(3)), (4, Failure::Certificate(4)), (5, Failure::Certificate(5)), (14, Failure::Cancelled), (16, Failure::Other(16)), (0, Failure::Other(0)), (17, Failure::Other(17))] {
+            assert_eq!(failure_of(status), want, "{status}");
+        }
+        assert_eq!(error_texts(Failure::HostNotFound), Some(("Server Not Found", "<strong>Tandem can\u{2019}t find the server. Check that the web address is correct and try again.</strong><br/><br/>The host name could not be resolved.".to_string())));
+        let (t, m) = error_texts(Failure::Offline).unwrap();
+        assert!(t == "No Internet Connection" && m.contains("Your computer appears to be offline. Check your internet connection and try again."));
+        assert_eq!(error_texts(Failure::TimedOut).unwrap().0, "The Connection Timed Out");
+        let (t, m) = error_texts(Failure::CannotConnect).unwrap();
+        assert!(t == "Can\u{2019}t Connect to Server" && m.contains("Tandem can\u{2019}t establish a secure connection to the server. The server may be down or unreachable."));
+        assert_eq!(error_texts(Failure::ConnectionLost).unwrap().0, "Network Connection Lost");
+        let (t, m) = error_texts(Failure::TooManyRedirects).unwrap();
+        assert!(t == "Too Many Redirects" && m.contains("Tandem can\u{2019}t open the page because the server redirected too many times."));
+        let (t, m) = error_texts(Failure::Certificate(2)).unwrap();
+        assert_eq!(t, "Secure Connection Failed");
+        assert_eq!(m, "<strong>Tandem can\u{2019}t verify the identity of the website. The connection may not be secure.</strong><br/><br/>The certificate is expired.");
+        assert!(error_texts(Failure::Certificate(1)).unwrap().1.ends_with("The hostname does not match the certificate."));
+        assert!(error_texts(Failure::Certificate(5)).unwrap().1.ends_with("The presented chain is not valid (e.g., self-signed without trust)."));
+        let (t, m) = error_texts(Failure::Other(16)).unwrap();
+        assert!(t == "Page Can\u{2019}t Be Loaded" && m.contains(&format!("An error occurred while loading this page. {}", describe(16))));
+        assert_eq!(error_texts(Failure::Cancelled), None);
+
+        let page = error_page(Failure::HostNotFound, Some("https://a.b/"));
+        assert!(page.contains("<div class=\"error-url\">https://a.b/</div>") && page.contains("const originalURL = 'https://a.b/';"));
+        assert!(!error_page(Failure::HostNotFound, None).contains("error-url\">"));
+        assert!(default_error_page().contains("<title>Page Unavailable</title>"));
+        // A hostile URL cannot leave its slots.
+        let bad = "https://a/'</script><img src=x onerror=alert(1)>{{NONCE}}\u{2028}\\";
+        let page = error_page(Failure::HostNotFound, Some(bad));
+        assert!(!page.contains("</script><img") && !page.contains("<img src=x") && !page.contains("onerror=alert(1)>"));
+        assert!(page.contains("const originalURL = 'https://a/\\u0027\\u003c/script\\u003e"), "{page}");
+        assert_eq!(page.matches("{{NONCE}}").count(), 1, "only the script's own nonce slot is left");
+        assert_eq!(page.matches("<script").count(), 1);
+        // Glyphs are not applied to a substituted value (review I9).
+        let page = error_page(Failure::HostNotFound, Some("https://a/\u{1F512}"));
+        assert!(page.contains("const originalURL = 'https://a/\u{1F512}';") && !page.contains("originalURL = 'https://a/<span"));
+        let d = described_error_page("Invalid file path: C:\\x", Some("file:///C:/x"));
+        assert!(d.contains("<title>Page Can\u{2019}t Be Loaded</title>"));
+        assert!(d.contains("<strong>An error occurred while loading this page. Invalid file path: C:\\x</strong><br/><br/>Invalid file path: C:\\x"));
+        assert!(described_error_page("<b>x</b>", None).contains("&lt;b&gt;x&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn a_server_that_answered_keeps_its_page() {
+        // Task 2 review I1: a 404 or 500 fails with IsSuccess false but a response; no error page.
+        // The engine's real values for a 404, a 500 and a 204 need the runtime probe.
+        for http in [400, 401, 404, 500, 503, 204, 100] {
+            assert!(server_answered(http), "{http}");
+        }
+        for http in [0, -1, 99] {
+            assert!(!server_answered(http), "{http}: no response, the error page");
+        }
+    }
+
+    #[test]
+    fn a_description_never_carries_a_fill_key() {
+        // Task 2 review M2: a description (a path, a remote error) holding a key is shown as text and
+        // the nonce lands only in the script.
+        let html = described_error_page("x {{NONCE}} {{TITLE}}", Some("https://a.test/{{NONCE}}"));
+        assert!(!html.is_empty());
+        let served = with_nonce(&html, "N0NCE");
+        assert!(!html.contains("x {{NONCE}}") && html.contains("x &#123;&#123;NONCE}} &#123;&#123;TITLE}}"));
+        let in_script = served.matches("N0NCE").count();
+        assert_eq!(in_script, html.matches("{{NONCE}}").count(), "only the template's own keys are filled");
+        assert!(!served.contains("x N0NCE"));
+    }
+
+    #[test]
+    fn error_loop_guard_follows_iterm2() {
+        assert!(should_show_error(Some("u"), None));
+        assert!(!should_show_error(Some("u"), Some("u")));
+        assert!(should_show_error(Some("u"), Some("v")));
+        assert!(!should_show_error(None, None));
+        let mut b = ErrorBurst::default();
+        let t = std::time::Instant::now();
+        let at = |ms: u64| t + std::time::Duration::from_millis(ms);
+        assert!((0..5).all(|i| b.allow(at(i * 100))));
+        assert!(!b.allow(at(900)), "a sixth in ten seconds");
+        assert!(b.allow(at(10_100)), "the window moves on");
+    }
+
+    /// The page is the copied template, patched exact-once; its script has the nonce, no inline
+    /// handler stays, and a click or key counts only when the person made it.
+    #[test]
+    fn the_error_page_is_a_patched_copy_under_the_nonce_policy() {
+        let raw = crate::browser_js::resource("error-page.html").unwrap();
+        for (name, target, _) in ERROR_PATCHES {
+            assert_eq!(raw.matches(target).count(), 1, "{name}");
+            assert!(crate::view_source::apply_patches(&format!("{raw}{target}"), &ERROR_PATCHES).is_err(), "a second copy of {name} is a miss");
+        }
+        let html = with_nonce(&error_page(Failure::TimedOut, Some("https://a.b/")), "n0nce");
+        assert!(html.contains("<script nonce=\"n0nce\">") && !html.contains("onclick") && html.matches("<script").count() == 1);
+        assert!(html.contains("event.isTrusted") && html.contains("window.location.href = originalURL"), "Try Again is a plain navigation: the one verdict judges it");
+        assert!(!html.contains("{{"), "every slot filled");
+        let headers = response_headers("n0nce");
+        assert!(headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("frame-ancestors 'none'") && v.contains("script-src 'nonce-n0nce'")));
+    }
+
+    #[test]
+    fn a_long_url_keeps_the_end_of_its_host() {
+        let long_path = format!("https://example.com/{}", "p".repeat(2000));
+        let s = shown_url(&long_path);
+        assert!(s.starts_with("https://example.com/") && s.chars().count() <= SHOWN_URL_MAX && s.ends_with('\u{2026}'));
+        let long_host = format!("https://{}.evil.example/x", "u".repeat(900));
+        let s = shown_url(&long_host);
+        assert!(s.chars().count() <= SHOWN_URL_MAX && s.ends_with(".evil.example") && s.starts_with('\u{2026}'), "{s}");
+        assert_eq!(shown_url("https://a\u{202E}b/"), "https://ab/", "hidden characters go");
+        // Too long to retry: no target, never a cut URL.
+        let page = error_page(Failure::TimedOut, Some(&format!("https://a/{}", "p".repeat(RETRY_URL_MAX))));
+        assert!(page.contains("const originalURL = '';"));
+        let page = error_page(Failure::TimedOut, Some("javascript:alert(1)"));
+        assert!(page.contains("const originalURL = '';"), "only a scheme Tandem loads is retried");
+    }
+}
+
+#[cfg(test)]
+mod file_page_tests {
+    use super::*;
+
+    /// Review Focus 2: the path rules are pure and Windows-shaped; nothing is probed.
+    #[test]
+    fn file_urls_follow_windows() {
+        let ok = |u: &str| file_path_of(u).map(|p| p.to_string_lossy().into_owned());
+        assert_eq!(ok("iterm2-file:///C:/Users/u/").unwrap(), r"C:\Users\u");
+        assert_eq!(ok("iterm2-file:///C:/").unwrap(), r"C:\");
+        assert_eq!(ok("iterm2-file:///C:").unwrap(), r"C:\");
+        assert_eq!(ok("iterm2-file:///C:/a%20b.txt").unwrap(), r"C:\a b.txt");
+        assert_eq!(ok("ITERM2-FILE:///c:/x?q#f").unwrap(), r"c:\x");
+        assert_eq!(ok("iterm2-file:"), Err("No path specified"));
+        assert_eq!(ok("iterm2-file://"), Err("No path specified"));
+        assert_eq!(file_url_of(Path::new(r"C:\a b"), true), "iterm2-file:///C:/a%20b/");
+        assert_eq!(file_url_of(Path::new(r"C:\x\y.txt"), false), "iterm2-file:///C:/x/y.txt");
+        assert_eq!(file_url_of(Path::new(r"C:\"), true), "iterm2-file:///C:/");
+        assert_eq!(file_url_of(Path::new(r"C:\"), false), "iterm2-file:///C:/");
+        assert_eq!(file_url_of(Path::new("C:\\d\\\u{e9}'\"<>"), false), "iterm2-file:///C:/d/%C3%A9%27%22%3C%3E");
+        assert_eq!(invalid_path_text("x"), "Invalid file path: x");
+        assert_eq!(file_not_found_text("x"), "File not found: x");
+        // Review I8: a share, verbatim or device form is refused after decoding.
+        for bad in [
+            "iterm2-file:///%5C%5Csrv%5Cshare",
+            "iterm2-file:////srv/share",
+            "iterm2-file://srv/share",
+            "iterm2-file:///%5C%5C%3F%5CUNC%5Csrv%5Cs",
+            "iterm2-file:///%5C%5C.%5CC:%5Cx",
+            "iterm2-file:///x",
+            "iterm2-file:///",
+            "iterm2-file:C:/x",
+            "https://a/C:/x",
+        ] {
+            assert!(file_path_of(bad).is_err(), "{bad}");
+        }
+        // Review M5: a device name in any component.
+        for bad in ["iterm2-file:///C:/CON", "iterm2-file:///C:/a/nul.txt", "iterm2-file:///C:/COM1/x", "iterm2-file:///C:/CONIN$", "iterm2-file:///C:/lpt9.log"] {
+            assert!(file_path_of(bad).is_err(), "{bad}");
+        }
+        // Traversal in every spelling, alternate streams, trailing dots and spaces, mixed slashes.
+        for bad in [
+            "iterm2-file:///C:/a/../b",
+            "iterm2-file:///C:/a/%2e%2e/b",
+            "iterm2-file:///C:/a/%2E%2E",
+            "iterm2-file:///C:/a/./b",
+            "iterm2-file:///C:/a%5C..%5Cb",
+            "iterm2-file:///C:/a%2F..%2Fb",
+            "iterm2-file:///C:/a//b",
+            "iterm2-file:///C:/a.txt:stream",
+            "iterm2-file:///C:/a.txt::$DATA",
+            "iterm2-file:///C:/a./b",
+            "iterm2-file:///C:/a /b",
+            "iterm2-file:///C:/.. /b",
+            "iterm2-file:///C:/.../b",
+            "iterm2-file:///C:/a%00b",
+            "iterm2-file:///C:/a%0Ab",
+            "iterm2-file:///C:/a*b",
+            "iterm2-file:///C:/a%3Fb",
+            "iterm2-file:///C:/%FF",
+            "iterm2-file:///CC:/a",
+            "iterm2-file:///1:/a",
+        ] {
+            assert!(file_path_of(bad).is_err(), "{bad}");
+        }
+        assert!(file_path_of(&format!("iterm2-file:///C:/{}", "a".repeat(256))).is_err(), "a component over 255 characters");
+        // A link may lead to a local path only.
+        for bad in [r"\\srv\share", r"\\?\UNC\srv\s", r"\\.\pipe\x", "//srv/share", r"\\?\GLOBALROOT\x", r"C:\x\NUL"] {
+            assert!(!link_target_ok(Path::new(bad)), "{bad}");
+        }
+        for good in [r"C:\x", r"\\?\C:\x", r"..\y", "y"] {
+            assert!(link_target_ok(Path::new(good)), "{good}");
+        }
+        // Every path the decoder accepts re-encodes to a URL that decodes to the same path.
+        for p in [r"C:\", r"C:\a b\c\d.txt", "C:\\\u{e9}\\\u{4e2d}"] {
+            assert_eq!(file_path_of(&file_url_of(Path::new(p), false)).unwrap(), PathBuf::from(p));
+        }
+    }
+
+    #[test]
+    fn directory_listing_follows_iterm2() {
+        let e = |name: &str, dir: bool, hidden: bool| Entry { name: name.into(), dir, hidden };
+        let entries = [e("b.txt", false, false), e("A", true, false), e(".git", true, true), e("c", true, false), e("a.txt", false, false)];
+        let html = directory_page(Path::new(r"C:\d"), &entries);
+        let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle} missing in {html}"));
+        let order = [
+            "<li><a href=\"iterm2-file:///C:/\">..</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/A/\">A</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/c/\">c</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/a.txt\">a.txt</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/b.txt\">b.txt</a></li>",
+        ];
+        for pair in order.windows(2) {
+            assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+        }
+        assert!(!html.contains(".git"), "hidden entries are skipped");
+        assert!(html.contains("<title>d</title>") && html.contains("<p class=\"directory-path\">C:\\d</p>"));
+        assert!(html.contains("<span class=\"tandem-glyph\">\u{E8B7}</span>") && !html.contains('\u{1F4C1}'), "the folder glyph, not the emoji");
+        // A name is text, never markup; a hidden or bidi character is dropped from what is shown.
+        let hostile = directory_page(Path::new(r"C:\d"), &[e("<x>&", false, false), e("a\u{202e}b\u{200b}", false, false), e("\"onmouseover=\"x", false, false), e("{{TITLE}}", false, false)]);
+        assert!(hostile.contains("&lt;x&gt;&amp;") && !hostile.contains("<x>"));
+        assert!(hostile.contains(">ab</a>") && !hostile.contains('\u{202e}') && !hostile.contains('\u{200b}'));
+        assert!(!hostile.contains("\"onmouseover=\"x") && hostile.contains("href=\"iterm2-file:///C:/d/%22onmouseover%3D%22x\""));
+        assert!(hostile.contains("&#123;&#123;TITLE}}"), "a name holding a slot is not substituted again");
+        // Review M6: the title and path slots are escaped too.
+        let odd = directory_page(Path::new(r"C:\d\<b>x"), &[]);
+        assert!(odd.contains("<title>&lt;b&gt;x</title>") && odd.contains("C:\\d\\&lt;b&gt;x"));
+        assert!(!odd.contains("<b>x"));
+        // A drive root has no ".." row.
+        let root = directory_page(Path::new(r"C:\"), &[e("x", false, false)]);
+        assert!(!root.contains(">..<") && root.contains("href=\"iterm2-file:///C:/x\""));
+        // A listing holds no script of ours.
+        assert!(!html.contains("<script") && !html.contains("innerHTML"));
+        // A very long folder ends in a note.
+        let many: Vec<Entry> = (0..MAX_LISTED + 3).map(|n| e(&format!("f{n:05}"), false, false)).collect();
+        let long = directory_page(Path::new(r"C:\d"), &many);
+        assert!(long.contains("Only the first 5000 items are shown.") && !long.contains("f05001"));
+    }
+
+    #[test]
+    fn file_view_follows_iterm2() {
+        assert_eq!(file_page(Path::new(r"C:\a.html"), b"<b>x</b>"), "<b>x</b>");
+        assert_eq!(file_page(Path::new(r"C:\a.HTM"), b"<b>x</b>"), "<b>x</b>");
+        assert_eq!(file_page(Path::new(r"C:\a.txt"), b"a<b"), "<pre>a&lt;b</pre>");
+        assert_eq!(file_page(Path::new(r"C:\a"), &[0xE9, 0x41]), "<pre>\u{e9}A</pre>");
+        assert_eq!(file_page(Path::new(r"C:\a.txt"), b"\"'&"), "<pre>&quot;&#39;&amp;</pre>");
+    }
+
+    /// R13x8-NS (Robert, 2026-10-11): every `iterm2-file:` and `iterm2-ssh:` answer runs no script.
+    /// A cancelled navigation still sent its request (probe runs d and e) and WebRTC and DNS hints are
+    /// governed by neither CSP nor the request filter, so a served page has no script to read and send
+    /// with: no script source, no inline script, no eval, a sandbox without `allow-scripts`, and no DNS
+    /// prefetch or referrer.
+    #[test]
+    fn file_and_ssh_answers_run_no_script() {
+        let h = file_headers();
+        let get = |k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or_default();
+        let csp = get("Content-Security-Policy");
+        let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
+        assert_eq!(directives.first(), Some(&"sandbox"), "a sandbox with no allow- token: {csp}");
+        assert!(!csp.contains("allow-") && !csp.contains("unsafe-eval") && !csp.contains("wasm"), "{csp}");
+        for d in ["default-src 'none'", "script-src 'none'", "connect-src 'none'", "form-action 'none'", "frame-src 'none'", "object-src 'none'", "base-uri 'none'"] {
+            assert!(directives.contains(&d), "{d} in {csp}");
+        }
+        assert_eq!(directives.iter().filter(|d| d.starts_with("script-src")).count(), 1, "{csp}");
+        assert_eq!(get("X-Content-Type-Options"), "nosniff");
+        assert_eq!(get("X-DNS-Prefetch-Control"), "off");
+        assert_eq!(get("Referrer-Policy"), "no-referrer");
+        // Tandem's own pages at those URLs drop their scripts; an unclosed one is cut.
+        assert_eq!(scriptless_page("a<script>x</script>b<script src=y>"), "ab");
+        assert_eq!(scriptless_page(r#"<button class="button retry-button" id="r">Try Again</button>"#), SCRIPTLESS_RETRY);
+    }
+
 }

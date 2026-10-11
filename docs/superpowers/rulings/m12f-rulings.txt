@@ -206,3 +206,4 @@ M14: Final review 8: docs/parity/00-roadmap.md:341-342 says "visible" (should be
 M15: Final review 9: the checklist has no rows for T11-8 (an event during an approval waits; now the outbox holds, FR-1), T11-9 (the 20-turn pause and its notice) or T11-10 (unlink or relink ends watchers) - cost: those rules are not checked by hand at acceptance.
 M16: Final review 10: src/chat_buttons.rs has a stray 16-space indent in consent_texts_follow_iterm2 - cost: cosmetic; rustfmt fixes it.
 M17: Final review M6 triage: the P14 guard comment still overstates (a cookie holder can call other functions on its own session) - cost: comment accuracy only.
+Plan 13x-ai Task 10: the recorded gap that a browser session_* mirror cannot act before milestone 13 is lifted by m13x AI browser tools (Task 9: browser mirrors claim, run through ai_run_tool and wait for their answer).

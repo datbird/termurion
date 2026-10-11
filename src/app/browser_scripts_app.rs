@@ -233,6 +233,10 @@ impl App {
             bv.world = WorldState::default();
             bv.pointer_sig = None;
             bv.pointer_down = None;
+            bv.last_failed = None;
+            bv.pending_error = None;
+            bv.error_burst = Default::default();
+            bv.blocked_url = None;
             bv.receiving_broadcast = 0;
             bv.receiving_since = None;
             bv.echo = Default::default();
@@ -250,11 +254,21 @@ impl App {
                 l.secret = browser_js::new_secret();
             }
             bv.trigger_gate.reset();
+            // The old view's file or ssh page is not the new view's (13x8).
+            bv.page_root = None;
+            bv.page_url = None;
+            bv.nav_root = None;
+            bv.nav_url = None;
+            bv.nav_id = 0;
             bv.autofill.reset();
             bv.password.reset();
+            bv.onboarding = Default::default();
+            bv.settings = Default::default();
         }
         self.autofill_ask_drop(pane, true, |_, _| false);
         self.basic_auth_reset(pane);
+        self.browser_downloads_view_gone(pane);
+        self.ssh_page_view_gone(pane);
         self.global_pane_gone(pane);
         for done in dones {
             done(self, pane, Err("view closed".into()));
@@ -920,6 +934,17 @@ impl App {
     /// plan adds its arm; an arm for a Client handler ignores a Page message). Anything else is
     /// counted in the log, never its text.
     pub(super) fn browser_message(&mut self, pane: PaneId, r: Routed) {
+        // A file or ssh page is a document of the person's files or a remote host, not a page of
+        // the web and not Tandem's own: nothing it posts reaches a handler (13x8).
+        // By pane state and by the message's own source (a leaving file page can still post).
+        if self.browser_views.get(&pane).is_some_and(|b| b.page_root.is_some()) || matches!(crate::webhost::scheme_of(&r.source).as_str(), "iterm2-file" | "iterm2-ssh") {
+            return;
+        }
+        // An extension's own page (`chrome-extension:`) is code the person approved for its sites, not
+        // for Tandem: nothing it posts reaches a handler or an isolated-world script (13x8 Task 10).
+        if crate::webhost::scheme_of(&r.source) == "chrome-extension" {
+            return;
+        }
         match r.handler.as_str() {
             _ if browser_js::local_page_ok(&r) => {
                 // The page's own words are rebuilt from the routed parts, never forwarded.

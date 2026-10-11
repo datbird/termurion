@@ -43,6 +43,39 @@ pub(super) fn choice_of(a: Answer) -> Choice {
     }
 }
 
+/// Whether a pane shows the picker's button for a pick: a terminal pick on every terminal pane, a
+/// browser pick on a linkable browser pane only (`SS:35-40`, `SV:1203-1210`).
+/// Whether a picker button is drawn on `pane` (the cover over a browser pane's strip).
+pub(super) fn cover_over(hits: &[(PaneId, Rect)], pane: PaneId) -> bool {
+    hits.iter().any(|(p, _)| *p == pane)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CoverKey {
+    Pass,
+    Swallow,
+    Cancel,
+}
+
+/// What a key does while the cover may be shown.
+pub(super) fn cover_key(covered: bool, pressed: bool, escape: bool) -> CoverKey {
+    match (covered, pressed && escape) {
+        (false, _) => CoverKey::Pass,
+        (true, true) => CoverKey::Cancel,
+        (true, false) => CoverKey::Swallow,
+    }
+}
+
+pub(super) fn pane_gets_picker(terminal_pick: bool, browser_pane: bool, linkable: bool) -> bool {
+    if terminal_pick { !browser_pane } else { browser_pane && linkable }
+}
+
+/// Whether a browser pane may be linked to a chat: never Dev Null, never a Tandem, power or local
+/// page (`ai_browser::offerable`, the one rule the tools use too).
+pub(super) fn browser_pane_linkable(url: &str, dev_null: bool) -> bool {
+    crate::ai_browser::offerable(url, dev_null)
+}
+
 /// A pick for a request the chat's agent no longer holds (Stop, a turn that ended) has nobody
 /// to answer: it is dropped (ruling F29). A pick that only links never goes stale.
 pub(super) fn pick_stale(pick: &Pick, agent: Option<&Agent>) -> bool {
@@ -85,22 +118,48 @@ impl App {
         if self.chat_db().is_none() {
             return Err(NOT_LINKED.to_string());
         }
+        // The kind of the pane decides the field. A Dev Null browser pane and an orchestration
+        // chat's browser link are refused here, at the one link path (the person's own act: the
+        // menu, the picker or the offer's button; no tool, script or page reaches it).
+        let browser = self.is_browser_pane(pane);
+        let orchestrating = self.chat_row(chat).is_some_and(|c| c.orchestration_enabled);
+        let field = chat_menu::link_field(browser, browser && self.pane_dev_null(pane), orchestrating).map_err(str::to_string)?;
+        let terminal = field == chat_menu::LinkField::Terminal;
         let stored = reference.clone();
-        let before = self.chat_row(chat).and_then(|c| c.terminal_session_guid);
-        if !self.chat_update(chat, |c| c.terminal_session_guid = Some(stored)) {
+        let before = self.chat_row(chat).and_then(|c| if terminal { c.terminal_session_guid } else { c.browser_session_guid });
+        let changed = self.chat_update(chat, |c| {
+            if terminal {
+                c.terminal_session_guid = Some(stored);
+            } else {
+                c.browser_session_guid = Some(stored);
+            }
+        });
+        if !changed {
             return Err(NOT_LINKED.to_string());
         }
         // A relink ends the chat's watchers and timers at once: they were registered under
-        // the old session's permissions (Task 11 fix round 1).
-        if before.as_deref() != Some(reference.as_str()) {
+        // the old session's permissions (Task 11 fix round 1). A browser link has none.
+        if terminal && before.as_deref() != Some(reference.as_str()) {
             self.orch_watch_drop_chat(chat);
         }
         // A new session starts from no watermark: "the screen is unchanged" must not carry over
         // from the old one (ruling F34).
         self.ai_watermarks.remove(chat);
-        let name = self.window_title(pane);
-        self.notice(chat, &chat_buttons::linked_notice(true, Some(name.as_str()).filter(|n| !n.trim().is_empty())));
-        self.client_local(chat, ClientLocal::Permissions { terminal: true, guid: reference });
+        // A new browser session starts with no call in flight for the old one: a relink to another
+        // pane answers every call of the chat "page changed" at once (the binding check compares
+        // against the OLD pane's own page, which has not changed), so the old pane's text is
+        // never delivered under the new link.
+        if !terminal && before.as_deref().is_some_and(|b| b != reference.as_str()) {
+            self.ai_browser_unlinked(chat);
+        }
+        let name = if terminal { self.window_title(pane) } else { self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| crate::inert_files::display_text(&io.title, 128, false)).unwrap_or_default() };
+        self.notice(chat, &chat_buttons::linked_notice(terminal, Some(name.as_str()).filter(|n| !n.trim().is_empty())));
+        if !terminal {
+            // The person sees which site the model would read: the host end kept, nothing hidden.
+            let host = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| crate::browser::display_host(&io.url)).unwrap_or_default();
+            self.notice(chat, &chat_menu::linked_site_notice(&host));
+        }
+        self.client_local(chat, ClientLocal::Permissions { terminal, guid: reference });
         self.ai_publish_permissions(chat);
         self.chat_refresh();
         self.chat_state_changed();
@@ -120,8 +179,8 @@ impl App {
 
     /// Starts a pick (`SessionSelector.select`, `CVC:1222-1275`): an earlier pick is replaced,
     /// the chat shows "Waiting for a session", and every terminal pane of every window shows
-    /// the picker's button. A browser pick finds no browser pane before milestone 13, so it
-    /// shows none, and Cancel or Escape ends it.
+    /// the picker's button. A browser pick is answered by a browser pane only; Cancel or Escape
+    /// ends it.
     pub(super) fn start_pick(&mut self, chat: &str, terminal: bool, then: PickThen) {
         // An open pick ends first, with no pane: its request is declined and its turn goes on.
         if self.chat_picker.is_some() {
@@ -138,7 +197,9 @@ impl App {
     /// answers the decline.
     pub(super) fn picked(&mut self, pane: Option<PaneId>) {
         let Some(pick) = self.chat_picker.take() else { return };
-        let pane = pane.filter(|p| self.session_ref(*p).is_some());
+        // A pick takes the kind of pane it asked for (a terminal pick never links a browser pane).
+        let pane = pane.filter(|p| self.session_ref(*p).is_some() && self.is_browser_pane(*p) != pick.terminal);
+        let pane = pane.filter(|p| pick.terminal || self.browser_linkable(*p));
         match pick_outcome(&pick, pane) {
             Outcome::Nothing => {}
             Outcome::Link { chat, pane } => {
@@ -173,12 +234,50 @@ impl App {
     /// The picker's button on a terminal pane while a pick for a terminal is open; answers the
     /// button's rectangle, which the frame keeps as this window's hits (`picker_hits`).
     pub(super) fn draw_session_picker(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(PaneId, Rect)> {
-        if !self.chat_picker.as_ref().is_some_and(|p| p.terminal) {
+        if !self.chat_picker.as_ref().is_some_and(|p| pane_gets_picker(p.terminal, self.is_browser_pane(id), true)) {
             return None;
         }
         let p = self.panes.get(&id)?;
         let (fg, bg) = (p.own().palette.fg, p.own().palette.bg);
         Some((id, scene::session_picker_button(frame, rect, chat_buttons::PICK_REASON, fg, bg, cell, self.scale())))
+    }
+
+    /// Whether the browser pane `pane` may be linked now (not Dev Null, not a Tandem or local page).
+    fn browser_linkable(&self, pane: PaneId) -> bool {
+        self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| browser_pane_linkable(&io.url, io.dev_null))
+    }
+
+    /// The picker's button on a browser pane while a pick for a browser is open: drawn by Tandem in
+    /// the toolbar strip (the web view covers the pane), replacing the address field, and only on a
+    /// linkable pane. The label is a constant; no page title or address is drawn. The rectangle
+    /// goes in the same `picker_hits` as a terminal pane's.
+    pub(super) fn draw_browser_picker(&self, frame: &mut Frame, id: PaneId, bar: Rect, cell: (f32, f32)) -> Option<(PaneId, Rect)> {
+        let terminal = self.chat_picker.as_ref()?.terminal;
+        if !pane_gets_picker(terminal, true, self.browser_linkable(id)) {
+            return None;
+        }
+        let p = self.panes.get(&id)?;
+        let (fg, bg) = (p.own().palette.fg, p.own().palette.bg);
+        Some((id, scene::browser_picker_button(frame, bar, chat_buttons::PICK_REASON, fg, bg, cell, self.scale())))
+    }
+
+    /// Whether the picker's cover is drawn over `pane`'s strip now (its button is in this
+    /// window's hits). The hidden address field and buttons under it take no input.
+    pub(super) fn picker_covers(&self, pane: PaneId) -> bool {
+        cover_over(&self.picker_hits, pane)
+    }
+
+    /// A key while the cover is shown: Escape cancels the pick, every other key is swallowed so
+    /// it never reaches the hidden address field. True when taken.
+    pub(super) fn picker_cover_key(&mut self, pane: PaneId, ev: &KeyEvent) -> bool {
+        match cover_key(self.picker_covers(pane), ev.state == ElementState::Pressed, matches!(ev.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))) {
+            CoverKey::Pass => false,
+            CoverKey::Swallow => true,
+            CoverKey::Cancel => {
+                self.picked(None);
+                true
+            }
+        }
     }
 
     /// A left press: on a picker's button it picks that pane; anywhere else the pick keeps
@@ -315,8 +414,8 @@ impl App {
             Press::CancelTool => self.ai_cancel_tool(chat),
             Press::StopStreaming => self.stop_streaming(chat),
             Press::Link { terminal, guid } => {
-                // The offered session, if it is still open; a browser offer has none before 13.
-                if let (true, Some(pane)) = (terminal, self.ref_pane(&guid)) {
+                // The offered session, if it is still open and of the offered kind.
+                if let Some(pane) = self.ref_pane(&guid).filter(|p| self.is_browser_pane(*p) != terminal) {
                     if let Err(e) = self.link_chat(chat, pane) {
                         self.banners.set("chat_link", e);
                     }
@@ -355,8 +454,15 @@ impl App {
     /// The chat's linked terminal, as its reference and its live pane: None when it is not linked
     /// or the session is not open.
     fn chat_live_link(&self, chat: &str) -> Option<(String, PaneId)> {
-        let guid = self.chat_row(chat)?.terminal_session_guid?;
-        let pane = self.ref_pane(&guid)?;
+        self.chat_live_link_of(chat, false)
+    }
+
+    /// The chat's linked session of a kind (`browser` true: the browser one), as its reference
+    /// and its live pane of that kind: None when it is not linked or the session is not open.
+    fn chat_live_link_of(&self, chat: &str, browser: bool) -> Option<(String, PaneId)> {
+        let row = self.chat_row(chat)?;
+        let guid = if browser { row.browser_session_guid? } else { row.terminal_session_guid? };
+        let pane = self.ref_pane(&guid).filter(|p| self.is_browser_pane(*p) == browser)?;
         Some((guid, pane))
     }
 
@@ -364,10 +470,7 @@ impl App {
     /// category cycles Always, Never, Ask for the linked live session, and the two autopopulated
     /// categories ask Confirm Change before Always. Nothing happens for a chat with no live link.
     pub(super) fn toggle_permission(&mut self, chat: &str, category: Category) {
-        if category.is_browser() {
-            return; // No browser pane exists before milestone 13.
-        }
-        let Some((guid, _)) = self.chat_live_link(chat) else { return };
+        let Some((guid, _)) = self.chat_live_link_of(chat, category.is_browser()) else { return };
         let global = |c: Category| self.ai_global_permission(c);
         let current = self.ai_overrides.get(chat, &guid, category, &global);
         match chat_menu::toggle(category, current) {
@@ -413,6 +516,8 @@ impl App {
         }
         if terminal {
             self.orch_watch_drop_chat(chat);
+        } else {
+            self.ai_browser_unlinked(chat);
         }
         // The next link starts from no watermark (ruling F34).
         self.ai_watermarks.remove(chat);
@@ -423,16 +528,16 @@ impl App {
     }
 
     /// Reveal Linked Terminal Session.
-    fn reveal_chat_session(&mut self, chat: &str) {
-        if let Some((_, pane)) = self.chat_live_link(chat) {
+    fn reveal_chat_session(&mut self, chat: &str, browser: bool) {
+        if let Some((_, pane)) = self.chat_live_link_of(chat, browser) {
             self.reveal_pane(pane);
         }
     }
 
     /// Put Chat in Linked Terminal Session (`CVC:1379-1401`): the panel of the linked pane
     /// shows this chat. Nothing when the chat is not linked to a live session.
-    pub(super) fn put_chat_in_session(&mut self, chat: &str) {
-        if let Some((_, pane)) = self.chat_live_link(chat) {
+    pub(super) fn put_chat_in_session(&mut self, chat: &str, browser: bool) {
+        if let Some((_, pane)) = self.chat_live_link_of(chat, browser) {
             self.bind_inline(pane, chat, true);
         }
     }
@@ -542,6 +647,12 @@ impl App {
         for chat in chat_menu::chats_linked_to(&linked, reference) {
             self.unlink_chat(&chat, true);
         }
+        // A browser pane's chats unlink with the browser notice (`CVC:241-256`); the unlink also
+        // republishes the allowed set, so a call in flight for that page finds nothing offered.
+        let browser_chats: Vec<String> = self.chat_db.as_ref().and_then(|db| db.chats().ok()).unwrap_or_default().into_iter().filter(|c| c.browser_session_guid.as_deref() == Some(reference)).map(|c| c.id).collect();
+        for chat in browser_chats {
+            self.unlink_chat(&chat, false);
+        }
         self.chat_refresh();
     }
 
@@ -588,9 +699,10 @@ impl App {
         let Some(hwnd) = hwnd else { return };
         let Some(row) = self.chat_row(chat) else { return };
         let live = row.terminal_session_guid.as_deref().and_then(|g| self.ref_pane(g).map(|_| g.to_string()));
-        let facts = MenuFacts { orchestrating: row.orchestration_enabled, terminal_live: live.is_some(), browser_live: false, inline: inline.is_some(), streaming: self.streaming_chats.contains(chat) };
+        let browser_live = self.chat_live_link_of(chat, true).map(|(g, _)| g);
+        let facts = MenuFacts { orchestrating: row.orchestration_enabled, terminal_live: live.is_some(), browser_live: browser_live.is_some(), inline: inline.is_some(), streaming: self.streaming_chats.contains(chat) };
         let global = |c: Category| self.ai_global_permission(c);
-        let perm = |c: Category| match &live {
+        let perm = |c: Category| match if c.is_browser() { &browser_live } else { &live } {
             Some(g) => self.ai_overrides.get(chat, g, c, &global),
             None => Permission::Ask,
         };
@@ -636,9 +748,12 @@ impl App {
         }
         let Some((action, chat)) = chat_menu::parse_menu_id(id) else { return true };
         match action {
-            chat_menu::Action::Reveal => self.reveal_chat_session(&chat),
+            chat_menu::Action::Reveal => self.reveal_chat_session(&chat, false),
             chat_menu::Action::Unlink => self.unlink_chat(&chat, true),
-            chat_menu::Action::Put => self.put_chat_in_session(&chat),
+            chat_menu::Action::Put => self.put_chat_in_session(&chat, false),
+            chat_menu::Action::RevealBrowser => self.reveal_chat_session(&chat, true),
+            chat_menu::Action::UnlinkBrowser => self.unlink_chat(&chat, false),
+            chat_menu::Action::PutBrowser => self.put_chat_in_session(&chat, true),
             chat_menu::Action::Toggle(c) => self.toggle_permission(&chat, c),
             chat_menu::Action::Stream => self.toggle_stream(&chat),
             chat_menu::Action::Link => self.start_pick(&chat, true, PickThen::Link),
@@ -650,8 +765,8 @@ impl App {
                     self.banners.set("chat_orchestration", e);
                 }
             }
-            // Disabled until milestone 13; never a pick.
-            chat_menu::Action::LinkBrowser => {}
+            // The person's own pick: browser panes only are taken (`picked`).
+            chat_menu::Action::LinkBrowser => self.start_pick(&chat, false, PickThen::Link),
         }
         true
     }
@@ -763,7 +878,92 @@ mod tests {
     use crate::chat_agent::Park;
 
     fn park(request: &str) -> Park {
-        Park { call_id: "c".into(), request_id: request.into(), call: crate::ai_tools::Call::IsAtPrompt, safe: None, cleared_typing: false, guid: String::new(), send: None }
+        Park { call_id: "c".into(), request_id: request.into(), call: crate::ai_tools::Call::IsAtPrompt, safe: None, cleared_typing: false, guid: String::new(), send: None, site: None }
+    }
+
+    /// Review Focus 4: the browser half of linking. The stubs of "no browser pane before milestone
+    /// 13" are gone; link, unlink and pane-gone work by the pane's kind; only the person links.
+    #[test]
+    fn browser_linking_follows_iterm2() {
+        let src = include_str!("chat_session_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(!prod.contains("before milestone 13") && !prod.contains("Disabled until milestone 13"));
+        let link = &prod[prod.find("pub(super) fn link_chat").unwrap()..prod.find("pub(super) fn chat_state_changed").unwrap()];
+        assert!(link.contains("chat_menu::link_field(") && link.contains("pane_dev_null(") && link.contains("browser_session_guid = Some(") && link.contains("terminal_session_guid = Some("));
+        assert!(link.contains("linked_notice(browser.is_none()") || link.contains("linked_notice(terminal"), "the notice follows the kind");
+        assert!(link.contains("ClientLocal::Permissions { terminal"), "the bubble names the kind");
+        let unlink = &prod[prod.find("pub(super) fn unlink_chat").unwrap()..prod.find("fn reveal_chat_session").unwrap()];
+        assert!(unlink.contains("browser_session_guid = None") && unlink.contains("UNLINKED_BROWSER") && unlink.contains("ai_publish_permissions"));
+        let gone = &prod[prod.find("pub(super) fn chat_reference_gone").unwrap()..prod.find("fn chat_links(").unwrap()];
+        assert!(gone.contains("browser_session_guid") && gone.contains("self.unlink_chat(&chat, false)") && gone.contains("self.unlink_chat(&chat, true)"));
+        let menu = &prod[prod.find("pub(super) fn chat_menu_picked").unwrap()..prod.find("pub(super) fn chat_indicator_press").unwrap()];
+        for a in ["RevealBrowser", "UnlinkBrowser", "PutBrowser", "LinkBrowser"] {
+            assert!(menu.contains(&format!("chat_menu::Action::{a}")), "{a}");
+        }
+        assert!(menu.contains("start_pick(&chat, false, PickThen::Link)") && menu.contains("self.unlink_chat(&chat, false)"));
+        let toggle = &prod[prod.find("pub(super) fn toggle_permission").unwrap()..prod.find("pub(super) fn confirm_change_answered").unwrap()];
+        assert!(toggle.contains("chat_live_link_of(chat, category.is_browser())") && !toggle.contains("return;"), "the browser category reads the browser guid");
+        // Nothing the model or a page says links a session: no tool, script or message path calls it.
+        for other in ["ai_browser_app.rs", "ai_browser.rs", "browser_app.rs", "webhost.rs"] {
+            let f = std::fs::read_to_string(format!("{}/src/{}{}", env!("CARGO_MANIFEST_DIR"), if other.ends_with("_app.rs") { "app/" } else { "" }, other)).unwrap();
+            assert!(!f.contains("link_chat(") && !f.contains("browser_session_guid = Some"), "{other}");
+        }
+    }
+
+    #[test]
+    fn the_browser_pick_takes_a_browser_pane_only() {
+        let src = include_str!("chat_session_app.rs");
+        let picked = &src[src.find("pub(super) fn picked").unwrap()..src.find("pub(super) fn pick_tick").unwrap()];
+        assert!(picked.contains("pick.terminal") && picked.contains("is_browser_pane("), "a pick takes the kind it asked for");
+    }
+
+    /// `SS:35-40`, `SV:1203-1210`: a terminal pick shows the button on terminal panes, a browser
+    /// pick on browser panes only, and a browser pane that is not linkable (Dev Null, a Tandem or
+    /// local page) never shows one. A browser pane's button is Tandem's, drawn in the toolbar strip
+    /// from `picker_in_toolbar`, and its press is the one `picker_press`.
+    #[test]
+    fn the_picker_cover_takes_the_strips_input() {
+        let r = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+        assert!(cover_over(&[(3, r)], 3) && !cover_over(&[(3, r)], 4) && !cover_over(&[], 3));
+        // Uncovered: keys go on. Covered: every key is swallowed (press and release), Escape cancels.
+        assert_eq!(cover_key(false, true, true), CoverKey::Pass);
+        assert_eq!(cover_key(true, true, false), CoverKey::Swallow);
+        assert_eq!(cover_key(true, false, false), CoverKey::Swallow);
+        assert_eq!(cover_key(true, false, true), CoverKey::Swallow, "the release of Escape");
+        assert_eq!(cover_key(true, true, true), CoverKey::Cancel);
+        // The wiring: the press check follows the button check, the key check is first in browser_key.
+        let b = include_str!("browser_app.rs");
+        let press = &b[b.find("pub(super) fn browser_toolbar_press").unwrap()..];
+        assert!(press.find("self.picker_press(x, y)").unwrap() < press.find("self.picker_covers(pane) && bar.contains(x, y)").unwrap());
+        assert!(press.find("self.picker_covers(pane)").unwrap() < press.find("t.focused = pane").unwrap());
+        let key = &b[b.find("pub(super) fn browser_key").unwrap()..];
+        assert!(key.find("picker_cover_key(pane, ev)").unwrap() < key.find("b.bar.keys").unwrap());
+    }
+
+    #[test]
+    fn picker_kind_follows_iterm2() {
+        // (terminal pick, browser pane, linkable)
+        assert!(pane_gets_picker(true, false, true) && !pane_gets_picker(true, true, true));
+        assert!(!pane_gets_picker(false, false, true) && pane_gets_picker(false, true, true));
+        assert!(!pane_gets_picker(false, true, false), "a pane the model may not read is never offered");
+        assert!(browser_pane_linkable("https://a.example/", false) && browser_pane_linkable("", false));
+        assert!(!browser_pane_linkable("https://a.example/", true), "Dev Null");
+        for u in ["iterm2-about:settings", "file:///c:/x", "iterm2-ssh://h/", "chrome-extension://x/a.html"] {
+            assert!(!browser_pane_linkable(u, false), "{u}");
+        }
+        let src = include_str!("chat_session_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let draw = &prod[prod.find("pub(super) fn draw_browser_picker").unwrap()..prod.find("pub(super) fn picker_press").unwrap()];
+        assert!(draw.contains("ai_browser::picker_in_toolbar(") || draw.contains("scene::browser_picker_button("), "the rectangle is the one rule");
+        assert!(draw.contains("pane_gets_picker(") && draw.contains("chat_buttons::PICK_REASON") && !draw.contains("title") && !draw.contains("io.url"), "a constant label, no page text");
+        let picked = &prod[prod.find("pub(super) fn picked").unwrap()..prod.find("pub(super) fn pick_tick").unwrap()];
+        assert!(picked.contains("browser_linkable("), "a pick links only a linkable browser pane");
+        let m = include_str!("mod.rs");
+        assert!(m.contains("picker_hits.extend(self.draw_browser_picker("), "browser hits go in the same picker_hits");
+        assert!(prod.find("pub(super) fn draw_browser_picker").is_some() && !m.contains("injectpicker"));
+        let b = include_str!("browser_app.rs");
+        let press = &b[b.find("pub(super) fn browser_toolbar_press").unwrap()..b.find("fn browser_field_click").unwrap()];
+        assert!(press.find("self.picker_press(").unwrap() < press.find("browser_suggest_rects").unwrap(), "the picker is asked first");
     }
 
     #[test]

@@ -251,7 +251,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/browser_reader_app.rs", 1),
     ("app/browser_scripts_app.rs", 5),
     ("app/browser_triggers_app.rs", 1),
-    ("app/chat_window_app.rs", 2),
+    ("app/chat_window_app.rs", 3),
     ("app/clipboard_ui.rs", 1),
     ("app/hotkey_ui.rs", 2),
     ("app/menu.rs", 2),
@@ -268,14 +268,17 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/windows_ui.rs", 3),
     ("app/workgroup_app.rs", 3),
     ("app/workgroup_restore_app.rs", 3),
-    ("browser_pages.rs", 1),
+    ("browser_onboarding.rs", 1),
+    ("browser_pages.rs", 3),
+    ("browser_settings_page.rs", 1),
+    ("file_serve.rs", 1),
     ("globals.rs", 1),
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),
     ("perm_queue.rs", 1),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
-    ("webhost_win.rs", 20),
+    ("webhost_win.rs", 22),
 ];
 
 

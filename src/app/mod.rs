@@ -159,7 +159,10 @@ mod browser_app;
 mod browser_find_app;
 mod browser_copymode_app;
 mod adblock_app;
+mod browser_extensions_app;
 mod browser_db_app;
+mod bookmark_tags_app;
+mod browser_pages_app;
 mod browser_perms_app;
 mod browser_reader_app;
 mod devtools_read_app;
@@ -171,6 +174,7 @@ mod browser_ctx_app;
 mod browser_marks_app;
 mod browser_autofill_app;
 mod browser_basic_auth_app;
+mod browser_download_app;
 mod browser_password_app;
 mod browser_triggers_app;
 mod browser_smart_app;
@@ -228,6 +232,7 @@ mod chat_session_app;
 mod transparency_ui;
 mod chat_engine;
 mod ai_tools_app;
+mod ai_browser_app;
 mod ai_exec_app;
 mod ai_safety_app;
 mod scripts_app;
@@ -237,6 +242,7 @@ mod builtin_ui;
 mod ssh_app;
 mod ssh_framer_app;
 mod ssh_files_app;
+mod ssh_page_app;
 mod ssh_panel_app;
 mod ssh_url_app;
 mod workgroup_app;
@@ -1075,6 +1081,11 @@ pub struct App {
     /// Each pane's inline chat (its binding and panel state), app-wide as `clips` is.
     inline: HashMap<PaneId, inline_chat_ui::InlineState>,
     add_clip_win: Option<(crate::clip_add_ui::AddClipWindow, PaneId)>,
+    /// The Edit Bookmark window (app-wide, never swapped: one at a time), a request for it that waits
+    /// for the next pass of the event loop, and whether its Delete question is open.
+    bookmark_editor: Option<crate::bookmark_tag_ui::TagEditor>,
+    bookmark_editor_req: Option<(PaneId, String, Option<String>)>,
+    bookmark_delete_asking: bool,
     clip_hover: Option<(PaneId, crate::clippings::Button)>,
     shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
     list_popup: Option<(crate::list_popup_ui::ListPopup, PaneId, shell_history_ui::PopupFor, Vec<String>)>,
@@ -1243,6 +1254,11 @@ pub struct App {
     /// The framed conductors of every window, by identity (app-wide, not in `swap_live`):
     /// 14d's Download Files reads it. Only `ssh_apply` and the pane drop paths change it.
     ssh_registry: crate::ssh_registry::Registry,
+    /// Remote files being fetched for browser views, by the transfer engine's job (app-wide, 13x8).
+    ssh_page_jobs: HashMap<u64, crate::ssh_page::PageJob>,
+    /// The `iterm2-ssh:` URL the new browser pane loads first: set only by the person's View answer
+    /// and taken by `start_browser_pane` in the same call.
+    ssh_view_url: Option<String>,
     /// What waits for each file request, by pane and the id Tandem sent it with (app-wide,
     /// not in `swap_live`; 14d).
     ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
@@ -1433,6 +1449,9 @@ pub struct App {
     autofill: browser_autofill_app::AutofillState,
     /// HTTP authentication state per browser pane (app-wide, keyed by pane; not swapped).
     basic_auth: HashMap<PaneId, browser_basic_auth_app::AuthPane>,
+    /// Browser downloads by id (app-wide, never swapped) and the last id.
+    browser_downloads: HashMap<u64, crate::browser_download::Download>,
+    download_seq: u64,
     ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
     /// The discovered Ollama models (app-wide, never swapped), the transport AI requests go
     /// through, and the refresh the settings window waits on.
@@ -1575,6 +1594,8 @@ pub struct App {
     chat_agents: HashMap<String, crate::chat_agent::Agent>,
     /// (chat, request id) of the Get-Help running on each pane (minor m1), app-wide.
     ai_pending_tools: HashMap<PaneId, (String, String)>,
+    /// The browser tool calls waiting by token (13x AI browser tools), app-wide.
+    ai_browser: ai_browser_app::Calls,
     /// What a model said about the session it started (provenance, 12f Task 9), by pane.
     orch_provenance: HashMap<PaneId, String>,
     /// Orchestration requests parked on the person: request id to (chat id, call id).
@@ -1748,6 +1769,9 @@ pub struct App {
     /// post. App-wide, never per window.
     web_envs: webhost_app::Envs,
     web_events: std::sync::mpsc::Receiver<crate::webhost::Posted>,
+    /// The workers that read `iterm2-file:` pages' files (13x8 Task 3), started on the first request.
+    /// App-wide, never per window.
+    file_pool: Option<crate::file_serve::Pool>,
     /// The window whose keyboard focus sits in one of its own web views (13x Task 1a): the parent saw
     /// `Focused(false)` but is still the foreground window. App-wide, never per window.
     web_focus_held: Option<WindowId>,
@@ -1774,6 +1798,8 @@ pub struct App {
     browser_next: Vec<browser_input_app::PageNext>,
     /// The ad blocker: rules, the list download and its schedule (13x Task 8; app-wide).
     adblock: adblock_app::Adblock,
+    /// Browser extensions: this run's folder map, the sync and the approval questions (13x8 Task 10; app-wide).
+    browser_ext: browser_extensions_app::Extensions,
     /// The pane that was focused at the last placement, to tell a pane change from none.
     focus_seen: crate::browser::FocusSeen<WindowId>,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
@@ -2421,6 +2447,9 @@ pub fn run() {
         clips: HashMap::new(),
         inline: HashMap::new(),
         add_clip_win: None,
+        bookmark_editor: None,
+        bookmark_editor_req: None,
+        bookmark_delete_asking: false,
         clip_hover: None,
         paste_history_win: None,
         advanced_paste_win: None,
@@ -2522,6 +2551,8 @@ pub fn run() {
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
         ssh_registry: Default::default(),
+        ssh_page_jobs: HashMap::new(),
+        ssh_view_url: None,
         ssh_waiters: HashMap::new(),
         ssh_next_file_id: 1,
         ssh_suggest_cache: HashMap::new(),
@@ -2620,6 +2651,8 @@ pub fn run() {
         ai_key_asks: VecDeque::new(),
         autofill: Default::default(),
         basic_auth: HashMap::new(),
+        browser_downloads: HashMap::new(),
+        download_seq: 0,
         ai_key_window: None,
         ai_discovery,
         ai_transport,
@@ -2694,6 +2727,7 @@ pub fn run() {
         ai_nag: crate::ai_classifier::NagGate::default(),
         chat_agents: HashMap::new(),
         ai_pending_tools: HashMap::new(),
+        ai_browser: ai_browser_app::Calls::default(),
         orch_provenance: HashMap::new(),
         orch_parks: HashMap::new(),
         orch_waits: HashMap::new(),
@@ -2773,6 +2807,7 @@ pub fn run() {
         restored_dir: None,
         web_envs,
         web_events,
+        file_pool: None,
         web_focus_held: None,
         web_focus_view: None,
         tool_view_ids: HashMap::new(),
@@ -2783,6 +2818,7 @@ pub fn run() {
         browser_runs: Vec::new(),
         browser_next: Vec::new(),
         adblock: adblock_app::Adblock::default(),
+        browser_ext: Default::default(),
         focus_seen: Default::default(),
         browser_url_override: None,
         restoring_windows: false,
@@ -4137,6 +4173,7 @@ impl App {
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
         self.page_save_cancel(id);
+        self.browser_extensions_pane_gone(id);
         self.api_session_subs.forget_session(id);
         // The shell a model's held text was typed into is gone (Task 10 fix round 2).
         self.orch_held.remove(&id);
@@ -4171,6 +4208,10 @@ impl App {
         self.marks_pane_gone(id);
         self.autofill_pane_gone(id);
         self.browser_pw_pane_gone(id);
+        self.browser_downloads_view_gone(id);
+        self.ssh_page_view_gone(id);
+        // Waiting browser tools answer a failure before the view closes.
+        self.ai_browser_pane_gone(id);
         self.close_browser_view(id);
     }
 
@@ -4987,6 +5028,9 @@ impl App {
         self.warn_short_lived(id);
         // The source ending cancels the pick (`PS:3940-3942`).
         self.pane_move_event(pane_move_ui::PickEvent::Ended(id));
+        // Waiting browser tools answer "the browser session was closed" first; the unlink below
+        // would otherwise answer them "page changed".
+        self.ai_browser_pane_gone(id);
         // Every chat linked to this session unlinks while its reference still names the pane.
         self.chat_pane_gone(id);
         // AI requests that belong to the pane end with it.
@@ -5106,6 +5150,7 @@ impl App {
         if self.add_clip_win.as_ref().is_some_and(|(_, p)| *p == id) {
             self.add_clip_win = None;
         }
+        self.bookmark_editor_close_for(id);
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
             let tab = &mut self.tabs[t];
             if tab.layout.remove(id) {
@@ -6469,6 +6514,7 @@ impl App {
                     }
                     if let Some(bar) = self.browser_strip(tab, id) {
                         self.draw_browser_bar(&mut frame, id, bar, rect, self.cell());
+                        picker_hits.extend(self.draw_browser_picker(&mut frame, id, bar, self.cell()));
                     }
                     // An announcement bar covers the top of the page (the web view gives way below it).
                     overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id)).map(|r| (mouse::Overlay::InfoBar, r)));
@@ -7345,6 +7391,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.bookmark_editor_tick(event_loop);
         self.browser_runs_tick(event_loop);
         self.browser_next_tick(event_loop);
         self.open_locale_asks(event_loop);
@@ -7535,7 +7582,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.bookmark_editor_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;

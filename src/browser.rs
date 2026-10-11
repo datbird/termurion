@@ -554,20 +554,26 @@ pub struct ReaderMenu {
     pub reader: bool,
     pub distraction: bool,
     pub has_url: bool,
+    /// Whether "Ask AI\u{2026}" is enabled: a page with a URL that tools may read (never Dev Null, never
+    /// a Tandem, local or extension page: `ai_browser::offerable`).
+    pub ask_ai: bool,
 }
+
+/// The toolbar menu's "Ask AI\u{2026}" entry: its label is its id (`browser_menu_picked` reads the label).
+pub const ASK_AI_ID: &str = "Ask AI\u{2026}";
 
 /// The toolbar menu: None is a separator, the flag is whether the item is enabled (`BT:306-420`).
 /// Dev Null hides the bookmark and history items; Settings stays disabled until 13x8 builds the
 /// page.
 pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool, reader: Option<ReaderMenu>) -> Vec<Option<(&'static str, bool)>> {
     let mut out = Vec::new();
-    // The reader block does not depend on Dev Null (`BT:313-345`). Ask AI waits for the AI browser
-    // tools plan, so it is shown disabled.
+    // The reader block does not depend on Dev Null (`BT:313-345`). Ask AI is enabled only for a page
+    // the AI tools may read (`ReaderMenu::ask_ai`).
     if let Some(r) = reader {
         out.push(Some((if r.reader { "Exit Reader Mode" } else { "Reader Mode" }, r.has_url)));
         out.push(Some((if r.distraction { "Exit Distraction Removal" } else { "Remove Distractions" }, r.has_url)));
         out.push(None);
-        out.push(Some(("Ask AI\u{2026}", false)));
+        out.push(Some((ASK_AI_ID, r.ask_ai)));
     }
     if !dev_null {
         out.push(Some((if bookmarked { "Remove Bookmark" } else { "Add Bookmark" }, has_url)));
@@ -576,7 +582,7 @@ pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool, reader: Optio
         out.push(Some(("History", true)));
         out.push(None);
     }
-    out.push(Some(("Settings", false)));
+    out.push(Some(("Settings", true)));
     // The one menu filter (13w): an item this build removes is never shown, here as in every
     // other menu copy (iTerm2's own toolbar menu has a debug-build-only item).
     out.retain(|i| i.is_none_or(|(label, _)| !crate::menus::hidden_in_menu(menu_selector(label), cfg!(debug_assertions))));
@@ -593,7 +599,7 @@ pub fn menu_selector(label: &str) -> &'static str {
         "Settings" => "settingsMenuItemSelected:",
         "Reader Mode" | "Exit Reader Mode" => "readerModeMenuItemSelected",
         "Remove Distractions" | "Exit Distraction Removal" => "distractionRemovalMenuItemSelected",
-        "Ask AI\u{2026}" => "askAIMenuItemSelected",
+        ASK_AI_ID => "askAIMenuItemSelected",
         "Debug Autofill Fields" => "debugAutofillMenuItemSelected:",
         _ => "",
     }
@@ -1313,6 +1319,12 @@ impl NavList {
         self.pending = Some(steps);
     }
 
+    /// The URL `steps` entries from the current one (negative is back), when the list holds it.
+    pub fn target_url(&self, steps: i32) -> Option<&str> {
+        let at = i64::try_from(self.index).ok()?.checked_add(i64::from(steps))?;
+        usize::try_from(at).ok().and_then(|i| self.entries.get(i)).map(|e| e.0.as_str())
+    }
+
     /// The entries before the current one, nearest first, with the steps back to each.
     pub fn back_items(&self) -> Vec<(String, String, i32)> {
         (0..self.index).rev().take(NAV_MENU).map(|i| (self.entries[i].1.clone(), self.entries[i].0.clone(), i as i32 - self.index as i32)).collect()
@@ -1668,7 +1680,7 @@ mod tests {
         }
         assert_eq!(names(&m), vec!["Remove Bookmark", "Manage Bookmarks", "History", "Settings"]);
         assert_eq!(m[1], None);
-        assert_eq!(m.last().copied().flatten(), Some(("Settings", false)), "Settings stays disabled until 13x8");
+        assert_eq!(m.last().copied().flatten(), Some(("Settings", true)), "Settings opens the settings page (13x8 Task 5)");
         let dev = menu_items(false, true, true, None);
         assert_eq!(names(&dev), vec!["Settings"], "Dev Null hides the bookmark and history items (`BT:344`)");
         assert_eq!(history_menu(&[("T".into(), "https://a/".into()), ("".into(), "https://b/".into()), ("x\u{202e}y".into(), "u".into())], 80), vec!["T", "https://b/", "xy"]);
@@ -1820,7 +1832,7 @@ mod tests {
         assert!(crate::menus::hidden_in_menu(menu_selector("Debug Autofill Fields"), false), "debug builds only (iTermBrowserToolbar.swift:370-378)");
         assert!(!crate::menus::hidden_in_menu(menu_selector("Debug Autofill Fields"), true));
         for dev_null in [false, true] {
-            for (label, _) in menu_items(false, true, dev_null, Some(ReaderMenu { reader: false, distraction: true, has_url: true })).into_iter().flatten() {
+            for (label, _) in menu_items(false, true, dev_null, Some(ReaderMenu { reader: false, distraction: true, has_url: true, ask_ai: true })).into_iter().flatten() {
                 assert!(!menu_selector(label).is_empty(), "{label} has its iTerm2 action");
                 assert!(!crate::menus::hidden_in_menu(menu_selector(label), false), "{label} shows in release");
             }
@@ -1834,9 +1846,9 @@ mod tests {
     /// when Reader Mode is offered.
     #[test]
     fn reader_menu_follows_iterm2() {
-        let rm = |reader, distraction, has_url| Some(ReaderMenu { reader, distraction, has_url });
+        let rm = |reader, distraction, has_url| Some(ReaderMenu { reader, distraction, has_url, ask_ai: has_url });
         let m = menu_items(false, true, false, rm(false, false, true));
-        assert_eq!(m[..5], [Some(("Reader Mode", true)), Some(("Remove Distractions", true)), None, Some(("Ask AI\u{2026}", false)), Some(("Add Bookmark", true))]);
+        assert_eq!(m[..5], [Some(("Reader Mode", true)), Some(("Remove Distractions", true)), None, Some(("Ask AI\u{2026}", true)), Some(("Add Bookmark", true))]);
         let on = menu_items(false, true, false, rm(true, true, true));
         assert_eq!((on[0], on[1]), (Some(("Exit Reader Mode", true)), Some(("Exit Distraction Removal", true))));
         let none = menu_items(false, true, false, rm(false, false, false));
@@ -1848,6 +1860,23 @@ mod tests {
         for label in ["Reader Mode", "Exit Reader Mode", "Remove Distractions", "Exit Distraction Removal", "Ask AI\u{2026}"] {
             assert!(!menu_selector(label).is_empty(), "{label} has its iTerm2 action");
         }
+    }
+
+    /// Task 8 (Review Focus 5, `BT:313-341`): with reader content the two reader items, a separator, then
+    /// Ask AI enabled; without reader content none of them and no separator; Dev Null keeps it; a
+    /// page the tools may not read (`ask_ai` false) shows it disabled.
+    #[test]
+    fn ask_ai_follows_iterm2() {
+        assert_eq!(ASK_AI_ID, "Ask AI\u{2026}");
+        let on = ReaderMenu { reader: false, distraction: false, has_url: true, ask_ai: true };
+        let m = menu_items(false, true, false, Some(on));
+        assert_eq!(m[..4], [Some(("Reader Mode", true)), Some(("Remove Distractions", true)), None, Some((ASK_AI_ID, true))]);
+        let none = menu_items(false, true, false, None);
+        assert!(none.iter().flatten().all(|(n, _)| !matches!(*n, "Reader Mode" | "Remove Distractions" | ASK_AI_ID)) && none[0] == Some(("Add Bookmark", true)), "no reader content, no block and no separator");
+        let dev = menu_items(false, true, true, Some(on));
+        assert!(dev.contains(&Some((ASK_AI_ID, true))), "Dev Null does not hide the item (the app disables it through ask_ai)");
+        let off = menu_items(false, true, true, Some(ReaderMenu { ask_ai: false, ..on }));
+        assert!(off.contains(&Some((ASK_AI_ID, false))));
     }
 
     #[test]
@@ -2325,6 +2354,8 @@ mod tests {
             n.source(u);
         }
         n.title("C");
+        assert_eq!((n.target_url(-1), n.target_url(-2), n.target_url(-3), n.target_url(1), n.target_url(0)), (Some("https://b/"), Some("https://a/"), None, None, Some("https://c/")));
+        assert_eq!(n.target_url(i32::MIN), None);
         assert_eq!(n.back_items(), vec![("".into(), "https://b/".into(), -1), ("".into(), "https://a/".into(), -2)]);
         assert!(n.forward_items().is_empty());
         n.expect(-2);

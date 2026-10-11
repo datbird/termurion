@@ -209,6 +209,11 @@ impl Overrides {
         self.map.get(&key).copied().unwrap_or_else(|| Permission::from_global(global(c)))
     }
 
+    /// The chat's own answer for a session (or a browser site scope), if it has one.
+    pub fn entry(&self, chat: &str, guid: &str, c: Category) -> Option<Permission> {
+        self.map.get(&Key { chat: chat.to_string(), guid: guid.to_string(), category: c }).copied()
+    }
+
     pub fn set(&mut self, key: Key, p: Permission) {
         self.map.insert(key, p);
     }
@@ -377,6 +382,36 @@ pub const NOT_LINKED_MODEL: &str = "The user did not link a terminal session to 
 pub const NOT_LINKED_USER_NOTICE: &str = "AI attempted to perform an action, but no terminal session is linked to this chat so it failed.";
 /// The session picker's text (`ChatViewController.swift:2746-2749`).
 pub const NEEDS_SESSION: &str = "The AI agent needs to run commands in a live terminal session, but none is attached to this chat.";
+/// The same three answers for a browser call with no live browser session (`ChatViewController.swift:1838-1847`).
+pub const NOT_LINKED_NOTICE_BROWSER: &str = "This chat is not linked to any web browser session.";
+pub const NOT_LINKED_USER_NOTICE_BROWSER: &str = "AI attempted to perform an action, but no web browser session is linked to this chat so it failed.";
+pub const NOT_LINKED_MODEL_BROWSER: &str = "The user did not link a web browser session to chat, so the function could not be run.";
+/// The session picker's text for a browser call (`ChatViewController.swift:2749`).
+pub const NEEDS_SESSION_BROWSER: &str = "The AI agent needs to run commands in a live web browser session, but none is attached to this chat.";
+
+/// The notice, the user notice and the model text of a call with no live session of its kind.
+/// All constants: nothing a page or a person typed ever reaches them.
+pub fn not_linked(browser: bool) -> (&'static str, &'static str, &'static str) {
+    if browser {
+        (NOT_LINKED_NOTICE_BROWSER, NOT_LINKED_USER_NOTICE_BROWSER, NOT_LINKED_MODEL_BROWSER)
+    } else {
+        (NOT_LINKED_NOTICE, NOT_LINKED_USER_NOTICE, NOT_LINKED_MODEL)
+    }
+}
+
+/// The picker text for the kind of session a call needs.
+pub fn needs_session(terminal: bool) -> &'static str {
+    if terminal { NEEDS_SESSION } else { NEEDS_SESSION_BROWSER }
+}
+
+/// The one owner of the offered tool set: the allowed set (which already needs a linked browser
+/// session for a browser category) minus every browser category unless the linked browser pane
+/// is one the model may use (`browser_ok`, from `ai_browser::offerable`: not Dev Null, not a
+/// power or local page). Depends on nothing but what the person linked and where it is.
+pub fn offered(allowed: &BTreeSet<Category>, browser_ok: bool) -> BTreeSet<Category> {
+    allowed.iter().copied().filter(|c| browser_ok || !c.is_browser()).collect()
+}
+
 /// A permission change whose chat row could not be written (Tandem's text; iTerm2 only logs
 /// it). The change still holds until Tandem quits.
 pub const NOT_SAVED: &str = "The permission change could not be saved. It applies until Tandem quits.";
@@ -580,6 +615,51 @@ mod tests {
         assert_eq!(decode(""), None);
         assert_eq!(decode("[]"), Some(BTreeMap::new()));
         assert_eq!(decode(&text), Some(BTreeMap::from([(key("C", "7", RunCommands), Permission::Always)])));
+    }
+
+    #[test]
+    fn browser_texts_follow_iterm2() {
+        assert_eq!(NOT_LINKED_NOTICE_BROWSER, "This chat is not linked to any web browser session.");
+        assert_eq!(NOT_LINKED_USER_NOTICE_BROWSER, "AI attempted to perform an action, but no web browser session is linked to this chat so it failed.");
+        assert_eq!(NOT_LINKED_MODEL_BROWSER, "The user did not link a web browser session to chat, so the function could not be run.");
+        assert_eq!(NEEDS_SESSION_BROWSER, "The AI agent needs to run commands in a live web browser session, but none is attached to this chat.");
+        assert_eq!(not_linked(true), (NOT_LINKED_NOTICE_BROWSER, NOT_LINKED_USER_NOTICE_BROWSER, NOT_LINKED_MODEL_BROWSER));
+        assert_eq!(not_linked(false), (NOT_LINKED_NOTICE, NOT_LINKED_USER_NOTICE, NOT_LINKED_MODEL));
+        assert_eq!(needs_session(true), NEEDS_SESSION);
+        assert_eq!(needs_session(false), NEEDS_SESSION_BROWSER);
+    }
+
+    #[test]
+    fn allowed_set_reads_the_browser_guid() {
+        let g = every(0);
+        let mut o = Overrides::default();
+        let mut all = BTreeSet::from(TERMINAL);
+        all.insert(ActInWebBrowser);
+        assert_eq!(o.allowed("C", Some("7"), Some("9"), &g), all);
+        assert_eq!(o.allowed("C", None, Some("9"), &g), BTreeSet::from([ActInWebBrowser]));
+        // An Always for the chat's browser session keeps the category over a global Never.
+        o.set(key("C", "9", ActInWebBrowser), Permission::Always);
+        assert!(o.allowed("C", None, Some("9"), &every(2)).contains(&ActInWebBrowser));
+        o.set(key("C", "9", ActInWebBrowser), Permission::Never);
+        assert!(!o.allowed("C", None, Some("9"), &g).contains(&ActInWebBrowser));
+        let d = defaults("C", None, Some("9"), &every(1));
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[&key("C", "9", ActInWebBrowser)], Permission::Always);
+    }
+
+    #[test]
+    fn the_offered_set_needs_a_usable_browser_pane() {
+        let mut all = BTreeSet::from(TERMINAL);
+        all.insert(ActInWebBrowser);
+        assert_eq!(offered(&all, true), all);
+        let mut without = all.clone();
+        without.remove(&ActInWebBrowser);
+        assert_eq!(offered(&all, false), without);
+        assert!(offered(&BTreeSet::from([ActInWebBrowser]), false).is_empty());
+        // No browser tool description carries a URL, a credential or page text.
+        for d in crate::ai_tools::tool_defs(&all) {
+            assert!(!d.description.contains("://") && !d.description.contains('@'), "{}", d.name);
+        }
     }
 
     #[test]

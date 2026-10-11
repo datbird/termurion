@@ -55,7 +55,7 @@ pub fn row_snippet(messages: &[Message]) -> String {
 
 /// The most recent chat linked to `session` (`lastChat(guid:)`); `chats` is most recent first.
 pub fn last_linked<'a>(chats: &'a [Chat], session: &str) -> Option<&'a Chat> {
-    chats.iter().find(|c| c.terminal_session_guid.as_deref() == Some(session))
+    chats.iter().find(|c| crate::chat_toolbar::is_linked(c.terminal_session_guid.as_deref(), c.browser_session_guid.as_deref(), &[session]))
 }
 
 /// The rows, in the order the store gives the chats. `snippet` is a chat's row snippet (its

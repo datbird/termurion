@@ -1222,7 +1222,8 @@ impl SettingsWindow {
                                 continue;
                             }
                             // The zoom commands set the page zoom; it has no row.
-                            if s.key == "Browser Zoom" {
+                            // The extension keys are written by the approval window, never by a control.
+                            if s.key == "Browser Zoom" || s.key == crate::browser_extensions::ROOT_KEY || s.key == crate::browser_extensions::ACTIVE_KEY {
                                 continue;
                             }
                             // Profile type: a two-segment control over Custom Command (`PGP:268-290`).

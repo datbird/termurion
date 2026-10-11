@@ -997,6 +997,40 @@ pub const EXTENSION_TO_MIME: &[(&str, &str)] = &[
     ("zmm", "application/vnd.handheld-entertainment+xml"),
 ];
 
+/// iTerm2's second table (`ETM:9-31`, "supported files" of OpenAI's file search), consulted after the
+/// first (`ETM:1029-1031`). Generated once by `sed -n 9,31p ExtensionToMime.swift` into pairs, sorted.
+pub const OPENAI_EXTENSION_TO_MIME: &[(&str, &str)] = &[
+    ("c", "text/x-c"),
+    ("cpp", "text/x-c++"),
+    ("cs", "text/x-csharp"),
+    ("css", "text/css"),
+    ("doc", "application/msword"),
+    ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ("go", "text/x-golang"),
+    ("html", "text/html"),
+    ("java", "text/x-java"),
+    ("js", "text/javascript"),
+    ("json", "application/json"),
+    ("md", "text/markdown"),
+    ("pdf", "application/pdf"),
+    ("php", "text/x-php"),
+    ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    ("py", "text/x-python"),
+    ("rb", "text/x-ruby"),
+    ("sh", "application/x-sh"),
+    ("tex", "text/x-tex"),
+    ("ts", "application/typescript"),
+    ("txt", "text/plain"),
+];
+
+/// The MIME type of a file extension (no dot, any case): iTerm2's main table, then its OpenAI table
+/// (`mimeType(for:)`, `ETM:1029-1031`); None when neither has the extension.
+pub fn mime_for_extension(ext: &str) -> Option<&'static str> {
+    let ext = ext.to_ascii_lowercase();
+    let find = |t: &'static [(&'static str, &'static str)]| t.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m);
+    find(EXTENSION_TO_MIME).or_else(|| find(OPENAI_EXTENSION_TO_MIME))
+}
+
 /// The extension a MIME type is saved under (`MTU:11-36`): the inverted table on the lower-cased
 /// MIME, then on the part before ";" trimmed, then the prefix fallbacks, else "dat". A MIME listed
 /// under several extensions answers the LAST one in source order.
@@ -1029,6 +1063,39 @@ pub fn extension_for_mime(mime: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extensions_map_to_their_mime() {
+        assert_eq!(mime_for_extension("PNG"), Some("image/png"));
+        assert_eq!(mime_for_extension("svg"), Some("image/svg+xml"));
+        assert_eq!(mime_for_extension("html"), Some("text/html"));
+        assert_eq!(mime_for_extension("nosuchext"), None);
+        assert_eq!(mime_for_extension(""), None);
+    }
+
+    #[test]
+    fn mime_types_follow_iterm2() {
+        assert_eq!(mime_for_extension("png"), Some("image/png"));
+        assert_eq!(mime_for_extension("PNG"), Some("image/png"));
+        assert_eq!(mime_for_extension("html"), Some("text/html"));
+        assert_eq!(mime_for_extension("txt"), Some("text/plain"));
+        assert_eq!(mime_for_extension("zip"), Some("application/zip"));
+        assert_eq!(mime_for_extension("7z"), Some("application/x-7z-compressed"));
+        assert_eq!(mime_for_extension("nope"), None);
+        // The main table comes first, then the OpenAI table (`ETM:1029-1031`); an extension only the
+        // second knows resolves from it.
+        assert_eq!(OPENAI_EXTENSION_TO_MIME.len(), 21, "ETM:9-31 holds 21 pairs, not the 22 the plan counted");
+        assert!(EXTENSION_TO_MIME.windows(2).all(|w| w[0].0 < w[1].0), "sorted");
+        for (ext, mime) in OPENAI_EXTENSION_TO_MIME {
+            let main = EXTENSION_TO_MIME.iter().find(|(e, _)| e == ext).map(|(_, m)| *m);
+            assert_eq!(mime_for_extension(ext), Some(main.unwrap_or(mime)), "{ext}");
+        }
+        let only_openai: Vec<_> = OPENAI_EXTENSION_TO_MIME.iter().filter(|(e, _)| !EXTENSION_TO_MIME.iter().any(|(m, _)| m == e)).collect();
+        assert!(!only_openai.is_empty(), "the second table adds something");
+        for (e, m) in only_openai {
+            assert_eq!(mime_for_extension(e), Some(*m));
+        }
+    }
 
     #[test]
     fn mime_table_follows_iterm2() {
