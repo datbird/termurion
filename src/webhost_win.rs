@@ -1965,6 +1965,11 @@ fn source_of(view: &ICoreWebView2) -> Option<String> {
 #[cfg(test)]
 static FRAME_CANCELS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Main-frame navigations the one verdict refused, as (target, redirect) (tests only): a refused
+/// redirect posts nothing, so this is the probe's evidence that the verdict saw and refused it.
+#[cfg(test)]
+static VERDICT_REFUSALS: std::sync::Mutex<Vec<(String, bool)>> = std::sync::Mutex::new(Vec::new());
+
 fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
     unsafe { view.add_NavigationStarting(&starting_handler(inner, false), token) }?;
     // The same handler body, in frame mode, for FrameNavigationStarting: a subframe may not go to an
@@ -2023,6 +2028,10 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
             let _ = unsafe { args.SetCancel(true) };
+            #[cfg(test)]
+            if let Ok(mut l) = VERDICT_REFUSALS.lock() {
+                l.push((uri.clone(), redirect));
+            }
             if webhost::refused_click(&info, allowed) {
                 let i = inner.borrow();
                 i.poster.post(Event::Refused { view: i.id, url: webhost::cap_url(&uri).0, user });
@@ -6858,9 +6867,27 @@ window.addEventListener('message', function (e) {
         // user-initiated) and the listener got the connection. The evidence is read without a script
         // (an ExecuteScript after a NavigationStarting waits for the next document): the listener, the
         // host's order (a refused navigation posts no Starting) and the view's Source.
-        let accepted = listener.accept().is_ok();
-        println!("probe: accepted={accepted} source={:?} order={:?} log={:?} navigated={:?}", p.source(), p.order, p.auth_log, p.navigated);
-        assert!(!accepted, "the listener saw no connection");
+        // Probe run 2026-10-11c: with the navigation refused (Refused, no Starting) the listener still
+        // accepted a connection; Chromium may preconnect to a navigation's host before
+        // NavigationStarting is judged. What leaves is what a connection carries: every connection is
+        // read, and none may carry a byte (no request line, no path, no query).
+        let mut carried: Vec<String> = Vec::new();
+        let mut connections = 0;
+        while let Ok((mut c, _)) = listener.accept() {
+            use std::io::Read;
+            connections += 1;
+            let _ = c.set_nonblocking(false);
+            let _ = c.set_read_timeout(Some(Duration::from_millis(1500)));
+            let mut buf = [0u8; 2048];
+            let n = c.read(&mut buf).unwrap_or(0);
+            if n > 0 {
+                carried.push(String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string());
+            }
+        }
+        println!("probe: connections={connections} carried={carried:?} source={:?} order={:?} log={:?} navigated={:?}", p.source(), p.order, p.auth_log, p.navigated);
+        assert!(carried.is_empty(), "no connection carried a request: {carried:?}");
+        let refused: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l.clone()).unwrap_or_default();
+        assert!(refused.iter().any(|(u, _)| u == &format!("http://127.0.0.1:{port}/nav")), "the verdict refused the navigation away: {refused:?} / {:?}", p.order);
         assert!(!p.order.iter().any(|o| o.starts_with("starting http")), "the navigation away never started: {:?}", p.order);
         assert_eq!(p.navigated.len(), n + 1, "nothing else loaded: {:?}", p.navigated);
         assert_eq!(p.source(), Some(page.clone()), "the view's Source is still the file page");
@@ -7036,6 +7063,7 @@ window.addEventListener('message', function (e) {
             p.view().navigate_tandem(&from);
             assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded again: {:?}", p.order);
             let before = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
+            let refused_before = VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0);
             let n = p.navigated.len();
             p.page_eval(&format!("setTimeout(function () {{ location.href = '{base}/r'; }}, 0); 1")).expect("the page navigates");
             assert!(p.wait(15, |p| p.navigated.len() > n), "from {from}: the navigation ended: {:?}", p.order);
@@ -7043,6 +7071,10 @@ window.addEventListener('message', function (e) {
             let after = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
             println!("probe: from {from}: /r hits {} source {:?} title {:?} navigated {:?}", after - before, p.source(), p.title(), &p.navigated[n..]);
             assert!(after > before, "from {from}: the server answered the 302");
+            // Positive evidence: WebView2 followed the 302 to a NavigationStarting and the verdict refused it.
+            let refused: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[refused_before..].to_vec()).unwrap_or_default();
+            println!("probe: from {from}: the verdict refused {refused:?}");
+            assert!(refused.iter().any(|(u, redirect)| u == "iterm2-about:settings" && *redirect), "from {from}: the verdict refused the redirect itself: {refused:?}");
             assert!(!p.order.iter().any(|o| o.contains("iterm2-about:settings")), "from {from}: the settings page was never requested or started: {:?}", p.order);
             assert_ne!(p.source().as_deref(), Some("iterm2-about:settings"), "from {from}");
             assert_ne!(p.title().as_deref(), Some("SETTINGS"), "from {from}");
