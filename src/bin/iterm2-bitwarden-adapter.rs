@@ -3,6 +3,7 @@
 
 #[cfg(windows)]
 fn main() {
+    tandem::dll::harden_process();
     let args: Vec<String> = std::env::args().collect();
     let mut runner = tandem::pwm_run::ProcessRunner::new();
     let code = tandem::pwm_adapter::run_main(&args, &mut std::io::stdin().lock(), &mut std::io::stdout().lock(), tandem::pwm_bitwarden::handle, &mut runner);
