@@ -3323,4 +3323,49 @@ mod tests {
         assert!(prod[start..start + 400].contains("route_reply"), "routing is the first step of pwm_reply");
         assert!(!prod.contains("self.pwm.info = Some"), "no reply overwrites the terminal info directly");
     }
+
+    /// Merge seam (13y2's KeePassXC, Bitwarden, Keeper and LastPass adapters with 13x7's browser
+    /// password sources): every source, for the terminal and the browser scope alike, is built in
+    /// `build` on the one worker, and nothing outside the password manager constructs one.
+    #[test]
+    fn every_password_source_has_one_owner() {
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let ctors = ["CredentialManager::for_scope(", "OnePassword::new(", "LastPass::new(", "Adapter::new("];
+        let b = &prod[prod.find("fn build(config: &Config, ctx: &Ctx)").unwrap()..];
+        let b = &b[..b.find("\n}\n").unwrap()];
+        for c in ctors {
+            assert_eq!(prod.matches(c).count(), 1, "{c}");
+            assert_eq!(b.matches(c).count(), 1, "{c} only in build");
+        }
+        assert!(b.contains("Kind::KeePassXC | Kind::Bitwarden | Kind::Keeper =>") && b.matches(".with_scope(config.scope)").count() == 3, "each scope gets the same sources");
+        assert_eq!(prod.matches("Worker::start(").count(), 2, "one worker per scope, both start the same way");
+        assert!(prod.contains("Worker::start(notify, Scope::Browser)"));
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        assert!(files.len() > 100);
+        for f in files {
+            let name = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            let prod = text.split("#[cfg(test)]").next().unwrap();
+            for c in ctors {
+                assert!(!prod.contains(c), "{name} builds a password source ({c})");
+            }
+            assert!(!prod.contains("impl Source for") && !prod.contains("Source for "), "{name} defines a second password source");
+        }
+    }
 }

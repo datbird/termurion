@@ -6502,7 +6502,7 @@ impl App {
         let mut overlay_drawn: Vec<(mouse::Overlay, Rect)> = Vec::new();
         let mut held_updates: Vec<(PaneId, Option<crate::flicker::Held>, Option<Instant>)> = Vec::new();
         // The focused browser pane's find bar and its mode label, when drawn above the page.
-        let mut browser_find_drawn: Option<(Rect, Rect)> = None;
+        let mut browser_find_drawn: Option<(Rect, Rect, Option<scene::OldFind>)> = None;
         let bview = self.broadcast_view();
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
@@ -6527,9 +6527,15 @@ impl App {
                         let bar = scene::FindBar { query: &f.query, count: &count, mode: self.find_mode().label(), error: false, notice: None, progress: None, selection };
                         scene::find_strip(&mut frame, row);
                         let first_quad = frame.quads.len();
-                        let mode_rect = scene::find_bar(&mut frame, &bar, row, self.pane_cell(id));
+                        // The one find bar: `UseOldStyleDropDownViews` picks its layout on a browser pane too.
+                        let (mode_rect, old) = if self.dropdown_views.old_style() {
+                            let o = scene::find_bar_old(&mut frame, &bar, row, self.pane_cell(id), self.scale());
+                            (o.mode, Some(o))
+                        } else {
+                            (scene::find_bar(&mut frame, &bar, row, self.pane_cell(id)), None)
+                        };
                         if id == tab.focused {
-                            browser_find_drawn = frame.quads.get(first_quad).map(|q| (q.rect, mode_rect));
+                            browser_find_drawn = frame.quads.get(first_quad).map(|q| (q.rect, mode_rect, old));
                         }
                     }
                     continue;
@@ -6710,7 +6716,7 @@ impl App {
             }
             self.find_bar_rect = browser_find_drawn.map(|d| d.0);
             self.find_mode_rect = browser_find_drawn.map(|d| d.1);
-            self.find_old_buttons = None;
+            self.find_old_buttons = browser_find_drawn.and_then(|d| d.2);
             // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar; a
             // browser pane's was drawn above its page.
             let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none() && !self.is_browser_pane(tab.focused));

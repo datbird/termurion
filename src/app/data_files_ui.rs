@@ -621,4 +621,45 @@ mod tests {
         let only = super::super::prefs_ui::quit_ask_for_test("D:\\sync", false);
         assert!(only.contains("Settings have changed. Copy them to D:\\sync?"));
     }
+
+    /// Merge seam (13y2 Task 9a with 13x8's settings, onboarding and extensions pages): the pages
+    /// write settings through `self.globals` and `apply_edit` like the Settings window, never a data
+    /// file or a sync key; the sync writes only its own NoSync keys (never carried by remote prefs)
+    /// and the four data files; prefs_ui is its one caller.
+    #[test]
+    fn the_settings_pages_and_the_data_sync_share_no_writer() {
+        use crate::data_file_sync as dfs;
+        let keys = [dfs::CONSENT_KEY, dfs::BASELINE_KEY, dfs::LAST_PUSHED_KEY, dfs::DISCARD_PENDING_KEY];
+        for k in keys {
+            assert!(k.starts_with("NoSync") && !crate::remote_prefs::syncable(k), "{k}");
+        }
+        let pages = [
+            ("browser_pages_app.rs", include_str!("browser_pages_app.rs")),
+            ("browser_extensions_app.rs", include_str!("browser_extensions_app.rs")),
+            ("browser_settings_page.rs", include_str!("../browser_settings_page.rs")),
+            ("browser_onboarding.rs", include_str!("../browser_onboarding.rs")),
+        ];
+        for (name, text) in pages {
+            let prod = text.split("#[cfg(test)]").next().unwrap();
+            for f in dfs::ALLOWLIST {
+                assert!(!prod.contains(f), "{name} names the data file {f}");
+            }
+            for k in keys {
+                assert!(!prod.contains(k), "{name} writes the sync key {k}");
+            }
+            assert!(!prod.contains("data_file_sync") && !prod.contains("data_files_") && !prod.contains("Globals::load") && !prod.contains("Globals::empty"), "{name}: one settings writer");
+        }
+        let own = include_str!("data_files_ui.rs");
+        let prod = &own[..own.find("#[cfg(test)]\nmod tests").unwrap()];
+        let pages_prod = include_str!("browser_pages_app.rs").split("#[cfg(test)]").next().unwrap();
+        for k in ["WebKitAdblockEnabled", "AdblockListURL", "SearchCommand", "SearchSuggestURL", "BrowserProxyEnabled", "BrowserProxyHost", "BrowserProxyPort"] {
+            assert!(pages_prod.contains(&format!("self.globals.set(\"{k}\"")), "{k} is a settings page key");
+            assert!(!prod.contains(k), "the data sync never writes {k}");
+        }
+        assert!(!prod.contains("self.globals.set(") && !prod.contains("Globals::load"), "the sync writes globals only through set_entry");
+        for f in ["browser_pages_app.rs", "browser_extensions_app.rs"] {
+            let t = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app").join(f)).unwrap();
+            assert!(!t.contains("data_files_push") && !t.contains("data_files_reconcile"), "{f}");
+        }
+    }
 }

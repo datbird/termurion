@@ -509,22 +509,26 @@ impl App {
         if outcome == Outcome::Nothing {
             self.share_query(id);
         }
-        // A browser pane: Return searches forward, Esc clears the page, Tab and Alt+Return do nothing.
+        self.find_bar_outcome(id, outcome, was_filter);
+        self.redraw();
+        true
+    }
+
+    /// The bar's answer on any pane, for a key and for the old bar's buttons alike: a browser pane's
+    /// Return searches forward, Esc clears the page, Tab and Alt+Return do nothing.
+    fn find_bar_outcome(&mut self, id: PaneId, outcome: Outcome, was_filter: bool) {
         if self.is_browser_pane(id) {
             match super::browser_find_app::bar_act(outcome) {
                 super::browser_find_app::BarAct::Nothing => {}
                 super::browser_find_app::BarAct::Step { forward } => self.browser_find_step(id, forward),
                 super::browser_find_app::BarAct::Close => self.browser_find_closed(id),
             }
-            self.redraw();
-            return true;
+            return;
         }
         self.find_outcome(id, outcome, was_filter);
-        self.redraw();
-        true
     }
 
-    /// What the bar's answer does, for a key and for the old bar's buttons alike (one owner).
+    /// What the bar's answer does on a terminal pane (`find_bar_outcome` is the one caller).
     fn find_outcome(&mut self, id: PaneId, outcome: Outcome, was_filter: bool) {
         match outcome {
             Outcome::Nothing => {}
@@ -985,7 +989,7 @@ impl App {
                 if let Some(f) = self.finds.get_mut(&id) {
                     let was_filter = f.filter;
                     let outcome = f.key(key, Instant::now());
-                    self.find_outcome(id, outcome, was_filter);
+                    self.find_bar_outcome(id, outcome, was_filter);
                 }
                 self.redraw();
                 return true;
@@ -1260,8 +1264,31 @@ mod tests {
     fn the_old_bars_buttons_do_what_the_keys_do() {
         let body = include_str!("find_ui.rs").split("pub(super) fn find_press").nth(1).unwrap().split("\n    }\n").next().unwrap();
         assert!(body.contains("BarKey::Previous") && body.contains("BarKey::Next") && body.contains("BarKey::Close"));
-        assert!(body.contains("find_outcome"), "one owner of what the bar's answer does");
+        assert!(body.contains("find_bar_outcome"), "one owner of what the bar's answer does");
+        assert!(body.contains("self.find_bar_outcome(id, outcome, was_filter)"), "the buttons take the key's route on a browser pane too");
         assert!(include_str!("find_ui.rs").contains("self.find_outcome(id, outcome, was_filter);"));
+    }
+
+    /// Merge seam (13y2 Task 9 with 13x3/13x8 and the AI browser tools): the browser pane's find bar is
+    /// the same bar (one `FindState`, one `scene` drawing), so `UseOldStyleDropDownViews` reaches it
+    /// as well; the AI tools' find_on_page is a model tool with no bar and never touches `finds`.
+    #[test]
+    fn old_style_reaches_the_one_find_bar_on_every_pane() {
+        let src = include_str!("find_ui.rs");
+        let key = &src[src.find("pub(super) fn find_key").unwrap()..src.find("fn find_bar_outcome").unwrap()];
+        assert!(key.contains("self.find_bar_outcome(id, outcome, was_filter)") && !key.contains("bar_act("), "the key goes through the one outcome owner");
+        let one = &src[src.find("fn find_bar_outcome").unwrap()..src.find("fn find_outcome").unwrap()];
+        assert!(one.contains("if self.is_browser_pane(id)") && one.contains("bar_act(outcome)") && one.contains("self.browser_find_closed(id)"));
+        let m = include_str!("mod.rs");
+        let strip = &m[m.find("// The find bar sits in its own row above the page").unwrap()..m.find("// face; the window's chrome").unwrap()];
+        assert!(strip.contains("self.dropdown_views.old_style()") && strip.contains("scene::find_bar_old(&mut frame, &bar, row"), "the browser strip draws the old bar too");
+        assert!(m.contains("self.find_old_buttons = browser_find_drawn.and_then(|d| d.2);"), "the browser bar's old buttons are clickable");
+        let o = include_str!("browser_overlay_app.rs");
+        let h = &o[o.find("fn browser_find_strip_height").unwrap()..];
+        assert!(h[..h.find("\n    }\n").unwrap()].contains("find_layout(true).size.1 * self.scale()"), "the strip is as tall as the old box");
+        for (name, text) in [("ai_browser.rs", include_str!("../ai_browser.rs")), ("ai_browser_app.rs", include_str!("ai_browser_app.rs"))] {
+            assert!(!text.contains("self.finds") && !text.contains("dropdown_views"), "{name}: the AI find has no bar");
+        }
     }
 
     /// Enter searches up with the swap on, down with it off; Shift+Enter the reverse

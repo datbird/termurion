@@ -807,7 +807,8 @@ mod tests {
         // The bar's paths: terminal search and step become the browser's; Return is forward.
         let f = prod(include_str!("find_ui.rs"));
         let key = between(f, "pub(super) fn find_key", "pub(super) fn find_type_text");
-        assert!(key.contains("if self.is_browser_pane(id)") && key.contains("bar_act(outcome)") && key.contains("self.browser_find_closed(id)"));
+        let one = between(f, "fn find_bar_outcome", "fn find_outcome");
+        assert!(key.contains("self.find_bar_outcome(id, outcome, was_filter)") && one.contains("if self.is_browser_pane(id)") && one.contains("bar_act(outcome)") && one.contains("self.browser_find_closed(id)"));
         let search = between(f, "fn search_as", "fn refilter");
         assert!(search.contains("self.browser_find_search(id, fresh)"));
         let step = between(f, "pub(super) fn find_step", "fn find_grow");

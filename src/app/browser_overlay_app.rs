@@ -33,8 +33,18 @@ impl App {
     /// at the top of `r`, P21), then the find bar's row below it, then the page.
     pub(super) fn browser_split(&self, id: PaneId, r: Rect) -> (Option<Rect>, Rect) {
         let bottom = self.bars.get(&id).and_then(|b| b.front()).filter(|_| self.is_browser_pane(id)).map(|bar| r.y + crate::infobar::layout(bar, r, self.pane_cell(id)).bar.h);
-        let find_h = self.browser_find_strip_open(id).then(|| crate::scene::find_bar_height(self.pane_cell(id).1, false));
+        let find_h = self.browser_find_strip_open(id).then(|| self.browser_find_strip_height(id));
         crate::browser_find::split(r, bottom, find_h)
+    }
+
+    /// The find strip's height on a browser pane: the old bar's box (`FindView.xib`, scaled) when the
+    /// window uses old-style views, else the bar's one row.
+    pub(super) fn browser_find_strip_height(&self, id: PaneId) -> f32 {
+        if self.dropdown_views.old_style() {
+            crate::dropdown_views::find_layout(true).size.1 * self.scale()
+        } else {
+            crate::scene::find_bar_height(self.pane_cell(id).1, false)
+        }
     }
 
     /// Where pane `id`'s web view goes: `r` below the announcement bar and the find bar's row.
