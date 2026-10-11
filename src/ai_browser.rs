@@ -283,6 +283,17 @@ pub fn session_name(url: &str, dev_null: bool) -> String {
 
 pub const BROWSER_SESSION: &str = "Web browser";
 
+/// The name the orchestration snapshot lists a pane under (final review I2), None to leave it out:
+/// a terminal by its label; a browser pane (`(url, dev_null)`) by `session_name`, never its page
+/// title; a private (Dev Null) browser pane not at all (B4: nothing of it reaches a provider).
+pub fn snapshot_name(browser: Option<(&str, bool)>, label: &str) -> Option<String> {
+    match browser {
+        None => Some(label.to_string()),
+        Some((_, true)) => None,
+        Some((url, false)) => Some(session_name(url, false)),
+    }
+}
+
 // ---- the approval (final review I1, B2) ----
 
 /// What a browser approval was asked about: the page's exact origin and navigation epoch (compared
@@ -687,6 +698,19 @@ mod tests {
     }
     fn page() -> Page {
         Page::open(7, 1, "https://a.example/x?q=1", "T", false).unwrap()
+    }
+
+    /// Final review I2: the orchestration snapshot never names a browser pane by its page title; a
+    /// private (Dev Null) pane is left out entirely; a terminal keeps its label.
+    #[test]
+    fn the_orchestration_snapshot_names_no_page_title() {
+        assert_eq!(snapshot_name(Some(("https://secret.test/x", true)), "secret-title"), None);
+        let n = snapshot_name(Some(("https://shop.example.test/cart?q=1", false)), "secret-title").unwrap();
+        assert_eq!(n, "Web browser (shop.example.test)");
+        assert_eq!(snapshot_name(Some(("iterm2-about:settings", false)), "Settings").as_deref(), Some(BROWSER_SESSION));
+        assert_eq!(snapshot_name(Some(("", false)), "New Tab").as_deref(), Some(BROWSER_SESSION));
+        assert_eq!(snapshot_name(None, "zsh").as_deref(), Some("zsh"));
+        assert_eq!(session_name("https://u:p@a.test:8080/x", false), "Web browser (a.test:8080)");
     }
 
     /// The picker's button in a browser pane's toolbar strip: centered, never wider than the strip,

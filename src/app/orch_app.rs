@@ -22,15 +22,20 @@ impl App {
             .chain(&world.buried)
             .chain(&world.hidden)
             .filter_map(|s| {
-                let screen = self.panes.get(&s.pane)?.own();
+                let pane = self.panes.get(&s.pane)?;
+                // Final review I2: a browser pane is named without its page title, and a private
+                // (Dev Null) one is not listed at all; its terminal facts are none.
+                let browser = pane.browser_io().map(|io| (io.url.as_str(), io.dev_null));
+                let name = crate::ai_browser::snapshot_name(browser, &s.name)?;
+                let screen = pane.own();
                 let changed = screen.newest_visible_change().map(|t| now - f64::from(t)).filter(|age| *age >= 0.0);
                 Some(orch::PaneFacts {
                     stable_id: s.stable_id.clone(),
-                    name: s.name.clone(),
+                    name,
                     status: s.status.clone(),
-                    ancestors: s.ancestors.clone(),
-                    alt_screen: s.alt_screen,
-                    job: screen.shell.job.as_ref().map(|j| j.name.clone()),
+                    ancestors: if browser.is_some() { Vec::new() } else { s.ancestors.clone() },
+                    alt_screen: s.alt_screen && browser.is_none(),
+                    job: screen.shell.job.as_ref().map(|j| j.name.clone()).filter(|_| browser.is_none()),
                     changed_secs_ago: changed,
                     provenance: self.orch_provenance.get(&s.pane).cloned(),
                 })

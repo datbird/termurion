@@ -1573,6 +1573,10 @@ mod tests {
         let claim = body(c, "pub(super) fn orch_claim(");
         assert!(claim.contains("self.orch_scope_browser_url(scope)") && claim.contains("ot::browser_claim_text(") && claim.contains("crate::ai_browser::approval_text(&call, &host)"), "{claim}");
         assert!(body(c, "pub(super) fn orch_name(").contains("crate::ai_browser::session_name(&io.url, io.dev_null)"));
+        // Final review I2: the snapshot every orchestration request carries names browser panes by
+        // ai_browser::snapshot_name (no page title, Dev Null left out).
+        let facts = body_of(include_str!("orch_app.rs"), "pub(super) fn orch_facts(");
+        assert!(facts.contains("crate::ai_browser::snapshot_name(browser, &s.name)?") && !facts.contains("name: s.name.clone()"), "{facts}");
         // start_code_review needs the claim first, then only the member's own restart runs.
         let review = body(c, "\"start_code_review\" => {");
         assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review_with(").unwrap(), "a model starts a review only where the person let it act");
