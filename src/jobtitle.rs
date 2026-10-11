@@ -78,12 +78,13 @@ pub fn title_function_value(display_name: &str, unique_id: &str) -> toml::Value 
 
 /// A tmux client session's title when its Title Components is Custom (`SNC:368-387`): the prefix and
 /// the title provider's value `base` when there is a Title Function (`provider` is Some(Some(id))),
-/// else the prefix and the tmux window's name. None when it is not Custom (the built-in title's
-/// prefix is the tmux label paths' own) and for a gateway, which `tmux_windows::gateway_title` names.
+/// else the prefix and the tmux window's name; with no Custom at all (`provider` None) it is the
+/// prefix and the window's name as well. A gateway is not a tmux client: `tmux_windows::gateway_title` names it.
 pub fn tmux_session_title(prefix: &str, provider: Option<Option<&str>>, base: &str, window_name: &str) -> Option<String> {
-    let shown = match provider? {
-        Some(_) => base,
-        None => window_name,
+    // Not Custom (`SNC:381-382`): the window's name too; the built-in components are ignored for a tmux pane.
+    let shown = match provider {
+        Some(Some(_)) => base,
+        Some(None) | None => window_name,
     };
     Some(format!("{prefix}{shown}"))
 }
@@ -166,10 +167,10 @@ pub fn preview(components: u32) -> String {
     }
     let c = components;
     let mut out = String::new();
-    if c & (TEMPORARY_NAME | SESSION_NAME) != 0 {
-        out.push_str("Name");
-    } else if c & AI != 0 {
+    if c & AI != 0 {
         out.push_str("AI");
+    } else if c & (TEMPORARY_NAME | SESSION_NAME) != 0 {
+        out.push_str("Name");
     } else if c & PROFILE_NAME != 0 {
         out.push_str("Profile");
     } else if c & PROFILE_AND_SESSION != 0 {
@@ -336,9 +337,24 @@ mod tests {
         assert_eq!(tmux_session_title(prefix, Some(Some("id")), "api", "work").as_deref(), Some("\u{21a3} api"));
         // Custom with no Title Function: the prefix and the tmux window's name.
         assert_eq!(tmux_session_title(prefix, Some(None), "", "work").as_deref(), Some("\u{21a3} work"));
-        // Not Custom: not handled here, the tmux label paths keep their titles.
-        assert_eq!(tmux_session_title(prefix, None, "Shell", "work"), None);
+        // Not Custom: the prefix and the window's name (`SNC:381-382`); the base is ignored.
+        assert_eq!(tmux_session_title(prefix, None, "Shell", "work").as_deref(), Some("\u{21a3} work"));
         // No prefix set: the value or the name alone.
         assert_eq!(tmux_session_title("", Some(None), "", "work").as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn tmux_builtin_title_follows_iterm2() {
+        let prefix = "\u{21a3} ";
+        assert_eq!(tmux_session_title(prefix, None, "zsh", "win").as_deref(), Some("\u{21a3} win"));
+        assert_eq!(tmux_session_title(prefix, Some(Some("api")), "api", "win").as_deref(), Some("\u{21a3} api"));
+        assert_eq!(tmux_session_title(prefix, Some(None), "", "win").as_deref(), Some("\u{21a3} win"));
+        assert_eq!(tmux_session_title("", None, "zsh", "win").as_deref(), Some("win"));
+    }
+
+    #[test]
+    fn preview_checks_ai_before_names() {
+        assert_eq!(preview(SESSION_NAME | AI), "AI");
+        assert_eq!(preview(TEMPORARY_NAME | AI), "AI");
     }
 }

@@ -91,7 +91,13 @@ impl App {
                 parts.home.clear();
             }
         }
-        jobtitle::title(components, &parts)
+        let built = jobtitle::title(components, &parts);
+        // A tmux client session wears the tmux title prefix and its window's name, not the built-in
+        // components (`SNC:381-382`); the gateway and the tab label paths keep their own titles.
+        match self.tmux_window_name_of(pane) {
+            Some(name) => jobtitle::tmux_session_title(&self.globals.string("tmuxTitlePrefix"), None, &built, &name).unwrap_or(built),
+            None => built,
+        }
     }
 
     /// The window's title: a program's own window title as it is, else the session title.
@@ -123,6 +129,16 @@ mod tests {
 
     fn job(name: &str, pid: u32) -> Job {
         Job { name: name.into(), title: name.into(), cmdline: name.into(), pid }
+    }
+
+    /// No App harness exists: the built-in branch of `session_title` routes a tmux pane through
+    /// `tmux_session_title(.., None, ..)`; `tmux_tab_label` and the gateway are not touched here.
+    #[test]
+    fn built_in_session_title_wears_the_tmux_prefix() {
+        let src = include_str!("jobs_ui.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap();
+        assert!(body.contains("jobtitle::tmux_session_title(&self.globals.string(\"tmuxTitlePrefix\"), None, &built, &name)"));
+        assert!(!body.contains("tmux_tab_label"));
     }
 
     #[test]
