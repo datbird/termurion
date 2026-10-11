@@ -90,6 +90,7 @@ pub mod bookmark_tag_ui;
 pub mod browser_perms;
 pub mod cooldown;
 pub mod browser_download;
+pub mod browser_extensions;
 pub mod perm_queue;
 pub mod browser_marks;
 pub mod browser_marks_db;

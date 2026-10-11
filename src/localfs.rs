@@ -284,6 +284,12 @@ pub fn pick_file(dialog: rfd::FileDialog) -> Option<LocalPath> {
     dialog.pick_file().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p))
 }
 
+/// The folder the person picks in this dialog at this moment (as `pick_file`). The caller still judges
+/// where it is (the extensions root refuses a network location).
+pub fn pick_folder(dialog: rfd::FileDialog) -> Option<LocalPath> {
+    dialog.pick_folder().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p))
+}
+
 /// The files the person picks in this open dialog at this moment (as `pick_file`, several allowed).
 pub fn pick_files(dialog: rfd::FileDialog) -> Vec<LocalPath> {
     dialog.pick_files().unwrap_or_default().into_iter().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p)).collect()
@@ -386,6 +392,21 @@ pub fn exists(p: &LocalPath) -> bool {
 /// What the path leads to (a link is followed; its target was judged with it).
 pub fn stat(p: &LocalPath) -> io::Result<Stat> {
     std::fs::metadata(&p.0).map(|m| Stat::of(&m))
+}
+
+/// The names of a judged folder's entries and whether each is a real folder (a link or reparse point
+/// is not), looking at no more than `limit` entries.
+pub fn list_dir(p: &LocalPath, limit: usize) -> io::Result<Vec<(String, bool)>> {
+    let rd = std::fs::read_dir(&p.0)?;
+    Ok(rd
+        .take(limit)
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            let st = Stat::of(&m);
+            Some((e.file_name().to_string_lossy().to_string(), st.is_dir && !st.is_reparse))
+        })
+        .collect())
 }
 
 /// The entry itself (a link is not followed).

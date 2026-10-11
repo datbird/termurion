@@ -679,6 +679,8 @@ impl App {
             // A `file:` page is Tandem's `iterm2-file:` page (13x8 Task 3).
             Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),
             Event::DataCleared { ok, .. } => self.browser_data_cleared(pane, *ok),
+            Event::Extensions { list, .. } => self.browser_extensions_listed(pane, list),
+            Event::ExtensionAdded { folder, result, .. } => self.browser_extension_added(pane, folder, result),
             Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } | Event::DownloadRefused { .. } => self.browser_download_event(pane, e),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
@@ -692,6 +694,10 @@ impl App {
                 // The first view of an environment rewrites the profile's permission states (13x6).
                 let dev_null = self.pane_dev_null(pane);
                 self.sync_permission_states(dev_null);
+                // Approved extensions are loaded into the persistent profile (never Dev Null; no question).
+                if !dev_null {
+                    self.browser_extensions_request(pane, false, false);
+                }
                 // A new view starts unmuted: the pane's page is muted until its origin is allowed (13x6).
                 self.browser_audio_created(pane);
             }
@@ -1321,6 +1327,7 @@ impl App {
                 due = Some(due.map_or(at, |d| d.min(at)));
             }
         }
+        self.browser_extensions_poll();
         let ad_due = self.adblock_tick();
         let replay_due = self.web_replay_tick();
         [due, ad_due, replay_due].into_iter().flatten().min()

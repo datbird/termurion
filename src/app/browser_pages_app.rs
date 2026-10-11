@@ -229,7 +229,7 @@ impl App {
     /// nothing. Each action goes through the owner that already does it: the web view for clearing,
     /// `open_password_manager` (the page never lists or shows a password), the warning keys through
     /// `warnings::Store` for link opening. The page's JSON never names a settings key. The Get and
-    /// Set actions of Task 6 and the extension actions of Task 10 answer nothing until those land.
+    /// The extension actions are the approved-folder flow of `browser_extensions_app` (Task 10).
     pub(super) fn browser_settings_message(&mut self, pane: PaneId, source: &str, msg: crate::browser_settings_page::Msg) {
         use crate::browser_settings_page as sp;
         use crate::warnings::Store as _;
@@ -359,7 +359,10 @@ impl App {
                     calls.push(sp::status_script(sp::INVALID_PORT, "error"));
                 }
             }
-            _ => {}
+            sp::Msg::GetExtensions => self.browser_extensions_request(pane, false, true),
+            sp::Msg::SetExtensionEnabled { id, enabled } => calls.extend(self.browser_extension_set(pane, &id, enabled)),
+            sp::Msg::RevealExtensionsDirectory => calls.extend(self.browser_extensions_reveal(pane)),
+            sp::Msg::ChooseExtensionFolder => calls.extend(self.browser_extensions_choose(pane)),
         }
         self.browser_settings_run(pane, calls);
     }
@@ -389,7 +392,7 @@ impl App {
     }
 
     /// Runs reply calls in the settings page, guarded: nothing happens if the pane left that page.
-    fn browser_settings_run(&mut self, pane: PaneId, calls: Vec<String>) {
+    pub(super) fn browser_settings_run(&mut self, pane: PaneId, calls: Vec<String>) {
         for call in calls.into_iter().filter(|c| !c.is_empty()) {
             for reply in browser_pages::script(crate::browser_settings_page::PAGE, &call) {
                 if let (browser_pages::Reply::Script(js), Some(v)) = (reply, self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {

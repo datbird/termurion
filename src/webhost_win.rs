@@ -75,6 +75,40 @@ impl Drop for WideSecret {
     }
 }
 
+/// The view's profile as the extension interface (`ICoreWebView2Profile7`).
+fn profile7(c: &Core) -> Option<ICoreWebView2Profile7> {
+    c.view.cast::<ICoreWebView2_13>().ok().and_then(|v| unsafe { v.Profile() }.ok()).and_then(|p| p.cast::<ICoreWebView2Profile7>().ok())
+}
+
+/// Reads the profile's extensions (id, name, enabled, handle), at most `webhost::MAX_EXTENSIONS`, and
+/// runs `f` with them when the answer arrives. False when the request could not be made.
+fn with_extensions(c: &Core, f: impl FnOnce(Vec<(String, String, bool, ICoreWebView2BrowserExtension)>) + 'static) -> bool {
+    let Some(p7) = profile7(c) else { return false };
+    let f = RefCell::new(Some(f));
+    let done = webview2_com::ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
+        let mut all = Vec::new();
+        if let (true, Some(list)) = (hr.is_ok(), list) {
+            let mut n = 0u32;
+            let _ = unsafe { list.Count(&mut n) };
+            for i in 0..n.min(webhost::MAX_EXTENSIONS as u32) {
+                let Ok(e) = (unsafe { list.GetValueAtIndex(i) }) else { continue };
+                let (Some(id), name) = (pwstr_out(|o| unsafe { e.Id(o) }), pwstr_out(|o| unsafe { e.Name(o) }).unwrap_or_default()) else { continue };
+                let on = bool_out(|o| unsafe { e.IsEnabled(o) });
+                all.push((id.chars().take(webhost::MAX_EXTENSION_TEXT).collect(), crate::inert_files::display_text(&name, webhost::MAX_EXTENSION_TEXT, false), on, e));
+            }
+        }
+        if let Some(f) = f.borrow_mut().take() {
+            f(all);
+        }
+        Ok(())
+    })));
+    unsafe { p7.GetBrowserExtensions(&done) }.is_ok()
+}
+
+fn post_extensions(poster: &Poster, view: ViewId, all: &[(String, String, bool, ICoreWebView2BrowserExtension)]) {
+    poster.post(Event::Extensions { view, list: all.iter().map(|(i, n, on, _)| (i.clone(), n.clone(), *on)).collect() });
+}
+
 fn pwstr_out(f: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> Option<String> {
     let mut p = PWSTR::null();
     f(&mut p).ok()?;
@@ -408,6 +442,8 @@ impl Env {
         let options = CoreWebView2EnvironmentOptions::default();
         // SAFETY: the setters write fields of an object no other thread has yet.
         unsafe {
+            // The browser stores only: an extension is still added only after the person approved it.
+            options.set_are_browser_extensions_enabled(opts.extensions);
             options.set_additional_browser_arguments(control.unwrap_or_else(|| webhost::browser_arguments(&opts.args)));
             // Windows single sign-on with the OS primary account is off (it is also WebView2's default).
             options.set_allow_single_sign_on_using_os_primary_account(false);
@@ -1078,6 +1114,119 @@ impl WebView {
                 failed(&poster);
             }
         });
+    }
+
+    /// Adds the unpacked extension in `folder` to this view's profile (`AddBrowserExtension`; it is
+    /// enabled once added). `Event::ExtensionAdded` follows with the id and name, or a reason. The
+    /// app calls this only for a folder the person chose and approved for this profile.
+    pub fn add_extension(&self, folder: &Path) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        let folder = folder.to_path_buf();
+        self.with(move |c| {
+            let failed = |poster: &Poster, folder: &Path, why: &str| poster.post(Event::ExtensionAdded { view: id, folder: folder.to_path_buf(), result: Err(why.to_string()) });
+            let Some(p7) = profile7(c) else { return failed(&poster, &folder, "extensions are not available") };
+            let (p, f) = (poster.clone(), folder.clone());
+            let done = webview2_com::ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |hr, ext| guard(|| {
+                let result = match (hr.is_ok(), ext) {
+                    (true, Some(e)) => match pwstr_out(|o| unsafe { e.Id(o) }) {
+                        Some(ext_id) if crate::browser_extensions::valid_id(&ext_id) => {
+                            let name = pwstr_out(|o| unsafe { e.Name(o) }).unwrap_or_default();
+                            Ok((ext_id, crate::inert_files::display_text(&name, webhost::MAX_EXTENSION_TEXT, false)))
+                        }
+                        _ => Err("WebView2 gave the extension no usable id".to_string()),
+                    },
+                    _ => Err("WebView2 did not add the extension".to_string()),
+                };
+                p.post(Event::ExtensionAdded { view: id, folder: f.clone(), result });
+                Ok(())
+            })));
+            let w = wide(&folder.to_string_lossy());
+            if unsafe { p7.AddBrowserExtension(PCWSTR(w.as_ptr()), &done) }.is_err() {
+                failed(&poster, &folder, "WebView2 refused the extension folder");
+            }
+        });
+    }
+
+    /// Asks for the profile's extensions: `Event::Extensions` follows (an empty list when the call fails).
+    pub fn list_extensions(&self) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        self.with(move |c| {
+            let p2 = poster.clone();
+            if !with_extensions(c, move |all| post_extensions(&p2, id, &all)) {
+                poster.post(Event::Extensions { view: id, list: Vec::new() });
+            }
+        });
+    }
+
+    /// Enables or disables the extension `ext_id` of this view's profile, then lists them again.
+    pub fn set_extension_enabled(&self, ext_id: &str, on: bool) {
+        self.change_extension(ext_id, Some(on));
+    }
+
+    /// Removes the extension `ext_id` from this view's profile (`ICoreWebView2BrowserExtension::Remove`),
+    /// then lists them again. The app keeps its own records in step in one place
+    /// (`App::browser_extension_remove`).
+    pub fn remove_extension(&self, ext_id: &str) {
+        self.change_extension(ext_id, None);
+    }
+
+    fn change_extension(&self, ext_id: &str, enable: Option<bool>) {
+        if !crate::browser_extensions::valid_id(ext_id) {
+            return;
+        }
+        let (poster, id, core) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id, i.core.clone())
+        };
+        let Some(core) = core else { return };
+        let ext_id = ext_id.to_string();
+        let again = core.clone();
+        let p2 = poster.clone();
+        let ok = with_extensions(&core, move |all| {
+            let Some((_, _, _, ext)) = all.iter().find(|(i, ..)| *i == ext_id) else { return post_extensions(&p2, id, &all) };
+            // The list that follows the change is read once the change has finished.
+            let (c2, p3) = (again.clone(), p2.clone());
+            let relist = Rc::new(RefCell::new(Some(move || {
+                let p4 = p3.clone();
+                if !with_extensions(&c2, move |all| post_extensions(&p4, id, &all)) {
+                    p3.post(Event::Extensions { view: id, list: Vec::new() });
+                }
+            })));
+            let started = match enable {
+                Some(on) => {
+                    let r = relist.clone();
+                    let h = webview2_com::BrowserExtensionEnableCompletedHandler::create(Box::new(move |_hr| guard(|| {
+                        if let Some(f) = r.borrow_mut().take() {
+                            f();
+                        }
+                        Ok(())
+                    })));
+                    unsafe { ext.Enable(on, &h) }.is_ok()
+                }
+                None => {
+                    let r = relist.clone();
+                    let h = webview2_com::BrowserExtensionRemoveCompletedHandler::create(Box::new(move |_hr| guard(|| {
+                        if let Some(f) = r.borrow_mut().take() {
+                            f();
+                        }
+                        Ok(())
+                    })));
+                    unsafe { ext.Remove(&h) }.is_ok()
+                }
+            };
+            if !started {
+                post_extensions(&p2, id, &all);
+            }
+        });
+        if !ok {
+            poster.post(Event::Extensions { view: id, list: Vec::new() });
+        }
     }
 
     pub fn reload(&self) {
@@ -3650,6 +3799,9 @@ mod probe {
         hold_ssh: bool,
         file_root: Option<crate::browser_pages::PageRoot>,
         served: Vec<(String, Vec<(String, String)>)>,
+        /// 13x8 Task 10: each `ExtensionAdded` (folder, result) and each `Extensions` list, in order.
+        ext_added: Vec<(PathBuf, Result<(String, String), String>)>,
+        ext_lists: Vec<Vec<(String, String, bool)>>,
     }
 
     impl Probe {
@@ -3686,6 +3838,11 @@ mod probe {
 
         /// `start_setup` with the environment's browser arguments (the proxy's, for a test).
         fn start_args(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup, args: &str) -> Option<Probe> {
+            Probe::start_ext(pages, sources, schemes, setup, args, false)
+        }
+
+        /// `start_args`, with `extensions` as the environment's `AreBrowserExtensionsEnabled`.
+        fn start_ext(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup, args: &str, extensions: bool) -> Option<Probe> {
             let permissions = setup.permissions;
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
@@ -3763,10 +3920,12 @@ mod probe {
                 hold_ssh: false,
                 file_root: None,
                 served: Vec::new(),
+                ext_added: Vec::new(),
+                ext_lists: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
-            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), ..Default::default() };
+            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), extensions, ..Default::default() };
             Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
@@ -3930,6 +4089,8 @@ mod probe {
                     self.auth_log.push(format!("basic-auth {token} {challenge}"));
                     self.auths.push((token, uri, challenge));
                 }
+                Event::ExtensionAdded { folder, result, .. } => self.ext_added.push((folder, result)),
+                Event::Extensions { list, .. } => self.ext_lists.push(list),
                 Event::DownloadStarting { token, url, .. } => self.downloads.push((token, url)),
                 Event::DownloadDone { id, result, .. } => self.dl_done.push((id, result)),
                 Event::Response { nav, status, .. } => {
@@ -6960,6 +7121,68 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(20, |p| !p.dl_done.is_empty()), "DownloadDone arrives");
         assert_eq!(p.dl_done[0], (1, Ok(())));
         assert_eq!(std::fs::read(&target).unwrap(), b"0123456789");
+        drop(p);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = thread.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unpacked extension loads through WebView2's own support (13x8 Task 10): its content script
+    /// sets the title of a page served from 127.0.0.1 (a `navigate_to_string` document is `about:blank`,
+    /// which the match pattern does not cover); disabled it no longer runs; removed it is not listed.
+    /// Needs the console session; never run on the desktop probe.
+    #[test]
+    #[ignore]
+    fn an_unpacked_extension_loads() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let body = "<!doctype html><title>page</title><p>x</p>";
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("tandem-ext-probe-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), r#"{"manifest_version":3,"name":"Probe","version":"1.0","content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["c.js"],"run_at":"document_start"}]}"#).unwrap();
+        std::fs::write(dir.join("c.js"), "document.addEventListener('DOMContentLoaded', function () { document.title = 'ext'; });").unwrap();
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, ..Default::default() };
+        let Some(mut p) = Probe::start_ext(&[], Vec::new(), &[], setup, "", true) else { return };
+        p.view().add_extension(&dir);
+        assert!(p.wait(30, |p| !p.ext_added.is_empty()), "ExtensionAdded within 30 s");
+        let id = match &p.ext_added[0].1 {
+            Ok((id, name)) => {
+                assert!(crate::browser_extensions::valid_id(id) && name == "Probe", "{id} {name}");
+                id.clone()
+            }
+            Err(e) => panic!("the extension was refused: {e}"),
+        };
+        let url = format!("http://127.0.0.1:{port}/p");
+        p.view().navigate_tandem(&url);
+        assert!(p.page_becomes(20, "document.title", false, "ext"), "the content script ran: {:?}", p.page_string("document.title"));
+        p.view().set_extension_enabled(&id, false);
+        let n = p.ext_lists.len();
+        assert!(p.wait(20, |p| p.ext_lists.len() > n), "the list follows the change");
+        assert!(p.ext_lists.last().unwrap().iter().any(|(i, _, on)| *i == id && !on), "listed and disabled: {:?}", p.ext_lists.last());
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/q"));
+        p.settle(2500);
+        assert_eq!(p.page_string("document.title"), Ok("page".to_string()), "a disabled extension does not run");
+        p.view().remove_extension(&id);
+        let n = p.ext_lists.len();
+        assert!(p.wait(20, |p| p.ext_lists.len() > n), "the list follows the removal");
+        assert!(p.ext_lists.last().unwrap().iter().all(|(i, _, _)| *i != id), "removed: {:?}", p.ext_lists.last());
         drop(p);
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = thread.join();

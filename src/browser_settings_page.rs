@@ -39,6 +39,8 @@ pub enum Msg {
     GetExtensions,
     SetExtensionEnabled { id: String, enabled: bool },
     RevealExtensionsDirectory,
+    /// The native folder picker for extensions (13x8 Task 10).
+    ChooseExtensionFolder,
     OpenPasswordManager,
     SetLinkOpening(String),
     GetLinkOpening,
@@ -125,6 +127,7 @@ pub fn parse(body: &Value) -> Option<Msg> {
             Msg::SetExtensionEnabled { id, enabled: bool_value(map, "enabled")? }
         }
         "revealExtensionsDirectory" => Msg::RevealExtensionsDirectory,
+        "chooseExtensionFolder" => Msg::ChooseExtensionFolder,
         "openPasswordManager" => Msg::OpenPasswordManager,
         "setLinkOpeningPreference" => Msg::SetLinkOpening(string_value(map)?),
         "getLinkOpeningPreference" => Msg::GetLinkOpening,
@@ -327,7 +330,7 @@ pub fn proxy_ui_script(enabled: bool, host: &str, port: i64) -> String {
 /// an untrusted manifest: the name, description and version go in by `textContent` and the id by a
 /// data attribute, never through `innerHTML` or an inline handler (preflight B2). (name, iTerm2's
 /// text, Tandem's text)
-pub const PATCHES: [(&str, &str, &str); 24] = [
+pub const PATCHES: [(&str, &str, &str); 25] = [
     ("SCRIPT", "    <script>\n        function clearCookies() {", "    <script nonce=\"{{NONCE}}\">\n        function clearCookies() {"),
     ("TANDEM", "    </script>\n</body>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n</body>"),
     ("CLEAR_COOKIES", "onclick=\"clearCookies()\"", "data-tandem-action=\"clearCookies\""),
@@ -346,6 +349,8 @@ pub const PATCHES: [(&str, &str, &str); 24] = [
     ("PROXY_TOGGLE", "onchange=\"toggleProxy(this.checked)\"", "data-tandem-change=\"toggleProxy\""),
     ("PROXY_HOST", "onchange=\"updateProxyHost(this.value)\"", "data-tandem-change=\"updateProxyHost\""),
     ("PROXY_PORT", "onchange=\"updateProxyPort(this.value)\"", "data-tandem-change=\"updateProxyPort\""),
+    // Tandem's addition (Task 10): the one way to load an extension is a folder the person picks.
+    ("EXT_CHOOSE", "Reveal in Finder</button>", "Reveal in Finder</button>\n                        <button class=\"button small\" data-tandem-action=\"chooseExtensionFolder\">Choose Folder\u{2026}</button>"),
     ("EXT_NAME", "<h4>${extension.name}</h4>", "<h4 data-tandem-text=\"name\"></h4>"),
     ("EXT_DESCRIPTION", "<p>${description}</p>", "<p data-tandem-text=\"description\"></p>"),
     ("EXT_TOGGLE", "onchange=\"toggleExtension('${extension.id}', this.checked)\"", "data-tandem-change=\"toggleExtension\""),
@@ -362,7 +367,10 @@ pub const PATCHES: [(&str, &str, &str); 24] = [
 /// made up (`isTrusted` false) does nothing, so a setting changes only by the person's own click or
 /// edit on the page's own control; the page's own functions then post the message. Nothing here
 /// builds markup.
-pub const TANDEM_SCRIPT: &str = "document.addEventListener('click', function (e) {
+pub const TANDEM_SCRIPT: &str = "function chooseExtensionFolder() {
+            window.webkit.messageHandlers['iterm2-about:settings'].postMessage({action: 'chooseExtensionFolder', sessionSecret: sessionSecret});
+        }
+        document.addEventListener('click', function (e) {
             if (!e.isTrusted || !e.target || !e.target.closest) { return; }
             var el = e.target.closest('[data-tandem-action]');
             if (!el || el.disabled) { return; }
@@ -374,6 +382,7 @@ pub const TANDEM_SCRIPT: &str = "document.addEventListener('click', function (e)
             case 'forceAdblockUpdate': forceAdblockUpdate(); break;
             case 'toggleExtensionsSection': toggleExtensionsSection(); break;
             case 'revealExtensionsDirectory': revealExtensionsDirectory(); break;
+            case 'chooseExtensionFolder': chooseExtensionFolder(); break;
             }
         });
         document.addEventListener('change', function (e) {

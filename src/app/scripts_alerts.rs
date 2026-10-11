@@ -97,6 +97,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::BrowserRun { .. } | Then::BrowserOpenFile { .. } => Answer::Button(1),
         // Cancel: a closed window clears nothing (Clear All Data from the settings page).
         Then::BrowserClearData { .. } => Answer::Button(1),
+        // Cancel: a closed window approves nothing.
+        Then::BrowserExtension { .. } => Answer::Button(1),
         // Cancel: a closed window deletes no bookmark.
         Then::BookmarkDelete { .. } => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
@@ -349,6 +351,9 @@ pub(super) enum Then {
     /// history): Clear (0) clears; Cancel (1) nothing. A page's button raised it, so the window is
     /// input-guarded and it is never remembered.
     BrowserClearData { pane: crate::layout::PaneId },
+    /// "Enable Browser Extension?" (13x8 Task 10): Enable (0) records the approval of this folder's
+    /// manifest (`hash`) for the pane's saved profile; Cancel (1) does nothing. Never remembered.
+    BrowserExtension { pane: crate::layout::PaneId, folder: std::path::PathBuf, hash: String },
     /// "Are you sure you want to delete this bookmark?" from Edit Bookmark: Delete (0) removes it;
     /// Cancel (1) nothing. The person's own window raised it.
     BookmarkDelete { pane: crate::layout::PaneId, url: String },
@@ -457,6 +462,7 @@ impl App {
             // Clear All Data could not ask (the queue refused it, or the window never opened): that is a
             // Cancel, and the settings page's pending question is released (no dead button).
             Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, 1),
+            Then::BrowserExtension { pane, folder, hash } => self.browser_extension_answered(pane, folder, hash, 1),
             Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, 1),
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
@@ -534,8 +540,12 @@ impl App {
                 }
                 // A page raised it: no default button, input ignored for a moment after it appears
                 // and after it regains focus (13x6 B1).
-                if matches!(ask.then, Then::BrowserPermission(_) | Then::BrowserClearData { .. }) {
+                if matches!(ask.then, Then::BrowserPermission(_) | Then::BrowserClearData { .. } | Then::BrowserExtension { .. }) {
                     w.guard_input();
+                }
+                // Enable waits until every permission has been shown (the list can be long).
+                if matches!(ask.then, Then::BrowserExtension { .. }) {
+                    w.require_read(0);
                 }
                 self.scripts_alert = Some((w, ask));
             }
@@ -612,6 +622,7 @@ impl App {
                 }
             }
             Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, index),
+            Then::BrowserExtension { pane, folder, hash } => self.browser_extension_answered(pane, folder, hash, index),
             Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, index),
             Then::BrowserOpenFile { pane, file } => {
                 if index == 0 {

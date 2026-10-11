@@ -159,6 +159,7 @@ mod browser_app;
 mod browser_find_app;
 mod browser_copymode_app;
 mod adblock_app;
+mod browser_extensions_app;
 mod browser_db_app;
 mod bookmark_tags_app;
 mod browser_pages_app;
@@ -1781,6 +1782,8 @@ pub struct App {
     browser_next: Vec<browser_input_app::PageNext>,
     /// The ad blocker: rules, the list download and its schedule (13x Task 8; app-wide).
     adblock: adblock_app::Adblock,
+    /// Browser extensions: this run's folder map, the sync and the approval questions (13x8 Task 10; app-wide).
+    browser_ext: browser_extensions_app::Extensions,
     /// The pane that was focused at the last placement, to tell a pane change from none.
     focus_seen: crate::browser::FocusSeen<WindowId>,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
@@ -2791,6 +2794,7 @@ pub fn run() {
         browser_runs: Vec::new(),
         browser_next: Vec::new(),
         adblock: adblock_app::Adblock::default(),
+        browser_ext: Default::default(),
         focus_seen: Default::default(),
         browser_url_override: None,
         restoring_windows: false,
@@ -4142,6 +4146,7 @@ impl App {
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
         self.page_save_cancel(id);
+        self.browser_extensions_pane_gone(id);
         self.api_session_subs.forget_session(id);
         // The shell a model's held text was typed into is gone (Task 10 fix round 2).
         self.orch_held.remove(&id);

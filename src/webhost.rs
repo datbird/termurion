@@ -174,6 +174,9 @@ pub struct EnvOptions {
     pub args: String,
     /// Custom scheme registrations (`iterm2-about` for the browser stores).
     pub custom_schemes: Vec<String>,
+    /// `AreBrowserExtensionsEnabled` (13x8 Task 10): only the persistent browser store sets it, never
+    /// Dev Null or the default store. An extension is still added only after the person approved it.
+    pub extensions: bool,
 }
 
 /// The one browser argument beyond the proxy's: the Windows integrated-authentication allowlist (NTLM,
@@ -379,7 +382,17 @@ pub enum Event {
     DownloadDone { view: ViewId, id: u64, result: Result<(), String> },
     /// The view's own caps cancelled a download (too many running, or too fast): the app says so. Carries nothing.
     DownloadRefused { view: ViewId },
+    /// `WebView::list_extensions` answered (13x8 Task 10): (id, name, enabled) of the profile's
+    /// extensions, at most `MAX_EXTENSIONS`, names cut. Never dropped: a sync waits on it.
+    Extensions { view: ViewId, list: Vec<(String, String, bool)> },
+    /// `WebView::add_extension` finished for `folder`: the id and name WebView2 gave it, or a short
+    /// reason (never a path). Never dropped: the order of completions matters to the sync.
+    ExtensionAdded { view: ViewId, folder: std::path::PathBuf, result: Result<(String, String), String> },
 }
+
+/// Extensions one `Event::Extensions` carries, and the longest name or id kept.
+pub const MAX_EXTENSIONS: usize = 64;
+pub const MAX_EXTENSION_TEXT: usize = 128;
 
 /// Longest challenge header text an event carries (characters); the rest is cut, and a cut
 /// challenge is cancelled by the host.
@@ -460,7 +473,9 @@ impl Event {
             | Event::DownloadStarting { view, .. }
             | Event::DownloadProgress { view, .. }
             | Event::DownloadDone { view, .. }
-            | Event::DownloadRefused { view } => *view,
+            | Event::DownloadRefused { view }
+            | Event::Extensions { view, .. }
+            | Event::ExtensionAdded { view, .. } => *view,
         }
     }
 
@@ -517,6 +532,8 @@ impl Event {
             Event::BasicAuth { uri, challenge, .. } => uri.len() + challenge.len(),
             Event::DownloadStarting { url, .. } => url.len(),
             Event::DownloadDone { result: Err(why), .. } => why.len(),
+            Event::Extensions { list, .. } => list.iter().map(|(i, n, _)| i.len() + n.len()).sum(),
+            Event::ExtensionAdded { folder, result, .. } => folder.as_os_str().len() + result.as_ref().map_or_else(|e| e.len(), |(i, n)| i.len() + n.len()),
             Event::NotificationShown { origin, title, body, .. } => origin.len() + title.len() + body.len(),
             Event::PermissionStates { states, .. } => states.iter().map(|(_, o, _)| o.len()).sum(),
             _ => 0,
@@ -2290,6 +2307,30 @@ mod tests {
         assert!(!refused.droppable() && refused.view() == 2 && refused.weight() == 0, "a refusal is always said");
         assert_eq!((start.view(), done.view(), progress.view()), (2, 2, 2));
         assert_eq!((start.weight(), done.weight()), (11, 28));
+    }
+
+    /// 13x8 Task 10: an extension's page (`chrome-extension:`) cannot start a power page, a file page or
+    /// an ssh page, by a script, a redirect or a click, and loading its own pages stays the engine's.
+    #[test]
+    fn an_extension_page_starts_no_local_page() {
+        let src = Some("chrome-extension://abcdefghijklmnopabcdefghijklmnop/p.html");
+        for target in ["iterm2-about:settings", "iterm2-about:onboarding-setup", "iterm2-file:///C:/x", "iterm2-ssh://h/x"] {
+            for (user, redirect) in [(false, false), (true, false), (false, true)] {
+                assert!(!navigation_allowed(src, target, user, redirect, false, true), "{target} user={user} redirect={redirect}");
+            }
+        }
+        assert!(!file_redirect_allowed(src, false), "a click in an extension page does not open a local path");
+    }
+
+    /// 13x8 Task 10: the extension answers are never dropped and are weighed.
+    #[test]
+    fn extension_events_are_classed() {
+        let list = Event::Extensions { view: 3, list: vec![("a".into(), "Name".into(), true)] };
+        let added = Event::ExtensionAdded { view: 3, folder: "D:\\e".into(), result: Ok(("id".into(), "N".into())) };
+        assert!(!list.droppable() && !added.droppable());
+        assert_eq!((list.view(), added.view()), (3, 3));
+        assert_eq!((list.weight(), added.weight()), (5, 7));
+        assert!(!EnvOptions::default().extensions, "off unless the store asks");
     }
 
     /// 13x7 Task 10: the HTTP authentication events are never dropped (a challenge holds a COM

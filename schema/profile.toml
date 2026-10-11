@@ -3285,3 +3285,27 @@ default = false
 help = "Whether instant replay is enabled for Browser profile"
 light_dark = false
 macos_only = false
+
+[[setting]]
+key = "Browser Extensions Root"
+tab = "General"
+mode = "browser"
+section = ""
+label = "Browser extensions root"
+type = "string"
+default_note = "No default value (NSNull); the folder is Tandem\\BrowserExtensions under the application data folder."
+help = "Root directory for browser extensions. Only a folder chosen in Tandem's folder picker and approved in its window is ever loaded. Not shown on the page."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Browser Extension Active IDs"
+tab = "General"
+mode = "browser"
+section = ""
+label = "Active browser extension IDs"
+type = "list"
+default = []
+help = "List of active browser extension IDs. Not shown on the page."
+light_dark = false
+macos_only = false

@@ -940,6 +940,11 @@ impl App {
         if self.browser_views.get(&pane).is_some_and(|b| b.page_root.is_some()) || matches!(crate::webhost::scheme_of(&r.source).as_str(), "iterm2-file" | "iterm2-ssh") {
             return;
         }
+        // An extension's own page (`chrome-extension:`) is code the person approved for its sites, not
+        // for Tandem: nothing it posts reaches a handler or an isolated-world script (13x8 Task 10).
+        if crate::webhost::scheme_of(&r.source) == "chrome-extension" {
+            return;
+        }
         match r.handler.as_str() {
             _ if browser_js::local_page_ok(&r) => {
                 // The page's own words are rebuilt from the routed parts, never forwarded.
