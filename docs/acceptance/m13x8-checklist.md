@@ -22,6 +22,7 @@ downloaded from the web (it has a Mark of the Web; any copy saved by a browser w
 - [ ] `webhost_win::probe::ssh_page_serves_text_and_a_closed_view_completes_the_deferral`
 - [ ] `webhost_win::probe::download_lands_where_told`
 - [ ] `webhost_win::probe::an_unpacked_extension_loads`
+- [ ] `webhost_win::probe::redirect_onto_a_power_page_is_refused` (a server 302 to `iterm2-about:settings` from a Tandem page and from a web page)
 
 Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show
@@ -41,7 +42,8 @@ $f = @(
  'webhost_win::probe::file_pages_cannot_read_or_send',
  'webhost_win::probe::ssh_page_serves_text_and_a_closed_view_completes_the_deferral',
  'webhost_win::probe::download_lands_where_told',
- 'webhost_win::probe::an_unpacked_extension_loads'
+ 'webhost_win::probe::an_unpacked_extension_loads',
+ 'webhost_win::probe::redirect_onto_a_power_page_is_refused'
 )
 & C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
 ```
@@ -99,6 +101,7 @@ automatic downloads with Handled true, and extension add and enable.
 - [ ] Open Settings, go to a web page, press Back: the settings page comes back (loaded fresh by Tandem), no wrong banner. Same for Forward and the long-press history list.
 - [ ] A web page that calls `history.back()` or `history.go(-1)` while the settings page is the previous entry does not land on it.
 - [ ] A web page cannot navigate to `iterm2-about:settings`, `iterm2-about:downloads` or `iterm2-file:` by click, script or redirect.
+- [ ] A local HTML file with a link to `https://example.com/`: clicking it does nothing (a file or ssh page leaves for no other page, R13x8-P2); the address bar still goes there.
 
 ## G. Downloads
 
