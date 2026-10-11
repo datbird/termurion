@@ -645,6 +645,9 @@ struct Inner {
     nav_uris: VecDeque<(u64, String)>,
     /// The (capped) URI and id of the last main-frame NavigationStarting, for the Document filter.
     last_main_nav: Option<(String, u64)>,
+    /// The last main document response (`register_main_responses`): its navigation id and status, for
+    /// a failed load whose HttpStatusCode is 0 (`webhost::completed_http`, a 204).
+    main_response: Option<(u64, i32)>,
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
@@ -732,6 +735,7 @@ impl WebView {
             queued: Vec::new(),
             nav_uris: VecDeque::new(),
             last_main_nav: None,
+            main_response: None,
             tandem_uri: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
@@ -2073,7 +2077,7 @@ fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
         let ok = bool_out(|b| unsafe { args.IsSuccess(b) });
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
-        let mut status = 0i32;
+        let status;
         // The HTTP status, read on a failure too: a server that answered 4xx or 5xx ends with
         // IsSuccess false, and its own page is what the person sees (13x8 Task 2 review I1).
         let mut http = 0i32;
@@ -2088,6 +2092,10 @@ fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
             status = web.0;
         }
         let mut i = inner.borrow_mut();
+        let http = webhost::completed_http(http, i.main_response, nav);
+        if i.main_response.is_some_and(|(n, _)| n == nav) {
+            i.main_response = None;
+        }
         let at = i.nav_uris.iter().position(|(n, _)| *n == nav);
         let url = at.and_then(|p| i.nav_uris.remove(p)).map(|(_, u)| u).unwrap_or_default();
         let id = i.id;
@@ -2840,7 +2848,11 @@ fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
         if let Ok(r) = unsafe { args.Response() } {
             let _ = unsafe { r.StatusCode(&mut status) };
         }
-        i.poster.post(Event::Response { view: i.id, nav: *nav, status });
+        let nav = *nav;
+        drop(i);
+        let mut i = inner.borrow_mut();
+        i.main_response = Some((nav, status));
+        i.poster.post(Event::Response { view: i.id, nav, status });
         Ok(())
     })));
     unsafe { v2.add_WebResourceResponseReceived(&response, token) }
@@ -4198,8 +4210,19 @@ mod probe {
                     self.devtools(session, &name, &json);
                 }
                 Event::DevToolsHeld { .. } => self.devtools_held(),
+                Event::Refused { url, user, .. } => self.order.push(format!("refused user={user} {url}")),
                 _ => {}
             }
+        }
+
+        /// The view's main-frame URL as WebView2 holds it (`Source`), read without running a script.
+        fn source(&self) -> Option<String> {
+            self.view.as_ref().and_then(|v| v.inner.borrow().core.as_ref().and_then(|c| source_of(&c.view)))
+        }
+
+        /// The view's document title as WebView2 holds it (`DocumentTitle`), read without running a script.
+        fn title(&self) -> Option<String> {
+            self.view.as_ref().and_then(|v| v.inner.borrow().core.as_ref().and_then(|c| pwstr_out(|p| unsafe { c.view.DocumentTitle(p) })))
         }
 
         /// A Page-world message as the app routes it (`browser_script_event`): Page, to the same graph.
@@ -6778,9 +6801,20 @@ window.addEventListener('message', function (e) {
         let n = p.navigated.len();
         p.view().navigate_tandem(&url);
         assert!(p.wait(10, |p| p.navigated.len() > n), "Navigated within 10 s: {:?}", p.order);
+        println!("probe: refused port ok={} status={} http={} log={:?}", p.navigated[n].1, p.statuses[n].1, p.https[n], p.auth_log);
         assert_eq!(p.navigated[n], (url.clone(), false), "a failed load, with the URL asked for");
         let status = p.statuses[n].1;
-        assert!(status == 12 || status == 6, "a connection status: {status}");
+        // Control: a name that cannot resolve.
+        let n2 = p.navigated.len();
+        p.view().navigate_tandem("http://nohost.tandem-probe.invalid/");
+        assert!(p.wait(15, |p| p.navigated.len() > n2), "Navigated within 15 s: {:?}", p.order);
+        println!("probe: unresolvable ok={} status={} http={}", p.navigated[n2].1, p.statuses[n2].1, p.https[n2]);
+        // Probe run 2026-10-11b: this runtime reports a refused connection as WebErrorStatus 0 (unknown),
+        // while the control names its own failure (13): the status is read, and a refused port has no
+        // status of its own (R13x8-P1). Either way no server answered.
+        assert_eq!((p.navigated[n2].1, p.statuses[n2].1, p.https[n2]), (false, 13, 0), "the control: a name that cannot resolve");
+        assert!(matches!(status, 0 | 6 | 12), "a connection status: {status}");
+        assert!(!crate::browser_pages::server_answered(p.https[n]), "no server answered");
         p.finish();
     }
 
@@ -6820,8 +6854,17 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
         assert!(p.page_becomes(10, "document.title", false, "fail,fail,fail,fail,fail"), "every attempt failed: {:?}", p.page_string("document.title"));
         p.settle(1500);
-        assert_eq!(p.page_string("location.href"), Ok(page.clone()), "the page is still the file page");
-        assert!(listener.accept().is_err(), "the listener saw no connection");
+        // Probe run 2026-10-11b: the script's `location.href` passed the verdict (WebView2 called it
+        // user-initiated) and the listener got the connection. The evidence is read without a script
+        // (an ExecuteScript after a NavigationStarting waits for the next document): the listener, the
+        // host's order (a refused navigation posts no Starting) and the view's Source.
+        let accepted = listener.accept().is_ok();
+        println!("probe: accepted={accepted} source={:?} order={:?} log={:?} navigated={:?}", p.source(), p.order, p.auth_log, p.navigated);
+        assert!(!accepted, "the listener saw no connection");
+        assert!(!p.order.iter().any(|o| o.starts_with("starting http")), "the navigation away never started: {:?}", p.order);
+        assert_eq!(p.navigated.len(), n + 1, "nothing else loaded: {:?}", p.navigated);
+        assert_eq!(p.source(), Some(page.clone()), "the view's Source is still the file page");
+        println!("probe: location.href answered {:?}", p.page_string("location.href"));
         assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| h.iter().any(|(k, v)| k == "Content-Security-Policy" && v == crate::browser_pages::SANDBOX_CSP)), "every answer carried the sandbox: {:?}", p.served);
         let messages: Vec<&Routed> = p.routed.iter().filter(|r| r.body.contains("iterm2-about:settings")).collect();
         assert!(!messages.is_empty() && messages.iter().all(|m| !crate::browser::local_source_ok(&m.from)), "the router drops a file page's message: {:?}", messages.iter().map(|m| m.from.clone()).collect::<Vec<_>>());
@@ -6843,17 +6886,23 @@ window.addEventListener('message', function (e) {
         let n = p.navigated.len();
         p.view().navigate_tandem("iterm2-ssh://box/a.txt");
         assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
+        assert!(p.navigated[n].1, "the page loaded: {:?}", p.navigated);
         p.settle(500);
-        assert_ne!(p.page_string("document.title"), Ok("RAN".to_string()), "no remote script ran");
+        // Final review M3: the page's own title, read from the view (no script), so a page that did not
+        // load or a script that ran both fail here.
+        assert_eq!(p.title().as_deref(), Some("kept"), "the page loaded and no remote script ran");
+        assert_eq!(p.source().as_deref(), Some("iterm2-ssh://box/a.txt"));
         assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| h.iter().any(|(k, v)| k == "Content-Security-Policy" && v.starts_with("sandbox;")) && h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff")), "{:?}", p.served);
         // A second request is held: the view is dropped with it waiting.
         p.ssh_body = None;
         p.hold_ssh = true;
         let n = p.order.len();
         p.view().navigate_tandem("iterm2-ssh://box/b.txt");
-        assert!(p.wait(15, |p| p.order.iter().skip(n).any(|o| o.contains("iterm2-ssh://box/b.txt"))), "the request arrived: {:?}", p.order);
+        let arrived = p.wait(15, |p| p.order.iter().skip(n).any(|o| o.starts_with("request ") && o.contains("iterm2-ssh://box/b.txt")));
         // The deferral of the held request is in the view's table; dropping the view completes and empties it.
         let inner = p.view().inner.clone();
+        println!("probe: arrived={arrived} pending={} order={:?}", inner.borrow().pending.len(), p.order);
+        assert!(arrived, "the request arrived: {:?}", p.order);
         assert!(!inner.borrow().pending.is_empty(), "the held request is a deferral the view holds");
         p.view.take();
         p.settle(500);
@@ -6897,7 +6946,8 @@ window.addEventListener('message', function (e) {
                 let _ = c.write_all(reply.as_bytes());
             }
         });
-        let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, ..Default::default() };
+        // The browser pane's setup for the main document's response (`browser_setup`: both are on).
+        let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, track_document_method: true, main_responses: true, ..Default::default() };
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else {
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = server.join();
@@ -6916,10 +6966,86 @@ window.addEventListener('message', function (e) {
         let n = p.navigated.len();
         p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/204"));
         let came = p.wait(4, |p| p.navigated.len() > n);
-        println!("probe: /204 navigated={came}");
+        println!("probe: /204 navigated={came} log={:?}", p.auth_log);
         if came {
             let (ok, http) = (p.navigated[n].1, p.https[n]);
+            println!("probe: /204 ok={ok} http={http} status={}", p.statuses[n].1);
             assert!(ok || crate::browser_pages::server_answered(http), "a 204 is no network failure: ok={ok} http={http}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+        p.finish();
+    }
+
+    /// 13x8 final review I1: a server's 302 onto `iterm2-about:settings` is refused whether the navigation
+    /// left a Tandem page or a web page (the source is still the old page while a redirect is judged).
+    /// A local listener answers `/r` with a 302 to the settings page and `/hop` with a 302 to `/landing`
+    /// (the positive control: a redirect to the web is followed). Needs the console session.
+    #[test]
+    #[ignore]
+    fn redirect_onto_a_power_page_is_refused() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("its address").port();
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (flag, seen) = (stop.clone(), hits.clone());
+        let server = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut c, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = c.set_nonblocking(false);
+                let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let n = c.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                if let Ok(mut l) = seen.lock() {
+                    l.push(path.clone());
+                }
+                let reply = match path.as_str() {
+                    "/r" => "HTTP/1.1 302 Found\r\nLocation: iterm2-about:settings\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    "/hop" => "HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    _ => "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 16\r\nConnection: close\r\n\r\n<title>w</title>".to_string(),
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        const TANDEM_PAGE: &str = "iterm2-about:bookmarks";
+        let pages = [(TANDEM_PAGE, "<title>t</title>".to_string()), ("iterm2-about:settings", "<title>SETTINGS</title>".to_string())];
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-about:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&pages, Vec::new(), &["iterm2-about"], setup) else {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = server.join();
+            return;
+        };
+        let base = format!("http://127.0.0.1:{port}");
+        for from in [TANDEM_PAGE.to_string(), format!("{base}/page")] {
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&from);
+            assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded: {:?}", p.order);
+            // The control: the page's own navigation through a 302 to the web lands.
+            let landing = format!("{base}/landing");
+            p.page_eval(&format!("setTimeout(function () {{ location.href = '{base}/hop'; }}, 0); 1")).expect("the page navigates");
+            assert!(p.wait(15, |p| p.source().as_deref() == Some(landing.as_str())), "from {from}: the redirect to the web landed: {:?} / {:?}", p.source(), p.order);
+            // Back on the page, the same navigation through a 302 to the settings page.
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&from);
+            assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded again: {:?}", p.order);
+            let before = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
+            let n = p.navigated.len();
+            p.page_eval(&format!("setTimeout(function () {{ location.href = '{base}/r'; }}, 0); 1")).expect("the page navigates");
+            assert!(p.wait(15, |p| p.navigated.len() > n), "from {from}: the navigation ended: {:?}", p.order);
+            p.settle(1000);
+            let after = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
+            println!("probe: from {from}: /r hits {} source {:?} title {:?} navigated {:?}", after - before, p.source(), p.title(), &p.navigated[n..]);
+            assert!(after > before, "from {from}: the server answered the 302");
+            assert!(!p.order.iter().any(|o| o.contains("iterm2-about:settings")), "from {from}: the settings page was never requested or started: {:?}", p.order);
+            assert_ne!(p.source().as_deref(), Some("iterm2-about:settings"), "from {from}");
+            assert_ne!(p.title().as_deref(), Some("SETTINGS"), "from {from}");
         }
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = server.join();

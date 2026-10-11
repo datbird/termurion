@@ -1035,6 +1035,18 @@ pub fn clean_title(t: &str) -> String {
     crate::inert_files::display_text(&spaced, MAX_TITLE, false)
 }
 
+/// The HTTP status a main-frame `NavigationCompleted` reports: WebView2's own `HttpStatusCode`, or,
+/// when that is 0, the status of the main document's response that arrived for the same navigation
+/// (`response`: its id and status). A 204 ends the load with IsSuccess false, WebErrorStatus 9
+/// (connection aborted) and HttpStatusCode 0 (probe run 2026-10-11b); the server answered, so the
+/// app shows no error page for it (`browser_pages::server_answered`).
+pub fn completed_http(http: i32, response: Option<(u64, i32)>, nav: u64) -> i32 {
+    match response {
+        Some((n, status)) if http == 0 && n == nav => status,
+        _ => http,
+    }
+}
+
 /// A URL a page gave, cut to 8192 bytes at a character boundary; the flag says it was cut (a cut
 /// URL is never stored whole and never navigated).
 pub fn cap_url(u: &str) -> (String, bool) {
@@ -1939,6 +1951,16 @@ mod tests {
         // A web page's script navigation to a power page stays refused by the verdict as before.
         assert!(!navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, false, true));
         assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true), "Tandem's own load");
+    }
+
+    #[test]
+    fn a_failed_load_that_got_a_response_reports_its_status() {
+        // Probe run 2026-10-11b: a 204 ends the navigation with IsSuccess false, WebErrorStatus 9 and
+        // HttpStatusCode 0, after the main document's response arrived with 204.
+        assert_eq!(completed_http(0, Some((6, 204)), 6), 204);
+        assert_eq!(completed_http(0, Some((5, 204)), 6), 0, "another navigation's response");
+        assert_eq!(completed_http(0, None, 6), 0, "no response: a network failure");
+        assert_eq!(completed_http(404, Some((6, 204)), 6), 404, "WebView2's own status wins");
     }
 
     #[test]
