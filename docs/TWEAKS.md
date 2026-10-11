@@ -22,7 +22,8 @@ Each item says what is wrong, what it should do, and where it was seen.
    the iTerm2 product name to the person; keep iTerm2 names only where they are file formats or
    compatibility keys (plists, escape sequences, the Python API). Seen 2026-10-11.
    Name candidates (Robert, 2026-10-11; "Tandem" is crowded if published): pinned **Orrery**
-   and **Halyard**; also Armillary, Tellurion, Binnacle, Mizzen, Fairlead. Quick web checks
+   and **Halyard**; also Armillary, Tellurion, Binnacle, Mizzen, Fairlead, Parhelion, Taffrail,
+   Sheave, Ecliptic, Perihelion. Quick web checks
    found no terminal or developer tool using any of them (not a trademark search). Decide the
    name before this rename, so the menus change only once.
 
