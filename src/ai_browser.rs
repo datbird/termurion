@@ -141,17 +141,34 @@ fn origin_of(url: &str) -> Option<String> {
 }
 
 /// Whether a browser pane showing `url` may be offered browser tools at all: never a private
-/// (Dev Null) pane, never a power or local page (iterm2-about, iterm2-file, iterm2-ssh, file:).
+/// (Dev Null) pane, never a Tandem, local or extension page (`webhost::tandem_or_local_page`, the one
+/// predicate the nav judge's atoms build), and otherwise only an ordinary web origin (`origin_of`).
 /// A blank or not yet loaded pane is offered (nothing is shown; reads still go through
-/// `Page::open`). Same origin rule as `Page::open`.
+/// `Page::open`). Same rule as `Page::open`.
 pub fn offerable(url: &str, dev_null: bool) -> bool {
-    !dev_null && (url.is_empty() || origin_of(url).is_some())
+    !dev_null && (url.is_empty() || readable_origin(url).is_some())
+}
+
+/// The origin of a page the model may read: not a Tandem, local or extension page (the one shared
+/// predicate, never a copy here) and a plain web origin.
+fn readable_origin(url: &str) -> Option<String> {
+    if crate::webhost::tandem_or_local_page(url) {
+        return None;
+    }
+    origin_of(url)
 }
 
 /// R13xai-3: the model may load `http://` and `https://` URLs only, without control characters,
-/// credentials or an empty host. Everything else answers the not-well-formed text.
+/// credentials or an empty host, and never a Tandem, local or extension page (the shared
+/// `webhost::tandem_or_local_page`). Everything else answers the not-well-formed text.
+///
+/// Hook point (B6, seam S4): a load this allows is started ONLY with the guarded `WebView::navigate`
+/// (never Tandem's own load, pinned below), so its NavigationStarting and every redirect after it
+/// are judged by 13x8's one `webhost::navigation_allowed` as a page's own navigation (`by_tandem`
+/// false): a redirect onto a power page or a local scheme is refused there, not here.
 pub fn url_refusal(url: &str) -> Option<Outcome> {
     let ok = !url.chars().any(char::is_control)
+        && !crate::webhost::tandem_or_local_page(url)
         && !url.contains('\\')
         && split_url(url).is_some_and(|(scheme, authority, _)| (scheme == "http" || scheme == "https") && !has_userinfo(authority) && !host_port(authority).is_empty());
     if ok {
@@ -352,7 +369,7 @@ impl Page {
         if dev_null {
             return Err(outcome(DEV_NULL_REFUSED, N_NOT_READ));
         }
-        let Some(origin) = origin_of(url) else {
+        let Some(origin) = readable_origin(url) else {
             return Err(outcome(POWER_PAGE_REFUSED, N_NOT_READ));
         };
         Ok(Page { binding: Binding { pane, epoch, origin }, title: title.chars().take(TITLE_MAX).collect() })
@@ -610,9 +627,27 @@ mod tests {
             assert!(offerable(url, false), "{url}");
             assert!(!offerable(url, true), "dev null {url}");
         }
-        for url in ["iterm2-about:welcome", "iterm2-file:///c:/x", "iterm2-ssh://h", "file:///c:/x", "data:text/html,x", "javascript:1", "blob:https://a/b"] {
+        for url in ["iterm2-about:welcome", "iterm2-file:///c:/x", "iterm2-ssh://h", "file:///c:/x", "data:text/html,x", "javascript:1", "blob:https://a/b", "chrome-extension://abcdefghijklmnopabcdefghijklmnop/popup.html"] {
             assert!(!offerable(url, false), "{url}");
         }
+    }
+
+    /// Seam S5 with 13x8: every page the shared predicate names is neither offered nor readable, and
+    /// this module carries no scheme list of its own for them.
+    #[test]
+    fn the_shared_predicate_decides_tandem_and_local_pages() {
+        for url in ["iterm2-about:settings", "iterm2-about:history", "iterm2-file:///C:/T/", "iterm2-ssh://box/a", "file:///C:/x", "chrome-extension://abcdefghijklmnopabcdefghijklmnop/p.html", "CHROME-EXTENSION://a/b"] {
+            assert!(crate::webhost::tandem_or_local_page(url), "{url}");
+            assert!(!offerable(url, false), "{url}");
+            assert_eq!(Page::open(1, 1, url, "t", false).unwrap_err(), o(POWER_PAGE_REFUSED, N_NOT_READ), "{url}");
+            assert!(url_refusal(url).is_some(), "{url}");
+        }
+        let src = include_str!("ai_browser.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        for owned in ["\"iterm2-about\"", "\"iterm2-file\"", "\"iterm2-ssh\"", "\"chrome-extension\"", "fn power_page", "fn local_scheme"] {
+            assert!(!code.contains(owned), "the Tandem/local page rule lives in webhost, not here: {owned}");
+        }
+        assert!(code.contains("crate::webhost::tandem_or_local_page("));
     }
 
     #[test]

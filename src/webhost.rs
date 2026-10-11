@@ -810,6 +810,16 @@ fn local_scheme(s: &str) -> bool {
     matches!(s, "file" | "iterm2-file" | "iterm2-ssh")
 }
 
+/// The one owner of "a page that is not the web's" (13x AI browser tools seam S5, B4): a power page
+/// (`power_page`), a local page (`local_scheme`: `file:`, `iterm2-file:`, `iterm2-ssh:`), any other
+/// Tandem page (`iterm2-about:`) or an extension's own page (`chrome-extension:`). The nav judge's
+/// atoms are `power_page` and `local_scheme`; the AI browser tools never offer, read or drive such a
+/// page (`ai_browser::offerable`, `ai_browser::Page::open`). Schemes compare ignoring ASCII case.
+pub fn tandem_or_local_page(url: &str) -> bool {
+    let s = scheme_of(url.trim_start_matches(|c: char| c <= ' '));
+    power_page(url) || local_scheme(&s) || matches!(s.as_str(), "iterm2-about" | "chrome-extension")
+}
+
 /// The one rule every guarded view's NavigationStarting asks (R13x8ai item 3, B4): may this
 /// navigation go on?
 /// - a `file:` target that is not `file_ok` (a share, a mapped or remote drive, a link, a
@@ -2073,6 +2083,20 @@ mod tests {
         }
         assert!(n(Some("iterm2-file:///C:/T/"), "file:///C:/T/b.txt", true, false, false), "a listing's file: link inside its root");
         assert!(!power_page("iterm2-about:settingsx") && !power_page("iterm2-about:onboarding-intro") && !power_page("https://a/settings"));
+        // Seam S5: one predicate for "not a web page", built from the judge's own atoms.
+        for u in ["iterm2-about:settings", "ITERM2-ABOUT:history", "iterm2-file:///C:/T/", "iterm2-ssh://box/a", "file:///C:/x", "FILE:///C:/x", " file:///C:/x", "chrome-extension://abcdefghijklmnopabcdefghijklmnop/p.html", "Chrome-Extension://a/b"] {
+            assert!(tandem_or_local_page(u), "{u}");
+        }
+        for u in ["https://a/", "http://127.0.0.1:1/", "about:blank", "https://a/iterm2-about:settings", ""] {
+            assert!(!tandem_or_local_page(u), "{u}");
+        }
+        assert!(["iterm2-about:settings", "iterm2-about:downloads#x"].iter().all(|u| power_page(u) && tandem_or_local_page(u)), "every power page is one");
+        // 13x AI browser tools B6: a model's load is a guarded `navigate` (not Tandem's, not the
+        // person's), so a redirect or script from the page it loaded lands on no power or local page.
+        for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-file:///C:/Users/", "iterm2-ssh://box/etc", "file:///C:/x"] {
+            assert!(!n(Some("https://model-loaded.test/"), t, false, true, false), "redirect {t}");
+            assert!(!n(Some("https://model-loaded.test/"), t, false, false, false), "script {t}");
+        }
         assert!(n(None, "iterm2-ssh://box/a.png", false, false, true));
         assert!(n(Some("https://a/"), "https://b/", false, false, false));
         assert!(!n(Some("https://evil.test/"), "FILE:///C:/x", false, false, false));
