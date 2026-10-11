@@ -31,12 +31,12 @@ For HTTP authentication use any local tool that answers 401 with `WWW-Authentica
 - [ ] `webhost_win::probe::password_writer_writes_only_a_visible_password_field`
 - [ ] `webhost_win::probe::basic_auth_round_trip`
 - [ ] `webhost_win::probe::a_view_without_basic_auth_cancels`
-- [ ] `webhost_win::probe::integrated_challenges_reach_the_app` (R13x710-1: an NTLM/Negotiate challenge reaches the app, nothing is sent)
+- [ ] `webhost_win::probe::integrated_auth_is_never_sent_by_itself` (R13x710-1: against a control environment, a SITE's NTLM/Negotiate challenge gets no Windows credential and reaches the app; a PROXY's is printed as the RESIDUAL line, answered by the engine itself)
 - [ ] `webhost_win::probe::proxy_challenge_reports_the_proxy` (R13x710-2: whether a 407 names the proxy or the site)
 
-Gap: no probe dispatches a TRUSTED click (`Input.dispatchMouseEvent`) on the autofill or password
-button (Task 3 and Task 7 reviews); the probes click with untrusted events only and prove those do
-nothing. The trusted press is lines in sections B and E below, by hand.
+The autofill and key-button probes press the button with a TRUSTED click (`Input.dispatchMouseEvent`,
+which the page sees as `isTrusted`) after the untrusted ones: exactly one request each (R13x7-P3). The
+by-hand lines in sections B and E remain for the native windows the probe does not open.
 
 Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show
@@ -57,7 +57,7 @@ $f = @(
  'webhost_win::probe::password_writer_writes_only_a_visible_password_field',
  'webhost_win::probe::basic_auth_round_trip',
  'webhost_win::probe::a_view_without_basic_auth_cancels',
- 'webhost_win::probe::integrated_challenges_reach_the_app',
+ 'webhost_win::probe::integrated_auth_is_never_sent_by_itself',
  'webhost_win::probe::proxy_challenge_reports_the_proxy'
 )
 & C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
