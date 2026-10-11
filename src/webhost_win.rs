@@ -4407,7 +4407,10 @@ mod probe {
         // An input's value drops line breaks (HTML value sanitization, probe run 2026-10-11b), and
         // ExecuteScript's JSON writes `<` as `\u003C`: compared decoded.
         assert_eq!(p.page_string("['u','p','h'].map(i => document.getElementById(i).value).join('|')"), Ok("|pw\"1</script>|".into()));
-        assert_eq!(p.page_eval("Object.keys(window).filter(k => /pw|text|secret/i.test(k)).length"), Ok("0".into()), "no page global holds it");
+        // No page global holds it: no string property of the page's window contains the password (a
+        // name match was a probe defect: `oncontextmenu` and its kin match /text/, run 2026-10-11c).
+        assert_eq!(p.page_eval("Object.getOwnPropertyNames(window).filter(k => { try { const v = window[k]; return typeof v === 'string' && v.includes('pw\"1'); } catch (_) { return false; } }).length"), Ok("0".into()), "no page global holds it");
+        assert_eq!(p.page_eval("(() => { window.__probeNeedle = 'pw\"1'; const n = Object.getOwnPropertyNames(window).filter(k => { try { const v = window[k]; return typeof v === 'string' && v.includes('pw\"1'); } catch (_) { return false; } }).length; delete window.__probeNeedle; return n; })()"), Ok("1".into()), "the global check finds a planted one (it can fail)");
         p.finish();
     }
 
@@ -6479,17 +6482,30 @@ window.addEventListener('message', function (e) {
         assert!(p.responses.contains(&(retry, 200)) && p.commits.contains(&retry), "its response and commit carry its id: {:?}", p.auth_log);
         assert!(p.auth_log.contains(&format!("navigated {retry} ok=true status=200")), "{:?}", p.auth_log);
         assert!(p.auths.is_empty(), "no second challenge for an accepted answer: {:?}", p.auths);
-        // A fragment on another path is the same document request: its response is posted too.
+        // A fragment on another path is the same document request: its response is posted too (the
+        // engine sends the accepted credential ahead, so this one is not challenged).
         let n = p.responses.len();
         p.view().navigate_tandem(&format!("{url}other#frag"));
         assert!(drive_auth(&mut p, 20, Some(("u", "p")), |p| p.responses.len() > n && p.responses.last().is_some_and(|r| r.1 == 200)), "the fragment navigation's response: {:?}", p.responses);
-        // A Cancel ends at the server's own 401 page.
+        // A Cancel. The engine keeps the accepted credential for that space and sends it ahead of any
+        // challenge (probe run 2026-10-11c: /cancel on the same server got 200 with no challenge), so
+        // the Cancel is tried on a second server, another origin: it is challenged, the person
+        // cancels, and the server never sees a credential.
+        let mut other = AuthServer::start("Authorization: Basic dTpw", "401 Unauthorized", "WWW-Authenticate: Basic realm=\"C\"");
         p.auths.clear();
-        let n = p.responses.len();
-        p.view().navigate_tandem(&format!("{url}cancel"));
-        assert!(drive_auth(&mut p, 20, None, |p| p.responses.len() > n), "a cancelled request still ends: {:?}", p.responses);
-        println!("basic auth end: events {:?}", p.auth_log);
+        let mark = p.auth_log.len();
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{}/cancel", other.port));
+        assert!(p.wait(20, |p| !p.auths.is_empty()), "the second origin is challenged: {:?}", &p.auth_log[mark..]);
+        let (t, ..) = p.auths.remove(0);
+        p.view().answer_basic_auth(t, None);
+        assert!(p.view().inner.borrow().auths.is_empty(), "the Cancel completed the deferral");
+        p.settle(2000);
+        let seen: Vec<String> = other.seen.lock().unwrap().clone();
+        println!("basic auth end: events {:?}; second server saw {seen:?}", p.auth_log);
+        assert!(seen.iter().all(|l| l.ends_with("[]")), "a Cancel sends no credential: {seen:?}");
+        assert!(!p.auth_log[mark..].iter().any(|l| l.ends_with("status=200")), "nothing signed in: {:?}", &p.auth_log[mark..]);
         p.finish();
+        other.stop();
         server.stop();
     }
 
