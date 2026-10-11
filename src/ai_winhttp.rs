@@ -489,14 +489,22 @@ impl Worker {
 
     /// One request handle: send, read the status, and either follow a redirect or read the body.
     fn hop(&self, hop: &mut Hop, headers: &[(String, String)], stream: bool, delivery: &mut Delivery) -> Result<HopEnd, Fail> {
-        let lines: String = headers
-            .iter()
-            .filter(|(n, v)| crate::ai_policy::header_name_valid(n) && crate::ai_policy::header_value_valid(v))
-            .map(|(n, v)| format!("{n}: {v}\r\n"))
-            .collect();
-        if !lines.is_empty() {
-            let lines: Vec<u16> = lines.encode_utf16().collect();
-            self.call(|h| unsafe { WinHttpAddRequestHeaders(h, lines.as_ptr(), lines.len() as u32, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE) })?;
+        // The header lines can hold an API key: both copies are wiped when done (Secret zeroes its text).
+        let lines = crate::pwm::Secret::new(
+            headers
+                .iter()
+                .filter(|(n, v)| crate::ai_policy::header_name_valid(n) && crate::ai_policy::header_value_valid(v))
+                .map(|(n, v)| format!("{n}: {v}\r\n"))
+                .collect::<String>(),
+        );
+        if !lines.expose().is_empty() {
+            let mut wide: Vec<u16> = lines.expose().encode_utf16().collect();
+            let added = self.call(|h| unsafe { WinHttpAddRequestHeaders(h, wide.as_ptr(), wide.len() as u32, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE) });
+            for w in wide.iter_mut() {
+                // SAFETY: a plain write into our own buffer; volatile so the wipe is not elided.
+                unsafe { std::ptr::write_volatile(w, 0) };
+            }
+            added?;
         }
         let ctx = Arc::as_ptr(&hop.ctx) as usize;
         let len = hop.ctx.body.len() as u32;

@@ -168,7 +168,7 @@ mod win {
     impl Runner for ProcessRunner {
         fn run(&mut self, r: Request) -> Result<Output, String> {
             let start = Instant::now();
-            let mut cmd = Command::new(resolve(&r.program));
+            let mut cmd = Command::new(resolve(&r.program)?);
             cmd.args(&r.args);
             cmd.creation_flags(CREATE_NO_WINDOW);
             // A request with its own stdin data closes the pipe after the write as ever; only
@@ -391,32 +391,42 @@ mod win {
     /// The most output read from a child (untrusted; read under the cap, not trimmed after).
     const MAX_OUTPUT: u64 = 64 << 20;
 
-    /// `program` as the file to start: a bare name is looked up on PATH with each PATHEXT
-    /// extension (`bw.cmd` as well as `bw.exe`); anything else is used as given.
-    pub(super) fn resolve(program: &str) -> String {
+    /// `program` as the absolute file to start. A name with no folder is looked up in the ABSOLUTE
+    /// PATH entries only, with its own extension or each PATHEXT one (`bw.cmd` as well as
+    /// `bw.exe`); a path must already be absolute. Never the bare name: Rust's own search would
+    /// follow a relative PATH entry or the current folder. `Err` is the "not found" text.
+    pub(super) fn resolve(program: &str) -> Result<String, String> {
         let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
         resolve_in(program, &std::env::var_os("PATH").unwrap_or_default(), &exts)
     }
 
-    fn resolve_in(program: &str, path: &std::ffi::OsStr, exts: &str) -> String {
-        let bare = !program.contains(['\\', '/', ':']) && std::path::Path::new(program).extension().is_none();
-        if !bare {
-            return program.to_string();
+    fn resolve_in(program: &str, path: &std::ffi::OsStr, exts: &str) -> Result<String, String> {
+        let not_found = || format!("{program} was not found");
+        if program.is_empty() {
+            return Err(not_found());
         }
+        if program.contains(['\\', '/', ':']) {
+            return if std::path::Path::new(program).is_absolute() { Ok(program.to_string()) } else { Err(not_found()) };
+        }
+        let mut names = Vec::new();
+        if std::path::Path::new(program).extension().is_some() {
+            names.push(program.to_string());
+        }
+        names.extend(exts.split(';').filter(|e| !e.is_empty()).map(|e| format!("{program}{e}")));
         for dir in std::env::split_paths(path) {
             // An empty or relative entry means the current folder: never searched, so a file
             // planted there cannot stand in for the CLI.
             if dir.as_os_str().is_empty() || !dir.is_absolute() {
                 continue;
             }
-            for ext in exts.split(';').filter(|e| !e.is_empty()) {
-                let candidate = dir.join(format!("{program}{ext}"));
+            for name in &names {
+                let candidate = dir.join(name);
                 if candidate.is_file() {
-                    return candidate.to_string_lossy().into_owned();
+                    return Ok(candidate.to_string_lossy().into_owned());
                 }
             }
         }
-        program.to_string()
+        Err(not_found())
     }
 
     /// Polls the child until it exits, `timeout` passes (if any, not counting time spent asking)
@@ -572,10 +582,13 @@ mod win {
             let dir = std::env::temp_dir().join(format!("tandem-pwm-ext-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("kxfake.cmd"), "@echo off\r\n").unwrap();
-            let found = resolve_in("kxfake", dir.as_os_str(), ".COM;.EXE;.CMD");
+            let found = resolve_in("kxfake", dir.as_os_str(), ".COM;.EXE;.CMD").unwrap();
+            let named = resolve_in("kxfake.cmd", dir.as_os_str(), ".COM;.EXE").unwrap();
             let _ = std::fs::remove_dir_all(&dir);
             assert!(found.to_lowercase().ends_with("kxfake.cmd"), "{found}");
-            assert_eq!(resolve_in("C:\\x\\bw", std::ffi::OsStr::new(""), ""), "C:\\x\\bw");
+            assert!(named.to_lowercase().ends_with("kxfake.cmd"), "{named}");
+            assert_eq!(resolve_in("C:\\x\\bw", std::ffi::OsStr::new(""), "").unwrap(), "C:\\x\\bw");
+            assert!(resolve_in("x\\bw", std::ffi::OsStr::new(""), "").is_err(), "a relative path is never started");
         }
 
         /// An empty entry (";;") or a relative one never means the current folder.
@@ -593,10 +606,16 @@ mod win {
             let abs = real.to_string_lossy().into_owned();
             let none = resolve_in(&name, std::ffi::OsStr::new(&format!(";;.;{rel};")), ".CMD");
             let found = resolve_in(&name, std::ffi::OsStr::new(&format!(";;.;{rel};{abs}")), ".CMD");
+            let with_ext = resolve_in(&format!("{name}.cmd"), std::ffi::OsStr::new(&format!(";;.;{rel};")), ".CMD");
+            // End to end: the runner never hands the bare name to the system search.
+            let ran = ProcessRunner::new().run(Request::new(name.clone(), Vec::new()));
             let _ = std::fs::remove_file(&planted);
             let _ = std::fs::remove_dir_all(&rel);
             let _ = std::fs::remove_dir_all(&real);
-            assert_eq!(none, name, "a planted file in the current folder was found");
+            assert!(with_ext.is_err(), "a planted file with an extension was found: {with_ext:?}");
+            assert!(ran.as_ref().is_err_and(|e| e.contains("was not found")), "{ran:?}");
+            assert!(none.is_err(), "a planted file in the current folder was found: {none:?}");
+            let found = found.unwrap();
             assert!(found.to_lowercase().ends_with(&format!("{name}.cmd")) && std::path::Path::new(&found).is_absolute(), "{found}");
         }
     }

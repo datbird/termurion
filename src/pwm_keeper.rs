@@ -557,13 +557,16 @@ impl<'a> Cmdr<'a> {
 
     /// Server text as it may be shown: no hidden characters, capped, no secret.
     fn clean(&self, text: &str) -> String {
-        let mut s = display_text(text, MAX_TEXT, false);
+        // Secrets are replaced on the whole text first; a cut before it could keep a prefix.
+        // One to three character secrets are not replaced (every word would turn into the mask
+        // and show the pattern).
+        let mut s = text.to_string();
         for h in &self.hide {
-            if !h.is_empty() {
+            if h.expose().chars().count() >= 4 {
                 s = s.replace(h.expose(), "<hidden>");
             }
         }
-        s
+        display_text(&s, MAX_TEXT, false)
     }
 
     fn headers(&self, json: bool) -> Vec<(String, String)> {
@@ -1436,6 +1439,10 @@ mod tests {
             ("http://keeper.example.com", false),
             ("http://192.168.1.5:8900", false),
             ("http://evil.example\\@localhost/", false),
+            ("http://localhost.evil.com", false),
+            ("http://127.0.0.1.nip.io", false),
+            ("http://[::ffff:127.0.0.1]", false),
+            ("http://2130706433", false),
             ("", false),
         ] {
             let mut fake = Fake::new(&[("list", &classic_listing())]);
