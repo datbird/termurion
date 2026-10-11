@@ -182,20 +182,35 @@ fn login(stdin: &[u8], runner: &mut dyn Runner) -> Result<Vec<u8>, Failure> {
     Ok(ok_json(&LoginResponse { token: Some(encode_token(&password)) }))
 }
 
+/// How long a listing reads entry details (one `show` call each, a key derivation every time;
+/// a call itself is cut at 60 s). Tandem kills the adapter at 180 s, so after this the remaining entries are listed by name
+/// only (no user name, no OTP flag) with a warning, instead of the whole listing being lost.
+const DETAIL_BUDGET: Duration = Duration::from_secs(100);
+
 fn list_accounts(stdin: &[u8], runner: &mut dyn Runner) -> Result<Vec<u8>, Failure> {
+    list_accounts_within(stdin, runner, DETAIL_BUDGET)
+}
+
+fn list_accounts_within(stdin: &[u8], runner: &mut dyn Runner, budget: Duration) -> Result<Vec<u8>, Failure> {
     let request: ListAccountsRequest = decode_request(stdin, "list-accounts").map_err(bad_request)?;
     let password = password_of(request.token.as_deref())?;
     let mut kx = Kx::new(&request.header, password, runner)?;
     let listing = kx.ok("ls", &["--flatten", "--recursive"], &[], &[], "Failed to list accounts.")?;
     let mut paths = entry_paths(listing.expose(), is_terminal(&request.header));
-    let warning = (paths.len() > MAX_ENTRIES).then(|| format!("The database has more than {MAX_ENTRIES} entries; only the first {MAX_ENTRIES} are shown."));
+    let mut warning = (paths.len() > MAX_ENTRIES).then(|| format!("The database has more than {MAX_ENTRIES} entries; only the first {MAX_ENTRIES} are shown."));
     paths.truncate(MAX_ENTRIES);
     let mut accounts = Vec::with_capacity(paths.len());
+    let started = std::time::Instant::now();
+    let mut unread = 0usize;
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         let mut user_name = String::new();
         let mut has_otp = false;
-        if let Ok(out) = kx.run("show", &["-s"], &[&path], &[]) {
+        let in_time = started.elapsed() < budget;
+        if !in_time {
+            unread += 1;
+        }
+        if let Some(out) = in_time.then(|| kx.run("show", &["-s"], &[&path], &[]).ok()).flatten() {
             if out.code == 0 && out.stdout.expose().len() <= MAX_CLI_JSON {
                 for line in out.stdout.expose().lines() {
                     let line = line.trim();
@@ -215,6 +230,10 @@ fn list_accounts(stdin: &[u8], runner: &mut dyn Runner) -> Result<Vec<u8>, Failu
             has_otp,
             source_label: None,
         });
+    }
+    if unread > 0 {
+        let note = format!("Reading the database took too long: {unread} entries are listed by name only, without user names.");
+        warning = Some(warning.map_or(note.clone(), |w| format!("{w} {note}")));
     }
     Ok(ok_json(&ListAccountsResponse { accounts, warning }))
 }
@@ -530,6 +549,18 @@ mod tests {
         assert!(add("a/b", "u").0.get("error").is_some());
         let (out, ran) = add("ok", "-u");
         assert!(out.get("error").is_some() && ran == 0);
+    }
+
+    #[test]
+    fn a_slow_listing_keeps_every_name_and_warns() {
+        let req = serde_json::json!({"header": {"pathToDatabase": "C:\\db.kdbx", "mode": "terminal"}, "token": encode_token(&Secret::new("pw".to_string()))});
+        let mut fake = Fake::default();
+        fake.outputs.push_back(Ok((0, "iTerm2/a\niTerm2/b\n".to_string())));
+        let out = list_accounts_within(req.to_string().as_bytes(), &mut fake, Duration::ZERO).ok().unwrap();
+        let out: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(out["accounts"].as_array().unwrap().len(), 2, "{out}");
+        assert!(out["warning"].as_str().unwrap().contains("2 entries are listed by name only"), "{out}");
+        assert_eq!(fake.log.len(), 1, "no show call once the budget is spent");
     }
 
     #[test]

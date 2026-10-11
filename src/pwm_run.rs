@@ -345,9 +345,11 @@ mod win {
         }
     }
 
-    /// A kill-on-close Job Object holding the child and everything it starts (an adapter's
-    /// `bw`/`lpass`/`keepassxc-cli`), so ending the request ends them all, never leaving one
-    /// running with a secret in its environment.
+    /// A Job Object holding the child and everything it starts (an adapter's
+    /// `bw`/`lpass`/`keepassxc-cli`), terminated only when the request times out or is canceled,
+    /// so none is left running with a secret in its environment. It is NOT kill-on-close: after a
+    /// request that ended normally, a process the CLI started on purpose (LastPass's agent, which
+    /// caches the session) must keep running.
     struct Job(windows_sys::Win32::Foundation::HANDLE);
 
     // SAFETY: a job handle is only used to terminate and close.
@@ -364,10 +366,7 @@ mod win {
                 if job.is_null() {
                     return None;
                 }
-                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                let set = SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
-                if set == 0 || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+                if AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
                     CloseHandle(job);
                     return None;
                 }
@@ -383,7 +382,8 @@ mod win {
 
     impl Drop for Job {
         fn drop(&mut self) {
-            // SAFETY: closing our own handle; kill-on-close ends anything still inside.
+            // SAFETY: closing our own handle; the job has no kill-on-close limit, so what is still
+            // inside keeps running.
             unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
         }
     }
@@ -404,6 +404,11 @@ mod win {
             return program.to_string();
         }
         for dir in std::env::split_paths(path) {
+            // An empty or relative entry means the current folder: never searched, so a file
+            // planted there cannot stand in for the CLI.
+            if dir.as_os_str().is_empty() || !dir.is_absolute() {
+                continue;
+            }
             for ext in exts.split(';').filter(|e| !e.is_empty()) {
                 let candidate = dir.join(format!("{program}{ext}"));
                 if candidate.is_file() {
@@ -485,20 +490,65 @@ mod win {
             assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
         }
 
-        #[test]
-        fn timing_out_kills_the_whole_process_tree() {
-            let dir = std::env::temp_dir().join(format!("tandem-pwm-job-{}", std::process::id()));
+        /// A folder with `inner.bat` (pings `pings` times, then writes the marker) and `outer.bat`
+        /// (starts inner by its full path, detached from the pipes, then pings `outer_pings`).
+        fn tree(tag: &str, pings: u32, outer_pings: u32) -> (std::path::PathBuf, std::path::PathBuf) {
+            let dir = std::env::temp_dir().join(format!("tandem-pwm-{tag}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let marker = dir.join("marker.txt");
-            std::fs::write(dir.join("inner.bat"), format!("@echo off\r\nping -n 6 127.0.0.1 >NUL\r\necho x >\"{}\"\r\n", marker.display())).unwrap();
-            std::fs::write(dir.join("outer.bat"), "@echo off\r\nstart /b cmd /d /c call inner.bat\r\nping -n 30 127.0.0.1 >NUL\r\n").unwrap();
+            let inner = dir.join("inner.bat");
+            std::fs::write(&inner, format!("@echo off\r\nping -n {pings} 127.0.0.1 >NUL\r\necho x >\"{}\"\r\n", marker.display())).unwrap();
+            std::fs::write(dir.join("outer.bat"), format!("@echo off\r\nstart \"\" /b cmd /d /c \"{}\" >NUL 2>&1 <NUL\r\nping -n {outer_pings} 127.0.0.1 >NUL\r\n", inner.display())).unwrap();
+            (dir, marker)
+        }
+
+        fn outer(dir: &std::path::Path, timeout: Duration) -> Request {
             let mut req = Request::new("cmd.exe", vec!["/d".to_string(), "/c".to_string(), dir.join("outer.bat").to_string_lossy().into_owned()]);
-            req.timeout = Some(Duration::from_millis(500));
-            assert_eq!(ProcessRunner::new().run(req).unwrap_err(), TIMED_OUT);
-            std::thread::sleep(Duration::from_secs(8));
-            let survived = marker.exists();
+            req.timeout = Some(timeout);
+            req
+        }
+
+        fn wait_for(marker: &std::path::Path, secs: u64) -> bool {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                if marker.exists() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            marker.exists()
+        }
+
+        /// The control for the next two tests: with nothing killing it, the scripts DO write the
+        /// marker, so a missing marker below means the tree was killed (the test can fail).
+        #[test]
+        fn the_process_tree_scripts_write_their_marker() {
+            let (dir, marker) = tree("control", 2, 5);
+            ProcessRunner::new().run(outer(&dir, Duration::from_secs(30))).unwrap();
+            let wrote = wait_for(&marker, 10);
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(wrote, "inner.bat never ran: the kill tests would pass for the wrong reason");
+        }
+
+        #[test]
+        fn timing_out_kills_the_whole_process_tree() {
+            let (dir, marker) = tree("kill", 6, 30);
+            assert_eq!(ProcessRunner::new().run(outer(&dir, Duration::from_millis(1500))).unwrap_err(), TIMED_OUT);
+            let survived = wait_for(&marker, 9);
             let _ = std::fs::remove_dir_all(&dir);
             assert!(!survived, "a grandchild outlived the timed-out request");
+        }
+
+        /// A request that ends normally leaves a process the CLI started on purpose running
+        /// (LastPass's agent caches the session).
+        #[test]
+        fn a_normal_end_leaves_a_started_agent_running() {
+            let (dir, marker) = tree("agent", 8, 2);
+            ProcessRunner::new().run(outer(&dir, Duration::from_secs(2))).unwrap();
+            assert!(!marker.exists(), "the agent had not finished yet");
+            let survived = wait_for(&marker, 14);
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(survived, "the job killed a process that outlived a successful request");
         }
 
         #[test]
@@ -526,6 +576,28 @@ mod win {
             let _ = std::fs::remove_dir_all(&dir);
             assert!(found.to_lowercase().ends_with("kxfake.cmd"), "{found}");
             assert_eq!(resolve_in("C:\\x\\bw", std::ffi::OsStr::new(""), ""), "C:\\x\\bw");
+        }
+
+        /// An empty entry (";;") or a relative one never means the current folder.
+        #[test]
+        fn the_path_lookup_skips_empty_and_relative_entries() {
+            let name = format!("kxplant{}", std::process::id());
+            let planted = std::path::PathBuf::from(format!("{name}.cmd"));
+            std::fs::write(&planted, "@echo off\r\n").unwrap();
+            let rel = format!("tandem-pwm-rel-{}", std::process::id());
+            std::fs::create_dir_all(&rel).unwrap();
+            std::fs::write(std::path::Path::new(&rel).join(format!("{name}.cmd")), "@echo off\r\n").unwrap();
+            let real = std::env::temp_dir().join(format!("tandem-pwm-abs-{}", std::process::id()));
+            std::fs::create_dir_all(&real).unwrap();
+            std::fs::write(real.join(format!("{name}.cmd")), "@echo off\r\n").unwrap();
+            let abs = real.to_string_lossy().into_owned();
+            let none = resolve_in(&name, std::ffi::OsStr::new(&format!(";;.;{rel};")), ".CMD");
+            let found = resolve_in(&name, std::ffi::OsStr::new(&format!(";;.;{rel};{abs}")), ".CMD");
+            let _ = std::fs::remove_file(&planted);
+            let _ = std::fs::remove_dir_all(&rel);
+            let _ = std::fs::remove_dir_all(&real);
+            assert_eq!(none, name, "a planted file in the current folder was found");
+            assert!(found.to_lowercase().ends_with(&format!("{name}.cmd")) && std::path::Path::new(&found).is_absolute(), "{found}");
         }
     }
 }
