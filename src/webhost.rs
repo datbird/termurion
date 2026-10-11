@@ -2095,6 +2095,9 @@ mod tests {
         // person's), so a redirect or script from the page it loaded lands on no power or local page.
         for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-file:///C:/Users/", "iterm2-ssh://box/etc", "file:///C:/x"] {
             assert!(!n(Some("https://model-loaded.test/"), t, false, true, false), "redirect {t}");
+            // WebView2 reports a navigation started through its API as user-initiated: a redirect
+            // it causes is refused just the same.
+            assert!(!n(Some("https://model-loaded.test/"), t, true, true, false), "user redirect {t}");
             assert!(!n(Some("https://model-loaded.test/"), t, false, false, false), "script {t}");
         }
         assert!(n(None, "iterm2-ssh://box/a.png", false, false, true));

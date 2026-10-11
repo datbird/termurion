@@ -143,6 +143,22 @@ pub fn neutralize(s: &str) -> String {
     fn fold(c: char) -> char {
         match c {
             '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            // Latin letters that read as a tag letter: dotless i, long s, small capitals, script l.
+            '\u{0131}' | '\u{026A}' => 'i',
+            '\u{017F}' | '\u{A731}' => 's',
+            '\u{2113}' | '\u{029F}' => 'l',
+            '\u{1D00}' => 'a',
+            '\u{0299}' => 'b',
+            '\u{1D04}' => 'c',
+            '\u{1D07}' => 'e',
+            '\u{0262}' => 'g',
+            '\u{1D0D}' => 'm',
+            '\u{0274}' => 'n',
+            '\u{1D0F}' => 'o',
+            '\u{1D18}' => 'p',
+            '\u{0280}' => 'r',
+            '\u{1D1B}' => 't',
+            '\u{1D20}' => 'v',
             '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{FE63}' | '\u{2043}' | '\u{FE58}' => '-',
             c if unicode_general_category::get_general_category(c) == unicode_general_category::GeneralCategory::DashPunctuation => '-',
             _ => c,
