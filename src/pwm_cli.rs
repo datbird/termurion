@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::pwm::{Account, Secret, SEP};
-use crate::pwm_run::{Request, Runner};
+use crate::pwm_run::{Interactive, Request, Runner};
 use crate::pwm_source::{Caps, Kind, Scope, Source};
 
 /// `op`'s minimum usable version (`OT:103`): older CLIs accept a piped `item edit` template,
@@ -397,6 +397,17 @@ pub const LP_COPY_COMMAND: &str = "Copy Command";
 /// showing a plain fetch/set/add/delete-failed text.
 pub const LP_NEEDS_LOGIN: &str = "LastPass needs a fresh login.";
 
+/// iTerm2's master password prompt when `lpass` asks for it mid-command (`LP:36-54`).
+pub const LP_ASK: &str = "Enter your LastPass master password:";
+/// The person canceled that prompt (iTerm2's `canceledByUser` has no text of its own).
+pub const LP_CANCELED: &str = "Canceled.";
+
+/// Whether `lpass`'s stderr shows the session needs a fresh login (`LP:43`): the CLI's own text
+/// mentions running `lpass login`. Also the `Interactive` watcher's rule.
+pub(crate) fn lastpass_needs_login(stderr: &str) -> bool {
+    stderr.contains("lpass login")
+}
+
 /// "The LastPass service took too long to respond. <message>" (`LP:313`).
 pub fn lp_timeout_message(context: &str) -> String {
     format!("The LastPass service took too long to respond. {context}")
@@ -601,7 +612,7 @@ impl<R: Runner> OnePassword<R> {
     fn pick_account(&mut self, force: bool) -> bool {
         self.checked_accounts = true;
         let Some(picker) = self.picker.as_mut() else { return false };
-        let request = Request { program: self.path.clone(), args: op_account_list(), env: Vec::new(), stdin: None, timeout: None };
+        let request = Request { program: self.path.clone(), args: op_account_list(), env: Vec::new(), stdin: None, timeout: None, interactive: None };
         let Ok(out) = self.runner.run(request) else { return false };
         if out.code != 0 {
             return false;
@@ -663,7 +674,7 @@ impl<R: Runner> OnePassword<R> {
         }
         let mut args = vec!["user".to_string(), "get".to_string(), "--me".to_string()];
         self.account_args(&mut args);
-        let out = self.runner.run(Request { program: self.path.clone(), args, env: self.base_env(), stdin: None, timeout: None })?;
+        let out = self.runner.run(Request { program: self.path.clone(), args, env: self.base_env(), stdin: None, timeout: None, interactive: None })?;
         if out.code == 0 {
             self.auth = Auth::Biometric;
             return Ok(());
@@ -678,7 +689,7 @@ impl<R: Runner> OnePassword<R> {
         let mut args = vec!["signin".to_string(), "--raw".to_string()];
         self.account_args(&mut args);
         let stdin = Secret::new(format!("{}\n", password.expose()));
-        let out = self.runner.run(Request { program: self.path.clone(), args, env: self.base_env(), stdin: Some(stdin), timeout: None })?;
+        let out = self.runner.run(Request { program: self.path.clone(), args, env: self.base_env(), stdin: Some(stdin), timeout: None, interactive: None })?;
         if out.code != 0 {
             return Err(OP_SIGNIN_FAILED_MESSAGE.to_string());
         }
@@ -694,11 +705,11 @@ impl<R: Runner> OnePassword<R> {
     fn call(&mut self, args: Vec<String>, stdin: Option<Secret>, timeout: Option<Duration>) -> Result<crate::pwm_run::Output, String> {
         self.ensure_auth()?;
         let retry_stdin = stdin.as_ref().map(Secret::duplicate);
-        let out = self.runner.run(Request { program: self.path.clone(), args: args.clone(), env: self.env(), stdin, timeout })?;
+        let out = self.runner.run(Request { program: self.path.clone(), args: args.clone(), env: self.env(), stdin, timeout, interactive: None })?;
         if out.code != 0 && smells_like_op_auth_error(&out.stderr) {
             self.auth = Auth::None;
             self.ensure_auth()?;
-            return self.runner.run(Request { program: self.path.clone(), args, env: self.env(), stdin: retry_stdin, timeout });
+            return self.runner.run(Request { program: self.path.clone(), args, env: self.env(), stdin: retry_stdin, timeout, interactive: None });
         }
         Ok(out)
     }
@@ -856,6 +867,7 @@ pub struct LastPass<R: Runner> {
     groups: Vec<String>,
     last_username: String,
     prompt: LoginPrompt,
+    interactive: Interactive,
     scope: Scope,
 }
 
@@ -864,7 +876,7 @@ impl<R: Runner> LastPass<R> {
     /// always found by Locate; that search lives with the app wiring, not here). `groups` is
     /// `lpass_groups` applied to the `lastpassGroups` global.
     pub fn new(runner: R, path: String, groups: Vec<String>, prompt: LoginPrompt) -> LastPass<R> {
-        LastPass { runner, path, groups, last_username: String::new(), prompt, scope: Scope::Terminal }
+        LastPass { runner, path, groups, last_username: String::new(), prompt, scope: Scope::Terminal, interactive: Interactive { ask: std::sync::mpsc::channel().0, needs_login: lastpass_needs_login } }
     }
 
     /// Serves one password manager scope: the terminal's groups, or every other group.
@@ -883,13 +895,23 @@ impl<R: Runner> LastPass<R> {
     }
 
     fn request(&self, args: Vec<String>, timeout: Option<Duration>) -> Request {
-        Request { program: self.path.clone(), args, env: self.env(), stdin: None, timeout }
+        Request { program: self.path.clone(), args, env: self.env(), stdin: None, timeout, interactive: Some(self.interactive.clone()) }
     }
 
-    /// Whether `lpass`'s stderr shows the session needs a fresh login (`LP:43`, the Swift
-    /// `ErrorHandler`'s check): the CLI's own text mentions running `lpass login`.
+    /// Runs one request; the person canceling the mid-command password prompt is `LP_CANCELED`.
+    fn exec(&mut self, r: Request) -> Result<crate::pwm_run::Output, String> {
+        self.runner.run(r).map_err(|e| if e == crate::pwm_run::CANCELED { LP_CANCELED.to_string() } else { e })
+    }
+
+    /// Where the runner's mid-command password prompts go (`ask`'s receiving end answers them
+    /// on the UI thread). Without one an ask finds nobody and ends as canceled.
+    pub fn with_asker(mut self, ask: std::sync::mpsc::Sender<std::sync::mpsc::Sender<Option<Secret>>>) -> LastPass<R> {
+        self.interactive.ask = ask;
+        self
+    }
+
     fn needs_login(out: &crate::pwm_run::Output) -> bool {
-        out.stderr.contains("lpass login")
+        lastpass_needs_login(&out.stderr)
     }
 
     /// Maps a failed, non-secret-bearing `lpass` call to `LP_NEEDS_LOGIN` when its stderr shows
@@ -920,7 +942,7 @@ impl<R: Runner> LastPass<R> {
     }
 
     fn accounts_once(&mut self) -> Result<Vec<Account>, String> {
-        let out = match self.runner.run(self.request(lpass_list(&self.list_groups()), Some(LASTPASS_LIST_TIMEOUT))) {
+        let out = match self.exec(self.request(lpass_list(&self.list_groups()), Some(LASTPASS_LIST_TIMEOUT))) {
             Ok(o) => o,
             Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_LIST_FETCH_FAILED)),
             Err(e) => return Err(e),
@@ -932,7 +954,7 @@ impl<R: Runner> LastPass<R> {
     }
 
     fn password_once(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
-        let out = self.runner.run(self.request(vec!["show".to_string(), "--password".to_string(), a.id.clone()], None))?;
+        let out = self.exec(self.request(vec!["show".to_string(), "--password".to_string(), a.id.clone()], None))?;
         if out.code != 0 {
             return Err(Self::mapped_error(&out, LP_PASSWORD_FETCH_FAILED));
         }
@@ -942,7 +964,7 @@ impl<R: Runner> LastPass<R> {
     fn set_password_once(&mut self, a: &Account, p: Secret) -> Result<(), String> {
         let mut request = self.request(vec!["edit".to_string(), "--non-interactive".to_string(), "--password".to_string(), a.id.clone()], None);
         request.stdin = Some(Secret::new(format!("{}\n", p.expose())));
-        let out = self.runner.run(request)?;
+        let out = self.exec(request)?;
         if out.code != 0 {
             return Err(Self::mapped_error(&out, LP_PASSWORD_SET_FAILED));
         }
@@ -950,7 +972,7 @@ impl<R: Runner> LastPass<R> {
     }
 
     fn delete_once(&mut self, a: &Account) -> Result<(), String> {
-        let out = self.runner.run(self.request(vec!["rm".to_string(), a.id.clone()], None))?;
+        let out = self.exec(self.request(vec!["rm".to_string(), a.id.clone()], None))?;
         if out.code != 0 {
             return Err(Self::mapped_error(&out, LP_ACCOUNT_DELETE_FAILED));
         }
@@ -961,17 +983,17 @@ impl<R: Runner> LastPass<R> {
         // LastPass has no Add Account toggles, so flags is ignored (as iTerm2's `LP:368`).
         let mut request = self.request(lpass_add_for(self.scope, name), None);
         request.stdin = Some(lpass_add_input(user, &p));
-        let added = self.runner.run(request)?;
+        let added = self.exec(request)?;
         if added.code != 0 {
             return Err(Self::mapped_error(&added, LP_ACCOUNT_ADD_FAILED));
         }
-        match self.runner.run(self.request(vec!["sync".to_string(), "now".to_string()], Some(LASTPASS_LIST_TIMEOUT))) {
+        match self.exec(self.request(vec!["sync".to_string(), "now".to_string()], Some(LASTPASS_LIST_TIMEOUT))) {
             Ok(out) if out.code == 0 => {}
             Ok(out) => return Err(Self::mapped_error(&out, LP_ACCOUNT_ADD_FAILED)),
             Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_ADD_FAILED)),
             Err(e) => return Err(e),
         }
-        let shown = self.runner.run(self.request(vec!["show".to_string(), "--id".to_string(), lpass_item_name(self.scope, name)], None))?;
+        let shown = self.exec(self.request(vec!["show".to_string(), "--id".to_string(), lpass_item_name(self.scope, name)], None))?;
         if shown.code != 0 {
             return Err(Self::mapped_error(&shown, LP_ACCOUNT_ADD_FAILED));
         }
@@ -988,12 +1010,12 @@ impl<R: Runner> LastPass<R> {
     /// username just entered.
     fn login(&mut self) -> Result<(), String> {
         let Some((user, password)) = (self.prompt)(LP_LOGIN_PROMPT, &self.last_username) else {
-            return Err("Canceled.".to_string());
+            return Err(LP_CANCELED.to_string());
         };
         self.last_username = user.clone();
         let mut request = self.request(vec!["login".to_string(), "--color=never".to_string(), user.clone()], None);
         request.stdin = Some(password);
-        let out = self.runner.run(request)?;
+        let out = self.exec(request)?;
         if out.code != 0 {
             return Err(lp_auth_failed_message(&user));
         }
@@ -1087,6 +1109,8 @@ mod tests {
         env: Vec<(String, String)>,
         stdin: Option<String>,
         timeout: Option<Duration>,
+        /// The request's `Interactive.needs_login` told "lpass login" from other text.
+        interactive: bool,
     }
 
     /// Records every `Request` it is given and returns the next canned result from its queue
@@ -1116,7 +1140,7 @@ mod tests {
         fn run(&mut self, r: Request) -> Result<Output, String> {
             let env: Vec<(String, String)> = r.env.iter().map(|(k, v)| (k.clone(), v.expose().to_string())).collect();
             let stdin = r.stdin.as_ref().map(|s| s.expose().to_string());
-            self.requests.lock().unwrap().push(Recorded { program: r.program.clone(), args: r.args.clone(), env, stdin, timeout: r.timeout });
+            self.requests.lock().unwrap().push(Recorded { program: r.program.clone(), args: r.args.clone(), env, stdin, timeout: r.timeout, interactive: r.interactive.as_ref().is_some_and(|i| (i.needs_login)("Please run lpass login") && !(i.needs_login)("Error: bad")) });
             match self.outputs.pop_front() {
                 Some(Ok((code, stdout, stderr))) => Ok(Output { code, stdout: Secret::new(stdout), stderr }),
                 Some(Err(e)) => Err(e),
@@ -1223,6 +1247,26 @@ mod tests {
         let ls_call = &calls[0];
         assert!(ls_call.env.iter().any(|(k, v)| k == "LPASS_DISABLE_PINENTRY" && v == "1"));
         assert_eq!(ls_call.timeout, Some(LASTPASS_LIST_TIMEOUT));
+    }
+
+    /// Task 5: every LastPass request carries the interactive re-authentication, `LP_ASK` is
+    /// iTerm2's text and a canceled ask is `LP_CANCELED` (no stderr, no secret shown).
+    #[test]
+    fn lastpass_requests_are_interactive() {
+        assert_eq!(LP_ASK, "Enter your LastPass master password:");
+        assert_eq!(LP_CANCELED, "Canceled.");
+        assert!(lastpass_needs_login("Please run 'lpass login' first"));
+        assert!(!lastpass_needs_login("Error: Could not find decryption key"));
+        let mut runner = FakeRunner::default();
+        runner.push(0, "iTerm2\t7\tsite\tbob", "");
+        runner.push(0, "pw\n", "");
+        runner.push_err(crate::pwm_run::CANCELED);
+        let mut lp = LastPass::new(runner, "lpass".to_string(), vec!["iTerm2".to_string()], Box::new(|_, _| None));
+        let accounts = lp.accounts().expect("accounts");
+        lp.password(&accounts[0]).expect("password");
+        let err = lp.password(&accounts[0]).unwrap_err();
+        assert_eq!(err, LP_CANCELED);
+        assert!(lp.runner.calls().iter().all(|c| c.interactive), "{:?}", lp.runner.calls());
     }
 
     #[test]

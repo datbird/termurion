@@ -476,6 +476,7 @@ impl<R: Runner> Adapter<R> {
             env: Vec::new(),
             stdin: Some(Secret::new(body)),
             timeout: Some(DEFAULT_TIMEOUT),
+            interactive: None,
         };
         let out = self.runner.run(req).map_err(AdapterError::Other)?;
         let stdout = out.stdout.expose();

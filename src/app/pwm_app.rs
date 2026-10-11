@@ -2428,6 +2428,20 @@ impl Ctx {
         Box::new(move |text| ctx.ask(text, None)?.into_iter().find(|(k, _)| k == PROMPT_PASSWORD).map(|(_, v)| v))
     }
 
+    /// Answers `lpass`'s mid-command password asks one at a time (a second never opens a second
+    /// window) through the same secret prompt as every master password, naming LastPass. The
+    /// thread ends when the source (the only sender) is dropped.
+    fn lastpass_asker(&self) -> Sender<Sender<Option<Secret>>> {
+        let (ask, asks) = mpsc::channel::<Sender<Option<Secret>>>();
+        let mut prompt = self.master_prompt();
+        let _ = std::thread::Builder::new().name("tandem-lpass-ask".into()).spawn(move || {
+            for reply in asks {
+                let _ = reply.send(prompt(pwm_cli::LP_ASK));
+            }
+        });
+        ask
+    }
+
     fn login_prompt(&self) -> pwm_cli::LoginPrompt {
         let ctx = self.clone();
         Box::new(move |text, user| {
@@ -2516,7 +2530,7 @@ fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
         }
         Kind::LastPass => {
             let path = if config.cli.is_empty() { pwm_cli::resolve_lpass().map_err(|_| NeedCli::Lp)? } else { config.cli.clone() };
-            Ok(Box::new(pwm_cli::LastPass::new(ProcessRunner::new(), path, pwm_cli::lpass_groups(&config.groups), ctx.login_prompt()).with_scope(config.scope)))
+            Ok(Box::new(pwm_cli::LastPass::new(ProcessRunner::new(), path, pwm_cli::lpass_groups(&config.groups), ctx.login_prompt()).with_asker(ctx.lastpass_asker()).with_scope(config.scope)))
         }
         Kind::KeePassXC | Kind::Bitwarden | Kind::Keeper => {
             let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
