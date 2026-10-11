@@ -124,10 +124,14 @@ pub(super) struct BrowserView {
     pub(super) find_out: crate::browser_find::Outbox,
     /// The Find Globally search this page's global stream answers (`App.global_generation` at its start).
     pub(super) global_gen: u64,
-    /// The file or ssh page the main frame is on, and the URL of that navigation (13x8 Task 1): set
-    /// from an allowed `Event::Starting`, cleared by any other and by `browser_reset_world`.
+    /// The file or ssh page the main frame is on (13x8 Task 1): set when its navigation COMMITS (the
+    /// view's Source becomes that URL), cleared by any other commit and by `browser_reset_world`.
     pub(super) page_root: Option<crate::browser_pages::PageRoot>,
     pub(super) page_url: Option<String>,
+    /// The file or ssh navigation that began and has not committed (set from an allowed
+    /// `Event::Starting`, cleared by any other start): only its Document request is answered.
+    pub(super) nav_root: Option<crate::browser_pages::PageRoot>,
+    pub(super) nav_url: Option<String>,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -270,7 +274,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -518,6 +522,7 @@ impl App {
             // The world's own about:blank navigation (the isolation check) is not the page.
             Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}
             Event::Source(_, url) => {
+                self.browser_page_committed(pane, url);
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.url = url.clone();
                 }

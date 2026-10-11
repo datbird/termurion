@@ -17,12 +17,26 @@ fn mono_ms() -> u64 {
 
 impl App {
     /// A main-frame navigation began and the one verdict let it go (`Event::Starting`): a file or
-    /// ssh URL sets the pane's page root, any other URL clears it. Redirects into a local scheme
-    /// never get this far (`webhost::navigation_allowed`).
+    /// ssh URL becomes the pending navigation (only its Document request is answered), any other URL
+    /// clears it. The page root itself waits for the commit. Redirects into a local scheme never get
+    /// this far (`webhost::navigation_allowed`).
     pub(super) fn browser_page_starting(&mut self, pane: PaneId, url: &str) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
-        bv.page_root = browser_pages::page_root(url);
-        bv.page_url = bv.page_root.is_some().then(|| url.to_string());
+        bv.nav_root = browser_pages::page_root(url);
+        bv.nav_url = bv.nav_root.is_some().then(|| url.to_string());
+    }
+
+    /// The view's Source changed (a navigation committed): the page root is the pending navigation's
+    /// when the Source is that URL, else none (a web page, or any other document, holds no root).
+    pub(super) fn browser_page_committed(&mut self, pane: PaneId, source: &str) {
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        if bv.nav_url.as_deref() == Some(source) && bv.nav_root.is_some() {
+            bv.page_root = bv.nav_root.clone();
+            bv.page_url = Some(source.to_string());
+        } else {
+            bv.page_root = None;
+            bv.page_url = None;
+        }
     }
 
     /// A main-frame load failed (`BM:1329-1390`): the error page when this URL is not the one that
@@ -86,9 +100,10 @@ impl App {
     }
 
     /// The answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL.
-    pub(super) fn browser_page_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32) {
+    pub(super) fn browser_page_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
         let Some(bv) = self.browser_views.get(&pane) else { return };
-        let allowed = browser_pages::page_request_allowed(bv.page_root.as_ref(), bv.page_url.as_deref(), url, context);
+        let pending = bv.nav_root.as_ref().zip(bv.nav_url.as_deref());
+        let allowed = browser_pages::page_request_allowed(pending, bv.page_root.as_ref(), top_url, url, context);
         let status = if allowed { 404 } else { 403 };
         let answer = Answer::Respond { status, mime: "text/html; charset=utf-8".to_string(), body: NOT_FOUND_HTML.as_bytes().to_vec(), headers: browser_pages::sandbox_headers() };
         if let Some(v) = bv.view.as_ref() {
@@ -110,13 +125,13 @@ mod tests {
     fn file_and_ssh_answers_are_sandboxed() {
         let p = prod();
         let f = &p[p.find("pub(super) fn browser_page_request").unwrap()..];
-        assert!(f.contains("browser_pages::page_request_allowed(bv.page_root.as_ref(), bv.page_url.as_deref(), url, context)"));
+        assert!(f.contains("browser_pages::page_request_allowed(pending, bv.page_root.as_ref(), top_url, url, context)"));
         assert_eq!(f.matches("Answer::Respond").count(), 1, "one place builds the answer");
         assert!(f.contains("headers: browser_pages::sandbox_headers()"));
         let db = include_str!("browser_db_app.rs");
         let db = &db[..db.find("#[cfg(test)]").unwrap()];
         let r = &db[db.find("fn browser_local_request").unwrap()..db.find("pub(super) fn local_page_message").unwrap()];
-        assert!(r.contains("browser_pages::FILE_SCHEME | browser_pages::SSH_SCHEME") && r.contains("self.browser_page_request(pane, token, url, context);"));
+        assert!(r.contains("browser_pages::FILE_SCHEME | browser_pages::SSH_SCHEME") && r.contains("self.browser_page_request(pane, token, url, context, top_url);"));
         assert!(r.find("browser_page_request").unwrap() < r.find("adblock_answer").unwrap(), "the ad blocker never sees a file or ssh URL");
     }
 
@@ -134,7 +149,11 @@ mod tests {
         assert!(reset.contains("bv.page_root = None") && reset.contains("bv.page_url = None"));
         let router = &scripts[scripts.find("pub(super) fn browser_message").unwrap()..];
         let router = &router[..router.find("match r.handler.as_str()").unwrap()];
-        assert!(router.contains("b.page_root.is_some()") && router.contains("return;"));
+        assert!(router.contains("b.page_root.is_some()") && router.contains("r.source") && router.contains("\"iterm2-file\" | \"iterm2-ssh\"") && router.contains("return;"), "dropped by pane state and by the message's own source");
+        // The root is set on the commit (the Source event), never at the start (Task 1 review, I1).
+        let start_fn = &prod()[prod().find("pub(super) fn browser_page_starting").unwrap()..prod().find("pub(super) fn browser_page_committed").unwrap()];
+        assert!(!start_fn.contains("page_root ="), "a start sets the pending navigation only");
+        assert!(app.contains("self.browser_page_committed(pane, url);"));
         let p = prod();
         assert!(!p.contains("std::fs") && !p.contains("localfs"), "this file reads no file; the serving arms live on a worker (Tasks 3, 9)");
     }

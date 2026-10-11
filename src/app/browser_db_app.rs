@@ -110,7 +110,7 @@ impl App {
         let scheme = crate::webhost::scheme_of(url);
         // A file or ssh page is answered by its own owner, under the sandbox policy (13x8).
         if matches!(scheme.as_str(), browser_pages::FILE_SCHEME | browser_pages::SSH_SCHEME) {
-            self.browser_page_request(pane, token, url, context);
+            self.browser_page_request(pane, token, url, context, top_url);
             return;
         }
         let source = if scheme == "iterm2-about" { self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context)) } else { None };

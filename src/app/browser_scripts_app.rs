@@ -245,6 +245,8 @@ impl App {
             // The old view's file or ssh page is not the new view's (13x8).
             bv.page_root = None;
             bv.page_url = None;
+            bv.nav_root = None;
+            bv.nav_url = None;
         }
         self.global_pane_gone(pane);
         for done in dones {
@@ -872,7 +874,8 @@ impl App {
     pub(super) fn browser_message(&mut self, pane: PaneId, r: Routed) {
         // A file or ssh page is a document of the person's files or a remote host, not a page of
         // the web and not Tandem's own: nothing it posts reaches a handler (13x8).
-        if self.browser_views.get(&pane).is_some_and(|b| b.page_root.is_some()) {
+        // By pane state and by the message's own source (a leaving file page can still post).
+        if self.browser_views.get(&pane).is_some_and(|b| b.page_root.is_some()) || matches!(crate::webhost::scheme_of(&r.source).as_str(), "iterm2-file" | "iterm2-ssh") {
             return;
         }
         match r.handler.as_str() {

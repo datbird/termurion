@@ -488,7 +488,14 @@ pub fn page_root(url: &str) -> Option<PageRoot> {
         SSH_SCHEME if !authority.is_empty() => Some(authority),
         _ => return None,
     };
-    Some(PageRoot { scheme, host, folder: folder_of(scheme, &path) })
+    let folder = folder_of(scheme, &path);
+    // A file page's folder starts at an explicit drive (`C:/`): `iterm2-file:///` and `///C:` would
+    // otherwise admit every path of every drive (Task 1 review, minor 1).
+    let drive = |f: &str| f.as_bytes().get(..3).is_some_and(|b| b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/');
+    if scheme == FILE_SCHEME && !drive(&folder) {
+        return None;
+    }
+    Some(PageRoot { scheme, host, folder })
 }
 
 /// Whether a page rooted at `root` may load `url` as a subresource: the same scheme and host, a
@@ -512,15 +519,17 @@ pub fn subresource_allowed(root: Option<&PageRoot>, url: &str, context: i32) -> 
     host_ok && inside && shown.len() > root.folder.len()
 }
 
-/// Whether a request for a file or ssh URL may be answered at all: a Document request only for the
-/// URL of the pane's current main-frame navigation (`nav_url`, set from `Event::Starting`, so a
-/// frame or a script cannot ask for a page the person did not open), every other context only as
-/// a subresource of that page's tree.
-pub fn page_request_allowed(root: Option<&PageRoot>, nav_url: Option<&str>, url: &str, context: i32) -> bool {
+/// Whether a request for a file or ssh URL may be answered at all. A Document request only for the
+/// URL of the pane's pending main-frame navigation (`pending`, set from `Event::Starting`, so a
+/// frame or a script cannot ask for a page the person did not open). Every other context only as a
+/// subresource of the COMMITTED page's tree, and only when the document making the request
+/// (`top_url`, the view's Source) is itself a page of that same root: a web page that still holds
+/// the main frame because a file navigation never committed gets a 403 (Task 1 review, I1).
+pub fn page_request_allowed(pending: Option<(&PageRoot, &str)>, committed: Option<&PageRoot>, top_url: &str, url: &str, context: i32) -> bool {
     if context == CONTEXT_DOCUMENT {
-        return root.is_some() && nav_url == Some(url);
+        return pending.is_some_and(|(_, nav_url)| nav_url == url);
     }
-    subresource_allowed(root, url, context)
+    committed.is_some() && page_root(top_url).as_ref() == committed && subresource_allowed(committed, url, context)
 }
 
 /// The script that makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call
@@ -1441,13 +1450,28 @@ mod plumbing_tests {
     #[test]
     fn page_requests_follow_the_main_frame_navigation() {
         let url = "iterm2-file:///C:/T/site/a.html";
-        let root = page_root(url);
-        assert!(page_request_allowed(root.as_ref(), Some(url), url, CONTEXT_DOCUMENT));
-        assert!(!page_request_allowed(root.as_ref(), Some(url), "iterm2-file:///C:/T/site/b.html", CONTEXT_DOCUMENT), "a document nobody navigated to");
-        assert!(!page_request_allowed(None, None, url, CONTEXT_DOCUMENT));
-        assert!(!page_request_allowed(root.as_ref(), None, url, CONTEXT_DOCUMENT));
-        assert!(page_request_allowed(root.as_ref(), Some(url), "iterm2-file:///C:/T/site/i.png", IMG));
-        assert!(!page_request_allowed(root.as_ref(), Some(url), "iterm2-file:///C:/T/x/i.png", IMG));
+        let root = page_root(url).unwrap();
+        let pending = Some((&root, url));
+        let none: Option<(&PageRoot, &str)> = None;
+        assert!(page_request_allowed(pending, None, "", url, CONTEXT_DOCUMENT));
+        assert!(!page_request_allowed(pending, None, "", "iterm2-file:///C:/T/site/b.html", CONTEXT_DOCUMENT), "a document nobody navigated to");
+        assert!(!page_request_allowed(none, None, "", url, CONTEXT_DOCUMENT));
+        // A subresource: the committed root, and a top document of that root.
+        assert!(page_request_allowed(None, Some(&root), url, "iterm2-file:///C:/T/site/i.png", IMG));
+        assert!(!page_request_allowed(None, Some(&root), url, "iterm2-file:///C:/T/x/i.png", IMG));
+        // Never committed: a web page holds the main frame while the root is the navigation's (or stale).
+        assert!(!page_request_allowed(pending, None, "https://evil.example/", "iterm2-file:///C:/T/site/i.png", IMG), "no committed root");
+        assert!(!page_request_allowed(None, Some(&root), "https://evil.example/", "iterm2-file:///C:/T/site/i.png", IMG), "a web top document");
+        assert!(!page_request_allowed(None, Some(&root), "iterm2-file:///C:/T/other/a.html", "iterm2-file:///C:/T/site/i.png", IMG), "a top document of another folder");
+        assert!(!page_request_allowed(None, Some(&root), "", "iterm2-file:///C:/T/site/i.png", IMG));
+    }
+
+    #[test]
+    fn a_file_root_names_a_drive() {
+        for bad in ["iterm2-file:///", "iterm2-file:///C:", "iterm2-file:///a.html", "iterm2-file:////a.html"] {
+            assert_eq!(page_root(bad), None, "{bad}");
+        }
+        assert!(page_root("iterm2-file:///C:/a.html").is_some_and(|r| r.folder == "C:/"));
     }
 
     #[test]
