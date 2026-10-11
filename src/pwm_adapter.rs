@@ -46,6 +46,17 @@ pub fn mode_for(scope: Scope) -> &'static str {
 /// A short timeout for one adapter round trip.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The timeout of a subcommand that opens or syncs the password manager's store (KeePassXC
+/// derives the key again for every `keepassxc-cli` call, and a listing makes one per entry).
+const LONG_TIMEOUT: Duration = Duration::from_secs(180);
+
+fn timeout_for(subcommand: &str) -> Duration {
+    match subcommand {
+        "login" | "list-accounts" | "add-account" => LONG_TIMEOUT,
+        _ => DEFAULT_TIMEOUT,
+    }
+}
+
 // --- Wire types (`PR:12-343`), iTerm2's camelCase JSON names verbatim ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -475,7 +486,7 @@ impl<R: Runner> Adapter<R> {
             args: vec![subcommand.to_string()],
             env: Vec::new(),
             stdin: Some(Secret::new(body)),
-            timeout: Some(DEFAULT_TIMEOUT),
+            timeout: Some(timeout_for(subcommand)),
             interactive: None,
         };
         let out = self.runner.run(req).map_err(AdapterError::Other)?;
