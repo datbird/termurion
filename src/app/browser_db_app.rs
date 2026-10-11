@@ -113,7 +113,7 @@ impl App {
             self.browser_page_request(pane, token, url, context, top_url);
             return;
         }
-        let source = if scheme == "iterm2-about" { self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context)) } else { None };
+        let source = if scheme == "iterm2-about" { self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context)).or_else(|| self.browser_welcome_answer(url, context)) } else { None };
         let answer: Answer = if let Some(source) = source {
             source
         } else if scheme == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
@@ -149,6 +149,7 @@ impl App {
                     }
                 }
                 Reply::Navigate(url) => self.browser_navigate(pane, &url),
+                Reply::Onboarding(action) => self.browser_onboarding_message(pane, source, action),
                 Reply::Permission(op) => {
                     confirmed = self.permission_page_op(pane, dev_null, op);
                     if !confirmed {

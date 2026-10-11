@@ -59,6 +59,8 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "error-page.html" => include_str!("../resources/browser/error-page.html"),
         "onboarding-intro.html" => include_str!("../resources/browser/onboarding-intro.html"),
         "onboarding-features.html" => include_str!("../resources/browser/onboarding-features.html"),
+        "onboarding-setup.html" => include_str!("../resources/browser/onboarding-setup.html"),
+        "onboarding-profile.html" => include_str!("../resources/browser/onboarding-profile.html"),
         "history-page.js" => include_str!("../resources/browser/history-page.js"),
         "permissions-page.html" => include_str!("../resources/browser/permissions-page.html"),
         "permissions-page.js" => include_str!("../resources/browser/permissions-page.js"),

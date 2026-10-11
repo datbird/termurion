@@ -115,6 +115,105 @@ impl App {
         }
     }
 
+    /// The welcome page until onboarding is done (`WPH:45-73`): the redirect to the intro, under the
+    /// same policy as every local page. None for any other URL, once onboarding is completed, and for
+    /// a request that is not the document itself.
+    pub(super) fn browser_welcome_answer(&mut self, url: &str, context: i32) -> Option<Answer> {
+        if browser_pages::page_name(url) != Some("welcome") || context != browser_pages::CONTEXT_DOCUMENT {
+            return None;
+        }
+        let nonce = browser_pages::new_nonce();
+        let html = crate::browser_onboarding::redirect_document(self.globals.bool(crate::browser_onboarding::COMPLETED_KEY), &nonce)?;
+        Some(Answer::Respond { status: 200, mime: "text/html; charset=utf-8".to_string(), body: html.into_bytes(), headers: browser_pages::response_headers(&nonce) })
+    }
+
+    /// An onboarding page's request (`OH:76-135`, `PSB:195-271`). It is already typed and belongs to
+    /// the page that sent it (`browser_pages::route`); it acts only when the pane's own main-frame URL
+    /// (WebView2's `Source`, kept in `BrowserIo.url`) is that page, so a web page, a frame or a page
+    /// that navigated away changes nothing and is answered nothing. A setting changes through the
+    /// owners the Settings window uses (`Globals::set` then `apply_edit`, `set_session_values`,
+    /// `remarry`); the page's own click handler is trusted-only (`TANDEM_SCRIPT`). Nothing is logged.
+    pub(super) fn browser_onboarding_message(&mut self, pane: PaneId, source: &str, action: crate::browser_onboarding::Action) {
+        use crate::browser_onboarding as ob;
+        let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+        let Some(page) = ob::page_url_of(&url).filter(|p| ob::page_url_of(source) == Some(*p) && action.page() == *p) else { return };
+        if !self.browser_views.get_mut(&pane).is_some_and(|bv| bv.onboarding.allow(&action, mono_ms())) {
+            return;
+        }
+        let mut calls: Vec<String> = Vec::new();
+        match action {
+            ob::Action::EnableAdBlocker => {
+                self.globals.set("WebKitAdblockEnabled", toml::Value::Boolean(true));
+                self.apply_edit(Edit::GlobalsChanged);
+                calls.push(ob::status_script("adblocker-status", true));
+            }
+            ob::Action::EnableInstantReplay => {
+                self.set_session_values(pane, &[("Instant Replay".to_string(), Some(toml::Value::Boolean(true)))]);
+                let shared = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile));
+                if let Some(shared) = shared.filter(|g| ob::enable_replay(&mut self.store, g)) {
+                    self.apply_edit(Edit::Changed(shared));
+                }
+                calls.push(ob::status_script("replay-status", true));
+            }
+            ob::Action::CreateBrowserProfile => match ob::create_browser_profile(&mut self.store) {
+                Some(guid) => {
+                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                        bv.onboarding.found = Some(guid.clone());
+                    }
+                    self.apply_edit(Edit::Changed(guid));
+                    calls.push(ob::created_script(true));
+                }
+                None => {
+                    let found = self.onboarding_find_profile(pane);
+                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                        bv.onboarding.found = found;
+                    }
+                    calls.push(ob::created_script(false));
+                }
+            },
+            ob::Action::CheckProfileExists => {
+                if ob::has_browser_profile(&self.store) {
+                    let found = self.onboarding_find_profile(pane);
+                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                        bv.onboarding.found = found;
+                    }
+                    calls.push(ob::created_script(false));
+                }
+            }
+            ob::Action::SwitchToProfile => {
+                let remembered = self.browser_views.get(&pane).and_then(|bv| bv.onboarding.found.clone());
+                let guid = remembered.or_else(|| self.onboarding_find_profile(pane));
+                if let Some(guid) = guid.filter(|g| self.store.get(g).is_some()) {
+                    self.remarry(pane, &guid);
+                }
+            }
+            ob::Action::GetSettingsStatus => {
+                let replay = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Instant Replay"));
+                calls.push(ob::initial_script(self.globals.bool("WebKitAdblockEnabled"), replay, ob::has_browser_profile(&self.store)));
+            }
+            ob::Action::CompleteOnboarding => {
+                self.globals.set(ob::COMPLETED_KEY, toml::Value::Boolean(true));
+                self.apply_edit(Edit::GlobalsChanged);
+            }
+        }
+        // Every answer runs in the page, guarded: it does nothing if the pane left that page.
+        for call in calls.into_iter().filter(|c| !c.is_empty()) {
+            for reply in browser_pages::script(page, &call) {
+                if let (browser_pages::Reply::Script(js), Some(v)) = (reply, self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {
+                    v.execute_script(&js, 0);
+                }
+            }
+        }
+    }
+
+    /// The browser profile onboarding switches to (`PSB:251-271`).
+    fn onboarding_find_profile(&self, pane: PaneId) -> Option<String> {
+        let is_browser = |g: &str| self.store.get(g).is_some_and(|p| crate::browser::is_browser(&p.string("Custom Command")));
+        let current = self.panes.get(&pane).map(|p| p.profile.clone());
+        let original = current.as_deref().map(|g| self.store.shared_guid(g)).filter(|o| Some(o.as_str()) != current.as_deref());
+        crate::browser_onboarding::find_browser_profile(current.as_deref().map(|g| (g, is_browser(g))), original.as_deref().map(|g| (g, is_browser(g))), &crate::browser_onboarding::profiles_of(&self.store))
+    }
+
     /// The answer to a request for `iterm2-about:error`: None for any other URL. Only the document
     /// request gets a page, from the pane's own `pending_error` (taken once) or the generic page; a
     /// subresource or any other context is a 404. The URL carries nothing the page shows.
@@ -364,5 +463,26 @@ mod tests {
         // The blocker's refusal of a main document is remembered for the error page.
         let dbs = include_str!("browser_db_app.rs");
         assert!(dbs.contains("bv.blocked_url = Some(url.to_string());"));
+    }
+
+    /// Onboarding changes a setting only through the existing owners, only from the pane's own main
+    /// frame on that page, and every reply is a guarded script of typed text.
+    #[test]
+    fn onboarding_effects_follow_iterm2() {
+        let p = prod();
+        let f = &p[p.find("pub(super) fn browser_onboarding_message").unwrap()..p.find("fn onboarding_find_profile").unwrap()];
+        assert!(f.contains("ob::page_url_of(&url).filter(|p| ob::page_url_of(source) == Some(*p) && action.page() == *p)"), "the pane's own main-frame URL, the source and the action's page agree");
+        assert!(f.contains("bv.onboarding.allow(&action, mono_ms())"));
+        assert!(f.contains("self.globals.set(\"WebKitAdblockEnabled\"") && f.contains("self.apply_edit(Edit::GlobalsChanged)"));
+        assert!(f.contains("self.set_session_values(pane,") && f.contains("ob::enable_replay(&mut self.store, g)") && f.contains("self.remarry(pane, &guid)"));
+        assert!(f.contains("ob::create_browser_profile(&mut self.store)") && f.contains("self.apply_edit(Edit::Changed(guid))"));
+        assert!(f.contains("ob::COMPLETED_KEY") && f.contains("browser_pages::script(page, &call)"));
+        assert!(!f.contains("serde_json") && !f.contains("rlog!") && !f.contains("dlog!"), "no page value read, nothing logged");
+        let w = &p[p.find("pub(super) fn browser_welcome_answer").unwrap()..p.find("/// An onboarding page's request").unwrap()];
+        assert!(w.contains("context != browser_pages::CONTEXT_DOCUMENT") && w.contains("redirect_document(self.globals.bool("));
+        let db = include_str!("browser_db_app.rs");
+        assert!(db.contains(".or_else(|| self.browser_welcome_answer(url, context))") && db.contains("Reply::Onboarding(action) => self.browser_onboarding_message(pane, source, action)"));
+        let scripts = include_str!("browser_scripts_app.rs");
+        assert!(scripts.contains("bv.onboarding = Default::default();"));
     }
 }

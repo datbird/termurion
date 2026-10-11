@@ -778,6 +778,9 @@ pub enum Reply {
     Navigate(String),
     /// A change to the saved permissions, applied by the app through the one write queue (Task 9).
     Permission(PermissionOp),
+    /// An onboarding page's request, already typed and judged to belong to that page; the app
+    /// acts on it only if the pane's own main frame is that page (Task 4).
+    Onboarding(crate::browser_onboarding::Action),
 }
 
 /// What the permissions page asked for, already typed: the origin is a normalized one.
@@ -797,7 +800,7 @@ pub fn page_name(url: &str) -> Option<&str> {
     if !scheme.eq_ignore_ascii_case("iterm2-about") || rest.is_empty() || rest.len() > 64 {
         return None;
     }
-    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "onboarding-intro" | "onboarding-features" | "iterm-browser-common.css").then_some(rest)
+    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "onboarding-intro" | "onboarding-features" | "onboarding-setup" | "onboarding-profile" | "iterm-browser-common.css").then_some(rest)
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
@@ -816,6 +819,7 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
         "bookmarks" => (page(resource("bookmarks-page.html")?, "BOOKMARKS_SCRIPT", resource("bookmarks-page.js")?), HTML),
         "permissions" => (permissions_document(nonce)?, HTML),
         "onboarding-intro" | "onboarding-features" => (static_page(&format!("{SCHEME_PREFIX}{name}"))?, HTML),
+        "onboarding-setup" | "onboarding-profile" => (crate::browser_onboarding::document(name, nonce)?, HTML),
         "iterm-browser-common.css" => (format!("{COMMON_CSS}{GLYPH_CSS}"), "text/css; charset=utf-8"),
         _ => return None,
     })
@@ -906,7 +910,7 @@ fn navigate_known(db: &Db, url: &str) -> Option<Vec<Reply>> {
 
 /// A script that runs `call` only on the page that asked: a page that navigated away since gets
 /// nothing (the data is the person's history).
-fn script(page: &str, call: &str) -> Vec<Reply> {
+pub(crate) fn script(page: &str, call: &str) -> Vec<Reply> {
     let src = Value::String(format!("{SCHEME_PREFIX}{page}"));
     vec![Reply::Script(format!("(function () {{ if (location.protocol !== 'iterm2-about:' || location.href.split('#')[0] !== {src}) {{ return 0; }} {call}; return 1; }})()"))]
 }
@@ -964,6 +968,7 @@ pub fn route(db: &Db, json: &str, source: &str) -> Vec<Reply> {
         "bookmarks" => bookmarks(db, body, page),
         "welcome" => welcome(db, body, page),
         "permissions" => permissions(db, body, page),
+        "onboarding-setup" | "onboarding-profile" => onboarding(body, page),
         _ => None,
     };
     out.unwrap_or_default()
@@ -1104,6 +1109,15 @@ fn bookmarks(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply
         }
         _ => None,
     }
+}
+
+/// An onboarding page's message: iTerm2's `action` and `sessionSecret` (typed, never compared), and the
+/// action must be one this page's own buttons send.
+fn onboarding(body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
+    keys_within(body, &["action", "sessionSecret"])?;
+    text(body, "sessionSecret")?;
+    let action = crate::browser_onboarding::parse(&Value::Object(body.clone()))?;
+    (action.page() == page).then(|| vec![Reply::Onboarding(action)])
 }
 
 fn welcome(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply>> {
@@ -1604,6 +1618,31 @@ mod permissions_tests {
         }
         // A pane that is not the permissions page gets nothing (the app also checks its main frame).
         assert!(route(&db, &msg(json!({"action": "loadPermissions"})), "iterm2-about:welcome").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod onboarding_route_tests {
+    use super::*;
+
+    fn go(source: &str, handler: &str, body: serde_json::Value) -> Vec<Reply> {
+        route(&Db::open_in_memory(), &json!({"handler": handler, "body": body}).to_string(), source)
+    }
+
+    #[test]
+    fn onboarding_messages_need_their_own_page() {
+        let (setup, profile) = (crate::browser_onboarding::SETUP_URL, crate::browser_onboarding::PROFILE_URL);
+        let ask = json!({"action": "enableAdBlocker", "sessionSecret": ""});
+        assert_eq!(go(setup, setup, ask.clone()), vec![Reply::Onboarding(crate::browser_onboarding::Action::EnableAdBlocker)]);
+        for (source, handler) in [(profile, profile), (profile, setup), ("https://evil.test/", setup), ("iterm2-about:welcome", setup), (setup, profile)] {
+            assert!(go(source, handler, ask.clone()).is_empty(), "{source} {handler}");
+        }
+        assert!(go(setup, setup, json!({"action": "createBrowserProfile", "sessionSecret": ""})).is_empty(), "another page's action");
+        assert!(go(setup, setup, json!({"action": "enableAdBlocker", "sessionSecret": "", "x": 1})).is_empty());
+        assert!(go(setup, setup, json!({"action": "nope"})).is_empty());
+        assert_eq!(page_name(setup), Some("onboarding-setup"));
+        let (_, mime) = document("onboarding-profile", "n").unwrap();
+        assert!(mime.starts_with("text/html"));
     }
 }
 
