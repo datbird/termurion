@@ -552,7 +552,7 @@ impl Screen {
         self.term.grid().cursor.point
     }
 
-    fn mark_line(&self, id: u32) -> Option<i32> {
+    pub(crate) fn mark_line(&self, id: u32) -> Option<i32> {
         self.row_marks().into_iter().find(|(_, m)| *m == id).map(|(l, _)| l)
     }
 

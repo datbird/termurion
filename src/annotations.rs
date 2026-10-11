@@ -44,6 +44,11 @@ pub fn parse_osc(value: &str) -> Option<(String, Option<usize>, Option<(usize, u
     })
 }
 
+/// A named mark's note (`PTYAnnotation.m:24-26`).
+pub fn named_mark_text(name: &str) -> String {
+    format!("Named Mark {}", crate::inert_files::display_text(name, crate::inert_files::SHOWN_NAME, false))
+}
+
 /// The next note row after (or before) `from`, wrapping at the ends.
 pub fn next_note(rows: &[i32], from: i32, forward: bool) -> Option<i32> {
     let mut sorted = rows.to_vec();
@@ -92,6 +97,47 @@ impl Screen {
                 self.notes.by_id.iter().filter(move |(_, n)| n.row_key == key).map(move |(id, n)| (l, *id, n))
             })
             .collect()
+    }
+
+    /// Removes every note whose row is `line`, returning how many went.
+    pub fn remove_notes_on_line(&mut self, line: i32) -> usize {
+        let grid = self.term().primary_grid();
+        if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+            return 0;
+        }
+        let key = grid[Line(line)].note();
+        if key == 0 {
+            return 0;
+        }
+        let ids: Vec<u32> = self.notes.by_id.iter().filter(|(_, n)| n.row_key == key).map(|(id, _)| *id).collect();
+        for id in &ids {
+            self.remove_note(*id);
+        }
+        ids.len()
+    }
+
+    /// Set Named Mark: the mark and its note on the line.
+    pub fn set_named_mark(&mut self, line: i32, name: &str) -> u32 {
+        let id = self.set_manual_mark(line, Some(name.to_string()));
+        let cols = self.term().columns();
+        self.add_note(line, 0, line, cols, &named_mark_text(name), false);
+        id
+    }
+
+    /// Renames a mark and replaces the notes on its line.
+    pub fn rename_named_mark(&mut self, id: u32, name: Option<String>) -> bool {
+        let Some(line) = self.mark_line(id) else { return false };
+        // iTerm2 drops the notes on the mark's line, then adds the new one (`PS:16775-16822`).
+        self.remove_notes_on_line(line);
+        let text = name.as_deref().map(named_mark_text);
+        if !self.rename_mark(id, name) {
+            return false;
+        }
+        if let Some(text) = text {
+            let cols = self.term().columns();
+            self.add_note(line, 0, line, cols, &text, false);
+        }
+        true
     }
 
     pub fn remove_note(&mut self, id: u32) {
@@ -146,6 +192,40 @@ mod tests {
         assert_eq!((notes[0].2.start_col, notes[0].2.end_col, notes[0].2.hidden), (3, 6, false));
         s.feed(b"\r\n\x1b]1337;AddHiddenAnnotation=quiet\x07");
         assert!(s.notes_in_order().iter().any(|(_, _, n)| n.hidden && n.text == "quiet"));
+    }
+
+    #[test]
+    fn named_mark_notes_follow_iterm2() {
+        assert_eq!(named_mark_text("build"), "Named Mark build");
+        let mut s = Screen::with_scrollback(20, 12, 100);
+        s.feed(b"\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\nten");
+        let m = s.set_named_mark(10, "build");
+        let notes = s.notes_in_order();
+        assert_eq!(notes.len(), 1);
+        let (line, _, n) = notes[0];
+        assert_eq!((line, n.text.as_str(), n.start_col, n.more_rows, n.end_col), (10, "Named Mark build", 0, 0, 20));
+        assert!(s.rename_named_mark(m, Some("test".into())));
+        let texts: Vec<String> = s.notes_in_order().iter().map(|(_, _, n)| n.text.clone()).collect();
+        assert_eq!(texts, vec!["Named Mark test".to_string()]);
+        assert_eq!(s.remove_notes_on_line(10), 1);
+        assert!(s.notes_in_order().is_empty());
+        // A non-command mark renamed to nothing goes, with its note.
+        let m = s.set_named_mark(10, "gone");
+        assert!(s.rename_named_mark(m, None));
+        assert!(s.notes_in_order().is_empty());
+        assert!(s.marks.records.get(&m).is_none());
+        // A command mark keeps the mark and has no note.
+        let c = s.new_mark(11, crate::marks::Kind::Prompt);
+        s.rename_mark(c, Some("cmd".into()));
+        s.add_note(11, 0, 11, 20, &named_mark_text("cmd"), false);
+        assert!(s.rename_named_mark(c, None));
+        assert!(s.notes_in_order().is_empty());
+        assert!(s.marks.records.contains_key(&c));
+        // The name is untrusted: hidden characters go, the length is capped.
+        let long = format!("a\u{202e}b{}", "x".repeat(1000));
+        s.set_named_mark(9, &long);
+        let t = s.notes_in_order().into_iter().find(|(l, _, _)| *l == 9).unwrap().2.text.clone();
+        assert!(!t.contains('\u{202e}') && t.starts_with("Named Mark ab") && t.chars().count() <= "Named Mark ".len() + crate::inert_files::SHOWN_NAME);
     }
 
     #[test]

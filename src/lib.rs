@@ -378,6 +378,7 @@ pub mod hotkey;
 pub mod session_hotkeys;
 pub mod broadcast;
 pub mod dim;
+pub mod dropdown_views;
 mod tmux_probe;
 pub mod tmux_hook;
 pub mod conductor_parser;

@@ -256,16 +256,16 @@ impl App {
                             PromptFor::Browser(prompt) => return { self.browser_mark_prompt_done(pane, prompt, name); true },
                         };
                         match rename {
-                            // Renaming adds no annotation (Set Named Mark adds none here).
+                            // The note "Named Mark <name>" follows the name (`PS:16775-16822`).
                             Some(mark) => {
                                 if let Some(p) = self.panes.get_mut(&pane) {
-                                    p.screen.rename_mark(mark, Some(name));
+                                    p.screen.rename_named_mark(mark, Some(name));
                                 }
                             }
                             None => {
                                 let line = self.top_visible_line(pane);
                                 if let Some(p) = self.panes.get_mut(&pane) {
-                                    let m = p.screen.set_manual_mark(line, Some(name));
+                                    let m = p.screen.set_named_mark(line, &name);
                                     self.mark_pos.insert(pane, m);
                                 }
                             }

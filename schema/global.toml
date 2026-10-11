@@ -425,6 +425,15 @@ default = false
 help = "Disable potentially insecure escape sequences.\nSome features of Tandem expand the surface area for security issues. Consider turning this on when viewing untrusted content. The following custom escape sequences will be disabled: RemoteHost, StealFocus, CurrentDir, SetProfile, CopyToClipboard, EndCopy, File, SetBackgroundImageFile, OSC 6\u2019s proxy icon-changing feature. The following DEC sequences are disabled: DECRQCRA. The following xterm extensions are disabled: Window Title Reporting, Icon Title Reporting. This will break displaying inline images, file download, some shell integration features, and other features."
 
 [[setting]]
+key = "UseOldStyleDropDownViews"
+tab = "Advanced"
+section = "General"
+label = "Use old-style find and paste progress indicator views."
+type = "bool"
+default = false
+help = "Use old-style find and paste progress indicator views.\nThis change will only affect new windows."
+
+[[setting]]
 key = "onePasswordAccount"
 tab = "Advanced"
 section = "General"

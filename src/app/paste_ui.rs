@@ -251,7 +251,10 @@ impl App {
             let on_bar = self.bar_shown_for(id);
             match pct {
                 Some(pct) if !on_bar => {
-                    self.ask(id, PASTE_BAR, &format!("Pasting... {pct}%"), &["Cancel"], true);
+                    // A window opened with the old-style key on says it in `PasteView.xib`'s words.
+                    let layout = crate::dropdown_views::paste_layout(self.dropdown_views.old_style());
+                    let text = if self.dropdown_views.old_style() { format!("{} {pct}%", layout.label_text) } else { format!("Pasting... {pct}%") };
+                    self.ask(id, PASTE_BAR, &text, &["Cancel"], true);
                 }
                 _ => {
                     self.drop_bar(id, PASTE_BAR);

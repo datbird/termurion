@@ -122,7 +122,7 @@ impl App {
         let named = self.panes.get(&pane).and_then(|p| p.screen.command_record(mark)).is_some_and(|m| m.name.is_some());
         if named {
             if let Some(p) = self.panes.get_mut(&pane) {
-                p.screen.rename_mark(mark, None);
+                p.screen.rename_named_mark(mark, None);
             }
         } else {
             self.open_rename_mark_prompt(pane, mark, "", event_loop);

@@ -44,6 +44,7 @@ pub(super) struct WinSlot {
     tab_press: Option<super::TabPress>,
     /// `SelectsTabsOnMouseDown` as it was when the window opened.
     tab_selects_on_down: bool,
+    dropdown_views: crate::dropdown_views::Opened,
     /// A side tab bar's preferred width in points.
     side_bar_preferred: f32,
     /// A side tab bar's scroll offset in points.
@@ -183,6 +184,7 @@ impl WinSlot {
             tab_seen: None,
             tab_press: None,
             tab_selects_on_down: true,
+            dropdown_views: Default::default(),
             side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
             side_bar_scroll: 0.0,
             tab_flash: crate::tab_flash::Flash::new(),
@@ -310,6 +312,7 @@ impl App {
         swap(&mut self.tab_seen, &mut s.tab_seen);
         swap(&mut self.tab_press, &mut s.tab_press);
         swap(&mut self.tab_selects_on_down, &mut s.tab_selects_on_down);
+        swap(&mut self.dropdown_views, &mut s.dropdown_views);
         swap(&mut self.side_bar_preferred, &mut s.side_bar_preferred);
         swap(&mut self.side_bar_scroll, &mut s.side_bar_scroll);
         swap(&mut self.tab_flash, &mut s.tab_flash);
@@ -671,6 +674,7 @@ impl App {
         }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
+        self.dropdown_views.open(self.globals.bool("UseOldStyleDropDownViews"));
         // A new window's side bar starts at `LeftTabBarWidth`.
         self.side_bar_preferred = super::side_bar_default(&self.globals);
         if let Some(slot) = new_slot {
@@ -1074,6 +1078,7 @@ impl WinSlot {
             tab_seen: None,
             tab_press: None,
             tab_selects_on_down: true,
+            dropdown_views: Default::default(),
             side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
             side_bar_scroll: 0.0,
             tab_flash: crate::tab_flash::Flash::new(),

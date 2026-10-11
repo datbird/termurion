@@ -1105,6 +1105,9 @@ pub struct App {
     /// `SelectsTabsOnMouseDown` as it was when this window opened (iTerm2 copies it into each
     /// tab bar it makes, `iTermTabBarControlView.m:58`; a change affects new windows only).
     tab_selects_on_down: bool,
+    /// `UseOldStyleDropDownViews` as it was when this window opened (a change affects new
+    /// windows only, `AS:526`).
+    dropdown_views: crate::dropdown_views::Opened,
     /// `MinimumTabDragDistance` in pixels, read once at startup (iTerm2 reads it when it makes
     /// a tab bar, `iTermTabBarControlView.m:44`; its help asks for a restart).
     min_tab_drag: f32,
@@ -2067,6 +2070,8 @@ pub fn run() {
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
+    let mut dropdown_views = crate::dropdown_views::Opened::default();
+    dropdown_views.open(globals.bool("UseOldStyleDropDownViews"));
     jobs.set_fast_updates(globals.bool("FastForegroundJobUpdates"));
     jobs.set_ancestry_diagnostics(globals.bool("LogForegroundJobAncestryDiagnostics"));
     let side_bar_preferred = side_bar_default(&globals);
@@ -2446,6 +2451,7 @@ pub fn run() {
         tab_seen: None,
         tab_press: None,
         tab_selects_on_down,
+        dropdown_views,
         min_tab_drag,
         tab_drop_marker: None,
         tab_bar_drawn: None,
@@ -6636,7 +6642,7 @@ impl App {
                 let palette_selection = self.panes.get(&tab.focused).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
                 let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE), progress: f.progress, selection: palette_selection };
                 let first_quad = frame.quads.len();
-                let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
+                let mode_rect = if self.dropdown_views.old_style() { scene::find_bar_old(&mut frame, &bar, rect, cell) } else { scene::find_bar(&mut frame, &bar, rect, cell) };
                 self.find_bar_rect = frame.quads.get(first_quad).map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
             }

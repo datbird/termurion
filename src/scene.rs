@@ -686,6 +686,38 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     mode_rect
 }
 
+/// The find bar in `FindView.xib`'s old layout (`UseOldStyleDropDownViews`): a 288 by 28 point box
+/// at the pane's top right with the search field, the previous/next pair and the close button at
+/// the xib's frames (`dropdown_views::find_layout`, origin bottom-left, so y is flipped). Returns
+/// the rectangle of the field's left end, which opens the mode menu when clicked.
+pub fn find_bar_old(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) -> Rect {
+    let l = crate::dropdown_views::find_layout(true);
+    let (w, h) = (l.size.0.min(pane.w), l.size.1);
+    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h };
+    let at = |f: crate::dropdown_views::Frame| Rect { x: r.x + f.x, y: r.y + (h - f.y - f.h), w: f.w, h: f.h };
+    frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    cut_rows_from(frame, r, cell.1);
+    let field = at(l.field);
+    frame.quads.push(Quad { rect: field, color: rgba(rgb(0, 0, 0), 0.35) });
+    if let Some(p) = bar.progress {
+        frame.quads.push(Quad { rect: Rect { x: r.x, y: r.y + r.h - 2.0, w: (r.w * p.clamp(0.0, 1.0)).max(0.0), h: 2.0 }, color: rgba(bar.selection, 1.0) });
+    }
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    let color = if bar.error { FIND_ERROR } else { TAB_TEXT };
+    let room = ((field.w - cell.0 * 2.0) / cell.0).max(1.0) as usize;
+    let n = bar.query.chars().count();
+    let shown: String = bar.query.chars().skip(n.saturating_sub(room.saturating_sub(1))).collect();
+    let text_y = |b: Rect| b.y + ((b.h - cell.1) / 2.0).max(0.0);
+    frame.rows.push(TextRow { x: field.x + cell.0, y: text_y(field), spans: vec![span(format!("{shown}_"), color)], clip: field, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    let arrows = at(l.arrows);
+    let (a, b) = crate::dropdown_views::ARROW_SEGMENTS;
+    frame.rows.push(TextRow { x: arrows.x + (a - cell.0) / 2.0, y: text_y(arrows), spans: vec![span("<".into(), TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    frame.rows.push(TextRow { x: arrows.x + a + (b - cell.0) / 2.0, y: text_y(arrows), spans: vec![span(">".into(), TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    let close = at(l.close);
+    frame.rows.push(TextRow { x: close.x + (close.w - cell.0) / 2.0, y: text_y(close), spans: vec![span("x".into(), TAB_TEXT_DIM)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    Rect { x: field.x, y: field.y, w: (cell.0 * 2.0).min(field.w), h: field.h }
+}
+
 /// iTerm2's Copy Mode cursor: a flag in the lower third of the cell at `row`, `col` (on
 /// screen), white, or light blue while selecting, with a black edge.
 pub fn copy_cursor(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize, col: usize, selecting: bool) {

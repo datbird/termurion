@@ -2414,6 +2414,17 @@ mod tests {
         );
     }
 
+    /// `AS:526`: the old-style find and paste progress views.
+    #[test]
+    fn old_style_row_follows_iterm2() {
+        let s = schema::find_global("UseOldStyleDropDownViews").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Use old-style find and paste progress indicator views.";
+        assert_eq!(s.label, label);
+        assert_eq!(s.help, format!("{label}\nThis change will only affect new windows."));
+    }
+
     #[test]
     fn prefs_row_enabling_follows_iterm2() {
         use crate::remote_prefs::{FOLDER_KEY, LOAD_KEY};
