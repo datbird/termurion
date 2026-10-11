@@ -809,10 +809,21 @@ pub fn strip_fragment(uri: &str) -> &str {
 /// not order `WebResourceResponseReceived` before `ContentLoading` (review I8), so a commit is held
 /// until the live navigation's final (non-3xx) response arrives or the navigation completes, and
 /// the response is always reduced before the commit (a typed Remember persists on the response).
+///
+/// HTTP authentication in WebView2 (probe run 2026-10-11b) differs from WebKit's order: the 401 (or
+/// 407) response and its commit come FIRST (Chromium commits the server's 401 page), then the
+/// challenge, then the navigation ends `ok=false` while the deferral is still held, and a supplied
+/// credential is retried as a NEW navigation to the same URL. So a 401/407 is not final: the sign-in
+/// stays the live main navigation's (`auth_wait`) until it is answered. A supply arms the retry
+/// (`supplied`): the next navigation to that URL continues the sign-in (`MainFrameRedirect`, which
+/// keeps the coordinator's awaiting credential) and its response decides. Without a supply (Cancel, or
+/// no challenge at all) the held 401 is the final response once nothing is held (`end_wait`).
 #[derive(Default)]
 pub struct NavTracker {
     live: Option<u64>,
     origin: Option<Origin>,
+    /// The live navigation's URI without its fragment (the retry goes to the same URI).
+    uri: String,
     /// The final response was reduced.
     responded: bool,
     /// The commit arrived and waits for the response.
@@ -821,17 +832,31 @@ pub struct NavTracker {
     committed: bool,
     /// The navigation completed (a later response is nothing).
     done: bool,
+    /// A 401/407 response held while its challenge may still be answered.
+    auth_wait: Option<u16>,
+    /// The navigation completed with `ok` while `auth_wait` (WebView2's "credentials required").
+    ended_ok: Option<bool>,
+    /// A credential was supplied for the held sign-in: the next navigation to `uri` is its retry.
+    retry: bool,
 }
 
 impl NavTracker {
     pub fn starting(&mut self, nav: u64, uri: &str, redirect: bool) -> Vec<Event> {
         let origin = origin_of(uri);
+        let bare = strip_fragment(uri).to_string();
         if redirect && self.live == Some(nav) && !self.done {
             self.origin = origin.clone();
+            self.uri = bare;
             self.responded = false;
+            self.auth_wait = None;
             return vec![Event::MainFrameRedirect(origin)];
         }
-        *self = NavTracker { live: Some(nav), origin: origin.clone(), ..NavTracker::default() };
+        if !redirect && self.retry && self.uri == bare && origin.is_some() {
+            // The engine's retry of the sign-in: the same sign-in, a new navigation id.
+            *self = NavTracker { live: Some(nav), origin: origin.clone(), uri: bare, ..NavTracker::default() };
+            return vec![Event::MainFrameRedirect(origin)];
+        }
+        *self = NavTracker { live: Some(nav), origin: origin.clone(), uri: bare, ..NavTracker::default() };
         vec![Event::MainProvisionalStarted(origin)]
     }
 
@@ -852,6 +877,11 @@ impl NavTracker {
             return Vec::new();
         }
         self.done = true;
+        if self.auth_wait.is_some() {
+            // Decided by `end_wait` (nothing held) or by the retry (a supply).
+            self.ended_ok = Some(ok);
+            return Vec::new();
+        }
         if self.commit_held {
             self.commit_held = false;
             self.committed = true;
@@ -868,12 +898,48 @@ impl NavTracker {
             return Vec::new();
         }
         let Some(origin) = self.origin.clone() else { return Vec::new() };
+        if status == 401 || status == 407 {
+            // Not final yet: WebView2 asks after it (the commit stays held with it).
+            self.auth_wait.get_or_insert(status);
+            return Vec::new();
+        }
         self.responded = true;
         let mut out = vec![Event::MainFrameResponse { origin, status }];
         if self.commit_held {
             self.commit_held = false;
             self.committed = true;
             out.push(Event::MainCommitted);
+        }
+        out
+    }
+
+    /// A credential was handed over while the live navigation's 401/407 is held: its retry follows.
+    pub fn supplied(&mut self) {
+        if self.auth_wait.is_some() {
+            self.retry = true;
+        }
+    }
+
+    /// The held 401/407 becomes the final response once the navigation completed, nothing is held
+    /// any more (`held` false) and no credential was supplied: the server's own 401 page stays.
+    pub fn end_wait(&mut self, held: bool) -> Vec<Event> {
+        let (Some(status), Some(ok)) = (self.auth_wait, self.ended_ok) else { return Vec::new() };
+        if held || self.retry {
+            return Vec::new();
+        }
+        self.auth_wait = None;
+        self.ended_ok = None;
+        let mut out = Vec::new();
+        if let Some(origin) = self.origin.clone() {
+            self.responded = true;
+            out.push(Event::MainFrameResponse { origin, status });
+        }
+        if self.commit_held {
+            self.commit_held = false;
+            self.committed = true;
+            out.push(Event::MainCommitted);
+        } else if !self.committed && !ok {
+            out.push(Event::MainEndedWithoutResponse);
         }
         out
     }

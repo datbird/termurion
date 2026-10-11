@@ -131,6 +131,14 @@ impl AuthPane {
 
     pub(super) fn completed(&mut self, nav: u64, ok: bool) -> Vec<Action> {
         let events = self.tracker.completed(nav, ok);
+        let mut out = self.feed_all(events);
+        out.extend(self.end_wait());
+        out
+    }
+
+    /// A held 401/407 that nothing waits on any more is the final response (`NavTracker::end_wait`).
+    fn end_wait(&mut self) -> Vec<Action> {
+        let events = self.tracker.end_wait(self.coordinator.pending() > 0);
         self.feed_all(events)
     }
 
@@ -246,7 +254,16 @@ impl AuthPane {
 
     fn feed(&mut self, e: ba::Event) -> Vec<Action> {
         let fx = self.coordinator.reduce(e);
-        self.actions(fx)
+        let answered = fx.iter().any(|e| matches!(e, Effect::Supply(..) | Effect::Cancel(..) | Effect::DefaultHandling(..)));
+        if fx.iter().any(|e| matches!(e, Effect::Supply(..))) {
+            // WebView2 retries a handed-over credential as a new navigation (`NavTracker`).
+            self.tracker.supplied();
+        }
+        let mut out = self.actions(fx);
+        if answered {
+            out.extend(self.end_wait());
+        }
+        out
     }
 
     fn answer(&mut self, id: ChallengeId, answer: Option<(String, Secret)>) -> Option<Action> {
@@ -623,6 +640,84 @@ mod tests {
         assert!(!acts.iter().any(|a| matches!(a, Action::Lookup { .. })));
         let (_, req) = p.want.take().unwrap();
         assert!(!req.proxy && !req.offer_remember && !req.offer_password_manager);
+    }
+
+    /// Probe run 2026-10-11b, WebView2's real order: the 401 response and its commit come BEFORE the
+    /// challenge (Chromium commits the server's 401 page and then asks), the navigation then ends
+    /// `ok=false` (status 17, credentials required) while the deferral is held, and the person's answer
+    /// is retried as a NEW navigation to the same URL, whose response decides. The sign-in must still
+    /// be the main document's (lookup, Remember, Password Manager), a remembered credential persists
+    /// after the retry's 200, a rejected stored one is flagged when the retry is challenged again, and
+    /// a Cancel ends the navigation (a later challenge is no longer the main document's).
+    #[test]
+    fn webview2_order_signs_in_and_remembers() {
+        let url = "https://a.b/";
+        let begin = |p: &mut AuthPane, nav: u64| {
+            assert!(p.starting(nav, url, false).is_empty());
+            assert!(p.response(nav, 401).is_empty());
+            assert!(p.committed(nav).is_empty());
+        };
+        // Typed with Remember: persisted once the retry's 200 arrives, never before.
+        let mut p = AuthPane::new(1, 1, true);
+        begin(&mut p, 2);
+        let acts = p.challenge(81, url, BASIC, &cx(false, true));
+        let id = lookup_id(&acts);
+        p.looked(id, None);
+        let (_, req) = p.want.take().expect("the prompt");
+        assert!(req.offer_remember && req.offer_password_manager, "the main document's sign-in offers Remember and the manager: {req:?}");
+        assert!(p.completed(2, false).is_empty(), "the 'credentials required' end cancels nothing");
+        assert!(p.holds(id));
+        let acts = p.prompt_answer(id, typed("u", "p", true));
+        assert_eq!(answers(&acts), vec![(81, true)]);
+        assert!(p.starting(3, url, false).is_empty(), "the engine's retry is the same sign-in");
+        let acts = p.response(3, 200);
+        assert!(matches!(acts.as_slice(), [Action::Persist { .. }]), "{acts:?}");
+        assert!(p.committed(3).is_empty() && p.completed(3, true).is_empty());
+        // The person answers before the navigation's end arrives: the same.
+        let mut p = AuthPane::new(1, 1, true);
+        begin(&mut p, 2);
+        let id = lookup_id(&p.challenge(82, url, BASIC, &cx(false, true)));
+        p.looked(id, None);
+        p.want.take();
+        assert_eq!(answers(&p.prompt_answer(id, typed("u", "p", true))), vec![(82, true)]);
+        assert!(p.completed(2, false).is_empty());
+        p.starting(3, url, false);
+        assert!(matches!(p.response(3, 200).as_slice(), [Action::Persist { .. }]));
+        // A saved credential the server rejects: the retry is challenged again and the saved one is
+        // never prefilled again (Task 8 I1), whatever the order.
+        let mut p = AuthPane::new(1, 1, true);
+        begin(&mut p, 2);
+        let id = lookup_id(&p.challenge(83, url, BASIC, &cx(false, true)));
+        p.looked(id, Some(("saved".into(), Secret::new("old".into()))));
+        p.want.take();
+        p.completed(2, false);
+        assert_eq!(answers(&p.prompt_answer(id, typed("saved", "old", false))), vec![(83, true)]);
+        begin(&mut p, 3);
+        let acts = p.challenge(84, url, BASIC, &cx(false, true));
+        assert!(!acts.iter().any(|a| matches!(a, Action::Lookup { .. })), "a rejected saved credential is not looked up again: {acts:?}");
+        let (_, req) = p.want.take().expect("asked again");
+        assert!(req.prefill.as_ref().is_none_or(|c| c.password.expose().is_empty()), "the rejected password is not prefilled");
+        // Cancel: the 401 page stays; the navigation is over, a later challenge is not the main one.
+        let mut p = AuthPane::new(1, 1, true);
+        begin(&mut p, 2);
+        let id = lookup_id(&p.challenge(85, url, BASIC, &cx(false, true)));
+        p.looked(id, None);
+        p.want.take();
+        p.completed(2, false);
+        assert_eq!(answers(&p.prompt_answer(id, AuthAnswer::Cancel)), vec![(85, false)]);
+        assert!(p.starting(3, url, false).is_empty(), "a later load of the same URL is a new navigation");
+        let acts = p.response(3, 200);
+        assert!(acts.is_empty(), "nothing awaits: {acts:?}");
+        // A navigation elsewhere after the supply is a new one: the credential is not persisted.
+        let mut p = AuthPane::new(1, 1, true);
+        begin(&mut p, 2);
+        let id = lookup_id(&p.challenge(86, url, BASIC, &cx(false, true)));
+        p.looked(id, None);
+        p.want.take();
+        p.completed(2, false);
+        p.prompt_answer(id, typed("u", "p", true));
+        p.starting(3, "https://a.b/other", false);
+        assert!(p.response(3, 200).is_empty(), "another URL is not the retry");
     }
 
     /// Digest, NTLM and Negotiate are prompted, never remembered or looked up.
