@@ -6,11 +6,11 @@
 //! request encoded as JSON on stdin; the adapter answers with JSON on stdout, either the expected
 //! response or an `ErrorResponse` (`AP:124-177`).
 //!
-//! Tandem ships none of the three adapter executables in this milestone (a Decision below), so
-//! `available()` always fails with "Adapter not found." and the window falls back to Credential
-//! Manager, as iTerm2 falls back when a source's own availability check fails (`P:600-668`). The
-//! wire types and `Adapter<R>` are built and tested now so a later milestone can drop the
-//! executables in without touching this module.
+//! Tandem ships all three adapter executables (`src/bin/iterm2-*-adapter.rs`) beside
+//! `tandem.exe`; the wire types here derive both `Serialize` and `Deserialize` so the app and the
+//! executables share one definition. When an executable is missing, `available()` fails with
+//! "Adapter not found." and the window falls back to Credential Manager, as iTerm2 falls back
+//! when a source's own availability check fails (`P:600-668`).
 //!
 //! A master password or session token is a `pwm::Secret` from the moment it is read to the
 //! moment it is written to the adapter's stdin and dropped; it is a plain `String` inside the
@@ -48,37 +48,37 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // --- Wire types (`PR:12-343`), iTerm2's camelCase JSON names verbatim ---
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PathKind {
     File,
     Url,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomCommand {
     pub name: String,
     pub label: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 }
 
 /// Names a pre-existing keychain entry an adapter wants migrated into its master-password slot.
 /// Tandem never persists adapter credentials (a Decision below), so it is decoded and ignored.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyCredentialMigration {
     pub from_keychain_account: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserAccount {
     pub name: String,
     pub identifier: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandshakeRequest {
     pub i_term_version: String,
@@ -86,48 +86,48 @@ pub struct HandshakeRequest {
     pub max_protocol_version: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandshakeResponse {
     pub protocol_version: i64,
     pub name: String,
     pub requires_master_password: bool,
     pub can_set_passwords: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_accounts: Option<Vec<UserAccount>>,
     pub needs_path_to_database: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_extension: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_path_to_executable: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_to_database_kind: Option<PathKind>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_to_database_prompt: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_to_database_placeholder: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub master_password_label: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persists_credentials: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_commands: Option<Vec<CustomCommand>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_fields: Option<Vec<Field>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub add_account_toggles: Option<Vec<Toggle>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_credential_migrations: Option<Vec<LegacyCredentialMigration>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_edit_in_place: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_password_for_add: Option<bool>,
 }
 
 /// `PR:146-156`. `settings` carries every settings field's current value, secret or not: iTerm2
 /// merges them all into one dictionary (`AP:319-329`) rather than keeping secret ones out of the
 /// request, so Tandem does the same.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestHeader {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,7 +145,7 @@ pub struct AccountIdentifier {
     pub account_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub identifier: AccountIdentifier,
@@ -153,14 +153,14 @@ pub struct Account {
     pub account_name: String,
     #[serde(rename = "hasOTP")]
     pub has_otp: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_label: Option<String>,
 }
 
 // -- Login: the only request that ever carries a master password, and the only response that
 // ever hands back a fresh session token, so neither derives `Debug`.
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginRequest {
     pub header: RequestHeader,
@@ -170,13 +170,13 @@ pub struct LoginRequest {
     pub master_password: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct LoginResponse {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAccountsRequest {
     pub header: RequestHeader,
@@ -186,16 +186,16 @@ pub struct ListAccountsRequest {
     pub token: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ListAccountsResponse {
     pub accounts: Vec<Account>,
     /// A non-fatal listing issue (`AP:690-700`): `accounts` keeps it, trimmed, for
     /// `Source::take_warning`, through which the app shows it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetPasswordRequest {
     pub header: RequestHeader,
@@ -206,14 +206,14 @@ pub struct GetPasswordRequest {
     pub account_identifier: AccountIdentifier,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Password {
     pub password: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otp: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetPasswordRequest {
     pub header: RequestHeader,
@@ -232,10 +232,10 @@ pub struct SetPasswordRequest {
     pub new_user_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SetPasswordResponse {}
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteAccountRequest {
     pub header: RequestHeader,
@@ -248,10 +248,10 @@ pub struct DeleteAccountRequest {
     pub source_label: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DeleteAccountResponse {}
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddAccountRequest {
     pub header: RequestHeader,
@@ -267,13 +267,13 @@ pub struct AddAccountRequest {
     pub flags: Option<HashMap<String, bool>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddAccountResponse {
     pub account_identifier: AccountIdentifier,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomCommandRequest {
     pub header: RequestHeader,
@@ -284,19 +284,19 @@ pub struct CustomCommandRequest {
     pub command_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CustomCommandResponse {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
     /// A response flagged with this clears the session token and retries once instead of
     /// showing an error (`AP:53-62`, `AP:656-664` and the other recipes' matching blocks).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_authentication: Option<bool>,
 }
 
@@ -680,6 +680,96 @@ impl<R: Runner> Source for Adapter<R> {
         // `switch_account` leaves picking to a later task.
         Ok(())
     }
+}
+
+// --- The adapter side: the one framework the three executables share ---
+
+/// The most request JSON an adapter reads from stdin (a request is a few hundred bytes).
+pub const MAX_REQUEST: usize = 1 << 20;
+
+/// The most JSON an adapter parses from a password manager CLI (untrusted output is capped).
+pub const MAX_CLI_JSON: usize = 16 << 20;
+
+/// What an adapter's `handle` is: the subcommand, its stdin, and the `Runner` it runs its
+/// password manager CLI through; it returns the JSON to print.
+pub type Handle = fn(&str, &[u8], &mut dyn Runner) -> Vec<u8>;
+
+/// `ErrorResponse` as the JSON an adapter prints.
+pub fn error_json(message: &str) -> Vec<u8> {
+    let mut v = serde_json::to_vec(&ErrorResponse { error: message.to_string(), needs_authentication: None }).unwrap_or_default();
+    v.push(b'\n');
+    v
+}
+
+/// Like `error_json`, flagged so the app clears its token and logs in again (`AP:53-62`).
+pub fn error_json_reauth(message: &str) -> Vec<u8> {
+    let mut v = serde_json::to_vec(&ErrorResponse { error: message.to_string(), needs_authentication: Some(true) }).unwrap_or_default();
+    v.push(b'\n');
+    v
+}
+
+/// A response as the JSON an adapter prints.
+pub fn ok_json<T: Serialize>(response: &T) -> Vec<u8> {
+    match serde_json::to_vec(response) {
+        Ok(mut v) => {
+            v.push(b'\n');
+            v
+        }
+        Err(_) => error_json("Failed to encode output."),
+    }
+}
+
+/// Decodes a request, refusing one over `MAX_REQUEST`. The error text names no content.
+pub fn decode_request<T: serde::de::DeserializeOwned>(stdin: &[u8], what: &str) -> Result<T, String> {
+    if stdin.len() > MAX_REQUEST {
+        return Err(format!("Failed to decode {what} request."));
+    }
+    serde_json::from_slice(stdin).map_err(|_| format!("Failed to decode {what} request."))
+}
+
+/// A session token travels as base64 of the session key (`encodeToken` in iTerm2's adapters).
+pub fn encode_token(session: &Secret) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(session.expose().as_bytes())
+}
+
+/// The session key a token carries, held in a `Secret`; `None` for a missing or malformed token.
+pub fn decode_token(token: Option<&str>) -> Option<Secret> {
+    use base64::Engine;
+    let token = token.filter(|t| !t.is_empty())?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(token).ok()?;
+    String::from_utf8(bytes).ok().map(Secret::new)
+}
+
+/// Overwrites a buffer with zeros so a request's plaintext does not linger.
+pub fn zero_bytes(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // SAFETY: a plain byte write into our own buffer.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The whole `main` of an adapter executable: the subcommand is argument 1, stdin is read to the
+/// end (capped), `handle`'s JSON is printed, and the process exits 0 after an error response
+/// except for "No input provided", which exits 1 (iTerm2's adapters). Returns the exit code.
+pub fn run_main(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn std::io::Write, handle: Handle, runner: &mut dyn Runner) -> i32 {
+    use std::io::Read;
+    let Some(command) = args.get(1) else {
+        let _ = stdout.write_all(&error_json("Usage: <adapter> <command>"));
+        return 1;
+    };
+    let mut input = Vec::new();
+    let _ = stdin.take(MAX_REQUEST as u64 + 1).read_to_end(&mut input);
+    if input.is_empty() {
+        let _ = stdout.write_all(&error_json("No input provided"));
+        return 1;
+    }
+    let out = handle(command, &input, runner);
+    zero_bytes(&mut input);
+    let _ = stdout.write_all(&out);
+    let _ = stdout.flush();
+    0
 }
 
 #[cfg(test)]
