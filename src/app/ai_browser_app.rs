@@ -290,6 +290,15 @@ impl Calls {
         self.calls.values().filter_map(|c| c.bound.as_ref().map(|(chat, _)| chat.clone())).collect()
     }
 
+    /// Forgets every call bound to an orchestration mirror that `live(chat, request_id)` refuses
+    /// (12f's 30 s limit or Stop dropped its `orch_mirrors` entry): a late answer is dropped.
+    pub fn sweep_orphans(&mut self, live: &dyn Fn(&str, &str) -> bool) {
+        let gone: Vec<u64> = self.calls.iter().filter(|(_, c)| c.bound.as_ref().is_some_and(|(chat, rid)| !live(chat, rid))).map(|(t, _)| *t).collect();
+        for t in gone {
+            self.forget(t);
+        }
+    }
+
     /// Drains the answers: an unbound or forgotten token is dropped, and a page answer is
     /// delivered only when `now(pane)` is still the page it was read from.
     pub fn finish(&mut self, now: &dyn Fn(PaneId) -> Option<Binding>) -> Vec<(String, String, Outcome)> {
@@ -483,6 +492,11 @@ impl App {
     pub(super) fn ai_browser_sweep(&mut self) {
         let keep: HashSet<String> = self.ai_browser.chats().into_iter().filter(|c| self.ai_browser_gate(c) && self.ai_browser_turn_active(c)).collect();
         self.ai_browser.sweep(&|chat| keep.contains(chat));
+        // A mirror 12f's limit or Stop dropped no longer waits for its answer. Only orchestration
+        // chats are checked: a direct call's request id is never in `orch_mirrors`.
+        let orch_chats: HashSet<String> = self.ai_browser.chats().into_iter().filter(|c| self.chat_row(c).is_some_and(|r| r.orchestration_enabled)).collect();
+        let mirrors: HashSet<(String, String)> = self.orch_mirrors.keys().cloned().collect();
+        self.ai_browser.sweep_orphans(&|chat, rid| !orch_chats.contains(chat) || mirrors.contains(&(chat.to_string(), rid.to_string())));
         // A chat whose turn ended starts its next turn with a fresh count.
         let active: HashSet<String> = self.ai_browser.turns.keys().filter(|c| self.ai_browser_turn_active(c)).cloned().collect();
         self.ai_browser.turns.retain(|c, _| active.contains(c));
@@ -514,6 +528,23 @@ mod tests {
         let p = Page::open(7, epoch, url, "T", false).unwrap();
         let a = p.web_search(&crate::ai_browser::Loaded::Ok, Some(Ok("# secret page")));
         (Ready::Page(a), p.binding().clone())
+    }
+
+    #[test]
+    fn a_timed_out_mirror_is_forgotten_and_its_answer_dropped() {
+        let mut s = Calls::default();
+        s.calls.insert(1, call(7));
+        s.bind(1, "C", "m1");
+        s.calls.insert(2, call(7));
+        s.bind(2, "C", "m2");
+        // 12f's timeout removed ("C", "m1") from orch_mirrors; ("C", "m2") still waits.
+        s.sweep_orphans(&|chat, rid| chat == "C" && rid == "m2");
+        assert!(!s.calls.contains_key(&1) && s.calls.contains_key(&2));
+        s.done.push((1, plain("late")));
+        s.done.push((2, plain("on time")));
+        let out = s.finish(&|_| None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "m2");
     }
 
     #[test]

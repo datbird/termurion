@@ -710,6 +710,23 @@ pub const LEFT_ORCHESTRATION: &str = "This chat is no longer in orchestration mo
 
 #[cfg(test)]
 mod tests {
+
+    /// Task 9 (Review Focus 5): 12f's browser mirrors, checked here and not changed.
+    #[test]
+    fn browser_mirrors_follow_iterm2() {
+        let mirrored: Vec<String> = crate::ai_tools::ALL_NAMES.iter().filter(|n| !NOT_MIRRORED.contains(n)).map(|n| format!("session_{n}")).collect();
+        let decls = all_decls();
+        let names: Vec<String> = decls.iter().skip(TOOLS.len()).map(|d| d.name.clone()).collect();
+        assert_eq!(names, mirrored);
+        assert_eq!(names.len(), 23);
+        for b in ["session_find_on_page", "session_load_url", "session_web_search_in_browser", "session_get_current_url", "session_read_web_page_section"] {
+            assert!(names.iter().any(|n| n == b), "{b}");
+        }
+        let load = decls.iter().find(|d| d.name == "session_load_url").unwrap();
+        let req: Vec<&str> = load.parameters["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req.contains(&"session_guid") && req.contains(&"url"));
+        assert!(mirror_needs_claim(crate::ai_permissions::Category::ActInWebBrowser));
+    }
     use super::*;
     use serde_json::json;
 

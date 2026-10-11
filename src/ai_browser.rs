@@ -157,6 +157,12 @@ pub fn kind_refusal(browser_call: bool, browser_pane: bool) -> Option<Outcome> {
     }
 }
 
+/// A kind refusal for a 12f `session_*` mirror reaches the orchestration model wrapped as the
+/// dispatcher's own error (`OD:1375`); every other call keeps the bare text.
+pub fn mirror_kind(o: Outcome, mirror: bool) -> Outcome {
+    if mirror { Outcome { model: orch_kind_error(&o.model), notice: o.notice } } else { o }
+}
+
 /// The picker's button in a browser pane's toolbar strip (Task 6): centered, never wider than the
 /// strip, the strip's height less 4 points above and below. A browser pane's view covers its
 /// rectangle, so the button lives in the strip Tandem draws, never in the page.
@@ -807,6 +813,13 @@ mod tests {
         assert_eq!(b("http://xn--caf-dma.example/"), "http://xn--caf-dma.example");
         assert_eq!(b("https://h?x=1"), "https://h");
         assert_eq!(b("about:blank"), "about:blank");
+    }
+
+    #[test]
+    fn mirror_kind_errors_are_wrapped_and_others_are_not() {
+        let bare = || Outcome { model: NOT_A_BROWSER.to_string(), notice: None };
+        assert_eq!(mirror_kind(bare(), true).model, "Error executing command: The associated session is a terminal emulator, not a web browser");
+        assert_eq!(mirror_kind(bare(), false).model, NOT_A_BROWSER);
     }
 
     #[test]

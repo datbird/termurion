@@ -702,6 +702,7 @@ impl App {
         let browser_call = call.category().is_browser();
         if self.panes.contains_key(&pane) {
             if let Some(o) = crate::ai_browser::kind_refusal(browser_call, self.is_browser_pane(pane)) {
+                let o = crate::ai_browser::mirror_kind(o, self.orch_mirrors.keys().any(|(c, r)| c == chat && r == request_id));
                 return self.ai_tool_finished(chat, request_id, o);
             }
         }
