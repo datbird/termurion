@@ -6,7 +6,7 @@
 //! `guard_open`. Tandem keeps nothing of a page but its URL (an arrangement) and its title.
 
 use super::*;
-use crate::browser::{self, BrowserIo, Button, Hit, Start, Suggestion};
+use crate::browser::{self, BrowserIo, Button, Hit, Placed, Start, Suggestion};
 use crate::layout::Rect;
 use crate::palette::Rgb;
 use crate::text_edit::{self, EditKey, EditOut};
@@ -293,19 +293,23 @@ impl App {
                     self.basic_auth_visible(pane, true);
                 }
                 None => {
-                    // Its link tip goes with it (hidden, another tab, buried, zoomed away).
-                    self.browser_tip_clear(pane);
                     // Not shown: hidden when it is this window's pane (another tab, buried, zoomed
-                    // away) or sits in this window's handle with no pane (an Undo Close stash).
-                    if let Some(bv) = self.browser_views.get(&pane) {
-                        if mine.contains(&pane) || bv.parent == hwnd {
-                            if let Some(v) = &bv.view {
+                    // away) or sits in this window's handle with no pane (an Undo Close stash). A pane
+                    // of another window is that window's to report (review I1: a redraw here used to
+                    // report it hidden and cancel its sign-in).
+                    let in_handle = self.browser_views.get(&pane).is_some_and(|bv| bv.parent == hwnd);
+                    match browser::placement(false, mine.contains(&pane), in_handle) {
+                        Placed::Hidden => {
+                            // Its link tip goes with it.
+                            self.browser_tip_clear(pane);
+                            if let Some(v) = self.browser_views.get(&pane).and_then(|bv| bv.view.as_ref()) {
                                 v.set_visible(false);
                             }
+                            self.web_replay_shown(pane, false);
+                            self.basic_auth_visible(pane, false);
                         }
+                        Placed::Shown | Placed::Elsewhere => {}
                     }
-                    self.web_replay_shown(pane, false);
-                    self.basic_auth_visible(pane, false);
                 }
             }
         }
@@ -1800,6 +1804,23 @@ mod tests {
         assert!(browser_setup(true, false, vec![]).in_private && !browser_setup(false, false, vec![]).in_private);
         let s = browser_setup(false, false, vec![]);
         assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
+    }
+
+    /// Task 10 review I1: one window's pass reports a pane hidden (sign-in cancelled, replay hidden,
+    /// link tip cleared) only when the pane is this window's or parked in its handle
+    /// (`browser::placement`); a pane of another window is left to that window's pass.
+    #[test]
+    fn another_windows_pane_is_not_reported_hidden() {
+        let src = include_str!("browser_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let f = &prod[prod.find("pub(super) fn place_browser_views").unwrap()..prod.find("fn show_browser_view").unwrap()];
+        assert!(f.contains("browser::placement("), "the one placement rule decides");
+        let rest = "Placed::Shown | Placed::Elsewhere => {}";
+        let hidden = &f[f.find("Placed::Hidden =>").expect("a Hidden arm")..f.find(rest).expect("another window's pane: nothing")];
+        for call in ["self.basic_auth_visible(pane, false)", "self.web_replay_shown(pane, false)", "self.browser_tip_clear(pane)", "v.set_visible(false)"] {
+            assert_eq!(f.matches(call).count(), 1, "{call} once");
+            assert!(hidden.contains(call), "{call} only for a pane hidden in this window");
+        }
     }
 
     /// The hand-over compares per window and moves focus only for the window in front (fix r1).
