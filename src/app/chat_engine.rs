@@ -807,11 +807,11 @@ impl Engine {
         a.running = None;
         // A result is stored and sent only while the turn's gate is open: page text from a
         // closed gate is dropped, never written to the history (R13xai-2).
-        if let Some(model) = cx.agents.get(chat).and_then(|a| a.model.clone()) {
-            let endpoint = endpoint_of(&model);
-            if !chat_gate::gate_open(cx.globals, &endpoint) {
-                return Self::refuse(cx, chat, endpoint);
-            }
+        // No model is no gate to pass: the result is dropped like the other gates here (`run`, `orch_done`).
+        let Some(model) = cx.agents.get(chat).and_then(|a| a.model.clone()) else { return Vec::new() };
+        let endpoint = endpoint_of(&model);
+        if !chat_gate::gate_open(cx.globals, &endpoint) {
+            return Self::refuse(cx, chat, endpoint);
         }
         Self::answer(cx, chat, request_id, o, false)
     }
@@ -2661,6 +2661,16 @@ mod tests {
             assert!(!h.in_turn(&chat));
             assert!(h.responses(&chat).iter().all(|(_, t)| !t.contains("Secret page")), "page text is not stored while the gate is closed");
         }
+        // (b2) no model on the turn (a batch ended it) is no gate: the result is dropped, not stored.
+        let mut h = H::new();
+        let chat = h.linked_chat(None, Some("9"));
+        h.set(&chat, "9", Category::ActInWebBrowser, Permission::Always);
+        h.script(vec![invoke("read_web_page_section", r#"{"startingLineNumber":0,"numberOfLines":50}"#, "r1")]);
+        let rid = run_ids(&h.say(&chat, "hi"))[0].0.clone();
+        h.run(|cx| cx.agents.get_mut(chat.as_str()).unwrap().model = None);
+        let fx = h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("# Secret page", Some("Contents provided"))));
+        assert!(fx.is_empty() && h.events().iter().all(|e| !matches!(e, Ev::Tool(_))));
+        assert!(h.responses(&chat).iter().all(|(_, t)| !t.contains("Secret page")));
         // (c) a parked navigation whose consent was removed never runs.
         let mut h = H::new();
         let chat = h.linked_chat(None, Some("9"));

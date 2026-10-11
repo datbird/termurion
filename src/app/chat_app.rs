@@ -714,7 +714,8 @@ impl App {
             match self.ai_tool_start(pane, call) {
                 super::ai_tools_app::ToolStart::Done(o) => self.ai_tool_finished(chat, request_id, o),
                 super::ai_tools_app::ToolStart::Waiting(token) => self.ai_browser_bind(token, chat, request_id),
-                super::ai_tools_app::ToolStart::Pending => {}
+                // A browser start never parks on a pane; if that changes it fails closed, not hangs.
+                super::ai_tools_app::ToolStart::Pending => self.ai_tool_finished(chat, request_id, Outcome { model: super::ai_tools_app::NOT_AVAILABLE.to_string(), notice: None }),
             }
             return;
         }

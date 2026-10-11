@@ -142,11 +142,6 @@ fn origin_of(url: &str) -> Option<String> {
     Some(format!("{scheme}://{}", hp.to_ascii_lowercase()))
 }
 
-/// Whether a browser pane showing `url` may be offered browser tools at all: never a private
-/// (Dev Null) pane, never a Tandem, local or extension page (`webhost::tandem_or_local_page`, the one
-/// predicate the nav judge's atoms build), and otherwise only an ordinary web origin (`origin_of`).
-/// A blank or not yet loaded pane is offered (nothing is shown; reads still go through
-/// `Page::open`). Same rule as `Page::open`.
 /// A tool for the wrong kind of pane answers a fixed text and touches nothing (`PS:326-336`).
 pub fn kind_refusal(browser_call: bool, browser_pane: bool) -> Option<Outcome> {
     match (browser_call, browser_pane) {
@@ -156,6 +151,11 @@ pub fn kind_refusal(browser_call: bool, browser_pane: bool) -> Option<Outcome> {
     }
 }
 
+/// Whether a browser pane showing `url` may be offered browser tools at all: never a private
+/// (Dev Null) pane, never a Tandem, local or extension page (`webhost::tandem_or_local_page`, the one
+/// predicate the nav judge's atoms build), and otherwise only an ordinary web origin (`origin_of`).
+/// A blank or not yet loaded pane is offered (nothing is shown; reads still go through
+/// `Page::open`). Same rule as `Page::open`.
 pub fn offerable(url: &str, dev_null: bool) -> bool {
     !dev_null && (url.is_empty() || readable_origin(url).is_some())
 }
