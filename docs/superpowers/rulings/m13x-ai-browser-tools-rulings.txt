@@ -1,0 +1,13 @@
+Plan: Ruling (pre-flight B1): page text reaches a model only through ai_context::neutralize / browser_reader::page_derived_block, run on the raw text before any JSON escaping; only ai_browser::Page builds an Answer - cost if wrong: a page could close the fence and speak as the system.
+Plan: Ruling (B2): the approval window names the exact top-level origin (punycode, host end) and the action - cost if wrong: a person approves a page they cannot identify.
+Plan: Ruling (B3): every browser tool call is bound to pane, navigation epoch and origin; a changed page answers PAGE_CHANGED with no page text - cost if wrong: an answer about one page is read as another.
+Plan: Ruling (B4): Dev Null panes and power or local pages (iterm2-about, iterm2-file, iterm2-ssh, file:) are never offered browser tools and never readable (ai_browser::offerable and Page::open; one shared predicate with 13x8 once it lands) - cost if wrong: private or local content reaches a provider.
+Plan: Ruling (B5): 12f orch_mirror is rewritten for browser calls (own claim, then orch_run_mirror), keeping the B1 fence inside the text.
+Plan: Ruling (B6): AI-loaded navigations go through the one nav judge, redirects included (13x8 fix); load_url is http and https only and refuses backslashes and credentials.
+Plan: Ruling (B7): results are capped at 64 KiB in total, the title, URL and fence included (fence reserve 1 KiB, title 200 chars, URL 2048 chars).
+Plan: Ruling (B8): password and autofill field values are never in page text.
+Plan: Ruling (B9): no secrets, userinfo or cookies reach logs or a provider; Page and Answer have a redacting Debug.
+Plan: Ruling (B10): rate limiting uses the existing limiter and Cooldown, one owner each; no new timer.
+Plan: DEVIATION (Task 1): Waits::navigated takes the navigation id (bind_nav(pane, nav), navigated(pane, nav)) so a load finishes only for its own navigation; the brief's one-argument form is replaced.
+Plan: DEVIATION (Task 2): the browser texts and the offered set - ai_permissions::offered is the one owner of the offered tool set (browser categories only for a linked, offerable browser pane); the engine reads it through Ctx.browser_offered; tool descriptions are constants with no page text, URL or secret. A blank or not yet loaded pane (empty url or about:blank) is offered; reads still refuse until a page shows.
+Plan: Ruling (review of Task 1): ai_context::neutralize defangs attribute, whitespace, zero-width, BOM, soft hyphen, bidi, fullwidth and lookalike bracket and slash, case and escaped (<\/) forms of the three fence tags; find_results is test-only (find goes through Page).
