@@ -618,6 +618,181 @@ fn merge_prefill(picked: Option<&Credential>, typed: Option<&Credential>, last: 
     Some(Credential { user: user.unwrap_or("").to_string(), password: Secret::new(password.unwrap_or("").to_string()) })
 }
 
+// --- The store rules, texts and challenge helpers (Task 9) ---
+
+pub const OK: &str = "OK";
+pub const CANCEL: &str = "Cancel";
+pub const PASSWORD_MANAGER: &str = "Password Manager";
+pub const PASSWORD_PLACEHOLDER: &str = "Password";
+pub const USER_PLACEHOLDER: &str = "User name";
+pub const REMEMBER: &str = "Remember this password";
+
+#[derive(Debug, PartialEq)]
+pub enum SavePlan {
+    SetPassword(crate::pwm::Account),
+    Add,
+}
+
+/// The stored account name of a protection space (`BAS:71-78`): the scheme always, the port only
+/// when it is not the scheme's default, then " (<realm>)" when there is a realm. The coordinator
+/// refuses a realm over `MAX_REALM` and a host over `MAX_HOST`, so a name is at most about 530
+/// characters; a store that cannot hold that refuses the Add and the person sees the failure toast.
+pub fn account_name(scheme: &str, host: &str, port: u16, realm: &str) -> String {
+    let default = (scheme == "https" && port == 443) || (scheme == "http" && port == 80);
+    let mut name = format!("{scheme}://{host}");
+    if !default {
+        name.push_str(&format!(":{port}"));
+    }
+    if !realm.is_empty() {
+        name.push_str(&format!(" ({realm})"));
+    }
+    name
+}
+
+/// The prompt's heading text (`BAM:228-233`). The inputs must already be inert (`display_text`).
+pub fn prompt_text(host: &str, realm: &str) -> String {
+    if realm.is_empty() {
+        format!("The website \u{201c}{host}\u{201d} requires a user name and password.")
+    } else {
+        format!("The website \u{201c}{host}\u{201d} requires a user name and password for \u{201c}{realm}\u{201d}.")
+    }
+}
+
+/// The scheme word and the `realm` parameter of a `WWW-Authenticate` or `Proxy-Authenticate`
+/// challenge (RFC 7235): the parameter name is case-insensitive, the value a token or a quoted
+/// string with backslash escapes; empty when absent. A quoted value that merely contains `realm=`
+/// is not a parameter.
+pub fn parse_challenge(header: &str) -> (String, String) {
+    let h = header.trim_start();
+    let end = h.find(|c: char| c.is_ascii_whitespace()).unwrap_or(h.len());
+    let scheme = h[..end].to_string();
+    let b = h[end..].as_bytes();
+    let rest = &h[end..];
+    let mut i = 0;
+    while i < b.len() {
+        while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b',') {
+            i += 1;
+        }
+        let start = i;
+        while i < b.len() && !matches!(b[i], b'=' | b',') && !b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let name = &rest[start..i];
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= b.len() || b[i] != b'=' {
+            continue;
+        }
+        i += 1;
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let mut value = String::new();
+        if i < b.len() && b[i] == b'"' {
+            i += 1;
+            let mut chars = rest[i..].char_indices();
+            let mut closed = i;
+            while let Some((k, c)) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some((_, n)) = chars.next() {
+                            value.push(n);
+                        }
+                    }
+                    '"' => {
+                        closed = i + k + 1;
+                        break;
+                    }
+                    c => value.push(c),
+                }
+                closed = i + k + c.len_utf8();
+            }
+            i = closed;
+        } else {
+            let s0 = i;
+            while i < b.len() && b[i] != b',' && !b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            value = rest[s0..i].to_string();
+        }
+        if name.eq_ignore_ascii_case("realm") {
+            return (scheme, value);
+        }
+    }
+    (scheme, String::new())
+}
+
+/// `scheme://host[:port]` of an http or https URI, lower-cased, default ports 443 and 80; None for any
+/// other scheme (iTerm2's default port there is -1, `BAM:325`), no host, a bad port or user information.
+pub fn origin_of(uri: &str) -> Option<Origin> {
+    let (scheme, rest) = uri.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port) = if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        (&authority[..=end], authority[end + 1..].strip_prefix(':').unwrap_or(""))
+    } else {
+        authority.split_once(':').unwrap_or((authority, ""))
+    };
+    if host.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let port = if port.is_empty() { if scheme == "https" { 443 } else { 80 } } else { port.parse::<u16>().ok()? };
+    Some(Origin { scheme, host: host.to_ascii_lowercase(), port })
+}
+
+/// The protection space of a challenge at `uri` with `realm`.
+pub fn space_of(uri: &str, realm: &str) -> Option<SpaceKey> {
+    let o = origin_of(uri)?;
+    Some(SpaceKey { scheme: o.scheme, host: o.host, port: o.port, realm: realm.to_string() })
+}
+
+/// Whether the challenge comes from the configured browser proxy (`BrowserProxyEnabled` with its host
+/// and port): its host and port equal the proxy's, the host compared without case. `proxy` is None
+/// when no proxy is set. The caller also treats every challenge as a proxy's while a proxy is on and
+/// WebView2's reported URI is unproven (P14).
+pub fn is_proxy_challenge(uri: &str, proxy: Option<(&str, u16)>) -> bool {
+    let Some((host, port)) = proxy else { return false };
+    origin_of(uri).is_some_and(|o| o.host.eq_ignore_ascii_case(host) && o.port == port)
+}
+
+/// Dev Null Mode never remembers (`BAS:41-48`).
+pub fn can_remember(dev_null: bool) -> bool {
+    !dev_null
+}
+
+/// The store may be read without any prompt (`BAS:87-89`).
+pub fn unlocked_without_prompt(authenticated: bool, require_open: bool) -> bool {
+    authenticated || !require_open
+}
+
+/// The first account with the wanted name, preferring the proposed user when it is non-empty
+/// (`BAS:123-134`).
+pub fn pick_saved<'a>(accounts: &'a [crate::pwm::Account], wanted: &str, preferred_user: Option<&str>) -> Option<&'a crate::pwm::Account> {
+    let mut named = accounts.iter().filter(|a| a.account_name == wanted);
+    let first = named.next()?;
+    match preferred_user.filter(|u| !u.is_empty()) {
+        Some(u) => accounts.iter().find(|a| a.account_name == wanted && a.user_name == u).or(Some(first)),
+        None => Some(first),
+    }
+}
+
+/// Saving (`BAS:172-187`): the password of an existing (name, user) account is replaced, else a new
+/// account is added with no flags.
+pub fn save_plan(accounts: &[crate::pwm::Account], name: &str, user: &str) -> SavePlan {
+    match accounts.iter().find(|a| a.account_name == name && a.user_name == user) {
+        Some(a) => SavePlan::SetPassword(a.clone()),
+        None => SavePlan::Add,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,5 +1243,57 @@ mod tests {
         assert!(!dbg.contains("hunter2") && !dbg.contains("user"));
         let ev = format!("{:?}", submit(1, "user", "hunter2", true));
         assert!(!ev.contains("hunter2") && !ev.contains("user"), "{ev}");
+    }
+
+    fn acct(name: &str, user: &str) -> crate::pwm::Account {
+        crate::pwm::Account { id: format!("{name}|{user}"), account_name: name.into(), user_name: user.into(), display: name.into(), has_otp: false, send_otp: false, source_label: None }
+    }
+
+    #[test]
+    fn store_rules_follow_iterm2() {
+        assert_eq!(account_name("https", "a.b", 443, ""), "https://a.b");
+        assert_eq!(account_name("http", "a.b", 8080, "R"), "http://a.b:8080 (R)");
+        assert_eq!(account_name("http", "a.b", 443, ""), "http://a.b:443");
+        assert_eq!(prompt_text("a.b", "R"), "The website \u{201c}a.b\u{201d} requires a user name and password for \u{201c}R\u{201d}.");
+        assert_eq!(prompt_text("a.b", ""), "The website \u{201c}a.b\u{201d} requires a user name and password.");
+        assert!(!can_remember(true) && can_remember(false));
+        assert!(!unlocked_without_prompt(false, true));
+        assert!(unlocked_without_prompt(true, true));
+        assert!(unlocked_without_prompt(false, false));
+        let two = [acct("https://a.b", "x"), acct("https://a.b", "y")];
+        assert_eq!(pick_saved(&two, "https://a.b", Some("y")).map(|a| a.user_name.as_str()), Some("y"));
+        assert_eq!(pick_saved(&two, "https://a.b", None).map(|a| a.user_name.as_str()), Some("x"));
+        assert_eq!(pick_saved(&two, "https://a.b", Some("")).map(|a| a.user_name.as_str()), Some("x"), "an empty preferred user does not count");
+        assert_eq!(pick_saved(&two, "https://a.b", Some("z")).map(|a| a.user_name.as_str()), Some("x"));
+        assert!(pick_saved(&two, "https://c.d", None).is_none());
+        assert_eq!(save_plan(&two, "https://a.b", "y"), SavePlan::SetPassword(two[1].clone()));
+        assert_eq!(save_plan(&two, "https://a.b", "q"), SavePlan::Add);
+        assert_eq!(save_plan(&two, "https://c.d", "x"), SavePlan::Add);
+        assert_eq!(REMEMBER, "Remember this password");
+        assert_eq!((OK, CANCEL, PASSWORD_MANAGER, PASSWORD_PLACEHOLDER, USER_PLACEHOLDER), ("OK", "Cancel", "Password Manager", "Password", "User name"));
+    }
+
+    #[test]
+    fn challenge_parsing_follows_rfc7235() {
+        let p = |h: &str| parse_challenge(h);
+        assert_eq!(p(r#"Basic realm="Secure Area", charset="UTF-8""#), ("Basic".into(), "Secure Area".into()));
+        assert_eq!(p("basic realm=x"), ("basic".into(), "x".into()));
+        assert_eq!(p("NTLM"), ("NTLM".into(), String::new()));
+        assert_eq!(p(r#"Basic realm="a\"b""#), ("Basic".into(), "a\"b".into()));
+        assert_eq!(p(r#"Basic charset="realm=evil", REALM="real""#), ("Basic".into(), "real".into()), "a quoted value is not a parameter");
+        assert_eq!(p(""), (String::new(), String::new()));
+        let s = space_of("HTTPS://A.B/x", "R").unwrap();
+        assert_eq!((s.scheme.as_str(), s.host.as_str(), s.port, s.realm.as_str()), ("https", "a.b", 443, "R"));
+        assert_eq!(space_of("http://a.b:81/", "").unwrap().port, 81);
+        assert_eq!(space_of("http://a.b/", "").unwrap().port, 80);
+        assert!(space_of("file:///c:/x", "").is_none());
+        assert!(space_of("ftp://a.b/", "R").is_none() && origin_of("ftp://a.b:21/").is_none());
+        let o = origin_of("https://A.B/x#f").unwrap();
+        assert_eq!((o.scheme.as_str(), o.host.as_str(), o.port), ("https", "a.b", 443));
+        assert!(origin_of("https://u:p@a.b/").is_none(), "user information is refused");
+        assert!(is_proxy_challenge("http://127.0.0.1:8888/", Some(("127.0.0.1", 8888))));
+        assert!(!is_proxy_challenge("https://a.b/", Some(("127.0.0.1", 8888))));
+        assert!(is_proxy_challenge("http://PROXY.lan:3128/", Some(("proxy.lan", 3128))));
+        assert!(!is_proxy_challenge("http://127.0.0.1:8888/", None));
     }
 }
