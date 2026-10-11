@@ -6,6 +6,11 @@
     try {
         // Clone the document to avoid modifying the original
         const documentClone = document.cloneNode(true);
+        // Tandem's own page UI is not the page's content (mark annotations carry the person's
+        // mark names): never in what a model reads. The list is the markdown script's, one constant.
+        documentClone
+            .querySelectorAll('{{TANDEM_UI}}')
+            .forEach(e => e.remove());
         const reader = new Readability(documentClone);
         const article = reader.parse();
         

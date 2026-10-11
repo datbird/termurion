@@ -182,10 +182,20 @@ pub fn offerable(url: &str, dev_null: bool) -> bool {
 }
 
 /// "Ask AI\u{2026}" (`CWC:676-680`): the attachment a pick leaves in the new chat's input, `<title>.txt`
-/// as plain text. The name is the title as given (the attachment writer, `chat_view::materialize`,
-/// refuses a name that is not one safe component and writes nothing for it).
+/// as plain text. Deviation from `CWC:676-680` (the title verbatim), ruled: the name is a page's
+/// text, so it goes through the one normalizer (`inline_file::clean_name`, after `/` and `\` become
+/// `_` so the whole title is kept): one component, no `:` `"` `<` `>`, never empty ("page" for an
+/// untitled one). It is the only form of the title that reaches the file system or a provider's
+/// attachment wrapper.
 pub fn ask_ai_attachment(title: &str, content: &str) -> (String, Vec<u8>, &'static str) {
-    (format!("{title}.txt"), content.as_bytes().to_vec(), "text/plain")
+    (ask_ai_file_name(title), content.as_bytes().to_vec(), "text/plain")
+}
+
+/// The attachment's file name for a page title (see [`ask_ai_attachment`]).
+pub fn ask_ai_file_name(title: &str) -> String {
+    let title = if title.trim().is_empty() { "page" } else { title };
+    let one_part: String = title.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
+    crate::inline_file::clean_name(&format!("{one_part}.txt"))
 }
 
 /// The page text as the Ask AI attachment carries it: page-derived, so capped ([`AI_RESULT_MAX`], at a
@@ -902,6 +912,12 @@ mod tests {
     #[test]
     fn ask_ai_attachment_follows_iterm2() {
         assert_eq!(ask_ai_attachment("Rust", "x y"), ("Rust.txt".to_string(), b"x y".to_vec(), "text/plain"));
+        // A page chooses the title: one component, none of : " < > / \\, never empty.
+        for (title, want) in [("..\\a/b:c", ".._a_b_c.txt"), ("https://a.example/x?y", "https___a.example_x_y.txt"), ("x\"></iterm2:attachment> y", "x____iterm2_attachment_ y.txt"), ("", "page.txt"), ("  ", "page.txt")] {
+            let n = ask_ai_file_name(title);
+            assert_eq!(n, want, "{title:?}");
+            assert!(!n.contains(['/', '\\', ':', '"', '<', '>']));
+        }
         assert_eq!(ask_ai_name("a\u{202e}b"), "ab");
         assert_eq!(ask_ai_name(" \u{200b}"), "Web page");
     }

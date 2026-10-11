@@ -1895,17 +1895,21 @@ mod tests {
         assert!(make.contains("chat_create(title, None, None") && make.contains("self.link_chat(&id, pane)") && make.contains("self.chat_delete(&id)"));
         let picked = include_str!("browser_app.rs");
         assert!(picked.contains("browser::ASK_AI_ID => return { self.ask_ai_about_page(pane, event_loop); true }"));
-        // A page titled ..\a/b:c: the attachment keeps the name, the writer refuses it and writes nothing.
-        let (name, bytes, mime) = crate::ai_browser::ask_ai_attachment("..\\a/b:c", "x");
-        assert_eq!((name.as_str(), bytes.as_slice(), mime), ("..\\a/b:c.txt", &b"x"[..], "text/plain"));
-        let root = std::env::temp_dir().join(format!("tandem-askai-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        assert!(crate::chat_view::materialize(&root, "CHAT", "ci_1", &name, &bytes).is_err());
-        let count = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.count()).unwrap_or(0);
-        let inside = count(&root.join("CHAT").join("ci_1"));
-        let outside = root.parent().unwrap().join("b");
-        assert_eq!((inside, outside.exists()), (0, false), "nothing written, nothing outside");
-        let _ = std::fs::remove_dir_all(&root);
+        // A page titled ..\a/b:c, or an untitled one named by its address: the attachment name is
+        // cleaned, the writer accepts it and writes exactly one file inside the chat's folder.
+        for title in ["..\\a/b:c", "https://a.example/x?y"] {
+            let (name, bytes, mime) = crate::ai_browser::ask_ai_attachment(title, "x");
+            assert_eq!((bytes.as_slice(), mime), (&b"x"[..], "text/plain"));
+            let root = std::env::temp_dir().join(format!("tandem-askai-{}-{}", std::process::id(), name.len()));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = crate::chat_view::materialize(&root, "CHAT", "ci_1", &name, &bytes).expect("a cleaned name is written");
+            let count = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.count()).unwrap_or(0);
+            assert_eq!(count(&root.join("CHAT").join("ci_1")), 1, "exactly one file");
+            assert_eq!(count(&root), 1, "nothing else under the root");
+            assert_eq!(path.file_name().and_then(|n| n.to_str()), Some(name.as_str()), "one component");
+            assert!(path.starts_with(root.join("CHAT").join("ci_1")));
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     /// Task 7 review I1: Open AI Chat and Ask AI link only through `link_chat`, whose rule refuses a Dev

@@ -29,9 +29,15 @@ pub fn unavailable(name: &str) -> String {
     format!("A file named {name} (content unavailable)")
 }
 
+/// A name inside a double-quoted wrapper attribute: a quote cannot close it (a page chooses some
+/// names; Ask AI also cleans its own).
+fn attr_escaped(name: &str) -> String {
+    name.replace('"', "&quot;")
+}
+
 /// A file sent as text inside iTerm2's wrapper (the wire string keeps its name).
 pub fn attachment_text(name: &str, mime: &str, content: &[u8]) -> String {
-    format!("<iterm2:attachment file=\"{name}\" type=\"{mime}\">\n{}\n</iterm2:attachment>", String::from_utf8_lossy(content))
+    format!("<iterm2:attachment file=\"{}\" type=\"{mime}\">\n{}\n</iterm2:attachment>", attr_escaped(name), String::from_utf8_lossy(content))
 }
 
 fn text_part(text: &str) -> Value {
@@ -581,7 +587,7 @@ fn coerced(content: Option<Result<String, Vec<Part>>>) -> String {
             .iter()
             .map(|p| match p {
                 Part::Text(t) => t.clone(),
-                Part::File { data, filename } => format!("<iterm2:attachment file=\"{filename}\">\n{}\n</iterm2:attachment>", String::from_utf8_lossy(&unbase64(data))),
+                Part::File { data, filename } => format!("<iterm2:attachment file=\"{}\">\n{}\n</iterm2:attachment>", attr_escaped(filename), String::from_utf8_lossy(&unbase64(data))),
                 Part::Image(_) => "[image]".to_string(),
                 Part::Audio { .. } => "[audio]".to_string(),
             })

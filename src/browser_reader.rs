@@ -96,12 +96,17 @@ pub fn remove_element_body(x: f64, y: f64) -> Result<String, String> {
 
 /// Readability's article text, whitespace collapsed (`RMM:35-61`); needs the loaders to have run.
 pub fn plain_text_body() -> String {
-    expression_body(file("extract-plain-text.js"))
+    expression_body(&fill_template(file("extract-plain-text.js"), &[("TANDEM_UI", TANDEM_UI)]))
 }
+
+/// What Tandem's injecting scripts add to a page (the injecting scripts are upstream's, so this
+/// list names what they create): removed from the clone both readers use, so none of it (a mark
+/// name, a find bubble) reaches a model. The one list; both scripts take it as `{{TANDEM_UI}}`.
+pub const TANDEM_UI: &str = r#"#iterm-mark-annotations, .iterm-mark-annotation, .find-nav-bubble, #find-nav-styles, #iterm2-autofill-highlight-style, #iterm-copy-mode-cursor, button[aria-label="Open Password Manager"], button[aria-label^="Autofill "], [data-tandem-ui]"#;
 
 /// The page as markdown (`RMM:63-68`), chrome (nav, footer, aside, header) dropped when asked.
 pub fn markdown_body(skip_chrome: bool) -> String {
-    expression_body(&fill_template(file("convert-to-markdown.js"), &[("SKIP_CHROME", if skip_chrome { "true" } else { "false" })]))
+    expression_body(&fill_template(file("convert-to-markdown.js"), &[("SKIP_CHROME", if skip_chrome { "true" } else { "false" }), ("TANDEM_UI", TANDEM_UI)]))
 }
 
 /// A markdown script's answer (`RMM:67`): a string is itself, anything else is "No content found on page".
@@ -307,12 +312,21 @@ mod tests {
             ("button[aria-label^=\"Autofill \"]", "autofill-detector.js", "Autofill ${fieldType}"),
         ];
         for (sel, script, needle) in created {
-            assert!(conv.contains(sel), "{sel}");
+            assert!(TANDEM_UI.contains(sel), "{sel}");
             assert!(file(script).contains(needle), "{script} creates {needle}");
         }
-        assert!(conv.contains("#iterm-copy-mode-cursor") && file("copy-mode-cursor.js").contains("iterm-copy-mode-cursor") && conv.contains("[data-tandem-ui]"));
+        assert!(TANDEM_UI.contains("#iterm-copy-mode-cursor") && file("copy-mode-cursor.js").contains("iterm-copy-mode-cursor") && TANDEM_UI.contains("[data-tandem-ui]"));
+        // Both readers fill the one list in, and neither carries a copy of it.
+        let plain = file("extract-plain-text.js");
+        for script in [conv, plain] {
+            assert!(script.contains("querySelectorAll('{{TANDEM_UI}}')") && !script.contains("iterm-mark-annotation"));
+        }
+        for body in [plain_text_body(), markdown_body(true), markdown_body(false)] {
+            assert!(body.contains(TANDEM_UI) && !body.contains("{{"));
+        }
+        assert!(plain.find("{{TANDEM_UI}}").unwrap() < plain.find("new Readability(").unwrap());
         // The removal runs before the markdown is made from the clone.
-        assert!(conv.find("#iterm-mark-annotations").unwrap() < conv.find("service.turndown(").unwrap());
+        assert!(conv.find("{{TANDEM_UI}}").unwrap() < conv.find("service.turndown(").unwrap());
         // The injecting scripts stay upstream's: no Tandem marker patched into them.
         assert!(!file("show-named-mark-annotations.js").contains("data-tandem-ui"));
     }
@@ -454,7 +468,7 @@ mod tests {
         }
         assert!(md.ends_with("})(true)\n)") && !md.contains("{{"));
         assert!(markdown_body(false).ends_with("})(false)\n)"));
-        assert_eq!(plain_text_body(), expression_body(include_str!("../resources/browser/extract-plain-text.js")));
+        assert_eq!(plain_text_body(), expression_body(&include_str!("../resources/browser/extract-plain-text.js").replace("{{TANDEM_UI}}", TANDEM_UI)));
         assert_eq!(markdown_answer(&serde_json::json!("x")), "x");
         assert_eq!(markdown_answer(&serde_json::json!(null)), NO_CONTENT);
         assert_eq!(markdown_answer(&serde_json::json!(3)), NO_CONTENT);
