@@ -87,6 +87,7 @@ pub mod browser_db;
 pub mod browser_db_perms;
 pub mod browser_perms;
 pub mod cooldown;
+pub mod browser_download;
 pub mod perm_queue;
 pub mod browser_marks;
 pub mod browser_marks_db;

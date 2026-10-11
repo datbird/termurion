@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, BasicAuthenticationRequestedEventHandler, CallDevToolsProtocolMethodCompletedHandler, ContentLoadingEventHandler, WebResourceResponseReceivedEventHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    AcceleratorKeyPressedEventHandler, BasicAuthenticationRequestedEventHandler, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler, CallDevToolsProtocolMethodCompletedHandler, ContentLoadingEventHandler, WebResourceResponseReceivedEventHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, ServerCertificateErrorDetectedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
@@ -516,6 +516,10 @@ pub struct ViewSetup {
     /// An HTTP (or proxy) authentication request is posted as `Event::BasicAuth` and held until
     /// `answer_basic_auth`. Off: the host cancels it on the spot; WebView2's own dialog is never shown.
     pub basic_auth: bool,
+    /// The app decides this view's downloads (browser panes): `DownloadStarting` is posted as
+    /// `Event::DownloadStarting` and held until `answer_download`. Off: a download is cancelled on
+    /// the spot (a tool page, a popover or Quick Look starts none, and Edge's bubble never shows).
+    pub downloads: bool,
 }
 
 #[derive(Clone)]
@@ -635,6 +639,11 @@ struct Inner {
     /// pending cap with `perms` (one owner of the deferral caps).
     auths: HashMap<u64, PendingAuth>,
     perm_limit: webhost::PermissionLimiter,
+    /// Downloads waiting for an answer (by token) and running (by the app's id); their own limiter, so a
+    /// page's downloads never starve or are starved by permission and sign-in prompts.
+    dl_pending: HashMap<u64, PendingDownload>,
+    dl_active: HashMap<u64, ActiveDownload>,
+    dl_limit: webhost::PermissionLimiter,
     /// Page notifications the app holds a token for (at most `MAX_HELD_NOTES`).
     notes: HashMap<u64, HeldNote>,
     note_limit: webhost::NotificationLimiter,
@@ -710,6 +719,9 @@ impl WebView {
             perms: HashMap::new(),
             auths: HashMap::new(),
             perm_limit: webhost::PermissionLimiter::default(),
+            dl_pending: HashMap::new(),
+            dl_active: HashMap::new(),
+            dl_limit: webhost::PermissionLimiter::default(),
             notes: HashMap::new(),
             note_limit: webhost::NotificationLimiter::default(),
             note_watch: None,
@@ -1226,6 +1238,33 @@ impl WebView {
         }
     }
 
+    /// Completes the deferral taken when `Event::DownloadStarting { token, .. }` was posted, exactly once.
+    /// `Some(path)` saves the download THERE (WebView2 writes the file itself; Edge's bubble is hidden)
+    /// and reports `DownloadProgress` and `DownloadDone` under `id`; None, an unknown token or any
+    /// failure leaves it cancelled.
+    pub fn answer_download(&self, token: u64, id: u64, path: Option<&Path>) {
+        let pending = self.inner.borrow_mut().dl_pending.remove(&token);
+        let Some(p) = pending else { return };
+        let poster = self.inner.borrow().poster.clone();
+        let total = self.inner.clone();
+        if let Some(path) = path {
+            if let Some(active) = start_download(&p, id, path, &poster) {
+                if let Ok(mut i) = total.try_borrow_mut() {
+                    i.dl_active.insert(id, active);
+                }
+            }
+        }
+        let _ = unsafe { p.deferral.Complete() };
+    }
+
+    /// Cancels the running download `id` (its `DownloadDone` follows with a cancelled result).
+    pub fn cancel_download(&self, id: u64) {
+        let op = self.inner.borrow().dl_active.get(&id).map(|a| a.op.clone());
+        if let Some(op) = op {
+            let _ = unsafe { op.Cancel() };
+        }
+    }
+
     /// Tells the view what happened to the notification held under `token` (see `NoteReport`).
     pub fn notification_report(&self, token: u64, r: NoteReport) {
         if r == NoteReport::Shown {
@@ -1454,6 +1493,7 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     let menus = std::mem::take(&mut i.menus);
     let (perms, notes) = (std::mem::take(&mut i.perms), std::mem::take(&mut i.notes));
     let auths = std::mem::take(&mut i.auths);
+    let (dl_pending, dl_active) = (std::mem::take(&mut i.dl_pending), std::mem::take(&mut i.dl_active));
     let (note_watch, audio_watch) = (i.note_watch.take(), i.audio_watch.take());
     drop(i);
     // A permission still waiting is refused, never left pending: nothing grants by the view going away.
@@ -1463,6 +1503,13 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     // An HTTP authentication request still waiting is cancelled, never left pending.
     for (_, p) in auths {
         complete_auth(p, None);
+    }
+    // A download still waiting stays cancelled; one running is cancelled with the view.
+    for (_, p) in dl_pending {
+        let _ = unsafe { p.deferral.Complete() };
+    }
+    for (_, a) in dl_active {
+        let _ = unsafe { a.op.Cancel() };
     }
     for (_, h) in notes {
         let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
@@ -1559,6 +1606,7 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     let workers_refused = register_worker_refusal(inner, view, &mut token);
     register_policy(inner, view, workers_refused, &mut token).map_err(|x| e("policy", x))?;
     register_basic_auth(inner, view, &mut token);
+    register_downloads(inner, view, &mut token);
     if setup.main_responses {
         register_main_responses(inner, view, &mut token).map_err(|x| e("main responses", x))?;
     }
@@ -2471,6 +2519,116 @@ fn register_basic_auth(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
     }
 }
 
+// ---- the one download owner (13x8 Task 7): the only place the download types are named ----
+
+/// A download held back until the app answers (`answer_download`).
+struct PendingDownload {
+    deferral: ICoreWebView2Deferral,
+    args: ICoreWebView2DownloadStartingEventArgs,
+}
+
+/// A download the app accepted: the operation and its two registrations, removed when it ends.
+struct ActiveDownload {
+    op: ICoreWebView2DownloadOperation,
+    bytes_token: i64,
+    state_token: i64,
+}
+
+
+/// Downloads (13x8 Task 7). Every view cancels one on the spot and hides Edge's download bubble; a view
+/// with `ViewSetup::downloads` holds it as a deferral and posts `Event::DownloadStarting`, within the
+/// view's own limiter and pending cap. WebView2 writes the file where `answer_download` says; the
+/// app names the place (a hidden `.download` file) and finishes it (Mark of the Web, final name).
+/// Needs `ICoreWebView2_4`; without it WebView2's defaults stand and that is said.
+fn register_downloads(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) {
+    let Ok(v4) = view.cast::<ICoreWebView2_4>() else {
+        crate::dlog!("webhost: download events are not available in this runtime");
+        return;
+    };
+    let ask = inner.borrow().setup.downloads;
+    let weak = Rc::downgrade(inner);
+    let handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let Some(args) = args else { return Ok(()) };
+        // Cancelled and hidden first: only a path handed over by `answer_download` clears the cancel.
+        let _ = unsafe { args.SetCancel(true) };
+        let _ = unsafe { args.SetHandled(true) };
+        if !ask {
+            return Ok(());
+        }
+        let Some(inner) = weak.upgrade() else { return Ok(()) };
+        let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
+        let pending = i.dl_pending.len() + i.dl_active.len();
+        if !i.dl_limit.allow(Instant::now(), pending) {
+            return Ok(());
+        }
+        let Ok(op) = (unsafe { args.DownloadOperation() }) else { return Ok(()) };
+        let uri = pwstr_out(|p| unsafe { op.Uri(p) }).unwrap_or_default();
+        let (uri, cut) = webhost::cap_url(&uri);
+        if cut {
+            return Ok(());
+        }
+        let mut total = -1i64;
+        let _ = unsafe { op.TotalBytesToReceive(&mut total) };
+        let total = u64::try_from(total).ok();
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
+        let t = i.next_token;
+        i.next_token += 1;
+        i.dl_pending.insert(t, PendingDownload { deferral, args: args.clone() });
+        let id = i.id;
+        i.poster.post(Event::DownloadStarting { view: id, token: t, url: uri, total });
+        Ok(())
+    })));
+    if unsafe { v4.add_DownloadStarting(&handler, token) }.is_err() {
+        crate::dlog!("webhost: the download handler could not be added");
+    }
+}
+
+/// Hands the place to WebView2 and watches the operation; None leaves the download cancelled.
+fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster) -> Option<ActiveDownload> {
+    let op = unsafe { p.args.DownloadOperation() }.ok()?;
+    let w = wide(&path.to_string_lossy());
+    unsafe { p.args.SetResultFilePath(PCWSTR(w.as_ptr())) }.ok()?;
+    let mut bytes_token = 0i64;
+    let post = poster.clone();
+    let last = std::cell::Cell::new(None::<Instant>);
+    let on_bytes = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
+        // At most four a second: a later one corrects a skipped one.
+        if last.get().is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
+            return Ok(());
+        }
+        last.set(Some(Instant::now()));
+        let Some(op) = sender else { return Ok(()) };
+        let (mut got, mut total) = (0i64, -1i64);
+        let _ = unsafe { op.BytesReceived(&mut got) };
+        let _ = unsafe { op.TotalBytesToReceive(&mut total) };
+        post.post(Event::DownloadProgress { view: post.view, id, received: u64::try_from(got).unwrap_or(0), total: u64::try_from(total).ok() });
+        Ok(())
+    })));
+    unsafe { op.add_BytesReceivedChanged(&on_bytes, &mut bytes_token) }.ok()?;
+    let mut state_token = 0i64;
+    let post = poster.clone();
+    let on_state = StateChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
+        let Some(op) = sender else { return Ok(()) };
+        let mut state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+        let _ = unsafe { op.State(&mut state) };
+        let result = match state {
+            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED => Ok(()),
+            COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED => Err("The download was interrupted".to_string()),
+            _ => return Ok(()),
+        };
+        post.post(Event::DownloadDone { view: post.view, id, result });
+        Ok(())
+    })));
+    if unsafe { op.add_StateChanged(&on_state, &mut state_token) }.is_err() {
+        let _ = unsafe { op.remove_BytesReceivedChanged(bytes_token) };
+        return None;
+    }
+    let _ = unsafe { p.args.SetCancel(false) };
+    Some(ActiveDownload { op, bytes_token, state_token })
+}
+
+// ---- end of the one download owner ----
+
 /// `ContentLoading` and the main document's response (13x7), both by the navigation they belong to.
 /// A response counts only when its URI (fragment ignored) is the last main-frame navigation's and no
 /// browser-set `Sec-Fetch-Dest` says it is not a document; it carries that navigation's id.
@@ -2709,10 +2867,24 @@ mod tests {
         let code = code.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert!(!code.contains("AddHostObjectToScript"), "a host object");
         assert!(code.contains("SetAreHostObjectsAllowed(false)"));
-        // Downloads stay WebView2's: no handler and no setting that changes the Mark of the Web.
-        for banned in ["DownloadStarting", "SetCancel(true)).and", "IsDefaultDownloadDialog", "DownloadOperation"] {
+        // Downloads have ONE owner (13x8 Task 7): the region between its two markers. Nowhere else may
+        // the file name a download type, and no setting changes the Mark of the Web or shows Edge's dialog.
+        for banned in ["SetCancel(true)).and", "IsDefaultDownloadDialog"] {
             assert!(!code.contains(banned), "{banned}");
         }
+        let whole = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        let start = whole.find("// ---- the one download owner").expect("owner start");
+        let end = whole.find("// ---- end of the one download owner ----").expect("owner end");
+        let uncommented = |t: &str| t.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let (before, after) = (uncommented(&whole[..start]), uncommented(&whole[end..]));
+        let outside = format!("{before}{after}").replace("DownloadStartingEventHandler, ", "").replace("Event::DownloadStarting", "");
+        for token in ["DownloadStarting", "DownloadOperation"] {
+            assert!(!outside.contains(token), "{token} outside the one owner");
+        }
+        let owner = uncommented(&whole[start..end]);
+        assert_eq!(owner.matches("add_DownloadStarting(").count(), 1);
+        assert_eq!(owner.matches("DownloadStartingEventHandler::create").count(), 1);
+        assert!(owner.contains("SetHandled(true)") && owner.contains("SetCancel(true)"));
         // The one NavigationStarting handler, and two message constructors (the view's and the frames',
         // 13x2 B8a) that both read a message only through `message_post`.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
@@ -3420,6 +3592,9 @@ mod probe {
         /// HTTP authentication (13x7 Task 10): requests held (token, uri, challenge), navigation ids
         /// seen starting and finished, the main document's responses and commits.
         auths: Vec<(u64, String, String)>,
+        /// Downloads held (token, url) and ended (id, result).
+        downloads: Vec<(u64, String)>,
+        dl_done: Vec<(u64, Result<(), String>)>,
         starts: Vec<u64>,
         finished: Vec<u64>,
         responses: Vec<(u64, i32)>,
@@ -3533,6 +3708,8 @@ mod probe {
                 writes: Vec::new(),
                 reads_complete: Vec::new(),
                 auths: Vec::new(),
+                downloads: Vec::new(),
+                dl_done: Vec::new(),
                 starts: Vec::new(),
                 finished: Vec::new(),
                 responses: Vec::new(),
@@ -3708,6 +3885,8 @@ mod probe {
                     self.auth_log.push(format!("basic-auth {token} {challenge}"));
                     self.auths.push((token, uri, challenge));
                 }
+                Event::DownloadStarting { token, url, .. } => self.downloads.push((token, url)),
+                Event::DownloadDone { id, result, .. } => self.dl_done.push((id, result)),
                 Event::Response { nav, status, .. } => {
                     self.auth_log.push(format!("response {nav} {status}"));
                     self.responses.push((nav, status));
@@ -6656,6 +6835,51 @@ window.addEventListener('message', function (e) {
                 let _ = t.join();
             }
         }
+    }
+
+    /// A response with `Content-Disposition: attachment` and 10 bytes is a download: it reaches the app
+    /// as `DownloadStarting`, saved where `answer_download` says, and `DownloadDone` follows. A view
+    /// without `downloads` saves nothing.
+    #[test]
+    #[ignore]
+    fn download_lands_where_told() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"f.bin\"\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789");
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("tandem-dl-probe-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, downloads: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/f.bin"));
+        assert!(p.wait(20, |p| !p.downloads.is_empty()), "DownloadStarting arrives: {:?}", p.order);
+        let (token, url) = p.downloads[0].clone();
+        assert!(url.ends_with("/f.bin"), "{url}");
+        let target = dir.join("f.bin.download");
+        p.view().answer_download(token, 1, Some(&target));
+        p.view().answer_download(token, 2, None);
+        assert!(p.wait(20, |p| !p.dl_done.is_empty()), "DownloadDone arrives");
+        assert_eq!(p.dl_done[0], (1, Ok(())));
+        assert_eq!(std::fs::read(&target).unwrap(), b"0123456789");
+        drop(p);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = thread.join();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn auth_setup() -> ViewSetup {

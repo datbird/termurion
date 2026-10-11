@@ -367,6 +367,16 @@ pub enum Event {
     /// permissions) or a view without `basic_auth` is cancelled by the host and never posted.
     /// `uri` is the URI WebView2 reports, `challenge` the header text; both are capped.
     BasicAuth { view: ViewId, token: u64, uri: String, challenge: String },
+    /// A download is starting (`DownloadStarting`; browser panes with `ViewSetup::downloads`). The
+    /// view holds it (a deferral, cancelled until answered) until `answer_download(token, id, ..)`;
+    /// beyond the view's limits it is cancelled by the host and never posted. `url` is capped.
+    /// Never dropped.
+    DownloadStarting { view: ViewId, token: u64, url: String, total: Option<u64> },
+    /// Bytes received so far by download `id` (the id `answer_download` was given). A later one
+    /// corrects a dropped one.
+    DownloadProgress { view: ViewId, id: u64, received: u64, total: Option<u64> },
+    /// Download `id` ended: Ok when complete; Err holds fixed words, never the page's text. Never dropped.
+    DownloadDone { view: ViewId, id: u64, result: Result<(), String> },
 }
 
 /// Longest challenge header text an event carries (characters); the rest is cut, and a cut
@@ -444,7 +454,10 @@ impl Event {
             | Event::PermissionWritten { view, .. }
             | Event::Committed { view, .. }
             | Event::Response { view, .. }
-            | Event::BasicAuth { view, .. } => *view,
+            | Event::BasicAuth { view, .. }
+            | Event::DownloadStarting { view, .. }
+            | Event::DownloadProgress { view, .. }
+            | Event::DownloadDone { view, .. } => *view,
         }
     }
 
@@ -474,7 +487,7 @@ impl Event {
         // A new audio state is corrected by the next change (and a new document resets it); the
         // permission and notification events hold a COM object or answer a request, so none is
         // dropped: the host bounds them where they are made (`PermissionLimiter`, `NotificationLimiter`).
-        if matches!(self, Event::AudioPlaying { .. }) {
+        if matches!(self, Event::AudioPlaying { .. } | Event::DownloadProgress { .. }) {
             return true;
         }
         // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
@@ -499,6 +512,8 @@ impl Event {
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             Event::Permission { uri, .. } => uri.len(),
             Event::BasicAuth { uri, challenge, .. } => uri.len() + challenge.len(),
+            Event::DownloadStarting { url, .. } => url.len(),
+            Event::DownloadDone { result: Err(why), .. } => why.len(),
             Event::NotificationShown { origin, title, body, .. } => origin.len() + title.len() + body.len(),
             Event::PermissionStates { states, .. } => states.iter().map(|(_, o, _)| o.len()).sum(),
             _ => 0,
@@ -768,7 +783,7 @@ pub fn power_page(url: &str) -> bool {
         Some(p) => p,
         None => return false,
     };
-    scheme.eq_ignore_ascii_case("iterm2-about") && ["settings", "onboarding-setup", "onboarding-profile"].iter().any(|n| rest.eq_ignore_ascii_case(n) || rest.get(..n.len()).is_some_and(|h| h.eq_ignore_ascii_case(n)) && matches!(rest.as_bytes().get(n.len()), Some(b'#' | b'?' | b'/')))
+    scheme.eq_ignore_ascii_case("iterm2-about") && ["settings", "downloads", "onboarding-setup", "onboarding-profile"].iter().any(|n| rest.eq_ignore_ascii_case(n) || rest.get(..n.len()).is_some_and(|h| h.eq_ignore_ascii_case(n)) && matches!(rest.as_bytes().get(n.len()), Some(b'#' | b'?' | b'/')))
 }
 
 fn local_scheme(s: &str) -> bool {
@@ -2256,6 +2271,18 @@ mod tests {
         }
         assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::Deny);
         assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::State { state: 2, saves: true });
+    }
+
+    /// 13x8 Task 7: a download that is starting or ended holds a deferral or a result and is never
+    /// dropped; progress is corrected by the next one; the page's URL is weighed.
+    #[test]
+    fn download_events_are_classed() {
+        let start = Event::DownloadStarting { view: 2, token: 1, url: "https://h/f".into(), total: Some(5) };
+        let done = Event::DownloadDone { view: 2, id: 9, result: Err("The download was interrupted".into()) };
+        let progress = Event::DownloadProgress { view: 2, id: 9, received: 1, total: None };
+        assert!(!start.droppable() && !done.droppable() && progress.droppable());
+        assert_eq!((start.view(), done.view(), progress.view()), (2, 2, 2));
+        assert_eq!((start.weight(), done.weight()), (11, 28));
     }
 
     /// 13x7 Task 10: the HTTP authentication events are never dropped (a challenge holds a COM

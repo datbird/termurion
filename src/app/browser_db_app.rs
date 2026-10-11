@@ -175,6 +175,7 @@ impl App {
                 Reply::Navigate(url) => self.browser_navigate(pane, &url),
                 Reply::Onboarding(action) => self.browser_onboarding_message(pane, source, action),
                 Reply::Settings(msg) => self.browser_settings_message(pane, source, msg),
+                Reply::Downloads(msg) => self.browser_downloads_message(pane, source, msg),
                 Reply::Permission(op) => {
                     confirmed = self.permission_page_op(pane, dev_null, op);
                     if !confirmed {
