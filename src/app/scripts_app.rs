@@ -824,6 +824,21 @@ fn verify_its_file(path: &Path) -> Result<crate::sigarchive::Verified, String> {
     }
 }
 
+/// Writes the Mark of the Web on every file under `dir` (a Reveal Contents folder is opened in
+/// Explorer, where a double-click would otherwise run an attacker-chosen file unwarned).
+fn mark_tree(dir: &Path) -> std::io::Result<()> {
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let path = e.path();
+        if e.file_type()?.is_dir() {
+            mark_tree(&path)?;
+        } else {
+            crate::inert_files::mark_strict(&path, None)?;
+        }
+    }
+    Ok(())
+}
+
 /// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread). Nothing
 /// that could reach outside `to` gets through: the file is read once, and its bytes must be a zip
 /// whose every entry is a plain file or folder with a safe name (`zip_check`), written by Tandem's
@@ -1189,7 +1204,7 @@ impl App {
                 Ok(Err(message)) => self.import_finish(Err(message)),
                 Ok(Ok(verified)) => {
                     let file = i.source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let text = format!("{}\n\n{}", sigarchive::confirm_text(&file, verified.author.as_deref()), sigarchive::confirm_note(&verified.leaf));
+                    let text = format!("{}\n\n{}", sigarchive::confirm_text(&file, verified.author.as_deref()), sigarchive::confirm_note(&verified.leaf, verified.issuer.as_deref()));
                     i.its = Some(Its::Asking(Box::new(verified)));
                     let ask = ask(sigarchive::CONFIRM_HEADING, &text, &[crate::api_auth::OK, crate::api_auth::CANCEL, sigarchive::REVEAL_CONTENTS], None, warnings::Kind::Persistent, Then::ConfirmSigned);
                     self.ask_scripts(ask);
@@ -1231,7 +1246,10 @@ impl App {
                 i.its = Some(Its::Revealing(rx));
                 std::thread::spawn(move || {
                     let folder = std::env::temp_dir().join(format!("{ITS_REVEAL_PREFIX}{}", crate::api_auth::fresh_key())).join("Contents");
-                    let _ = tx.send(crate::extract::zip(&verified.payload, &folder, crate::zip_check::Limits::DEFAULT).map(|_| folder).map_err(|e| sa::unzip_failed(&e)));
+                    let done = crate::extract::zip(&verified.payload, &folder, crate::zip_check::Limits::DEFAULT).map_err(|e| sa::unzip_failed(&e));
+                    // Explorer opens these files, so each carries the Mark of the Web like any download.
+                    let done = done.and_then(|_| mark_tree(&folder).map_err(|e| sa::unzip_failed(&e.to_string())));
+                    let _ = tx.send(done.map(|_| folder));
                     notify();
                 });
             }

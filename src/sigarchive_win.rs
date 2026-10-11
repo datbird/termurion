@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Security::Cryptography::{
     BCRYPT_PAD_PKCS1, BCRYPT_PKCS1_PADDING_INFO, BCRYPT_SHA256_ALGORITHM, BCryptDestroyKey, BCryptVerifySignature, CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL, CERT_CHAIN_CONTEXT, CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE, CERT_CHAIN_ENGINE_CONFIG,
-    CERT_CHAIN_PARA, CERT_CHAIN_POLICY_BASE, CERT_CHAIN_POLICY_PARA, CERT_CHAIN_POLICY_STATUS, CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY, CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, CERT_CONTEXT, CERT_NAME_ATTR_TYPE,
+    CERT_CHAIN_PARA, CERT_CHAIN_POLICY_BASE, CERT_CHAIN_POLICY_PARA, CERT_CHAIN_POLICY_STATUS, CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY, CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, CERT_CONTEXT, CERT_NAME_ATTR_TYPE, CERT_NAME_ISSUER_FLAG,
     CERT_OPEN_STORE_FLAGS, CERT_STORE_ADD_ALWAYS, CERT_STORE_CREATE_NEW_FLAG, CERT_STORE_PROV_MEMORY, CertAddCertificateContextToStore, CertCloseStore, CertCreateCertificateChainEngine, CertCreateCertificateContext,
     CertFreeCertificateChain, CertFreeCertificateChainEngine, CertFreeCertificateContext, CertGetCertificateChain, CertGetNameStringW, CertOpenStore, CertVerifyCertificateChainPolicy, CryptImportPublicKeyInfoEx2, HCERTSTORE,
     X509_ASN_ENCODING, szOID_COMMON_NAME,
@@ -112,9 +112,9 @@ impl Drop for Key {
 impl CryptoApi {
     /// The chain engine and the flags: the default engine online (its lookups bounded by
     /// `URL_TIMEOUT_MS`), cache-only offline; a test's engine trusts its own root alone.
-    fn engine(&self, anchor_store: Option<&Store>) -> Result<(Engine, u32), SigError> {
+    fn engine(&self, anchor_store: Option<&Store>, offline: bool) -> Result<(Engine, u32), SigError> {
         let mut flags = CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
-        if self.offline {
+        if offline {
             flags |= CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY | CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL | CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE;
         }
         // SAFETY: an all-zero configuration is the documented default.
@@ -135,7 +135,37 @@ impl CryptoApi {
     /// Whether the chain from `leaf` ends at a trusted root with no error (basic X.509 policy and
     /// revocation, `SP:15-64`).
     fn chain_trusted(&self, leaf: &Cert, extra: &Store) -> Result<(), SigError> {
-        let anchor = match self.anchor() {
+        // The archive's certificates are not trusted yet and name the hosts a lookup would
+        // contact: build the chain from the cache alone first, and go online only for a chain
+        // that already ends at a trusted root (only revocation not yet known may be left).
+        if !self.offline {
+            let status = self.chain_error_status(leaf, extra, true)?;
+            if !prepass_allows(status) {
+                return Err(SigError::TrustFailed);
+            }
+        }
+        self.chain_checked(leaf, extra, self.offline)
+    }
+
+    /// `dwErrorStatus` of the chain built from the cache (`offline`) or with lookups.
+    fn chain_error_status(&self, leaf: &Cert, extra: &Store, offline: bool) -> Result<u32, SigError> {
+        let anchor = self.anchor_store()?;
+        let (engine, flags) = self.engine(anchor.as_ref(), offline)?;
+        // SAFETY: zeroed parameters ask for no particular usage.
+        let mut para: CERT_CHAIN_PARA = unsafe { std::mem::zeroed() };
+        para.cbSize = std::mem::size_of::<CERT_CHAIN_PARA>() as u32;
+        let mut chain: *mut CERT_CHAIN_CONTEXT = null_mut();
+        // SAFETY: every handle is live for the call; `chain` is an out parameter.
+        if unsafe { CertGetCertificateChain(engine.0, leaf.0, null(), extra.0, &para, flags, null(), &mut chain) } == 0 {
+            return Err(SigError::TrustFailed);
+        }
+        let chain = Chain(chain);
+        // SAFETY: the context is live while `chain` is.
+        Ok(unsafe { (*chain.0).TrustStatus.dwErrorStatus })
+    }
+
+    fn anchor_store(&self) -> Result<Option<Store>, SigError> {
+        match self.anchor() {
             Some(der) => {
                 let store = Store::memory().ok_or(SigError::TrustFailed)?;
                 if !der.is_empty() {
@@ -144,11 +174,15 @@ impl CryptoApi {
                         return Err(SigError::TrustFailed);
                     }
                 }
-                Some(store)
+                Ok(Some(store))
             }
-            None => None,
-        };
-        let (engine, flags) = self.engine(anchor.as_ref())?;
+            None => Ok(None),
+        }
+    }
+
+    fn chain_checked(&self, leaf: &Cert, extra: &Store, offline: bool) -> Result<(), SigError> {
+        let anchor = self.anchor_store()?;
+        let (engine, flags) = self.engine(anchor.as_ref(), offline)?;
         // SAFETY: zeroed parameters ask for no particular usage.
         let mut para: CERT_CHAIN_PARA = unsafe { std::mem::zeroed() };
         para.cbSize = std::mem::size_of::<CERT_CHAIN_PARA>() as u32;
@@ -195,6 +229,23 @@ fn signature_matches(leaf: &Cert, digest: &[u8; 32], signature: &[u8]) -> Result
     Ok(())
 }
 
+/// `CERT_TRUST_REVOCATION_STATUS_UNKNOWN` and `CERT_TRUST_IS_OFFLINE_REVOCATION`: all that may be
+/// left of a chain built from the cache before the online build (anything else, an untrusted
+/// root or a partial chain among it, ends the import with no lookup at all).
+const PREPASS_OK: u32 = 0x0000_0040 | 0x0100_0000;
+
+fn prepass_allows(error_status: u32) -> bool {
+    error_status & !PREPASS_OK == 0
+}
+
+/// The name of the certificate's issuer (a common name), at most 255 characters.
+fn issuer_name(c: &Cert) -> Option<String> {
+    let mut buf = [0u16; 256];
+    // SAFETY: the context is live; `buf` holds `buf.len()` characters.
+    let n = unsafe { CertGetNameStringW(c.0, CERT_NAME_ATTR_TYPE, CERT_NAME_ISSUER_FLAG, szOID_COMMON_NAME as *const c_void, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (n > 1).then(|| String::from_utf16_lossy(&buf[..n - 1])).filter(|s| !s.trim().is_empty())
+}
+
 /// The certificate's common name (`SC:62-70`), at most 255 characters; None when it has none.
 fn common_name(c: &Cert) -> Option<String> {
     let mut buf = [0u16; 256];
@@ -204,6 +255,10 @@ fn common_name(c: &Cert) -> Option<String> {
 }
 
 impl Verifier for CryptoApi {
+    fn issuer(&self, cert: &[u8]) -> Option<String> {
+        issuer_name(&Cert::new(cert)?)
+    }
+
     fn verify(&self, certs: &[Vec<u8>], digest: &[u8; 32], signature: &[u8]) -> Result<Option<String>, SigError> {
         let (first, rest) = certs.split_first().ok_or(SigError::NoCertificate)?;
         let leaf = Cert::new(first).ok_or(SigError::MalformedCertificate)?;
@@ -330,6 +385,25 @@ mod tests {
         // A garbled certificate is refused as one.
         assert_eq!(trusting.verify(&[vec![1, 2, 3]], &[0; 32], &[]), Err(SigError::MalformedCertificate));
         assert_eq!(trusting.verify(&[], &[0; 32], &[]), Err(SigError::NoCertificate));
+        // The issuer shown for a self-signed certificate is its own name.
+        assert_eq!(trusting.issuer(&root.der).as_deref(), Some("Test Author"));
+    }
+
+    /// The online verifier builds from the cache first: an untrusted chain ends there with no
+    /// lookup, a trusted one goes on to the online build (both orders), and only revocation not
+    /// yet known may be left after the first build.
+    #[test]
+    fn online_build_follows_a_cache_only_build() {
+        let root = TestRoot::new("Test Author");
+        let archive = signed_archive(&root, b"PK-payload");
+        let untrusted = CryptoApi::new(false).with_anchor(Vec::new());
+        assert_eq!(sigarchive::verify_its(&archive, &untrusted).unwrap_err(), SigError::TrustFailed);
+        let trusted = CryptoApi::new(false).with_anchor(root.der.clone());
+        assert!(sigarchive::verify_its(&archive, &trusted).is_ok());
+        assert!(prepass_allows(0) && prepass_allows(0x40) && prepass_allows(0x0100_0000 | 0x40));
+        assert!(!prepass_allows(0x20), "untrusted root");
+        assert!(!prepass_allows(0x1_0000), "partial chain");
+        assert!(!prepass_allows(0x4), "expired");
     }
 
     /// The test-only trust anchor never reaches a release build: every line that names it is the

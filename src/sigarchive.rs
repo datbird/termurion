@@ -61,7 +61,6 @@ pub const CORRUPT: &str = "This script archive is corrupt and cannot be installe
 pub const NOT_VALID: &str = "This is not a valid Tandem script archive.";
 pub const CONFIRM_HEADING: &str = "Confirm Installation";
 pub const REVEAL_CONTENTS: &str = "Reveal Contents";
-pub const CANCELED: &str = "Installation canceled by user request.";
 pub const CERT_NIL: &str = "Could not find certificate after verification (nil data)";
 pub const CERT_BAD: &str = "Could not find certificate after verification (bad data)";
 
@@ -72,6 +71,10 @@ pub trait Verifier {
     /// Checks the chain of `certs` (leaf first) and `signature` over `digest` with the leaf's key;
     /// the leaf's common name on success.
     fn verify(&self, certs: &[Vec<u8>], digest: &[u8; 32], signature: &[u8]) -> Result<Option<String>, SigError>;
+    /// The common name of the DER certificate's issuer, for the confirmation (None when unknown).
+    fn issuer(&self, _cert: &[u8]) -> Option<String> {
+        None
+    }
 }
 
 impl SigError {
@@ -264,8 +267,13 @@ pub fn confirm_text(file: &str, author: Option<&str>) -> String {
 
 /// Said under the confirmation (beyond iTerm2): the name is the certificate's own text, not an
 /// identity Tandem knows, so the certificate's fingerprint is shown to compare with the author's.
-pub fn confirm_note(leaf: &[u8]) -> String {
-    format!("Tandem has not checked who this author is: the name comes from the certificate. Certificate fingerprint (SHA-256):\n{}", thumbprint(leaf))
+pub fn confirm_note(leaf: &[u8], issuer: Option<&str>) -> String {
+    let issuer = issuer.map(|i| crate::inert_files::display_text(i, 128, false)).filter(|i| !i.trim().is_empty());
+    format!(
+        "Tandem has not checked who this author is: the name comes from the certificate.\nCertificate issuer: {}\nCertificate fingerprint (SHA-256):\n{}",
+        issuer.as_deref().unwrap_or("Unknown"),
+        thumbprint(leaf)
+    )
 }
 
 /// The certificate's SHA-256, as `AB:CD:..`.
@@ -280,6 +288,7 @@ pub struct Verified {
     pub payload: Vec<u8>,
     pub leaf: Vec<u8>,
     pub author: Option<String>,
+    pub issuer: Option<String>,
 }
 
 /// The importer's verification (`IM:157-270`): a file that does not smell like an archive is
@@ -302,7 +311,8 @@ pub fn verify_file(bytes: &[u8], v: &dyn Verifier) -> Result<Verified, String> {
     }
     let (start, len) = (usize::try_from(parsed.payload.0).map_err(|_| CORRUPT)?, usize::try_from(parsed.payload.1).map_err(|_| CORRUPT)?);
     let payload = start.checked_add(len).and_then(|end| bytes.get(start..end)).ok_or(CORRUPT)?.to_vec();
-    Ok(Verified { payload, leaf, author })
+    let issuer = v.issuer(&leaf);
+    Ok(Verified { payload, leaf, author, issuer })
 }
 
 #[cfg(test)]
@@ -424,7 +434,10 @@ mod tests {
         assert!(!sneaky.contains('\u{202e}') && !sneaky.contains('\u{200b}'), "{sneaky:?}");
         assert_eq!(thumbprint(b"abc"), "BA:78:16:BF:8F:01:CF:EA:41:41:40:DE:5D:AE:22:23:B0:03:61:A3:96:17:7A:9C:B4:10:FF:61:F2:00:15:AD");
         assert_eq!(CONFIRM_HEADING, "Confirm Installation");
-        assert_eq!((REVEAL_CONTENTS, CANCELED), ("Reveal Contents", "Installation canceled by user request."));
+        assert_eq!(REVEAL_CONTENTS, "Reveal Contents");
+        let note = confirm_note(b"abc", Some("Let\u{2019}s\u{202e} CA"));
+        assert!(note.contains("Certificate issuer: Let\u{2019}s CA\n") && !note.contains('\u{202e}'), "{note:?}");
+        assert!(confirm_note(b"abc", None).contains("Certificate issuer: Unknown\n"));
         assert_eq!(CORRUPT, "This script archive is corrupt and cannot be installed.");
         let x = crate::script_archive::trusted_autolaunch_text("x");
         assert_eq!(x, "\u{201c}x\u{201d} would like to launch automatically when Tandem starts. Would you like to allow that?");
