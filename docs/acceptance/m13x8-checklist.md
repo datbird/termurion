@@ -11,14 +11,14 @@ are what no test could execute (a real click, a real native window, a real downl
 
 Test material: a folder served with `python -m http.server 8000` (`http://127.0.0.1:8000`); a folder
 `C:\t13x8\` holding `a.txt`, `b.html` (with a `<script>` that writes "ran" into the page and tries
-`fetch('c.txt')`), `c.txt`, a `.png`, a `.js` and a subfolder; a second copy of `b.html` that was
-downloaded from the web (it has a Mark of the Web; any copy saved by a browser will do).
+`fetch('c.txt')`, and a link to `https://example.com/`), `c.txt`, a `.png`, a `.js` and a subfolder.
 
 ## A. Probe tests (webhost_win::probe, all `#[ignore]`, console session only)
 
 - [ ] `webhost_win::probe::failed_load_posts_its_url`
-- [ ] `webhost_win::probe::server_answers_and_network_failures_differ` (404 with a body, empty 404, 503, a dead port, 204)
-- [ ] `webhost_win::probe::file_pages_cannot_read_or_send`
+- [ ] `webhost_win::probe::server_answers_and_network_failures_differ` (404 with a body, empty 404, 503, a dead port, a 302 to the dead port, 204)
+- [ ] `webhost_win::probe::file_pages_cannot_read_or_send` (the served file's script never runs: title stays, no connection, nothing refused because nothing is tried; R13x8-NS)
+- [ ] `webhost_win::probe::tandem_loads_leave_a_file_page_for_the_web` (from a file page, Tandem's own load and a 302 hop land on the web, no 403)
 - [ ] `webhost_win::probe::ssh_page_serves_text_and_a_closed_view_completes_the_deferral`
 - [ ] `webhost_win::probe::download_lands_where_told`
 - [ ] `webhost_win::probe::an_unpacked_extension_loads`
@@ -76,8 +76,8 @@ automatic downloads with Handled true, and extension add and enable.
 - [ ] Type `file:///C:/Windows/`: the styled listing, folders first (with folder glyphs), then names ignoring case; hidden entries are not listed.
 - [ ] Click `..` up to `C:\`: at the drive root there is no `..` row.
 - [ ] Open `a.txt` from the listing: shown as text in a box; a `.png` shows as an image; a `.js` shows as text.
-- [ ] Open `b.html` you made yourself: it renders and its script runs ("ran"), but `fetch('c.txt')` fails (DevTools console shows the refusal) and the page cannot reach the network or load a sibling file.
-- [ ] Open the copy with a Mark of the Web: it renders but its script does NOT run. An `.svg` and an `.xml` file run no script either.
+- [ ] Open `b.html` you made yourself: it renders WITHOUT its script (no "ran"; R13x8-NS, stricter than iTerm2: local HTML apps do not run). An `.svg` and an `.xml` file run no script either.
+- [ ] Its link to `https://example.com/` does nothing (R13x8-P2); typing the address in the address bar from that tab goes there.
 - [ ] `file://server/share/x`, `file:///C:/a/../b`, `file:///C:/x.txt:stream` and a device name (`file:///C:/con`) are refused ("Invalid file path"), with no network probe.
 - [ ] A file over 64 MB is not shown.
 - [ ] A junction inside the folder that points outside it does not lead out.
@@ -129,9 +129,9 @@ automatic downloads with Handled true, and extension add and enable.
 ## I. The ssh page and View
 
 - [ ] In an ssh-integrated session Win-click a remote `.png`: "Download or View File?"; View opens it in a browser tab; Download still downloads.
-- [ ] Win-click a remote `.html`: View shows it with no script running.
+- [ ] Win-click a remote `.html`: View shows it with no script running (remote HTML files display without scripts, R13x8-NS).
 - [ ] A remote folder name asks the same question and View shows "Only a file can be shown."
-- [ ] Close the connection and reload the tab: the "Could not display file" page; Try Again does nothing harmful (it reloads the page).
+- [ ] Close the connection and reload the tab: the "Could not display file" page; its Try Again (a link, the page runs no script) reloads the page.
 - [ ] The URL of another host, user or port than an open session shows the no-connection page; typing an `iterm2-ssh:` URL for your open session works, and a link inside a served page never leads to another ssh or file page.
 - [ ] A web page cannot open `iterm2-ssh:` by script or click.
 
@@ -162,8 +162,8 @@ extensions folder, so the lines below are BLOCKED until the section is shown (on
 
 ## L. Security of local pages
 
-- [ ] A saved HTML page opened through `file:` cannot fetch a sibling file or reach the network (DevTools console shows the refusals); it cannot submit a form or open a window.
-- [ ] A hostile `.html` in a folder can still be clicked out of to the web (RESIDUAL, FLAG 1): note what the address bar shows after clicking an outbound link.
+- [ ] A saved HTML page opened through `file:` runs none of its scripts (DevTools console shows the CSP refusal), cannot reach the network, submit a form or open a window.
+- [ ] An outbound link in a local or remote `.html` does nothing (FLAG 1); the address bar, a bookmark or the menu still leave the page for the web.
 - [ ] No Tandem script (autofill button, password key button, find, marks) runs inside a file or ssh page.
 
 ## M. Nothing leaks
