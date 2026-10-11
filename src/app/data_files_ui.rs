@@ -113,17 +113,14 @@ fn write_atomic(dir: &LocalPath, name: &str, bytes: &[u8]) -> Result<(), String>
 }
 
 /// A copy of the local file before it is replaced or removed.
-fn backup(local: &LocalPath, name: &str) {
-    let Some(from) = local.child(name) else { return };
+/// False when the copy failed: the caller then leaves the file alone.
+fn backup(local: &LocalPath, name: &str) -> bool {
+    let Some(from) = local.child(name) else { return false };
     if !localfs::exists(&from) {
-        return;
+        return true;
     }
-    let Some(dir) = local.join("Backups").and_then(|d| d.join("DataSync")) else { return };
-    if localfs::create_dir_all(&dir).is_ok() {
-        if let Some(to) = dir.child(name) {
-            let _ = localfs::copy(&from, &to);
-        }
-    }
+    let Some(dir) = local.join("Backups").and_then(|d| d.join("DataSync")) else { return false };
+    localfs::create_dir_all(&dir).is_ok() && dir.child(name).is_some_and(|to| localfs::copy(&from, &to).is_ok())
 }
 
 /// The folder's copy replaces the local one: each folder file that passes `valid_content` is
@@ -143,14 +140,12 @@ pub(super) fn apply_pull(local: &Path, remote: &Set) -> bool {
         match remote.get(name) {
             Some(bytes) if dfs::valid_content(name, bytes) => {
                 if current.as_deref() != Some(bytes.as_slice()) {
-                    backup(&dir, name);
-                    changed |= write_atomic(&dir, name, bytes).is_ok();
+                    changed |= backup(&dir, name) && write_atomic(&dir, name, bytes).is_ok();
                 }
             }
             Some(_) => {}
             None => {
-                if current.is_some() {
-                    backup(&dir, name);
+                if current.is_some() && backup(&dir, name) {
                     if let Some(p) = dir.child(name) {
                         changed |= localfs::remove_file(&p).is_ok();
                     }
@@ -188,8 +183,7 @@ pub(super) fn discard_local(local: &Path) -> bool {
     for name in ALLOWLIST {
         let Some(p) = dir.child(name) else { continue };
         if localfs::lstat(&p).is_ok() {
-            backup(&dir, name);
-            ok &= localfs::remove_file(&p).is_ok();
+            ok &= backup(&dir, name) && localfs::remove_file(&p).is_ok();
         }
     }
     ok
@@ -246,7 +240,11 @@ pub(super) fn reconcile_with(g: &mut Globals, local_dir: &Path, folder: &Path, r
     let key = folder.display().to_string();
     // A discard that failed at the last quit is tried again first.
     let mut pulled = false;
-    if entry(g, dfs::DISCARD_PENDING_KEY, &key).is_some() && discard_local(local_dir) {
+    if entry(g, dfs::DISCARD_PENDING_KEY, &key).is_some() {
+        if !discard_local(local_dir) {
+            // Still not gone: reconciling now could publish the edits the person chose to lose.
+            return (Vec::new(), false);
+        }
         set_entry(g, dfs::DISCARD_PENDING_KEY, &key, None);
         adopt(g, &key, &dfs::empty_signature());
         set_entry(g, dfs::LAST_PUSHED_KEY, &key, None);
@@ -296,6 +294,9 @@ pub(super) fn reconcile_at_start(g: &mut Globals, folder: &Path) -> Vec<Ask> {
 pub(super) fn push_if_allowed(g: &mut Globals, local_dir: &Path, folder: &Path, remote: Option<Set>) -> bool {
     let key = folder.display().to_string();
     let Some(remote) = remote else { return false };
+    if entry(g, dfs::DISCARD_PENDING_KEY, &key).is_some() {
+        return false;
+    }
     let local = read_set(local_dir);
     let l = local.signature();
     let baseline = text_entry(g, dfs::BASELINE_KEY, &key);
@@ -534,6 +535,37 @@ mod tests {
         assert!(pulled);
         assert_eq!(std::fs::read_to_string(local.join("notes.txt")).unwrap(), "theirs");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A failed backup stops the overwrite or removal; a discard that cannot finish never lets the
+    /// reconcile publish the edits the person chose to lose.
+    #[test]
+    fn a_failed_backup_keeps_the_file_and_a_pending_discard_publishes_nothing() {
+        let root = temp("backupfail");
+        let (local, folder) = (root.join("local"), root.join("folder"));
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(folder.join("Data")).unwrap();
+        std::fs::write(local.join("notes.txt"), "mine").unwrap();
+        // "Backups" is a file, so the backup directory cannot be made.
+        std::fs::write(local.join("Backups"), "x").unwrap();
+        assert!(!discard_local(&local));
+        assert!(local.join("notes.txt").exists(), "no backup, no removal");
+        let mut g = globals(&root);
+        let key = folder.display().to_string();
+        set_entry(&mut g, dfs::CONSENT_KEY, &key, Some(Value::Boolean(true)));
+        adopt(&mut g, &key, &dfs::empty_signature());
+        set_entry(&mut g, dfs::DISCARD_PENDING_KEY, &key, Some(Value::Boolean(true)));
+        let (asks, _) = reconcile_with(&mut g, &local, &folder, Some(read_set(&folder.join("Data"))));
+        assert!(asks.is_empty());
+        assert!(!folder.join("Data").join("notes.txt").exists(), "the discarded edits are not published");
+        assert!(!push_if_allowed(&mut g, &local, &folder, Some(read_set(&folder.join("Data")))));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// I2: a closed conflict window answers nothing (changes neither side, asks again at launch).
+    #[test]
+    fn a_closed_conflict_window_is_no_answer() {
+        assert_eq!(super::super::scripts_alerts::on_close(&Then::DataConflict(PathBuf::from("f")), 0), super::super::scripts_alerts::Answer::Closed);
     }
 
     #[test]

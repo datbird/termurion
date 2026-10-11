@@ -106,8 +106,11 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::AllowAutoLaunch(_) => Answer::Button(0),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
-        // Just Settings and Use Settings Folder's: a closed window never copies files out (the pull backs the local ones up).
-        Then::DataConsent(_) | Then::DataConflict(_) => Answer::Button(1),
+        // Just Settings: a closed window never copies files out.
+        Then::DataConsent(_) => Answer::Button(1),
+        // Neither: a closed conflict changes nothing and asks again at the next launch (the folder is
+        // untrusted, so it never overwrites local edits by default).
+        Then::DataConflict(_) => Answer::Closed,
         // Keep It: a closed window never removes a workgroup the person edited.
         Then::ClaudeEditedWorkgroup => Answer::Button(0),
         // Cancel (the first button, the default): a closed window never starts a workgroup's commands.

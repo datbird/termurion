@@ -114,7 +114,8 @@ pub enum Reconcile {
 /// signature both sides last had.
 pub fn reconcile(consent: Option<bool>, remote_has_any: bool, local: &str, remote: &str, baseline: Option<&str>) -> Reconcile {
     match consent {
-        None => return if remote_has_any { Reconcile::AskConsent } else { Reconcile::Nothing },
+        // iTerm2 skips the question only when neither side has a file (`RP:789-796`).
+        None => return if remote_has_any || local != empty_signature() { Reconcile::AskConsent } else { Reconcile::Nothing },
         Some(false) => return Reconcile::Nothing,
         Some(true) => {}
     }
@@ -161,7 +162,10 @@ mod tests {
 
     #[test]
     fn data_file_sync_follows_iterm2() {
-        assert_eq!(reconcile(None, false, L, R, None), Reconcile::Nothing);
+        assert_eq!(reconcile(None, false, &empty_signature(), &empty_signature(), None), Reconcile::Nothing);
+        // A machine with data and an empty folder is asked too (I1), and pushes once it agrees.
+        assert_eq!(reconcile(None, false, &some_local(), &empty_signature(), None), Reconcile::AskConsent);
+        assert_eq!(reconcile(Some(true), false, &some_local(), &empty_signature(), None), Reconcile::Push);
         assert_eq!(reconcile(None, true, L, R, None), Reconcile::AskConsent);
         assert_eq!(reconcile(Some(false), true, L, R, None), Reconcile::Nothing);
         // No baseline yet.

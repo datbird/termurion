@@ -126,11 +126,14 @@ pub(super) fn quit_ask_for_test(folder: &str, data: bool) -> String {
     quit_ask(folder, data).spec.text.clone()
 }
 
+/// iTerm2's silenceable key for the data-only quit question (`RP:1724-1726`); only Copy is remembered.
+const DATA_QUIT_KEY: &str = "NoSyncNeverRemindDataFileChangesLostForFile";
+
 /// "Your snippets, notes, or icon customizations changed. Copy them to ...?" at quit when only
 /// the data files changed; Lose Changes is never remembered.
 fn data_quit_ask(folder: &str) -> Ask {
     let buttons = [rp::COPY, rp::LOSE_CHANGES];
-    ask(crate::script_new::WARNING, &crate::data_file_sync::with_folder(crate::data_file_sync::COPY_DATA_TEXT, folder), &buttons, None, Kind::Persistent, Then::PrefsQuitData)
+    ask(crate::script_new::WARNING, &crate::data_file_sync::with_folder(crate::data_file_sync::COPY_DATA_TEXT, folder), &buttons, Some(DATA_QUIT_KEY), Kind::Permanent, Then::PrefsQuitData)
 }
 
 /// The URL's text as loaded: the snapshot, or the failure (an empty or malformed file falls
