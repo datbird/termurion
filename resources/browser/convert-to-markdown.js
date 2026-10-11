@@ -32,6 +32,10 @@
     clone
         .querySelectorAll('script, style')
         .forEach(e => e.remove());
+    // Never the value of a secret field (the AI browser tools hand this markdown to a model).
+    clone
+        .querySelectorAll('input[type="password" i], input[type="hidden" i], [hidden], [autocomplete*="password" i], [autocomplete^="cc-" i], [autocomplete="one-time-code" i]')
+        .forEach(e => e.remove());
 
     const bodyEl = clone.querySelector('body');
 

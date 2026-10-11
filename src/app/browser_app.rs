@@ -632,6 +632,10 @@ impl App {
                 }
                 self.browser_name(pane);
                 self.browser_marks_navigated(pane, *ok, *nav);
+                // A waiting AI load or web search finishes only for its own navigation.
+                if let Event::Navigated { nav, status, .. } = e {
+                    self.ai_browser_navigated(pane, *nav, *ok, *status);
+                }
                 // The error page (13x8): a failed load, or a page that loaded after one.
                 if let Event::Navigated { url, status, http, .. } = e {
                     if *ok {
@@ -730,6 +734,7 @@ impl App {
             // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
             Event::Starting { url, kind, user, redirect, nav, .. } => {
                 self.browser_page_starting(pane, url, *nav);
+                self.ai_browser_starting(pane, *redirect, *nav);
                 // A navigation of the pane closes its Edit Bookmark window (`BVC:1095-1096`).
                 if !*redirect {
                     self.bookmark_editor_close_for(pane);

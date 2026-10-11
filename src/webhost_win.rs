@@ -7383,6 +7383,73 @@ window.addEventListener('message', function (e) {
         }
     }
 
+    /// 13x AI browser tools Task 4: the pure answer functions over the real markdown script, with
+    /// the loads started through the GUARDED `navigate` (never `navigate_tandem`). A 127.0.0.1
+    /// listener serves `/a` and `/b` only. Needs the console session; never run on the desktop probe.
+    #[test]
+    #[ignore]
+    fn ai_browser_tools_run_on_a_page() {
+        use crate::ai_browser::{current_url_outcome, load_outcome, Loaded, Page, LOADED};
+        use std::io::{Read, Write};
+        if runtime_version(None).is_err() {
+            println!("WebView2 Runtime not installed; skipped");
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = if req.starts_with("GET /a ") {
+                    "<!doctype html><html><body><main><h1>A</h1><p>Rust here</p><form><input type=password value=hunter2secret><input type=hidden value=hiddensecret></form></main></body></html>"
+                } else if req.starts_with("GET /b ") {
+                    "<!doctype html><html><body><p>B</p></body></html>"
+                } else {
+                    let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    continue;
+                };
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            }
+        });
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
+        let go = |p: &mut Probe, path: &str| -> String {
+            let n = p.navigated.len();
+            let url = format!("http://127.0.0.1:{port}{path}");
+            p.view().navigate(&url);
+            assert!(p.wait(10, |p| p.navigated.len() > n), "Navigated within 10 s: {:?}", p.order);
+            assert!(p.navigated[n].1, "the load of {url} worked");
+            assert!(p.wait(5, |p| browser_world::world_usable(p.setup.state(), &p.contexts)), "the world is usable");
+            url
+        };
+        let b = go(&mut p, "/b");
+        assert_eq!(load_outcome(&Loaded::Ok).model, LOADED);
+        assert_eq!(current_url_outcome(&b, false).model, b, "the view's URL");
+        let a = go(&mut p, "/a");
+        let md = reader_run(&mut p, &crate::browser_reader::markdown_body(false)).expect("the markdown");
+        let md = md.as_str().expect("a string").to_string();
+        assert!(!md.contains("hunter2secret") && !md.contains("hiddensecret"), "secret fields are not in the page text: {md}");
+        let page = Page::open(1, 1, &a, "A", false).expect("an ordinary page");
+        let section = page.section(Ok(&md), 0, 50).deliver(Some(page.binding())).model;
+        assert!(section.contains("# A"), "{section}");
+        let found = page.find(Ok(&md), "rust").deliver(Some(page.binding())).model;
+        assert!(found.contains("\"matchingLine\":\"Rust here\""), "{found}");
+        drop(p);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = thread.join();
+    }
+
     /// A response with `Content-Disposition: attachment` and 10 bytes is a download: it reaches the app
     /// as `DownloadStarting`, saved where `answer_download` says, and `DownloadDone` follows. A view
     /// without `downloads` saves nothing.

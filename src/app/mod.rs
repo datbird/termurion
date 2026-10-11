@@ -4187,6 +4187,8 @@ impl App {
         self.browser_pw_pane_gone(id);
         self.browser_downloads_view_gone(id);
         self.ssh_page_view_gone(id);
+        // Waiting browser tools answer a failure before the view closes.
+        self.ai_browser_pane_gone(id);
         self.close_browser_view(id);
     }
 

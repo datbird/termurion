@@ -527,6 +527,17 @@ impl Waits {
         self.entries.retain(|(_, t, _)| *t != token);
     }
 
+    /// Ends a load that never started; false when it is no longer waiting.
+    pub fn cancel_load(&mut self, pane: u64, token: u64) -> bool {
+        match self.entries.iter().position(|(p, t, k)| *p == pane && *t == token && matches!(k, Kind::Load { .. })) {
+            Some(i) => {
+                self.entries.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn start_read(&mut self, pane: u64, token: u64) {
         self.entries.push((pane, token, Kind::Read));
     }

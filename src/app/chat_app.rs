@@ -786,6 +786,7 @@ impl App {
     /// Stop (12d).
     #[allow(dead_code)] // Called by the chat window (12d).
     pub(crate) fn chat_stop(&mut self, chat: &str) {
+        self.ai_browser_stopped(chat);
         let fx = self.engine(|cx| Engine::stop(cx, chat)).unwrap_or_default();
         self.chat_apply(fx);
     }
