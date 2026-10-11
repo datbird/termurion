@@ -231,6 +231,7 @@ mod chat_session_app;
 mod transparency_ui;
 mod chat_engine;
 mod ai_tools_app;
+mod ai_browser_app;
 mod ai_exec_app;
 mod ai_safety_app;
 mod scripts_app;
@@ -1580,6 +1581,8 @@ pub struct App {
     chat_agents: HashMap<String, crate::chat_agent::Agent>,
     /// (chat, request id) of the Get-Help running on each pane (minor m1), app-wide.
     ai_pending_tools: HashMap<PaneId, (String, String)>,
+    /// The browser tool calls waiting by token (13x AI browser tools), app-wide.
+    ai_browser: ai_browser_app::Calls,
     /// What a model said about the session it started (provenance, 12f Task 9), by pane.
     orch_provenance: HashMap<PaneId, String>,
     /// Orchestration requests parked on the person: request id to (chat id, call id).
@@ -2704,6 +2707,7 @@ pub fn run() {
         ai_nag: crate::ai_classifier::NagGate::default(),
         chat_agents: HashMap::new(),
         ai_pending_tools: HashMap::new(),
+        ai_browser: ai_browser_app::Calls::default(),
         orch_provenance: HashMap::new(),
         orch_parks: HashMap::new(),
         orch_waits: HashMap::new(),

@@ -531,6 +531,12 @@ impl App {
                 self.ai_tool_finished(&chat, &request_id, o);
             }
         }
+        // Browser calls: a closed gate or an ended turn forgets them, then each answer takes the
+        // one return path (its result is gated again inside `Engine::tool_finished`).
+        self.ai_browser_sweep();
+        for (chat, request_id, o) in self.ai_browser_finish() {
+            self.ai_tool_finished(&chat, &request_id, o);
+        }
         self.chat_agents.values().any(|a| a.files.is_some()).then(|| Instant::now() + crate::ai_files::POLL_EVERY)
     }
 
@@ -692,6 +698,26 @@ impl App {
     /// the call's command) only while the prompt still holds what was checked; every other tool
     /// starts in `ai_tool_start`.
     pub(super) fn ai_run_tool(&mut self, chat: &str, request_id: &str, pane: PaneId, call: &Call, send: Option<String>) {
+        // The kind first, before any terminal state is touched (`ai_prompt_text` reads a terminal).
+        let browser_call = call.category().is_browser();
+        if self.panes.contains_key(&pane) {
+            if let Some(o) = crate::ai_browser::kind_refusal(browser_call, self.is_browser_pane(pane)) {
+                return self.ai_tool_finished(chat, request_id, o);
+            }
+        }
+        if browser_call {
+            // R13xai-2: with the chat's gate closed nothing starts; the answer is dropped by the
+            // engine's own continuation gate. A new call never cancels a waiting browser call.
+            if !self.ai_browser_gate(chat) {
+                return self.ai_tool_finished(chat, request_id, Outcome { model: crate::ai_browser::AI_OFF.to_string(), notice: None });
+            }
+            match self.ai_tool_start(pane, call) {
+                super::ai_tools_app::ToolStart::Done(o) => self.ai_tool_finished(chat, request_id, o),
+                super::ai_tools_app::ToolStart::Waiting(token) => self.ai_browser_bind(token, chat, request_id),
+                super::ai_tools_app::ToolStart::Pending => {}
+            }
+            return;
+        }
         if let Some((c, r)) = self.ai_exec_cancel(pane) {
             self.ai_tool_finished(&c, &r, crate::ai_exec::canceled_outcome());
         }
