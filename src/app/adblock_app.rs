@@ -23,6 +23,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(3600);
 /// How long a browser environment that failed after a proxy change is tried again: the old
 /// browser process may still hold the folder for a moment.
 /// The longest one download may take in all.
+/// What the settings page is told when the download itself fails (no reason text from the server).
+const UPDATE_FAILED: &str = "The filter list could not be downloaded";
 const LIST_DEADLINE: Duration = Duration::from_secs(300);
 /// The requests judged in one tick; the rest of a burst goes on unjudged.
 const MAX_JUDGED_PER_TICK: usize = 64;
@@ -57,6 +59,11 @@ pub(super) struct Adblock {
     /// The list address last looked at (None until the first look: not a change).
     url_seen: Option<String>,
     force: bool,
+    /// The settings page asked for this update and wants to be told how it ended.
+    report: bool,
+    /// The settings page's rule count for a list that is not loaded: read on a worker (13q), one at a time.
+    stats: Option<(Sender<usize>, Receiver<usize>)>,
+    stats_busy: bool,
     /// Requests judged in this tick (reset by `web_tick`).
     pub(super) judged: std::cell::Cell<usize>,
 }
@@ -161,9 +168,12 @@ impl App {
                 due = Some(t);
             }
         }
+        self.adblock_stats_poll();
         if !self.adblock_on() {
             if self.adblock.rules.is_some() || self.adblock.call.is_some() || self.adblock.chan.is_some() || self.adblock.disk != Disk::Untried {
+                let (stats, busy) = (self.adblock.stats.take(), self.adblock.stats_busy);
                 self.adblock = Adblock::default();
+                (self.adblock.stats, self.adblock.stats_busy) = (stats, busy);
                 self.banners.clear("adblock");
             }
             return due;
@@ -215,6 +225,7 @@ impl App {
 
     fn adblock_download(&mut self, url: &str) {
         if !adblock::list_url_ok(url) {
+            self.adblock_report(Err(crate::browser_settings_page::INVALID_FILTER_URL.to_string()));
             crate::rlog!("adblock: the list address was refused");
             self.banners.set("adblock", adblock::invalid_url_text(&crate::inert_files::display_text(url, 120, false)));
             return;
@@ -235,6 +246,7 @@ impl App {
                 Some(HttpEvent::Done { body, error }) => {
                     self.adblock.call = None;
                     if error.is_some() || body.len() > adblock::MAX_LIST_BYTES {
+                        self.adblock_report(Err(UPDATE_FAILED.to_string()));
                         self.adblock_failed();
                     } else {
                         self.adblock.working = true;
@@ -270,12 +282,77 @@ impl App {
                     self.globals.set(adblock::LAST_UPDATE_KEY, toml::Value::Integer(unix_now()));
                     let _ = self.globals.save();
                     self.banners.clear("adblock");
+                    self.adblock_report(Ok(()));
                 }
-                Done::Fetched(Err(_)) => {
+                Done::Fetched(Err(e)) => {
                     self.adblock.working = false;
+                    self.adblock_report(Err(e));
                     self.adblock_failed();
                 }
             }
+        }
+    }
+
+    /// The compiled rules' count while a list is loaded.
+    pub(super) fn adblock_loaded_rules(&self) -> Option<usize> {
+        self.adblock.rules.as_ref().map(|r| r.len())
+    }
+
+    /// The settings page asked for the rule statistics. A loaded list answers from memory; otherwise the
+    /// saved list is read and counted on a worker (never on the UI thread, the 13q ruling) and the page
+    /// is answered when it is done (`adblock_stats_poll`, from the tick). One read at a time.
+    pub(super) fn adblock_stats_request(&mut self) {
+        if let Some(n) = self.adblock_loaded_rules() {
+            return self.adblock_stats_reply(n);
+        }
+        if std::mem::replace(&mut self.adblock.stats_busy, true) {
+            return;
+        }
+        let tx = self.adblock.stats.get_or_insert_with(channel).0.clone();
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            let n = data_dir().ok().and_then(|d| load_list(&d)).map_or(0, |json| adblock::saved_rule_count(&json));
+            let _ = tx.send(n);
+            notify();
+        });
+    }
+
+    fn adblock_stats_poll(&mut self) {
+        let got: Vec<usize> = self.adblock.stats.as_ref().map(|(_, rx)| rx.try_iter().collect()).unwrap_or_default();
+        if got.is_empty() {
+            return;
+        }
+        self.adblock.stats_busy = false;
+        if let Some(n) = got.last().copied() {
+            self.adblock_stats_reply(n);
+        }
+    }
+
+    fn adblock_stats_reply(&mut self, rules: usize) {
+        let last = self.globals.raw(adblock::LAST_UPDATE_KEY).and_then(|v| v.as_integer()).unwrap_or(0).max(0);
+        self.browser_settings_stats(rules, last as f64);
+    }
+
+    /// "Update Now" on the settings page (`SH:254-257`): an update starts at the next look even when
+    /// 24 hours have not passed, and the page is told how it ended. An update already running is
+    /// the one reported. Returns false when ad blocking is off (nothing starts).
+    pub(super) fn adblock_refresh_now(&mut self) -> bool {
+        if !self.adblock_on() {
+            return false;
+        }
+        self.adblock.report = true;
+        if self.adblock.call.is_none() && !self.adblock.working {
+            self.adblock.force = true;
+            self.adblock.next_check = Some(Instant::now());
+            self.redraw();
+        }
+        true
+    }
+
+    /// An update the settings page asked for ended (once): every settings page is told.
+    fn adblock_report(&mut self, result: Result<(), String>) {
+        if std::mem::take(&mut self.adblock.report) {
+            self.browser_settings_adblock_result(result);
         }
     }
 
@@ -396,6 +473,32 @@ mod tests {
 
     /// Off means off: the tick clears everything and starts nothing; the download needs a browser
     /// view; the proxy argument is made in one place from the three globals.
+    /// Review follow-up: the settings page's rule statistics never read the disk on the UI thread.
+    #[test]
+    fn the_rule_statistics_are_counted_on_a_worker() {
+        let live = include_str!("adblock_app.rs");
+        let live = &live[..live.find("#[cfg(test)]").unwrap()];
+        let req = &live[live.find("pub(super) fn adblock_stats_request").unwrap()..live.find("fn adblock_stats_poll").unwrap()];
+        assert!(req.contains("std::thread::spawn") && req.find("std::thread::spawn").unwrap() < req.find("load_list(&d)").unwrap(), "the read is inside the worker");
+        assert!(req.contains("self.adblock_loaded_rules()") && req.contains("stats_busy"));
+        let page = include_str!("browser_pages_app.rs");
+        assert!(page.contains("sp::Msg::GetAdblockStats => self.adblock_stats_request(),") && !page.contains("adblock_saved_rules"));
+        assert!(live.contains("self.adblock_stats_poll();
+        if !self.adblock_on() {"), "polled even with blocking off");
+    }
+
+    /// Review follow-up: a Clear All Data question that cannot open is a Cancel and releases the page's
+    /// pending state.
+    #[test]
+    fn a_clear_question_that_cannot_open_releases_the_button() {
+        let alerts = include_str!("scripts_alerts.rs");
+        let dropped = &alerts[alerts.find("fn scripts_dropped").unwrap()..];
+        assert!(dropped.contains("Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, 1),"));
+        let page = include_str!("browser_pages_app.rs");
+        let a = &page[page.find("pub(super) fn browser_clear_data_answered").unwrap()..];
+        assert!(a.find("settings.confirming = false").unwrap() < a.find("if index != 0").unwrap());
+    }
+
     #[test]
     fn ad_blocking_off_starts_nothing() {
         let src = include_str!("adblock_app.rs");
@@ -434,6 +537,6 @@ mod tests {
         let src = include_str!("browser_db_app.rs");
         let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
         let f = &live[live.find("fn browser_local_request").unwrap()..];
-        assert!(f.contains("scheme_of(url) == \"iterm2-about\" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) }"));
+        assert!(f.contains("scheme == \"iterm2-about\" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) }"));
     }
 }

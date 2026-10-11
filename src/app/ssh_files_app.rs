@@ -103,6 +103,10 @@ impl App {
     pub(super) fn ssh_transfer_apply(&mut self, actions: Vec<Action>) {
         let mut work: std::collections::VecDeque<Action> = actions.into();
         while let Some(action) = work.pop_front() {
+            // A remote file shown in a browser tab is a page job's: it never touches Downloads.
+            if self.ssh_page_job(&action) {
+                continue;
+            }
             match action {
                 Action::Send { job, tag, pane, sub, high } => {
                     // The job ended (a local failure, or a nested -1) earlier in this batch.
@@ -283,14 +287,23 @@ impl App {
         self.ssh_transfer_apply(actions);
     }
 
-    /// Download or view (`downloadOrView`, `CD:1630-1675`). Tandem has no in-app browser, so
-    /// iTerm2's no-browser path applies: the file or folder downloads. The extension table is
-    /// ported with a browser (Decision: with no browser the mime type is never consulted).
+    /// Download or view (`downloadOrView`, `CD:1630-1675`): a type the browser can show asks, when a
+    /// browser pane is allowed; everything else downloads. The prompt keeps iTerm2's heading, buttons
+    /// and identifier (only View is remembered). A path the view URL cannot carry downloads. A folder
+    /// is not stat'ed first (iTerm2 does): its page shows "Only a file can be shown." (Decision).
     pub(super) fn ssh_download_or_view(&mut self, pane: PaneId, to: &ScpPath) {
-        // `Ask` is unreachable while `BROWSER_ALLOWED` is false: its View would open a browser
-        // Tandem lacks, so both arms download.
-        match ssh_files::download_or_view(None, ssh_files::BROWSER_ALLOWED) {
-            ssh_files::ViewChoice::Download | ssh_files::ViewChoice::Ask { .. } => self.ssh_download(pane, &to.path),
+        let ext = std::path::Path::new(&to.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        match ssh_files::download_or_view(crate::mime_ext::mime_for_extension(&ext), self.browser_allowed()) {
+            ssh_files::ViewChoice::Download => self.ssh_download(pane, &to.path),
+            ssh_files::ViewChoice::Ask { mime } => {
+                if !crate::ssh_page::view_url_ok(&crate::ssh_page::view_in_browser_url(&to.hostname, &to.path)) {
+                    return self.ssh_download(pane, &to.path);
+                }
+                let name = std::path::Path::new(&to.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let labels = [ssh_files::DOWNLOAD, ssh_files::VIEW, crate::api_auth::CANCEL];
+                let a = super::scripts_alerts::ask(ssh_files::VIEW_HEADING, &ssh_files::view_title(&shown_name(&name)), &labels, Some(&ssh_files::view_id(&mime, to)), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::SshViewOrDownload { pane, to: to.clone(), mime });
+                self.ask_scripts(a);
+            }
         }
     }
 

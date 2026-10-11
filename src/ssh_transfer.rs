@@ -128,6 +128,9 @@ struct Job {
     path: String,
     host: String,
     chunked: bool,
+    /// A page's job (the ssh page, 13x8): it ends at the first stat unless the path is a regular file,
+    /// so a folder is never zipped on the remote for a page.
+    file_only: bool,
     /// The remote zip of a folder, once it exists: removed when the job ends, success or not.
     zip: Option<String>,
     /// What is fetched now: the path, or the zip.
@@ -169,10 +172,20 @@ impl Transfers {
         self.add(pane, remote, host, true)
     }
 
+    /// A page's stream (13x8, the ssh page): `download`, but the job ends at the first stat with
+    /// `ssh_page::NOT_A_FILE` when the path is a folder or not a regular file, before any `Zip` is sent.
+    pub fn download_file_only(&mut self, pane: PaneId, remote: &str) -> (JobId, Vec<Action>) {
+        let (id, out) = self.add(pane, remote, "", false);
+        if let Some(j) = self.jobs.get_mut(&id) {
+            j.file_only = true;
+        }
+        (id, out)
+    }
+
     fn add(&mut self, pane: PaneId, remote: &str, host: &str, chunked: bool) -> (JobId, Vec<Action>) {
         let id = self.next_job;
         self.next_job += 1;
-        let job = Job { pane, path: remote.to_string(), host: host.to_string(), chunked, zip: None, fetch_path: remote.to_string(), holds_slot: false, state: State::Stat, up: None };
+        let job = Job { pane, path: remote.to_string(), host: host.to_string(), chunked, file_only: false, zip: None, fetch_path: remote.to_string(), holds_slot: false, state: State::Stat, up: None };
         let mut out = Vec::new();
         self.send(id, &job, FileSub::Stat { path: remote.to_string() }, &mut out);
         self.jobs.insert(id, job);
@@ -186,7 +199,7 @@ impl Transfers {
         let id = self.next_job;
         self.next_job += 1;
         let temp = upload_temp(dest, uuid);
-        let job = Job { pane, path: dest.to_string(), host: String::new(), chunked: true, zip: None, fetch_path: dest.to_string(), holds_slot: false, state: State::UpCreate, up: Some(Upload { temp: temp.clone(), data }) };
+        let job = Job { pane, path: dest.to_string(), host: String::new(), chunked: true, file_only: false, zip: None, fetch_path: dest.to_string(), holds_slot: false, state: State::UpCreate, up: Some(Upload { temp: temp.clone(), data }) };
         let mut out = Vec::new();
         self.send(id, &job, FileSub::Create { path: temp, content: Vec::new() }, &mut out);
         self.jobs.insert(id, job);
@@ -444,6 +457,9 @@ impl Transfers {
             Ok(f) => f,
             Err(e) => return fail(e),
         };
+        if j.file_only && !file.is_regular() {
+            return fail(crate::ssh_page::NOT_A_FILE);
+        }
         if !j.chunked {
             if file.is_folder() {
                 j.state = State::Zip;
@@ -834,6 +850,24 @@ mod tests {
         let acts = t.reply(job, tag_of(&acts), r#"{"absolutePath":"/h/n","kind":{"file":{"_0":{}}}}"#, 0);
         assert_eq!(acts, [done(job, Err("Internal error"))]);
         assert_eq!(t.running(), 1, "only the 8192 byte download of /h/b still runs");
+    }
+
+    /// 13x8 review I2: a page's job stops at the first stat unless the path is a regular file; no `Zip`
+    /// is ever sent for it, while the same folder through `download` still zips.
+    #[test]
+    fn a_page_job_never_zips_a_folder() {
+        let mut t = Transfers::new();
+        let (job, acts) = t.download_file_only(P, "/h/d");
+        assert_eq!(acts, [Action::Send { job, tag: 1, pane: P, sub: stat("/h/d"), high: false }]);
+        let acts = t.reply(job, 1, &json_folder("/h/d"), 0);
+        assert_eq!(acts, [done(job, Err(crate::ssh_page::NOT_A_FILE))], "{acts:?}");
+        assert!(!t.is_live(job));
+        let (job, acts) = t.download_file_only(P, "/h/a.txt");
+        let acts = t.reply(job, tag_of(&acts), &json_file("/h/a.txt", 5), 0);
+        assert_eq!(acts[0], Action::Size { job, size: Some(5) }, "a regular file streams as before");
+        let (job, acts) = t.download(P, "/h/d");
+        let acts = t.reply(job, tag_of(&acts), &json_folder("/h/d"), 0);
+        assert!(matches!(only_send(&acts).1, FileSub::Zip { .. }), "the Downloads path still zips a folder");
     }
 
     #[test]

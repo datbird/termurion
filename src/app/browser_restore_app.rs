@@ -265,7 +265,7 @@ mod tests {
     fn transitions_and_the_page_color_are_wired() {
         let app = prod(include_str!("browser_app.rs"));
         let ev = &app[app.find("pub(super) fn browser_event").unwrap()..app.find("fn browser_view_failed").unwrap()];
-        assert!(ev.contains("Event::Starting { url, kind, user, redirect, .. } => {") && ev.contains("self.browser_nav_starting(pane, url, *kind, *user, *redirect)"));
+        assert!(ev.contains("Event::Starting { url, kind, user, redirect, nav, .. } => {") && ev.contains("self.browser_nav_starting(pane, url, *kind, *user, *redirect)"));
         assert!(ev.contains("self.browser_color_read(pane)"));
         let me = prod(include_str!("browser_restore_app.rs"));
         assert!(me.contains("browser_eval_in_frame(") && !me.contains("browser_eval(pane"), "the isolated world only (P17)");

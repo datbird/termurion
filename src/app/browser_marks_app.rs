@@ -762,7 +762,7 @@ mod tests {
     fn method_events_reach_the_tracker() {
         let app = include_str!("browser_app.rs");
         let live = app.split("#[cfg(test)]").next().unwrap();
-        let starting = &live[live.find("Event::Starting { url, kind, user, redirect, .. } => {").unwrap()..];
+        let starting = &live[live.find("Event::Starting { url, kind, user, redirect, nav, .. } => {").unwrap()..];
         assert!(starting[..starting.find("browser_nav_starting").unwrap()].contains("self.marks_method_event(pane, e);"), "before the redirect filter, so redirects count");
         assert!(live.contains("Event::DocumentMethod { .. } => self.marks_method_event(pane, e),"));
         assert!(live.contains("track_document_method: true"));

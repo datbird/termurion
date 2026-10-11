@@ -1169,12 +1169,14 @@ mod tests {
 
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
+        ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
         ("app/semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "execute_with", "the sink itself; its callers are checked"),
         ("app/url_handler_ui.rs", "url_handler", "starts the person's own handler program directly; reached only from execute_with, the URL is one argument (handler_plan)"),
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("app/browser_download_app.rs", "browser_downloads_message", "Show in folder only SELECTS the file Tandem itself finished in the Downloads folder (the id names its own record, never the page's text); nothing is opened or run"),
         ("app/page_saver_app.rs", "page_save_acts", "selects the index.html the saver itself wrote in the folder the person picked in Explorer; nothing is opened or run, and the path is not pane text"),
         ("app/workgroup_toolbar_ui.rs", "usage_report_answered", "opens the fixed issue form; the person's click on Report Bug, the query holds only the report Tandem built"),
         ("app/workgroup_toolbar_ui.rs", "run_usage", "runs `claude.exe` from the path or the item's own command line (the person's settings, never pane text), with no substitution"),

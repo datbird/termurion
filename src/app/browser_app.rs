@@ -41,6 +41,15 @@ pub(super) struct BrowserView {
     /// The main frame began a navigation to `iterm2-about:source` that has not yet made its document
     /// request: only that request may take the pending source.
     pub(super) source_nav: bool,
+    /// The URL whose failure got the error page last (iTerm2's `lastFailedURL`, `BM:1348-1352`): the same
+    /// URL failing again shows nothing; cleared by a person's load and a page that loaded.
+    pub(super) last_failed: Option<String>,
+    /// The error page the next `iterm2-about:error` document request serves; taken once.
+    pub(super) pending_error: Option<String>,
+    /// The main document URL the ad blocker refused (answered `Block`), until its failed load is seen.
+    pub(super) blocked_url: Option<String>,
+    /// At most a few error pages in a few seconds (preflight P6).
+    pub(super) error_burst: crate::browser_pages::ErrorBurst,
     /// The toolbar's state: the address field, its suggestions, a press, the history list.
     pub(super) bar: BarState,
     /// Browser Instant Replay: this pane's frames and the state of the capture round trip.
@@ -117,10 +126,25 @@ pub(super) struct BrowserView {
     pub(super) find_out: crate::browser_find::Outbox,
     /// The Find Globally search this page's global stream answers (`App.global_generation` at its start).
     pub(super) global_gen: u64,
+    /// The file or ssh page the main frame is on (13x8 Task 1): set when its navigation COMMITS (the
+    /// view's Source becomes that URL), cleared by any other commit and by `browser_reset_world`.
+    pub(super) page_root: Option<crate::browser_pages::PageRoot>,
+    pub(super) page_url: Option<String>,
+    /// The file or ssh navigation that began and has not committed (set from an allowed
+    /// `Event::Starting`, cleared by any other start): only its Document request is answered.
+    pub(super) nav_root: Option<crate::browser_pages::PageRoot>,
+    pub(super) nav_url: Option<String>,
+    /// That navigation's id (`Event::Starting.nav`; 0 for none): its commit (13x7's `Event::Committed`)
+    /// keeps the page root, any other commit drops it.
+    pub(super) nav_id: u64,
     /// Autofill's queue, waiting request and ask flag (13x7); goes with the view's world.
     pub(super) autofill: super::browser_autofill_app::PaneAutofill,
     /// The password writer's waiting operations and their secrets (13x7 Task 5); go with the view's world.
     pub(super) password: super::browser_password_app::PanePassword,
+    /// The onboarding pages' per-pane state (13x8 Task 4): the profile found, the write limit.
+    pub(super) onboarding: crate::browser_onboarding::State,
+    /// The settings page's per-pane state (13x8 Task 5): a Clear All Data waiting, the action limits.
+    pub(super) settings: crate::browser_settings_page::State,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -192,11 +216,12 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 /// tools on, every navigation guarded, new windows posted, InPrivate for Dev Null Mode. The only
 /// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
 /// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
-/// (`browser_pages::route`). No host objects.
+/// (`browser_pages::route`). No host objects. The Instant Replay sensitive mark runs in every frame of
+/// every browser page (final review I1); a certificate error fails the load (`fail_cert_errors`, 13x8).
 pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<String>) -> ViewSetup {
     // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
     // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
-    let mut filters = vec!["iterm2-about:*".to_string()];
+    let mut filters = vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()];
     if adblock {
         filters.push("*".to_string());
     }
@@ -205,17 +230,18 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         devtools: true,
         new_windows: true,
         guard_local_schemes: true,
+        redirect_file_urls: true,
         in_private: dev_null,
         web_message: true,
-        // The Instant Replay sensitive mark runs in every frame of every browser page (final review I1).
         scripts: page_scripts.into_iter().chain([crate::web_replay::sensitive_script()]).collect(),
         resource_filters: filters,
         favicon: true,
         context_menu: true,
-        permissions: true,
+        permissions: true, fail_cert_errors: true,
         track_document_method: true,
         main_responses: true,
         basic_auth: true,
+        downloads: true,
         ..Default::default()
     }
 }
@@ -243,8 +269,9 @@ impl App {
         // A restored (or opened) URL is judged by the one navigation gate again at load time: a stored
         // file: or javascript: URL never loads, the pane starts at the profile's Initial URL.
         let restored = self.browser_url_override.take().and_then(|u| crate::browser_restore::load_gate(&u));
+        let ssh_view = self.ssh_view_url.take().filter(|u| crate::ssh_page::view_url_ok(u));
         let url = match browser::start_plan(&p.string("Custom Command"), self.globals.bool("BrowserProfiles"), &p.string("Initial URL"), restored.as_deref()) {
-            Start::Browser(u) => u,
+            Start::Browser(u) => ssh_view.unwrap_or(u),
             Start::Terminal => return false,
         };
         if self.web_runtime() == Runtime::Missing {
@@ -263,7 +290,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, blocked_url: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, nav_id: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default(), onboarding: Default::default(), settings: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -522,6 +549,7 @@ impl App {
             // The world's own about:blank navigation (the isolation check) is not the page.
             Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}
             Event::Source(_, url) => {
+                self.browser_page_committed(pane, url);
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
                     io.url = url.clone();
                 }
@@ -604,6 +632,14 @@ impl App {
                 }
                 self.browser_name(pane);
                 self.browser_marks_navigated(pane, *ok, *nav);
+                // The error page (13x8): a failed load, or a page that loaded after one.
+                if let Event::Navigated { url, status, http, .. } = e {
+                    if *ok {
+                        self.browser_load_succeeded(pane, url);
+                    } else {
+                        self.browser_load_failed(pane, url, *status, *http);
+                    }
+                }
             }
             Event::History { back, forward, .. } => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
@@ -640,6 +676,12 @@ impl App {
                 }
             }
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
+            // A `file:` page is Tandem's `iterm2-file:` page (13x8 Task 3).
+            Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),
+            Event::DataCleared { ok, .. } => self.browser_data_cleared(pane, *ok),
+            Event::Extensions { list, .. } => self.browser_extensions_listed(pane, list),
+            Event::ExtensionAdded { folder, result, .. } => self.browser_extension_added(pane, folder, result),
+            Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } | Event::DownloadRefused { .. } => self.browser_download_event(pane, e),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
@@ -652,13 +694,25 @@ impl App {
                 // The first view of an environment rewrites the profile's permission states (13x6).
                 let dev_null = self.pane_dev_null(pane);
                 self.sync_permission_states(dev_null);
+                // Approved extensions are loaded into the persistent profile (never Dev Null; no question).
+                if !dev_null {
+                    self.browser_extensions_request(pane, false, false);
+                }
                 // A new view starts unmuted: the pane's page is muted until its origin is allowed (13x6).
                 self.browser_audio_created(pane);
             }
             // The view could not be made: remade from the URL within the budget.
-            Event::Failed(view, _) => {
+            Event::Failed(view, why) => {
                 // The reason is COM's text: only that it happened and which view (13w B8).
                 crate::rlog!("webhost: a browser pane's view {} failed", *view);
+                // A runtime without the certificate event: no remake loop, one clear message (M4).
+                if why.starts_with(webhost::OLD_RUNTIME_WHAT) {
+                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                        bv.stopped = true;
+                    }
+                    self.banners.set("webview2-old", webhost::OLD_RUNTIME_TEXT);
+                    return;
+                }
                 self.browser_view_failed(pane, webhost::PROCESS_RENDER_EXITED);
             }
             // A process failed: the kind says what to do (final review I5).
@@ -674,7 +728,12 @@ impl App {
             Event::ContextMenu { token, target, .. } => self.browser_context_menu(pane, *token, target.clone()),
             Event::ContextMenuPicked { token, id, .. } => self.browser_ctx_event(pane, *token, *id, event_loop),
             // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
-            Event::Starting { url, kind, user, redirect, .. } => {
+            Event::Starting { url, kind, user, redirect, nav, .. } => {
+                self.browser_page_starting(pane, url, *nav);
+                // A navigation of the pane closes its Edit Bookmark window (`BVC:1095-1096`).
+                if !*redirect {
+                    self.bookmark_editor_close_for(pane);
+                }
                 // Every start counts, redirects included: a redirected load is a new document request.
                 self.marks_method_event(pane, e);
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
@@ -691,6 +750,13 @@ impl App {
             Event::AudioPlaying { playing, .. } => self.browser_audio_playing(pane, *playing),
             Event::PermissionStates { view, states, complete, workers_cleared } => self.permission_states_read(pane, *view, states, *complete, *workers_cleared),
             Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok),
+            // A navigation committed (ContentLoading, 13x7): HTTP authentication's tracker saw it first
+            // (`basic_auth_event` above), then the file or ssh page root holds only for the navigation
+            // that named it (13x8); the scripts see it last, as before.
+            Event::Committed { nav, .. } => {
+                self.browser_page_nav_committed(pane, *nav);
+                self.browser_script_event(pane, e);
+            }
             // The method of the document request (13x5): the Edit menu's gate and the prompt's OK.
             Event::DocumentMethod { .. } => self.marks_method_event(pane, e),
             // Everything a page's script says, the world's events and the calls' answers: the router.
@@ -1031,6 +1097,20 @@ impl App {
         true
     }
 
+    /// Tandem's own Back, Forward and history pick (13x8 Task 5 review I1, redesigned): when the pane's
+    /// record says the target entry is a power page or a local page, the history step is not taken; the
+    /// page is loaded as a fresh Tandem navigation (the path of typing it or opening it from the menu).
+    /// A history step onto such a page is refused by the host whoever starts it, so no flag exists for a
+    /// page to take. True when it was loaded this way.
+    pub(super) fn browser_history_fresh(&mut self, pane: PaneId, steps: i32) -> bool {
+        let Some(url) = self.browser_views.get(&pane).and_then(|bv| bv.bar.nav.target_url(steps)).map(str::to_string) else { return false };
+        if !webhost::needs_fresh_load(&url) {
+            return false;
+        }
+        self.browser_navigate(pane, &url);
+        true
+    }
+
     /// What a toolbar button does.
     fn browser_button(&mut self, pane: PaneId, b: Button, menu_at: (f32, f32)) {
         // The world is being set up: there is no page to go back from or reload (review I2).
@@ -1038,6 +1118,8 @@ impl App {
             return;
         }
         match b {
+            Button::Back if self.browser_history_fresh(pane, -1) => {}
+            Button::Forward if self.browser_history_fresh(pane, 1) => {}
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.expect(-1);
@@ -1176,6 +1258,9 @@ impl App {
     pub(super) fn browser_menu_picked(&mut self, id: &str) -> bool {
         if let Some(rest) = id.strip_prefix(HISTORY_ID) {
             let Some((pane, steps)) = rest.split_once(':').and_then(|(p, s)| Some((p.parse::<PaneId>().ok()?, s.parse::<i32>().ok()?))) else { return true };
+            if steps != 0 && steps.abs() <= 100 && self.browser_history_fresh(pane, steps) {
+                return true;
+            }
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 if steps != 0 && steps.abs() <= 100 {
                     bv.bar.nav.expect(steps);
@@ -1204,6 +1289,7 @@ impl App {
         let target = match label {
             "Manage Bookmarks" => Some("iterm2-about:bookmarks"),
             "History" => Some("iterm2-about:history"),
+            "Settings" => Some(crate::browser_settings_page::SETTINGS_URL),
             _ => None,
         };
         if let Some(url) = target {
@@ -1241,6 +1327,7 @@ impl App {
                 due = Some(due.map_or(at, |d| d.min(at)));
             }
         }
+        self.browser_extensions_poll();
         let ad_due = self.adblock_tick();
         let replay_due = self.web_replay_tick();
         [due, ad_due, replay_due].into_iter().flatten().min()
@@ -1330,7 +1417,7 @@ impl App {
             browser::Typed::Navigate(u) => self.browser_navigate(pane, &u),
             browser::Typed::File(u) => {
                 let info = webhost::NavInfo { target: &u, source: None, user: true, redirect: false, by_tandem: false };
-                let policy = webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+                let policy = webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
                 let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
                 if webhost::nav_verdict(&info, &policy, &|t| webhost::file_url_local(t, &judge)) {
                     self.browser_navigate(pane, &u);
@@ -1351,6 +1438,8 @@ impl App {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
             bv.bar.nav_state.will_load(url);
+            // A URL the person loads starts over (`BM:661`).
+            bv.last_failed = None;
             // A person's own load ends the wait of a restored page.
             bv.world.restore_load = None;
             bv.world.restore_from = None;
@@ -1604,7 +1693,7 @@ impl App {
 
     /// (allowed, runtime) for `open_decision`: `allowed` is `BrowserProfiles` on with the runtime
     /// found; `runtime` is false only when the browser is on and the runtime is missing.
-    fn browser_gate(&self) -> (bool, bool) {
+    pub(super) fn browser_gate(&self) -> (bool, bool) {
         let on = self.globals.bool("BrowserProfiles");
         let found = self.web_runtime() != Runtime::Missing;
         (on && found, found || !on)
@@ -1682,6 +1771,24 @@ impl App {
         let Some(url) = browser::normalize_url(url).filter(|u| matches!(webhost::scheme_of(u).as_str(), "http" | "https" | "iterm2-about")).and_then(|u| browser::saved_url(&u)) else {
             return;
         };
+        self.open_in_browser_pane(url, style, near);
+    }
+
+    /// The tab for a remote file the person chose to View (13x8 Task 9, `CD:1670`): the one open path,
+    /// so the profile choice and the split rules are the same; the pane's first load is `url`, which
+    /// only `view_url_ok` lets in and only this function sets (no link, page or arrangement can).
+    pub(super) fn open_ssh_view(&mut self, url: &str, near: Option<PaneId>) {
+        if !crate::ssh_page::view_url_ok(url) {
+            return;
+        }
+        self.ssh_view_url = Some(url.to_string());
+        // The profile a made browser profile starts at is the welcome page, never this URL.
+        self.open_in_browser_pane(browser::DEFAULT_URL.to_string(), browser::Style::Tab, near);
+        self.ssh_view_url = None;
+    }
+
+    /// Opens `url` (already judged by the caller) in a browser pane of the default browser profile.
+    fn open_in_browser_pane(&mut self, url: String, style: browser::Style, near: Option<PaneId>) {
         let default = self.store.default_profile();
         let found = if self.is_browser_profile(default) { Some(default.guid()) } else { self.store.profiles.iter().find(|p| self.is_browser_profile(p)).map(|p| p.guid()) };
         let (guid, made) = match found {
@@ -1747,6 +1854,21 @@ pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 5 review I1 (redesign): Back, Forward and the history pick ask the pane's own record first and
+    /// load a power or local target fresh; no flag or window exists for a page to take.
+    #[test]
+    fn tandems_history_steps_never_land_on_a_power_page() {
+        let src = include_str!("browser_app.rs");
+        let p = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(p.contains("Button::Back if self.browser_history_fresh(pane, -1) => {}") && p.contains("Button::Forward if self.browser_history_fresh(pane, 1) => {}"));
+        assert!(p.contains("if steps != 0 && steps.abs() <= 100 && self.browser_history_fresh(pane, steps) {"));
+        let f = &p[p.find("pub(super) fn browser_history_fresh").unwrap()..p.find("fn browser_button(").unwrap()];
+        assert!(f.contains("webhost::needs_fresh_load(&url)") && f.contains("self.browser_navigate(pane, &url)") && !f.contains("go_back") && !f.contains("history.go"));
+        let win = include_str!("../webhost_win.rs");
+        assert!(!win.contains("tandem_history") && !win.contains("history_by_tandem"), "no flag a page could take");
+        assert!(win.contains("!webhost::history_refused(kind.0, &uri) && webhost::nav_verdict("));
+    }
+
     /// Task 10: the indicators come from Tandem's own state only, the click opens only the help.
     #[test]
     fn browser_indicators_follow_iterm2() {
@@ -1803,7 +1925,7 @@ mod tests {
         // The views are made in the Dev Null store InPrivate, and never with a bridge or host objects.
         assert!(browser_setup(true, false, vec![]).in_private && !browser_setup(false, false, vec![]).in_private);
         let s = browser_setup(false, false, vec![]);
-        assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
+        assert!(s.guard_local_schemes && s.redirect_file_urls && s.user_agent.as_deref() == Some(""));
     }
 
     /// Task 10 review I1: one window's pass reports a pane hidden (sign-in cancelled, replay hidden,
@@ -1875,9 +1997,9 @@ mod tests {
             assert_eq!(s.scripts, vec![page[0].clone(), crate::web_replay::sensitive_script()], "the bridge and the sensitive mark are the only injected scripts");
             assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__tandemClient"), "a Page script never holds the Client binding");
             assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
-            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
+            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()], "only Tandem's own schemes are served");
             let on = browser_setup(dev_null, true, vec![]);
-            assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
+            assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
         }
     }
 

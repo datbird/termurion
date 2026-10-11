@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, BasicAuthenticationRequestedEventHandler, CallDevToolsProtocolMethodCompletedHandler, ContentLoadingEventHandler, WebResourceResponseReceivedEventHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    AcceleratorKeyPressedEventHandler, BasicAuthenticationRequestedEventHandler, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler, CallDevToolsProtocolMethodCompletedHandler, ContentLoadingEventHandler, WebResourceResponseReceivedEventHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
-    ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
+    ProcessFailedEventHandler, ServerCertificateErrorDetectedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
@@ -73,6 +73,40 @@ impl Drop for WideSecret {
     fn drop(&mut self) {
         self.wipe();
     }
+}
+
+/// The view's profile as the extension interface (`ICoreWebView2Profile7`).
+fn profile7(c: &Core) -> Option<ICoreWebView2Profile7> {
+    c.view.cast::<ICoreWebView2_13>().ok().and_then(|v| unsafe { v.Profile() }.ok()).and_then(|p| p.cast::<ICoreWebView2Profile7>().ok())
+}
+
+/// Reads the profile's extensions (id, name, enabled, handle), at most `webhost::MAX_EXTENSIONS`, and
+/// runs `f` with them when the answer arrives. False when the request could not be made.
+fn with_extensions(c: &Core, f: impl FnOnce(Vec<(String, String, bool, ICoreWebView2BrowserExtension)>) + 'static) -> bool {
+    let Some(p7) = profile7(c) else { return false };
+    let f = RefCell::new(Some(f));
+    let done = webview2_com::ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |hr, list| guard(|| {
+        let mut all = Vec::new();
+        if let (true, Some(list)) = (hr.is_ok(), list) {
+            let mut n = 0u32;
+            let _ = unsafe { list.Count(&mut n) };
+            for i in 0..n.min(webhost::MAX_EXTENSIONS as u32) {
+                let Ok(e) = (unsafe { list.GetValueAtIndex(i) }) else { continue };
+                let (Some(id), name) = (pwstr_out(|o| unsafe { e.Id(o) }), pwstr_out(|o| unsafe { e.Name(o) }).unwrap_or_default()) else { continue };
+                let on = bool_out(|o| unsafe { e.IsEnabled(o) });
+                all.push((id.chars().take(webhost::MAX_EXTENSION_TEXT).collect(), crate::inert_files::display_text(&name, webhost::MAX_EXTENSION_TEXT, false), on, e));
+            }
+        }
+        if let Some(f) = f.borrow_mut().take() {
+            f(all);
+        }
+        Ok(())
+    })));
+    unsafe { p7.GetBrowserExtensions(&done) }.is_ok()
+}
+
+fn post_extensions(poster: &Poster, view: ViewId, all: &[(String, String, bool, ICoreWebView2BrowserExtension)]) {
+    poster.post(Event::Extensions { view, list: all.iter().map(|(i, n, on, _)| (i.clone(), n.clone(), *on)).collect() });
 }
 
 fn pwstr_out(f: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> Option<String> {
@@ -408,6 +442,8 @@ impl Env {
         let options = CoreWebView2EnvironmentOptions::default();
         // SAFETY: the setters write fields of an object no other thread has yet.
         unsafe {
+            // The browser stores only: an extension is still added only after the person approved it.
+            options.set_are_browser_extensions_enabled(opts.extensions);
             options.set_additional_browser_arguments(control.unwrap_or_else(|| webhost::browser_arguments(&opts.args)));
             // Windows single sign-on with the OS primary account is off (it is also WebView2's default).
             options.set_allow_single_sign_on_using_os_primary_account(false);
@@ -419,8 +455,11 @@ impl Env {
                 .custom_schemes
                 .iter()
                 .map(|s| {
-                    // Not secure, no authority component, no allowed origins (preflight P8).
+                    // Never secure; the origins and the host component come from `scheme_registration`.
                     let reg = CoreWebView2CustomSchemeRegistration::new(s.clone());
+                    let (origins, authority) = crate::webhost::scheme_registration(s);
+                    reg.set_allowed_origins(origins);
+                    reg.set_has_authority_component(authority);
                     Some(reg.into())
                 })
                 .collect();
@@ -481,6 +520,10 @@ pub struct ViewSetup {
     /// The view's NavigationStarting handler asks `navigation_allowed` and cancels a refused
     /// navigation. Every view sets it (preflight B4c).
     pub guard_local_schemes: bool,
+    /// A main-frame navigation to a `file:` URL the one verdict allowed is cancelled and posted as
+    /// `Event::FileRedirect` when `webhost::file_redirect_allowed` says so (browser panes: the app shows
+    /// the same path as an `iterm2-file:` page, 13x8 Task 3). WebView2 never lists a folder itself.
+    pub redirect_file_urls: bool,
     /// Only these schemes may load (compared ignoring case); None allows any the guard allows.
     pub allowed_schemes: Option<Vec<String>>,
     /// `IsWebMessageEnabled`: true only for popover HTML, tool views and `iterm2-about:` pages (preflight P5).
@@ -499,6 +542,9 @@ pub struct ViewSetup {
     /// The view reports the HTTP method of its main document requests (`Event::DocumentMethod`,
     /// 13x5): a second `WebResourceRequested` handler on a Document-context filter, no deferral.
     pub track_document_method: bool,
+    /// A certificate error fails the load (`ServerCertificateErrorDetected` answers Cancel), so the
+    /// app shows its error page and Edge's interstitial, with its "continue anyway", never appears.
+    pub fail_cert_errors: bool,
     /// The view reports `Event::Committed` (ContentLoading) and `Event::Response` (the main
     /// document's HTTP response) for the HTTP authentication state machine (13x7). The response
     /// needs the Document filter `track_document_method` adds; browser panes set both.
@@ -506,6 +552,10 @@ pub struct ViewSetup {
     /// An HTTP (or proxy) authentication request is posted as `Event::BasicAuth` and held until
     /// `answer_basic_auth`. Off: the host cancels it on the spot; WebView2's own dialog is never shown.
     pub basic_auth: bool,
+    /// The app decides this view's downloads (browser panes): `DownloadStarting` is posted as
+    /// `Event::DownloadStarting` and held until `answer_download`. Off: a download is cancelled on
+    /// the spot (a tool page, a popover or Quick Look starts none, and Edge's bubble never shows).
+    pub downloads: bool,
 }
 
 #[derive(Clone)]
@@ -595,9 +645,16 @@ struct Inner {
     nav_uris: VecDeque<(u64, String)>,
     /// The (capped) URI and id of the last main-frame NavigationStarting, for the Document filter.
     last_main_nav: Option<(String, u64)>,
+    /// The last main document response (`register_main_responses`): its navigation id and status, for
+    /// a failed load whose HttpStatusCode is 0 (`webhost::completed_http`, a 204).
+    main_response: Option<(u64, i32)>,
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
+    /// The navigation id Tandem's own load took (`by_tandem`), so its redirects are judged as from no
+    /// page (`webhost::redirect_source`, R13x8-P2).
+    tandem_nav: Option<u64>,
+    /// Milliseconds (`webhost::now_ms`-style, since `START`) when Tandem started a Back or Forward.
     new_windows: webhost::NewWindowLimiter,
     pending: HashMap<u64, Pending>,
     next_token: u64,
@@ -623,6 +680,11 @@ struct Inner {
     /// pending cap with `perms` (one owner of the deferral caps).
     auths: HashMap<u64, PendingAuth>,
     perm_limit: webhost::PermissionLimiter,
+    /// Downloads waiting for an answer (by token) and running (by the app's id); their own limiter, so a
+    /// page's downloads never starve or are starved by permission and sign-in prompts.
+    dl_pending: HashMap<u64, PendingDownload>,
+    dl_active: HashMap<u64, ActiveDownload>,
+    dl_limit: webhost::PermissionLimiter,
     /// Page notifications the app holds a token for (at most `MAX_HELD_NOTES`).
     notes: HashMap<u64, HeldNote>,
     note_limit: webhost::NotificationLimiter,
@@ -676,7 +738,9 @@ impl WebView {
             queued: Vec::new(),
             nav_uris: VecDeque::new(),
             last_main_nav: None,
+            main_response: None,
             tandem_uri: None,
+            tandem_nav: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
             next_token: 1,
@@ -691,6 +755,9 @@ impl WebView {
             perms: HashMap::new(),
             auths: HashMap::new(),
             perm_limit: webhost::PermissionLimiter::default(),
+            dl_pending: HashMap::new(),
+            dl_active: HashMap::new(),
+            dl_limit: webhost::PermissionLimiter::default(),
             notes: HashMap::new(),
             note_limit: webhost::NotificationLimiter::default(),
             note_watch: None,
@@ -1023,6 +1090,163 @@ impl WebView {
         });
     }
 
+    /// Deletes every cookie of this view's profile (`CookieManager().DeleteAllCookies()`, `SH:193-201`).
+    /// The profile is the view's store's: a Dev Null view clears Dev Null's, never the persistent one.
+    pub fn delete_all_cookies(&self) {
+        self.with(|c| {
+            if let Ok(v2) = c.view.cast::<ICoreWebView2_2>() {
+                if let Ok(cookies) = unsafe { v2.CookieManager() } {
+                    let _ = unsafe { cookies.DeleteAllCookies() };
+                }
+            }
+        });
+    }
+
+    /// Clears every kind of website data of this view's profile (`ClearBrowsingDataAll`, `SH:204-227`);
+    /// `Event::DataCleared` follows with whether the web view did it (always posts).
+    pub fn clear_browsing_data(&self) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        self.with(move |c| {
+            let failed = |poster: &Poster| poster.post(Event::DataCleared { view: id, ok: false });
+            let p2 = c.view.cast::<ICoreWebView2_13>().ok().and_then(|v13| unsafe { v13.Profile() }.ok()).and_then(|p| p.cast::<ICoreWebView2Profile2>().ok());
+            let Some(p2) = p2 else { return failed(&poster) };
+            let p = poster.clone();
+            let done = webview2_com::ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| guard(|| {
+                p.post(Event::DataCleared { view: id, ok: hr.is_ok() });
+                Ok(())
+            })));
+            if unsafe { p2.ClearBrowsingDataAll(&done) }.is_err() {
+                failed(&poster);
+            }
+        });
+    }
+
+    /// The tree the app committed for this view's file page (the navigation guard reads it at
+    /// every NavigationStarting). None: no file page.
+    pub fn set_local_root(&self, root: Option<crate::browser_pages::PageRoot>) {
+        self.inner.borrow().poster.gate.set_local_root(root);
+    }
+
+    pub fn local_root(&self) -> Option<crate::browser_pages::PageRoot> {
+        self.inner.borrow().poster.gate.local_root()
+    }
+
+    /// Adds the unpacked extension in `folder` to this view's profile (`AddBrowserExtension`; it is
+    /// enabled once added). `Event::ExtensionAdded` follows with the id and name, or a reason. The
+    /// app calls this only for a folder the person chose and approved for this profile.
+    pub fn add_extension(&self, folder: &Path) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        let folder = folder.to_path_buf();
+        self.with(move |c| {
+            let failed = |poster: &Poster, folder: &Path, why: &str| poster.post(Event::ExtensionAdded { view: id, folder: folder.to_path_buf(), result: Err(why.to_string()) });
+            let Some(p7) = profile7(c) else { return failed(&poster, &folder, "extensions are not available") };
+            let (p, f) = (poster.clone(), folder.clone());
+            let done = webview2_com::ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |hr, ext| guard(|| {
+                let result = match (hr.is_ok(), ext) {
+                    (true, Some(e)) => match pwstr_out(|o| unsafe { e.Id(o) }) {
+                        Some(ext_id) if crate::browser_extensions::valid_id(&ext_id) => {
+                            let name = pwstr_out(|o| unsafe { e.Name(o) }).unwrap_or_default();
+                            Ok((ext_id, crate::inert_files::display_text(&name, webhost::MAX_EXTENSION_TEXT, false)))
+                        }
+                        _ => Err("WebView2 gave the extension no usable id".to_string()),
+                    },
+                    _ => Err("WebView2 did not add the extension".to_string()),
+                };
+                p.post(Event::ExtensionAdded { view: id, folder: f.clone(), result });
+                Ok(())
+            })));
+            let w = wide(&folder.to_string_lossy());
+            if unsafe { p7.AddBrowserExtension(PCWSTR(w.as_ptr()), &done) }.is_err() {
+                failed(&poster, &folder, "WebView2 refused the extension folder");
+            }
+        });
+    }
+
+    /// Asks for the profile's extensions: `Event::Extensions` follows (an empty list when the call fails).
+    pub fn list_extensions(&self) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        self.with(move |c| {
+            let p2 = poster.clone();
+            if !with_extensions(c, move |all| post_extensions(&p2, id, &all)) {
+                poster.post(Event::Extensions { view: id, list: Vec::new() });
+            }
+        });
+    }
+
+    /// Enables or disables the extension `ext_id` of this view's profile, then lists them again.
+    pub fn set_extension_enabled(&self, ext_id: &str, on: bool) {
+        self.change_extension(ext_id, Some(on));
+    }
+
+    /// Removes the extension `ext_id` from this view's profile (`ICoreWebView2BrowserExtension::Remove`),
+    /// then lists them again. The app keeps its own records in step in one place
+    /// (`App::browser_extension_remove`).
+    pub fn remove_extension(&self, ext_id: &str) {
+        self.change_extension(ext_id, None);
+    }
+
+    fn change_extension(&self, ext_id: &str, enable: Option<bool>) {
+        if !crate::browser_extensions::valid_id(ext_id) {
+            return;
+        }
+        let (poster, id, core) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id, i.core.clone())
+        };
+        let Some(core) = core else { return };
+        let ext_id = ext_id.to_string();
+        let again = core.clone();
+        let p2 = poster.clone();
+        let ok = with_extensions(&core, move |all| {
+            let Some((_, _, _, ext)) = all.iter().find(|(i, ..)| *i == ext_id) else { return post_extensions(&p2, id, &all) };
+            // The list that follows the change is read once the change has finished.
+            let (c2, p3) = (again.clone(), p2.clone());
+            let relist = Rc::new(RefCell::new(Some(move || {
+                let p4 = p3.clone();
+                if !with_extensions(&c2, move |all| post_extensions(&p4, id, &all)) {
+                    p3.post(Event::Extensions { view: id, list: Vec::new() });
+                }
+            })));
+            let started = match enable {
+                Some(on) => {
+                    let r = relist.clone();
+                    let h = webview2_com::BrowserExtensionEnableCompletedHandler::create(Box::new(move |_hr| guard(|| {
+                        if let Some(f) = r.borrow_mut().take() {
+                            f();
+                        }
+                        Ok(())
+                    })));
+                    unsafe { ext.Enable(on, &h) }.is_ok()
+                }
+                None => {
+                    let r = relist.clone();
+                    let h = webview2_com::BrowserExtensionRemoveCompletedHandler::create(Box::new(move |_hr| guard(|| {
+                        if let Some(f) = r.borrow_mut().take() {
+                            f();
+                        }
+                        Ok(())
+                    })));
+                    unsafe { ext.Remove(&h) }.is_ok()
+                }
+            };
+            if !started {
+                post_extensions(&p2, id, &all);
+            }
+        });
+        if !ok {
+            poster.post(Event::Extensions { view: id, list: Vec::new() });
+        }
+    }
+
     pub fn reload(&self) {
         self.with(|c| {
             let _ = unsafe { c.view.Reload() };
@@ -1168,6 +1392,33 @@ impl WebView {
         let pending = self.inner.borrow_mut().auths.remove(&token);
         if let Some(p) = pending {
             complete_auth(p, answer);
+        }
+    }
+
+    /// Completes the deferral taken when `Event::DownloadStarting { token, .. }` was posted, exactly once.
+    /// `Some(path)` saves the download THERE (WebView2 writes the file itself; Edge's bubble is hidden)
+    /// and reports `DownloadProgress` and `DownloadDone` under `id`; None, an unknown token or any
+    /// failure leaves it cancelled.
+    pub fn answer_download(&self, token: u64, id: u64, path: Option<&Path>) {
+        let pending = self.inner.borrow_mut().dl_pending.remove(&token);
+        let Some(p) = pending else { return };
+        let poster = self.inner.borrow().poster.clone();
+        let total = self.inner.clone();
+        if let Some(path) = path {
+            if let Some(active) = start_download(&p, id, path, &poster, Rc::downgrade(&total)) {
+                if let Ok(mut i) = total.try_borrow_mut() {
+                    i.dl_active.insert(id, active);
+                }
+            }
+        }
+        let _ = unsafe { p.deferral.Complete() };
+    }
+
+    /// Cancels the running download `id` (its `DownloadDone` follows with a cancelled result).
+    pub fn cancel_download(&self, id: u64) {
+        let op = self.inner.borrow().dl_active.get(&id).map(|a| a.op.clone());
+        if let Some(op) = op {
+            let _ = unsafe { op.Cancel() };
         }
     }
 
@@ -1399,6 +1650,7 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     let menus = std::mem::take(&mut i.menus);
     let (perms, notes) = (std::mem::take(&mut i.perms), std::mem::take(&mut i.notes));
     let auths = std::mem::take(&mut i.auths);
+    let (dl_pending, dl_active) = (std::mem::take(&mut i.dl_pending), std::mem::take(&mut i.dl_active));
     let (note_watch, audio_watch) = (i.note_watch.take(), i.audio_watch.take());
     drop(i);
     // A permission still waiting is refused, never left pending: nothing grants by the view going away.
@@ -1408,6 +1660,13 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     // An HTTP authentication request still waiting is cancelled, never left pending.
     for (_, p) in auths {
         complete_auth(p, None);
+    }
+    // A download still waiting stays cancelled; one running is cancelled with the view.
+    for (_, p) in dl_pending {
+        let _ = unsafe { p.deferral.Complete() };
+    }
+    for (_, a) in dl_active {
+        let _ = unsafe { a.op.Cancel() };
     }
     for (_, h) in notes {
         let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
@@ -1504,6 +1763,7 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     let workers_refused = register_worker_refusal(inner, view, &mut token);
     register_policy(inner, view, workers_refused, &mut token).map_err(|x| e("policy", x))?;
     register_basic_auth(inner, view, &mut token);
+    register_downloads(inner, view, &mut token);
     if setup.main_responses {
         register_main_responses(inner, view, &mut token).map_err(|x| e("main responses", x))?;
     }
@@ -1521,7 +1781,29 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     if setup.track_document_method {
         register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
     }
+    if setup.guard_local_schemes {
+        register_local_page_exit(inner, view, &mut token).map_err(|x| e("local page exit", x))?;
+    }
+    if setup.fail_cert_errors {
+        register_cert_cancel(view, &mut token).map_err(|x| e(webhost::OLD_RUNTIME_WHAT, x))?;
+    }
     Ok(())
+}
+
+/// A server certificate error cancels the request (`ServerCertificateErrorDetected`): the load
+/// fails with a certificate status and the app's error page replaces Edge's interstitial, which has
+/// a "continue anyway". iTerm2 offers none either. A runtime without the event keeps its own page
+/// fails closed (13x8 Task 2 review M4): a view that asked for it and cannot have it is not made, so
+/// Edge's interstitial and its "continue anyway" never appear (R13x8-3).
+fn register_cert_cancel(view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let v14 = view.cast::<ICoreWebView2_14>()?;
+    let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(|_sender, args| guard(|| {
+        if let Some(args) = args {
+            let _ = unsafe { args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL) };
+        }
+        Ok(())
+    })));
+    unsafe { v14.add_ServerCertificateErrorDetected(&handler, token) }
 }
 
 #[cfg(test)]
@@ -1690,6 +1972,11 @@ fn source_of(view: &ICoreWebView2) -> Option<String> {
 #[cfg(test)]
 static FRAME_CANCELS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Main-frame navigations the one verdict refused, as (target, redirect) (tests only): a refused
+/// redirect posts nothing, so this is the probe's evidence that the verdict saw and refused it.
+#[cfg(test)]
+static VERDICT_REFUSALS: std::sync::Mutex<Vec<(String, bool)>> = std::sync::Mutex::new(Vec::new());
+
 fn register_navigation(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
     unsafe { view.add_NavigationStarting(&starting_handler(inner, false), token) }?;
     // The same handler body, in frame mode, for FrameNavigationStarting: a subframe may not go to an
@@ -1717,7 +2004,12 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let (user, redirect) = (bool_out(|b| unsafe { args.IsUserInitiated(b) }), bool_out(|b| unsafe { args.IsRedirected(b) }));
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
-        let (policy, by_tandem) = {
+        // The kind first: a history step onto a power page is refused below, whoever started it (Task 5 review I1).
+        let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
+        if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
+            let _ = unsafe { a3.NavigationKind(&mut kind) };
+        }
+        let (policy, by_tandem, tandem_chain) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
             i.nav_uris.push_back((nav, capped));
@@ -1734,14 +2026,25 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                     by_tandem = true;
                 }
             }
-            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone() }, by_tandem)
+            if by_tandem {
+                i.tandem_nav = Some(nav);
+            } else if !redirect {
+                i.tandem_nav = None;
+            }
+            let tandem_chain = redirect && i.tandem_nav == Some(nav);
+            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem, tandem_chain)
         };
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
-        let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };
-        let allowed = webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
+        let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), tandem_chain), user, redirect, by_tandem };
+        // A history step never lands on a power page, whoever started it (Tandem loads it fresh instead).
+        let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
             let _ = unsafe { args.SetCancel(true) };
+            #[cfg(test)]
+            if let Ok(mut l) = VERDICT_REFUSALS.lock() {
+                l.push((uri.clone(), redirect));
+            }
             if webhost::refused_click(&info, allowed) {
                 let i = inner.borrow();
                 i.poster.post(Event::Refused { view: i.id, url: webhost::cap_url(&uri).0, user });
@@ -1749,11 +2052,6 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             return Ok(());
         }
         let i = inner.borrow();
-        // The kind needs a newer runtime (-1 without).
-        let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
-        if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
-            let _ = unsafe { a3.NavigationKind(&mut kind) };
-        }
         // The permission sync gate (13x6), AFTER the verdict (a refused navigation is never parked):
         // a store whose profile was not synced from the table lets no page navigate (a stale profile
         // grant would work with no question). Cancelled; a web page's TARGET is posted with how it
@@ -1770,6 +2068,17 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0, user, redirect, by_tandem, history: kind.0 == 1, source });
                 return Ok(());
             }
+        }
+        // A `file:` page is Tandem's own `iterm2-file:` page (13x8 Task 3), after the verdict and the sync
+        // gate (preflight B5): cancelled here whatever happens, posted only when the source is not a
+        // web page and the URL was not cut short (a cut URL names another path).
+        if i.setup.redirect_file_urls && webhost::scheme_of(&uri) == "file" {
+            let _ = unsafe { args.SetCancel(true) };
+            let (capped, over) = webhost::cap_url(&uri);
+            if !over && webhost::file_redirect_allowed(source.as_deref(), by_tandem) {
+                i.poster.post(Event::FileRedirect { view: i.id, uri: capped });
+            }
+            return Ok(());
         }
         // The per-navigation hooks (13x5), only for a navigation that passed the verdict and the sync
         // gate: the Document filter's method is matched to this start (a refused or parked one is not).
@@ -1790,21 +2099,29 @@ fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
         let ok = bool_out(|b| unsafe { args.IsSuccess(b) });
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
-        let mut status = 0i32;
+        let status;
+        // The HTTP status, read on a failure too: a server that answered 4xx or 5xx ends with
+        // IsSuccess false, and its own page is what the person sees (13x8 Task 2 review I1).
+        let mut http = 0i32;
+        if let Ok(a2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() {
+            let _ = unsafe { a2.HttpStatusCode(&mut http) };
+        }
         if ok {
-            if let Ok(a2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() {
-                let _ = unsafe { a2.HttpStatusCode(&mut status) };
-            }
+            status = http;
         } else {
             let mut web = COREWEBVIEW2_WEB_ERROR_STATUS(0);
             let _ = unsafe { args.WebErrorStatus(&mut web) };
             status = web.0;
         }
         let mut i = inner.borrow_mut();
+        let http = webhost::completed_http(http, i.main_response, nav);
+        if i.main_response.is_some_and(|(n, _)| n == nav) {
+            i.main_response = None;
+        }
         let at = i.nav_uris.iter().position(|(n, _)| *n == nav);
         let url = at.and_then(|p| i.nav_uris.remove(p)).map(|(_, u)| u).unwrap_or_default();
         let id = i.id;
-        i.poster.post(Event::Navigated { view: id, ok, status, url, nav });
+        i.poster.post(Event::Navigated { view: id, ok, status, http, url, nav });
         i.poster.post(Event::Loading(id, false));
         Ok(())
     })));
@@ -2288,7 +2605,7 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         let _ = unsafe { args.ResourceContext(&mut context) };
         // Every handler sees every request any filter matched: a Document request that only the
         // method tracker's filter matched is not this handler's (B10), and takes no deferral.
-        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (inner.borrow().setup.track_document_method || inner.borrow().setup.main_responses) && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
+        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (inner.borrow().setup.track_document_method || inner.borrow().setup.main_responses || inner.borrow().setup.guard_local_schemes) && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
             return Ok(());
         }
         let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
@@ -2334,6 +2651,46 @@ fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
     let w = wide("*");
     unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
 }
+
+/// A file or ssh page's main-document request that the verdict did not allow is answered 403 by the
+/// host where it is made (`webhost::local_page_exit_refused`): probe run 2026-10-11d showed a cancelled
+/// NavigationStarting still let the request leave. Its own Document filter, no deferral: the answer is
+/// set synchronously, so nothing waits on the app.
+fn register_local_page_exit(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let weak = Rc::downgrade(inner);
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT(0);
+        let _ = unsafe { args.ResourceContext(&mut context) };
+        if context != COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT {
+            return Ok(());
+        }
+        let Ok(request) = (unsafe { args.Request() }) else { return Ok(()) };
+        let uri = pwstr_out(|p| unsafe { request.Uri(p) }).unwrap_or_default();
+        let top = sender.as_ref().and_then(source_of).unwrap_or_default();
+        let i = inner.borrow();
+        if !webhost::local_page_exit_refused(&top, &uri, i.last_main_nav.as_ref().map(|(u, _)| u.as_str())) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Ok(mut l) = EXIT_REFUSALS.lock() {
+            l.push(webhost::cap_url(&uri).0);
+        }
+        let env = i.env.clone();
+        drop(i);
+        if let Ok(resp) = unsafe { env.env.CreateWebResourceResponse(None::<&windows::Win32::System::Com::IStream>, 403, windows::core::w!("Blocked"), windows::core::w!("")) } {
+            let _ = unsafe { args.SetResponse(&resp) };
+        }
+        Ok(())
+    })));
+    unsafe { view.add_WebResourceRequested(&handler, token) }?;
+    let w = wide("*");
+    unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
+}
+
+/// Document requests the local-page exit guard answered 403 (tests only, the probe's evidence).
+#[cfg(test)]
+static EXIT_REFUSALS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// HTTP and proxy authentication (13x7 Task 10). Every view cancels a request on the spot (WebView2's
 /// own dialog is never shown); a view with `ViewSetup::basic_auth` holds it as a deferral and posts
@@ -2382,6 +2739,139 @@ fn register_basic_auth(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: 
     }
 }
 
+// ---- the one download owner (13x8 Task 7): the only place the download types are named ----
+
+/// A download held back until the app answers (`answer_download`).
+struct PendingDownload {
+    deferral: ICoreWebView2Deferral,
+    args: ICoreWebView2DownloadStartingEventArgs,
+}
+
+/// A download the app accepted: the operation and its two registrations, removed when it ends.
+struct ActiveDownload {
+    op: ICoreWebView2DownloadOperation,
+    bytes_token: i64,
+    state_token: i64,
+}
+
+
+/// Downloads (13x8 Task 7). Every view cancels one on the spot and hides Edge's download bubble; a view
+/// with `ViewSetup::downloads` holds it as a deferral and posts `Event::DownloadStarting`, within the
+/// view's own limiter and pending cap. WebView2 writes the file where `answer_download` says; the
+/// app names the place (a hidden `.download` file) and finishes it (Mark of the Web, final name).
+/// Needs `ICoreWebView2_4`; without it WebView2's defaults stand and that is said.
+fn register_downloads(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) {
+    let Ok(v4) = view.cast::<ICoreWebView2_4>() else {
+        crate::dlog!("webhost: download events are not available in this runtime");
+        return;
+    };
+    let ask = inner.borrow().setup.downloads;
+    let weak = Rc::downgrade(inner);
+    let handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let Some(args) = args else { return Ok(()) };
+        // Cancelled and hidden first: only a path handed over by `answer_download` clears the cancel.
+        let _ = unsafe { args.SetCancel(true) };
+        let _ = unsafe { args.SetHandled(true) };
+        if !ask {
+            return Ok(());
+        }
+        let Some(inner) = weak.upgrade() else { return Ok(()) };
+        let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
+        let pending = i.dl_pending.len() + i.dl_active.len();
+        if !i.dl_limit.allow(Instant::now(), pending) {
+            // Cancelled above; the app is told so it can say so (never silent).
+            i.poster.post(Event::DownloadRefused { view: i.id });
+            return Ok(());
+        }
+        let Ok(op) = (unsafe { args.DownloadOperation() }) else { return Ok(()) };
+        let uri = pwstr_out(|p| unsafe { op.Uri(p) }).unwrap_or_default();
+        let (uri, cut) = webhost::cap_url(&uri);
+        if cut {
+            return Ok(());
+        }
+        let mut total = -1i64;
+        let _ = unsafe { op.TotalBytesToReceive(&mut total) };
+        let total = u64::try_from(total).ok();
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
+        let t = i.next_token;
+        i.next_token += 1;
+        i.dl_pending.insert(t, PendingDownload { deferral, args: args.clone() });
+        let id = i.id;
+        i.poster.post(Event::DownloadStarting { view: id, token: t, url: uri, total });
+        Ok(())
+    })));
+    if unsafe { v4.add_DownloadStarting(&handler, token) }.is_err() {
+        crate::dlog!("webhost: the download handler could not be added");
+    }
+}
+
+/// Hands the place to WebView2 and watches the operation; None leaves the download cancelled.
+fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster, owner: std::rc::Weak<RefCell<Inner>>) -> Option<ActiveDownload> {
+    let op = unsafe { p.args.DownloadOperation() }.ok()?;
+    let w = wide(&path.to_string_lossy());
+    unsafe { p.args.SetResultFilePath(PCWSTR(w.as_ptr())) }.ok()?;
+    let mut bytes_token = 0i64;
+    let post = poster.clone();
+    let last = std::cell::Cell::new(None::<Instant>);
+    let on_bytes = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
+        // At most four a second: a later one corrects a skipped one.
+        if last.get().is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
+            return Ok(());
+        }
+        last.set(Some(Instant::now()));
+        let Some(op) = sender else { return Ok(()) };
+        let (mut got, mut total) = (0i64, -1i64);
+        let _ = unsafe { op.BytesReceived(&mut got) };
+        let _ = unsafe { op.TotalBytesToReceive(&mut total) };
+        post.post(Event::DownloadProgress { view: post.view, id, received: u64::try_from(got).unwrap_or(0), total: u64::try_from(total).ok() });
+        Ok(())
+    })));
+    unsafe { op.add_BytesReceivedChanged(&on_bytes, &mut bytes_token) }.ok()?;
+    let mut state_token = 0i64;
+    let post = poster.clone();
+    let told = path.to_path_buf();
+    let on_state = StateChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
+        let Some(op) = sender else { return Ok(()) };
+        let mut state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+        let _ = unsafe { op.State(&mut state) };
+        let mut result = match state {
+            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED => Ok(()),
+            COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED => Err("The download was interrupted".to_string()),
+            _ => return Ok(()),
+        };
+        // A runtime that wrote under another name than the one told (it made the name unique) leaves
+        // a file Tandem never judged: that is a failure, not a finished download.
+        if result.is_ok() {
+            let wrote = pwstr_out(|p| unsafe { op.ResultFilePath(p) }).unwrap_or_default();
+            if !wrote.eq_ignore_ascii_case(&told.to_string_lossy()) {
+                result = Err("The download was saved somewhere else than asked".to_string());
+            }
+        }
+        // The operation has ended: the view forgets it (the cap counts running downloads only), then the
+        // app hears. The registrations die with the operation when its last reference goes.
+        if let Some(inner) = owner.upgrade() {
+            if let Ok(mut i) = inner.try_borrow_mut() {
+                download_ended(&mut i.dl_active, id);
+            }
+        }
+        post.post(Event::DownloadDone { view: post.view, id, result });
+        Ok(())
+    })));
+    if unsafe { op.add_StateChanged(&on_state, &mut state_token) }.is_err() {
+        let _ = unsafe { op.remove_BytesReceivedChanged(bytes_token) };
+        return None;
+    }
+    let _ = unsafe { p.args.SetCancel(false) };
+    Some(ActiveDownload { op, bytes_token, state_token })
+}
+
+/// A finished, failed or cancelled download leaves the running set (the host's cap counts that set).
+fn download_ended<T>(active: &mut HashMap<u64, T>, id: u64) -> Option<T> {
+    active.remove(&id)
+}
+
+// ---- end of the one download owner ----
+
 /// `ContentLoading` and the main document's response (13x7), both by the navigation they belong to.
 /// A response counts only when its URI (fragment ignored) is the last main-frame navigation's and no
 /// browser-set `Sec-Fetch-Dest` says it is not a document; it carries that navigation's id.
@@ -2420,7 +2910,11 @@ fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
         if let Ok(r) = unsafe { args.Response() } {
             let _ = unsafe { r.StatusCode(&mut status) };
         }
-        i.poster.post(Event::Response { view: i.id, nav: *nav, status });
+        let nav = *nav;
+        drop(i);
+        let mut i = inner.borrow_mut();
+        i.main_response = Some((nav, status));
+        i.poster.post(Event::Response { view: i.id, nav, status });
         Ok(())
     })));
     unsafe { v2.add_WebResourceResponseReceived(&response, token) }
@@ -2428,7 +2922,32 @@ fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
 
 #[cfg(test)]
 mod tests {
-    /// Task 5 review I1: the DevTools params (a password among them) go to COM from a wiping UTF-16
+
+
+    /// Task 7 review I1: the host's cap counts RUNNING downloads. Eight finished ones leave the set, so
+    /// the ninth proceeds; a refusal is said (an event), never silent.
+    #[test]
+    fn the_ninth_download_after_eight_finished_ones_proceeds() {
+        let mut limiter = webhost::PermissionLimiter::default();
+        let mut active: HashMap<u64, ()> = HashMap::new();
+        let t0 = Instant::now();
+        for id in 1..=8u64 {
+            // Spread past the per-second rate so only the running count is under test.
+            assert!(limiter.allow(t0 + Duration::from_secs(id * 2), active.len()), "download {id}");
+            active.insert(id, ());
+        }
+        assert!(!limiter.allow(t0 + Duration::from_secs(20), active.len()), "eight running: the ninth is refused");
+        for id in 1..=8u64 {
+            assert!(download_ended(&mut active, id).is_some());
+        }
+        assert!(download_ended(&mut active, 1).is_none());
+        assert!(limiter.allow(t0 + Duration::from_secs(22), active.len()), "eight finished: the ninth proceeds");
+        let this = include_str!("webhost_win.rs");
+        let owner = &this[this.find("// ---- the one download owner").unwrap()..this.find("// ---- end of the one download owner ----\n\n/// `ContentLoading`").unwrap()];
+        assert!(owner.contains("download_ended(&mut i.dl_active, id)"), "the state handler prunes on completion, failure and cancel");
+        assert!(owner.contains("Event::DownloadRefused { view: i.id }"), "a cap that cancels says so");
+        assert!(owner.contains("ResultFilePath"), "the written path is compared with the told one");
+    }    /// Task 5 review I1: the DevTools params (a password among them) go to COM from a wiping UTF-16
     /// copy, built at its exact size, on every call, the queued path included (the closure owns it).
     #[test]
     fn devtools_params_are_a_wiping_wide_copy() {
@@ -2620,10 +3139,24 @@ mod tests {
         let code = code.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert!(!code.contains("AddHostObjectToScript"), "a host object");
         assert!(code.contains("SetAreHostObjectsAllowed(false)"));
-        // Downloads stay WebView2's: no handler and no setting that changes the Mark of the Web.
-        for banned in ["DownloadStarting", "SetCancel(true)).and", "IsDefaultDownloadDialog", "DownloadOperation"] {
+        // Downloads have ONE owner (13x8 Task 7): the region between its two markers. Nowhere else may
+        // the file name a download type, and no setting changes the Mark of the Web or shows Edge's dialog.
+        for banned in ["SetCancel(true)).and", "IsDefaultDownloadDialog"] {
             assert!(!code.contains(banned), "{banned}");
         }
+        let whole = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        let start = whole.find("// ---- the one download owner").expect("owner start");
+        let end = whole.find("// ---- end of the one download owner ----").expect("owner end");
+        let uncommented = |t: &str| t.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let (before, after) = (uncommented(&whole[..start]), uncommented(&whole[end..]));
+        let outside = format!("{before}{after}").replace("DownloadStartingEventHandler, ", "").replace("Event::DownloadStarting", "");
+        for token in ["DownloadStarting", "DownloadOperation"] {
+            assert!(!outside.contains(token), "{token} outside the one owner");
+        }
+        let owner = uncommented(&whole[start..end]);
+        assert_eq!(owner.matches("add_DownloadStarting(").count(), 1);
+        assert_eq!(owner.matches("DownloadStartingEventHandler::create").count(), 1);
+        assert!(owner.contains("SetHandled(true)") && owner.contains("SetCancel(true)"));
         // The one NavigationStarting handler, and two message constructors (the view's and the frames',
         // 13x2 B8a) that both read a message only through `message_post`.
         assert_eq!(code.matches("NavigationStartingEventHandler::create").count(), 1);
@@ -3299,6 +3832,10 @@ mod probe {
         rejected_bindings: usize,
         attached: Vec<(String, String)>,
         navigated: Vec<(String, bool)>,
+        /// Each `Navigated`'s url and status (13x8 Task 2).
+        statuses: Vec<(String, i32)>,
+        /// Each `Navigated`'s HTTP status (13x8 merge review 4).
+        https: Vec<i32>,
         failed: Vec<String>,
         created: bool,
         /// WebView2's own frame ids (`watch_frames`).
@@ -3327,6 +3864,9 @@ mod probe {
         /// HTTP authentication (13x7 Task 10): requests held (token, uri, challenge), navigation ids
         /// seen starting and finished, the main document's responses and commits.
         auths: Vec<(u64, String, String)>,
+        /// Downloads held (token, url) and ended (id, result).
+        downloads: Vec<(u64, String)>,
+        dl_done: Vec<(u64, Result<(), String>)>,
         starts: Vec<u64>,
         finished: Vec<u64>,
         responses: Vec<(u64, i32)>,
@@ -3334,6 +3874,18 @@ mod probe {
         /// The navigation and authentication events in the order the host posted them (probe run
         /// 2026-10-11: the order is the evidence a failure is read from).
         auth_log: Vec<String>,
+        /// 13x8 Task 3: when set, `iterm2-file:` requests are answered by `file_serve::serve` (the page's tree
+        /// is `file_root`, as the app holds it) and each answer's headers are kept.
+        serve_files: bool,
+        /// 13x8 Task 9: `iterm2-ssh:` requests are answered with this remote file's bytes through the
+        /// ssh page's own answer, or (`hold_ssh`) not at all, as a transfer still running.
+        ssh_body: Option<Vec<u8>>,
+        hold_ssh: bool,
+        file_root: Option<crate::browser_pages::PageRoot>,
+        served: Vec<(String, Vec<(String, String)>)>,
+        /// 13x8 Task 10: each `ExtensionAdded` (folder, result) and each `Extensions` list, in order.
+        ext_added: Vec<(PathBuf, Result<(String, String), String>)>,
+        ext_lists: Vec<Vec<(String, String, bool)>>,
     }
 
     impl Probe {
@@ -3370,6 +3922,11 @@ mod probe {
 
         /// `start_setup` with the environment's browser arguments (the proxy's, for a test).
         fn start_args(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup, args: &str) -> Option<Probe> {
+            Probe::start_ext(pages, sources, schemes, setup, args, false)
+        }
+
+        /// `start_args`, with `extensions` as the environment's `AreBrowserExtensionsEnabled`.
+        fn start_ext(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup, args: &str, extensions: bool) -> Option<Probe> {
             let permissions = setup.permissions;
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
@@ -3418,6 +3975,8 @@ mod probe {
                 rejected_bindings: 0,
                 attached: Vec::new(),
                 navigated: Vec::new(),
+                statuses: Vec::new(),
+                https: Vec::new(),
                 failed: Vec::new(),
                 created: false,
                 frames: Vec::new(),
@@ -3433,15 +3992,24 @@ mod probe {
                 writes: Vec::new(),
                 reads_complete: Vec::new(),
                 auths: Vec::new(),
+                downloads: Vec::new(),
+                dl_done: Vec::new(),
                 starts: Vec::new(),
                 finished: Vec::new(),
                 responses: Vec::new(),
                 commits: Vec::new(),
                 auth_log: Vec::new(),
+                serve_files: false,
+                ssh_body: None,
+                hold_ssh: false,
+                file_root: None,
+                served: Vec::new(),
+                ext_added: Vec::new(),
+                ext_lists: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
-            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), ..Default::default() };
+            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), extensions, ..Default::default() };
             Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
@@ -3589,7 +4157,9 @@ mod probe {
                 Event::Created(_) => self.created = true,
                 Event::Failed(_, why) => self.failed.push(why),
                 Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
-                Event::Navigated { ok, url, nav, status, .. } => {
+                Event::Navigated { ok, url, nav, status, http, .. } => {
+                    self.https.push(http);
+                    self.statuses.push((url.clone(), status));
                     self.auth_log.push(format!("navigated {nav} ok={ok} status={status}"));
                     self.navigated.push((url, ok));
                     self.finished.push(nav);
@@ -3603,6 +4173,10 @@ mod probe {
                     self.auth_log.push(format!("basic-auth {token} {challenge}"));
                     self.auths.push((token, uri, challenge));
                 }
+                Event::ExtensionAdded { folder, result, .. } => self.ext_added.push((folder, result)),
+                Event::Extensions { list, .. } => self.ext_lists.push(list),
+                Event::DownloadStarting { token, url, .. } => self.downloads.push((token, url)),
+                Event::DownloadDone { id, result, .. } => self.dl_done.push((id, result)),
                 Event::Response { nav, status, .. } => {
                     self.auth_log.push(format!("response {nav} {status}"));
                     self.responses.push((nav, status));
@@ -3614,6 +4188,26 @@ mod probe {
                 Event::Request { token, url, context, .. } => {
                     self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
+                    if url.starts_with("iterm2-ssh:") && (self.hold_ssh || self.ssh_body.is_some()) {
+                        if let Some(body) = self.ssh_body.clone() {
+                            let job = crate::ssh_page::PageJob { pane: 1, view_pane: 2, token, url: url.clone(), path: "/a.html".into(), document: context == crate::browser_pages::CONTEXT_DOCUMENT, mime: "text/html", body, answered: false };
+                            let answer = crate::ssh_page::body_answer(job);
+                            if let Answer::Respond { headers, .. } = &answer {
+                                self.served.push((url.clone(), headers.clone()));
+                            }
+                            self.view().answer_request(token, answer);
+                        }
+                        return;
+                    }
+                    if self.serve_files && url.starts_with("iterm2-file:") {
+                        let root = if context == crate::browser_pages::CONTEXT_DOCUMENT { None } else { self.file_root.clone() };
+                        let answer = crate::file_serve::serve(&url, context, root.as_ref());
+                        if let Answer::Respond { headers, .. } = &answer {
+                            self.served.push((url.clone(), headers.clone()));
+                        }
+                        self.view().answer_request(token, answer);
+                        return;
+                    }
                     let answer = match self.pages.get(&key) {
                         Some(body) => {
                             // A page by default; a stylesheet or an image by its extension (Save Page As).
@@ -3678,8 +4272,19 @@ mod probe {
                     self.devtools(session, &name, &json);
                 }
                 Event::DevToolsHeld { .. } => self.devtools_held(),
+                Event::Refused { url, user, .. } => self.order.push(format!("refused user={user} {url}")),
                 _ => {}
             }
+        }
+
+        /// The view's main-frame URL as WebView2 holds it (`Source`), read without running a script.
+        fn source(&self) -> Option<String> {
+            self.view.as_ref().and_then(|v| v.inner.borrow().core.as_ref().and_then(|c| source_of(&c.view)))
+        }
+
+        /// The view's document title as WebView2 holds it (`DocumentTitle`), read without running a script.
+        fn title(&self) -> Option<String> {
+            self.view.as_ref().and_then(|v| v.inner.borrow().core.as_ref().and_then(|c| pwstr_out(|p| unsafe { c.view.DocumentTitle(p) })))
         }
 
         /// A Page-world message as the app routes it (`browser_script_event`): Page, to the same graph.
@@ -6245,6 +6850,369 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
+    /// 13x8 Task 2: a load that fails posts its own URL (the NavigationStarting's, iTerm2's
+    /// `lastRequestedURL`) with a connection status, so the app needs no second failure event. A port
+    /// bound and closed inside the test refuses the connection. Skips when the runtime is missing.
+    #[test]
+    #[ignore]
+    fn failed_load_posts_its_url() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
+        let n = p.navigated.len();
+        p.view().navigate_tandem(&url);
+        assert!(p.wait(10, |p| p.navigated.len() > n), "Navigated within 10 s: {:?}", p.order);
+        println!("probe: refused port ok={} status={} http={} log={:?}", p.navigated[n].1, p.statuses[n].1, p.https[n], p.auth_log);
+        assert_eq!(p.navigated[n], (url.clone(), false), "a failed load, with the URL asked for");
+        let status = p.statuses[n].1;
+        // Control: a name that cannot resolve.
+        let n2 = p.navigated.len();
+        p.view().navigate_tandem("http://nohost.tandem-probe.invalid/");
+        assert!(p.wait(15, |p| p.navigated.len() > n2), "Navigated within 15 s: {:?}", p.order);
+        println!("probe: unresolvable ok={} status={} http={}", p.navigated[n2].1, p.statuses[n2].1, p.https[n2]);
+        // Probe run 2026-10-11b: this runtime reports a refused connection as WebErrorStatus 0 (unknown),
+        // while the control names its own failure (13): the status is read, and a refused port has no
+        // status of its own (R13x8-P1). Either way no server answered.
+        assert_eq!((p.navigated[n2].1, p.statuses[n2].1, p.https[n2]), (false, 13, 0), "the control: a name that cannot resolve");
+        assert!(matches!(status, 0 | 6 | 12), "a connection status: {status}");
+        assert!(!crate::browser_pages::server_answered(p.https[n]), "no server answered");
+        p.finish();
+    }
+
+    /// 13x8 Task 3 (Review Focus 10, R13x8-1) and R13x8-NS: a file page runs no script, so it reads and
+    /// sends nothing. `T\site\a.html`'s script would set the title to "loaded", fetch and XHR the
+    /// sibling file, fetch an `iterm2-ssh:` URL and a 127.0.0.1 listener, post a message to an
+    /// `iterm2-about:` handler and navigate to the listener; none of it runs: the title stays the
+    /// file's own ("static", read from the view, no script), the listener sees no connection at all,
+    /// nothing is refused because nothing is tried, no message arrives, the page stays, and every answer
+    /// carries the one no-script policy. Needs the console session.
+    #[test]
+    #[ignore]
+    fn file_pages_cannot_read_or_send() {
+        let t = std::env::temp_dir().join(format!("tandem-filepage-{}", hex32()));
+        std::fs::create_dir_all(t.join("site")).expect("site");
+        std::fs::create_dir_all(t.join("other")).expect("other");
+        std::fs::write(t.join("other").join("secret.txt"), "s3cret").expect("secret");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().expect("its address").port();
+        let secret = crate::browser_pages::file_url_of(&t.join("other").join("secret.txt"), false);
+        let nav = format!("http://127.0.0.1:{port}/nav");
+        let html = format!(
+            "<!doctype html><title>static</title><script>document.title='loaded';\
+             fetch('{secret}');fetch('iterm2-ssh://box/etc/passwd');fetch('http://127.0.0.1:{port}/x?d=1');\
+             var x=new XMLHttpRequest();x.open('GET','{secret}');x.send();\
+             window.chrome.webview.postMessage({{handler:'iterm2-about:settings',body:{{}}}});\
+             setTimeout(function(){{location.href='{nav}';}},300);</script><p>shown</p>"
+        );
+        std::fs::write(t.join("site").join("a.html"), html).expect("page");
+        let page = crate::browser_pages::file_url_of(&t.join("site").join("a.html"), false);
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-file:*".into(), "iterm2-ssh:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-file", "iterm2-ssh", "iterm2-about"], setup) else { return };
+        p.serve_files = true;
+        p.file_root = crate::browser_pages::page_root(&page);
+        let (verdicts_before, exits_before) = (VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0), EXIT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0));
+        let n = p.navigated.len();
+        p.view().navigate_tandem(&page);
+        assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
+        // Well past the script's 300 ms timer: a navigation it started would have been judged by now.
+        p.settle(2000);
+        let mut carried: Vec<String> = Vec::new();
+        let mut connections = 0;
+        while let Ok((mut c, _)) = listener.accept() {
+            use std::io::Read;
+            connections += 1;
+            let _ = c.set_nonblocking(false);
+            let _ = c.set_read_timeout(Some(Duration::from_millis(1500)));
+            let mut buf = [0u8; 2048];
+            let got = c.read(&mut buf).unwrap_or(0);
+            if got > 0 {
+                carried.push(String::from_utf8_lossy(&buf[..got]).lines().next().unwrap_or("").to_string());
+            }
+        }
+        let verdicts: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[verdicts_before.min(l.len())..].to_vec()).unwrap_or_default();
+        let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l[exits_before.min(l.len())..].to_vec()).unwrap_or_default();
+        println!("probe: title={:?} connections={connections} carried={carried:?} verdict refusals={verdicts:?} exit 403s={exits:?} source={:?} order={:?} navigated={:?}", p.title(), p.source(), p.order, p.navigated);
+        assert_eq!(p.navigated.get(n), Some(&(page.clone(), true)), "the file page loaded: {:?}", p.navigated);
+        assert_eq!(p.title().as_deref(), Some("static"), "the file's script never ran (no 'loaded')");
+        assert_eq!((connections, carried.len()), (0, 0), "the listener saw no connection at all: {carried:?}");
+        assert!(!verdicts.iter().any(|(u, _)| u.contains(&format!(":{port}/"))) && !exits.iter().any(|u| u.contains(&format!(":{port}/"))), "nothing was tried, so nothing was refused: {verdicts:?} / {exits:?}");
+        assert!(!p.order.iter().any(|o| o.contains(&format!(":{port}/")) || o.contains("secret.txt") || o.contains("iterm2-ssh:")), "no request left the page: {:?}", p.order);
+        assert_eq!(p.navigated.len(), n + 1, "nothing else loaded: {:?}", p.navigated);
+        assert_eq!(p.source(), Some(page.clone()), "the view's Source is still the file page");
+        assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| *h == crate::browser_pages::file_headers()), "every answer carried the no-script policy: {:?}", p.served);
+        assert!(!p.routed.iter().any(|r| r.body.contains("iterm2-about:settings")), "no message came from the page");
+        std::fs::remove_dir_all(&t).ok();
+        p.finish();
+    }
+
+    /// R13x8-NS, last-gate review 6 (the positive control of the exit guard): Tandem's own loads leave a
+    /// file page for the web. From a served file page, `navigate_tandem` (the address bar, a bookmark,
+    /// a menu action) to a 127.0.0.1 listener lands, and so does one the server redirects (302 to
+    /// another path); the exit guard answers neither 403 and the verdict refuses neither. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn tandem_loads_leave_a_file_page_for_the_web() {
+        use std::io::{Read, Write};
+        let t = std::env::temp_dir().join(format!("tandem-fileexit-{}", hex32()));
+        std::fs::create_dir_all(&t).expect("folder");
+        std::fs::write(t.join("f.html"), "<title>f</title><p>file</p>").expect("page");
+        let page = crate::browser_pages::file_url_of(&t.join("f.html"), false);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("its address").port();
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (flag, seen) = (stop.clone(), hits.clone());
+        let server = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut c, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = c.set_nonblocking(false);
+                let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let got = c.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..got]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                if path.is_empty() {
+                    continue;
+                }
+                if let Ok(mut l) = seen.lock() {
+                    l.push(path.clone());
+                }
+                let reply = match path.as_str() {
+                    "/hop" => "HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    _ => "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 16\r\nConnection: close\r\n\r\n<title>w</title>",
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, fail_cert_errors: true, track_document_method: true, main_responses: true, resource_filters: vec!["iterm2-file:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-file"], setup) else {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = server.join();
+            std::fs::remove_dir_all(&t).ok();
+            return;
+        };
+        p.serve_files = true;
+        p.file_root = crate::browser_pages::page_root(&page);
+        let base = format!("http://127.0.0.1:{port}");
+        for (load, lands) in [(format!("{base}/ok"), format!("{base}/ok")), (format!("{base}/hop"), format!("{base}/landing"))] {
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&page);
+            assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(page.as_str())), "the file page loaded: {:?}", p.order);
+            let (verdicts_before, exits_before) = (VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0), EXIT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0));
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&load);
+            let landed = p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(lands.as_str()));
+            let verdicts: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[verdicts_before.min(l.len())..].to_vec()).unwrap_or_default();
+            let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l[exits_before.min(l.len())..].to_vec()).unwrap_or_default();
+            println!("probe: {load} landed={landed} source={:?} title={:?} navigated={:?} https={:?} verdict refusals={verdicts:?} exit 403s={exits:?} hits={:?}", p.source(), p.title(), &p.navigated[n..], &p.https[n..], hits.lock().map(|l| l.clone()).unwrap_or_default());
+            assert!(landed, "{load} landed on {lands}: {:?} / {:?}", p.source(), p.order);
+            assert_eq!(p.title().as_deref(), Some("w"), "the server's page shows");
+            assert!(!exits.iter().any(|u| u.starts_with(&base)) && !verdicts.iter().any(|(u, _)| u.starts_with(&base)), "no refusal of Tandem's own load: {verdicts:?} / {exits:?}");
+        }
+        let seen = hits.lock().map(|l| l.clone()).unwrap_or_default();
+        assert!(["/ok", "/hop", "/landing"].iter().all(|h| seen.iter().any(|s| s == h)), "the server answered each: {seen:?}");
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+        std::fs::remove_dir_all(&t).ok();
+        p.finish();
+    }
+
+    /// 13x8 Task 9: a remote file answered through the ssh page's own answer is shown as text with no
+    /// script (the page's script does not run, its title stays), under the sandbox policy and nosniff; and
+    /// a view closed while its `iterm2-ssh:` request is still waiting completes the deferral (the view
+    /// shuts down without hanging or leaving the request pending). Needs the console session; never run
+    /// on the desktop probe.
+    #[test]
+    #[ignore]
+    fn ssh_page_serves_text_and_a_closed_view_completes_the_deferral() {
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-ssh:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-ssh", "iterm2-about"], setup) else { return };
+        p.ssh_body = Some(b"<title>kept</title><script>document.title='RAN'</script>hello".to_vec());
+        let n = p.navigated.len();
+        p.view().navigate_tandem("iterm2-ssh://box/a.txt");
+        assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
+        assert!(p.navigated[n].1, "the page loaded: {:?}", p.navigated);
+        p.settle(500);
+        // Final review M3: the page's own title, read from the view (no script), so a page that did not
+        // load or a script that ran both fail here.
+        assert_eq!(p.title().as_deref(), Some("kept"), "the page loaded and no remote script ran");
+        assert_eq!(p.source().as_deref(), Some("iterm2-ssh://box/a.txt"));
+        assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| h.iter().any(|(k, v)| k == "Content-Security-Policy" && v.starts_with("sandbox;")) && h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff")), "{:?}", p.served);
+        // A second request is held: the view is dropped with it waiting.
+        p.ssh_body = None;
+        p.hold_ssh = true;
+        let n = p.order.len();
+        p.view().navigate_tandem("iterm2-ssh://box/b.txt");
+        let arrived = p.wait(15, |p| p.order.iter().skip(n).any(|o| o.starts_with("request ") && o.contains("iterm2-ssh://box/b.txt")));
+        // The deferral of the held request is in the view's table; dropping the view completes and empties it.
+        let inner = p.view().inner.clone();
+        println!("probe: arrived={arrived} pending={} order={:?}", inner.borrow().pending.len(), p.order);
+        assert!(arrived, "the request arrived: {:?}", p.order);
+        assert!(!inner.borrow().pending.is_empty(), "the held request is a deferral the view holds");
+        p.view.take();
+        p.settle(500);
+        assert!(inner.borrow().pending.is_empty(), "the dropped view completed the deferral (no hang)");
+        p.finish();
+    }
+
+    /// 13x8 merge review 4: what a main-document load reports for a server that answered and for one
+    /// that did not, as the error page's rule (`server_answered`) reads it. A local listener serves a 404
+    /// with a body, an empty 404, a 204 and a 503; a dead port is the network failure, and so is a 302 to
+    /// the dead port (last-gate review 7: the hop's 302 is not the answer). A server that
+    /// answered has `http >= 100` (its own page shows); the network failure has `http` under 100 (Tandem's
+    /// page shows); a 204 makes no navigation or one that is not an error. Needs the console session.
+    #[test]
+    #[ignore]
+    fn server_answers_and_network_failures_differ() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("its address").port();
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        // A port nothing listens on: the network failure, and the target of a redirect (last-gate review 7).
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
+        let to_dead = format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{dead}/gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let server = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut c, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = c.set_nonblocking(false);
+                let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let n = c.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let reply = match path.as_str() {
+                    "/302dead" => to_dead.as_str(),
+                    "/404" => "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 12\r\nConnection: close\r\n\r\n<b>nobody</b>",
+                    "/empty404" => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    "/204" => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+                    "/503" => "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy",
+                    _ => "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        // The browser pane's setup for the main document's response (`browser_setup`: both are on).
+        let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, track_document_method: true, main_responses: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = server.join();
+            return;
+        };
+        for (path, port_of, answered) in [("/404", port, true), ("/empty404", port, true), ("/503", port, true), ("/dead", dead, false), ("/302dead", port, false)] {
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&format!("http://127.0.0.1:{port_of}{path}"));
+            assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s for {path}: {:?}", p.order);
+            let (ok, http) = (p.navigated[n].1, p.https[n]);
+            println!("probe: {path} ok={ok} http={http} status={}", p.statuses[n].1);
+            assert_eq!(crate::browser_pages::server_answered(http), answered, "{path}: ok={ok} http={http}");
+        }
+        // A 204 keeps the page: no navigation completes, or it is not a failure the error page would cover.
+        let n = p.navigated.len();
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/204"));
+        let came = p.wait(4, |p| p.navigated.len() > n);
+        println!("probe: /204 navigated={came} log={:?}", p.auth_log);
+        if came {
+            let (ok, http) = (p.navigated[n].1, p.https[n]);
+            println!("probe: /204 ok={ok} http={http} status={}", p.statuses[n].1);
+            assert!(ok || crate::browser_pages::server_answered(http), "a 204 is no network failure: ok={ok} http={http}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+        p.finish();
+    }
+
+    /// 13x8 final review I1: a server's 302 onto `iterm2-about:settings` is refused whether the navigation
+    /// left a Tandem page or a web page (the source is still the old page while a redirect is judged).
+    /// A local listener answers `/r` with a 302 to the settings page and `/hop` with a 302 to `/landing`
+    /// (the positive control: a redirect to the web is followed). Needs the console session.
+    #[test]
+    #[ignore]
+    fn redirect_onto_a_power_page_is_refused() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("its address").port();
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (flag, seen) = (stop.clone(), hits.clone());
+        let server = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut c, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = c.set_nonblocking(false);
+                let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let n = c.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                if let Ok(mut l) = seen.lock() {
+                    l.push(path.clone());
+                }
+                let reply = match path.as_str() {
+                    "/r" => "HTTP/1.1 302 Found\r\nLocation: iterm2-about:settings\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    "/hop" => "HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    _ => "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 16\r\nConnection: close\r\n\r\n<title>w</title>".to_string(),
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        const TANDEM_PAGE: &str = "iterm2-about:bookmarks";
+        let pages = [(TANDEM_PAGE, "<title>t</title>".to_string()), ("iterm2-about:settings", "<title>SETTINGS</title>".to_string())];
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-about:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&pages, Vec::new(), &["iterm2-about"], setup) else {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = server.join();
+            return;
+        };
+        let base = format!("http://127.0.0.1:{port}");
+        for from in [TANDEM_PAGE.to_string(), format!("{base}/page")] {
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&from);
+            assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded: {:?}", p.order);
+            // The control: the page's own navigation through a 302 to the web lands.
+            let landing = format!("{base}/landing");
+            p.page_eval(&format!("setTimeout(function () {{ location.href = '{base}/hop'; }}, 0); 1")).expect("the page navigates");
+            assert!(p.wait(15, |p| p.source().as_deref() == Some(landing.as_str())), "from {from}: the redirect to the web landed: {:?} / {:?}", p.source(), p.order);
+            // Back on the page, the same navigation through a 302 to the settings page.
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&from);
+            assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded again: {:?}", p.order);
+            let before = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
+            let refused_before = VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0);
+            let n = p.navigated.len();
+            p.page_eval(&format!("setTimeout(function () {{ location.href = '{base}/r'; }}, 0); 1")).expect("the page navigates");
+            assert!(p.wait(15, |p| p.navigated.len() > n), "from {from}: the navigation ended: {:?}", p.order);
+            p.settle(1000);
+            let after = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
+            println!("probe: from {from}: /r hits {} source {:?} title {:?} navigated {:?}", after - before, p.source(), p.title(), &p.navigated[n..]);
+            assert!(after > before, "from {from}: the server answered the 302");
+            // Positive evidence: WebView2 followed the 302 to a NavigationStarting and the verdict refused it.
+            let refused: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[refused_before..].to_vec()).unwrap_or_default();
+            println!("probe: from {from}: the verdict refused {refused:?}");
+            assert!(refused.iter().any(|(u, redirect)| u == "iterm2-about:settings" && *redirect), "from {from}: the verdict refused the redirect itself: {refused:?}");
+            assert!(!p.order.iter().any(|o| o.contains("iterm2-about:settings")), "from {from}: the settings page was never requested or started: {:?}", p.order);
+            assert_ne!(p.source().as_deref(), Some("iterm2-about:settings"), "from {from}");
+            assert_ne!(p.title().as_deref(), Some("SETTINGS"), "from {from}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+        p.finish();
+    }
+
     /// Final review M5 (ruling R13x6-SW), last-gate LG-2: WebView2 raises `NotificationReceived` for
     /// non-persistent notifications only, so a service worker's `showNotification` would reach
     /// WebView2's own toast. The view has the SHIPPING filter set of a browser pane with ad blocking
@@ -6413,6 +7381,113 @@ window.addEventListener('message', function (e) {
                 let _ = t.join();
             }
         }
+    }
+
+    /// A response with `Content-Disposition: attachment` and 10 bytes is a download: it reaches the app
+    /// as `DownloadStarting`, saved where `answer_download` says, and `DownloadDone` follows. A view
+    /// without `downloads` saves nothing.
+    #[test]
+    #[ignore]
+    fn download_lands_where_told() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"f.bin\"\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789");
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("tandem-dl-probe-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, downloads: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/f.bin"));
+        assert!(p.wait(20, |p| !p.downloads.is_empty()), "DownloadStarting arrives: {:?}", p.order);
+        let (token, url) = p.downloads[0].clone();
+        assert!(url.ends_with("/f.bin"), "{url}");
+        let target = dir.join("f.bin.download");
+        p.view().answer_download(token, 1, Some(&target));
+        p.view().answer_download(token, 2, None);
+        assert!(p.wait(20, |p| !p.dl_done.is_empty()), "DownloadDone arrives");
+        assert_eq!(p.dl_done[0], (1, Ok(())));
+        assert_eq!(std::fs::read(&target).unwrap(), b"0123456789");
+        drop(p);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = thread.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unpacked extension loads through WebView2's own support (13x8 Task 10): its content script
+    /// sets the title of a page served from 127.0.0.1 (a `navigate_to_string` document is `about:blank`,
+    /// which the match pattern does not cover); disabled it no longer runs; removed it is not listed.
+    /// Needs the console session; never run on the desktop probe.
+    #[test]
+    #[ignore]
+    fn an_unpacked_extension_loads() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let body = "<!doctype html><title>page</title><p>x</p>";
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("tandem-ext-probe-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), r#"{"manifest_version":3,"name":"Probe","version":"1.0","content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["c.js"],"run_at":"document_start"}]}"#).unwrap();
+        std::fs::write(dir.join("c.js"), "document.addEventListener('DOMContentLoaded', function () { document.title = 'ext'; });").unwrap();
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, ..Default::default() };
+        let Some(mut p) = Probe::start_ext(&[], Vec::new(), &[], setup, "", true) else { return };
+        p.view().add_extension(&dir);
+        assert!(p.wait(30, |p| !p.ext_added.is_empty()), "ExtensionAdded within 30 s");
+        let id = match &p.ext_added[0].1 {
+            Ok((id, name)) => {
+                assert!(crate::browser_extensions::valid_id(id) && name == "Probe", "{id} {name}");
+                id.clone()
+            }
+            Err(e) => panic!("the extension was refused: {e}"),
+        };
+        let url = format!("http://127.0.0.1:{port}/p");
+        p.view().navigate_tandem(&url);
+        assert!(p.page_becomes(20, "document.title", false, "ext"), "the content script ran: {:?}", p.page_string("document.title"));
+        p.view().set_extension_enabled(&id, false);
+        let n = p.ext_lists.len();
+        assert!(p.wait(20, |p| p.ext_lists.len() > n), "the list follows the change");
+        assert!(p.ext_lists.last().unwrap().iter().any(|(i, _, on)| *i == id && !on), "listed and disabled: {:?}", p.ext_lists.last());
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/q"));
+        p.settle(2500);
+        assert_eq!(p.page_string("document.title"), Ok("page".to_string()), "a disabled extension does not run");
+        p.view().remove_extension(&id);
+        let n = p.ext_lists.len();
+        assert!(p.wait(20, |p| p.ext_lists.len() > n), "the list follows the removal");
+        assert!(p.ext_lists.last().unwrap().iter().all(|(i, _, _)| *i != id), "removed: {:?}", p.ext_lists.last());
+        drop(p);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = thread.join();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn auth_setup() -> ViewSetup {

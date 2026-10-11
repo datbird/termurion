@@ -105,7 +105,12 @@ impl Envs {
 pub(super) fn env_options(store: Store, proxy: &str) -> EnvOptions {
     match store {
         Store::Default => EnvOptions::default(),
-        Store::Browser | Store::BrowserDevNull => EnvOptions { args: proxy.to_string(), custom_schemes: vec!["iterm2-about".into()] },
+        Store::Browser | Store::BrowserDevNull => EnvOptions {
+            args: proxy.to_string(),
+            custom_schemes: vec![crate::browser_pages::ABOUT.into(), crate::browser_pages::FILE_SCHEME.into(), crate::browser_pages::SSH_SCHEME.into()],
+            // Extensions only in the persistent store: Dev Null "writes nothing" (13x8 Task 10).
+            extensions: store == Store::Browser,
+        },
     }
 }
 
@@ -282,6 +287,7 @@ impl App {
         self.web_popover_tick();
         self.browser_tip_tick(event_loop);
         self.browser_gates_sync();
+        self.files_tick();
         self.adblock.judged.set(0);
         for _ in 0..DRAIN_PER_TICK {
             let Ok(posted) = self.web_events.try_recv() else { break };
@@ -430,8 +436,9 @@ mod tests {
         assert_eq!(env_options(Store::Default, ""), EnvOptions::default());
         for s in [Store::Browser, Store::BrowserDevNull] {
             let o = env_options(s, "");
-            assert_eq!(o.custom_schemes, vec!["iterm2-about".to_string()]);
+            assert_eq!(o.custom_schemes, vec!["iterm2-about".to_string(), "iterm2-file".to_string(), "iterm2-ssh".to_string()]);
             assert_eq!(o.args, "", "no Chromium switch is composed from anything but the proxy");
+            assert_eq!(o.extensions, s == Store::Browser, "extension support is the persistent store's alone");
         }
     }
 

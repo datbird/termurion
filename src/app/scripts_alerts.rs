@@ -91,8 +91,16 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::TriggerImportMarked(_) => Answer::Button(1),
         // Cancel: a closed window opens no link and downloads nothing.
         Then::OpenLink { .. } | Then::BrowserUpsell { .. } => Answer::Button(2),
+        // Cancel (the third button): a closed window neither downloads nor opens a tab for a remote file.
+        Then::SshViewOrDownload { .. } => Answer::Button(2),
         // Cancel: a closed window runs nothing and opens nothing a page's text named.
         Then::BrowserRun { .. } | Then::BrowserOpenFile { .. } => Answer::Button(1),
+        // Cancel: a closed window clears nothing (Clear All Data from the settings page).
+        Then::BrowserClearData { .. } => Answer::Button(1),
+        // Cancel: a closed window approves nothing.
+        Then::BrowserExtension { .. } => Answer::Button(1),
+        // Cancel: a closed window deletes no bookmark.
+        Then::BookmarkDelete { .. } => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -243,6 +251,11 @@ pub(super) enum Then {
     /// directory `to`; Cancel (1) does nothing. A closed window cancels and a dropped ask is
     /// dropped (P9: a close never sends local files). Never capped.
     SshUpload { pane: crate::layout::PaneId, files: Vec<std::path::PathBuf>, to: crate::ssh_files::ScpPath },
+    /// "Download or View File?" for the remote file `to` of `pane`'s host (`CD:1630-1675`): Download (0),
+    /// View (1) opens a browser tab at the file's `iterm2-ssh:` URL, Cancel (2). Only View is
+    /// remembered (a remembered Download would repeat a failed download without asking). A closed
+    /// window cancels. Not capped: the person's own click.
+    SshViewOrDownload { pane: crate::layout::PaneId, to: crate::ssh_files::ScpPath, mime: String },
     /// "Uninstall Claude Code Integration?": Uninstall (0) strips the hook; Cancel (1) does
     /// nothing. A closed window cancels (P10).
     ClaudeUninstall,
@@ -334,6 +347,17 @@ pub(super) enum Then {
     /// "Open file?" for a Smart Selection action from a page (`PSB:335-346`): OK (0) opens it as
     /// `open_file_run` plans (a program is revealed, never run); Cancel (1) nothing.
     BrowserOpenFile { pane: crate::layout::PaneId, file: String },
+    /// "Clear all website data?" for the settings page's Clear All Data (it also erases bookmarks and
+    /// history): Clear (0) clears; Cancel (1) nothing. A page's button raised it, so the window is
+    /// input-guarded and it is never remembered.
+    BrowserClearData { pane: crate::layout::PaneId },
+    /// "Enable Browser Extension?" (13x8 Task 10): Enable (0) records the approval of this folder's
+    /// manifest (`hash`) for the shared browser data (every non-Dev-Null browser profile, R13x8-14);
+    /// Cancel (1) does nothing. Never remembered.
+    BrowserExtension { pane: crate::layout::PaneId, folder: std::path::PathBuf, hash: String },
+    /// "Are you sure you want to delete this bookmark?" from Edit Bookmark: Delete (0) removes it;
+    /// Cancel (1) nothing. The person's own window raised it.
+    BookmarkDelete { pane: crate::layout::PaneId, url: String },
     /// "Allow Notifications" (and the other permission questions) for the open ask `id`
     /// (`browser_perms_app::Asks`): Allow (0) or Block (1). A closed window, or an ask that never
     /// shows, blocks the request and saves nothing. A page raises it, so it is capped.
@@ -352,6 +376,7 @@ impl Then {
             Then::Archive(_) => vec![1, 2],
             // Replace would overwrite for every later file of that name.
             Then::SshKeepOrReplace { .. } => vec![1],
+            Then::SshViewOrDownload { .. } => vec![0, 2],
             // A remembered Reinstall would rewrite the person's settings.json unasked.
             Then::ClaudeRepair => vec![0],
             // A remembered Register would let every later program claim a system-wide hotkey.
@@ -435,6 +460,11 @@ impl App {
             // The request is blocked and nothing is saved: a WebView2 request never keeps its
             // deferral, and a closed window never grants.
             Then::BrowserPermission(id) => self.browser_permission_answered(id, None),
+            // Clear All Data could not ask (the queue refused it, or the window never opened): that is a
+            // Cancel, and the settings page's pending question is released (no dead button).
+            Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, 1),
+            Then::BrowserExtension { pane, folder, hash } => self.browser_extension_answered(pane, folder, hash, 1),
+            Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, 1),
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
             _ => {}
@@ -511,8 +541,12 @@ impl App {
                 }
                 // A page raised it: no default button, input ignored for a moment after it appears
                 // and after it regains focus (13x6 B1).
-                if matches!(ask.then, Then::BrowserPermission(_)) {
+                if matches!(ask.then, Then::BrowserPermission(_) | Then::BrowserClearData { .. } | Then::BrowserExtension { .. }) {
                     w.guard_input();
+                }
+                // Enable waits until every permission has been shown (the list can be long).
+                if matches!(ask.then, Then::BrowserExtension { .. }) {
+                    w.require_read(0);
                 }
                 self.scripts_alert = Some((w, ask));
             }
@@ -588,6 +622,9 @@ impl App {
                     self.browser_run_confirmed(pane, command);
                 }
             }
+            Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, index),
+            Then::BrowserExtension { pane, folder, hash } => self.browser_extension_answered(pane, folder, hash, index),
+            Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, index),
             Then::BrowserOpenFile { pane, file } => {
                 if index == 0 {
                     self.browser_open_file_confirmed(pane, &file);
@@ -722,6 +759,7 @@ impl App {
                 }
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
+            Then::SshViewOrDownload { pane, to, .. } => self.ssh_view_answered(pane, &to, index),
             Then::LocaleMismatch { guid, locale, from_settings } => self.locale_mismatch_answered(guid, locale, from_settings, index),
             Then::OpenProfiles(guids, how, from) => {
                 if index == 0 {

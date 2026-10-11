@@ -576,7 +576,7 @@ pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool, reader: Optio
         out.push(Some(("History", true)));
         out.push(None);
     }
-    out.push(Some(("Settings", false)));
+    out.push(Some(("Settings", true)));
     // The one menu filter (13w): an item this build removes is never shown, here as in every
     // other menu copy (iTerm2's own toolbar menu has a debug-build-only item).
     out.retain(|i| i.is_none_or(|(label, _)| !crate::menus::hidden_in_menu(menu_selector(label), cfg!(debug_assertions))));
@@ -1313,6 +1313,12 @@ impl NavList {
         self.pending = Some(steps);
     }
 
+    /// The URL `steps` entries from the current one (negative is back), when the list holds it.
+    pub fn target_url(&self, steps: i32) -> Option<&str> {
+        let at = i64::try_from(self.index).ok()?.checked_add(i64::from(steps))?;
+        usize::try_from(at).ok().and_then(|i| self.entries.get(i)).map(|e| e.0.as_str())
+    }
+
     /// The entries before the current one, nearest first, with the steps back to each.
     pub fn back_items(&self) -> Vec<(String, String, i32)> {
         (0..self.index).rev().take(NAV_MENU).map(|i| (self.entries[i].1.clone(), self.entries[i].0.clone(), i as i32 - self.index as i32)).collect()
@@ -1668,7 +1674,7 @@ mod tests {
         }
         assert_eq!(names(&m), vec!["Remove Bookmark", "Manage Bookmarks", "History", "Settings"]);
         assert_eq!(m[1], None);
-        assert_eq!(m.last().copied().flatten(), Some(("Settings", false)), "Settings stays disabled until 13x8");
+        assert_eq!(m.last().copied().flatten(), Some(("Settings", true)), "Settings opens the settings page (13x8 Task 5)");
         let dev = menu_items(false, true, true, None);
         assert_eq!(names(&dev), vec!["Settings"], "Dev Null hides the bookmark and history items (`BT:344`)");
         assert_eq!(history_menu(&[("T".into(), "https://a/".into()), ("".into(), "https://b/".into()), ("x\u{202e}y".into(), "u".into())], 80), vec!["T", "https://b/", "xy"]);
@@ -2325,6 +2331,8 @@ mod tests {
             n.source(u);
         }
         n.title("C");
+        assert_eq!((n.target_url(-1), n.target_url(-2), n.target_url(-3), n.target_url(1), n.target_url(0)), (Some("https://b/"), Some("https://a/"), None, None, Some("https://c/")));
+        assert_eq!(n.target_url(i32::MIN), None);
         assert_eq!(n.back_items(), vec![("".into(), "https://b/".into(), -1), ("".into(), "https://a/".into(), -2)]);
         assert!(n.forward_items().is_empty());
         n.expect(-2);

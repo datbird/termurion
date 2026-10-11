@@ -284,6 +284,12 @@ pub fn pick_file(dialog: rfd::FileDialog) -> Option<LocalPath> {
     dialog.pick_file().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p))
 }
 
+/// The folder the person picks in this dialog at this moment (as `pick_file`). The caller still judges
+/// where it is (the extensions root refuses a network location).
+pub fn pick_folder(dialog: rfd::FileDialog) -> Option<LocalPath> {
+    dialog.pick_folder().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p))
+}
+
 /// The files the person picks in this open dialog at this moment (as `pick_file`, several allowed).
 pub fn pick_files(dialog: rfd::FileDialog) -> Vec<LocalPath> {
     dialog.pick_files().unwrap_or_default().into_iter().filter(|p| !p.as_os_str().is_empty()).map(|p| LocalPath::person_picked(&p)).collect()
@@ -352,6 +358,8 @@ pub struct Stat {
     pub len: u64,
     pub modified: Option<SystemTime>,
     pub readonly: bool,
+    /// The hidden attribute (Windows); a leading dot is the caller's rule.
+    pub hidden: bool,
 }
 
 impl Stat {
@@ -361,7 +369,11 @@ impl Stat {
         let reparse = std::os::windows::fs::MetadataExt::file_attributes(m) & 0x400 != 0;
         #[cfg(not(windows))]
         let reparse = t.is_symlink();
-        Stat { is_dir: t.is_dir(), is_file: t.is_file(), is_link: t.is_symlink(), is_reparse: reparse || t.is_symlink(), len: m.len(), modified: m.modified().ok(), readonly: m.permissions().readonly() }
+        #[cfg(windows)]
+        let hidden = std::os::windows::fs::MetadataExt::file_attributes(m) & 0x2 != 0;
+        #[cfg(not(windows))]
+        let hidden = false;
+        Stat { is_dir: t.is_dir(), is_file: t.is_file(), is_link: t.is_symlink(), is_reparse: reparse || t.is_symlink(), len: m.len(), modified: m.modified().ok(), readonly: m.permissions().readonly(), hidden }
     }
 }
 
@@ -382,6 +394,21 @@ pub fn stat(p: &LocalPath) -> io::Result<Stat> {
     std::fs::metadata(&p.0).map(|m| Stat::of(&m))
 }
 
+/// The names of a judged folder's entries and whether each is a real folder (a link or reparse point
+/// is not), looking at no more than `limit` entries.
+pub fn list_dir(p: &LocalPath, limit: usize) -> io::Result<Vec<(String, bool)>> {
+    let rd = std::fs::read_dir(&p.0)?;
+    Ok(rd
+        .take(limit)
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            let st = Stat::of(&m);
+            Some((e.file_name().to_string_lossy().to_string(), st.is_dir && !st.is_reparse))
+        })
+        .collect())
+}
+
 /// The entry itself (a link is not followed).
 pub fn lstat(p: &LocalPath) -> io::Result<Stat> {
     std::fs::symlink_metadata(&p.0).map(|m| Stat::of(&m))
@@ -390,6 +417,25 @@ pub fn lstat(p: &LocalPath) -> io::Result<Stat> {
 /// An open file's own facts (no path is touched).
 pub fn file_stat(f: &File) -> io::Result<Stat> {
     f.metadata().map(|m| Stat::of(&m))
+}
+
+/// The path an OPEN handle really names (`GetFinalPathNameByHandleW`, every link followed), so a
+/// check on it is a check on what a read of that handle returns, whatever was swapped meanwhile.
+/// None when the system cannot say (and on other hosts).
+#[cfg(windows)]
+pub fn final_path(f: &File) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let mut buf = vec![0u16; 4096];
+    // SAFETY: an open handle and a buffer of the length given.
+    let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+    (n != 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
+}
+
+#[cfg(not(windows))]
+pub fn final_path(_f: &File) -> Option<PathBuf> {
+    None
 }
 
 pub fn open(p: &LocalPath) -> io::Result<File> {
@@ -466,6 +512,33 @@ pub fn remove_dir_all(p: &LocalPath) -> io::Result<()> {
 
 pub fn rename(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
     std::fs::rename(&from.0, &to.0)
+}
+
+/// A move that never replaces: `AlreadyExists` when `to` is there. On Windows it is `MoveFileExW` with
+/// no flags (the standard library's rename passes MOVEFILE_REPLACE_EXISTING), atomic against a file
+/// that appears at the name at any time.
+pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (f, t) = (wide(&from.0), wide(&to.0));
+        // SAFETY: both are NUL-terminated wide strings that live through the call.
+        if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        // ERROR_ALREADY_EXISTS (183) and ERROR_FILE_EXISTS (80).
+        return Err(if matches!(e.raw_os_error(), Some(183) | Some(80)) { io::Error::from(io::ErrorKind::AlreadyExists) } else { e });
+    }
+    #[cfg(not(windows))]
+    {
+        if to.0.exists() {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        std::fs::rename(&from.0, &to.0)
+    }
 }
 
 pub fn copy(from: &LocalPath, to: &LocalPath) -> io::Result<u64> {

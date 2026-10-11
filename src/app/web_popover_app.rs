@@ -360,6 +360,8 @@ mod tests {
         let ql = &ql[..ql.find("\n    }\n").unwrap()];
         assert!(ql.contains("external_uri_run("), "the fallback asks guard_open");
         let host = include_str!("../webhost_win.rs");
+        // The production part only: the probe harness records the event too.
+        let host = &host[..host.find("#[cfg(test)]\nmod tests").unwrap()];
         assert_eq!(host.matches("Event::Refused").count(), 1, "one place posts it");
         assert!(host.find("refused_click(").unwrap() < host.find("Event::Refused").unwrap());
         assert_eq!(external_uri_run("https://a.example/x", true), ExternalRun::Open("https://a.example/x".to_string()));
