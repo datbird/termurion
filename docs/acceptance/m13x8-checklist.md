@@ -1,0 +1,169 @@
+# Milestone 13x8 acceptance checklist (browser pages and extensions)
+
+Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+`tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
+`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
+WebView2 Runtime installed (one run). Mark each line pass or fail.
+
+Before anything else: `m13x8-rulings.txt` ends with PROBE and FLAGS FOR ROBERT, the behaviors that
+differ from iTerm2. Section A lists the probe tests (none has run yet: Probe PENDING). Sections B to N
+are what no test could execute (a real click, a real native window, a real download).
+
+Test material: a folder served with `python -m http.server 8000` (`http://127.0.0.1:8000`); a folder
+`C:\t13x8\` holding `a.txt`, `b.html` (with a `<script>` that writes "ran" into the page and tries
+`fetch('c.txt')`), `c.txt`, a `.png`, a `.js` and a subfolder; a second copy of `b.html` that was
+downloaded from the web (it has a Mark of the Web; any copy saved by a browser will do).
+
+## A. Probe tests (webhost_win::probe, all `#[ignore]`, console session only)
+
+- [ ] `webhost_win::probe::failed_load_posts_its_url`
+- [ ] `webhost_win::probe::server_answers_and_network_failures_differ` (404 with a body, empty 404, 503, a dead port, 204)
+- [ ] `webhost_win::probe::file_pages_cannot_read_or_send`
+- [ ] `webhost_win::probe::ssh_page_serves_text_and_a_closed_view_completes_the_deferral`
+- [ ] `webhost_win::probe::download_lands_where_told`
+- [ ] `webhost_win::probe::an_unpacked_extension_loads`
+
+Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
+checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show
+N not 0, session 0 prints SKIPPED, which is not a pass):
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout>
+```
+
+Only the 13x8 tests: `-Filters` is a `string[]`, and `-File` passes a comma string as ONE filter,
+so use a wrapper `C:\Users\datbi\src\run-13x8-probe.ps1` and run it the same way:
+
+```
+$f = @(
+ 'webhost_win::probe::failed_load_posts_its_url',
+ 'webhost_win::probe::server_answers_and_network_failures_differ',
+ 'webhost_win::probe::file_pages_cannot_read_or_send',
+ 'webhost_win::probe::ssh_page_serves_text_and_a_closed_view_completes_the_deferral',
+ 'webhost_win::probe::download_lands_where_told',
+ 'webhost_win::probe::an_unpacked_extension_loads'
+)
+& C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
+```
+
+Questions only the probe answers (write each answer in the rulings): the allowed-origin pattern for
+the custom schemes, the Source of a sandboxed page, view Source's top_url for a file page, a trusted
+Try Again click, a hidden ResultFilePath being honored, Chromium's own Mark of the Web, repeat
+automatic downloads with Handled true, and extension add and enable.
+
+## B. Onboarding
+
+- [ ] A new browser tab (first ever, `NoSyncBrowserOnboardingCompleted` unset) shows onboarding-intro; Next shows features.
+- [ ] The profile step: Create Browser Profile makes "Web Browser" (Settings > Profiles shows it); on a second visit the step says "Profile Exists" and creates nothing.
+- [ ] The setup step: Ad Blocker and Instant Replay turn on (Settings and the profile show it).
+- [ ] Finish lands on the welcome page and does not loop back to onboarding; a later tab skips onboarding.
+- [ ] Nothing happens on any onboarding button until a real click (a script-dispatched click does nothing).
+
+## C. Error page
+
+- [ ] Open `https://nonexistent.invalid/`: "Server Not Found" with the URL and Try Again; Try Again retries that URL.
+- [ ] Open a page with a bad certificate (a local test server with a self-signed certificate): "Secure Connection Failed", no "continue anyway", no Edge page.
+- [ ] A very long URL or one with `<b>` and quotes in it shows as text, cut with the end of its host kept; nothing runs.
+- [ ] A server that answers 404 (or 503) with its own body shows the SERVER's page, not Tandem's error page.
+- [ ] Stop a load part way: no error page for a cancelled load.
+- [ ] A site blocked by the ad blocker shows Tandem's blocked page, not a Chromium 403.
+- [ ] On a machine with an old WebView2 runtime (if you have one): the banner "This WebView2 runtime is too old" shows and no browser opens.
+
+## D. File pages
+
+- [ ] Type `file:///C:/Windows/`: the styled listing, folders first (with folder glyphs), then names ignoring case; hidden entries are not listed.
+- [ ] Click `..` up to `C:\`: at the drive root there is no `..` row.
+- [ ] Open `a.txt` from the listing: shown as text in a box; a `.png` shows as an image; a `.js` shows as text.
+- [ ] Open `b.html` you made yourself: it renders and its script runs ("ran"), but `fetch('c.txt')` fails (DevTools console shows the refusal) and the page cannot reach the network or load a sibling file.
+- [ ] Open the copy with a Mark of the Web: it renders but its script does NOT run. An `.svg` and an `.xml` file run no script either.
+- [ ] `file://server/share/x`, `file:///C:/a/../b`, `file:///C:/x.txt:stream` and a device name (`file:///C:/con`) are refused ("Invalid file path"), with no network probe.
+- [ ] A file over 64 MB is not shown.
+- [ ] A junction inside the folder that points outside it does not lead out.
+- [ ] A web page (http://127.0.0.1:8000) with a link to `file:///C:/t13x8/a.txt`: clicking it does nothing (refused even on click).
+
+## E. Settings page
+
+- [ ] Menu > Settings opens `iterm2-about:settings`.
+- [ ] Clear Cookies (the page's own confirm): sign in to a site, clear, reload: signed out.
+- [ ] Clear All Data: a NATIVE Tandem window asks first; Cancel clears nothing; OK empties the history page and the bookmarks page, and the page says so.
+- [ ] Search engine: each built-in choice changes what the URL bar searches. Custom with a URL lacking `%@` shows the error; an `http://` template is refused (https only); a template with two `%@` is refused.
+- [ ] Ad blocking: the toggle works; statistics show a rule count; Update Now reports the result once (invalid list address, download fail, or success); a list address that is not https is refused.
+- [ ] Proxy: host and port save; port 0 or 70000 shows the error; a host with a space, `--flag` or a user name shows "Invalid proxy host".
+- [ ] Link opening: Always Ask brings back the "Open in Tandem?" question; the other choices change what a clicked link does.
+- [ ] Manage Passwords opens the password manager; Manage Permissions opens `iterm2-about:permissions`.
+- [ ] In a Dev Null pane the settings page shows its Dev Null note.
+- [ ] Rapid clicking a privileged button (Clear, Update Now, proxy) acts at most about once a second.
+
+## F. Back and Forward onto power pages
+
+- [ ] Open Settings, go to a web page, press Back: the settings page comes back (loaded fresh by Tandem), no wrong banner. Same for Forward and the long-press history list.
+- [ ] A web page that calls `history.back()` or `history.go(-1)` while the settings page is the previous entry does not land on it.
+- [ ] A web page cannot navigate to `iterm2-about:settings`, `iterm2-about:downloads` or `iterm2-file:` by click, script or redirect.
+
+## G. Downloads
+
+- [ ] Download a file from a page: it lands in Downloads under the URL's name, a notification names the final name, progress shows as a banner.
+- [ ] Download it again: the second is numbered (`name (1).ext`), the first is untouched.
+- [ ] A dangerous type (`.exe`, `.bat`, `.js`) is saved renamed with `.download` and is never run or opened.
+- [ ] Right-click the saved file > Properties: it carries the "unblock" mark (Mark of the Web, internet zone).
+- [ ] A name Windows forbids (`a:b`) is saved cleaned (`a_b`).
+- [ ] From a local test server, a download at `/..%5C..%5Cx.exe` lands in Downloads as `x.exe` (`.download` renamed) and nowhere else.
+- [ ] Start 4 downloads in one pane: the 4th is cancelled with a banner.
+- [ ] In a Dev Null pane a download is refused with a banner and nothing is written.
+- [ ] `iterm2-about:downloads` (type it in the URL bar) lists downloads with Cancel, Remove and Show in folder; there is no Downloads menu item.
+- [ ] After a download ends, later downloads still work (no stuck count).
+
+## H. Bookmark tags and Edit Bookmark
+
+- [ ] Add Bookmark on a page opens the Edit Bookmark window (always on top, centered on the browser window) with Title, URL and Tags; type tags separated by commas and see completions; Save stores them.
+- [ ] Add Bookmark on an already bookmarked page removes it and toasts.
+- [ ] Delete in the editor asks first, then removes the bookmark; the question shows above the editor.
+- [ ] Navigating the pane or closing it closes the editor.
+- [ ] No editor opens in a Dev Null pane.
+- [ ] The bookmarks page lists the tags; filtering by one tag, then by two, shows only bookmarks that carry every chosen tag; text search plus tag works.
+- [ ] A tag like `<b>x</b>` is shown as text. Enter with a completion list open saves (a known parity detail).
+
+## I. The ssh page and View
+
+- [ ] In an ssh-integrated session Win-click a remote `.png`: "Download or View File?"; View opens it in a browser tab; Download still downloads.
+- [ ] Win-click a remote `.html`: View shows it with no script running.
+- [ ] A remote folder name asks the same question and View shows "Only a file can be shown."
+- [ ] Close the connection and reload the tab: the "Could not display file" page; Try Again does nothing harmful (it reloads the page).
+- [ ] The URL of another host, user or port than an open session shows the no-connection page; typing an `iterm2-ssh:` URL for your open session works, and a link inside a served page never leads to another ssh or file page.
+- [ ] A web page cannot open `iterm2-ssh:` by script or click.
+
+## J. Extensions
+
+The settings page's Extensions section is HIDDEN (FLAGS FOR ROBERT 8): there is no control to choose an
+extensions folder, so the lines below are BLOCKED until the section is shown (one flag,
+`show_extensions`) or Robert rules otherwise. Mark them blocked, not failed. Once shown:
+
+- [ ] Choose Folder opens a native folder picker; choosing an unpacked extension folder (or its parent) lists the extension with its name, version and description ("No description available" when none).
+- [ ] Enabling asks in a native Tandem window that lists every permission and every site and must be scrolled to its end; Cancel loads nothing; Enable loads it into the next browser tab and it acts.
+- [ ] A manifest name with `<b>` or a script tag shows as text on the page and in the window.
+- [ ] Edit the extension's `manifest.json`: it asks again; edit only a script file: it does not (FLAG: only the manifest is hashed).
+- [ ] Delete the folder, open a new browser tab: the extension is gone and removed from the profile.
+- [ ] A Browser Extensions Root or Active IDs value that arrived by editing the profile file, import or sync loads nothing without the approval.
+- [ ] A Dev Null pane never loads extensions and refuses the picker.
+- [ ] An extension's own page (`chrome-extension:`) cannot open settings, file, ssh or downloads pages.
+
+## K. Web pages can never reach local pages
+
+- [ ] From a page on `http://127.0.0.1:8000`, a link, a script `location=`, a meta refresh and a redirect to each of `iterm2-about:settings`, `iterm2-about:downloads`, `iterm2-about:onboarding-setup`, `iterm2-file:///C:/`, `iterm2-ssh://...` and `file:///C:/` do nothing.
+- [ ] A web page's script cannot post a message that clears data, changes settings or starts a download action (DevTools: `window.chrome.webview.postMessage` with any shape does nothing).
+- [ ] An `iframe` of a Tandem page inside a web page is refused (frame-ancestors none).
+
+## L. Security of local pages
+
+- [ ] A saved HTML page opened through `file:` cannot fetch a sibling file or reach the network (DevTools console shows the refusals); it cannot submit a form or open a window.
+- [ ] A hostile `.html` in a folder can still be clicked out of to the web (RESIDUAL, FLAG 1): note what the address bar shows after clicking an outbound link.
+- [ ] No Tandem script (autofill button, password key button, find, marks) runs inside a file or ssh page.
+
+## M. Nothing leaks
+
+- [ ] Look through `%LOCALAPPDATA%\Tandem` logs after these steps: no file path, remote URL, download name, tag, proxy host or password appears (words and counts only).
+
+## N. Existing browser behavior
+
+- [ ] The pages of 13x to 13x7 (welcome, bookmarks, history, permissions, source, autofill, password manager, HTTP sign-in) still work.
+- [ ] Tab and window close with a download or an editor open leaves nothing running (Task Manager shows no stray `Tandem` process).
