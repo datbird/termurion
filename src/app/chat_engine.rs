@@ -421,7 +421,7 @@ impl Engine {
         let orchestrating = row.orchestration_enabled;
         // An orchestration chat takes its system message and tools from 12f and ignores the
         // permission set; a session-bound chat's tools are 12c's followed by the enable tool.
-        let system = if orchestrating { (cx.orch_system)(&row) } else { chat_agent::system_message(&cx.globals.string(chat_agent::prompt_key(functions, &allowed).global_key())) };
+        let system = if orchestrating { (cx.orch_system)(&row) } else { chat_agent::system_message_for(&cx.globals.string(chat_agent::prompt_key(functions, &allowed).global_key()), functions && allowed.contains(&Category::ActInWebBrowser)) };
         let tools = if !functions {
             Vec::new()
         } else if orchestrating {
@@ -609,6 +609,13 @@ impl Engine {
         (guid, pane)
     }
 
+    /// The fixed refusal for a browser call whose live pane is not offered the tools (Dev Null, a
+    /// Tandem, local or extension page: `ai_browser::offerable`); None for any other call.
+    fn unoffered(cx: &Ctx, call: &Call, pane: Option<PaneId>) -> Option<Outcome> {
+        let refused = call.category().is_browser() && pane.is_some_and(|p| !(cx.browser_offered)(p));
+        refused.then(|| Outcome { model: crate::ai_browser::NOT_OFFERED.to_string(), notice: None })
+    }
+
     /// An `execute_command` is refused for a control key first, then checked on its pane's
     /// whole staged line (the App's `Check` arm); every other call is gated at once.
     fn route(cx: &mut Ctx, chat: &str, request: Message) -> Fx {
@@ -648,6 +655,12 @@ impl Engine {
         let request_id = request.unique_id.clone();
         Self::publish_or_replace(cx, chat, request.clone());
         let (guid, pane) = Self::linked(cx, chat, &rc.call);
+        // Task 2 review I1: the offered set is enforced on every call that arrives, not only
+        // declared: a browser call (undeclared, replayed or stale) on a private pane or a page the
+        // tools are not offered on is refused before any approval, navigation or URL read.
+        if let Some(o) = Self::unoffered(cx, &rc.call, pane) {
+            return Self::answer(cx, chat, &request_id, o, false);
+        }
         let g = cx.globals;
         let global = |c: Category| g.int(c.global_key());
         let p = cx.overrides.get(chat, guid.as_deref().unwrap_or(""), rc.call.category(), &global);
@@ -679,6 +692,11 @@ impl Engine {
     /// The one dispatch: the tool runs on the chat's pane (`performRemoteCommand`,
     /// `CC:204-231`), with its status notice, or for a command the executing bubble.
     fn run(cx: &mut Ctx, chat: &str, request_id: &str, guid: String, pane: PaneId, rc: RemoteCommand, send: Option<String>) -> Fx {
+        // The offered set again at the one dispatch: a parked call's pane may have moved to a
+        // private or unoffered page between the question and the button (task 2 review I1).
+        if let Some(o) = Self::unoffered(cx, &rc.call, Some(pane)) {
+            return Self::answer(cx, chat, request_id, o, true);
+        }
         // Every dispatch passes the turn's gate here, whichever way it got here (the permission
         // gate, a button, a session picker's answer): nothing runs while it is closed.
         let Some(model) = cx.agents.get(chat).and_then(|a| a.model.clone()) else { return Vec::new() };
@@ -2476,6 +2494,72 @@ mod tests {
         h.say(&chat, "hi");
         let tools = h.log.borrow().inputs[0].tools.clone();
         assert!(!tools.iter().any(|n| BROWSER_TOOLS.contains(&n.as_str())));
+    }
+
+    /// Task 2 review I1: the offered set is enforced when a call arrives. A browser call the model
+    /// names anyway (undeclared, replayed) on a Dev Null or power/local page pane, even Always
+    /// allowed, never runs and never asks; it answers the fixed refusal.
+    #[test]
+    fn a_browser_call_on_an_unoffered_pane_is_refused_on_arrival() {
+        for (tool, args) in [("load_url", r#"{"url":"https://evil.test/"}"#), ("get_current_url", "{}"), ("web_search_in_browser", r#"{"query":"x"}"#), ("read_web_page_section", r#"{"startingLineNumber":0,"numberOfLines":5}"#), ("find_on_page", r#"{"query":"x"}"#)] {
+            for always in [false, true] {
+                let mut h = H::new();
+                h.unoffered.push(9);
+                let chat = h.linked_chat(Some("7"), Some("9"));
+                if always {
+                    h.set(&chat, "9", Category::ActInWebBrowser, Permission::Always);
+                }
+                h.script(vec![invoke(tool, args, "b1")]);
+                let fx = h.say(&chat, "hi");
+                assert!(run_ids(&fx).is_empty(), "{tool} {always}: {fx:?}");
+                assert!(h.park_ids(&chat).is_empty(), "{tool} {always}: no approval is asked");
+                let r = h.responses(&chat);
+                assert_eq!(r.len(), 1, "{tool} {always}: {r:?}");
+                assert_eq!(r[0].1, crate::ai_browser::NOT_OFFERED, "{tool} {always}");
+            }
+        }
+    }
+
+    /// Task 2 review I1: a parked browser call whose pane became unoffered (a navigation to a power
+    /// page, Dev Null) between the question and the button is refused at the one dispatch.
+    #[test]
+    fn a_parked_browser_call_whose_pane_became_unoffered_never_runs() {
+        for c in [Choice::AllowOnce, Choice::AlwaysAllow] {
+            let mut h = H::new();
+            let chat = h.linked_chat(Some("7"), Some("9"));
+            h.script(vec![invoke("load_url", r#"{"url":"https://a.test/"}"#, "u1")]);
+            h.say(&chat, "hi");
+            let rid = h.park_ids(&chat)[0].clone();
+            h.unoffered.push(9);
+            let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, c));
+            assert!(run_ids(&fx).is_empty(), "{fx:?}");
+            assert_eq!(h.responses(&chat), vec![(rid, crate::ai_browser::NOT_OFFERED.to_string())]);
+        }
+        // Still offered: it runs.
+        let mut h = H::new();
+        let chat = h.linked_chat(Some("7"), Some("9"));
+        h.script(vec![invoke("get_current_url", "{}", "u1")]);
+        h.say(&chat, "hi");
+        let rid = h.park_ids(&chat)[0].clone();
+        let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
+        assert_eq!(run_ids(&fx).len(), 1);
+    }
+
+    /// Task 1 re-review r1 I3: a chat offered the browser tools is told how page text is fenced; a
+    /// chat without them gets the iTerm2 prompt unchanged.
+    #[test]
+    fn the_system_message_names_the_random_fence_only_with_browser_tools() {
+        let mut h = H::new();
+        let chat = h.linked_chat(Some("7"), Some("9"));
+        h.say(&chat, "hi");
+        let first = format!("{:?}", h.log.borrow().inputs[0].messages[0].body);
+        assert!(first.contains(crate::chat_agent::PAGE_FENCE_SENTENCE), "{first}");
+        let mut h = H::new();
+        h.unoffered.push(9);
+        let chat = h.linked_chat(Some("7"), Some("9"));
+        h.say(&chat, "hi");
+        let first = format!("{:?}", h.log.borrow().inputs[0].messages[0].body);
+        assert!(!first.contains("page-content"), "{first}");
     }
 
     #[test]

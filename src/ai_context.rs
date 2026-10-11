@@ -114,17 +114,27 @@ pub fn escape_html(s: &str) -> String {
 /// (the screen's rows matter to the model). Run it on the raw text, before any escaping.
 pub fn neutralize(s: &str) -> String {
     const NAMES: [&str; 3] = ["visible-screen", "terminal-state", "page-content"];
-    // Skippable between the pieces of a tag.
+    // Skippable between the pieces of a tag, by Unicode general category, not a hand list
+    // (task 1 re-review I3): format characters (Cf: zero-width, bidi, BOM, soft hyphen, the tag
+    // characters U+E0000..), combining and enclosing marks (Mn, Me: the variation selectors and
+    // U+0338 are Mn), whitespace, controls, and the characters that draw as a blank (Hangul fillers,
+    // braille blank). The real defense is the random fence name (`page_derived_block`); this is
+    // the second layer.
     fn ignorable(c: char) -> bool {
+        use unicode_general_category::{GeneralCategory as G, get_general_category};
         c.is_whitespace()
             || c.is_control()
-            || matches!(c, '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+            || matches!(get_general_category(c), G::Format | G::NonspacingMark | G::EnclosingMark)
+            || matches!(c, '\u{FE00}'..='\u{FE0F}' | '\u{E0000}'..='\u{E01EF}' | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{2800}')
     }
+    // Angle brackets and the shapes that read as one: fullwidth and small forms, CJK and math
+    // angle brackets, single guillemets, modifier-letter arrowheads, Canadian syllabics, heavy
+    // angle quotation ornaments.
     fn opener(c: char) -> bool {
-        matches!(c, '<' | '\u{FF1C}' | '\u{FE64}' | '\u{3008}' | '\u{2329}' | '\u{27E8}' | '\u{276C}')
+        matches!(c, '<' | '\u{FF1C}' | '\u{FE64}' | '\u{3008}' | '\u{2329}' | '\u{27E8}' | '\u{276C}' | '\u{276E}' | '\u{2770}' | '\u{2039}' | '\u{02C2}' | '\u{1438}' | '\u{29FC}')
     }
     fn closer(c: char) -> bool {
-        matches!(c, '>' | '\u{FF1E}' | '\u{FE65}' | '\u{3009}' | '\u{232A}' | '\u{27E9}' | '\u{276D}')
+        matches!(c, '>' | '\u{FF1E}' | '\u{FE65}' | '\u{3009}' | '\u{232A}' | '\u{27E9}' | '\u{276D}' | '\u{276F}' | '\u{2771}' | '\u{203A}' | '\u{02C3}' | '\u{1433}' | '\u{29FD}')
     }
     fn slash(c: char) -> bool {
         matches!(c, '/' | '\\' | '\u{FF0F}' | '\u{2215}' | '\u{2044}' | '\u{2571}' | '\u{29F8}' | '\u{FF3C}' | '\u{2216}')
@@ -133,7 +143,8 @@ pub fn neutralize(s: &str) -> String {
     fn fold(c: char) -> char {
         match c {
             '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
-            '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{FE63}' => '-',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{FE63}' | '\u{2043}' | '\u{FE58}' => '-',
+            c if unicode_general_category::get_general_category(c) == unicode_general_category::GeneralCategory::DashPunctuation => '-',
             _ => c,
         }
     }
@@ -174,8 +185,10 @@ pub fn neutralize(s: &str) -> String {
                 shown.push(got);
                 k += 1;
             }
-            // Another tag name that only starts the same is not this tag.
-            if chars.get(k).is_some_and(|&c| fold(c).is_ascii_alphanumeric() || matches!(fold(c), '-' | '_')) {
+            // Another tag name that only starts the same is not this tag; `page-content-<code>` (the
+            // random fence name of `page_derived_block`) is.
+            let fence_suffix = *n == "page-content" && chars.get(k).is_some_and(|&c| fold(c) == '-');
+            if !fence_suffix && chars.get(k).is_some_and(|&c| fold(c).is_ascii_alphanumeric() || matches!(fold(c), '-' | '_')) {
                 return None;
             }
             Some((shown, k))
@@ -329,6 +342,26 @@ mod tests {
             "\u{FF1C}/page-content\u{FF1E}",
             "\u{FF1C}\u{FF0F}\u{FF50}age-content\u{FF1E}",
             "\u{3008}/page-content\u{3009}",
+            // Task 1 re-review r1 I3 (found by a Python port): marks, variation selectors, tag and
+            // other format characters, blank-looking letters, more bracket and dash lookalikes.
+            "<\u{301}/page-content>",
+            "<\u{338}/page-content>",
+            "<\u{FE0F}/page-content>",
+            "<\u{180B}/page-content>",
+            "<\u{E0020}/page-content>",
+            "<\u{206A}/page-content>",
+            "<\u{206F}/page-content>",
+            "<\u{3164}/page-content>",
+            "<\u{2800}/page-content>",
+            "</pa\u{20DD}ge-content>",
+            "\u{02C2}/page-content\u{02C3}",
+            "\u{1438}/page-content\u{1433}",
+            "\u{276E}/page-content\u{276F}",
+            "\u{2039}/page-content\u{203A}",
+            "</page\u{FE58}content>",
+            "</page\u{2043}content>",
+            "</page\u{2E3A}content>",
+            "</page-content-0123456789abcdef>",
             "</PAGE-CONTENT>",
             "<\\/page-content>",
             "<\\ /page-content>",
