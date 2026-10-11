@@ -257,7 +257,7 @@ pub fn approval_text(m: &Manifest, folder: &str) -> String {
     list(&mut t, &m.permissions, "  No special permissions.");
     t.push_str("\nIt can read and change pages on these sites:\n");
     list(&mut t, &m.sites(), "  No sites.");
-    t.push_str("\nEnable only an extension you trust. It is loaded into this browser profile only, never into Dev Null windows.");
+    t.push_str("\nEnable only an extension you trust. It is loaded into all browser profiles that share this browser data, never into Dev Null windows.");
     t
 }
 
@@ -268,13 +268,21 @@ pub fn folder_key(folder: &Path) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
-    /// The saved profile's Guid.
+    /// Always `STORE`: every Tandem browser profile shares one WebView2 profile (one extension list),
+    /// so an approval belongs to that shared browser data (13x8 Task 10 review I1). The field keeps
+    /// its name so a file written earlier still parses; such a record no longer matches and is dropped
+    /// at the next sync (the extension is removed until it is approved again).
     pub profile: String,
     pub folder: String,
     pub hash: String,
     /// The WebView2 id, once added.
     pub id: Option<String>,
+    /// Whether the extension is turned on (the settings page's switch); shared like the approval.
+    pub enabled: bool,
 }
+
+/// The approvals' `profile` value: the one shared WebView2 profile of `Store::Browser`.
+pub const STORE: &str = "browser-data";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Approvals {
@@ -293,7 +301,7 @@ impl Approvals {
             .iter()
             .filter_map(|r| {
                 let id = text(r, "id").filter(|i| valid_id(i));
-                Some(Approval { profile: text(r, "profile")?, folder: text(r, "folder")?, hash: text(r, "hash")?, id })
+                Some(Approval { profile: text(r, "profile")?, folder: text(r, "folder")?, hash: text(r, "hash")?, id, enabled: r.get("enabled").and_then(Value::as_bool).unwrap_or(true) })
             })
             .take(MAX_APPROVALS)
             .collect();
@@ -301,7 +309,7 @@ impl Approvals {
     }
 
     pub fn to_json(&self) -> String {
-        let rows: Vec<Value> = self.list.iter().map(|a| json!({"profile": a.profile, "folder": a.folder, "hash": a.hash, "id": a.id})).collect();
+        let rows: Vec<Value> = self.list.iter().map(|a| json!({"profile": a.profile, "folder": a.folder, "hash": a.hash, "id": a.id, "enabled": a.enabled})).collect();
         Value::Array(rows).to_string()
     }
 
@@ -314,7 +322,7 @@ impl Approvals {
     pub fn approve(&mut self, profile: &str, folder: &str, hash: &str) {
         self.list.retain(|a| !(a.profile == profile && a.folder == folder));
         if self.list.len() < MAX_APPROVALS {
-            self.list.push(Approval { profile: profile.to_string(), folder: folder.to_string(), hash: hash.to_string(), id: None });
+            self.list.push(Approval { profile: profile.to_string(), folder: folder.to_string(), hash: hash.to_string(), id: None, enabled: true });
         }
     }
 
@@ -325,6 +333,18 @@ impl Approvals {
         if let Some(a) = self.list.iter_mut().find(|a| a.profile == profile && a.folder == folder) {
             a.id = Some(id.to_string());
         }
+    }
+
+    /// Turns the extension with `id` on or off (the one switch, for every browser profile).
+    pub fn set_enabled(&mut self, id: &str, on: bool) {
+        for a in self.list.iter_mut().filter(|a| a.id.as_deref() == Some(id)) {
+            a.enabled = on;
+        }
+    }
+
+    /// The ids of every approved extension that was added.
+    pub fn known_ids(&self) -> Vec<String> {
+        self.list.iter().filter_map(|a| a.id.clone()).collect()
     }
 
     /// Drops the record of an extension that was removed.
@@ -492,9 +512,33 @@ mod tests {
         for bad in ["", "x", "[1]", "{\"list\":5}", &"[".repeat(100000)] {
             assert!(Approvals::parse(bad).list.is_empty(), "{bad:.20}");
         }
-        let many = Approvals { list: (0..1000).map(|i| Approval { profile: "P".into(), folder: format!("f{i}"), hash: h1.clone(), id: None }).collect() };
+        let many = Approvals { list: (0..1000).map(|i| Approval { profile: "P".into(), folder: format!("f{i}"), hash: h1.clone(), id: None, enabled: true }).collect() };
         assert_eq!(Approvals::parse(&many.to_json()).list.len(), MAX_APPROVALS);
         assert!(Approvals::parse(&format!("{}{}", " ".repeat(MAX_APPROVALS_BYTES), many.to_json())).list.is_empty(), "too big");
+    }
+
+    /// 13x8 Task 10 review I1: every Tandem browser profile shares one WebView2 profile, so an approval
+    /// belongs to that shared browser data and says so; whether it is on is shared too.
+    #[test]
+    fn an_approval_is_for_the_shared_browser_data() {
+        let m = manifest(r#"{"name":"X","version":"1"}"#).unwrap();
+        let t = approval_text(&m, "D:\\e");
+        assert!(t.contains("all browser profiles that share this browser data"), "{t}");
+        assert!(!t.contains("this browser profile only"), "{t}");
+        assert!(t.contains("never into Dev Null"), "{t}");
+        let (h, id) = (manifest_hash(b"one"), "a".repeat(32));
+        let mut a = Approvals::default();
+        a.approve(STORE, "d:\\e", &h);
+        a.set_id(STORE, "d:\\e", &id);
+        assert!(a.find(STORE, "d:\\e", &h).unwrap().enabled, "approving turns it on");
+        a.set_enabled(&id, false);
+        assert!(!a.find(STORE, "d:\\e", &h).unwrap().enabled);
+        assert_eq!(Approvals::parse(&a.to_json()), a, "off survives the file");
+        let old = format!(r#"[{{"profile":"P","folder":"f","hash":"{h}","id":null}}]"#);
+        assert!(Approvals::parse(&old).list[0].enabled, "a record with no flag is on");
+        assert_eq!(a.known_ids(), vec![id.clone()]);
+        a.forget_id(STORE, &id);
+        assert!(a.known_ids().is_empty());
     }
 
     #[test]

@@ -42,8 +42,10 @@ struct Found {
     key: String,
     manifest: Manifest,
     hash: String,
-    /// Approved for this profile: Some(the recorded id, if it was added before).
+    /// Approved for the shared browser data: Some(the recorded id, if it was added before).
     approval: Option<Option<String>>,
+    /// The shared switch (approvals file).
+    enabled: bool,
 }
 
 enum Done {
@@ -121,25 +123,47 @@ fn edit_approvals(change: impl FnOnce(&mut Approvals)) -> bool {
     save_approvals(&dir, &a).is_ok()
 }
 
-/// The folders under `root` (or `root` itself when it holds a manifest) with their manifests, and
-/// whether the root could be read at all. Worker code.
-fn scan(root: &Path, profile: &str) -> (Vec<Found>, bool) {
-    let Some(judged) = localfs::judge(root).filter(|_| be::root_ok(root)) else { return (Vec::new(), false) };
+/// What the shared browser data should run: every approved folder whose manifest still hashes to what
+/// was approved (wherever it is: approvals are for the shared WebView2 profile, not for a Tandem
+/// profile), plus the folders under `root` (or `root` itself when it holds a manifest) with their
+/// manifests, which may be new. A pane with no root still gets the approved set, so a sync from any
+/// pane leaves no orphan running. The bool is whether the root could be read at all. Worker code.
+fn scan(root: Option<&Path>) -> (Vec<Found>, bool) {
     let approvals = data_dir().map(|d| load_approvals(&d)).unwrap_or_default();
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if judged.child("manifest.json").is_some_and(|m| localfs::is_file(&m)) {
-        dirs.push(judged.path().to_path_buf());
-    } else {
-        let Ok(names) = localfs::list_dir(&judged, 1000) else { return (Vec::new(), false) };
-        dirs.extend(be::folders(&names).iter().filter_map(|n| judged.child(n)).map(LocalPath::into_path_buf));
+    let mut readable = true;
+    if let Some(root) = root {
+        match localfs::judge(root).filter(|_| be::root_ok(root)) {
+            None => readable = false,
+            Some(judged) => {
+                if judged.child("manifest.json").is_some_and(|m| localfs::is_file(&m)) {
+                    dirs.push(judged.path().to_path_buf());
+                } else {
+                    match localfs::list_dir(&judged, 1000) {
+                        Ok(names) => dirs.extend(be::folders(&names).iter().filter_map(|n| judged.child(n)).map(LocalPath::into_path_buf)),
+                        Err(_) => readable = false,
+                    }
+                }
+            }
+        }
+    }
+    if !readable {
+        return (Vec::new(), false);
+    }
+    for a in approvals.list.iter().filter(|a| a.profile == be::STORE) {
+        let d = PathBuf::from(&a.folder);
+        if !dirs.iter().any(|x| be::folder_key(x) == a.folder) && be::root_ok(&d) {
+            dirs.push(d);
+        }
     }
     let found = dirs
         .into_iter()
         .filter_map(|d| {
             let (manifest, hash) = be::read_folder_manifest(&d)?;
             let key = be::folder_key(&d);
-            let approval = approvals.find(profile, &key, &hash).map(|a| a.id.clone());
-            Some(Found { folder: d, key, manifest, hash, approval })
+            let rec = approvals.find(be::STORE, &key, &hash);
+            let (approval, enabled) = (rec.map(|a| a.id.clone()), rec.is_none_or(|a| a.enabled));
+            Some(Found { folder: d, key, manifest, hash, approval, enabled })
         })
         .collect();
     (found, true)
@@ -151,10 +175,11 @@ impl App {
         self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| !io.dev_null) && self.browser_views.get(&pane).is_some_and(|b| b.view.is_some())
     }
 
-    /// The saved profile an approval belongs to.
+    /// What an approval belongs to: the shared browser data, the same for every Tandem browser profile
+    /// (they share one WebView2 profile, so one extension list).
     fn browser_ext_profile(&self, pane: PaneId) -> Option<String> {
-        let guid = self.panes.get(&pane)?.profile.clone();
-        Some(self.store.shared_guid(&guid))
+        self.panes.get(&pane)?;
+        Some(be::STORE.to_string())
     }
 
     fn browser_ext_value(&self, pane: PaneId, key: &str) -> Option<toml::Value> {
@@ -162,16 +187,12 @@ impl App {
         self.store.get(&guid)?.get(key)
     }
 
-    fn browser_ext_active(&self, pane: PaneId) -> Vec<String> {
-        let list = self.browser_ext_value(pane, be::ACTIVE_KEY);
-        list.as_ref().and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).filter(|i| be::valid_id(i)).take(be::MAX_ENTRIES).map(str::to_string).collect()).unwrap_or_default()
-    }
-
     /// Writes a profile key to the pane's own copy and to the saved profile (the profile mutator's way),
     /// then saves.
     fn browser_ext_write(&mut self, pane: PaneId, key: &str, value: Option<toml::Value>) {
         self.set_session_values(pane, &[(key.to_string(), value.clone())]);
-        let Some(shared) = self.browser_ext_profile(pane) else { return };
+        let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
+        let shared = self.store.shared_guid(&guid);
         if let Some(p) = self.store.get_mut(&shared) {
             match value {
                 Some(v) => p.set(key, v),
@@ -183,20 +204,18 @@ impl App {
         let _ = self.save_store();
     }
 
-    fn browser_ext_set_active(&mut self, pane: PaneId, id: &str, on: bool) {
-        let next = be::set_active(&self.browser_ext_active(pane), id, on);
-        self.browser_ext_write(pane, be::ACTIVE_KEY, Some(toml::Value::Array(next.into_iter().map(toml::Value::String).collect())));
-    }
-
-    /// Looks at the pane's chosen root on a worker, then syncs WebView2 with what the person approved.
-    /// `choose`: a folder was just chosen, so unapproved manifests are asked about (one window at a
-    /// time). `report`: the settings page wants the list. With no chosen root nothing happens.
+    /// Looks at the pane's chosen root (if any) and the approved folders on a worker, then syncs WebView2
+    /// with what the person approved. `choose`: a folder was just chosen, so unapproved manifests are
+    /// asked about (one window at a time). `report`: the settings page wants the list, and always gets
+    /// an answer. With no chosen root the sync still runs for the approved set.
     pub(super) fn browser_extensions_request(&mut self, pane: PaneId, choose: bool, report: bool) {
         if !self.browser_ext_pane_ok(pane) {
+            if report {
+                self.browser_settings_run(pane, vec![be::ui_script("[]")]);
+            }
             return;
         }
         let root = self.browser_ext_value(pane, be::ROOT_KEY).and_then(|v| v.as_str().map(str::to_string)).filter(|r| !r.trim().is_empty());
-        let (Some(root), Some(profile)) = (root, self.browser_ext_profile(pane)) else { return };
         if std::mem::replace(&mut self.browser_ext.busy, true) {
             let q = self.browser_ext.queued.get_or_insert((pane, false, false));
             *q = (pane, q.1 || choose, q.2 || report);
@@ -205,7 +224,7 @@ impl App {
         let tx = self.browser_ext.chan.get_or_insert_with(channel).0.clone();
         let notify = self.notify.clone();
         std::thread::spawn(move || {
-            let (found, readable) = scan(Path::new(&root), &profile);
+            let (found, readable) = scan(root.as_deref().map(Path::new));
             let _ = tx.send(Done::Scan { pane, found, readable, choose, report });
             notify();
         });
@@ -256,7 +275,7 @@ impl App {
                 self.browser_ext.known.insert(id.clone());
             }
         }
-        let active = self.browser_ext_active(pane);
+        let active: Vec<String> = found.iter().filter(|f| f.enabled).filter_map(|f| f.approval.clone().flatten()).collect();
         self.browser_ext.sync = Some(Sync { pane, found, active, report, failed: HashSet::new(), adds: 0 });
         if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
             v.list_extensions();
@@ -336,8 +355,7 @@ impl App {
                 self.browser_ext.ids.insert((Store::Browser, key.clone()), id.clone());
                 self.browser_ext.known.insert(id.clone());
                 if newly {
-                    // Approving a folder makes its extension active.
-                    self.browser_ext_set_active(pane, id, true);
+                    // Approving a folder makes its extension active (a new record is on).
                     if let Some(s) = self.browser_ext.sync.as_mut() {
                         s.active.push(id.clone());
                     }
@@ -373,7 +391,6 @@ impl App {
         }
         self.browser_ext.ids.retain(|_, v| v != id);
         self.browser_ext.known.remove(id);
-        self.browser_ext_set_active(pane, id, false);
         if let Some(profile) = self.browser_ext_profile(pane) {
             let id = id.to_string();
             std::thread::spawn(move || {
@@ -389,8 +406,14 @@ impl App {
         if !be::valid_id(id) || !known || !self.browser_ext_pane_ok(pane) {
             return vec![status_script(be::NOT_AVAILABLE, "error")];
         }
-        self.browser_ext_set_active(pane, id, enabled);
-        self.browser_extensions_request(pane, false, false);
+        // The switch lives with the approval, shared by every browser profile; the sync runs when it is saved.
+        let (tx, id) = (self.browser_ext.chan.get_or_insert_with(channel).0.clone(), id.to_string());
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            let ok = edit_approvals(|a| a.set_enabled(&id, enabled));
+            let _ = tx.send(Done::Approved { pane, ok });
+            notify();
+        });
         vec![status_script(if enabled { be::ENABLED } else { be::DISABLED }, "success")]
     }
 
@@ -487,10 +510,11 @@ mod tests {
     fn extensions_load_only_what_the_person_approved() {
         let l = live();
         // Never in Dev Null, and a pane needs a view.
-        assert!(body(l, "fn browser_ext_pane_ok", "/// The saved profile").contains("!io.dev_null"));
+        assert!(body(l, "fn browser_ext_pane_ok", "/// What an approval belongs to").contains("!io.dev_null"));
         let req = body(l, "pub(super) fn browser_extensions_request", "/// From the tick");
         assert!(req.find("browser_ext_pane_ok").unwrap() < req.find("std::thread::spawn").unwrap(), "checked before any work");
-        assert!(req.contains("filter(|r| !r.trim().is_empty())"), "no chosen root, no work");
+        assert!(req.contains("filter(|r| !r.trim().is_empty())") && !req.contains("else { return };"), "no chosen root: the approved set still syncs, no orphan");
+        assert!(!l.contains("a.profile == profile") && l.contains("be::STORE"), "approvals are for the shared browser data");
         // A folder reaches WebView2 only from `browser_extensions_listed`, only among approved folders.
         assert_eq!(l.matches("add_extension(").count(), 1);
         let listed = body(l, "pub(super) fn browser_extensions_listed", "/// An add finished");
@@ -520,7 +544,7 @@ mod tests {
         let l = live();
         assert_eq!(l.matches("remove_extension(").count(), 1);
         let rm = body(l, "pub(super) fn browser_extension_remove", "/// The settings page toggled");
-        assert!(rm.contains("remove_extension(id)") && rm.contains("ids.retain") && rm.contains("browser_ext_set_active(pane, id, false)") && rm.contains("forget_id"));
+        assert!(rm.contains("remove_extension(id)") && rm.contains("ids.retain") && rm.contains("forget_id"));
         let alerts = include_str!("scripts_alerts.rs");
         assert!(alerts.contains("Then::BrowserPermission(_) | Then::BrowserClearData { .. } | Then::BrowserExtension { .. }") && alerts.contains("w.require_read(0)"));
         assert!(alerts.contains("Then::BrowserExtension { .. } => Answer::Button(1)"));
