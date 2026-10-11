@@ -130,6 +130,14 @@ fn origin_of(url: &str) -> Option<String> {
     Some(format!("{scheme}://{}", hp.to_ascii_lowercase()))
 }
 
+/// Whether a browser pane showing `url` may be offered browser tools at all: never a private
+/// (Dev Null) pane, never a power or local page (iterm2-about, iterm2-file, iterm2-ssh, file:).
+/// A blank or not yet loaded pane is offered (nothing is shown; reads still go through
+/// `Page::open`). Same origin rule as `Page::open`.
+pub fn offerable(url: &str, dev_null: bool) -> bool {
+    !dev_null && (url.is_empty() || origin_of(url).is_some())
+}
+
 /// R13xai-3: the model may load `http://` and `https://` URLs only, without control characters,
 /// credentials or an empty host. Everything else answers the not-well-formed text.
 pub fn url_refusal(url: &str) -> Option<Outcome> {
@@ -566,6 +574,17 @@ mod tests {
             assert!(!out.model.contains('a') || out.model == PAGE_CHANGED);
         }
         assert_eq!(ans.deliver(None), o(PAGE_CHANGED, N_PAGE_CHANGED), "a pane that is gone or now unreadable answers nothing");
+    }
+
+    #[test]
+    fn offerable_pages_are_ordinary_and_not_private() {
+        for url in ["", "about:blank", "https://example.com/a?b=1", "http://127.0.0.1:8080/"] {
+            assert!(offerable(url, false), "{url}");
+            assert!(!offerable(url, true), "dev null {url}");
+        }
+        for url in ["iterm2-about:welcome", "iterm2-file:///c:/x", "iterm2-ssh://h", "file:///c:/x", "data:text/html,x", "javascript:1", "blob:https://a/b"] {
+            assert!(!offerable(url, false), "{url}");
+        }
     }
 
     #[test]

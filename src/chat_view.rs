@@ -189,7 +189,6 @@ const STREAM_STOPPED_AUTO: &str = "Terminal commands will no longer be sent to A
 const PERMISSIONS_HELP: &str = "You can use these buttons or the info button menu at the top of the chat window to control AI permissions for this chat.";
 const ORCHESTRATION_OFFER: &str = "**Enable orchestration for this chat?**\n\n**Orchestration** lets the AI coordinate across multiple terminal sessions. It can read the contents of any session, and you grant a one-time approval before it controls a session instead of approving every call. It also runs in **auto mode**: each command the AI proposes is checked for safety by your AI provider, and anything risky is held for your review.";
 pub const ENABLE_ORCHESTRATION: &str = "**Enable orchestration?**\n\nOrchestration mode lets the agent read screen contents from any session. To type into a session still requires your permission.\n\nThis is a more permissive model than when an agent is linked to a single session, where there are very fine-grained permission settings.\n\nEnabling will detach any linked terminal or browser session and switch the chat to Orchestration mode.";
-const NEEDS_BROWSER: &str = "The AI agent needs to run commands in a live web browser session, but none is attached to this chat.";
 /// The orchestration ids that pick a prompt's heading (`WorkgroupIntrospection.swift`).
 pub const SPAWN_ID: &str = "spawn";
 pub const COMMAND_APPROVAL_ID: &str = "command-approval";
@@ -272,7 +271,7 @@ pub fn body(content: &Content) -> Body {
         // The detail is Tandem's text around a program's words: it opens no link or span.
         Content::WatcherEvent(v) => Body::Markdown(chat_json::watcher(v).map(|(_, detail)| field(&detail)).unwrap_or_default()),
         Content::Unsupported(_) => system(UNSUPPORTED_TEXT),
-        Content::SelectSessionRequest { terminal, .. } => system(if *terminal { crate::ai_permissions::NEEDS_SESSION } else { NEEDS_BROWSER }),
+        Content::SelectSessionRequest { terminal, .. } => system(crate::ai_permissions::needs_session(*terminal)),
         Content::ClientLocal(action) => match action {
             ClientLocal::PickingSession => system(WAITING_TEXT),
             ClientLocal::ExecutingCommand(rc) => Body::Markdown(rc.call.markdown_description()),

@@ -561,6 +561,7 @@ impl App {
             crate::orch::tools_for(c.orchestration_enabled, offer)
         };
         let pane_of = |g: &str| pane_for_ref(&panes.borrow(), g).filter(|_| !links_off);
+        let browser_offered = |id: PaneId| panes.borrow().get(&id).and_then(|p| p.browser_io()).is_some_and(|io| crate::ai_browser::offerable(&io.url, io.dev_null));
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
             Box::new(LiveTurn {
@@ -586,6 +587,7 @@ impl App {
             globals,
             model_for: &model_for,
             pane_of: &pane_of,
+            browser_offered: &browser_offered,
             new_turn: &mut new_turn,
             new_files: &mut new_files,
             explain: &mut explain,

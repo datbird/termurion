@@ -54,6 +54,8 @@ pub(super) struct Ctx<'a> {
     pub model_for: &'a dyn Fn(&Chat) -> Option<Model>,
     /// A session guid to its live pane.
     pub pane_of: &'a dyn Fn(&str) -> Option<PaneId>,
+    /// Whether the model may use a browser pane (not Dev Null, not a power or local page).
+    pub browser_offered: &'a dyn Fn(PaneId) -> bool,
     pub new_turn: &'a mut dyn FnMut(&Model) -> Box<dyn TurnDriver>,
     pub new_files: &'a mut dyn FnMut(&Model, Job) -> Box<dyn FileDriver>,
     /// The explanation processor (ruling P8, `ChatClient.swift:59-83`): a message about to be
@@ -413,7 +415,8 @@ impl Engine {
             }
         }
         let Some(a) = cx.agents.get_mut(chat) else { return Vec::new() };
-        let allowed = a.allowed.clone().unwrap_or_default();
+        let browser_ok = row.browser_session_guid.as_deref().and_then(|g| (cx.pane_of)(g)).is_some_and(|p| (cx.browser_offered)(p));
+        let allowed = ai_permissions::offered(&a.allowed.clone().unwrap_or_default(), browser_ok);
         let functions = has(&model, Feature::FunctionCalling);
         let orchestrating = row.orchestration_enabled;
         // An orchestration chat takes its system message and tools from 12f and ignores the
@@ -797,8 +800,9 @@ impl Engine {
         let current = if category.is_browser() { row.browser_session_guid } else { row.terminal_session_guid };
         let live = current.and_then(|g| (cx.pane_of)(&g).map(|p| (g, p)));
         let Some((guid, pane)) = live else {
-            Self::notice(cx, chat, ai_permissions::NOT_LINKED_NOTICE);
-            let o = Outcome { model: ai_permissions::NOT_LINKED_MODEL.to_string(), notice: Some(ai_permissions::NOT_LINKED_USER_NOTICE.to_string()) };
+            let (notice, user, model) = ai_permissions::not_linked(category.is_browser());
+            Self::notice(cx, chat, notice);
+            let o = Outcome { model: model.to_string(), notice: Some(user.to_string()) };
             return Self::answer(cx, chat, request_id, o, true);
         };
         if guid != park.guid {
@@ -1187,6 +1191,8 @@ mod tests {
         model: Model,
         pinned: Model,
         live: Vec<PaneId>,
+        /// Live browser panes the model may not use (Dev Null, a power or local page).
+        unoffered: Vec<PaneId>,
         /// Every message the explanation processor was handed, as it came from the turn.
         seen: Rc<RefCell<Vec<Message>>>,
     }
@@ -1206,6 +1212,7 @@ mod tests {
                 model: crate::ai_model::fixture("gpt-t", "https://api.openai.com/v1/responses", Api::Responses),
                 pinned: crate::ai_model::fixture("p", "https://pinned.test/v1/chat/completions", Api::ChatCompletions),
                 live: vec![7, 8, 9],
+                unoffered: Vec::new(),
                 seen: Rc::new(RefCell::new(Vec::new())),
             }
         }
@@ -1215,6 +1222,8 @@ mod tests {
             let model_for = move |c: &Chat| Some(if c.model_name.as_deref() == Some(pinned.name.as_str()) { pinned.clone() } else { model.clone() });
             let live = self.live.clone();
             let pane_of = move |g: &str| g.parse::<PaneId>().ok().filter(|p| live.contains(p));
+            let unoffered = self.unoffered.clone();
+            let browser_offered = move |p: PaneId| !unoffered.contains(&p);
             let log = self.log.clone();
             let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
                 log.borrow_mut().turns_made += 1;
@@ -1239,6 +1248,7 @@ mod tests {
                 globals: &self.g,
                 model_for: &model_for,
                 pane_of: &pane_of,
+                browser_offered: &browser_offered,
                 new_turn: &mut new_turn,
                 new_files: &mut new_files,
                 explain: &mut explain,
@@ -1260,6 +1270,13 @@ mod tests {
 
         fn chat(&mut self, guid: Option<&str>) -> String {
             self.chat_with(guid, None)
+        }
+
+        /// A chat linked to a terminal pane and/or a browser pane.
+        fn linked_chat(&mut self, terminal: Option<&str>, browser: Option<&str>) -> String {
+            let g = &self.g;
+            let global = |c: Category| g.int(c.global_key());
+            create_in(&mut self.store, &mut self.broker, &mut self.overrides, "T", terminal, browser, "", vec![], None, &global, 1.0).unwrap()
         }
 
         fn send(&mut self, chat: &str, content: Content) -> Vec<EngineEffect> {
@@ -2433,6 +2450,46 @@ mod tests {
         h.script(vec![invoke("register_timer", "{\"delay_seconds\":5,\"fire_at\":null,\"note\":null}", "t1")]);
         let fx = h.say(&chat, "hi");
         assert_eq!(fx, vec![orch_effect(&chat, "t1", "register_timer", serde_json::json!({"delay_seconds": 5, "fire_at": null, "note": null}))]);
+    }
+
+    const BROWSER_TOOLS: [&str; 5] = ["find_on_page", "load_url", "web_search_in_browser", "get_current_url", "read_web_page_section"];
+
+    #[test]
+    fn the_browser_tools_are_offered_only_for_a_usable_linked_browser_pane() {
+        // A linked ordinary browser pane: the five tools.
+        let mut h = H::new();
+        let chat = h.linked_chat(None, Some("9"));
+        h.say(&chat, "hi");
+        let tools = h.log.borrow().inputs[0].tools.clone();
+        assert!(BROWSER_TOOLS.iter().all(|t| tools.iter().any(|n| n == t)), "{tools:?}");
+        // A Dev Null or power-page pane: none of them.
+        let mut h = H::new();
+        h.unoffered.push(9);
+        let chat = h.linked_chat(Some("7"), Some("9"));
+        h.say(&chat, "hi");
+        let tools = h.log.borrow().inputs[0].tools.clone();
+        assert!(!tools.iter().any(|n| BROWSER_TOOLS.contains(&n.as_str())), "{tools:?}");
+        assert!(tools.iter().any(|n| n == "execute_command"));
+        // No browser link: none either.
+        let mut h = H::new();
+        let chat = h.linked_chat(Some("7"), None);
+        h.say(&chat, "hi");
+        let tools = h.log.borrow().inputs[0].tools.clone();
+        assert!(!tools.iter().any(|n| BROWSER_TOOLS.contains(&n.as_str())));
+    }
+
+    #[test]
+    fn a_browser_call_with_no_browser_session_answers_the_browser_texts() {
+        let mut h = H::new();
+        let chat = h.linked_chat(Some("7"), Some("9"));
+        h.script(vec![invoke("get_current_url", "{}", "u1")]);
+        h.say(&chat, "hi");
+        let rid = h.park_ids(&chat)[0].clone();
+        h.live.retain(|p| *p != 9);
+        let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
+        assert!(run_ids(&fx).is_empty());
+        assert_eq!(h.notices(&chat), vec![ai_permissions::NOT_LINKED_NOTICE_BROWSER.to_string(), ai_permissions::NOT_LINKED_USER_NOTICE_BROWSER.to_string()]);
+        assert_eq!(h.responses(&chat), vec![(rid, ai_permissions::NOT_LINKED_MODEL_BROWSER.to_string())]);
     }
 
     #[test]
