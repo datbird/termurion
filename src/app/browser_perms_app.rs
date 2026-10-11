@@ -25,8 +25,6 @@ const LATER_TOTAL: usize = 32;
 const WAITING_PER_ASK: usize = 16;
 /// After a prompt is closed unanswered, the same origin and kind in the same pane is denied
 /// without a window for this long (B2): a page cannot re-raise the window by looping.
-const COOLDOWN_MS: u64 = 60_000;
-const COOLDOWNS_KEPT: usize = 256;
 /// Longest origin a permission question names (two of them and the question fit its 300).
 const PROMPT_ORIGIN_CHARS: usize = 120;
 /// A granted origin may show one notification this often; a flood from one site is dropped.
@@ -34,8 +32,7 @@ const WEB_NOTE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Milliseconds on a monotonic clock (the cooldown's).
 fn now_ms() -> u64 {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+    crate::cooldown::mono_ms()
 }
 
 /// Per-pane state for the audio and mute work; it lives on the pane, not the view (a remade view
@@ -148,7 +145,7 @@ pub(super) struct Asks {
     /// The clock the cooldown reads (milliseconds; the `App` sets it before each plan).
     pub(super) now_ms: u64,
     /// (pane, origin, type, dev null) -> when the cooldown ends.
-    cooldown: HashMap<(PaneId, String, PermissionType, bool), u64>,
+    cooldown: crate::cooldown::Cooldown<(PaneId, String, PermissionType, bool)>,
 }
 
 fn deny(r: &Req) -> Act {
@@ -208,7 +205,7 @@ impl Asks {
         };
         let waiter = Waiter { pane: p.req.pane, token: p.req.token, epoch: p.req.epoch };
         // Closed unanswered a moment ago: no window, no grant (B2).
-        if self.cooldown.get(&(p.req.pane, origin.clone(), t, p.dev_null)).is_some_and(|until| self.now_ms < *until) {
+        if self.cooldown.active(&(p.req.pane, origin.clone(), t, p.dev_null), self.now_ms) {
             acts.push(deny(&p.req));
             return;
         }
@@ -246,14 +243,7 @@ impl Asks {
         let a = self.open.remove(&id)?;
         let (d, save) = bp::answer_of(index);
         if index.is_none() {
-            if self.cooldown.len() >= COOLDOWNS_KEPT {
-                let now = self.now_ms;
-                self.cooldown.retain(|_, until| now < *until);
-                if self.cooldown.len() >= COOLDOWNS_KEPT {
-                    self.cooldown.clear();
-                }
-            }
-            self.cooldown.insert((a.pane, a.origin.clone(), a.kind, a.dev_null), self.now_ms + COOLDOWN_MS);
+            self.cooldown.start((a.pane, a.origin.clone(), a.kind, a.dev_null), self.now_ms);
         }
         Some(Settled { origin: a.origin, t: a.kind, d, save, dev_null: a.dev_null, waiters: a.waiting })
     }
@@ -1285,6 +1275,19 @@ mod tests {
         let off = Systems { notifications: System::Denied, location: System::Allowed };
         let acts = asks.plan_flush(vec![prep(req(7, 10, 4, "https://a.b/"), &[])], off);
         assert_eq!(answers(&acts), vec![(10, PermAnswer::Deny)]);
+    }
+
+    #[test]
+    fn the_permission_cooldown_is_the_shared_bounded_one() {
+        let mut asks = Asks::default();
+        for n in 0..(crate::cooldown::KEPT as u64 + 40) {
+            let q = asked(&asks.plan_flush(vec![prep(req(1, n * 2, 4, &format!("https://h{n}.example/")), &[])], SYS));
+            assert_eq!(q.len(), 1);
+            asks.answered(q[0].0, None).unwrap();
+            assert!(asks.cooldown.len() <= crate::cooldown::KEPT);
+        }
+        let src = include_str!("browser_perms_app.rs");
+        assert!(!src.contains(&format!("const {}", "COOLDOWNS_KEPT")), "one cooldown owner");
     }
 
     #[test]

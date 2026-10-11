@@ -54,7 +54,7 @@ use crate::pwm::Secret;
 /// Challenges held at once beyond the open prompt (the rest are cancelled).
 pub const MAX_QUEUED: usize = 4;
 /// After the person cancels a prompt, the same origin's challenges are cancelled at once this long.
-pub const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+pub const COOLDOWN: std::time::Duration = std::time::Duration::from_millis(crate::cooldown::SPAN_MS);
 /// Challenges accepted per navigation epoch (the rest are cancelled).
 pub const MAX_PER_NAV: usize = 16;
 /// Protection spaces remembered per pane (rejection flags and prompt prefill).
@@ -255,7 +255,7 @@ pub struct Coordinator {
     epoch: u64,
     /// Origins whose prompt the person cancelled, and when: a page that reloads itself into a 401
     /// cannot bring the prompt back for `COOLDOWN` (M1).
-    cancelled: HashMap<Origin, Instant>,
+    cancelled: crate::cooldown::Cooldown<Origin>,
     /// Told what a coordinator dropped without `Reset` still held, answered Cancel (set by the owner).
     drop_sink: Option<Box<dyn FnMut(Vec<Effect>)>>,
     nav_count: usize,
@@ -363,12 +363,7 @@ impl Coordinator {
                 match outcome {
                     PromptOutcome::Cancelled => {
                         let origin = self.contexts[&id].space.origin();
-                        if self.cancelled.len() >= MAX_SPACES {
-                            self.cancelled.retain(|_, t| now.saturating_duration_since(*t) < COOLDOWN);
-                        }
-                        if self.cancelled.len() < MAX_SPACES {
-                            self.cancelled.insert(origin, now);
-                        }
+                        self.cancelled.start(origin, crate::cooldown::ms_of(now));
                         self.cancel_one(id)
                     }
                     PromptOutcome::Submitted { credential, remember } => {
@@ -518,7 +513,7 @@ impl Coordinator {
         if self.no_cooldown {
             return false;
         }
-        self.cancelled.get(origin).is_some_and(|t| now.saturating_duration_since(*t) < COOLDOWN)
+        self.cancelled.active(origin, crate::cooldown::ms_of(now))
     }
 
     fn is_open(&self, id: ChallengeId) -> bool {
@@ -1387,6 +1382,27 @@ mod tests {
         assert_eq!(c.reduce_at(chal(2, "r"), soon), vec![Effect::Cancel(id(2))]);
         let later = t + COOLDOWN + std::time::Duration::from_secs(1);
         assert!(matches!(c.reduce_at(chal(3, "r"), later).as_slice(), [Effect::LookupSaved { .. }]));
+    }
+
+    #[test]
+    fn the_cancel_cooldown_is_the_shared_bounded_one() {
+        let mut c = Coordinator::default();
+        let t0 = Instant::now();
+        c.reduce_at(Event::Visible(true), t0);
+        for n in 0..(crate::cooldown::KEPT as u64 + 40) {
+            let t = t0 + std::time::Duration::from_secs(n);
+            let origin = Origin { scheme: "https".into(), host: format!("h{n}.example"), port: 443 };
+            let space = SpaceKey { scheme: "https".into(), host: format!("h{n}.example"), port: 443, realm: "r".into() };
+            c.reduce_at(Event::MainProvisionalStarted(Some(origin)), t);
+            let fx = c.reduce_at(chal_with(n + 1, space, true, false, true, true), t);
+            assert!(matches!(fx.as_slice(), [Effect::LookupSaved { .. }]), "{n}: {fx:?}");
+            c.reduce_at(Event::SavedLookupResult { id: id(n + 1), credential: None }, t);
+            c.reduce_at(Event::PromptResult { id: id(n + 1), outcome: PromptOutcome::Cancelled }, t);
+            assert!(c.cancelled.len() <= crate::cooldown::KEPT);
+        }
+        assert!(c.cancelled.len() > 0);
+        let src = include_str!("browser_basic_auth.rs");
+        assert!(!src.contains(&format!("cancelled: {}", "HashMap")), "one cooldown owner");
     }
 
     #[test]
