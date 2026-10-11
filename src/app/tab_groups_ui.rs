@@ -861,7 +861,6 @@ fn decode_icon_file(path: &Path) -> Option<(Vec<u8>, (u32, u32))> {
 impl App {
     /// Reads the user's icon maps again (`GS reloadGraphicMaps`; 13y2 Task 9a calls it after it
     /// pulls them): when the maps changed, every icon is worked out again and the bars redrawn.
-    #[allow(dead_code)] // 13y2 Task 9a is its caller.
     pub(super) fn reload_tab_icon_maps(&mut self) {
         let maps = user_tab_icon_maps(Some(&self.tab_icon_maps));
         if maps == self.tab_icon_maps {

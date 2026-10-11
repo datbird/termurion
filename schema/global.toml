@@ -5840,3 +5840,39 @@ label = "The Claude Code main session was given Auto-Request Review When Idle."
 type = "bool"
 default = false
 help = "Remembered so the one-time workgroup migration does not run again."
+
+[[setting]]
+key = "NoSyncSyncDataFilesWithCustomFolder"
+tab = "Stored"
+section = "General"
+label = "Sync snippets, notes and icon customizations with the settings folder"
+type = "dict"
+default = {}
+help = "Per settings folder, whether you chose to keep your snippets, global notes and session icon customizations in its Data folder (true) or only the settings (false)."
+
+[[setting]]
+key = "NoSyncRemoteDataFileSyncBaselineSignatures"
+tab = "Stored"
+section = "General"
+label = "Data files: signature both sides last had"
+type = "dict"
+default = {}
+help = "Per settings folder, the signature of the snippets, notes and icon files when this PC and the folder last matched."
+
+[[setting]]
+key = "NoSyncRemoteDataFileSyncLastPushedLocal"
+tab = "Stored"
+section = "General"
+label = "Data files: signature last pushed"
+type = "dict"
+default = {}
+help = "Per settings folder, the signature of this PC's data files at the last push."
+
+[[setting]]
+key = "NoSyncRemoteDataFileSyncDiscardPending"
+tab = "Stored"
+section = "General"
+label = "Data files: discard pending"
+type = "dict"
+default = {}
+help = "Per settings folder, set when Lose Changes could not remove a local data file; the next launch tries again."

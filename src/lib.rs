@@ -424,6 +424,7 @@ pub mod access;
 pub mod uia_win;
 pub mod dynamic_profiles;
 pub mod dynamic_profiles_trust;
+pub mod data_file_sync;
 #[cfg(windows)]
 pub mod dynamic_profiles_scan;
 #[cfg(windows)]

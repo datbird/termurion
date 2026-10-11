@@ -577,3 +577,9 @@ mod tests {
         assert_eq!(first_letter(""), None);
     }
 }
+
+/// Whether bytes are a JSON object, as the user's icon and color maps must be (`parse`); the
+/// check a map pulled from the settings folder passes before it is written.
+pub fn is_map_file(bytes: &[u8]) -> bool {
+    parse(bytes).is_some()
+}

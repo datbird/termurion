@@ -211,6 +211,7 @@ mod frustration_ui;
 mod mouse_ui;
 mod shell_version_ui;
 mod prefs_ui;
+mod data_files_ui;
 mod settings_export_ui;
 mod ai_app;
 mod ai_runs;

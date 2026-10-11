@@ -114,9 +114,23 @@ pub(super) fn overwrite_ask(text: &str) -> Ask {
 /// "Settings have changed. Copy them to ...?" at quit (`RP:1682-1688`), silenced under the Save
 /// changes popup's key. Lose Changes is never remembered, so a saved Lose Changes (Manually)
 /// still asks, as in iTerm2.
-fn quit_ask(text: &str) -> Ask {
+fn quit_ask(text: &str, data: bool) -> Ask {
     let buttons = [rp::COPY, rp::LOSE_CHANGES];
-    ask(crate::script_new::WARNING, &rp::settings_changed(text), &buttons, Some(rp::HAVE_SELECTION_KEY), Kind::Permanent, Then::PrefsQuit)
+    let question = if data { crate::data_file_sync::with_folder(crate::data_file_sync::COPY_BOTH_TEXT, text) } else { rp::settings_changed(text) };
+    ask(crate::script_new::WARNING, &question, &buttons, Some(rp::HAVE_SELECTION_KEY), Kind::Permanent, Then::PrefsQuit)
+}
+
+/// The quit question's text for the test.
+#[cfg(test)]
+pub(super) fn quit_ask_for_test(folder: &str, data: bool) -> String {
+    quit_ask(folder, data).spec.text.clone()
+}
+
+/// "Your snippets, notes, or icon customizations changed. Copy them to ...?" at quit when only
+/// the data files changed; Lose Changes is never remembered.
+fn data_quit_ask(folder: &str) -> Ask {
+    let buttons = [rp::COPY, rp::LOSE_CHANGES];
+    ask(crate::script_new::WARNING, &crate::data_file_sync::with_folder(crate::data_file_sync::COPY_DATA_TEXT, folder), &buttons, None, Kind::Persistent, Then::PrefsQuitData)
 }
 
 /// The URL's text as loaded: the snapshot, or the failure (an empty or malformed file falls
@@ -197,7 +211,14 @@ pub(super) fn load_at_start(g: &mut Globals, store: &mut Store, fetch: &dyn Fn(&
         Start::Ask(ask) => (None, vec![ask]),
         Start::Loaded(snap) => {
             apply_snapshot(&snap, g, store);
-            (Some(snap), Vec::new())
+            // The data files reconcile before the snippets, notes and icon maps are read.
+            let location = rp::expanded(&g.string(rp::FOLDER_KEY), &home());
+            let asks = if rp::is_url(&location) || rp::is_unc(&location) { Vec::new() } else {
+                let base = PathBuf::from(&location);
+                let folder = if crate::localfs::is_local_file(&base) { base.parent().map(Path::to_path_buf).unwrap_or(base) } else { base };
+                super::data_files_ui::reconcile_at_start(g, &folder)
+            };
+            (Some(snap), asks)
         }
     }
 }
@@ -237,7 +258,7 @@ fn write_snapshot(snap: &Snapshot, file: &Path, read_link: &dyn Fn(&Path) -> Opt
 
 impl App {
     /// The location as typed and as used (tilde-expanded, a URL as is).
-    fn prefs_location(&self) -> (String, String) {
+    pub(super) fn prefs_location(&self) -> (String, String) {
         let text = self.globals.string(rp::FOLDER_KEY);
         let location = rp::expanded(&text, &home());
         (text, location)
@@ -245,7 +266,7 @@ impl App {
 
     /// The settings file in the folder; None for a URL, a blank location, a network path or a
     /// folder or file reached through a link to one, which are never touched as files.
-    fn prefs_file(&self) -> Option<PathBuf> {
+    pub(super) fn prefs_file(&self) -> Option<PathBuf> {
         let (text, location) = self.prefs_location();
         let read_link = crate::netpath::read_reparse;
         if rp::is_url(&location) || text.trim().is_empty() || rp::is_unc(&text) || !rp::local_folder(Path::new(&location), &read_link) {
@@ -295,21 +316,35 @@ impl App {
         let snap = self.prefs_local();
         if write_snapshot(&snap, &file, &crate::netpath::read_reparse).is_ok() {
             self.prefs_saved = Some(snap);
+            if let Some(folder) = self.data_folder() {
+                self.data_files_push(&folder, false);
+            }
         }
     }
 
     /// Writes the folder, or says it could not (`RP:376-386`). iTerm2 names the file twice.
-    fn prefs_write(&mut self) {
+    fn prefs_write(&mut self, interactive: bool) {
+        if !self.prefs_write_settings() {
+            return;
+        }
+        // The data files go with the settings.
+        if let Some(folder) = self.data_folder() {
+            self.data_files_push(&folder, interactive);
+        }
+    }
+
+    fn prefs_write_settings(&mut self) -> bool {
         let snap = self.prefs_local();
         let file = self.prefs_file();
         if let Some(f) = &file {
             if write_snapshot(&snap, f, &crate::netpath::read_reparse).is_ok() {
                 self.prefs_saved = Some(snap);
-                return;
+                return true;
             }
         }
         let shown = file.map_or_else(|| self.prefs_location().1, |f| f.display().to_string());
         self.ask_scripts(ask(rp::FAILED_COPY, &rp::tried_to_copy(&shown, &shown), &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing));
+        false
     }
 
     /// `remotePrefsHaveChanged` (`RP:1625-1644`): the folder's file no longer holds what was
@@ -321,9 +356,9 @@ impl App {
     }
 
     /// Save Now, the Copy answers and the save at quit (`saveLocalUserDefaultsToRemotePrefs`,
-    /// `RP:335-392`). iTerm2's `interactive` only chooses how the Data folder reconciles, which
-    /// Tandem does not sync.
-    pub(super) fn prefs_save_now(&mut self, _interactive: bool) {
+    /// `RP:335-392`). `interactive` lets the Data folder push reconcile (and ask) when the folder
+    /// moved since the last sync.
+    pub(super) fn prefs_save_now(&mut self, interactive: bool) {
         let (text, location) = self.prefs_location();
         let url = rp::is_url(&location);
         match save_plan(url, !url && self.prefs_remote_changed()) {
@@ -332,7 +367,7 @@ impl App {
                 self.ask_scripts(ask);
             }
             SavePlan::AskOverwrite => self.ask_scripts(overwrite_ask(&text)),
-            SavePlan::Write => self.prefs_write(),
+            SavePlan::Write => self.prefs_write(interactive),
         }
     }
 
@@ -398,8 +433,23 @@ impl App {
                 let t = timeout(&self.globals);
                 self.prefs_fetch_start(url, Some(t));
             }
-            (Then::PrefsOverwrite, 0) => self.prefs_write(),
+            (Then::PrefsOverwrite, 0) => self.prefs_write(true),
             (Then::PrefsQuit, 0) => self.prefs_save_now(false),
+            (Then::PrefsQuit, 1) => {
+                if let Some(folder) = self.data_folder().filter(|_| self.data_files_differ()) {
+                    self.data_files_discard(&folder);
+                }
+            }
+            (Then::PrefsQuitData, 0) => {
+                if let Some(folder) = self.data_folder() {
+                    self.data_files_push(&folder, false);
+                }
+            }
+            (Then::PrefsQuitData, 1) => {
+                if let Some(folder) = self.data_folder() {
+                    self.data_files_discard(&folder);
+                }
+            }
             (Then::PrefsCopyNow, 0) => self.prefs_save_now(true),
             _ => {}
         }
@@ -432,7 +482,26 @@ impl App {
         let mode = rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY));
         let (text, location) = self.prefs_location();
         let differs = on && self.prefs_saved.as_ref().is_some_and(|saved| rp::differs(saved, &self.prefs_local()));
-        match rp::quit_step(on, rp::is_url(&location), differs, mode, self.prefs_saved.is_some()) {
+        let data = on && !rp::is_url(&location) && self.data_files_differ();
+        let step = rp::quit_step(on, rp::is_url(&location), differs, mode, self.prefs_saved.is_some());
+        // Only the data changed: push just them, or ask with the data-only text.
+        if data && !differs && matches!(step, QuitStep::Nothing | QuitStep::ClearUrlPrompt) {
+            if matches!(step, QuitStep::ClearUrlPrompt) {
+                self.globals.unset(rp::PROMPT_URL_KEY);
+                self.save_globals();
+            }
+            if let Some(folder) = self.data_folder() {
+                if mode == rp::SaveMode::Always {
+                    self.data_files_push(&folder, false);
+                    return true;
+                }
+                self.ask_scripts(data_quit_ask(&folder.display().to_string()));
+                self.prefs_exit_pending = true;
+                return false;
+            }
+            return true;
+        }
+        match step {
             QuitStep::Nothing => return true,
             QuitStep::RememberUrl => {
                 self.globals.set(rp::PROMPT_URL_KEY, Value::String(location));
@@ -445,7 +514,7 @@ impl App {
                 return true;
             }
             QuitStep::SaveSilently => self.prefs_save_now(false),
-            QuitStep::Ask => self.ask_scripts(quit_ask(&text)),
+            QuitStep::Ask => self.ask_scripts(quit_ask(&text, data)),
         }
         if self.prefs_quit_question_open() {
             self.prefs_exit_pending = true;
@@ -705,7 +774,7 @@ mod tests {
     fn a_silenced_quit_question_saved_as_lose_changes_is_shown() {
         use crate::warnings::{preempt, Preempt};
         let mut g = Globals::empty(Path::new("settings.toml"));
-        let q = quit_ask("C:\\T");
+        let q = quit_ask("C:\\T", false);
         assert_eq!(q.spec.never_remember, [1]);
         g.set(rp::HAVE_SELECTION_KEY, Value::Boolean(true));
         g.set(rp::SELECTION_KEY, Value::Integer(1));

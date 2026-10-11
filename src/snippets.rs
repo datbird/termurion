@@ -84,7 +84,7 @@ impl Snippet {
 
     /// The title, or the value ellipsized to 30 characters when the title is empty.
     pub fn display_title(&self) -> String {
-        if self.title.is_empty() { ellipsize(&self.value, 30) } else { self.title.clone() }
+        if self.title.is_empty() { ellipsize(&self.value, 30) } else { crate::inert_files::display_text(&self.title, 200, false) }
     }
 
     /// What a Send Snippet key action stores: `{"guid":"..."}`.

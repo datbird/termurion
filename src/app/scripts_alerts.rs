@@ -106,6 +106,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::AllowAutoLaunch(_) => Answer::Button(0),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
+        // Just Settings and Use Settings Folder's: a closed window never copies files out (the pull backs the local ones up).
+        Then::DataConsent(_) | Then::DataConflict(_) => Answer::Button(1),
         // Keep It: a closed window never removes a workgroup the person edited.
         Then::ClaudeEditedWorkgroup => Answer::Button(0),
         // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
@@ -193,6 +195,15 @@ pub(super) enum Then {
     PrefsQuit,
     /// "Copy local settings to custom folder now?": Copy (0) or Don't Copy (1).
     PrefsCopyNow,
+    /// Only the snippets, notes or icon customizations changed, at quit: Copy (0) or Lose Changes
+    /// (1), which is never remembered.
+    PrefsQuitData,
+    /// "Tandem can also keep your snippets ... Sync them too?" for a settings folder: Sync These
+    /// Too (0) or Just Settings (1).
+    DataConsent(std::path::PathBuf),
+    /// Snippets, notes or icons changed on both sides: Use This PC's (0) or Use Settings
+    /// Folder's (1).
+    DataConflict(std::path::PathBuf),
     /// "Problem Exporting" after Export All Settings and Data failed: OK (0).
     ExportFailed,
     /// "Importing Settings and Data" for the archive picked: OK (0) stages it and restarts
@@ -357,7 +368,7 @@ impl Then {
     /// Reveal and a found archive's Cancel and Move to Trash (`iTermScriptsMenuController.m:567,964`).
     pub(super) fn never_remember(&self) -> Vec<usize> {
         match self {
-            Then::OpenNewScript(_) | Then::PrefsQuit | Then::Malformed(_) => vec![1],
+            Then::OpenNewScript(_) | Then::PrefsQuit | Then::PrefsQuitData | Then::Malformed(_) => vec![1],
             // View Log, and Reveal in Explorer when the file is offered: navigation, never remembered.
             Then::DynamicProfilesError(file) => if file.is_some() { vec![1, 2] } else { vec![1] },
             Then::Archive(_) => vec![1, 2],
@@ -722,7 +733,8 @@ impl App {
                     self.erase_confirmed(dry_run);
                 }
             }
-            Then::PrefsUrlPrompt(_) | Then::PrefsFailedUrl { .. } | Then::PrefsLocationNotSet | Then::PrefsOverwrite | Then::PrefsQuit | Then::PrefsCopyNow => self.prefs_answered(then, index),
+            Then::PrefsUrlPrompt(_) | Then::PrefsFailedUrl { .. } | Then::PrefsLocationNotSet | Then::PrefsOverwrite | Then::PrefsQuit | Then::PrefsQuitData | Then::PrefsCopyNow => self.prefs_answered(then, index),
+            Then::DataConsent(_) | Then::DataConflict(_) => self.data_files_answered(then, index),
             Then::ExcludeFromTaskbar => {
                 if index == 0 {
                     self.exclude_from_taskbar_confirmed();
@@ -921,7 +933,7 @@ mod tests {
             assert!(push_capped(&mut q, ask(d(pane))).is_none());
         }
         assert!(push_capped(&mut q, ask(d(99))).is_some(), "one download too many");
-        for then in [Then::Paste(1), Then::Restart(1, Default::default()), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
+        for then in [Then::Paste(1), Then::Restart(1, Default::default()), Then::PrefsQuit, Then::PrefsQuitData, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
             assert!(push_capped(&mut q, ask(then.clone())).is_none(), "{then:?}");
         }
         assert_eq!(q.len(), LIMIT + 7);
