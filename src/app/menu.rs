@@ -420,6 +420,11 @@ impl App {
     /// profile it uses; Settings alone without a session.
     pub(super) fn edit_session(&mut self, pane: Option<PaneId>, event_loop: &ActiveEventLoop) {
         self.open_settings(event_loop, Mode::Settings);
+        // iTerm2 divorces the session first (`PseudoTerminal.m:7183-7198`), here and nowhere else:
+        // following the focus must not copy every pane it passes.
+        if let Some(id) = pane {
+            self.divorce(id);
+        }
         self.point_edit_session(pane);
     }
 

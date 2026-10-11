@@ -53,6 +53,9 @@ pub enum Edit {
     /// The Session Hotkey row set (or cleared) the hotkey of this session; only the person's own
     /// edit gets here, and the app registers it.
     SessionHotkey(crate::layout::PaneId, Option<crate::hotkey::Shortcut>),
+    /// Edit Session on a pane with no copy yet changed these values: the app divorces the pane
+    /// and sets them on the copy (the saved profile stays as it was).
+    SessionEdit(crate::layout::PaneId, Vec<(String, Option<Value>)>),
     Imported(usize),
     Error(String),
     /// An OK-only alert the person's own action raised (a trigger file that did not import or
@@ -245,6 +248,13 @@ pub fn follow_target(seen: Option<PaneId>, now: Option<PaneId>, pin: bool, editi
 }
 
 /// The Edit Session pane after `closed` closed.
+/// What `now` changed from `base`, as session values (None removes a key).
+pub fn session_diff(base: &Profile, now: &Profile) -> Vec<(String, Option<Value>)> {
+    let mut out: Vec<(String, Option<Value>)> = now.values.iter().filter(|(k, v)| base.values.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+    out.extend(base.values.keys().filter(|k| !now.values.contains_key(*k)).map(|k| (k.clone(), None)));
+    out
+}
+
 pub fn edit_session_after_close(editing: Option<PaneId>, closed: PaneId) -> Option<PaneId> {
     editing.filter(|&p| p != closed)
 }
@@ -688,6 +698,9 @@ impl SettingsWindow {
     pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals, snippets: &mut crate::snippets::Store) -> Edit {
         let mut edit = Edit::None;
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
+        // Edit Session: the page edits the profile the session uses (its own copy once it has one);
+        // the list keeps the saved profile selected, as the destination of Copy Current Settings.
+        let page_guid = self.edit_session_profile.clone().filter(|_| self.edit_session.is_some()).unwrap_or_else(|| selected.clone());
         let mut tab = self.tab;
         let mut pick = None;
         // A fixed Theme forces its mode here too (`tab_theme::forced_dark`).
@@ -768,9 +781,18 @@ impl SettingsWindow {
                         // "Update Which Modes?": load the preset the click was about (P21).
                         if crate::settings_presets::is_question_id(answer.spec.id.as_deref()) {
                             if let Some((name, _)) = presets.pending.take() {
-                                if let (Some(p), Some(preset)) = (store.get_mut(&selected), crate::color_presets::find(globals, &name)) {
-                                    crate::settings_presets::load(&preset, p, answer.index == 0, presets.editing.dark, dark);
-                                    edit = Edit::Changed(selected.clone());
+                                if let Some(preset) = crate::color_presets::find(globals, &name) {
+                                    if let (Some(pane), false) = (edit_session, store.is_session(&page_guid)) {
+                                        // A session with no copy yet: load into a scratch profile; the app divorces.
+                                        if let Some(base) = store.get(&page_guid).cloned() {
+                                            let mut p = base.clone();
+                                            crate::settings_presets::load(&preset, &mut p, answer.index == 0, presets.editing.dark, dark);
+                                            edit = Edit::SessionEdit(pane, session_diff(&base, &p));
+                                        }
+                                    } else if let Some(p) = store.get_mut(&page_guid) {
+                                        crate::settings_presets::load(&preset, p, answer.index == 0, presets.editing.dark, dark);
+                                        edit = Edit::Changed(page_guid.clone());
+                                    }
                                 }
                             }
                         }
@@ -968,7 +990,9 @@ impl SettingsWindow {
                     pick = Some(g);
                 }
                 ui.separator();
-                ui.horizontal(|ui| {
+                // Edit Session hides the list's editing buttons (`ProfilePreferencesViewController.m:309-326`).
+                if edit_session.is_none() {
+                    ui.horizontal(|ui| {
                     if ui.button("+").on_hover_text("New profile").clicked() {
                         let p = Profile::new("New Profile");
                         pick = Some(p.guid());
@@ -1026,6 +1050,7 @@ impl SettingsWindow {
                         };
                     }
                 }
+                }
             });
             egui::CentralPanel::default().show(ui, |ui| {
                 // A browser profile hides the terminal rows, and the tabs left with none
@@ -1046,9 +1071,23 @@ impl SettingsWindow {
                     }
                 });
                 ui.separator();
+                let selected = page_guid.clone();
                 let is_default = selected == store.default_guid;
                 let saved_guid = store.shared_guid(&selected);
-                let Some(profile) = store.get_mut(&selected) else { return };
+                // A session with no copy yet is edited through a scratch profile: a change comes
+                // back as `SessionEdit` and the app divorces then, once (never merely for a focus).
+                let mut scratch = match edit_session {
+                    Some(_) if !store.is_session(&selected) => store.get(&selected).cloned(),
+                    _ => None,
+                };
+                let scratch_base = scratch.clone();
+                let profile = match scratch.as_mut() {
+                    Some(p) => p,
+                    None => {
+                        let Some(p) = store.get_mut(&selected) else { return };
+                        p
+                    }
+                };
                 let separate = profile.bool("Use Separate Colors for Light and Dark Mode");
                 let system_dark = dark;
                 let colors = schema::TABS[tab] == "Colors";
@@ -1364,6 +1403,12 @@ impl SettingsWindow {
                         }
                     }
                 });
+                if let (Some(base), Some(now), Some(pane)) = (&scratch_base, &scratch, edit_session) {
+                    let diff = session_diff(base, now);
+                    if !diff.is_empty() {
+                        edit = Edit::SessionEdit(pane, diff);
+                    }
+                }
             });
         });
         // The first edit of a dynamic profile that is not rewritable asks "Changes Will Be Lost"
@@ -2905,6 +2950,32 @@ mod tests {
         for (name, src) in [("mod.rs", include_str!("app/mod.rs")), ("emu_ui.rs", include_str!("app/emu_ui.rs")), ("hotkey_ui.rs", include_str!("app/hotkey_ui.rs")), ("tmux_tabs_ui.rs", include_str!("app/tmux_tabs_ui.rs"))] {
             assert!(!src.contains("self.store.save()"), "{name} saves the store around save_store");
         }
+    }
+
+    #[test]
+    fn session_diff_lists_only_what_changed() {
+        let base = Profile::new("A");
+        let mut now = base.clone();
+        now.set("Columns", Value::Integer(131));
+        now.values.remove("Name");
+        let d = session_diff(&base, &now);
+        assert!(d.iter().any(|(k, v)| k == "Columns" && *v == Some(Value::Integer(131))));
+        assert!(d.iter().any(|(k, v)| k == "Name" && v.is_none()));
+        assert_eq!(d.len(), 2);
+        assert!(session_diff(&base, &base).is_empty());
+    }
+
+    /// 13y2 Task 9c: in Edit Session the profile page edits the session's own copy, the list has no
+    /// add or remove, and a pane with no copy yet is edited through a scratch profile that becomes
+    /// a `SessionEdit` (the divorce happens once, at the first real edit).
+    #[test]
+    fn edit_session_page_edits_the_copy() {
+        let src = include_str!("settings_ui.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(live.contains("SessionEdit("), "a scratch edit comes back as Edit::SessionEdit");
+        assert!(live.contains("let selected = page_guid.clone();"), "the page edits the session profile, the list keeps the original");
+        let at = live.find("on_hover_text(\"New profile\")").unwrap();
+        assert!(live[..at].rsplit("egui::Panel::left").next().unwrap().contains("if edit_session.is_none() {"), "no add or remove in Edit Session");
     }
 
     #[test]

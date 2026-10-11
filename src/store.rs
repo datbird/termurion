@@ -153,7 +153,19 @@ impl Store {
     }
 
     pub fn get_mut(&mut self, guid: &str) -> Option<&mut Profile> {
-        self.profiles.iter_mut().find(|p| p.guid() == guid)
+        if let Some(i) = self.profiles.iter().position(|p| p.guid() == guid) {
+            return Some(&mut self.profiles[i]);
+        }
+        // A session's own copy is edited in place (Edit Session); `refresh_overridden` follows.
+        self.sessions.iter_mut().map(|s| &mut s.profile).find(|p| p.guid() == guid)
+    }
+
+    /// After the session copy `guid` was edited in place: which keys it overrides, again.
+    pub fn refresh_overridden(&mut self, guid: &str) {
+        let Some(i) = self.sessions.iter().position(|s| s.profile.guid() == guid) else { return };
+        let original = self.sessions[i].original_guid();
+        let shared = self.profiles.iter().find(|p| p.guid() == original).cloned().unwrap_or_else(|| self.default_profile().clone());
+        self.sessions[i].recompute(&shared);
     }
 
     /// The saved profile a Guid stands for: itself, or a session copy's original.
@@ -268,9 +280,26 @@ mod tests {
         let mut st = Store::fresh(&path);
         let shared = st.profiles[0].guid();
         st.sessions.push(crate::session_profile::divorce(&st.profiles[0].clone(), "copy".into()));
-        assert_eq!(st.shared_guid("copy"), shared, "new panes and Edit Session use the saved profile");
+        assert_eq!(st.shared_guid("copy"), shared, "new panes use the saved profile");
         assert_eq!(st.shared_guid(&shared), shared);
         assert_eq!(st.shared_guid("unknown"), "unknown");
+    }
+
+    #[test]
+    fn a_session_copy_is_edited_in_place_and_marked() {
+        let mut st = Store::fresh(&std::env::temp_dir().join(format!("tandem-store-edit-{}.toml", std::process::id())));
+        let saved = st.profiles[0].guid();
+        let copy = st.divorce(&saved);
+        st.get_mut(&copy).expect("the copy is reachable for editing").set("Columns", toml::Value::Integer(131));
+        st.refresh_overridden(&copy);
+        assert_eq!(st.get(&copy).unwrap().int("Columns"), 131);
+        assert_ne!(st.get(&saved).unwrap().int("Columns"), 131, "the saved profile is unchanged");
+        assert!(st.sessions[0].overridden.contains("Columns"));
+        // Putting the value back clears the mark.
+        let saved_value = st.get(&saved).unwrap().values.get("Columns").cloned();
+        match saved_value { Some(v) => st.get_mut(&copy).unwrap().set("Columns", v), None => { st.get_mut(&copy).unwrap().values.remove("Columns"); } }
+        st.refresh_overridden(&copy);
+        assert!(st.sessions[0].overridden.is_empty(), "{:?}", st.sessions[0].overridden);
     }
 
     #[test]

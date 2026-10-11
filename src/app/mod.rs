@@ -4518,10 +4518,13 @@ impl App {
         // A rewritable dynamic profile's edit goes back to its file once it settles.
         if let Edit::Changed(guid) = &edit {
             self.dynamic_edited(guid);
+            // A session's own copy edited in Edit Session: what it overrides is worked out again.
+            self.store.refresh_overridden(guid);
         }
         match edit {
             Edit::None | Edit::Preview => return,
             Edit::SessionHotkey(pane, s) => self.set_session_hotkey(pane, s),
+            Edit::SessionEdit(pane, values) => self.session_edit(pane, values),
             Edit::OpenMany(guids, how) => self.open_selected_profiles(guids, how, crate::settings_ui::Opener::ProfilesWindow),
             // Taken by the window's redraw handler, which has the event loop.
             Edit::EditProfiles(_) => return,

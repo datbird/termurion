@@ -57,6 +57,11 @@ impl SessionProfile {
         }
     }
 
+    /// The copy was edited in place: every key that differs from `shared` is overridden.
+    pub fn recompute(&mut self, shared: &Profile) {
+        self.overridden = self.profile.values.keys().chain(shared.values.keys()).filter(|k| !own(k) && self.profile.values.get(*k) != shared.values.get(*k)).cloned().collect();
+    }
+
     /// The shared profile changed: keys the session did not override follow it.
     pub fn merge(&mut self, shared: &Profile) {
         for (k, v) in &shared.values {

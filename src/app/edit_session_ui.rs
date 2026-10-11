@@ -7,11 +7,14 @@ impl App {
     /// Points the open Settings window at the profile `pane` uses (Settings alone without a
     /// session): the profile selected, the tmux state, and the pane Edit Session is open for.
     pub(super) fn point_edit_session(&mut self, pane: Option<PaneId>) {
-        let guid = pane.and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile));
+        // The profile page edits what the pane uses (its own copy when it has one), the list
+        // keeps the saved profile selected as the destination of Copy Current Settings.
+        let used = pane.and_then(|id| self.panes.get(&id)).map(|p| p.profile.clone());
+        let guid = used.as_ref().map(|u| self.store.shared_guid(u));
         let tmux = pane.is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
         let Some(s) = self.settings.as_mut() else { return };
         s.edit_session = pane.filter(|_| guid.is_some());
-        s.edit_session_profile = guid.clone().filter(|_| s.edit_session.is_some());
+        s.edit_session_profile = used.filter(|_| s.edit_session.is_some());
         if let Some(g) = guid {
             s.select(&g);
             // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
@@ -25,6 +28,19 @@ impl App {
             s.session_hotkey_refused = None;
         }
         self.sync_session_hotkey_row();
+    }
+
+    /// A first edit in Edit Session on a pane with no copy yet (a followed pane): the pane
+    /// divorces now, once, and takes the changed values.
+    pub(super) fn session_edit(&mut self, pane: PaneId, values: Vec<(String, Option<toml::Value>)>) {
+        self.set_session_values(pane, &values);
+        self.point_edit_session(Some(pane));
+        for s in self.aps.values_mut() {
+            s.mark_dirty();
+        }
+        self.refresh_panes();
+        self.apply_fonts();
+        self.relayout();
     }
 
     /// Edit Session follows the newly active session unless Pin Edit Session is on (R3). Called
@@ -62,6 +78,21 @@ mod tests {
         let start = src.find(name).unwrap_or_else(|| panic!("{name}"));
         let rest = &src[start..];
         &rest[..rest.find("\n    }\n").expect("end of fn")]
+    }
+
+    /// 13y2 Task 9c (B3): Edit Session divorces once, in the menu path; following the focus never
+    /// does (it would copy every pane merely focused), and the window points at the pane's own
+    /// profile (its copy when it has one).
+    #[test]
+    fn edit_session_edits_the_copy() {
+        let menu = body(include_str!("menu.rs"), "fn edit_session(&mut self");
+        assert!(menu.contains("self.divorce(id)") && menu.find("self.divorce(id)") < menu.find("self.point_edit_session(pane)"));
+        assert!(!body(include_str!("edit_session_ui.rs"), "fn follow_edit_session(").contains("divorce"));
+        let point = body(include_str!("edit_session_ui.rs"), "fn point_edit_session(");
+        assert!(!point.contains("divorce") && point.contains("p.profile.clone()") && point.contains("shared_guid"));
+        let ap = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(ap.contains("Edit::SessionEdit(pane, values) => self.session_edit(pane, values)"));
+        assert!(ap.contains("self.store.refresh_overridden(guid)"));
     }
 
     /// S3 (13t x 13u): the Session Hotkey row shows the pane Edit Session points at. Every way
