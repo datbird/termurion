@@ -203,7 +203,8 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 /// tools on, every navigation guarded, new windows posted, InPrivate for Dev Null Mode. The only
 /// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
 /// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
-/// (`browser_pages::route`). No host objects.
+/// (`browser_pages::route`). No host objects. The Instant Replay sensitive mark runs in every frame of
+/// every browser page (final review I1); a certificate error fails the load (`fail_cert_errors`, 13x8).
 pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<String>) -> ViewSetup {
     // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
     // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
@@ -218,15 +219,12 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         guard_local_schemes: true,
         in_private: dev_null,
         web_message: true,
-        // The Instant Replay sensitive mark runs in every frame of every browser page (final review I1).
         scripts: page_scripts.into_iter().chain([crate::web_replay::sensitive_script()]).collect(),
         resource_filters: filters,
         favicon: true,
         context_menu: true,
-        permissions: true,
+        permissions: true, fail_cert_errors: true,
         track_document_method: true,
-        // iTerm2 never offers "continue anyway": a certificate error fails the load (Task 2 ruling).
-        fail_cert_errors: true,
         ..Default::default()
     }
 }
