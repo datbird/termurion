@@ -273,6 +273,58 @@ pub fn current_url_outcome(url: &str, dev_null: bool) -> Outcome {
     outcome(safe_url(url), N_URL)
 }
 
+// ---- the approval (final review I1, B2) ----
+
+/// What a browser approval was asked about: the page's exact origin and navigation epoch (compared
+/// when the person answers) and the host the person was shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Site {
+    /// `readable_origin` of the page; None for a blank, not yet loaded or unreadable page.
+    pub origin: Option<String>,
+    /// `browser::display_host` of the page (punycode, host end kept); empty for a blank page.
+    pub host: String,
+    pub epoch: u64,
+}
+
+/// The site of a browser pane showing `url` at navigation `epoch`.
+pub fn site(url: &str, epoch: u64) -> Site {
+    Site { origin: readable_origin(url), host: crate::browser::display_host(url), epoch }
+}
+
+impl Site {
+    /// Whether the pane still shows the page the person was asked about: same origin, same epoch.
+    pub fn same_page(&self, now: Option<&Site>) -> bool {
+        now.is_some_and(|n| n.origin == self.origin && n.epoch == self.epoch)
+    }
+}
+
+/// The override key an Always Allow on a browser call is stored under: the chat's permission for
+/// one site (exact origin), not for the pane (final review I1). A pane's own key never starts so.
+pub fn site_scope(origin: Option<&str>) -> String {
+    format!("tandem-site:{}", origin.unwrap_or(""))
+}
+
+/// Tandem's approval text for a browser call (final review I1, a deviation from iTerm2's
+/// `permissionDescription`): the action and the site the pane shows now, every model-written field
+/// and the host escaped as running text. A load also names the host it goes to.
+pub fn approval_text(call: &crate::ai_tools::Call, host: &str) -> String {
+    use crate::ai_tools::{consent_field, Call, Field};
+    let on = if host.is_empty() { "a blank page".to_string() } else { consent_field(host, Field::Text) };
+    let p = "The AI agent would like to";
+    match call {
+        Call::ReadWebPage { .. } => format!("{p} read the web page on {on}"),
+        Call::FindOnPage { query } => format!("{p} search the web page on {on} for \u{201c}{}\u{201d}", consent_field(query, Field::Text)),
+        Call::GetUrl => format!("{p} get the address of the web page on {on}"),
+        Call::LoadUrl { url } => {
+            let target = crate::browser::display_host(url);
+            let target = if target.is_empty() { consent_field(url, Field::Text) } else { consent_field(&target, Field::Text) };
+            format!("{p} leave the web page on {on} and load a page on {target}: {}", consent_field(url, Field::Text))
+        }
+        Call::WebSearch { query } => format!("{p} search the web for \u{201c}{}\u{201d} in the browser now showing {on}", consent_field(query, Field::Text)),
+        other => other.consent_description(),
+    }
+}
+
 // ---- navigation ----
 
 #[derive(Clone, Debug, PartialEq)]

@@ -264,7 +264,7 @@ pub fn body(content: &Content) -> Body {
             Some((_, _, markdown)) => Body::Markdown(markdown),
             None => Body::Plain(UNSUPPORTED_TEXT.to_string()),
         },
-        Content::RemoteCommandRequest { payload: Payload::Classic(rc), safe } => Body::Markdown(crate::ai_permissions::parked_text(&rc.call.consent_description(), rc.call.category().title(), *safe)),
+        Content::RemoteCommandRequest { payload: Payload::Classic(rc), safe } => Body::Markdown(crate::ai_permissions::parked_text(&rc.consent_text(), rc.call.category().title(), *safe)),
         Content::RemoteCommandRequest { payload: Payload::External(v), .. } => Body::Markdown(v.get("markdownDescription").and_then(serde_json::Value::as_str).unwrap_or_default().to_string()),
         Content::RemoteCommandResponse { result: Err(e), .. } => Body::Markdown(e.message.clone()),
         Content::RemoteCommandResponse { .. } => Body::Plain(String::new()),
@@ -656,7 +656,7 @@ mod tests {
     }
 
     fn classic(call: Call, safe: Option<bool>) -> Content {
-        Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: json!({"role":"assistant"}), call }), safe }
+        Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(json!({"role":"assistant"}), call)), safe }
     }
 
     fn ids(v: &[&Message]) -> Vec<String> {

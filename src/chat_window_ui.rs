@@ -1484,7 +1484,7 @@ mod tests {
         let d1 = 86_400.0 * 100.0 + 50.0;
         let d2 = d1 + 86_400.0;
         let user = Message::new("C", Participant::User, Content::PlainText { text: " hi".into(), context: Some("secret".into()) }, d1);
-        let flagged = Message::new("C", Participant::Agent, Content::RemoteCommandRequest { payload: crate::chat_message::Payload::Classic(RemoteCommand { llm_message: serde_json::json!({}), call: Call::ExecuteCommand { command: "rm x".into() } }), safe: Some(false) }, d2);
+        let flagged = Message::new("C", Participant::Agent, Content::RemoteCommandRequest { payload: crate::chat_message::Payload::Classic(RemoteCommand::of(serde_json::json!({}), Call::ExecuteCommand { command: "rm x".into() })), safe: Some(false) }, d2);
         let hidden = Message::new("C", Participant::Agent, Content::RenameChat("t".into()), d2);
         let day = |t: f64| (2026, 9, (t / 86_400.0) as u32);
         let label = |t: f64| format!("day {}", (t / 86_400.0) as u32);

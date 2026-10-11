@@ -56,6 +56,9 @@ pub(super) struct Ctx<'a> {
     pub pane_of: &'a dyn Fn(&str) -> Option<PaneId>,
     /// Whether the model may use a browser pane (not Dev Null, not a power or local page).
     pub browser_offered: &'a dyn Fn(PaneId) -> bool,
+    /// A browser pane's page now: origin, shown host and navigation epoch (final review I1); None
+    /// for a pane that is not a browser.
+    pub browser_site: &'a dyn Fn(PaneId) -> Option<crate::ai_browser::Site>,
     pub new_turn: &'a mut dyn FnMut(&Model) -> Box<dyn TurnDriver>,
     pub new_files: &'a mut dyn FnMut(&Model, Job) -> Box<dyn FileDriver>,
     /// The explanation processor (ruling P8, `ChatClient.swift:59-83`): a message about to be
@@ -594,7 +597,7 @@ impl Engine {
             ..Message::new(
                 chat,
                 Participant::Agent,
-                Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand { llm_message: chat_agent::call_json(&call, id.as_ref()), call: tool }), safe: None },
+                Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(chat_agent::call_json(&call, id.as_ref()), tool)), safe: None },
                 cx.now,
             )
         };
@@ -650,11 +653,16 @@ impl Engine {
             return Vec::new();
         }
         let Content::RemoteCommandRequest { payload: Payload::Classic(rc), .. } = &request.content else { return Vec::new() };
-        let rc = rc.clone();
+        let mut rc = rc.clone();
+        let (guid, pane) = Self::linked(cx, chat, &rc.call);
+        // Final review I1 (B2): a browser request names the site its pane shows now, and the park
+        // keeps that page (origin and epoch) to compare when the person answers.
+        let browser = rc.call.category().is_browser();
+        let site = pane.filter(|_| browser).and_then(|p| (cx.browser_site)(p));
+        rc.site = site.as_ref().map(|s| s.host.clone());
         request.content = Content::RemoteCommandRequest { payload: Payload::Classic(rc.clone()), safe };
         let request_id = request.unique_id.clone();
         Self::publish_or_replace(cx, chat, request.clone());
-        let (guid, pane) = Self::linked(cx, chat, &rc.call);
         // Task 2 review I1: the offered set is enforced on every call that arrives, not only
         // declared: a browser call (undeclared, replayed or stale) on a private pane or a page the
         // tools are not offered on is refused before any approval, navigation or URL read.
@@ -663,9 +671,18 @@ impl Engine {
         }
         let g = cx.globals;
         let global = |c: Category| g.int(c.global_key());
-        let p = cx.overrides.get(chat, guid.as_deref().unwrap_or(""), rc.call.category(), &global);
+        let session = guid.as_deref().unwrap_or("");
+        // A browser call: the session's Never holds for every site; else the site's own answer
+        // (Always Allow is per site, final review I1), else the session's, else the global.
+        let p = match &site {
+            Some(s) if cx.overrides.entry(chat, session, rc.call.category()) != Some(Permission::Never) => {
+                let scope = crate::ai_browser::site_scope(s.origin.as_deref());
+                cx.overrides.entry(chat, &scope, rc.call.category()).unwrap_or_else(|| cx.overrides.get(chat, session, rc.call.category(), &global))
+            }
+            _ => cx.overrides.get(chat, session, rc.call.category(), &global),
+        };
         let call_id = chat_agent::call_from_json(&rc.llm_message).and_then(|(c, id)| id.map(|i| i.call_id).or(c.id)).unwrap_or_default();
-        let park = |guid: String| Park { call_id: call_id.clone(), request_id: request_id.clone(), call: rc.call.clone(), safe, cleared_typing: true, guid, send: send.clone() };
+        let park = |guid: String| Park { call_id: call_id.clone(), request_id: request_id.clone(), call: rc.call.clone(), safe, cleared_typing: true, guid, send: send.clone(), site: site.clone() };
         match (ai_permissions::gate(pane.is_some(), p, safe), guid, pane) {
             (Gate::Run, Some(guid), Some(pane)) => Self::run(cx, chat, &request_id, guid, pane, rc, send),
             (Gate::Deny, ..) => Self::answer(cx, chat, &request_id, Outcome { model: ai_permissions::DENIED_MODEL.to_string(), notice: Some(ai_permissions::DENIED_NOTICE.to_string()) }, false),
@@ -835,23 +852,37 @@ impl Engine {
             let o = Outcome { model: chat_agent::RELINKED_MODEL.to_string(), notice: Some(chat_agent::RELINKED_NOTICE.to_string()) };
             return Self::answer(cx, chat, request_id, o, true);
         }
-        // Always Allow and Always Deny write the chat's own override (never the globals).
+        let allow = matches!(c, Choice::AllowOnce | Choice::AlwaysAllow);
+        // Final review I1 (B3 at the approval): a browser call runs only on the page the person was
+        // asked about; a pane that moved since (another site or a new navigation) answers "page
+        // changed", runs nothing and remembers nothing.
+        if allow && category.is_browser() && !park.site.as_ref().is_some_and(|s| s.same_page((cx.browser_site)(pane).as_ref())) {
+            let o = Outcome { model: crate::ai_browser::PAGE_CHANGED.to_string(), notice: Some(crate::ai_browser::N_PAGE_CHANGED.to_string()) };
+            return Self::answer(cx, chat, request_id, o, true);
+        }
+        // Always Allow and Always Deny write the chat's own override (never the globals). A browser
+        // call's Always Allow is for the site it was asked about, never for every site the pane may
+        // show later (final review I1); Always Deny holds for the whole session.
         let always = match c {
             Choice::AlwaysAllow => Some(Permission::Always),
             Choice::AlwaysDeny => Some(Permission::Never),
             _ => None,
         };
+        let key_guid = match (&park.site, c) {
+            (Some(s), Choice::AlwaysAllow) if category.is_browser() => crate::ai_browser::site_scope(s.origin.as_deref()),
+            _ => guid.clone(),
+        };
         // A change that holds for this run but was not written is reported to the person.
         let mut fx = Vec::new();
         if let Some(p) = always {
-            if set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: guid.clone(), category }, p).is_some_and(|(_, saved)| !saved) {
+            if set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: key_guid, category }, p).is_some_and(|(_, saved)| !saved) {
                 fx.push(EngineEffect::PermissionNotSaved);
             }
         }
         fx.extend(match c {
             Choice::AllowOnce | Choice::AlwaysAllow => {
                 let rc = cx.store.message(request_id).ok().flatten().and_then(|m| classic(&m).cloned());
-                let rc = RemoteCommand { call: park.call, ..rc.unwrap_or(RemoteCommand { llm_message: serde_json::json!({}), call: Call::IsAtPrompt }) };
+                let rc = RemoteCommand { call: park.call, ..rc.unwrap_or(RemoteCommand::of(serde_json::json!({}), Call::IsAtPrompt)) };
                 Self::run(cx, chat, request_id, guid, pane, rc, park.send)
             }
             Choice::DenyOnce | Choice::AlwaysDeny => Self::answer(cx, chat, request_id, Outcome { model: ai_permissions::DECLINED_MODEL.to_string(), notice: None }, true),
@@ -1219,6 +1250,8 @@ mod tests {
         live: Vec<PaneId>,
         /// Live browser panes the model may not use (Dev Null, a power or local page).
         unoffered: Vec<PaneId>,
+        /// The page each browser pane shows (pane 9: https://a.test, epoch 1, unless a test says).
+        sites: HashMap<PaneId, crate::ai_browser::Site>,
         /// Every message the explanation processor was handed, as it came from the turn.
         seen: Rc<RefCell<Vec<Message>>>,
     }
@@ -1239,6 +1272,7 @@ mod tests {
                 pinned: crate::ai_model::fixture("p", "https://pinned.test/v1/chat/completions", Api::ChatCompletions),
                 live: vec![7, 8, 9],
                 unoffered: Vec::new(),
+                sites: HashMap::from([(9, crate::ai_browser::site("https://a.test/", 1))]),
                 seen: Rc::new(RefCell::new(Vec::new())),
             }
         }
@@ -1250,6 +1284,8 @@ mod tests {
             let pane_of = move |g: &str| g.parse::<PaneId>().ok().filter(|p| live.contains(p));
             let unoffered = self.unoffered.clone();
             let browser_offered = move |p: PaneId| !unoffered.contains(&p);
+            let sites = self.sites.clone();
+            let browser_site = move |p: PaneId| sites.get(&p).cloned();
             let log = self.log.clone();
             let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
                 log.borrow_mut().turns_made += 1;
@@ -1275,6 +1311,7 @@ mod tests {
                 model_for: &model_for,
                 pane_of: &pane_of,
                 browser_offered: &browser_offered,
+                browser_site: &browser_site,
                 new_turn: &mut new_turn,
                 new_files: &mut new_files,
                 explain: &mut explain,
@@ -2553,6 +2590,85 @@ mod tests {
         assert_eq!(run_ids(&fx).len(), 1);
     }
 
+    /// The parked request's text as the chat window draws it.
+    fn parked_text(h: &H, chat: &str) -> String {
+        let req = h.requests(chat).pop().expect("a request");
+        match crate::chat_view::body(&req.content) {
+            crate::chat_view::Body::Markdown(t) => t,
+            b => panic!("{b:?}"),
+        }
+    }
+
+    /// Final review I1 (B2): a browser approval is Tandem's text naming the action and the site the
+    /// pane shows (never the page title); the park keeps that page's origin and epoch, and an answer
+    /// after the pane moved (another site, or a new navigation on the same one) runs nothing and
+    /// answers "page changed". Allow Once on the same page runs.
+    #[test]
+    fn a_browser_approval_names_the_site_and_a_moved_page_answers_page_changed() {
+        let cases: [(&str, &str, &str); 5] = [
+            ("read_web_page_section", r#"{"startingLineNumber":0,"numberOfLines":5}"#, "read the web page on shop\\.example\\.test"),
+            ("find_on_page", r#"{"query":"x"}"#, "search the web page on shop\\.example\\.test for"),
+            ("get_current_url", "{}", "get the address of the web page on shop\\.example\\.test"),
+            ("load_url", r#"{"url":"https://evil.test/p"}"#, "leave the web page on shop\\.example\\.test and load a page on evil\\.test"),
+            ("web_search_in_browser", r#"{"query":"x"}"#, "in the browser now showing shop\\.example\\.test"),
+        ];
+        for (tool, args, want) in cases {
+            let mut h = H::new();
+            h.sites.insert(9, crate::ai_browser::site("https://shop.example.test/cart", 1));
+            let chat = h.linked_chat(Some("7"), Some("9"));
+            h.script(vec![invoke(tool, args, "b1")]);
+            h.say(&chat, "hi");
+            let text = parked_text(&h, &chat);
+            assert!(text.contains(want), "{tool}: {text}");
+            assert!(!text.contains("would like to write to"), "{tool}: Tandem's text, not iTerm2's: {text}");
+            let rid = h.park_ids(&chat)[0].clone();
+            let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
+            assert_eq!(run_ids(&fx).len(), 1, "{tool}: same page runs: {fx:?}");
+        }
+        for moved in [crate::ai_browser::site("https://other.test/", 1), crate::ai_browser::site("https://shop.example.test/cart", 2)] {
+            for c in [Choice::AllowOnce, Choice::AlwaysAllow] {
+                let mut h = H::new();
+                h.sites.insert(9, crate::ai_browser::site("https://shop.example.test/cart", 1));
+                let chat = h.linked_chat(Some("7"), Some("9"));
+                h.script(vec![invoke("read_web_page_section", r#"{"startingLineNumber":0,"numberOfLines":5}"#, "b1")]);
+                h.say(&chat, "hi");
+                let rid = h.park_ids(&chat)[0].clone();
+                h.sites.insert(9, moved.clone());
+                let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, c));
+                assert!(run_ids(&fx).is_empty(), "{moved:?} {c:?}: {fx:?}");
+                assert_eq!(h.responses(&chat), vec![(rid, crate::ai_browser::PAGE_CHANGED.to_string())], "{moved:?} {c:?}");
+                assert_eq!(h.permission(&chat, &crate::ai_browser::site_scope(Some("https://shop.example.test")), Category::ActInWebBrowser), Permission::Ask, "nothing is remembered");
+            }
+        }
+    }
+
+    /// Final review I1: Always Allow on a browser approval holds for that site in this chat, on any
+    /// pane, and never for another site; the pane's own permission is not changed.
+    #[test]
+    fn always_allow_on_a_browser_call_holds_for_its_site_only() {
+        let mut h = H::new();
+        let chat = h.linked_chat(Some("7"), Some("9"));
+        h.script(vec![invoke("get_current_url", "{}", "u1")]);
+        h.say(&chat, "hi");
+        let rid = h.park_ids(&chat)[0].clone();
+        let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AlwaysAllow));
+        assert_eq!(run_ids(&fx).len(), 1);
+        assert_eq!(h.permission(&chat, "9", Category::ActInWebBrowser), Permission::Ask, "the pane is not allowed for every site");
+        assert_eq!(h.permission(&chat, &crate::ai_browser::site_scope(Some("https://a.test")), Category::ActInWebBrowser), Permission::Always);
+        // The next call on the same site runs at once.
+        h.log.borrow_mut().on_tool.push_back(vec![invoke("read_web_page_section", r#"{"startingLineNumber":0,"numberOfLines":5}"#, "u2")]);
+        let fx = h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("https://a.test/", Some("URL provided"))));
+        assert_eq!(run_ids(&fx).len(), 1, "same site: {fx:?}");
+        let rid2 = run_ids(&fx)[0].0.clone();
+        // Another site asks again.
+        h.sites.insert(9, crate::ai_browser::site("https://b.test/", 2));
+        h.log.borrow_mut().on_tool.push_back(vec![invoke("read_web_page_section", r#"{"startingLineNumber":0,"numberOfLines":5}"#, "u3")]);
+        let fx = h.run(|cx| Engine::tool_finished(cx, &chat, &rid2, ran("x", None)));
+        assert!(run_ids(&fx).is_empty(), "another site parks: {fx:?}");
+        assert_eq!(h.park_ids(&chat).len(), 1);
+        assert!(parked_text(&h, &chat).contains("b\\.test"));
+    }
+
     /// Task 1 re-review r1 I3: a chat offered the browser tools is told how page text is fenced; a
     /// chat without them gets the iTerm2 prompt unchanged.
     #[test]
@@ -2598,7 +2714,7 @@ mod tests {
         let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
         assert_eq!(run_ids(&fx), vec![(rid.clone(), 9, Call::LoadUrl { url: "https://a".into() }, None)]);
         assert!(h.notices(&chat).contains(&"Navigate to https://a\u{2026}".to_string()), "{:?}", h.notices(&chat));
-        // Always Allow is stored under the browser guid only.
+        // Always Allow is stored for the browser pane's site only (final review I1), never the terminal.
         let mut h = H::new();
         let chat = h.linked_chat(Some("7"), Some("9"));
         let before = h.permission(&chat, "7", Category::ActInWebBrowser);
@@ -2606,7 +2722,7 @@ mod tests {
         h.say(&chat, "hi");
         let rid = h.park_ids(&chat)[0].clone();
         h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AlwaysAllow));
-        assert_eq!(h.permission(&chat, "9", Category::ActInWebBrowser), Permission::Always);
+        assert_eq!(h.permission(&chat, &crate::ai_browser::site_scope(Some("https://a.test")), Category::ActInWebBrowser), Permission::Always);
         assert_eq!(h.permission(&chat, "7", Category::ActInWebBrowser), before);
         // A terminal call in the same chat still runs on the terminal.
         let mut h = H::new();

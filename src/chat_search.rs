@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(indexable(&Content::Multipart { parts, vector_store_id: None }).as_deref(), Some("p\nc"));
         let md = Content::Multipart { parts: vec![Subpart::Markdown("**raw**".into())], vector_store_id: None };
         assert_eq!(indexable(&md).as_deref(), Some("**raw**"), "a multipart markdown part is indexed as written");
-        let rc = Payload::Classic(RemoteCommand { llm_message: json!({}), call: crate::ai_tools::Call::IsAtPrompt });
+        let rc = Payload::Classic(RemoteCommand::of(json!({}), crate::ai_tools::Call::IsAtPrompt));
         assert_eq!(indexable(&Content::RemoteCommandRequest { payload: rc, safe: None }), None);
         assert_eq!(indexable(&Content::RenameChat("n".into())), None);
         assert_eq!(indexable(&Content::Unsupported("{}".into())), None);

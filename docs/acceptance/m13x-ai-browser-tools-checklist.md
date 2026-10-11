@@ -35,11 +35,11 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 
 | # | Check | Result |
 |---|---|---|
-| 13 | Ask "what is on this page?": the model asks to read it; the approval window names the exact site (host end kept) and the action; Allow Once; it quotes the page. | |
+| 13 | Ask "what is on this page?": the model asks to read it; the approval is Tandem's text naming the action and the site the tab shows ("read the web page on example.com", host end kept, never the page title); Allow Once; it quotes the page. Ask again, and before answering move the tab to another site (or reload it): Allow Once answers "Page changed" and nothing is read. | |
 | 14 | Ask it to find a word on the page: Allow Once; it answers with line numbers and the matching lines. | |
 | 15 | Ask it to read one section by line numbers: Allow Once; it returns that slice; a start past the end answers out of bounds. | |
 | 16 | Ask for the current URL: it answers with the page's address without credentials, query secrets cut as designed. | |
-| 17 | Ask it to open example.com: it asks; Always Allow; the page loads in that tab and the next load in this chat does not ask. | |
+| 17 | Ask it to open example.com: it asks ("leave the web page on <site> and load a page on example.com"); Always Allow; the page loads in that tab. The next browser call while the tab shows that same site does not ask; once the tab shows another site, it asks again (Always Allow is per site, not per tab). | |
 | 18 | Ask it to open `file:///C:/Windows/win.ini`: it gets the not-well-formed answer ("Navigation failed") and the tab does not move. Same for `iterm2-file:`, `javascript:` and `about:` URLs. | |
 | 19 | Ask for a web search: the tab shows the search results page and the model summarizes it. | |
 | 20 | Never on Act in Web Browser refuses with no prompt; Ask parks until Allow; Always runs. | |

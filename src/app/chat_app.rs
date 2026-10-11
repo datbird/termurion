@@ -568,6 +568,11 @@ impl App {
         };
         let pane_of = |g: &str| pane_for_ref(&panes.borrow(), g).filter(|_| !links_off);
         let browser_offered = |id: PaneId| panes.borrow().get(&id).and_then(|p| p.browser_io()).is_some_and(|io| crate::ai_browser::offerable(&io.url, io.dev_null));
+        let views = &self.browser_views;
+        let browser_site = |id: PaneId| {
+            let epoch = views.get(&id).map(|bv| bv.reader.epoch).unwrap_or(0);
+            panes.borrow().get(&id).and_then(|p| p.browser_io()).map(|io| crate::ai_browser::site(&io.url, epoch))
+        };
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
             Box::new(LiveTurn {
@@ -594,6 +599,7 @@ impl App {
             model_for: &model_for,
             pane_of: &pane_of,
             browser_offered: &browser_offered,
+            browser_site: &browser_site,
             new_turn: &mut new_turn,
             new_files: &mut new_files,
             explain: &mut explain,
@@ -1084,7 +1090,7 @@ mod tests {
         let mut agent = Agent::default();
         assert!(!removal_needs_stop(&broker, None, "c"), "an idle chat needs no stop");
         assert!(!removal_needs_stop(&broker, Some(&agent), "c"));
-        agent.parks.push(chat_agent::Park { call_id: String::new(), request_id: "r".into(), call: Call::ExecuteCommand { command: "ls".into() }, safe: None, cleared_typing: true, guid: "S-7".into(), send: None });
+        agent.parks.push(chat_agent::Park { call_id: String::new(), request_id: "r".into(), call: Call::ExecuteCommand { command: "ls".into() }, safe: None, cleared_typing: true, guid: "S-7".into(), send: None, site: None });
         assert!(removal_needs_stop(&broker, Some(&agent), "c"), "a parked request outlives its message otherwise");
         agent.parks.clear();
         agent.running = Some(("r".into(), "S-7".into()));

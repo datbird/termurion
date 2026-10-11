@@ -209,6 +209,11 @@ impl Overrides {
         self.map.get(&key).copied().unwrap_or_else(|| Permission::from_global(global(c)))
     }
 
+    /// The chat's own answer for a session (or a browser site scope), if it has one.
+    pub fn entry(&self, chat: &str, guid: &str, c: Category) -> Option<Permission> {
+        self.map.get(&Key { chat: chat.to_string(), guid: guid.to_string(), category: c }).copied()
+    }
+
     pub fn set(&mut self, key: Key, p: Permission) {
         self.map.insert(key, p);
     }

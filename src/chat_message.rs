@@ -70,6 +70,25 @@ pub struct AiError {
 pub struct RemoteCommand {
     pub llm_message: Value,
     pub call: Call,
+    /// Tandem's (final review I1): for a browser call, the host its pane showed when the approval
+    /// was asked (`ai_browser::Site::host`), written as `tandemSite`; None for every other call.
+    pub site: Option<String>,
+}
+
+impl RemoteCommand {
+    pub fn of(llm_message: Value, call: Call) -> RemoteCommand {
+        RemoteCommand { llm_message, call, site: None }
+    }
+
+    /// The text of the parked request: a browser call asked about a site gets Tandem's text naming
+    /// the action and the site (`ai_browser::approval_text`); every other call keeps
+    /// `consent_description`.
+    pub fn consent_text(&self) -> String {
+        match &self.site {
+            Some(host) if self.call.category().is_browser() => crate::ai_browser::approval_text(&self.call, host),
+            _ => self.call.consent_description(),
+        }
+    }
 }
 
 /// A classic call is written bare; an orchestration call carries `"kind":"external"` (`RC:29-102`).
@@ -268,12 +287,12 @@ impl<'a> Body<'a> {
 }
 
 fn command_value(rc: &RemoteCommand) -> Value {
-    obj([("llmMessage", Some(rc.llm_message.clone())), ("content", Some(rc.call.encode()))])
+    obj([("llmMessage", Some(rc.llm_message.clone())), ("content", Some(rc.call.encode())), ("tandemSite", rc.site.clone().map(Value::String))])
 }
 
 fn command_of(v: &Value) -> Option<RemoteCommand> {
     let body = Body::of(v)?;
-    Some(RemoteCommand { llm_message: body.get("llmMessage")?.clone(), call: Call::decode(body.get("content")?)? })
+    Some(RemoteCommand { llm_message: body.get("llmMessage")?.clone(), call: Call::decode(body.get("content")?)?, site: body.opt_string("tandemSite")? })
 }
 
 fn action_value(action: &ClientLocal) -> Value {
@@ -621,7 +640,7 @@ mod tests {
     }
 
     fn classic(call: Call) -> Payload {
-        Payload::Classic(RemoteCommand { llm_message: json!({"role":"assistant"}), call })
+        Payload::Classic(RemoteCommand::of(json!({"role":"assistant"}), call))
     }
 
     fn all_calls() -> Vec<Call> {
@@ -699,7 +718,7 @@ mod tests {
         );
         round(Content::ClientLocal(ClientLocal::Permissions { terminal: true, guid: "7".into() }), r#"{"clientLocal":{"_0":{"action":{"permissions":{"terminal":true,"guid":"7"}}}}}"#);
         round(
-            Content::ClientLocal(ClientLocal::ExecutingCommand(RemoteCommand { llm_message: json!({}), call: Call::GetShellType })),
+            Content::ClientLocal(ClientLocal::ExecutingCommand(RemoteCommand::of(json!({}), Call::GetShellType))),
             r#"{"clientLocal":{"_0":{"action":{"executingCommand":{"_0":{"llmMessage":{},"content":{"getShellType":{"_0":{}}}}}}}}}"#,
         );
         round(Content::UserCommand(UserCommand::Stop), r#"{"userCommand":{"_0":{"stop":{}}}}"#);
@@ -866,7 +885,7 @@ mod tests {
     }
 
     fn every_content() -> Vec<Content> {
-        let rc = RemoteCommand { llm_message: json!({}), call: Call::IsAtPrompt };
+        let rc = RemoteCommand::of(json!({}), Call::IsAtPrompt);
         let m = Message::new("C", Participant::User, Content::Markdown("m".into()), 0.0);
         vec![
             Content::PlainText { text: "p".into(), context: None },
@@ -912,7 +931,7 @@ mod tests {
         assert_eq!(snippet(&Content::ClientLocal(ClientLocal::StreamingChanged(Streaming::Active)), 40), "Sending commands to AI automatically");
         assert_eq!(snippet(&Content::ClientLocal(ClientLocal::StreamingChanged(Streaming::Stopped)), 40), "Stopped sending commands to AI");
         assert_eq!(snippet(&Content::ClientLocal(ClientLocal::StreamingChanged(Streaming::StoppedAutomatically)), 40), "Stopped sending commands to AI");
-        let ls = RemoteCommand { llm_message: json!({}), call: Call::ExecuteCommand { command: "ls".into() } };
+        let ls = RemoteCommand::of(json!({}), Call::ExecuteCommand { command: "ls".into() });
         assert_eq!(snippet(&Content::RemoteCommandRequest { payload: Payload::Classic(ls.clone()), safe: None }, 40), "Executing `ls`");
         assert_eq!(snippet(&Content::ClientLocal(ClientLocal::ExecutingCommand(ls)), 40), "Executing `ls`");
         assert_eq!(
@@ -942,5 +961,18 @@ mod tests {
         for none in [Content::RenameChat("t".into()), Content::Commit("A".into()), Content::Unsupported("{}".into()), Content::ClientLocal(ClientLocal::OfferOrchestration)] {
             assert_eq!(snippet(&none, 40), "", "{none:?}");
         }
+    }
+
+    /// Final review I1: a browser request keeps the site it was asked about (`tandemSite`), and a
+    /// request without one is written as before.
+    #[test]
+    fn a_browser_request_keeps_its_site() {
+        let rc = RemoteCommand { site: Some("a.test".into()), ..RemoteCommand::of(json!({}), Call::GetUrl) };
+        let c = Content::RemoteCommandRequest { payload: Payload::Classic(rc.clone()), safe: None };
+        assert_eq!(decode_content(&encode_content(&c)), c);
+        assert!(rc.consent_text().contains("a\\.test"), "{}", rc.consent_text());
+        let plain = Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(json!({}), Call::GetUrl)), safe: None };
+        assert!(!encode_content(&plain).contains("tandemSite"));
+        assert_eq!(RemoteCommand::of(json!({}), Call::GetUrl).consent_text(), Call::GetUrl.consent_description());
     }
 }

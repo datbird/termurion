@@ -878,7 +878,7 @@ mod tests {
     use crate::chat_agent::Park;
 
     fn park(request: &str) -> Park {
-        Park { call_id: "c".into(), request_id: request.into(), call: crate::ai_tools::Call::IsAtPrompt, safe: None, cleared_typing: false, guid: String::new(), send: None }
+        Park { call_id: "c".into(), request_id: request.into(), call: crate::ai_tools::Call::IsAtPrompt, safe: None, cleared_typing: false, guid: String::new(), send: None, site: None }
     }
 
     /// Review Focus 4: the browser half of linking. The stubs of "no browser pane before milestone
