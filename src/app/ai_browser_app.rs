@@ -220,6 +220,17 @@ impl Calls {
         self.sweep(&|c| c != chat);
     }
 
+    /// The person unlinked the chat's browser session: every call of the chat, waiting or answered
+    /// but not yet delivered, answers "page changed" now. Nothing read from the page is delivered.
+    pub fn unlinked(&mut self, chat: &str) {
+        let tokens: Vec<u64> = self.calls.iter().filter(|(_, c)| c.bound.as_ref().is_some_and(|(ch, _)| ch == chat)).map(|(t, _)| *t).collect();
+        for t in tokens {
+            self.waits.forget(t);
+            self.done.retain(|(d, _)| *d != t);
+            self.push_plain(t, crate::ai_terminal::Outcome { model: crate::ai_browser::PAGE_CHANGED.to_string(), notice: Some(crate::ai_browser::N_PAGE_CHANGED.to_string()) });
+        }
+    }
+
     /// Binds a token to the chat and request it answers; once.
     pub fn bind(&mut self, token: u64, chat: &str, request_id: &str) {
         if let Some(c) = self.calls.get_mut(&token).filter(|c| c.bound.is_none()) {
@@ -389,6 +400,11 @@ impl App {
         self.ai_browser.forget_chat(chat);
     }
 
+    /// Unlinking takes effect at once (`unlink_chat`): in-flight calls are answered "page changed".
+    pub(super) fn ai_browser_unlinked(&mut self, chat: &str) {
+        self.ai_browser.unlinked(chat);
+    }
+
     pub(super) fn ai_browser_bind(&mut self, token: u64, chat: &str, request_id: &str) {
         self.ai_browser.bind(token, chat, request_id);
     }
@@ -450,6 +466,25 @@ mod tests {
         let p = Page::open(7, epoch, url, "T", false).unwrap();
         let a = p.web_search(&crate::ai_browser::Loaded::Ok, Some(Ok("# secret page")));
         (Ready::Page(a), p.binding().clone())
+    }
+
+    #[test]
+    fn unlinking_answers_page_changed_at_once() {
+        let mut s = Calls::default();
+        s.calls.insert(1, call(7));
+        s.bind(1, "C", "r1");
+        s.calls.insert(2, call(7));
+        s.bind(2, "D", "r2");
+        let (ready, _) = page_answer(1, "https://a.example/");
+        s.done.push((2, ready));
+        s.unlinked("C");
+        s.unlinked("D");
+        let out = s.finish(&|_| None);
+        assert_eq!(out.len(), 2);
+        for (_, _, o) in &out {
+            assert_eq!(o.model, crate::ai_browser::PAGE_CHANGED);
+            assert!(!o.model.contains("secret"));
+        }
     }
 
     #[test]
