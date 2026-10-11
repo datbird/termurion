@@ -25,15 +25,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::pwm::{Account as PwmAccount, Secret, SEP};
 use crate::pwm_run::{Request, Runner};
-use crate::pwm_source::{Caps, Field, Kind, Source, Toggle};
+use crate::pwm_source::{Caps, Field, Kind, Scope, Source, Toggle};
 
 /// The adapter protocol's version this build speaks (`PR:5`, "Protocol Version: 0"). The
 /// handshake below accepts only a reply that echoes it back (`AP:195`).
 pub const PROTOCOL: i64 = 0;
 
-/// `RequestHeader.mode`: Tandem has no browser integration, so every request is `"terminal"`
-/// (`PR:152-155`).
+/// `RequestHeader.mode` of the terminal password manager (`PR:152-155`).
 const MODE_TERMINAL: &str = "terminal";
+
+/// `RequestHeader.mode` for a scope: `"terminal"`, or `"browser"` for the browser password
+/// manager (`ADS:314-318`).
+pub fn mode_for(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Terminal => MODE_TERMINAL,
+        Scope::Browser => "browser",
+    }
+}
 
 /// A short timeout for one adapter round trip.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -417,6 +425,7 @@ pub struct Adapter<R: Runner> {
     token: Option<Secret>,
     /// The last account list's warning, trimmed and non-empty, until `take_warning`.
     warning: Option<String>,
+    scope: Scope,
 }
 
 impl<R: Runner> Adapter<R> {
@@ -430,7 +439,13 @@ impl<R: Runner> Adapter<R> {
         user_account_id: Option<String>,
         prompt: MasterPasswordPrompt,
     ) -> Adapter<R> {
-        Adapter { runner, kind, path, path_to_database, path_to_executable, settings, user_account_id, prompt, handshake: None, token: None, warning: None }
+        Adapter { runner, kind, path, path_to_database, path_to_executable, settings, user_account_id, prompt, handshake: None, token: None, warning: None, scope: Scope::Terminal }
+    }
+
+    /// Serves one password manager scope: its requests carry that scope's `mode`.
+    pub fn with_scope(mut self, scope: Scope) -> Adapter<R> {
+        self.scope = scope;
+        self
     }
 
     /// `standardHeader` (`AP:314-329`): only the settings the handshake declared, and none
@@ -441,7 +456,7 @@ impl<R: Runner> Adapter<R> {
         RequestHeader {
             path_to_database: self.path_to_database.clone(),
             path_to_executable: self.path_to_executable.clone(),
-            mode: MODE_TERMINAL.to_string(),
+            mode: mode_for(self.scope).to_string(),
             settings: if settings.is_empty() { None } else { Some(settings) },
         }
     }
@@ -885,5 +900,20 @@ mod tests {
         let last = calls.last().unwrap();
         assert_eq!(last.1, vec!["sync".to_string()], "the command's name is the subcommand");
         assert!(last.2.as_deref().is_some_and(|s| s.contains("\"commandName\":\"sync\"")));
+    }
+    #[test]
+    fn adapter_mode_follows_iterm2() {
+        assert_eq!(mode_for(Scope::Browser), "browser");
+        assert_eq!(mode_for(Scope::Terminal), "terminal");
+        let mut runner = FakeRunner::default();
+        let requests = runner.requests.clone();
+        runner.push(&handshake_json(serde_json::json!({"requiresMasterPassword": false})));
+        runner.push(r#"{"token":"tok"}"#);
+        runner.push(r#"{"accounts":[]}"#);
+        let mut a = adapter(runner, Box::new(|_| None)).with_scope(Scope::Browser);
+        a.accounts().expect("accounts");
+        let calls = requests.lock().unwrap();
+        let (_, _, stdin) = calls.iter().find(|(_, args, _)| args == &vec!["list-accounts".to_string()]).expect("a list-accounts call");
+        assert!(stdin.as_deref().unwrap().contains("\"mode\":\"browser\""));
     }
 }

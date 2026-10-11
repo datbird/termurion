@@ -170,6 +170,9 @@ mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;
 mod browser_marks_app;
+mod browser_autofill_app;
+mod browser_basic_auth_app;
+mod browser_password_app;
 mod browser_triggers_app;
 mod browser_smart_app;
 mod browser_overlay_app;
@@ -1415,6 +1418,9 @@ pub struct App {
     ai_reveal: Option<crate::settings_ai::SubTab>,
     /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
     ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    autofill: browser_autofill_app::AutofillState,
+    /// HTTP authentication state per browser pane (app-wide, keyed by pane; not swapped).
+    basic_auth: HashMap<PaneId, browser_basic_auth_app::AuthPane>,
     ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
     /// The discovered Ollama models (app-wide, never swapped), the transport AI requests go
     /// through, and the refresh the settings window waits on.
@@ -2593,6 +2599,8 @@ pub fn run() {
         ai_alert: None,
         ai_reveal: None,
         ai_key_asks: VecDeque::new(),
+        autofill: Default::default(),
+        basic_auth: HashMap::new(),
         ai_key_window: None,
         ai_discovery,
         ai_transport,
@@ -4139,6 +4147,8 @@ impl App {
         }
         self.browser_tip_drop(id);
         self.marks_pane_gone(id);
+        self.autofill_pane_gone(id);
+        self.browser_pw_pane_gone(id);
         self.close_browser_view(id);
     }
 
@@ -7252,10 +7262,11 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_jobs_confirm(event_loop);
         self.open_recording_windows(event_loop);
         self.open_git_log(event_loop);
-        let pwm_due = self.tick_pwm();
+        let pwm_due = [self.tick_pwm(), self.basic_auth_tick(event_loop)].into_iter().flatten().min();
         #[cfg(windows)]
         self.tick_logout();
         self.open_pwm_windows(event_loop);
+        self.open_autofill_windows(event_loop);
         self.api_tick(event_loop);
         self.api_notify_tick();
         self.open_api_alerts(event_loop);
@@ -7479,7 +7490,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;

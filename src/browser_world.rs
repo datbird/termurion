@@ -72,6 +72,19 @@ pub fn evaluate_params(unique_context_id: &str, expression: &str) -> Value {
     json!({"expression": expression, "uniqueContextId": unique_context_id, "awaitPromise": true, "returnByValue": true, "userGesture": false})
 }
 
+/// `evaluate_params` as JSON text for an expression that holds a secret: built in a `Secret`-owned
+/// buffer (the expression escaped into it once more), so the text is wiped when dropped and no
+/// `serde_json::Value` or `to_string` copy of it is made.
+pub fn evaluate_params_secret(unique_context_id: &str, expression: &crate::pwm::Secret) -> crate::pwm::Secret {
+    let mut out = crate::pwm::Secret::new(String::with_capacity(crate::browser_js::json_room(expression.expose().len()) + crate::browser_js::json_room(unique_context_id.len()) + 128));
+    out.push_str("{\"expression\":");
+    crate::browser_js::push_json_str(&mut out, expression.expose());
+    out.push_str(",\"uniqueContextId\":");
+    crate::browser_js::push_json_str(&mut out, unique_context_id);
+    out.push_str(",\"awaitPromise\":true,\"returnByValue\":true,\"userGesture\":false}");
+    out
+}
+
 /// The unique id of a `Runtime.executionContextCreated` event's context when it is Tandem's own
 /// isolated world (named so and of type "isolated"); None for any other context.
 pub fn isolated_unique(json: &str) -> Option<String> {
@@ -1209,5 +1222,16 @@ mod tests {
         assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), add, &Err("boom".into())), None);
         assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), add, &Ok(json!({}))), None);
         assert_eq!(late_removal(true, &ClientWorld::Unavailable("x".into()), add, &Ok(json!({"identifier": "x".repeat(200)}))), None, "an identifier is bounded");
+    }
+
+    /// B10: the secret parameters are the same JSON as `evaluate_params` for the same expression.
+    #[test]
+    fn evaluate_params_secret_matches_evaluate_params() {
+        for e in ["(async () => { const t = \"a\\\"b\"; })()", "x\ny\u{2028}\\", "</script>"] {
+            let want = evaluate_params("U-1\"", e);
+            let got = evaluate_params_secret("U-1\"", &crate::pwm::Secret::new(e.to_string()));
+            let back: Value = serde_json::from_str(got.expose()).unwrap();
+            assert_eq!(back, want, "{e:?}");
+        }
     }
 }

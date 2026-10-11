@@ -324,6 +324,33 @@ impl InputGuard {
     pub fn armed(&self, now: std::time::Instant) -> bool {
         now.saturating_duration_since(self.since) >= GUARD_DELAY
     }
+
+    /// Whether `event` is input that could answer a window: a key, a mouse button, a touch (a touch
+    /// screen or pen), or text from an input method.
+    pub fn is_answer_input(event: &WindowEvent) -> bool {
+        matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Touch(_) | WindowEvent::Ime(_))
+    }
+
+    /// Whether the guard drops `event` at `now`: input that could answer, before it is armed. Every
+    /// guarded window asks this one rule (the permission prompt, the mark windows, the autofill
+    /// question).
+    pub fn drops(&self, event: &WindowEvent, now: std::time::Instant) -> bool {
+        Self::is_answer_input(event) && !self.armed(now)
+    }
+
+    /// Whether a Win chord (Win+B, Win+U, Win+C: the low-level key hook hands them to the window
+    /// outside its event stream) is held at `now`: it is input like a key, so it waits for the same
+    /// delay. Every guarded window that takes chords asks this one rule.
+    pub fn drops_chord(&self, now: std::time::Instant) -> bool {
+        !self.armed(now)
+    }
+
+    /// A window event: regaining the focus starts the delay over.
+    pub fn window_event(&mut self, event: &WindowEvent, now: std::time::Instant) {
+        if matches!(event, WindowEvent::Focused(true)) {
+            self.refocus(now);
+        }
+    }
 }
 
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
@@ -488,11 +515,22 @@ impl ConfirmWindow {
         self.host.focus();
     }
 
+    /// A guarded window drops a key, click, touch or input-method event before its guard is armed.
     pub fn event(&mut self, event: &WindowEvent) -> bool {
-        if let (WindowEvent::Focused(true), Some(g)) = (event, self.guard.as_mut()) {
-            g.refocus(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        if let Some(g) = self.guard.as_mut() {
+            g.window_event(event, now);
+            if g.drops(event, now) {
+                return false;
+            }
         }
         self.host.event(event)
+    }
+
+    /// Whether the window's guard drops `event` now (false for an unguarded window): for a caller
+    /// that answers a key itself.
+    pub fn input_guarded(&self, event: &WindowEvent) -> bool {
+        self.guard.is_some_and(|g| g.drops(event, std::time::Instant::now()))
     }
 
     pub fn redraw(&mut self) -> ConfirmResult {
@@ -630,6 +668,41 @@ mod tests {
         assert!(f.contains("(false, false)"), "a guarded window ignores Enter and Escape");
         assert!(f.contains("surrender_focus"), "no widget holds the focus for Enter or Space");
         assert!(f.contains("primary_released"), "only a pointer release counts");
+    }
+
+    /// The one guard covers a touch (a touch screen or pen) as it covers keys and clicks, and the
+    /// window drops guarded input before egui sees it.
+    #[test]
+    fn the_guard_drops_touch_keys_clicks_and_ime_until_armed() {
+        use std::time::{Duration, Instant};
+        use winit::event::{Ime, Touch, TouchPhase};
+        let t0 = Instant::now();
+        let mut g = InputGuard::new(t0);
+        let touch = WindowEvent::Touch(Touch { device_id: winit::event::DeviceId::dummy(), phase: TouchPhase::Started, location: winit::dpi::PhysicalPosition::new(1.0, 1.0), force: None, id: 1 });
+        let mouse = WindowEvent::MouseInput { device_id: winit::event::DeviceId::dummy(), state: winit::event::ElementState::Pressed, button: winit::event::MouseButton::Left };
+        for e in [&touch, &mouse, &WindowEvent::Ime(Ime::Enabled)] {
+            assert!(g.drops(e, t0), "{e:?} is dropped while the guard waits");
+            assert!(!g.drops(e, t0 + GUARD_DELAY), "{e:?} counts once armed");
+        }
+        assert!(!g.drops(&WindowEvent::Focused(true), t0), "focus and paint are not answers");
+        assert!(!g.drops(&WindowEvent::RedrawRequested, t0));
+        g.window_event(&WindowEvent::Focused(true), t0 + Duration::from_secs(4));
+        assert!(g.drops(&touch, t0 + Duration::from_secs(4) + Duration::from_millis(999)), "refocus restarts it for a touch too");
+        let src = include_str!("prompt_ui.rs");
+        let ev = &src[src.find("pub fn event(&mut self, event: &WindowEvent) -> bool {\n        let now").unwrap()..];
+        assert!(ev[..ev.find("self.host.event(event)").unwrap()].contains("if g.drops(event, now) {"));
+    }
+
+    /// A Win chord that arrives through the hook (outside the window's events) waits for the guard.
+    #[test]
+    fn the_guard_holds_win_chords_until_armed() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut g = InputGuard::new(t0);
+        assert!(g.drops_chord(t0) && g.drops_chord(t0 + GUARD_DELAY - Duration::from_millis(1)));
+        assert!(!g.drops_chord(t0 + GUARD_DELAY));
+        g.refocus(t0 + Duration::from_secs(3));
+        assert!(g.drops_chord(t0 + Duration::from_secs(3)), "refocus restarts it for a chord too");
     }
 
     /// A long body scrolls, the buttons never leave the window, and a gated button (the entry

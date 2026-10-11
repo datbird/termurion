@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use crate::pwm::{Account, Secret, SEP};
 use crate::pwm_run::{Request, Runner};
-use crate::pwm_source::{Caps, Kind, Source};
+use crate::pwm_source::{Caps, Kind, Scope, Source};
 
 /// `op`'s minimum usable version (`OT:103`): older CLIs accept a piped `item edit` template,
 /// report success, and silently change nothing, which would break secure in-place editing.
@@ -44,10 +44,29 @@ pub fn op_version_ok(v: &str) -> bool {
 /// `op`'s two-stage account list pipeline (`OP:228-246`): `item list --tags iTerm2` piped into
 /// `item get -`, which fetches every field for every listed item in one call.
 pub fn op_list() -> (Vec<String>, Vec<String>) {
-    (
-        vec!["item".to_string(), "list".to_string(), "--format=json".to_string(), "--no-color".to_string(), "--tags".to_string(), OP_TAG.to_string()],
-        vec!["item".to_string(), "get".to_string(), "--format=json".to_string(), "--no-color".to_string(), "-".to_string()],
-    )
+    op_list_for(Scope::Terminal)
+}
+
+/// `op_list` for a scope: the browser lists every item (no `--tags`, `ODS:236-240`) and drops
+/// the terminal's tagged ones after the fetch (`op_accounts_excluding`).
+pub fn op_list_for(scope: Scope) -> (Vec<String>, Vec<String>) {
+    let mut list = vec!["item".to_string(), "list".to_string(), "--format=json".to_string(), "--no-color".to_string()];
+    if scope == Scope::Terminal {
+        list.push("--tags".to_string());
+        list.push(OP_TAG.to_string());
+    }
+    (list, vec!["item".to_string(), "get".to_string(), "--format=json".to_string(), "--no-color".to_string(), "-".to_string()])
+}
+
+/// `op item create`'s args for a scope: the terminal tags its items `iTerm2`, the browser adds
+/// no tag (`ODS:455-457`).
+pub fn op_create_args(scope: Scope) -> Vec<String> {
+    let mut args = vec!["item".to_string(), "create".to_string(), "--format=json".to_string()];
+    if scope == Scope::Terminal {
+        args.push(format!("--tags={OP_TAG}"));
+    }
+    args.push("-".to_string());
+    args
 }
 
 /// Fetches one item's fields, for the password read (`OP:296-300`).
@@ -111,10 +130,22 @@ fn op_field<'a>(fields: &'a [OpField], id: &str) -> Option<&'a OpField> {
 /// carries) are simply never looked at. An item without a string `id` or `title` is skipped
 /// (a row with no id could name nothing; iTerm2's typed decode would fail the whole list).
 pub fn op_accounts(json: &str) -> Result<Vec<Account>, String> {
+    op_accounts_excluding(json, None)
+}
+
+/// `op_accounts` that drops every item carrying the `exclude` tag (the browser scope leaves
+/// the terminal's `iTerm2` items out, `ODS:272-274`).
+pub fn op_accounts_excluding(json: &str, exclude: Option<&str>) -> Result<Vec<Account>, String> {
     let items: Vec<serde_json::Value> = serde_json::from_str(&op_split_objects(json)).map_err(|e| e.to_string())?;
     Ok(items
         .into_iter()
         .filter_map(|item| {
+            if let Some(tag) = exclude {
+                let tagged = item.get("tags").and_then(|v| v.as_array()).is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some(tag)));
+                if tagged {
+                    return None;
+                }
+            }
             let id = item.get("id").and_then(|v| v.as_str())?.to_string();
             let title = item.get("title").and_then(|v| v.as_str())?.to_string();
             let empty = Vec::new();
@@ -250,6 +281,12 @@ pub fn lpass_list(groups: &[String]) -> Vec<String> {
 /// is an unsynced account with no stable identifier and is skipped; only a listed group is kept
 /// (`LP:150-176`).
 pub fn lpass_accounts(stdout: &str, groups: &[String]) -> Vec<Account> {
+    lpass_accounts_for(stdout, groups, Scope::Terminal)
+}
+
+/// `lpass_accounts` for a scope: the terminal keeps only `groups`, the browser keeps every
+/// other group (`LDS:137-146`, `:162-167`).
+pub fn lpass_accounts_for(stdout: &str, groups: &[String], scope: Scope) -> Vec<Account> {
     stdout
         .split('\n')
         .filter_map(|line| {
@@ -259,7 +296,8 @@ pub fn lpass_accounts(stdout: &str, groups: &[String]) -> Vec<Account> {
                 return None;
             }
             let (group, id, name, user) = (parts[0], parts[1], parts[2], parts[3]);
-            if id == "0" || !groups.iter().any(|g| g == group) {
+            let listed = groups.iter().any(|g| g == group);
+            if id == "0" || listed != (scope == Scope::Terminal) {
                 return None;
             }
             Some(Account {
@@ -277,7 +315,20 @@ pub fn lpass_accounts(stdout: &str, groups: &[String]) -> Vec<Account> {
 
 /// `lpass add`'s args (`LP:247-250`): iTerm2 always adds under the "iTerm2/" group prefix.
 pub fn lpass_add(name: &str) -> Vec<String> {
-    vec!["add".to_string(), format!("iTerm2/{name}"), "--non-interactive".to_string()]
+    lpass_add_for(Scope::Terminal, name)
+}
+
+/// `lpass add`'s args for a scope: the "iTerm2/" group prefix only for the terminal (`LDS:248-250`).
+pub fn lpass_add_for(scope: Scope, name: &str) -> Vec<String> {
+    vec!["add".to_string(), lpass_item_name(scope, name), "--non-interactive".to_string()]
+}
+
+/// The LastPass item name a new account gets in a scope.
+fn lpass_item_name(scope: Scope, name: &str) -> String {
+    match scope {
+        Scope::Terminal => format!("iTerm2/{name}"),
+        Scope::Browser => name.to_string(),
+    }
 }
 
 /// `lpass add`'s stdin (`LP:251`): no trailing newline (the process's stdin is closed instead).
@@ -512,6 +563,7 @@ pub struct OnePassword<R: Runner> {
     picker: Option<AccountPicker>,
     /// The account list was checked this run (`haveCheckedAccounts`).
     checked_accounts: bool,
+    scope: Scope,
 }
 
 impl<R: Runner> OnePassword<R> {
@@ -520,7 +572,14 @@ impl<R: Runner> OnePassword<R> {
     /// this module). `account` is the 1Password account to use when more than one is signed in
     /// (`--account`), or `None`.
     pub fn new(runner: R, path: String, account: Option<String>, prompt: MasterPasswordPrompt) -> OnePassword<R> {
-        OnePassword { runner, path, account, auth: Auth::None, prompt, picker: None, checked_accounts: false }
+        OnePassword { runner, path, account, auth: Auth::None, prompt, picker: None, checked_accounts: false, scope: Scope::Terminal }
+    }
+
+    /// Serves one password manager scope (the terminal's tagged items, or the browser's
+    /// untagged ones).
+    pub fn with_scope(mut self, scope: Scope) -> OnePassword<R> {
+        self.scope = scope;
+        self
     }
 
     /// Checks the signed-in accounts before the first sign-in, and lets Switch Account choose
@@ -679,7 +738,7 @@ impl<R: Runner> Source for OnePassword<R> {
     }
 
     fn accounts(&mut self) -> Result<Vec<Account>, String> {
-        let (list_args, get_args) = op_list();
+        let (list_args, get_args) = op_list_for(self.scope);
         let listed = match self.call(list_args, None, Some(OP_LIST_TIMEOUT)) {
             Ok(o) => o,
             Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(OP_TIMEOUT_MESSAGE.to_string()),
@@ -692,7 +751,7 @@ impl<R: Runner> Source for OnePassword<R> {
         if fetched.code != 0 {
             return Err(OP_RUNTIME_ERROR.to_string());
         }
-        op_accounts(fetched.stdout.expose())
+        op_accounts_excluding(fetched.stdout.expose(), (self.scope == Scope::Browser).then_some(OP_TAG))
     }
 
     fn password(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
@@ -718,7 +777,7 @@ impl<R: Runner> Source for OnePassword<R> {
     fn add(&mut self, name: &str, user: &str, p: Secret, _flags: &[(String, bool)]) -> Result<Account, String> {
         // 1Password has no Add Account toggles, so flags is ignored (as iTerm2's `OP:527-528`).
         let template = op_create_template(name, user, &p);
-        let args = vec!["item".to_string(), "create".to_string(), "--format=json".to_string(), format!("--tags={OP_TAG}"), "-".to_string()];
+        let args = op_create_args(self.scope);
         let out = self.call(args, Some(template), None)?;
         if out.code != 0 {
             return Err(OP_RUNTIME_ERROR.to_string());
@@ -797,6 +856,7 @@ pub struct LastPass<R: Runner> {
     groups: Vec<String>,
     last_username: String,
     prompt: LoginPrompt,
+    scope: Scope,
 }
 
 impl<R: Runner> LastPass<R> {
@@ -804,7 +864,13 @@ impl<R: Runner> LastPass<R> {
     /// always found by Locate; that search lives with the app wiring, not here). `groups` is
     /// `lpass_groups` applied to the `lastpassGroups` global.
     pub fn new(runner: R, path: String, groups: Vec<String>, prompt: LoginPrompt) -> LastPass<R> {
-        LastPass { runner, path, groups, last_username: String::new(), prompt }
+        LastPass { runner, path, groups, last_username: String::new(), prompt, scope: Scope::Terminal }
+    }
+
+    /// Serves one password manager scope: the terminal's groups, or every other group.
+    pub fn with_scope(mut self, scope: Scope) -> LastPass<R> {
+        self.scope = scope;
+        self
     }
 
     /// Every `lpass` call runs with `LPASS_DISABLE_PINENTRY=1` and no `LPASS_ASKPASS`, so a
@@ -845,8 +911,16 @@ impl<R: Runner> LastPass<R> {
         }
     }
 
+    /// The groups `lpass ls` is asked for: the terminal's; the browser lists every group.
+    fn list_groups(&self) -> Vec<String> {
+        match self.scope {
+            Scope::Terminal => self.groups.clone(),
+            Scope::Browser => Vec::new(),
+        }
+    }
+
     fn accounts_once(&mut self) -> Result<Vec<Account>, String> {
-        let out = match self.runner.run(self.request(lpass_list(&self.groups), Some(LASTPASS_LIST_TIMEOUT))) {
+        let out = match self.runner.run(self.request(lpass_list(&self.list_groups()), Some(LASTPASS_LIST_TIMEOUT))) {
             Ok(o) => o,
             Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_LIST_FETCH_FAILED)),
             Err(e) => return Err(e),
@@ -854,7 +928,7 @@ impl<R: Runner> LastPass<R> {
         if out.code != 0 {
             return Err(Self::mapped_error(&out, LP_ACCOUNT_LIST_FETCH_FAILED));
         }
-        Ok(lpass_accounts(out.stdout.expose(), &self.groups))
+        Ok(lpass_accounts_for(out.stdout.expose(), &self.groups, self.scope))
     }
 
     fn password_once(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
@@ -885,7 +959,7 @@ impl<R: Runner> LastPass<R> {
 
     fn add_once(&mut self, name: &str, user: &str, p: Secret) -> Result<Account, String> {
         // LastPass has no Add Account toggles, so flags is ignored (as iTerm2's `LP:368`).
-        let mut request = self.request(lpass_add(name), None);
+        let mut request = self.request(lpass_add_for(self.scope, name), None);
         request.stdin = Some(lpass_add_input(user, &p));
         let added = self.runner.run(request)?;
         if added.code != 0 {
@@ -897,7 +971,7 @@ impl<R: Runner> LastPass<R> {
             Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_ADD_FAILED)),
             Err(e) => return Err(e),
         }
-        let shown = self.runner.run(self.request(vec!["show".to_string(), "--id".to_string(), format!("iTerm2/{name}")], None))?;
+        let shown = self.runner.run(self.request(vec!["show".to_string(), "--id".to_string(), lpass_item_name(self.scope, name)], None))?;
         if shown.code != 0 {
             return Err(Self::mapped_error(&shown, LP_ACCOUNT_ADD_FAILED));
         }
@@ -1459,5 +1533,30 @@ mod tests {
         assert_eq!(lp_login_command("me@example.com"), "lpass login me@example.com");
         assert!(lp_logged_in("Success: Logged in as me@example.com.") && !lp_logged_in("Error"));
         assert_eq!(lp_auth_failed_email(LP_NEEDS_LOGIN), None);
+    }
+    #[test]
+    fn op_browser_follows_iterm2() {
+        assert!(!op_list_for(Scope::Browser).0.iter().any(|a| a == "--tags"));
+        assert_eq!(op_list_for(Scope::Terminal), op_list());
+        let two = "{\"id\":\"1\",\"title\":\"term\",\"tags\":[\"iTerm2\"],\"fields\":[]}\n{\"id\":\"2\",\"title\":\"web\",\"fields\":[]}";
+        let kept = op_accounts_excluding(two, Some("iTerm2")).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "2");
+        assert_eq!(op_accounts_excluding(two, None).unwrap().len(), 2);
+        assert!(!op_create_args(Scope::Browser).iter().any(|a| a.starts_with("--tags")));
+        assert!(op_create_args(Scope::Terminal).iter().any(|a| a == "--tags=iTerm2"));
+    }
+
+    #[test]
+    fn lpass_browser_follows_iterm2() {
+        let ls = "iTerm2\t11\tterm\tme\nWeb\t12\tsite\tme\nOther\t13\tmore\tyou\nWeb\t0\tunsynced\tme\niTerm2\t0\tx\ty\n";
+        let groups = vec!["iTerm2".to_string()];
+        let b: Vec<String> = lpass_accounts_for(ls, &groups, Scope::Browser).into_iter().map(|a| a.id).collect();
+        assert_eq!(b, vec!["12", "13"]);
+        let t: Vec<String> = lpass_accounts_for(ls, &groups, Scope::Terminal).into_iter().map(|a| a.id).collect();
+        assert_eq!(t, vec!["11"]);
+        assert_eq!(lpass_accounts(ls, &groups).len(), 1);
+        assert_eq!(lpass_add_for(Scope::Browser, "site"), vec!["add".to_string(), "site".to_string(), "--non-interactive".to_string()]);
+        assert_eq!(lpass_add_for(Scope::Terminal, "site"), lpass_add("site"));
     }
 }

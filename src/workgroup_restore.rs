@@ -560,10 +560,17 @@ const KEY_ENTROPY: &[u8] = b"tandem workgroup approval key\0v1";
 /// reverse. None on any failure.
 #[cfg(windows)]
 fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
+    dpapi_with(data, protect, KEY_ENTROPY)
+}
+
+/// `dpapi` with the caller's own entropy: THE DPAPI wrapper (the autofill contact card at rest uses
+/// it with its own entropy, so a blob made for one use never opens as the other).
+#[cfg(windows)]
+pub(crate) fn dpapi_with(data: &[u8], protect: bool, entropy: &[u8]) -> Option<Vec<u8>> {
     use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
     use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData};
     let input = CRYPT_INTEGER_BLOB { cbData: u32::try_from(data.len()).ok()?, pbData: data.as_ptr() as *mut u8 };
-    let entropy = CRYPT_INTEGER_BLOB { cbData: KEY_ENTROPY.len() as u32, pbData: KEY_ENTROPY.as_ptr() as *mut u8 };
+    let entropy = CRYPT_INTEGER_BLOB { cbData: u32::try_from(entropy.len()).ok()?, pbData: entropy.as_ptr() as *mut u8 };
     let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     // SAFETY: the blobs point at live buffers of the lengths given (DPAPI only reads them); the
     // output is copied out and freed once.

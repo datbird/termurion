@@ -19,12 +19,14 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::broadcast::Write;
+use crate::browser_basic_auth::SpaceKey;
+use crate::browser_password::{self as bp, PwPage};
 use crate::echo_probe::{self, Finish, Out, Probe, Round};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::{self, Account, AccountPanel, Alert, Auth, Busy, GearItem, Secret};
 use crate::pwm_cli::{self, OpNotUsable};
 use crate::pwm_prompt;
-use crate::pwm_source::{self, Caps, Field, Kind, Source};
+use crate::pwm_source::{self, Caps, Field, Kind, Scope, Source};
 use crate::pwm_ui::{PwmAct, PwmView, PwmWindow};
 use crate::warnings::Preempt;
 
@@ -81,6 +83,22 @@ pub(super) struct PwmWin {
     /// Selected once the next list arrives: by display string, or by (account, user).
     select_name: Option<String>,
     select_pair: Option<(String, String)>,
+    /// Which store this manager serves: the terminal's or the browser's own (iTerm2's two providers).
+    scope: Scope,
+    /// The browser pane it was opened over; the page every entry is bound to (Session target).
+    page_pane: Option<PaneId>,
+    /// Opened to send the user name by default (`sendUserByDefault`), and to send both
+    /// (`didSendUserName` set).
+    send_user_by_default: bool,
+    send_both: bool,
+    target: PwmTarget,
+    /// Enter Username & Password's focus step: the password field's id and the navigation count it
+    /// was asked at.
+    focus_after_user: Option<(String, u64)>,
+    /// A basic-auth picker's user name, which arrives before the password (`pendingUserName`).
+    pending_user: Option<String>,
+    /// The challenge origin a picker lists for and picks within.
+    pick_page: Option<PwPage>,
 }
 
 impl PwmWin {
@@ -107,6 +125,10 @@ impl Drop for PwmWin {
     fn drop(&mut self) {
         if let Some(h) = self.window.hwnd() {
             crate::winkeys::remove_pwm_window(h);
+        }
+        // A picker closed any way at all (or with its window) without a choice ends its challenge once.
+        if let Some(n) = take_challenge(&mut self.target) {
+            ORPHANED.lock().unwrap().push(n);
         }
     }
 }
@@ -143,8 +165,15 @@ pub(super) struct PwmState {
     entry_ids: u64,
     rounds: Vec<BroadcastRound>,
     confirms: Vec<Confirm>,
+    /// The browser manager's own authentication, worker and source info (iTerm2 keeps `authenticated`
+    /// and the data source per provider, `PDS:15`): unlocking one never unlocks the other.
+    browser_auth: Auth,
+    browser_worker: Option<Worker>,
+    browser_info: Option<(Kind, String, Caps)>,
+    /// Basic-auth store answers waiting for the coordinator's owner (Task 10).
+    store_replies: Vec<StoreReply>,
     /// Opens asked for, done on the next pass (a window needs the event loop).
-    requests: Vec<(Option<String>, Option<PaneId>)>,
+    requests: Vec<PwmOpen>,
     /// The window whose authentication gate failed on the last pass: opens for it queued
     /// meanwhile (events held during the modal prompt) are dropped, so one cancel never pops
     /// a second prompt at once.
@@ -160,6 +189,236 @@ pub(super) struct PwmState {
     /// "Success: Logged in as".
     lp_terminal: Option<String>,
     lp_watch: Option<PaneId>,
+}
+
+/// How a manager is asked for (`openPasswordManagerToAccountName:inSession:forUser:didSendUserName:`).
+#[derive(Clone, Debug, Default)]
+pub(super) struct PwmOpen {
+    pub(super) account: Option<String>,
+    pub(super) pane: Option<PaneId>,
+    pub(super) scope: Scope,
+    /// `forUser`: the default button sends the user name.
+    pub(super) for_user: bool,
+    /// `didSendUserName` set: the default button sends the user name and the password.
+    pub(super) send_both: bool,
+    pub(super) target: PwmTarget,
+    /// The password field's id and the page's navigation count, for send-both's focus step.
+    pub(super) focus_after_user: Option<(String, u64)>,
+    /// A web page's button asked for it: the window carries the one input guard (`PwmWindow::guard_input`).
+    pub(super) from_page: bool,
+    /// A basic-auth picker's challenge origin (https): the list shows only its accounts and a pick
+    /// must match it (`account_matches`). None with a picker target lists nothing.
+    pub(super) pick_page: Option<PwPage>,
+}
+
+/// What the manager's entries go to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PwmTarget {
+    /// The session (a terminal's pty, or a browser page).
+    #[default]
+    Session,
+    /// A basic-auth challenge's picker: the entries finish this challenge (`BAP`).
+    BasicAuth(u64),
+}
+
+/// A basic-auth picker's outcome, the way Task 10's coordinator takes it.
+#[allow(dead_code)]
+pub(super) struct PickerResult {
+    pub(super) chosen: Option<(String, Secret)>,
+    /// With nothing chosen the prompt comes back with what was typed.
+    pub(super) typed_fallback: bool,
+}
+
+/// Challenges of pickers that closed without a choice, ended on the next pass.
+static ORPHANED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+/// The challenge a picker still owes an answer, once: taking it leaves the target a plain session.
+fn take_challenge(target: &mut PwmTarget) -> Option<u64> {
+    match std::mem::take(target) {
+        PwmTarget::BasicAuth(n) => Some(n),
+        PwmTarget::Session => None,
+    }
+}
+
+/// The request `open_password_manager` queues: the browser's store when the pane (or the focused pane
+/// when none is named) is a browser pane, bound to that pane (`PT:10319-10323`).
+fn open_request(account: Option<String>, pane: Option<PaneId>, focused: Option<PaneId>, browser: bool) -> PwmOpen {
+    if browser {
+        PwmOpen { account, pane: pane.or(focused), scope: Scope::Browser, ..PwmOpen::default() }
+    } else {
+        PwmOpen { account, pane, ..PwmOpen::default() }
+    }
+}
+
+/// What opening does with the window's one `pwm_window` slot. iTerm2's refuse-if-open rule is the
+/// session path's; a picker gets its own window in iTerm2 (`BAP:32-38`), so here a taken slot ends the
+/// challenge at once with no choice (the open manager is left as it is).
+#[derive(Debug, PartialEq, Eq)]
+enum OpenDecision {
+    Open,
+    Refuse,
+    AnswerNone,
+}
+
+fn open_decision(target: PwmTarget, slot_taken: bool) -> OpenDecision {
+    match (target, slot_taken) {
+        (_, false) => OpenDecision::Open,
+        (PwmTarget::Session, true) => OpenDecision::Refuse,
+        (PwmTarget::BasicAuth(_), true) => OpenDecision::AnswerNone,
+    }
+}
+
+/// What a manager window's buttons depend on, before `pwm::buttons`.
+struct ButtonInputs {
+    target: PwmTarget,
+    for_user: bool,
+    send_both: bool,
+    selected: bool,
+    user_name_empty: bool,
+    /// The session (or page) can take an entry for the selection.
+    session_can_enter: bool,
+    can_broadcast: bool,
+    available: bool,
+    sends_otp: bool,
+}
+
+/// A picker can always enter and never broadcast (`BAP:54-58`).
+fn button_state(i: &ButtonInputs) -> pwm::ButtonState {
+    let picker = matches!(i.target, PwmTarget::BasicAuth(_));
+    pwm::ButtonState {
+        selected: i.selected,
+        user_name_empty: i.user_name_empty,
+        can_enter: picker || i.session_can_enter,
+        can_broadcast: !picker && i.can_broadcast,
+        available: i.available,
+        send_user_by_default: i.for_user,
+        send_both: i.send_both,
+        account_sends_otp: i.sends_otp,
+    }
+}
+
+/// What a browser manager lists: over a page, only the accounts for that page's exact https origin
+/// (Task 5's `account_matches`; the others are hidden, as iTerm2 has no "use anyway"); no https page,
+/// nothing. A picker and the terminal manager list everything.
+fn browser_listing(scope: Scope, target: PwmTarget, page: Option<&PwPage>, accounts: Vec<Account>) -> Vec<Account> {
+    match (scope, target) {
+        (Scope::Browser, PwmTarget::Session | PwmTarget::BasicAuth(_)) => match page {
+            Some(p) => accounts.into_iter().filter(|a| bp::account_matches(&a.account_name, p)).collect(),
+            None => Vec::new(),
+        },
+        _ => accounts,
+    }
+}
+
+/// One thing the browser manager types into a page.
+#[derive(Debug, PartialEq, Eq)]
+enum PageStep {
+    User(String),
+    Focus(String),
+    Password,
+}
+
+/// Enter Username & Password (`PMW:1282-1296`): the user name (when it has one), the focus on the next
+/// password field (only while the page's navigation count is still the one it was asked at), then the
+/// password.
+fn page_steps(send_both: bool, user: &str, focus: Option<&(String, u64)>, epoch: u64) -> Vec<PageStep> {
+    let mut v = Vec::new();
+    if send_both {
+        if !user.is_empty() {
+            v.push(PageStep::User(user.to_string()));
+        }
+        if let Some((id, _)) = focus.filter(|(_, at)| *at == epoch) {
+            v.push(PageStep::Focus(id.clone()));
+        }
+    }
+    v.push(PageStep::Password);
+    v
+}
+
+impl PwmState {
+    pub(super) fn auth_mut(&mut self, scope: Scope) -> &mut Auth {
+        match scope {
+            Scope::Terminal => &mut self.auth,
+            Scope::Browser => &mut self.browser_auth,
+        }
+    }
+
+    pub(super) fn auth_of(&self, scope: Scope) -> &Auth {
+        match scope {
+            Scope::Terminal => &self.auth,
+            Scope::Browser => &self.browser_auth,
+        }
+    }
+
+    fn info_of(&self, scope: Scope) -> &Option<(Kind, String, Caps)> {
+        match scope {
+            Scope::Terminal => &self.info,
+            Scope::Browser => &self.browser_info,
+        }
+    }
+
+    /// The source info a store's worker reported; only that store's.
+    fn store_info(&mut self, scope: Scope, info: (Kind, String, Caps)) {
+        match scope {
+            Scope::Terminal => self.info = Some(info),
+            Scope::Browser => self.browser_info = Some(info),
+        }
+    }
+
+    /// The authentication prompt's answer for one store: success unlocks that store only, failure
+    /// revokes it. Err is the reason.
+    fn apply_answer(&mut self, scope: Scope, answer: win_auth::Answer) -> Result<(), String> {
+        let reason = match answer {
+            win_auth::Answer::Granted => {
+                self.auth_mut(scope).granted(true);
+                return Ok(());
+            }
+            win_auth::Answer::Canceled => "password entry was cancelled.".to_string(),
+            win_auth::Answer::Failed(reason) => reason,
+        };
+        self.auth_mut(scope).granted(false);
+        Err(reason)
+    }
+
+    /// The first steps of `pwm_reply`, which need no window (review I5), in this order: (1) a basic-auth
+    /// store reply goes to the coordinator's owner and ends there; (2) the source info is stored per
+    /// scope, a browser reply never overwriting the terminal's; (3) a prompt or account pick with no
+    /// manager window to show it drops its sender (Cancel: a locked 1Password save fails, with the
+    /// toast). The rest is the window path, handed back.
+    fn route_reply(&mut self, r: Reply) -> Option<Reply> {
+        let Reply { scope, owner, instance, token, busy, info, done } = r;
+        if let Some(i) = info {
+            self.store_info(scope, i);
+        }
+        match done {
+            Done::AuthLooked { pane, id, found } => {
+                self.basic_auth_store_reply(StoreReply::Looked { pane, id, found });
+                None
+            }
+            Done::AuthSaved { pane, space, host, success } => {
+                self.basic_auth_store_reply(StoreReply::Saved { pane, space, host, success });
+                None
+            }
+            Done::Prompt { .. } | Done::Pick { .. } if owner.is_none() => None,
+            done => Some(Reply { scope, owner, instance, token, busy, info: None, done }),
+        }
+    }
+
+    /// The store answers the coordinator's owner has not taken yet.
+    pub(super) fn take_store_replies(&mut self) -> Vec<StoreReply> {
+        std::mem::take(&mut self.store_replies)
+    }
+
+    /// A basic-auth store job's answer, held for the coordinator's owner (Task 10) to take.
+    fn basic_auth_store_reply(&mut self, r: StoreReply) {
+        self.store_replies.push(r);
+    }
+
+    /// The screen locked: both stores re-lock when "after lock" is on.
+    fn screen_locked(&mut self, after: bool) {
+        self.auth.screen_locked(after);
+        self.browser_auth.screen_locked(after);
+    }
 }
 
 /// One broadcast password round (`iTermBroadcastPasswordHelper`).
@@ -188,13 +447,23 @@ enum ConfirmKind {
     Warning,
     /// An adapter's notice, OK with iTerm2's checkbox (`adapter_warning_spec`).
     Notice(crate::warnings::Spec),
+    /// A browser page's autofill press, asked in Tandem's own window (13x7): only Fill, pressed by
+    /// the person, runs it, and only on the page it was asked on.
+    Autofill(PaneId, super::browser_autofill_app::AutofillAsk),
 }
 
 impl App {
     /// Opens the password manager over the window of `pane` (or the current window) to
     /// `account`, on the next pass (`openPasswordManagerToAccountName:inSession:`).
     pub(super) fn open_password_manager(&mut self, account: Option<String>, pane: Option<PaneId>) {
-        self.pwm.requests.push((account, pane));
+        let focused = self.focused_id();
+        let browser = pane.or(focused).is_some_and(|p| self.is_browser_pane(p));
+        self.open_password_manager_with(open_request(account, pane, focused, browser));
+    }
+
+    /// Opens a manager as `o` describes, on the next pass.
+    pub(super) fn open_password_manager_with(&mut self, o: PwmOpen) {
+        self.pwm.requests.push(o);
         self.redraw();
     }
 
@@ -203,8 +472,17 @@ impl App {
         // One open per window a pass: the first; the rest (a trigger and automatic opening at
         // the same prompt, say) would only find it open, or ask to authenticate again.
         let mut handled: Vec<WindowId> = self.pwm.refused.take().into_iter().collect();
-        for (account, pane) in std::mem::take(&mut self.pwm.requests) {
-            self.open_pwm_now(event_loop, account, pane, &mut handled);
+        for o in std::mem::take(&mut self.pwm.requests) {
+            let challenge = match o.target {
+                PwmTarget::BasicAuth(n) => Some(n),
+                PwmTarget::Session => None,
+            };
+            // A picker that cannot open ends its challenge (the prompt comes back with what was typed).
+            if !self.open_pwm_now(event_loop, o, &mut handled) {
+                if let Some(n) = challenge {
+                    self.basic_auth_picked(n, None);
+                }
+            }
         }
         if let Some(email) = self.pwm.lp_terminal.take() {
             self.open_lp_login(event_loop, &email);
@@ -218,10 +496,18 @@ impl App {
                 ConfirmKind::Check(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
                 ConfirmKind::Broadcast(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, BROADCAST_ENTER),
                 ConfirmKind::Warning => ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
+                ConfirmKind::Autofill(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, crate::browser_autofill::CONFIRM_FILL),
                 ConfirmKind::Notice(spec) => super::warnings_app::open_warning(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), spec, c.remembered.as_deref(), underline),
             };
             match opened {
-                Ok(w) => c.window = Some(w),
+                Ok(mut w) => {
+                    // A question a page can raise: the one shared input guard (prompt_ui::InputGuard,
+                    // 1 s, restarted on refocus, keys, clicks and touch), no default button.
+                    if matches!(c.kind, ConfirmKind::Autofill(..)) {
+                        w.guard_input();
+                    }
+                    c.window = Some(w);
+                }
                 Err(e) => failed = Some(e),
             }
         }
@@ -240,27 +526,34 @@ impl App {
     }
 
     /// `openPasswordManagerToAccountName:inSession:forUser:didSendUserName:` (`PT:10302-10346`).
-    fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, account: Option<String>, pane: Option<PaneId>, handled: &mut Vec<WindowId>) {
+    /// True when a manager opened (or the open was refused as iTerm2 refuses it); false when a picker's
+    /// challenge must end because nothing opened.
+    fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, o: PwmOpen, handled: &mut Vec<WindowId>) -> bool {
+        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page, pick_page } = o;
+        let session = target == PwmTarget::Session;
         if let Some(p) = pane {
             // Unburied first, else it has no window (`AD:650-653`).
             self.disinter(p);
             if !self.enter_pane_window(p) {
-                return;
+                return session;
             }
             self.reveal_pane(p);
         } else if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let Some(here) = self.current_window() else { return };
-        if !first_for(handled, here) {
-            return;
+        let Some(here) = self.current_window() else { return session };
+        // The refuse-if-open rules are the session path's; a picker's one slot is decided below.
+        if session && !first_for(handled, here) {
+            return true;
         }
-        if self.pwm_window.is_some() {
-            return; // "Password manager sheet already open"
+        match open_decision(target, self.pwm_window.is_some()) {
+            OpenDecision::Open => {}
+            OpenDecision::Refuse => return true, // "Password manager sheet already open"
+            OpenDecision::AnswerNone => return false, // the challenge ends with None; the open manager stays
         }
-        // `canOpenPasswordManager`: not while that session's probe runs.
-        if pane.and_then(|p| self.panes.get(&p)).and_then(|p| p.echo_probe.as_ref()).is_some_and(Probe::active) {
-            return;
+        // `canOpenPasswordManager`: not while that session's probe runs (a terminal session's probe).
+        if session && pane.and_then(|p| self.panes.get(&p)).and_then(|p| p.echo_probe.as_ref()).is_some_and(Probe::active) {
+            return true;
         }
         // It would be a shame to send a focus report to a password prompt.
         let hold = pane.or_else(|| self.focused_id());
@@ -269,25 +562,32 @@ impl App {
         }
         let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
         let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
-        let prompted = self.pwm.auth.needs_prompt(required, every);
+        let prompted = self.pwm_auth(scope).needs_prompt(required, every);
         if prompted {
-            if !self.authenticate() {
+            if !self.authenticate(scope) {
                 // The prompt took the focus: the hold ends when the window gets it back.
                 if let Some(p) = hold {
                     self.pwm.holds.push(p);
                 }
-                self.pwm.refused = Some(here);
-                return;
+                if session {
+                    self.pwm.refused = Some(here);
+                }
+                return session;
             }
         } else if !required {
-            self.pwm.auth.open_unprompted();
+            self.pwm_auth(scope).open_unprompted();
         }
         let opened = match (self.gpu.as_ref(), self.hwnd()) {
             (Some(g), Some(h)) => PwmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, h, crate::tab_theme::forced_dark(self.tab_style())).map(|w| (w, h)),
             _ => Err("no terminal window".to_string()),
         };
         let (window, owner_hwnd) = match opened {
-            Ok(w) => w,
+            Ok((mut win, h)) => {
+                if from_page {
+                    win.guard_input();
+                }
+                (win, h)
+            }
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
                 match hold {
@@ -299,7 +599,7 @@ impl App {
                     }
                     None => {}
                 }
-                return;
+                return session;
             }
         };
         if let Some(h) = window.hwnd() {
@@ -325,28 +625,38 @@ impl App {
             default_name: account.clone().unwrap_or_default(),
             select_name: account,
             select_pair: None,
+            scope,
+            page_pane: if scope == Scope::Browser { pane } else { None },
+            send_user_by_default: for_user,
+            send_both,
+            target,
+            focus_after_user,
+            pending_user: None,
+            pick_page,
         });
         self.pwm_job(Work::Load, true);
+        true
     }
 
     /// Windows Hello for the signed-in user when it is available (iTerm2's `LAContext`
     /// `deviceOwnerAuthentication`), else the Windows credential prompt checked with `LogonUserW`
     /// (`requestAuthenticationIfNeeded`). A failure or a cancel shows iTerm2's alert.
-    pub(super) fn authenticate(&mut self) -> bool {
+    pub(super) fn authenticate(&mut self, scope: Scope) -> bool {
         let owner = self.hwnd().unwrap_or(0);
         // Windows Hello (PIN, fingerprint, face) where it is set up, else the password prompt.
         let answer = win_auth::hello(owner).unwrap_or_else(|| win_auth::prompt(owner));
-        let reason = match answer {
-            win_auth::Answer::Granted => {
-                self.pwm.auth.granted(true);
-                return true;
+        match self.pwm.apply_answer(scope, answer) {
+            Ok(()) => true,
+            Err(reason) => {
+                self.pwm_warning(AUTH_FAILED_TITLE, &format!("Authentication failed because {reason}"));
+                false
             }
-            win_auth::Answer::Canceled => "password entry was cancelled.".to_string(),
-            win_auth::Answer::Failed(reason) => reason,
-        };
-        self.pwm.auth.granted(false);
-        self.pwm_warning(AUTH_FAILED_TITLE, &format!("Authentication failed because {reason}"));
-        false
+        }
+    }
+
+    /// The authentication of one store (iTerm2 keeps `authenticated` per provider, `PDS:15`).
+    pub(super) fn pwm_auth(&mut self, scope: Scope) -> &mut Auth {
+        self.pwm.auth_mut(scope)
     }
 
     fn pwm_warning(&mut self, heading: &str, text: &str) {
@@ -362,14 +672,23 @@ impl App {
         self.globals.number(echo_probe::DURATION_KEY).unwrap_or(echo_probe::DEFAULT_DURATION)
     }
 
+    /// The store the manager in front serves (the terminal's when none is open).
+    fn cur_scope(&self) -> Scope {
+        self.pwm_window.as_ref().map_or(Scope::Terminal, |w| w.scope)
+    }
+
     fn pwm_kind(&self) -> Kind {
-        Kind::from_stored(&self.globals.string(pwm_source::SOURCE_KEY))
+        self.pwm_kind_for(self.cur_scope())
+    }
+
+    fn pwm_kind_for(&self, scope: Scope) -> Kind {
+        Kind::from_stored(&self.globals.string(scope.source_key()))
     }
 
     /// The current source's name and capabilities, once the worker has built it.
     fn pwm_info(&self) -> (String, Caps) {
         let kind = self.pwm_kind();
-        match &self.pwm.info {
+        match self.pwm.info_of(self.cur_scope()) {
             Some((k, name, caps)) if *k == kind => (name.clone(), caps.clone()),
             _ => (String::new(), Caps::default()),
         }
@@ -427,23 +746,36 @@ impl App {
         let w = self.pwm_window.as_ref();
         let sel = w.and_then(PwmWin::selected_account);
         let focused = self.focused_id();
-        let can_enter = focused.and_then(|id| self.panes.get(&id)).is_some_and(|p| p.exited.is_none());
-        let can_broadcast = focused.is_some_and(|id| self.broadcast.targets(&self.broadcast_view(), id).len() > 1);
-        pwm::buttons(&pwm::ButtonState {
+        let scope = self.cur_scope();
+        let session_can_enter = match (scope, w.and_then(|w| w.page_pane)) {
+            // A browser page takes an entry only from an account for its exact https origin.
+            (Scope::Browser, pane) => pane.zip(sel).is_some_and(|(pane, a)| self.page_accepts(pane, &a.account_name)),
+            (Scope::Terminal, _) => focused.and_then(|id| self.panes.get(&id)).is_some_and(|p| p.exited.is_none()),
+        };
+        let can_broadcast = scope == Scope::Terminal && focused.is_some_and(|id| self.broadcast.targets(&self.broadcast_view(), id).len() > 1);
+        pwm::buttons(&button_state(&ButtonInputs {
+            target: w.map_or(PwmTarget::Session, |w| w.target),
+            for_user: w.is_some_and(|w| w.send_user_by_default),
+            send_both: w.is_some_and(|w| w.send_both),
             selected: sel.is_some(),
             user_name_empty: sel.is_none_or(|a| a.user_name.is_empty()),
-            can_enter,
+            session_can_enter,
             can_broadcast,
             available: w.is_some_and(|w| w.available),
-            send_user_by_default: false,
-            send_both: false,
-            account_sends_otp: sel.is_some_and(|a| a.send_otp),
-        })
+            sends_otp: sel.is_some_and(|a| a.send_otp),
+        }))
+    }
+
+    /// Whether `pane` shows an https page that the stored `account` is for, exactly (Task 5's one
+    /// matcher, `account_matches`).
+    fn page_accepts(&self, pane: PaneId, account: &str) -> bool {
+        self.page_bound_now(pane).and_then(|(url, epoch)| PwPage::new(&url, epoch)).is_some_and(|p| bp::account_matches(account, &p))
     }
 
     fn pwm_gear(&self) -> pwm::Gear {
         let (name, caps) = self.pwm_info();
-        let authenticated = self.pwm.auth.authenticated;
+        let scope = self.cur_scope();
+        let authenticated = self.pwm.auth_of(scope).authenticated;
         pwm::Gear {
             authenticated,
             require_open: self.pwm_setting(pwm::REQUIRE_OPEN_KEY),
@@ -457,6 +789,7 @@ impl App {
             switch_on: authenticated && caps.multiple_accounts,
             adapter_settings: !caps.settings.is_empty(),
             commands: caps.commands.clone(),
+            browser: scope == Scope::Browser,
         }
     }
 
@@ -467,7 +800,12 @@ impl App {
         if let Some(p) = w.hold {
             self.pwm.holds.push(p);
         }
-        // Dropping the window answers any prompt it showed with Cancel.
+        // Dropping the window answers any prompt it showed with Cancel, and a picker's challenge with
+        // nothing (its `Drop` queues it; this ends it now).
+        drop(w);
+        for n in std::mem::take(&mut *ORPHANED.lock().unwrap()) {
+            self.basic_auth_picked(n, None);
+        }
     }
 
     /// The current window gained the focus: holds left by a closed manager on its sessions end
@@ -515,7 +853,7 @@ impl App {
 
     /// What the user did in the manager.
     pub(super) fn pwm_act(&mut self, act: PwmAct) {
-        let authenticated = self.pwm.auth.authenticated;
+        let authenticated = self.pwm.auth_of(self.cur_scope()).authenticated;
         let (_, caps) = self.pwm_info();
         let Some(w) = self.pwm_window.as_mut() else { return };
         match act {
@@ -532,16 +870,17 @@ impl App {
                 let can_enter = self.pwm_buttons().default_on;
                 let Some(w) = self.pwm_window.as_ref() else { return };
                 if let (true, true, Some(a)) = (authenticated, can_enter, w.selected_account().cloned()) {
-                    self.pwm_job(Work::Fetch(a, Why::Enter), true);
+                    // The pick binds the page now, before the secret is fetched.
+                    let Some(why) = self.pick_why(&a) else { return };
+                    self.pwm_job(Work::Fetch(a, why), true);
                 }
             }
             PwmAct::EnterUserName => {
                 let user = w.selected_account().map(|a| a.user_name.clone()).unwrap_or_default();
                 let broadcast = w.broadcast;
+                let account = w.selected_account().map(|a| a.account_name.clone()).unwrap_or_default();
                 if authenticated && !user.is_empty() && self.pwm_buttons().secondary_on {
-                    if let Some(pane) = self.focused_id() {
-                        self.enter_username(pane, &user, broadcast);
-                    }
+                    self.pwm_enter_user(&account, &user, broadcast);
                 }
             }
             PwmAct::Add => {
@@ -657,7 +996,7 @@ impl App {
 
     /// The gear menu's items (`W:555-668`, `W:1815-1830`). Every item needs authentication.
     fn pwm_gear_item(&mut self, item: GearItem) {
-        if !self.pwm.auth.authenticated {
+        if !self.pwm.auth_of(self.cur_scope()).authenticated {
             return;
         }
         let (name, caps) = self.pwm_info();
@@ -711,7 +1050,8 @@ impl App {
     /// Choosing a source (`useKeychain:`, `use1Password:` and the like): stored at once; a
     /// source whose check fails shows its alert and falls back to Credential Manager (kept).
     fn pwm_choose(&mut self, k: Kind) {
-        self.globals.set(pwm_source::SOURCE_KEY, toml::Value::String(k.stored().to_string()));
+        // Each store keeps its own choice (`NoSyncPasswordManagerDataSourceName` + "Browser").
+        self.globals.set(self.cur_scope().source_key(), toml::Value::String(k.stored().to_string()));
         self.save_globals();
         if k == Kind::CredentialManager {
             self.pwm_job(Work::Load, true);
@@ -869,7 +1209,13 @@ impl App {
 
     /// What the worker builds the source from.
     fn pwm_config(&self) -> Config {
-        let kind = self.pwm_kind();
+        self.pwm_config_for(self.cur_scope())
+    }
+
+    /// What the worker of `scope`'s store builds its source from (a sign-in prompt's store jobs have
+    /// no manager window, so the scope is named, not read from the window in front).
+    fn pwm_config_for(&self, scope: Scope) -> Config {
+        let kind = self.pwm_kind_for(scope);
         let cli = match kind {
             Kind::OnePassword => self.globals.string(OP_PATH_KEY),
             Kind::LastPass => self.globals.string(LP_PATH_KEY),
@@ -886,7 +1232,7 @@ impl App {
             adapter.settings = plain.chain(secret).collect();
             adapter.settings.sort();
         }
-        Config { kind, cli, groups: self.globals.string(LP_GROUPS_KEY), account: self.globals.string(OP_ACCOUNT_KEY), adapter }
+        Config { kind, cli, groups: self.globals.string(LP_GROUPS_KEY), account: self.globals.string(OP_ACCOUNT_KEY), adapter, scope }
     }
 
     /// Sends a request for the current window's manager to the worker; `busy` shows the scrim
@@ -899,14 +1245,79 @@ impl App {
         let instance = w.instance;
         w.window.request_redraw();
         let notify = self.notify.clone();
-        let worker = self.pwm.worker.get_or_insert_with(|| Worker::start(notify));
-        if worker.tx.send(Job { owner, instance, token, busy, config, work }).is_err() {
-            self.pwm.worker = None;
+        let scope = config.scope;
+        let slot = match scope {
+            Scope::Terminal => &mut self.pwm.worker,
+            Scope::Browser => &mut self.pwm.browser_worker,
+        };
+        let worker = slot.get_or_insert_with(|| Worker::start(notify, scope));
+        if worker.tx.send(Job::Window(WindowJob { owner, instance, token, busy, config, work })).is_err() {
+            *slot = None;
             if busy {
                 w.busy.decr();
             }
             self.banners.set("pwm", "The password manager could not start its worker thread.");
         }
+    }
+
+    /// The browser store can be read now with no prompt (REQUIRE_OPEN and REQUIRE_EVERY honored).
+    pub(super) fn basic_auth_unlocked(&self) -> bool {
+        let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
+        crate::browser_basic_auth::unlocked_without_prompt(self.pwm.browser_auth.authenticated, required, every)
+    }
+
+    /// Saving a remembered sign-in needs the browser store open: whether that is a prompt now. The
+    /// answer is for the BROWSER store only; the terminal's authentication is never touched.
+    pub(super) fn basic_auth_save_needs_prompt(&mut self) -> bool {
+        let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
+        let needs = self.pwm_auth(Scope::Browser).needs_prompt(required, every);
+        if !needs && !required {
+            self.pwm_auth(Scope::Browser).open_unprompted();
+        }
+        needs
+    }
+
+    /// A challenge ended elsewhere (answered, cancelled, superseded): its picker goes, queued opens
+    /// included; an open picker window closes.
+    pub(super) fn basic_auth_picker_gone(&mut self, id: u64) {
+        self.pwm.requests.retain(|o| o.target != PwmTarget::BasicAuth(id));
+        if self.pwm_window.as_ref().is_some_and(|w| w.target == PwmTarget::BasicAuth(id)) {
+            self.close_pwm();
+        }
+    }
+
+    /// Sends a basic-auth store job to the browser store's worker (13x7 Task 9). The store is read only
+    /// when it is unlocked without any prompt (`BAS:87-89`); a locked one answers a miss or a failed save
+    /// at once, and never asks here. Returns false when it could not be sent.
+    pub(super) fn basic_auth_store_job(&mut self, work: AuthWork) -> bool {
+        let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
+        let authenticated = self.pwm.browser_auth.authenticated;
+        // A read is silent only when no prompt is due (REQUIRE_EVERY asks each time, so a lookup is a
+        // miss). A save follows the authentication the caller just did, which `every` would not reuse.
+        let open = match work {
+            AuthWork::Lookup { .. } => crate::browser_basic_auth::unlocked_without_prompt(authenticated, required, every),
+            AuthWork::Save { .. } => authenticated || !required,
+        };
+        if !open {
+            self.pwm.store_replies.push(match auth_failed(work) {
+                Done::AuthLooked { pane, id, found } => StoreReply::Looked { pane, id, found },
+                Done::AuthSaved { pane, space, host, success } => StoreReply::Saved { pane, space, host, success },
+                _ => return false,
+            });
+            return true;
+        }
+        let config = self.pwm_config_for(Scope::Browser);
+        let notify = self.notify.clone();
+        let slot = &mut self.pwm.browser_worker;
+        let worker = slot.get_or_insert_with(|| Worker::start(notify, Scope::Browser));
+        if worker.tx.send(Job::Auth(AuthJob { config, work })).is_err() {
+            *slot = None;
+            return false;
+        }
+        true
     }
 
     /// Every other window's manager lists the accounts again (`kPasswordManagersShouldReloadData`);
@@ -930,15 +1341,16 @@ impl App {
         if lock::take() {
             self.pwm_screen_locked();
         }
-        if lock::watched() == 0 && self.pwm.auth.authenticated {
+        if lock::watched() == 0 && (self.pwm.auth.authenticated || self.pwm.browser_auth.authenticated) {
             if let Some(h) = self.hwnd() {
                 lock::watch(h, self.notify.clone());
             }
         }
-        let replies: Vec<Reply> = match &self.pwm.worker {
-            Some(w) => w.rx.try_iter().collect(),
-            None => Vec::new(),
-        };
+        let replies: Vec<Reply> = [&self.pwm.worker, &self.pwm.browser_worker].into_iter().flatten().flat_map(|w| w.rx.try_iter()).collect();
+        // Pickers that closed without a choice end their challenges.
+        for n in std::mem::take(&mut *ORPHANED.lock().unwrap()) {
+            self.basic_auth_picked(n, None);
+        }
         for r in replies {
             self.pwm_reply(r);
         }
@@ -1018,7 +1430,7 @@ impl App {
     /// The screen locked (`staticScreenDidLock:`, `instanceScreenDidLock:`).
     pub(super) fn pwm_screen_locked(&mut self) {
         let after = self.pwm_setting(pwm::REQUIRE_LOCK_KEY);
-        self.pwm.auth.screen_locked(after);
+        self.pwm.screen_locked(after);
         if self.pwm_setting(pwm::REQUIRE_OPEN_KEY) && after {
             let here = self.current_window();
             for owner in self.pwm_owners() {
@@ -1033,15 +1445,13 @@ impl App {
     }
 
     fn pwm_reply(&mut self, r: Reply) {
-        let Reply { owner, instance, token, busy, info, done } = r;
-        if let Some(i) = info {
-            self.pwm.info = Some(i);
-        }
+        // Store replies and ownerless prompts go first, never needing a manager window (review I5).
+        let Some(Reply { owner: Some(owner), instance, token, busy, done, scope, .. }) = self.pwm.route_reply(r) else { return };
         let here = self.current_window();
         if here != Some(owner) && !self.enter(owner) {
             return; // The window closed: a prompt's sender drops, which answers Cancel.
         }
-        let Some(w) = self.pwm_window.as_mut() else { return self.restore_window(here) };
+        let Some(w) = self.pwm_window.as_mut().filter(|w| w.scope == scope) else { return self.restore_window(here) };
         // A prompt is never under a scrim of its own; a stale one drops its sender (Cancel).
         let scrim = busy && !matches!(done, Done::Prompt { .. } | Done::Pick { .. });
         if !pwm::reply_current(Some(w.instance), instance, scrim, token, &w.busy) {
@@ -1092,17 +1502,26 @@ impl App {
     fn pwm_done(&mut self, done: Done) {
         let kind = self.pwm_kind();
         match done {
-            Done::Prompt { .. } | Done::Pick { .. } => {}
+            Done::Prompt { .. } | Done::Pick { .. } | Done::AuthLooked { .. } | Done::AuthSaved { .. } => {}
             Done::Listed { accounts, warning } => {
+                // A browser manager over a page lists only the accounts for that page's exact origin.
+                let (scope, target) = self.pwm_window.as_ref().map_or((Scope::Terminal, PwmTarget::Session), |w| (w.scope, w.target));
+                let page = match target {
+                    PwmTarget::BasicAuth(_) => self.pwm_window.as_ref().and_then(|w| w.pick_page.clone()),
+                    PwmTarget::Session => self.pwm_window.as_ref().and_then(|w| w.page_pane).and_then(|p| self.page_bound_now(p)).and_then(|(url, epoch)| PwPage::new(&url, epoch)),
+                };
                 let result = match accounts {
-                    Ok(v) => pwm::sorted(v),
+                    Ok(v) => browser_listing(scope, target, page.as_ref(), pwm::sorted(v)),
                     Err(e) => {
                         self.pwm_source_alert(kind, &e);
                         Vec::new()
                     }
                 };
                 // As a side effect, the trigger's pop-up gets the names (`setCachedCombinedAccountNames:`).
-                pwm_prompt::set_cached_names(result.iter().map(|a| a.display.clone()).collect());
+                // (The terminal's only: the browser's names never reach a terminal trigger.)
+                if scope == Scope::Terminal {
+                    pwm_prompt::set_cached_names(result.iter().map(|a| a.display.clone()).collect());
+                }
                 let Some(w) = self.pwm_window.as_mut() else { return };
                 let kept = w.selected_account().map(|a| a.id.clone());
                 w.accounts = result;
@@ -1289,11 +1708,14 @@ impl App {
                 }
                 self.pwm_copy(&s);
             }
-            Why::Enter => {
+            Why::Enter(page) => {
                 // `didFetchPasswordToEnter:otp:`: to the window's current session (or its
                 // broadcast sessions), then the manager closes.
                 let Some(w) = self.pwm_window.as_ref() else { return };
                 let combined = pwm::combined(&password, &w.two_factor, otp.as_ref());
+                if w.scope == Scope::Browser {
+                    return self.enter_browser(page, &a, combined);
+                }
                 let broadcast = w.broadcast;
                 if let Some(pane) = self.focused_id() {
                     if broadcast {
@@ -1307,9 +1729,106 @@ impl App {
         }
     }
 
+    /// What a pick of `a` is bound to: in the browser, the page showing now, which must be https and
+    /// the one `a` is for (Task 5's `account_matches`); otherwise nothing. None (with the reason
+    /// toasted) refuses the pick.
+    fn pick_why(&mut self, a: &Account) -> Option<Why> {
+        let w = self.pwm_window.as_ref()?;
+        if w.scope == Scope::Terminal {
+            return Some(Why::Enter(None));
+        }
+        // A picker's pick must be for the challenge's own origin (the list already hides the rest).
+        if let PwmTarget::BasicAuth(_) = w.target {
+            let page = w.pick_page.clone()?;
+            if !bp::account_matches(&a.account_name, &page) {
+                self.show_toast(bp::WRONG_SITE);
+                return None;
+            }
+            return Some(Why::Enter(Some(page)));
+        }
+        let pane = w.page_pane?;
+        let page = self.browser_pw_page(pane)?;
+        if !bp::account_matches(&a.account_name, &page) {
+            self.show_toast(bp::WRONG_SITE);
+            return None;
+        }
+        Some(Why::Enter(Some(page)))
+    }
+
+    /// Enter User Name in the manager in front: a terminal session as before, a basic-auth picker records
+    /// it for the password to follow, a page gets it through the bound writer.
+    fn pwm_enter_user(&mut self, account: &str, user: &str, broadcast: bool) {
+        let Some(w) = self.pwm_window.as_mut() else { return };
+        let (scope, target, pane, close) = (w.scope, w.target, w.page_pane, w.send_user_by_default && !w.send_both);
+        if scope == Scope::Terminal {
+            if let Some(pane) = self.focused_id() {
+                self.enter_username(pane, user, broadcast);
+            }
+            return;
+        }
+        match target {
+            PwmTarget::BasicAuth(_) => w.pending_user = Some(user.to_string()),
+            PwmTarget::Session => {
+                let Some(pane) = pane else { return };
+                let Some(page) = self.browser_pw_page(pane) else { return };
+                if !bp::account_matches(account, &page) {
+                    self.show_toast(bp::WRONG_SITE);
+                    return;
+                }
+                self.browser_fill_username(pane, page, Secret::new(user.to_string()));
+            }
+        }
+        if close {
+            self.close_pwm();
+        }
+    }
+
+    /// Enter Password in a browser manager (`didFetchPasswordToEnter:`): in send-both, the user name,
+    /// then the password field's focus (only when the page has not navigated since), then the
+    /// password, and the manager closes. A basic-auth picker finishes its challenge with (the user
+    /// name that came first, or none) and the password.
+    fn enter_browser(&mut self, page: Option<PwPage>, a: &Account, password: Secret) {
+        let Some(w) = self.pwm_window.as_mut() else { return };
+        match w.target {
+            PwmTarget::BasicAuth(_) => {
+                if w.send_both && !a.user_name.is_empty() {
+                    w.pending_user = Some(a.user_name.clone());
+                }
+                let user = w.pending_user.take().unwrap_or_default();
+                let challenge = take_challenge(&mut w.target);
+                self.close_pwm();
+                if let Some(n) = challenge {
+                    self.basic_auth_picked(n, Some((user, password)));
+                }
+            }
+            PwmTarget::Session => {
+                let (Some(pane), Some(page)) = (w.page_pane, page) else { return };
+                let steps = page_steps(w.send_both, &a.user_name, w.focus_after_user.as_ref(), page.epoch);
+                let mut password = Some(password);
+                for step in steps {
+                    match step {
+                        PageStep::User(u) => self.browser_fill_username(pane, page.clone(), Secret::new(u)),
+                        PageStep::Focus(id) => self.browser_focus_password(pane, page.clone(), &id),
+                        PageStep::Password => {
+                            if let Some(p) = password.take() {
+                                self.browser_fill_password(pane, page.clone(), p);
+                            }
+                        }
+                    }
+                }
+                self.close_pwm();
+            }
+        }
+    }
+
     /// `-[PTYSession enterPassword:]`: the echo probe first, with the profile's Backspace; focus
-    /// reports held until it is done. A tmux gateway gets nothing.
+    /// reports held until it is done. A tmux gateway gets nothing. A browser pane never gets a
+    /// password here: the page path binds the pick's page (`enter_browser`).
     pub(super) fn enter_password(&mut self, pane: PaneId, password: Secret) {
+        if self.is_browser_pane(pane) {
+            self.show_toast("This manager types into a terminal; open the browser's password manager for a page.");
+            return;
+        }
         if self.is_tmux_gateway(pane) || !self.panes.contains_key(&pane) {
             return;
         }
@@ -1328,7 +1847,7 @@ impl App {
     /// `broadcastPassword:` (`PT:15379-15420`, `BH:51-131`): every broadcast session that can
     /// backspace probes, with no password and never sending it; none probing enters it in each.
     pub(super) fn broadcast_password(&mut self, sender: PaneId, password: Secret) {
-        let targets: Vec<PaneId> = self.broadcast.targets(&self.broadcast_view(), sender).into_iter().filter(|t| !self.is_tmux_gateway(*t)).collect();
+        let targets: Vec<PaneId> = self.broadcast.targets(&self.broadcast_view(), sender).into_iter().filter(|t| !self.is_tmux_gateway(*t) && !self.is_browser_pane(*t)).collect();
         let probing: Vec<(PaneId, Vec<u8>)> = targets.iter().map(|t| (*t, self.backspace_data(*t))).filter(|(_, bs)| !bs.is_empty()).collect();
         if probing.is_empty() {
             for t in targets {
@@ -1356,10 +1875,14 @@ impl App {
     /// broadcast; with Broadcast on, once per broadcast session (kept: each write broadcasts
     /// again).
     pub(super) fn enter_username(&mut self, pane: PaneId, user: &str, broadcast: bool) {
+        if self.is_browser_pane(pane) {
+            self.show_toast("This manager types into a terminal; open the browser's password manager for a page.");
+            return; // a page takes its user name through the bound writer
+        }
         let text = format!("{user}\n");
         let targets = if broadcast { self.broadcast.targets(&self.broadcast_view(), pane) } else { vec![pane] };
         for t in targets {
-            if !self.is_tmux_gateway(t) {
+            if !self.is_tmux_gateway(t) && !self.is_browser_pane(t) {
                 self.user_write(t, text.as_bytes(), Write::SendText);
             }
         }
@@ -1484,12 +2007,19 @@ impl App {
     /// Events for the password manager's questions. False for other windows.
     pub(super) fn pwm_confirm_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
         let Some(i) = self.pwm.confirms.iter().position(|c| c.window.as_ref().is_some_and(|w| w.id() == id)) else { return false };
+        // The autofill question: its window carries the one shared input guard (`guard_input` at
+        // open; `ConfirmWindow::event` drops what it guards). Only a pointer click answers Fill;
+        // the keyboard's one key is Escape (Cancel), itself held back while the guard waits.
+        let autofill = matches!(self.pwm.confirms[i].kind, ConfirmKind::Autofill(..));
         let Some(w) = self.pwm.confirms[i].window.as_mut() else { return false };
         let answer = match event {
             WindowEvent::CloseRequested => ConfirmResult::Cancel,
             WindowEvent::RedrawRequested => w.redraw(),
+            WindowEvent::KeyboardInput { event: k, .. } if autofill && autofill_escape(k) && !w.input_guarded(event) => ConfirmResult::Cancel,
             other => {
-                w.event(other);
+                if !(autofill && autofill_key_dropped(other)) {
+                    w.event(other);
+                }
                 ConfirmResult::Open
             }
         };
@@ -1506,6 +2036,29 @@ impl App {
             self.pwm_confirmed(c.kind, answer);
         }
         true
+    }
+
+    /// Opens a page's autofill question for `pane` on the next pass. One at a time per pane (the
+    /// caller checks `autofill_ask_open`).
+    pub(super) fn pwm_ask_autofill(&mut self, pane: PaneId, text: String, ask: super::browser_autofill_app::AutofillAsk) {
+        self.pwm.confirms.push(Confirm { window: None, heading: crate::browser_autofill::CONFIRM_HEADING.to_string(), text, kind: ConfirmKind::Autofill(pane, ask), remembered: None });
+        self.redraw();
+    }
+
+    /// Whether `pane` has an autofill question open or waiting.
+    pub(super) fn autofill_ask_open(&self, pane: PaneId) -> bool {
+        self.pwm.confirms.iter().any(|c| matches!(&c.kind, ConfirmKind::Autofill(p, _) if *p == pane))
+    }
+
+    /// Drops `pane`'s autofill questions (closing their windows) whose page is gone: all of them with
+    /// `all`, else those `still` (origin, epoch) does not accept. Nothing fills.
+    pub(super) fn autofill_ask_drop(&mut self, pane: PaneId, all: bool, still: impl Fn(&str, u64) -> bool) {
+        self.pwm.confirms.retain(|c| !matches!(&c.kind, ConfirmKind::Autofill(p, a) if *p == pane && (all || !still(&a.origin, a.epoch))));
+    }
+
+    /// The panes with an autofill question, to sweep.
+    pub(super) fn autofill_ask_panes(&self) -> Vec<PaneId> {
+        self.pwm.confirms.iter().filter_map(|c| match &c.kind { ConfirmKind::Autofill(p, _) => Some(*p), _ => None }).collect()
     }
 
     fn pwm_confirmed(&mut self, kind: ConfirmKind, answer: ConfirmResult) {
@@ -1526,6 +2079,11 @@ impl App {
                     for p in sessions {
                         self.write_password(p, &password);
                     }
+                }
+            }
+            ConfirmKind::Autofill(pane, ask) => {
+                if ok {
+                    self.autofill_confirmed(pane, ask);
                 }
             }
             // A notice's answer is remembered in `pwm_confirm_event`; closed, nothing.
@@ -1558,6 +2116,26 @@ impl App {
         self.pwm.lp_watch = None;
         self.pwm_warning(pwm_cli::LP_LOGIN_SUCCESSFUL_TITLE, pwm_cli::LP_LOGIN_SUCCESSFUL_MESSAGE);
         self.close_pane(pane, event_loop);
+    }
+}
+
+/// The autofill question's Escape press: its Cancel (a guarded window ignores Escape itself).
+fn autofill_escape(k: &winit::event::KeyEvent) -> bool {
+    k.state == winit::event::ElementState::Pressed && autofill_key_allowed(&k.logical_key)
+}
+
+/// Whether the autofill question lets a key through: Escape (Cancel) only. Tab never moves focus
+/// to Fill and Space or Enter never press it, so only a pointer click answers Fill.
+fn autofill_key_allowed(key: &winit::keyboard::Key) -> bool {
+    matches!(key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape))
+}
+
+/// Whether the autofill question drops a keyboard or input-method event.
+fn autofill_key_dropped(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::KeyboardInput { event, .. } => !autofill_key_allowed(&event.logical_key),
+        WindowEvent::Ime(_) => true,
+        _ => false,
     }
 }
 
@@ -1685,6 +2263,8 @@ struct Config {
     /// is written back into the built source's config, so it does not.
     account: String,
     adapter: AdapterConfig,
+    /// Which password manager the source serves: the terminal's, or the browser's own store.
+    scope: Scope,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -1697,11 +2277,18 @@ struct AdapterConfig {
 
 impl Config {
     fn same_source(&self, o: &Config) -> bool {
-        self.kind == o.kind && self.cli == o.cli && self.groups == o.groups && self.account == o.account && self.adapter == o.adapter
+        self.kind == o.kind && self.cli == o.cli && self.groups == o.groups && self.account == o.account && self.adapter == o.adapter && self.scope == o.scope
     }
 }
 
-struct Job {
+/// A request for the worker: a manager window's, or a sign-in prompt's store job, which has no window.
+enum Job {
+    Window(WindowJob),
+    #[allow(dead_code)]
+    Auth(AuthJob),
+}
+
+struct WindowJob {
     owner: WindowId,
     instance: u64,
     token: u32,
@@ -1710,8 +2297,30 @@ struct Job {
     work: Work,
 }
 
+/// A basic-auth store job (13x7 Task 9): owner-less, no instance and no token; its reply is routed by
+/// the challenge, never by a manager window (review I5).
+struct AuthJob {
+    config: Config,
+    work: AuthWork,
+}
+
+/// What the sign-in prompt asks of the store (`BAS:100-190`).
+pub(super) enum AuthWork {
+    /// The saved credential for the account name: it only prefills the prompt (R13x78-1).
+    Lookup { pane: PaneId, id: u64, name: String, preferred_user: Option<String> },
+    /// Remember a credential the server accepted.
+    Save { pane: PaneId, space: SpaceKey, name: String, user: String, password: Secret },
+}
+
+/// A store job's answer, queued for the coordinator's owner (Task 10).
+pub(super) enum StoreReply {
+    Looked { pane: PaneId, id: u64, found: Option<(String, Secret)> },
+    Saved { pane: PaneId, space: SpaceKey, host: String, success: bool },
+}
+
 enum Why {
-    Enter,
+    /// Enter Password; in the browser, the page the pick was made on (bound before the fetch).
+    Enter(Option<PwPage>),
     Reveal,
     Copy,
     /// The Edit panel with this serial.
@@ -1763,10 +2372,17 @@ enum Done {
     Prompt { heading: String, user: Option<String>, answer: Sender<Option<Vec<(String, Secret)>>> },
     /// The 1Password account picker, as (email, account id); the worker waits.
     Pick { choices: Vec<(String, String)>, answer: Sender<Option<String>> },
+    /// A basic-auth lookup's result (no window).
+    AuthLooked { pane: PaneId, id: u64, found: Option<(String, Secret)> },
+    /// A basic-auth save's result (no window).
+    AuthSaved { pane: PaneId, space: SpaceKey, host: String, success: bool },
 }
 
 struct Reply {
-    owner: WindowId,
+    /// The store whose worker sent it.
+    scope: Scope,
+    /// None for a basic-auth store reply: there is no manager window to show it in.
+    owner: Option<WindowId>,
     instance: u64,
     token: u32,
     busy: bool,
@@ -1782,6 +2398,7 @@ struct Worker {
 /// What a prompt from inside a source needs to reach the window that asked.
 #[derive(Clone)]
 struct Ctx {
+    scope: Scope,
     out: Sender<Reply>,
     notify: Notify,
     /// The window and manager instance of the request being run.
@@ -1793,7 +2410,7 @@ struct Ctx {
 impl Ctx {
     fn send(&self, done: Done) -> bool {
         let Some((owner, instance)) = *self.current.lock().unwrap() else { return false };
-        let sent = self.out.send(Reply { owner, instance, token: 0, busy: false, info: None, done }).is_ok();
+        let sent = self.out.send(Reply { scope: self.scope, owner: Some(owner), instance, token: 0, busy: false, info: None, done }).is_ok();
         (self.notify)();
         sent
     }
@@ -1839,13 +2456,28 @@ impl Ctx {
 
 impl Worker {
     /// The worker thread: it owns the source and runs one request at a time, in order.
-    fn start(notify: Notify) -> Worker {
+    fn start(notify: Notify, scope: Scope) -> Worker {
         let (tx, jobs) = mpsc::channel::<Job>();
         let (out, rx) = mpsc::channel::<Reply>();
         let _ = std::thread::Builder::new().name("tandem-pwm".into()).spawn(move || {
-            let ctx = Ctx { out: out.clone(), notify: notify.clone(), current: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
+            let ctx = Ctx { scope, out: out.clone(), notify: notify.clone(), current: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
             let mut slot: Option<(Config, Box<dyn Source>)> = None;
             for job in jobs {
+                let job = match job {
+                    Job::Window(j) => j,
+                    Job::Auth(j) => {
+                        // No window: a source that needs a master password cannot ask (its prompt
+                        // finds no window and answers Cancel), so a locked store fails the job.
+                        *ctx.current.lock().unwrap() = None;
+                        let done = run_auth(&mut slot, j, &ctx);
+                        let info = slot.as_ref().map(|(_, s)| (s.kind(), s.name(), s.caps()));
+                        if out.send(Reply { scope, owner: None, instance: 0, token: 0, busy: false, info, done }).is_err() {
+                            break;
+                        }
+                        notify();
+                        continue;
+                    }
+                };
                 *ctx.current.lock().unwrap() = Some((job.owner, job.instance));
                 let (owner, instance, token, busy) = (job.owner, job.instance, job.token, job.busy);
                 let done = run(&mut slot, job, &ctx);
@@ -1854,7 +2486,7 @@ impl Worker {
                 if let (Some(a), Some((c, _))) = (ctx.picked.lock().unwrap().take(), slot.as_mut()) {
                     c.account = a;
                 }
-                if out.send(Reply { owner, instance, token, busy, info, done }).is_err() {
+                if out.send(Reply { scope, owner: Some(owner), instance, token, busy, info, done }).is_err() {
                     break;
                 }
                 notify();
@@ -1869,7 +2501,7 @@ impl Worker {
 fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
     use crate::pwm_run::ProcessRunner;
     match config.kind {
-        Kind::CredentialManager => Ok(Box::new(crate::pwm_credman::CredentialManager::new())),
+        Kind::CredentialManager => Ok(Box::new(crate::pwm_credman::CredentialManager::for_scope(config.scope))),
         Kind::OnePassword => {
             let mut runner = ProcessRunner::new();
             let path = if config.cli.is_empty() {
@@ -1880,18 +2512,18 @@ fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
                 config.cli.clone()
             };
             let account = Some(config.account.clone()).filter(|a| !a.is_empty());
-            Ok(Box::new(pwm_cli::OnePassword::new(runner, path, account, ctx.master_prompt()).with_picker(ctx.picker())))
+            Ok(Box::new(pwm_cli::OnePassword::new(runner, path, account, ctx.master_prompt()).with_picker(ctx.picker()).with_scope(config.scope)))
         }
         Kind::LastPass => {
             let path = if config.cli.is_empty() { pwm_cli::resolve_lpass().map_err(|_| NeedCli::Lp)? } else { config.cli.clone() };
-            Ok(Box::new(pwm_cli::LastPass::new(ProcessRunner::new(), path, pwm_cli::lpass_groups(&config.groups), ctx.login_prompt())))
+            Ok(Box::new(pwm_cli::LastPass::new(ProcessRunner::new(), path, pwm_cli::lpass_groups(&config.groups), ctx.login_prompt()).with_scope(config.scope)))
         }
         Kind::KeePassXC | Kind::Bitwarden | Kind::Keeper => {
             let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
             let path = crate::pwm_adapter::adapter_path(config.kind, &exe_dir).unwrap_or_default();
             let a = &config.adapter;
             let settings = a.settings.iter().cloned().collect();
-            Ok(Box::new(crate::pwm_adapter::Adapter::new(ProcessRunner::new(), config.kind, path, a.db.clone(), a.exe.clone(), settings, None, ctx.master_prompt())))
+            Ok(Box::new(crate::pwm_adapter::Adapter::new(ProcessRunner::new(), config.kind, path, a.db.clone(), a.exe.clone(), settings, None, ctx.master_prompt()).with_scope(config.scope)))
         }
     }
 }
@@ -1901,8 +2533,61 @@ fn list(src: &mut dyn Source) -> Done {
     Done::Listed { accounts, warning: src.take_warning() }
 }
 
+/// A basic-auth store job: the source built (or reused), then `auth_job` on it. A source that cannot be
+/// built answers as a miss or a failed save.
+fn run_auth(slot: &mut Option<(Config, Box<dyn Source>)>, job: AuthJob, ctx: &Ctx) -> Done {
+    if slot.as_ref().is_none_or(|(c, _)| !c.same_source(&job.config)) {
+        *slot = None;
+        if let Ok(s) = build(&job.config, ctx) {
+            *slot = Some((job.config.clone(), s));
+        }
+    }
+    match slot.as_mut() {
+        Some((_, src)) => auth_job(src.as_mut(), job.work),
+        None => auth_failed(job.work),
+    }
+}
+
+fn auth_failed(work: AuthWork) -> Done {
+    match work {
+        AuthWork::Lookup { pane, id, .. } => Done::AuthLooked { pane, id, found: None },
+        AuthWork::Save { pane, space, .. } => {
+            let host = space.host.clone();
+            Done::AuthSaved { pane, space, host, success: false }
+        }
+    }
+}
+
+/// `BAS:100-190` over a source: the first account named for the space (the proposed user preferred) and
+/// its password; a save sets the password of an existing (name, user) account, else adds with no flags.
+/// Any store error is a miss or a failed save, never a thrown prompt.
+fn auth_job(src: &mut dyn Source, work: AuthWork) -> Done {
+    use crate::browser_basic_auth::{pick_saved, save_plan, SavePlan};
+    match work {
+        AuthWork::Lookup { pane, id, name, preferred_user } => {
+            let found = src.accounts().ok().and_then(|accounts| {
+                let a = pick_saved(&accounts, &name, preferred_user.as_deref())?;
+                let (password, _) = src.password(a).ok()?;
+                Some((a.user_name.clone(), password))
+            });
+            Done::AuthLooked { pane, id, found }
+        }
+        AuthWork::Save { pane, space, name, user, password } => {
+            let host = space.host.clone();
+            let success = match src.accounts() {
+                Err(_) => false,
+                Ok(accounts) => match save_plan(&accounts, &name, &user) {
+                    SavePlan::SetPassword(a) => src.set_password(&a, password).is_ok(),
+                    SavePlan::Add => src.add(&name, &user, password, &[]).is_ok(),
+                },
+            };
+            Done::AuthSaved { pane, space, host, success }
+        }
+    }
+}
+
 /// Runs one request against the source, building it first when the configuration changed.
-fn run(slot: &mut Option<(Config, Box<dyn Source>)>, job: Job, ctx: &Ctx) -> Done {
+fn run(slot: &mut Option<(Config, Box<dyn Source>)>, job: WindowJob, ctx: &Ctx) -> Done {
     let choosing = matches!(job.work, Work::Choose);
     if slot.as_ref().is_none_or(|(c, _)| !c.same_source(&job.config)) {
         *slot = None;
@@ -2298,10 +2983,323 @@ mod tests {
 
     #[test]
     fn a_changed_source_is_rebuilt() {
-        let c = Config { kind: Kind::OnePassword, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default() };
+        let c = Config { kind: Kind::OnePassword, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default(), scope: Scope::Terminal };
         let picked = Config { account: "AB".into(), ..c.clone() };
         assert!(!c.same_source(&picked), "an account changed in Settings rebuilds the 1Password source");
         assert!(!c.same_source(&Config { cli: "C:\\op.exe".into(), ..c.clone() }));
         assert!(!c.same_source(&Config { kind: Kind::LastPass, ..c.clone() }));
+    }
+
+    #[test]
+    fn autofill_fill_answers_only_a_pointer_click() {
+        use winit::keyboard::{Key, NamedKey};
+        assert!(autofill_key_allowed(&Key::Named(NamedKey::Escape)));
+        for k in [Key::Named(NamedKey::Tab), Key::Named(NamedKey::Space), Key::Named(NamedKey::Enter), Key::Character(" ".into()), Key::Character("f".into())] {
+            assert!(!autofill_key_allowed(&k), "{k:?} must not reach the question");
+        }
+        assert!(!autofill_key_dropped(&WindowEvent::Focused(true)), "pointer and focus events pass");
+        assert!(autofill_key_dropped(&WindowEvent::Ime(winit::event::Ime::Enabled)));
+        // The call site routes every keyboard event of an Autofill question through the rule, and the
+        // window carries the one shared guard (no second delay of its own).
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let ev = &prod[prod.find("pub(super) fn pwm_confirm_event").unwrap()..prod.find("pub(super) fn pwm_ask_autofill").unwrap()];
+        assert!(ev.contains("if autofill && autofill_escape(k) && !w.input_guarded(event) => ConfirmResult::Cancel"), "Escape cancels only once the guard is armed");
+        assert!(ev.contains("if !(autofill && autofill_key_dropped(other)) {\n                    w.event(other);"), "every other key is dropped; the window's guard drops early clicks and touches");
+        assert!(prod.contains("if matches!(c.kind, ConfirmKind::Autofill(..)) {\n                        w.guard_input();"));
+        assert!(!prod.contains("input_ignored(") && !prod.contains("opened: Option<Instant>"), "no second guard");
+    }
+
+    #[test]
+    fn a_changed_scope_is_rebuilt() {
+        let c = Config { kind: Kind::CredentialManager, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default(), scope: Scope::Terminal };
+        assert!(c.same_source(&c.clone()));
+        assert!(!c.same_source(&Config { scope: Scope::Browser, ..c.clone() }));
+    }
+
+    fn acct(name: &str, user: &str) -> Account {
+        Account { id: format!("{name}|{user}"), account_name: name.into(), user_name: user.into(), display: name.into(), has_otp: false, send_otp: false, source_label: None }
+    }
+
+    fn inputs() -> ButtonInputs {
+        ButtonInputs { target: PwmTarget::Session, for_user: false, send_both: false, selected: true, user_name_empty: false, session_can_enter: true, can_broadcast: true, available: true, sends_otp: false }
+    }
+
+    #[test]
+    fn browser_manager_follows_iterm2() {
+        // A browser pane (named, or the focused one) opens the browser store, bound to the pane; a
+        // terminal pane the terminal's. Edit > Password Manager from a settings page names no account.
+        let b = open_request(None, Some(7), Some(3), true);
+        assert_eq!((b.scope, b.pane, b.for_user, b.send_both, b.target), (Scope::Browser, Some(7), false, false, PwmTarget::Session));
+        assert_eq!(open_request(None, None, Some(3), true).pane, Some(3), "no pane named: the focused browser pane");
+        let t = open_request(Some("a".into()), Some(7), Some(3), false);
+        assert_eq!((t.scope, t.pane, t.account.as_deref()), (Scope::Terminal, Some(7), Some("a")));
+        assert_eq!(open_request(None, None, Some(3), false).pane, None, "a terminal request keeps its pane as asked");
+        // The titles (`PMW:361-371`).
+        let user = pwm::buttons(&button_state(&ButtonInputs { for_user: true, ..inputs() }));
+        assert_eq!((user.default_title, user.secondary_shown), (pwm::TITLE_ENTER_USER_NAME, false));
+        let both = pwm::buttons(&button_state(&ButtonInputs { for_user: true, send_both: true, ..inputs() }));
+        assert_eq!((both.default_title, both.default_on), (pwm::TITLE_ENTER_USERNAME_AND_PASSWORD, true));
+        let no_user = pwm::buttons(&button_state(&ButtonInputs { for_user: true, send_both: true, user_name_empty: true, ..inputs() }));
+        assert!(!no_user.default_on && !no_user.secondary_on, "send-both needs a user name");
+        // A picker can always enter and never broadcast (`BAP:54-58`).
+        let picker = button_state(&ButtonInputs { target: PwmTarget::BasicAuth(7), session_can_enter: false, ..inputs() });
+        assert!(picker.can_enter && !picker.can_broadcast);
+        let session = button_state(&ButtonInputs { session_can_enter: false, ..inputs() });
+        assert!(!session.can_enter, "a page that does not take the account enables nothing");
+        // The slot: a picker never displaces an open manager, it ends its challenge; the session path refuses.
+        assert_eq!(open_decision(PwmTarget::BasicAuth(7), true), OpenDecision::AnswerNone);
+        assert_eq!(open_decision(PwmTarget::BasicAuth(7), false), OpenDecision::Open);
+        assert_eq!(open_decision(PwmTarget::Session, true), OpenDecision::Refuse);
+        // The source: its own key, and the choice goes there.
+        assert_eq!(Scope::Browser.source_key(), pwm_source::SOURCE_KEY_BROWSER);
+        assert_ne!(Scope::Browser.source_key(), Scope::Terminal.source_key());
+        // Replies and info are kept apart.
+        let mut st = PwmState::default();
+        st.store_info(Scope::Browser, (Kind::CredentialManager, "b".into(), Caps::default()));
+        assert!(st.info.is_none() && st.browser_info.is_some());
+        assert_eq!(st.info_of(Scope::Browser).as_ref().map(|i| i.1.as_str()), Some("b"));
+        assert!(st.info_of(Scope::Terminal).is_none());
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(prod.contains("Scope::Browser => &mut self.pwm.browser_worker"), "the browser's jobs go to its own worker");
+        assert!(prod.contains("Worker::start(notify, scope)") && prod.contains("self.out.send(Reply { scope: self.scope,"), "replies carry the scope");
+        assert!(prod.contains("self.store_info(scope, i)"), "a reply updates its own store's info");
+        assert!(prod.contains("self.globals.set(self.cur_scope().source_key(),"), "choosing a source writes the scope's key");
+        assert!(prod.contains("browser: scope == Scope::Browser"));
+        assert!(prod.contains("if scope == Scope::Terminal {\n                    pwm_prompt::set_cached_names"), "a browser list never reaches terminal triggers");
+    }
+
+    #[test]
+    fn browser_unlock_leaves_terminal_locked() {
+        let (required, every) = (true, false);
+        let mut st = PwmState::default();
+        assert!(st.auth_of(Scope::Browser).needs_prompt(required, every) && st.auth_of(Scope::Terminal).needs_prompt(required, every));
+        assert!(st.apply_answer(Scope::Browser, win_auth::Answer::Granted).is_ok());
+        assert!(!st.auth_of(Scope::Browser).needs_prompt(required, every));
+        assert!(st.auth_of(Scope::Terminal).needs_prompt(required, every), "the terminal store stays locked");
+        assert!(st.apply_answer(Scope::Terminal, win_auth::Answer::Granted).is_ok());
+        assert!(st.apply_answer(Scope::Browser, win_auth::Answer::Canceled).is_err());
+        assert!(st.auth_of(Scope::Browser).needs_prompt(required, every) && !st.auth_of(Scope::Terminal).needs_prompt(required, every), "a refusal revokes only its own store");
+        // The reverse.
+        let mut st = PwmState::default();
+        assert!(st.apply_answer(Scope::Terminal, win_auth::Answer::Granted).is_ok());
+        assert!(st.auth_of(Scope::Browser).needs_prompt(required, every));
+        // A screen lock revokes both.
+        assert!(st.apply_answer(Scope::Browser, win_auth::Answer::Granted).is_ok());
+        st.screen_locked(false);
+        assert!(st.auth.authenticated && st.browser_auth.authenticated, "after-lock off keeps both");
+        st.screen_locked(true);
+        assert!(!st.auth.authenticated && !st.browser_auth.authenticated);
+        // Every caller names the store it unlocks.
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(!prod.contains("self.authenticate()") && !prod.contains("self.pwm.auth.needs_prompt"), "no caller unlocks the terminal store by default");
+        assert!(prod.contains("self.authenticate(scope)"));
+    }
+
+    #[test]
+    fn enter_routes_to_the_page() {
+        // Send-both: the user name, the focus step, then the password.
+        let focus = ("pw".to_string(), 4u64);
+        assert_eq!(page_steps(true, "me", Some(&focus), 4), vec![PageStep::User("me".into()), PageStep::Focus("pw".into()), PageStep::Password]);
+        assert_eq!(page_steps(true, "me", Some(&focus), 5), vec![PageStep::User("me".into()), PageStep::Password], "a page that navigated since gets no focus step");
+        assert_eq!(page_steps(true, "", Some(&focus), 4), vec![PageStep::Focus("pw".into()), PageStep::Password], "no user name, none typed");
+        assert_eq!(page_steps(false, "me", Some(&focus), 4), vec![PageStep::Password], "plain Enter Password types only the password");
+        // A picker: the user name first, then the password finishes the challenge; closing finishes with none, once.
+        let mut t = PwmTarget::BasicAuth(7);
+        assert_eq!(take_challenge(&mut t), Some(7));
+        assert_eq!(take_challenge(&mut t), None, "a challenge ends once");
+        let mut s = PwmTarget::Session;
+        assert_eq!(take_challenge(&mut s), None);
+        // The source: a browser pane gets nothing through the pty paths; the page path is bound.
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let pw = between(prod, "pub(super) fn enter_password", "pub(super) fn broadcast_password");
+        assert!(pw.contains("self.is_browser_pane(pane)") && pw.find("is_browser_pane").unwrap() < pw.find("Probe::begin").unwrap(), "no echo probe for a browser pane");
+        let un = between(prod, "pub(super) fn enter_username", "fn end_probe_of");
+        assert!(un.contains("self.is_browser_pane(pane)") && un.find("is_browser_pane").unwrap() < un.find("user_write").unwrap(), "no pty write for a browser pane");
+        assert!(prod.contains(".filter(|t| !self.is_tmux_gateway(*t) && !self.is_browser_pane(*t)).collect();"), "broadcast skips pages");
+        let eb = between(prod, "fn enter_browser", "/// `-[PTYSession enterPassword:]`");
+        assert!(eb.contains("self.browser_fill_username(pane, page.clone(),") && eb.contains("self.browser_focus_password(pane, page.clone(),") && eb.contains("self.browser_fill_password(pane, page.clone(), p)"));
+        assert!(eb.contains("page_steps(w.send_both, &a.user_name, w.focus_after_user.as_ref(), page.epoch)"));
+        assert!(eb.contains("take_challenge(&mut w.target)") && eb.contains("self.basic_auth_picked(n, Some((user, password)))"));
+        assert!(prod.contains("ORPHANED.lock().unwrap().push(n)"), "a picker that goes with its window ends its challenge");
+    }
+
+    #[test]
+    fn a_page_takes_only_its_own_accounts() {
+        let page = PwPage::new("https://shop.example/login", 3).unwrap();
+        let all = vec![
+            acct("https://shop.example", "me"),
+            acct("https://shop.example (Realm)", "me"),
+            acct("https://evil.example", "me"),
+            acct("https://shop.example.evil.test", "me"),
+            acct("https://evil.test/https://shop.example", "me"),
+            acct("http://shop.example", "me"),
+            acct("https://shop.example:8443", "me"),
+            acct("shop.example", "me"),
+            acct("terminal-login", "root"),
+        ];
+        let names = |v: Vec<Account>| v.into_iter().map(|a| a.account_name).collect::<Vec<_>>();
+        assert_eq!(names(browser_listing(Scope::Browser, PwmTarget::Session, Some(&page), all.clone())), vec!["https://shop.example", "https://shop.example (Realm)"]);
+        assert!(browser_listing(Scope::Browser, PwmTarget::Session, None, all.clone()).is_empty(), "an http (or no) page lists nothing");
+        assert_eq!(browser_listing(Scope::Terminal, PwmTarget::Session, None, all.clone()).len(), all.len(), "the terminal manager lists its own store");
+        assert_eq!(names(browser_listing(Scope::Browser, PwmTarget::BasicAuth(1), Some(&page), all.clone())), vec!["https://shop.example", "https://shop.example (Realm)"], "a picker lists only the challenge's own origin");
+        assert!(browser_listing(Scope::Browser, PwmTarget::BasicAuth(1), None, all.clone()).is_empty(), "a picker with no https origin lists nothing");
+        // The pick is checked again against the page showing then.
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let pick = between(prod, "fn pick_why", "fn pwm_enter_user");
+        assert!(pick.contains("self.browser_pw_page(pane)?") && pick.contains("bp::account_matches(&a.account_name, &page)"), "the pick binds the page, then the account");
+        assert!(pick.contains("w.pick_page.clone()?") && pick.contains("PwmTarget::BasicAuth(_)"), "a picker's pick binds the challenge's origin first");
+        let user = between(prod, "fn pwm_enter_user", "fn enter_browser");
+        assert!(user.contains("bp::account_matches(account, &page)"));
+        assert!(prod.contains("fn page_accepts") && prod.contains("bp::account_matches(account, &p)"));
+        assert!(!prod.contains("fn account_matches") && !prod.contains("fn origin_matches"), "one matcher");
+        assert!(between(prod, "PwmAct::EnterPassword => {", "PwmAct::EnterUserName").find("pick_why").unwrap() < between(prod, "PwmAct::EnterPassword => {", "PwmAct::EnterUserName").find("Work::Fetch").unwrap(), "bound before the fetch");
+    }
+
+    #[test]
+    fn the_browser_manager_never_logs_or_derives_debug_over_secrets() {
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        for line in ["pub(super) struct PickerResult", "pub(super) struct PwmOpen", "enum PwmTarget"] {
+            let at = prod.find(line).unwrap();
+            let before = &prod[at.saturating_sub(160)..at];
+            if line.contains("PickerResult") {
+                assert!(!before.contains("derive(") || !before.contains("Debug"), "{line}: a secret field has no derived Debug");
+            }
+        }
+        for banned in ["log::", "println!", "eprintln!", "dbg!"] {
+            let browser = between(prod, "fn pick_why", "pub(super) fn enter_password");
+            assert!(!browser.contains(banned), "{banned}");
+        }
+    }
+
+    /// Task 6 review I1: a picker whose window cannot open must report false so its challenge is
+    /// answered; only a session may report true on a failure. Task 6 review M1 (class rule): the
+    /// manager a page's button opens carries the one input guard.
+    #[test]
+    fn a_failed_open_answers_a_picker_and_a_page_opened_manager_is_guarded() {
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(!prod.contains("return !session") && !prod.contains("{ return !session }"), "no inverted failure return");
+        let open = between(prod, "fn open_pwm_now", "pub(super) fn authenticate");
+        assert_eq!(open.matches("return session").count(), 4, "all four failure paths answer a picker");
+        let guard = between(open, "Ok((mut win, h)) => {", "Err(e) =>");
+        assert!(guard.contains("if from_page {") && guard.contains("win.guard_input();"));
+        assert_eq!(prod.matches("guard_input()").count(), 2, "the autofill question and this window");
+        let ui = include_str!("../pwm_ui.rs");
+        assert!(ui.contains("g.drops(e, now)") && ui.contains("g.window_event(e, now)"), "the window drops guarded input before egui");
+        assert!(include_str!("browser_password_app.rs").contains("from_page: true,"));
+        // The toast tells the person why nothing was entered (M5).
+        assert!(between(prod, "pub(super) fn enter_password", "let bs =").contains("show_toast"));
+    }
+
+    fn between<'a>(s: &'a str, a: &str, b: &str) -> &'a str {
+        let i = s.find(a).unwrap_or_else(|| panic!("{a}"));
+        let j = s[i..].find(b).unwrap_or_else(|| panic!("{b}")) + i;
+        &s[i..j]
+    }
+
+    /// A store whose accounts are a list; it records what was written.
+    struct FakeStore {
+        accounts: Vec<Account>,
+        calls: Vec<String>,
+        fail: bool,
+    }
+
+    impl Source for FakeStore {
+        fn kind(&self) -> Kind {
+            Kind::CredentialManager
+        }
+        fn name(&self) -> String {
+            "fake".into()
+        }
+        fn caps(&self) -> Caps {
+            Caps::default()
+        }
+        fn available(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn accounts(&mut self) -> Result<Vec<Account>, String> {
+            if self.fail { Err("locked".into()) } else { Ok(self.accounts.clone()) }
+        }
+        fn password(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
+            Ok((Secret::new(format!("pw-of-{}", a.user_name)), None))
+        }
+        fn set_password(&mut self, a: &Account, _p: Secret) -> Result<(), String> {
+            self.calls.push(format!("set {} {}", a.account_name, a.user_name));
+            if self.fail { Err("no".into()) } else { Ok(()) }
+        }
+        fn delete(&mut self, _a: &Account) -> Result<(), String> {
+            Ok(())
+        }
+        fn add(&mut self, name: &str, user: &str, _p: Secret, flags: &[(String, bool)]) -> Result<Account, String> {
+            self.calls.push(format!("add {name} {user} {}", flags.len()));
+            if self.fail { Err("no".into()) } else { Ok(acct(name, user)) }
+        }
+        fn edit_in_place(&mut self, _a: &Account, _n: Option<&str>, _u: Option<&str>, _p: Option<Secret>) -> Result<(), String> {
+            Ok(())
+        }
+        fn toggle_otp(&mut self, a: &Account) -> Result<Account, String> {
+            Ok(a.clone())
+        }
+        fn reload(&mut self) {}
+        fn reset_configuration(&mut self) {}
+        fn switch_account(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn space() -> SpaceKey {
+        SpaceKey { scheme: "https".into(), host: "a.b".into(), port: 443, realm: String::new() }
+    }
+
+    #[test]
+    fn auth_jobs_follow_iterm2() {
+        let mut st = FakeStore { accounts: vec![acct("https://a.b", "u")], calls: Vec::new(), fail: false };
+        let look = |st: &mut FakeStore, name: &str| auth_job(st, AuthWork::Lookup { pane: 1, id: 3, name: name.into(), preferred_user: None });
+        match look(&mut st, "https://a.b") {
+            Done::AuthLooked { pane: 1, id: 3, found: Some((user, pw)) } => assert_eq!((user.as_str(), pw.expose()), ("u", "pw-of-u")),
+            _ => panic!("a saved account is found"),
+        }
+        assert!(matches!(look(&mut st, "https://c.d"), Done::AuthLooked { found: None, .. }));
+        let save = |st: &mut FakeStore, name: &str, user: &str| auth_job(st, AuthWork::Save { pane: 1, space: space(), name: name.into(), user: user.into(), password: Secret::new("p".into()) });
+        assert!(matches!(save(&mut st, "https://a.b", "u"), Done::AuthSaved { success: true, .. }));
+        assert!(matches!(save(&mut st, "https://a.b", "v"), Done::AuthSaved { success: true, .. }));
+        assert_eq!(st.calls, vec!["set https://a.b u", "add https://a.b v 0"], "an existing pair is set, else added with no flags");
+        st.fail = true;
+        assert!(matches!(save(&mut st, "https://a.b", "u"), Done::AuthSaved { success: false, .. }), "the result comes from the store");
+        assert!(matches!(look(&mut st, "https://a.b"), Done::AuthLooked { found: None, .. }), "a store error is a miss");
+    }
+
+    #[test]
+    fn auth_replies_route_before_windows() {
+        let info = || Some((Kind::CredentialManager, "b".to_string(), Caps::default()));
+        let mut st = PwmState::default();
+        st.info = Some((Kind::OnePassword, "t".into(), Caps::default()));
+        let r = Reply { scope: Scope::Browser, owner: None, instance: 0, token: 0, busy: false, info: info(), done: Done::AuthLooked { pane: 5, id: 3, found: None } };
+        assert!(st.route_reply(r).is_none(), "a store reply needs no window");
+        assert_eq!(st.store_replies.len(), 1);
+        assert!(matches!(st.store_replies[0], StoreReply::Looked { pane: 5, id: 3, found: None }));
+        assert_eq!(st.browser_info.as_ref().map(|i| i.1.as_str()), Some("b"));
+        assert_eq!(st.info.as_ref().map(|i| i.1.as_str()), Some("t"), "the terminal's info is untouched");
+        let (tx, rx) = mpsc::channel::<Option<Vec<(String, Secret)>>>();
+        let r = Reply { scope: Scope::Browser, owner: None, instance: 0, token: 0, busy: false, info: None, done: Done::Prompt { heading: String::new(), user: None, answer: tx } };
+        assert!(st.route_reply(r).is_none());
+        assert!(rx.recv().is_err(), "an ownerless prompt drops its sender");
+        // A terminal window's reply still updates the terminal's info and goes on to its window.
+        let w = WindowId::dummy();
+        let r = Reply { scope: Scope::Terminal, owner: Some(w), instance: 1, token: 0, busy: false, info: Some((Kind::LastPass, "lp".into(), Caps::default())), done: Done::Reset };
+        assert!(st.route_reply(r).is_some());
+        assert_eq!(st.info.as_ref().map(|i| i.1.as_str()), Some("lp"));
+        assert_eq!(st.browser_info.as_ref().map(|i| i.1.as_str()), Some("b"));
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let start = prod.find("fn pwm_reply").unwrap();
+        assert!(prod[start..start + 400].contains("route_reply"), "routing is the first step of pwm_reply");
+        assert!(!prod.contains("self.pwm.info = Some"), "no reply overwrites the terminal info directly");
     }
 }

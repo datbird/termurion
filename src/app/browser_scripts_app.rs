@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use super::*;
-use crate::browser_js::{self, NavGate, Routed, UserScript, World};
+use crate::browser_js::{self, Inject, NavGate, Routed, UserScript, World};
 use crate::browser_world::{self, Attach, ClientWorld, Check, SessionSetup, Setup};
 use crate::layout::Axis;
 use serde_json::{Value, json};
@@ -185,6 +185,17 @@ impl App {
             // iTerm2's trigger engine (13x5 Task 9): every browser view, the isolated world only, with
             // the trigger secret and not the view's.
             scripts.extend(self.browser_trigger_script(pane));
+            // iTerm2's autofill detector (13x7 Task 3): the isolated world, the main frame, document end. None
+            // when its patches failed closed: no button, no request.
+            if let Some(code) = crate::browser_autofill::detector_script(secret) {
+                scripts.push(UserScript { id: "autofillHandler", code, inject: Inject::DocumentEnd, main_frame_only: true, world: World::Client });
+            }
+            // iTerm2's password button (13x7 Task 7): the isolated world, every frame (the script itself
+            // refuses non-https pages and frames of another origin), document end. None when its patches
+            // failed closed: no button.
+            if let Some(code) = crate::browser_password::button_script(secret) {
+                scripts.push(UserScript { id: "passwordManager", code, inject: Inject::DocumentEnd, main_frame_only: false, world: World::Client });
+            }
         }
         scripts
     }
@@ -247,7 +258,11 @@ impl App {
             bv.page_url = None;
             bv.nav_root = None;
             bv.nav_url = None;
+            bv.autofill.reset();
+            bv.password.reset();
         }
+        self.autofill_ask_drop(pane, true, |_, _| false);
+        self.basic_auth_reset(pane);
         self.global_pane_gone(pane);
         for done in dones {
             done(self, pane, Err("view closed".into()));
@@ -504,6 +519,12 @@ impl App {
 
     /// `devtools_send` with the answer read up to `cap` bytes of JSON text instead of `MAX_RESULT`.
     pub(super) fn devtools_send_capped(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &Value, cap: usize, done: JsDone) -> Option<u64> {
+        self.devtools_send_text(pane, session, method, &params.to_string(), cap, done)
+    }
+
+    /// The sender itself: `params` is the JSON text (a caller with a secret in it builds the text in a
+    /// `Secret` and drops it after this returns).
+    fn devtools_send_text(&mut self, pane: PaneId, session: Option<&str>, method: &str, params: &str, cap: usize, done: JsDone) -> Option<u64> {
         let why = match self.browser_views.get_mut(&pane) {
             Some(bv) if bv.view.is_some() && browser_world::method_allowed(method) => {
                 let token = bv.next_token;
@@ -514,8 +535,8 @@ impl App {
                 }
                 if let Some(v) = &bv.view {
                     match session {
-                        None => v.devtools_call(method, &params.to_string(), token),
-                        Some(s) => v.devtools_call_for_session(s, method, &params.to_string(), token),
+                        None => v.devtools_call(method, params, token),
+                        Some(s) => v.devtools_call_for_session(s, method, params, token),
                     }
                 }
                 return Some(token);
@@ -659,13 +680,7 @@ impl App {
 
     /// `allow_setup` is the isolation check's own call, the only one that may run before the world is Ready.
     fn browser_evaluate_in(&mut self, pane: PaneId, frame: Option<u64>, expression: String, done: JsDone, allow_setup: bool) {
-        let target = match self.browser_views.get(&pane) {
-            None => Err("no view"),
-            Some(bv) if bv.view.is_none() => Err("no view"),
-            Some(bv) if bv.client_world != ClientWorld::Ready && !(allow_setup && bv.world.setup.is_some()) => Err("isolated world unavailable"),
-            Some(bv) => bv.contexts.unique_for(frame).ok_or("no context"),
-        };
-        let (session, unique) = match target {
+        let (session, unique) = match self.world_target(pane, frame, allow_setup) {
             Ok(t) => t,
             Err(why) => {
                 log_js_failure(why);
@@ -674,6 +689,47 @@ impl App {
         };
         let params = browser_world::evaluate_params(&unique, &expression);
         self.devtools_send(pane, session.as_deref(), "Runtime.evaluate", &params, Box::new(move |app, pane, r| {
+            let r = r.and_then(|v| browser_world::evaluate_result(&v.to_string()));
+            if let Err(e) = &r {
+                log_js_failure(e);
+            }
+            done(app, pane, r)
+        }));
+    }
+
+    /// The DevTools session and unique context id of `pane`'s Tandem world (the frame's, or the main
+    /// frame's): Err with the reason when there is no view, the world is not Ready or no context exists.
+    fn world_target(&self, pane: PaneId, frame: Option<u64>, allow_setup: bool) -> Result<(Option<String>, String), &'static str> {
+        match self.browser_views.get(&pane) {
+            None => Err("no view"),
+            Some(bv) if bv.view.is_none() => Err("no view"),
+            Some(bv) if bv.client_world != ClientWorld::Ready && !(allow_setup && bv.world.setup.is_some()) => Err("isolated world unavailable"),
+            Some(bv) => bv.contexts.unique_for(frame).ok_or("no context"),
+        }
+    }
+
+    /// `browser_js_call` for a body with ONE secret argument (a password, B10): the expression and the
+    /// DevTools parameters are built in `Secret` buffers and wiped as soon as the send returns; no
+    /// `Value` or `to_string` copy is made. The seam sees only the constant body. Main frame only.
+    pub(super) fn browser_js_call_secret(&mut self, pane: PaneId, body: &str, args: Value, secret_name: &str, secret: &crate::pwm::Secret, done: JsDone) {
+        let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::World, body, done) else { return };
+        let (session, unique) = match self.world_target(pane, None, false) {
+            Ok(t) => t,
+            Err(why) => {
+                log_js_failure(why);
+                return done(self, pane, Err(why.into()));
+            }
+        };
+        let expr = match browser_js::call_js_secret(body, &args, secret_name, secret) {
+            Ok(e) => e,
+            Err(e) => {
+                log_js_failure(&e);
+                return done(self, pane, Err(e));
+            }
+        };
+        let params = browser_world::evaluate_params_secret(&unique, &expr);
+        drop(expr);
+        self.devtools_send_text(pane, session.as_deref(), "Runtime.evaluate", params.expose(), MAX_RESULT, Box::new(move |app, pane, r| {
             let r = r.and_then(|v| browser_world::evaluate_result(&v.to_string()));
             if let Err(e) = &r {
                 log_js_failure(e);
@@ -891,6 +947,8 @@ impl App {
             h if h == crate::browser_marks::MESSAGE_HANDLER => self.marks_message(pane, &r),
             h if h == crate::browser_marks::LAYOUT_HANDLER => self.marks_layout_message(pane, &r),
             h if h == crate::browser_triggers::MESSAGE_HANDLER => self.browser_trigger_message(pane, &r),
+            h if h == crate::browser_autofill::HANDLER => self.browser_autofill_message(pane, &r),
+            h if h == crate::browser_password::HANDLER => self.browser_password_message(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -1085,7 +1143,7 @@ mod tests {
     /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
     /// router or is a listed Client handler that asks `client_open` before it acts.
     fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
-        let known = ["marks_message", "marks_layout_message", "browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message", "browser_trigger_message"];
+        let known = ["browser_autofill_message", "browser_password_message", "marks_message", "marks_layout_message", "browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message", "browser_trigger_message"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
         let mut out = Vec::new();
         for (file, src) in files {

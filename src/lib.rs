@@ -86,10 +86,14 @@ pub mod devtools;
 pub mod browser_db;
 pub mod browser_db_perms;
 pub mod browser_perms;
+pub mod cooldown;
 pub mod perm_queue;
 pub mod browser_marks;
 pub mod browser_marks_db;
 pub mod browser_triggers;
+pub mod browser_autofill;
+pub mod browser_password;
+pub mod browser_basic_auth;
 pub mod browser_pages;
 pub mod browser_restore;
 pub mod adblock;
@@ -327,6 +331,7 @@ pub mod egui_host;
 
 #[cfg(windows)]
 pub mod prompt_ui;
+pub mod basic_auth_ui;
 #[cfg(windows)]
 pub mod note_ui;
 #[cfg(windows)]
@@ -576,6 +581,7 @@ pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]
 pub mod ai_key_ui;
+pub mod autofill_card_ui;
 #[cfg(windows)]
 pub mod ai_engage_ui;
 pub mod transparency;

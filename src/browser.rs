@@ -154,6 +154,28 @@ pub fn start_plan(custom_command: &str, browser_profiles: bool, initial_url: &st
     Start::Browser(start_url(restored.unwrap_or(initial_url)))
 }
 
+/// What one window's placement pass does with a browser pane (Task 10 review I1). `browser_views` is
+/// app-wide but each window places only its own: a pane shown here is Shown; one of this window's panes
+/// (another tab, buried, zoomed away) or a view parked in this window's handle (an Undo Close stash)
+/// is Hidden; any other pane belongs to another window, whose own pass decides, so this pass reports
+/// nothing for it (reporting it hidden cancelled its sign-in on every redraw of this window).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placed {
+    Shown,
+    Hidden,
+    Elsewhere,
+}
+
+pub fn placement(shown_here: bool, in_this_window: bool, in_this_handle: bool) -> Placed {
+    if shown_here {
+        Placed::Shown
+    } else if in_this_window || in_this_handle {
+        Placed::Hidden
+    } else {
+        Placed::Elsewhere
+    }
+}
+
 /// The store a profile's views live in: Dev Null Mode has its own (InPrivate views, a folder per run).
 pub fn store_of(dev_null: bool) -> Store {
     if dev_null { Store::BrowserDevNull } else { Store::Browser }
@@ -1499,6 +1521,23 @@ pub fn web_context_items(short: Option<&str>, locally_openable: bool, quick_look
 
 #[cfg(test)]
 mod tests {
+    /// Review I1: two windows, A holding pane 1 (shown) and B holding pane 2 (shown). B's pass sees
+    /// pane 1 as another window's: nothing is reported for it, so A's sign-in stays. A's own pass hides
+    /// its pane only when its tab is not active (or it is stashed in A's handle).
+    #[test]
+    fn a_pane_of_another_window_is_neither_shown_nor_hidden_here() {
+        use super::{placement, Placed};
+        // Window B's pass over pane 1 (A's pane, A's handle): not shown in B, not B's, not in B's handle.
+        assert_eq!(placement(false, false, false), Placed::Elsewhere);
+        // Window A's pass over pane 1: shown; then its tab goes to the background: hidden.
+        assert_eq!(placement(true, true, true), Placed::Shown);
+        assert_eq!(placement(false, true, true), Placed::Hidden);
+        // An Undo Close stash in A's handle with no pane in A: hidden by A.
+        assert_eq!(placement(false, false, true), Placed::Hidden);
+        // A pane just moved into A whose view is still parented in B: A hides it until shown.
+        assert_eq!(placement(false, true, false), Placed::Hidden);
+    }
+
     #[test]
     fn indicator_strip_follows_iterm2() {
         assert_eq!(strip_width(0.0, 285.0), None);

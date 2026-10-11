@@ -6,7 +6,7 @@
 //! `guard_open`. Tandem keeps nothing of a page but its URL (an arrangement) and its title.
 
 use super::*;
-use crate::browser::{self, BrowserIo, Button, Hit, Start, Suggestion};
+use crate::browser::{self, BrowserIo, Button, Hit, Placed, Start, Suggestion};
 use crate::layout::Rect;
 use crate::palette::Rgb;
 use crate::text_edit::{self, EditKey, EditOut};
@@ -132,6 +132,10 @@ pub(super) struct BrowserView {
     /// `Event::Starting`, cleared by any other start): only its Document request is answered.
     pub(super) nav_root: Option<crate::browser_pages::PageRoot>,
     pub(super) nav_url: Option<String>,
+    /// Autofill's queue, waiting request and ask flag (13x7); goes with the view's world.
+    pub(super) autofill: super::browser_autofill_app::PaneAutofill,
+    /// The password writer's waiting operations and their secrets (13x7 Task 5); go with the view's world.
+    pub(super) password: super::browser_password_app::PanePassword,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -225,6 +229,8 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         context_menu: true,
         permissions: true, fail_cert_errors: true,
         track_document_method: true,
+        main_responses: true,
+        basic_auth: true,
         ..Default::default()
     }
 }
@@ -272,7 +278,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -297,20 +303,28 @@ impl App {
         for pane in panes {
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
             match rect {
-                Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front && self.browser_page_may_focus(pane)),
+                Some(rect) => {
+                    self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front && self.browser_page_may_focus(pane));
+                    self.basic_auth_visible(pane, true);
+                }
                 None => {
-                    // Its link tip goes with it (hidden, another tab, buried, zoomed away).
-                    self.browser_tip_clear(pane);
                     // Not shown: hidden when it is this window's pane (another tab, buried, zoomed
-                    // away) or sits in this window's handle with no pane (an Undo Close stash).
-                    if let Some(bv) = self.browser_views.get(&pane) {
-                        if mine.contains(&pane) || bv.parent == hwnd {
-                            if let Some(v) = &bv.view {
+                    // away) or sits in this window's handle with no pane (an Undo Close stash). A pane
+                    // of another window is that window's to report (review I1: a redraw here used to
+                    // report it hidden and cancel its sign-in).
+                    let in_handle = self.browser_views.get(&pane).is_some_and(|bv| bv.parent == hwnd);
+                    match browser::placement(false, mine.contains(&pane), in_handle) {
+                        Placed::Hidden => {
+                            // Its link tip goes with it.
+                            self.browser_tip_clear(pane);
+                            if let Some(v) = self.browser_views.get(&pane).and_then(|bv| bv.view.as_ref()) {
                                 v.set_visible(false);
                             }
+                            self.web_replay_shown(pane, false);
+                            self.basic_auth_visible(pane, false);
                         }
+                        Placed::Shown | Placed::Elsewhere => {}
                     }
-                    self.web_replay_shown(pane, false);
                 }
             }
         }
@@ -467,6 +481,7 @@ impl App {
             self.perm_menu = None;
         }
         self.browser_permission_pane_gone(pane);
+        self.basic_auth_pane_gone(pane);
         self.browser_web_note_dropped(pane);
         self.browser_bars_end(pane);
         self.browser_reset_world(pane);
@@ -516,6 +531,8 @@ impl App {
         if matches!(e, Event::Focus(_, false)) {
             self.browser_tip_clear(pane);
         }
+        // HTTP authentication sees every navigation fact first (it cancels what a new one supersedes).
+        self.basic_auth_event(pane, e);
         match e {
             // The world's own about:blank navigation (the isolation check) is not the page.
             Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}
@@ -1814,6 +1831,23 @@ mod tests {
         assert!(browser_setup(true, false, vec![]).in_private && !browser_setup(false, false, vec![]).in_private);
         let s = browser_setup(false, false, vec![]);
         assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
+    }
+
+    /// Task 10 review I1: one window's pass reports a pane hidden (sign-in cancelled, replay hidden,
+    /// link tip cleared) only when the pane is this window's or parked in its handle
+    /// (`browser::placement`); a pane of another window is left to that window's pass.
+    #[test]
+    fn another_windows_pane_is_not_reported_hidden() {
+        let src = include_str!("browser_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let f = &prod[prod.find("pub(super) fn place_browser_views").unwrap()..prod.find("fn show_browser_view").unwrap()];
+        assert!(f.contains("browser::placement("), "the one placement rule decides");
+        let rest = "Placed::Shown | Placed::Elsewhere => {}";
+        let hidden = &f[f.find("Placed::Hidden =>").expect("a Hidden arm")..f.find(rest).expect("another window's pane: nothing")];
+        for call in ["self.basic_auth_visible(pane, false)", "self.web_replay_shown(pane, false)", "self.browser_tip_clear(pane)", "v.set_visible(false)"] {
+            assert_eq!(f.matches(call).count(), 1, "{call} once");
+            assert!(hidden.contains(call), "{call} only for a pane hidden in this window");
+        }
     }
 
     /// The hand-over compares per window and moves focus only for the window in front (fix r1).

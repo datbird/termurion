@@ -1026,7 +1026,10 @@ impl App {
             "saveArchive:" => self.save_archive_menu(),
             "restoreArchive:" => self.restore_archive(None),
             "openDirectories:" => self.open_recent_dirs(event_loop),
-            "openAutocomplete:" => self.open_autocomplete(),
+            "openAutocomplete:" => match self.focused_id().filter(|p| self.is_browser_pane(*p)) {
+                Some(pane) => self.browser_fill_all(pane),
+                None => self.open_autocomplete(),
+            },
             "toggleShowClippings:" => self.toggle_clippings(),
             "toggleShowInlineChat:" => self.toggle_inline_chat(),
             "toggleToolbeltVisibility:" => self.toggle_toolbelt(),
