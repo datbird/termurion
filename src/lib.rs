@@ -92,6 +92,7 @@ pub mod browser_marks_db;
 pub mod browser_triggers;
 pub mod browser_autofill;
 pub mod browser_password;
+pub mod browser_basic_auth;
 pub mod browser_pages;
 pub mod browser_restore;
 pub mod adblock;
