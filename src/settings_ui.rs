@@ -255,6 +255,30 @@ pub fn session_diff(base: &Profile, now: &Profile) -> Vec<(String, Option<Value>
     out
 }
 
+/// 13y2 review 9c I1: the profile Copy Current Settings writes to: the person's pick when it is
+/// still a profile, else the list's selection (the session's original saved profile, iTerm2's
+/// preselection `PGP:459-462`), never the session copy's own Guid.
+pub fn copy_destination(chosen: Option<&str>, profiles: &[(String, String)], list_selected: &str) -> String {
+    chosen.filter(|d| profiles.iter().any(|(g, _)| g == d)).unwrap_or(list_selected).to_string()
+}
+
+/// 13y2 review 9c I2: the edit a scratch profile's diff becomes. A live color preview (a hover,
+/// not a click) is never an edit: it shows and reverts when the pointer leaves.
+pub fn scratch_edit(diff: Vec<(String, Option<Value>)>, previewing: bool) -> Option<Vec<(String, Option<Value>)>> {
+    (!previewing && !diff.is_empty()).then_some(diff)
+}
+
+/// 13y2 review 9c I3: a deferred write (the key-binding override warning) that landed on the
+/// saved profile `guid` while the session had no copy: the saved profile goes back to `before`
+/// and the change returns as the session's diff (invariant 4: the saved profile is never edited
+/// from Edit Session).
+pub fn redirect_to_session(store: &mut Store, guid: &str, before: Profile) -> Vec<(String, Option<Value>)> {
+    let Some(p) = store.get_mut(guid) else { return Vec::new() };
+    let diff = session_diff(&before, p);
+    *p = before;
+    diff
+}
+
 pub fn edit_session_after_close(editing: Option<PaneId>, closed: PaneId) -> Option<PaneId> {
     editing.filter(|&p| p != closed)
 }
@@ -810,11 +834,26 @@ impl SettingsWindow {
                             }
                         }
                         match sheet.take().map(|w| w.then) {
-                            Some(settings_keys::SheetThen::SaveKey) => match settings_keys::held_answered(keys, answer.index, globals, store) {
-                                settings_keys::Saved::Nothing => {}
-                                settings_keys::Saved::Global => edit = Edit::GlobalsChanged,
-                                settings_keys::Saved::Profile(g) => edit = Edit::Changed(g),
-                            },
+                            Some(settings_keys::SheetThen::SaveKey) => {
+                                // A session with no copy: the binding goes to the session, never the saved profile.
+                                let no_copy = match edit_session {
+                                    Some(pane) if !store.is_session(&page_guid) => store.get(&page_guid).cloned().map(|before| (pane, before)),
+                                    _ => None,
+                                };
+                                match settings_keys::held_answered(keys, answer.index, globals, store) {
+                                    settings_keys::Saved::Nothing => {}
+                                    settings_keys::Saved::Global => edit = Edit::GlobalsChanged,
+                                    settings_keys::Saved::Profile(g) => match no_copy {
+                                        Some((pane, before)) if g == page_guid => {
+                                            let diff = redirect_to_session(store, &g, before);
+                                            if !diff.is_empty() {
+                                                edit = Edit::SessionEdit(pane, diff);
+                                            }
+                                        }
+                                        _ => edit = Edit::Changed(g),
+                                    },
+                                }
+                            }
                             Some(settings_keys::SheetThen::CreateHotkey(existing)) => crate::settings_hotkey::create_answered(hk, store, &existing, answer.index),
                             Some(settings_keys::SheetThen::DynamicProfile(guid)) => match answer.index {
                                 0 => *dynamic_request = Some(DynamicRequest::Mark(guid)),
@@ -1071,6 +1110,7 @@ impl SettingsWindow {
                     }
                 });
                 ui.separator();
+                let list_selected = selected.clone();
                 let selected = page_guid.clone();
                 let is_default = selected == store.default_guid;
                 let saved_guid = store.shared_guid(&selected);
@@ -1134,7 +1174,7 @@ impl SettingsWindow {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Edit Session: copy this session's settings to a profile (`02:984`).
                     if edit_session.is_some() && schema::TABS[tab] == "General" {
-                        let dest = copy_dest.clone().filter(|d| profiles.iter().any(|(g, _)| g == d)).unwrap_or_else(|| selected.clone());
+                        let dest = copy_destination(copy_dest.as_deref(), &profiles, &list_selected);
                         let dest_name = profiles.iter().find(|(g, _)| *g == dest).map(|(_, n)| n.clone()).unwrap_or_default();
                         ui.horizontal(|ui| {
                             egui::ComboBox::from_id_salt("copy_to_profile_dest").selected_text(crate::profile_list::display_text(&dest_name)).show_ui(ui, |ui| {
@@ -1210,6 +1250,11 @@ impl SettingsWindow {
                             }
                             // The hotkey keys are one row and the Configure Hotkey Window sheet.
                             if s.key == "Has Hotkey" {
+                                // The hotkey window sheet writes the saved profile: a session with no copy leaves it alone.
+                                if scratch_base.is_some() {
+                                    ui.label("The profile's Hotkey Window is set in Settings > Profiles.");
+                                    continue;
+                                }
                                 if crate::settings_hotkey::profile_row(ui, &selected, profile, hk, keys, &hotkey_prefs) {
                                     edit = Edit::Changed(selected.clone());
                                 }
@@ -1404,8 +1449,8 @@ impl SettingsWindow {
                     }
                 });
                 if let (Some(base), Some(now), Some(pane)) = (&scratch_base, &scratch, edit_session) {
-                    let diff = session_diff(base, now);
-                    if !diff.is_empty() {
+                    let previewing = matches!(edit, Edit::Preview) || presets.preview.is_some();
+                    if let Some(diff) = scratch_edit(session_diff(base, now), previewing) {
                         edit = Edit::SessionEdit(pane, diff);
                     }
                 }
@@ -2976,6 +3021,33 @@ mod tests {
         assert!(live.contains("let selected = page_guid.clone();"), "the page edits the session profile, the list keeps the original");
         let at = live.find("on_hover_text(\"New profile\")").unwrap();
         assert!(live[..at].rsplit("egui::Panel::left").next().unwrap().contains("if edit_session.is_none() {"), "no add or remove in Edit Session");
+    }
+
+    #[test]
+    fn edit_session_copy_preview_and_key_fixes() {
+        // I1: the default destination is the list's profile, not the session copy.
+        let profiles = vec![("SAVED".to_string(), "Work".to_string()), ("OTHER".to_string(), "Home".to_string())];
+        assert_eq!(copy_destination(None, &profiles, "SAVED"), "SAVED");
+        assert_eq!(copy_destination(Some("OTHER"), &profiles, "SAVED"), "OTHER");
+        assert_eq!(copy_destination(Some("GONE"), &profiles, "SAVED"), "SAVED");
+        let src = include_str!("settings_ui.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(live.contains("let list_selected = selected.clone();\n                let selected = page_guid.clone();"));
+        assert!(live.contains("copy_destination(copy_dest.as_deref(), &profiles, &list_selected)"));
+        // I2: a hover preview never becomes a session edit.
+        let diff = vec![("Background Color".to_string(), None)];
+        assert!(scratch_edit(diff.clone(), true).is_none());
+        assert_eq!(scratch_edit(diff.clone(), false), Some(diff));
+        assert!(scratch_edit(Vec::new(), false).is_none());
+        // I3: a write to the saved profile is put back and returned as the session's diff.
+        let mut store = Store::fresh(std::path::Path::new("x.toml"));
+        let guid = store.default_guid.clone();
+        let before = store.get(&guid).cloned().unwrap();
+        store.get_mut(&guid).unwrap().set("Badge Text", Value::String("held".into()));
+        let d = redirect_to_session(&mut store, &guid, before.clone());
+        assert_eq!(d, vec![("Badge Text".to_string(), Some(Value::String("held".into())))]);
+        assert_eq!(store.get(&guid).unwrap().string("Badge Text"), before.string("Badge Text"), "the saved profile is untouched");
+        assert!(live.contains("redirect_to_session(store, &g, before)"));
     }
 
     #[test]
