@@ -49,6 +49,7 @@ pub const PAGE_CHANGED: &str = "The web page changed while the request was runni
 /// A browser call that arrives for a pane the tools are not offered on (the engine's call-time gate).
 pub const NOT_OFFERED: &str = "The linked browser pane is private or is not showing an ordinary web page, so the browser tools are not available there.";
 pub const DEV_NULL_REFUSED: &str = "This browser pane is private and keeps nothing, so its web page is not available to you.";
+pub const PRIVATE_HOST_REFUSED: &str = "This address is on this computer or the local network, so the browser tools do not load or read it.";
 pub const POWER_PAGE_REFUSED: &str = "This page is not an ordinary web page (it is a Tandem page, a local file or another page type), so it is not available to you.";
 
 pub const N_FIND_OK: &str = "Find on page complete";
@@ -237,10 +238,12 @@ pub fn url_refusal(url: &str) -> Option<Outcome> {
         && !crate::webhost::tandem_or_local_page(url)
         && !url.contains('\\')
         && split_url(url).is_some_and(|(scheme, authority, _)| (scheme == "http" || scheme == "https") && !has_userinfo(authority) && !host_port(authority).is_empty());
-    if ok {
-        None
-    } else {
+    if !ok {
         Some(outcome(not_well_formed(url), N_NAV_FAILED))
+    } else if crate::webhost::private_host(url) {
+        Some(outcome(PRIVATE_HOST_REFUSED, N_NAV_FAILED))
+    } else {
+        None
     }
 }
 
@@ -527,6 +530,11 @@ impl Page {
         let Some(origin) = readable_origin(url) else {
             return Err(outcome(POWER_PAGE_REFUSED, N_NOT_READ));
         };
+        // Final review I3: a page on this computer or the local network is never read by a model,
+        // however the pane got there (a page's script can navigate where a model's load may not).
+        if crate::webhost::private_host(url) {
+            return Err(outcome(PRIVATE_HOST_REFUSED, N_NOT_READ));
+        }
         Ok(Page { binding: Binding { pane, epoch, origin }, title: title.chars().take(TITLE_MAX).collect() })
     }
 
@@ -914,7 +922,7 @@ mod tests {
         let b = |u: &str| Page::open(1, 1, u, "", false).unwrap().binding().origin().to_string();
         assert_eq!(b("HTTPS://User:pw@Example.COM:8443/p?q#f"), "https://example.com:8443");
         assert_eq!(b("http://xn--caf-dma.example/"), "http://xn--caf-dma.example");
-        assert_eq!(b("https://h?x=1"), "https://h");
+        assert_eq!(b("https://h.test?x=1"), "https://h.test");
         assert_eq!(b("about:blank"), "about:blank");
     }
 
@@ -927,7 +935,7 @@ mod tests {
 
     #[test]
     fn load_and_search_texts_follow_iterm2() {
-        assert!(url_refusal("https://a").is_none());
+        assert!(url_refusal("https://a.test").is_none());
         assert_eq!(url_refusal("").unwrap().model, "The URL  is not well formed");
         assert!(url_refusal("javascript:alert(1)").is_some() && url_refusal("JavaScript:x").is_some() && url_refusal("a\u{7}b").is_some());
         assert_eq!(orch_kind_error(NOT_A_BROWSER), "Error executing command: The associated session is a terminal emulator, not a web browser");
@@ -949,12 +957,24 @@ mod tests {
 
     #[test]
     fn url_refusal_is_http_only() {
-        for u in ["https://a", "http://127.0.0.1:8080/x", "HTTPS://A/"] {
+        for u in ["https://a.test", "http://8.8.8.8:8080/x", "HTTPS://A.TEST/"] {
             assert!(url_refusal(u).is_none(), "{u}");
         }
         for u in ["file:///C:/Users/u/.ssh/id_ed25519", "FILE:///C:/x", "iterm2-file:///C:/x", "iterm2-ssh://box/etc/passwd", "iterm2-about:settings", "about:blank", "javascript:alert(1)", "data:text/html,x", "blob:https://a/1", "ftp://h/x", "https:foo", "//a/b", "a.com", "https://a/\u{7}", "https://", "https://u:pw@h/"] {
             assert_eq!(url_refusal(u), Some(o(&not_well_formed(u), N_NAV_FAILED)), "{u}");
         }
+    }
+
+    /// Final review I3: the model may not load or read a page on this computer or the local network
+    /// (loopback, LAN, link-local, single-label and localhost names); public pages are unchanged.
+    #[test]
+    fn a_model_never_loads_or_reads_a_private_host() {
+        for u in ["http://127.0.0.1:8080/x", "http://192.168.1.1/", "http://localhost:3000/", "http://nas/", "http://[::1]/", "http://169.254.169.254/latest/meta-data"] {
+            assert_eq!(url_refusal(u), Some(o(PRIVATE_HOST_REFUSED, N_NAV_FAILED)), "{u}");
+            assert_eq!(Page::open(1, 1, u, "T", false).err(), Some(o(PRIVATE_HOST_REFUSED, N_NOT_READ)), "{u}");
+        }
+        assert!(url_refusal("https://example.com/").is_none());
+        assert!(Page::open(1, 1, "https://example.com/", "T", false).is_ok());
     }
 
     #[test]

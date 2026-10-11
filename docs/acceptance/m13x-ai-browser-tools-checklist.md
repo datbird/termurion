@@ -40,7 +40,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 | 15 | Ask it to read one section by line numbers: Allow Once; it returns that slice; a start past the end answers out of bounds. | |
 | 16 | Ask for the current URL: it answers with the page's address without credentials, query secrets cut as designed. | |
 | 17 | Ask it to open example.com: it asks ("leave the web page on <site> and load a page on example.com"); Always Allow; the page loads in that tab. The next browser call while the tab shows that same site does not ask; once the tab shows another site, it asks again (Always Allow is per site, not per tab). | |
-| 18 | Ask it to open `file:///C:/Windows/win.ini`: it gets the not-well-formed answer ("Navigation failed") and the tab does not move. Same for `iterm2-file:`, `javascript:` and `about:` URLs. | |
+| 18 | Ask it to open `file:///C:/Windows/win.ini`: it gets the not-well-formed answer ("Navigation failed") and the tab does not move. Same for `iterm2-file:`, `javascript:` and `about:` URLs. Ask it to open `http://127.0.0.1:631/`, `http://localhost/`, a LAN address such as `http://192.168.1.1/` and `http://nas/`: each answers "on this computer or the local network" and the tab does not move. Open a LAN page yourself and ask it to read it: refused the same way. | |
 | 19 | Ask for a web search: the tab shows the search results page and the model summarizes it. | |
 | 20 | Never on Act in Web Browser refuses with no prompt; Ask parks until Allow; Always runs. | |
 
@@ -66,7 +66,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 | 31 | Navigate the linked tab yourself while a read is in flight: the read answers "page changed", no text of either page arrives. | |
 | 32 | A fragment-only `load_url` (same page, `#x`) waits until Stop; Stop ends it. | |
 | 33 | Security (R13xai-2): while the model reads a long page, turn "Enable generative AI features" off: the chat stops and nothing more is sent (a proxy log of the provider host shows no request after the switch). | |
-| 34 | Security (R13xai-3): see row 18; and a redirect from an http page to `file:` or `iterm2-ssh:` that the model caused is refused by the navigation judge. | |
+| 34 | Security (R13xai-3, final review I3): see row 18; a redirect from an http page to `file:` or `iterm2-ssh:` that the model caused is refused by the navigation judge; and a public page the model loads that redirects (302) to `http://127.0.0.1/` or a LAN address is refused there too (the tab stays, the load fails). | |
 
 ## F. Orchestration mirrors
 

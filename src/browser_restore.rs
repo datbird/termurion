@@ -161,7 +161,7 @@ pub fn load_gate(url: &str) -> Option<String> {
 /// relaunch loads exactly what the same pane loads outside one (final review I2). `file_ok` is the
 /// one path judge for a `file:` URL. None: refused (the caller says so, never a silent blank).
 pub fn own_load(url: &str, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
-    let info = crate::webhost::NavInfo { target: url, source: None, user: false, redirect: false, by_tandem: true };
+    let info = crate::webhost::NavInfo { target: url, source: None, user: false, redirect: false, by_tandem: true, by_model: false };
     let policy = crate::webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
     crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
 }
@@ -183,7 +183,7 @@ pub fn parked_load(url: &str, from: &ParkedFrom, file_ok: &dyn Fn(&str) -> bool)
     if !matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https") {
         return None;
     }
-    let info = crate::webhost::NavInfo { target: url, source: from.source.as_deref(), user: from.user, redirect: from.redirect, by_tandem: false };
+    let info = crate::webhost::NavInfo { target: url, source: from.source.as_deref(), user: from.user, redirect: from.redirect, by_tandem: false, by_model: false };
     let policy = crate::webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
     crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
 }

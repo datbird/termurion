@@ -120,8 +120,10 @@ impl Calls {
     /// that is not a plain web page answers `SEARCH_UNAVAILABLE` and navigates nothing.
     pub fn start_search(&mut self, pane: PaneId, template: &str, query: &str) -> Started {
         let url = crate::browser::search_url(template, query);
-        if crate::ai_browser::url_refusal(&url).is_some() {
-            return Started::Done(search_unavailable());
+        if let Some(o) = crate::ai_browser::url_refusal(&url) {
+            // A search engine on this computer or the local network says so (final review I3).
+            let private = o.model == crate::ai_browser::PRIVATE_HOST_REFUSED;
+            return Started::Done(if private { Outcome { model: o.model, notice: Some(crate::ai_browser::N_SEARCH_FAILED.to_string()) } } else { search_unavailable() });
         }
         self.begin_load(pane, url, Step::Search)
     }
@@ -407,7 +409,9 @@ impl App {
         if !synced || bv.world.setup.is_some() {
             return Err(NOT_READY);
         }
-        v.navigate(url);
+        // The guarded navigation, marked as the model's: the one verdict refuses it, and every
+        // redirect of it, onto this computer or the local network (final review I3).
+        v.navigate_model(url);
         Ok(())
     }
 
@@ -735,8 +739,8 @@ mod tests {
         use crate::ai_browser::*;
         // A load finishes for its own navigation only.
         let mut s = Calls::default();
-        let (t, act) = wait(s.start_load(7, "https://a"));
-        assert_eq!(act, Act::Navigate { pane: 7, token: t, url: "https://a".into() });
+        let (t, act) = wait(s.start_load(7, "https://a.test"));
+        assert_eq!(act, Act::Navigate { pane: 7, token: t, url: "https://a.test".into() });
         s.bind(t, "C", "r1");
         s.starting(7, false, 5);
         assert!(s.navigated(7, 9, true, 0).is_none(), "a person's navigation finishes nothing");
@@ -746,15 +750,15 @@ mod tests {
         assert_eq!(ids(&out), vec![("C", "r1")]);
         assert_eq!((out[0].2.model.as_str(), out[0].2.notice.as_deref()), (LOADED, Some(N_NAV_OK)));
         // A failed load answers the table text.
-        let (t, _) = wait(s.start_load(7, "https://a"));
+        let (t, _) = wait(s.start_load(7, "https://a.test"));
         s.bind(t, "C", "r2");
         s.starting(7, false, 6);
         s.navigated(7, 6, false, 13);
         assert_eq!(s.finish(&here)[0].2.model, format!("{LOAD_FAILED_PREFIX}the host name could not be resolved"));
         // A second load interrupts the first at once.
-        let (a, _) = wait(s.start_load(7, "https://a"));
+        let (a, _) = wait(s.start_load(7, "https://a.test"));
         s.bind(a, "C", "r3");
-        let (b, _) = wait(s.start_load(7, "https://b"));
+        let (b, _) = wait(s.start_load(7, "https://b.test"));
         s.bind(b, "C", "r4");
         let out = s.finish(&here);
         assert_eq!(ids(&out), vec![("C", "r3")]);
@@ -792,13 +796,16 @@ mod tests {
         // A load while the search waits answers the search unavailable.
         let (t, _) = wait(s.start_search(7, SEARCH, "x"));
         s.bind(t, "C", "r3");
-        wait(s.start_load(7, "https://b"));
+        wait(s.start_load(7, "https://b.test"));
         assert_eq!(s.finish(&here)[0].2.model, SEARCH_UNAVAILABLE);
         // A template that is not a web page navigates nothing.
         for tpl in ["file:///C:/%@", "javascript:%@", "https://%@@evil/"] {
             let Started::Done(o) = s.start_search(9, tpl, "q") else { panic!("{tpl}") };
             assert_eq!(o.model, SEARCH_UNAVAILABLE);
         }
+        // Final review I3: a search engine on this computer or the local network is not used by a model.
+        let Started::Done(o) = s.start_search(9, "http://192.168.1.5/search?q=%@", "q") else { panic!("a LAN search engine") };
+        assert_eq!((o.model.as_str(), o.notice.as_deref()), (PRIVATE_HOST_REFUSED, Some(N_SEARCH_FAILED)));
         // The query is encoded, never raw.
         let (_, act) = wait(s.start_search(9, SEARCH, "a b&c#d\u{e9}"));
         let Act::Navigate { url, .. } = act else { panic!() };
@@ -831,9 +838,9 @@ mod tests {
     fn a_closed_pane_answers_its_calls() {
         use crate::ai_browser::*;
         let mut s = Calls::default();
-        let (l, _) = wait(s.start_load(7, "https://a"));
+        let (l, _) = wait(s.start_load(7, "https://a.test"));
         let (r, _) = wait(s.start_read(7, Step::Read { start: 0, count: 5 }));
-        let (o, _) = wait(s.start_load(8, "https://a"));
+        let (o, _) = wait(s.start_load(8, "https://a.test"));
         s.bind(l, "C", "r1");
         s.bind(r, "C", "r2");
         s.bind(o, "D", "r3");
@@ -861,7 +868,7 @@ mod tests {
         s.read_answer(7, r, &page(), Ok("late"));
         assert!(s.finish(&here).is_empty() && s.calls.is_empty());
         // Stop forgets by chat.
-        let (t, _) = wait(s.start_load(7, "https://a"));
+        let (t, _) = wait(s.start_load(7, "https://a.test"));
         s.bind(t, "C", "r3");
         s.forget_chat("C");
         assert!(s.calls.is_empty() && s.waits.pane_gone(7).is_empty());
@@ -870,7 +877,7 @@ mod tests {
     #[test]
     fn a_load_that_cannot_start_ends_with_a_failure() {
         let mut s = Calls::default();
-        let (t, _) = wait(s.start_load(7, "https://a"));
+        let (t, _) = wait(s.start_load(7, "https://a.test"));
         s.bind(t, "C", "r1");
         s.load_not_started(7, t, "the browser is not ready, try again");
         assert!(s.finish(&here)[0].2.model.ends_with("not ready, try again"));
@@ -898,7 +905,7 @@ mod tests {
         let start = &p[p.find("pub(super) fn ai_browser_starting").unwrap()..p.find("pub(super) fn ai_browser_navigated").unwrap()];
         assert!(start.contains("world.setup.is_some()") && start.contains("view.is_none()"), "setup navigations are Tandem's own (I1)");
         assert!(!p.contains("navigate_tandem") && !p.contains("defer_load") && !p.contains("browser_navigate("), "a model's URL never takes Tandem's own load");
-        assert_eq!(p.matches("v.navigate(url)").count(), 1);
+        assert_eq!(p.matches("v.navigate_model(url)").count(), 1, "the guarded navigation, marked as the model's (final review I3)");
         assert_eq!(p.matches("browser_page_markdown_with(").count(), 1);
         for banned in ["browser_page_call", "browser_devtools", "execute_script", "password", "autofill", "cookie", "log::", "dlog"] {
             assert!(!p.contains(banned), "{banned}");

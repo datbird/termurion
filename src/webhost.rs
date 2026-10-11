@@ -820,6 +820,110 @@ pub fn tandem_or_local_page(url: &str) -> bool {
     power_page(url) || local_scheme(&s) || matches!(s.as_str(), "iterm2-about" | "chrome-extension")
 }
 
+/// Final review I3 (13x AI browser tools): whether `url` names this computer or the local network by
+/// its host literal: loopback, unspecified, RFC1918, CGNAT (100.64/10), link-local, multicast and
+/// reserved IPv4, in every form a browser reads as IPv4 (one to four parts, decimal, octal or hex);
+/// IPv6 loopback, unspecified, ULA, link-local, site-local, multicast and an IPv4 mapped, compatible or
+/// NAT64 one of those; a single-label name, `localhost` and `*.localhost`, `*.local` (mDNS) and
+/// `*.home.arpa`. Fail closed: a percent sign in the host, an empty host, an unparsable IPv6 literal or
+/// an IPv4 form a browser rejects counts as private. Fullwidth digits, letters and dots (which a
+/// browser folds) are folded first. A URL with no `scheme://` authority is not judged here. A public
+/// name that resolves to a private address (DNS rebinding) is NOT caught: a residual.
+pub fn private_host(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else { return false };
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    let host = if hostport.starts_with('[') {
+        match hostport.find(']') {
+            Some(end) => &hostport[..=end],
+            None => return true,
+        }
+    } else {
+        hostport.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(hostport, |(h, _)| h)
+    };
+    host_is_private(host)
+}
+
+fn host_is_private(host: &str) -> bool {
+    if host.contains('%') {
+        return true;
+    }
+    let folded: String = host
+        .chars()
+        .map(|c| match c {
+            '\u{3002}' | '\u{ff0e}' | '\u{ff61}' => '.',
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
+            c => c,
+        })
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if let Some(inner) = folded.strip_prefix('[') {
+        let Some(inner) = inner.strip_suffix(']') else { return true };
+        return inner.parse::<std::net::Ipv6Addr>().map_or(true, private_v6);
+    }
+    let name = folded.strip_suffix('.').unwrap_or(&folded);
+    if name.is_empty() {
+        return true;
+    }
+    match ipv4_of(name) {
+        Some(Some(v4)) => return private_v4(v4),
+        Some(None) => return true,
+        None => {}
+    }
+    !name.contains('.') || name == "localhost" || [".localhost", ".local", ".home.arpa"].iter().any(|s| name.ends_with(s))
+}
+
+/// The WHATWG IPv4 parser: None when `host` is a domain (its last label is not a number), Some(None)
+/// for an IPv4 form a browser rejects, else the address.
+fn ipv4_of(host: &str) -> Option<Option<std::net::Ipv4Addr>> {
+    let number = |p: &str| -> Option<u64> {
+        if let Some(h) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            return if h.is_empty() { Some(0) } else { u64::from_str_radix(h, 16).ok() };
+        }
+        if p.is_empty() {
+            return None;
+        }
+        if p.len() > 1 && p.starts_with('0') {
+            return u64::from_str_radix(&p[1..], 8).ok();
+        }
+        p.parse::<u64>().ok()
+    };
+    let parts: Vec<&str> = host.split('.').collect();
+    let last = parts.last().copied().unwrap_or("");
+    let numeric = (!last.is_empty() && last.bytes().all(|b| b.is_ascii_digit())) || number(last).is_some();
+    if !numeric {
+        return None;
+    }
+    if parts.len() > 4 {
+        return Some(None);
+    }
+    let Some(nums) = parts.iter().map(|p| number(p)).collect::<Option<Vec<u64>>>() else { return Some(None) };
+    let (head, tail) = nums.split_at(nums.len() - 1);
+    if head.iter().any(|n| *n > 255) || tail[0] >= 256u64.pow(5 - nums.len() as u32) {
+        return Some(None);
+    }
+    let mut v = tail[0];
+    for (i, n) in head.iter().enumerate() {
+        v += n << (8 * (3 - i));
+    }
+    Some(u32::try_from(v).ok().map(std::net::Ipv4Addr::from))
+}
+
+fn private_v4(a: std::net::Ipv4Addr) -> bool {
+    let [b0, b1, ..] = a.octets();
+    b0 == 0 || b0 == 10 || b0 == 127 || b0 >= 224 || (b0 == 169 && b1 == 254) || (b0 == 172 && (16..32).contains(&b1)) || (b0 == 192 && b1 == 168) || (b0 == 100 && (64..128).contains(&b1))
+}
+
+fn private_v6(a: std::net::Ipv6Addr) -> bool {
+    let s = a.segments();
+    if a.is_loopback() || a.is_unspecified() || s[0] & 0xfe00 == 0xfc00 || s[0] & 0xffc0 == 0xfe80 || s[0] & 0xffc0 == 0xfec0 || s[0] & 0xff00 == 0xff00 {
+        return true;
+    }
+    let nat64 = s[..6] == [0x64, 0xff9b, 0, 0, 0, 0];
+    let embedded = if nat64 { Some(std::net::Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8)) } else { a.to_ipv4() };
+    embedded.is_some_and(private_v4)
+}
+
 /// The one rule every guarded view's NavigationStarting asks (R13x8ai item 3, B4): may this
 /// navigation go on?
 /// - a `file:` target that is not `file_ok` (a share, a mapped or remote drive, a link, a
@@ -1476,6 +1580,8 @@ pub struct NavInfo<'a> {
     pub redirect: bool,
     /// Tandem's own load (`navigate_tandem`).
     pub by_tandem: bool,
+    /// A model's load (`navigate_model`) or a redirect of it (13x AI browser tools, final review I3).
+    pub by_model: bool,
 }
 
 /// The view's navigation policy, from its `ViewSetup`.
@@ -1494,6 +1600,11 @@ pub struct NavPolicy {
 /// cancels it. `file_ok` judges a `file:` target (the one path judge); it runs only when the guard
 /// asks, since it touches the disk.
 pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) -> bool) -> bool {
+    // A model's load and each redirect of it never reach this computer or the local network (13x AI
+    // browser tools final review I3); a refused one is never parked.
+    if info.by_model && private_host(info.target) {
+        return false;
+    }
     if let Some(list) = &policy.allowed_schemes {
         if !info.by_tandem && !scheme_ok(info.target, list) {
             return false;
@@ -2370,6 +2481,39 @@ mod tests {
         assert_eq!(pane_focus_reports(None, Some((1, false))), Vec::<(u64, bool)>::new());
     }
 
+    /// 13x AI browser tools final review I3: a host literal that is this computer or the local
+    /// network (loopback, unspecified, RFC1918, CGNAT, link-local, ULA, IPv4 in any form Chromium
+    /// accepts, single-label and localhost names, mDNS) is private; public hosts are not.
+    #[test]
+    fn private_hosts_are_recognized_in_every_form() {
+        for u in [
+            "http://127.0.0.1:8080/x", "http://127.1/", "http://2130706433/", "http://0x7f.1/", "http://0177.0.0.1/", "http://0x7f000001/",
+            "http://0.0.0.0/", "http://10.1.2.3/", "http://172.16.0.1/", "http://172.31.255.255/", "http://192.168.1.1/", "http://100.64.0.1/",
+            "http://169.254.169.254/latest", "http://[::1]/", "http://[::]/", "http://[fd00::1]/", "http://[fe80::1]/", "http://[::ffff:192.168.1.1]/",
+            "http://[::ffff:7f00:1]/", "http://localhost/", "http://LOCALHOST:3000/", "http://a.localhost/", "http://printer.local/", "http://nas/",
+            "http://router./", "http://user:pw@192.168.0.1/", "http://127.0.0.%31/", "http://\u{ff11}\u{ff12}\u{ff17}.0.0.1/", "http://localhost\u{3002}/",
+            "http://1.2.3.4.5/", "http://256.1.1.1/", "http://box.home.arpa/", "https://224.0.0.1/",
+        ] {
+            assert!(private_host(u), "{u}");
+        }
+        for u in ["https://example.com/", "https://a.example/x", "http://8.8.8.8/", "http://172.32.0.1/", "http://100.128.0.1/", "http://[2001:db8::1]/", "https://xn--bcher-kva.example/", "http://1.2.3.example/", "http://router.example.com./", "iterm2-about:settings", "about:blank"] {
+            assert!(!private_host(u), "{u}");
+        }
+    }
+
+    /// Final review I3: a model's load, and every redirect of it, may not reach a private host; the
+    /// person's own navigation and Tandem's are judged as before.
+    #[test]
+    fn a_model_load_never_reaches_a_private_host() {
+        let policy = NavPolicy { guard_local_schemes: true, ..Default::default() };
+        let yes = |_: &str| true;
+        let nav = |target, redirect, by_model| NavInfo { target, source: Some("https://a.example/"), user: true, redirect, by_tandem: false, by_model };
+        assert!(!nav_verdict(&nav("http://192.168.1.1/admin", false, true), &policy, &yes), "the load itself");
+        assert!(!nav_verdict(&nav("http://127.0.0.1:631/", true, true), &policy, &yes), "a redirect of it");
+        assert!(nav_verdict(&nav("https://b.example/", true, true), &policy, &yes), "a public redirect goes on");
+        assert!(nav_verdict(&nav("http://192.168.1.1/admin", false, false), &policy, &yes), "the person's own navigation");
+    }
+
     /// Final review round 1, item 3: the policy function itself cancels a page's navigation into a
     /// local scheme. Called with the guard off it lets the same navigation through, so the test
     /// fails when the guard is removed.
@@ -2378,7 +2522,7 @@ mod tests {
     /// neither is a navigation Tandem itself made.
     #[test]
     fn a_refused_click_is_offered_to_the_app() {
-        let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem };
+        let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem, by_model: false };
         assert!(refused_click(&info(true, false), false));
         assert!(!refused_click(&info(false, false), false), "a script's navigation");
         assert!(!refused_click(&info(true, true), false), "Tandem's own load");
@@ -2444,7 +2588,7 @@ mod tests {
 
     #[test]
     fn nav_verdict_guard_cancels_local_navigations_from_a_page() {
-        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false };
+        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false, by_model: false };
         let yes = |_: &str| true;
         let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
         let open = NavPolicy::default();
@@ -2454,15 +2598,15 @@ mod tests {
         }
         assert!(nav_verdict(&from_page("https://example.test/next"), &guarded, &yes));
         // A file target that the path judge refuses is cancelled even for a person's click.
-        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false };
+        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false, by_model: false };
         assert!(!nav_verdict(&click, &guarded, &|_| false));
         // A redirect into a local scheme is cancelled even for Tandem's own load.
-        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true };
+        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true, by_model: false };
         assert!(!nav_verdict(&redirected, &guarded, &yes));
         // The scheme list cancels what it does not name, except Tandem's own load.
         let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]), local_root: None };
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
-        let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true };
+        let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true, by_model: false };
         assert!(nav_verdict(&own, &only_https, &yes));
     }
 
@@ -2568,7 +2712,7 @@ mod tests {
         assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, None));
         // The same through the handler's own entry point.
         let policy = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: Some(root.clone()) };
-        let info = |source, target| NavInfo { target, source: Some(source), user: true, redirect: false, by_tandem: false };
+        let info = |source, target| NavInfo { target, source: Some(source), user: true, redirect: false, by_tandem: false, by_model: false };
         assert!(nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/T/x"), &policy, &|_| true));
         assert!(!nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/"), &policy, &|_| true));
     }

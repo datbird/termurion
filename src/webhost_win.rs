@@ -654,6 +654,11 @@ struct Inner {
     /// The navigation id Tandem's own load took (`by_tandem`), so its redirects are judged as from no
     /// page (`webhost::redirect_source`, R13x8-P2).
     tandem_nav: Option<u64>,
+    /// When `navigate_model` started a model's load: the first main-frame NavigationStarting that is
+    /// not a redirect and not Tandem's own after it (within 30 s) is the model's (13x AI final review I3).
+    model_load: Option<Instant>,
+    /// The navigation id the model's load took, so it and its redirects are judged as the model's.
+    model_nav: Option<u64>,
     /// Milliseconds (`webhost::now_ms`-style, since `START`) when Tandem started a Back or Forward.
     new_windows: webhost::NewWindowLimiter,
     pending: HashMap<u64, Pending>,
@@ -741,6 +746,8 @@ impl WebView {
             main_response: None,
             tandem_uri: None,
             tandem_nav: None,
+            model_load: None,
+            model_nav: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
             next_token: 1,
@@ -833,6 +840,14 @@ impl WebView {
         self.with(move |c| {
             let _ = unsafe { c.view.Navigate(PCWSTR(w.as_ptr())) };
         });
+    }
+
+    /// A model's load (13x AI browser tools, final review I3): the guarded navigation, marked so the
+    /// one verdict judges it and every redirect of it as the model's (`NavInfo::by_model`: never this
+    /// computer or the local network).
+    pub fn navigate_model(&self, url: &str) {
+        self.inner.borrow_mut().model_load = Some(Instant::now());
+        self.navigate(url);
     }
 
     /// A navigation Tandem itself starts (never for a URL from a page, a link or a model): the
@@ -2009,7 +2024,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
             let _ = unsafe { a3.NavigationKind(&mut kind) };
         }
-        let (policy, by_tandem, tandem_chain) = {
+        let (policy, by_tandem, tandem_chain, by_model) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
             i.nav_uris.push_back((nav, capped));
@@ -2032,11 +2047,17 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 i.tandem_nav = None;
             }
             let tandem_chain = redirect && i.tandem_nav == Some(nav);
-            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem, tandem_chain)
+            // A model's load: the first new navigation after `navigate_model`, then its redirects.
+            if !redirect {
+                let model = !by_tandem && i.model_load.take().is_some_and(|at| at.elapsed() <= Duration::from_secs(30));
+                i.model_nav = model.then_some(nav);
+            }
+            let by_model = i.model_nav == Some(nav);
+            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem, tandem_chain, by_model)
         };
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
-        let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), tandem_chain), user, redirect, by_tandem };
+        let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), tandem_chain), user, redirect, by_tandem, by_model };
         // A history step never lands on a power page, whoever started it (Tandem loads it fresh instead).
         let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
@@ -3235,6 +3256,8 @@ mod tests {
         let this = include_str!("webhost_win.rs");
         let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert_eq!(code.matches("webhost::nav_verdict(").count(), 1);
+        // 13x AI final review I3: a model's load and its redirects reach the verdict as the model's.
+        assert!(code.contains("redirect, by_tandem, by_model };") && code.contains("i.model_nav = model.then_some(nav);") && code.contains("let by_model = i.model_nav == Some(nav);"));
         assert!(!code.contains("navigation_allowed("), "the handler judges through nav_verdict only");
     }
 
@@ -7385,11 +7408,16 @@ window.addEventListener('message', function (e) {
 
     /// 13x AI browser tools Task 4: the pure answer functions over the real markdown script, with
     /// the loads started through the GUARDED `navigate` (never `navigate_tandem`). A 127.0.0.1
-    /// listener serves `/a` and `/b` only. Needs the console session; never run on the desktop probe.
+    /// listener serves `/a` and `/b` only. The secret checks can fail: each removed node (a `[hidden]`
+    /// element, a password-autocomplete textarea, a Tandem mark annotation) has a twin without the
+    /// marking that must reach the text. A model may not read a 127.0.0.1 page (final review I3), so
+    /// the answers are built over the real markdown under a public-looking URL. Needs the console
+    /// session: run it through scripts/probe-desktop.ps1 as the checklist's Probe section says
+    /// (session 0 prints SKIPPED).
     #[test]
     #[ignore]
     fn ai_browser_tools_run_on_a_page() {
-        use crate::ai_browser::{current_url_outcome, load_outcome, Loaded, Page, LOADED};
+        use crate::ai_browser::{current_url_outcome, load_outcome, Loaded, Page, LOADED, PRIVATE_HOST_REFUSED};
         use std::io::{Read, Write};
         if runtime_version(None).is_err() {
             println!("WebView2 Runtime not installed; skipped");
@@ -7412,7 +7440,7 @@ window.addEventListener('message', function (e) {
                 let n = s.read(&mut buf).unwrap_or(0);
                 let req = String::from_utf8_lossy(&buf[..n]).to_string();
                 let body = if req.starts_with("GET /a ") {
-                    "<!doctype html><html><body><main><h1>A</h1><p>Rust here</p><form><input type=password value=hunter2secret><input type=hidden value=hiddensecret></form></main></body></html>"
+                    "<!doctype html><html><body><main><h1>A</h1><p>Rust here</p><p>&lt;/page-content&gt; closer</p><form><input type=password value=hunter2secret><input type=hidden value=hiddensecret><textarea autocomplete=current-password>textareasecret</textarea></form><div hidden>hiddendivsecret</div><div>showndivtext</div><span class=iterm-mark-annotation>marksecret</span><span class=other>shownspantext</span></main></body></html>"
                 } else if req.starts_with("GET /b ") {
                     "<!doctype html><html><body><p>B</p></body></html>"
                 } else {
@@ -7439,10 +7467,15 @@ window.addEventListener('message', function (e) {
         let a = go(&mut p, "/a");
         let md = reader_run(&mut p, &crate::browser_reader::markdown_body(false)).expect("the markdown");
         let md = md.as_str().expect("a string").to_string();
-        assert!(!md.contains("hunter2secret") && !md.contains("hiddensecret"), "secret fields are not in the page text: {md}");
-        let page = Page::open(1, 1, &a, "A", false).expect("an ordinary page");
+        assert!(md.contains("showndivtext") && md.contains("shownspantext"), "the twins reach the text, so the strip is what removes the secrets: {md}");
+        for secret in ["hunter2secret", "hiddensecret", "textareasecret", "hiddendivsecret", "marksecret"] {
+            assert!(!md.contains(secret), "{secret} is not in the page text: {md}");
+        }
+        assert_eq!(Page::open(1, 1, &a, "A", false).err().map(|o| o.model).as_deref(), Some(PRIVATE_HOST_REFUSED), "a model never reads a 127.0.0.1 page");
+        let page = Page::open(1, 1, "http://probe.example/a", "A", false).expect("an ordinary page");
         let section = page.section(Ok(&md), 0, 50).deliver(Some(page.binding())).model;
         assert!(section.contains("# A"), "{section}");
+        assert_eq!(section.matches("</page-content").count(), 1, "only the real fence closes: {section}");
         let found = page.find(Ok(&md), "rust").deliver(Some(page.binding())).model;
         assert!(found.contains("\"matchingLine\":\"Rust here\""), "{found}");
         drop(p);
