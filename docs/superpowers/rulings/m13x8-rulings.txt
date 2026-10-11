@@ -55,3 +55,32 @@ R13x8-9 (Task 7, downloads)
 - Dev Null panes: downloads are REFUSED with a banner (writing to Downloads would break "writes nothing"). Cost if wrong: use a normal browser pane. An ask-first or a cleared scratch folder is a follow-up if wanted.
 - The downloads page (iterm2-about:downloads, also Menu > Downloads) is Tandem's own page through the one nonce-CSP path, a power page (a web page cannot navigate to it), message source and pane URL both must be the page, a closed action set (list, cancel, remove, showInFolder) naming a download by id only; every name and host drawn goes through display_text and textContent. Menu > Downloads is a Tandem addition (iTerm2 has none).
 - Nothing is logged beyond fixed words; the Download rows hold names for the person's list only.
+
+R13x8-10 (Task 8, bookmark tags and Edit Bookmark)
+- The tag table and the key-value table are created with iTerm2's text. rusqlite's bundled SQLite is built with
+  foreign key enforcement ON by default (iTerm2's engine runs none), which refuses every tag insert and bookmark
+  delete ("foreign key mismatch": the reference is to the implicit rowid of a table keyed by url). bring_up turns it
+  OFF on every connection; nothing in Tandem turns it on. remove_bookmark and clear_bookmarks delete the tag rows
+  in the same transaction (an iTerm2 bug fixed: a reused rowid inherited the old tags).
+- Tags: display_text, trimmed, 64 characters, 32 per bookmark; a search takes at most 16 tags; every text is a bound
+  parameter and a term's % and _ are literal. A tag read back from a file is cleaned again. The page's tag array is
+  bounded in route (16 x 64 characters).
+- Edit Bookmark is a native always-on-top Tandem window opened only by the person's Add Bookmark action (never a
+  page event, so no InputGuard), never in a Dev Null pane (the bookmark is not kept there). One at a time; a
+  navigation of its pane or the pane closing closes it. Delete asks through the one alert queue
+  (Then::BookmarkDelete, a closed question is Cancel) and acts only on the open editor's own bookmark.
+- Bookmark URLs stay as stored. Opening one is navigate_known / nav_verdict as before (Task 7 of 13x); this task
+  adds no opener. javascript: bookmarklets: iTerm2's WebView would run one from the bookmarks page; Tandem's
+  nav_verdict refuses javascript:, data:, iterm2-file:, iterm2-ssh: and settings from a bookmark (a bookmark never
+  runs with power). Cost if wrong: a bookmarklet does nothing. Add Bookmark only offers http and https pages anyway.
+- The key-value table is created and never read or written (WebView2 extensions keep Chromium's storage).
+
+R13x8-11 (Task 7 review follow-ups)
+- The 3 s repeat cooldown is removed: Chromium's download limiter plus R13x6-D4/T1a already deny a page's repeat
+  automatic downloads. PROBE NEEDED: confirm Chromium still raises MULTIPLE_AUTOMATIC_DOWNLOADS when Handled is true.
+- The host forgets a download when it ends, fails or is cancelled (the cap counts running ones), and says so when its
+  cap cancels one (Event::DownloadRefused, banner). A completed download whose ResultFilePath is not the told path
+  is a failure.
+- The final move never replaces (MoveFileExW with no flags); on a taken name the name is picked again, four tries.
+- Menu > Downloads is removed (not in iTerm2). The downloads page stays reachable by its URL.
+  FLAG for Robert: the page is a Tandem extra.

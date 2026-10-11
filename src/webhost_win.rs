@@ -1238,7 +1238,7 @@ impl WebView {
         let poster = self.inner.borrow().poster.clone();
         let total = self.inner.clone();
         if let Some(path) = path {
-            if let Some(active) = start_download(&p, id, path, &poster) {
+            if let Some(active) = start_download(&p, id, path, &poster, Rc::downgrade(&total)) {
                 if let Ok(mut i) = total.try_borrow_mut() {
                     i.dl_active.insert(id, active);
                 }
@@ -2550,6 +2550,8 @@ fn register_downloads(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &
         let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
         let pending = i.dl_pending.len() + i.dl_active.len();
         if !i.dl_limit.allow(Instant::now(), pending) {
+            // Cancelled above; the app is told so it can say so (never silent).
+            i.poster.post(Event::DownloadRefused { view: i.id });
             return Ok(());
         }
         let Ok(op) = (unsafe { args.DownloadOperation() }) else { return Ok(()) };
@@ -2575,7 +2577,7 @@ fn register_downloads(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &
 }
 
 /// Hands the place to WebView2 and watches the operation; None leaves the download cancelled.
-fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster) -> Option<ActiveDownload> {
+fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster, owner: std::rc::Weak<RefCell<Inner>>) -> Option<ActiveDownload> {
     let op = unsafe { p.args.DownloadOperation() }.ok()?;
     let w = wide(&path.to_string_lossy());
     unsafe { p.args.SetResultFilePath(PCWSTR(w.as_ptr())) }.ok()?;
@@ -2598,15 +2600,31 @@ fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster) ->
     unsafe { op.add_BytesReceivedChanged(&on_bytes, &mut bytes_token) }.ok()?;
     let mut state_token = 0i64;
     let post = poster.clone();
+    let told = path.to_path_buf();
     let on_state = StateChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
         let Some(op) = sender else { return Ok(()) };
         let mut state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
         let _ = unsafe { op.State(&mut state) };
-        let result = match state {
+        let mut result = match state {
             COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED => Ok(()),
             COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED => Err("The download was interrupted".to_string()),
             _ => return Ok(()),
         };
+        // A runtime that wrote under another name than the one told (it made the name unique) leaves
+        // a file Tandem never judged: that is a failure, not a finished download.
+        if result.is_ok() {
+            let wrote = pwstr_out(|p| unsafe { op.ResultFilePath(p) }).unwrap_or_default();
+            if !wrote.eq_ignore_ascii_case(&told.to_string_lossy()) {
+                result = Err("The download was saved somewhere else than asked".to_string());
+            }
+        }
+        // The operation has ended: the view forgets it (the cap counts running downloads only), then the
+        // app hears. The registrations die with the operation when its last reference goes.
+        if let Some(inner) = owner.upgrade() {
+            if let Ok(mut i) = inner.try_borrow_mut() {
+                download_ended(&mut i.dl_active, id);
+            }
+        }
         post.post(Event::DownloadDone { view: post.view, id, result });
         Ok(())
     })));
@@ -2616,6 +2634,11 @@ fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster) ->
     }
     let _ = unsafe { p.args.SetCancel(false) };
     Some(ActiveDownload { op, bytes_token, state_token })
+}
+
+/// A finished, failed or cancelled download leaves the running set (the host's cap counts that set).
+fn download_ended<T>(active: &mut HashMap<u64, T>, id: u64) -> Option<T> {
+    active.remove(&id)
 }
 
 // ---- end of the one download owner ----
@@ -2666,7 +2689,32 @@ fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
 
 #[cfg(test)]
 mod tests {
-    /// Task 5 review I1: the DevTools params (a password among them) go to COM from a wiping UTF-16
+
+
+    /// Task 7 review I1: the host's cap counts RUNNING downloads. Eight finished ones leave the set, so
+    /// the ninth proceeds; a refusal is said (an event), never silent.
+    #[test]
+    fn the_ninth_download_after_eight_finished_ones_proceeds() {
+        let mut limiter = webhost::PermissionLimiter::default();
+        let mut active: HashMap<u64, ()> = HashMap::new();
+        let t0 = Instant::now();
+        for id in 1..=8u64 {
+            // Spread past the per-second rate so only the running count is under test.
+            assert!(limiter.allow(t0 + Duration::from_secs(id * 2), active.len()), "download {id}");
+            active.insert(id, ());
+        }
+        assert!(!limiter.allow(t0 + Duration::from_secs(20), active.len()), "eight running: the ninth is refused");
+        for id in 1..=8u64 {
+            assert!(download_ended(&mut active, id).is_some());
+        }
+        assert!(download_ended(&mut active, 1).is_none());
+        assert!(limiter.allow(t0 + Duration::from_secs(22), active.len()), "eight finished: the ninth proceeds");
+        let this = include_str!("webhost_win.rs");
+        let owner = &this[this.find("// ---- the one download owner").unwrap()..this.find("// ---- end of the one download owner ----\n\n/// `ContentLoading`").unwrap()];
+        assert!(owner.contains("download_ended(&mut i.dl_active, id)"), "the state handler prunes on completion, failure and cancel");
+        assert!(owner.contains("Event::DownloadRefused { view: i.id }"), "a cap that cancels says so");
+        assert!(owner.contains("ResultFilePath"), "the written path is compared with the told one");
+    }    /// Task 5 review I1: the DevTools params (a password among them) go to COM from a wiping UTF-16
     /// copy, built at its exact size, on every call, the queued path included (the closure owns it).
     #[test]
     fn devtools_params_are_a_wiping_wide_copy() {

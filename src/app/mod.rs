@@ -1428,10 +1428,9 @@ pub struct App {
     autofill: browser_autofill_app::AutofillState,
     /// HTTP authentication state per browser pane (app-wide, keyed by pane; not swapped).
     basic_auth: HashMap<PaneId, browser_basic_auth_app::AuthPane>,
-    /// Browser downloads by id (app-wide, never swapped), the last id, and the per-pane quiet time after one starts.
+    /// Browser downloads by id (app-wide, never swapped) and the last id.
     browser_downloads: HashMap<u64, crate::browser_download::Download>,
     download_seq: u64,
-    download_quiet: crate::cooldown::Cooldown<PaneId>,
     ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
     /// The discovered Ollama models (app-wide, never swapped), the transport AI requests go
     /// through, and the refresh the settings window waits on.
@@ -2620,7 +2619,6 @@ pub fn run() {
         basic_auth: HashMap::new(),
         browser_downloads: HashMap::new(),
         download_seq: 0,
-        download_quiet: crate::cooldown::Cooldown::new(crate::browser_download::REPEAT_MS, crate::cooldown::KEPT),
         ai_key_window: None,
         ai_discovery,
         ai_transport,

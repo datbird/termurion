@@ -574,7 +574,6 @@ pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool, reader: Optio
         out.push(None);
         out.push(Some(("Manage Bookmarks", true)));
         out.push(Some(("History", true)));
-        out.push(Some(("Downloads", true)));
         out.push(None);
     }
     out.push(Some(("Settings", true)));
@@ -591,7 +590,6 @@ pub fn menu_selector(label: &str) -> &'static str {
         "Add Bookmark" | "Remove Bookmark" => "bookmarkMenuItemSelected:",
         "Manage Bookmarks" => "manageBookmarksMenuItemSelected:",
         "History" => "historyMenuItemSelected:",
-        "Downloads" => "downloadsMenuItemSelected:",
         "Settings" => "settingsMenuItemSelected:",
         "Reader Mode" | "Exit Reader Mode" => "readerModeMenuItemSelected",
         "Remove Distractions" | "Exit Distraction Removal" => "distractionRemovalMenuItemSelected",
@@ -1674,7 +1672,7 @@ mod tests {
         fn names<'a>(v: &[Option<(&'a str, bool)>]) -> Vec<&'a str> {
             v.iter().flatten().map(|(n, _)| *n).collect()
         }
-        assert_eq!(names(&m), vec!["Remove Bookmark", "Manage Bookmarks", "History", "Downloads", "Settings"]);
+        assert_eq!(names(&m), vec!["Remove Bookmark", "Manage Bookmarks", "History", "Settings"]);
         assert_eq!(m[1], None);
         assert_eq!(m.last().copied().flatten(), Some(("Settings", true)), "Settings opens the settings page (13x8 Task 5)");
         let dev = menu_items(false, true, true, None);

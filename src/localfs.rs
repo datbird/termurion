@@ -493,6 +493,33 @@ pub fn rename(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
     std::fs::rename(&from.0, &to.0)
 }
 
+/// A move that never replaces: `AlreadyExists` when `to` is there. On Windows it is `MoveFileExW` with
+/// no flags (the standard library's rename passes MOVEFILE_REPLACE_EXISTING), atomic against a file
+/// that appears at the name at any time.
+pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (f, t) = (wide(&from.0), wide(&to.0));
+        // SAFETY: both are NUL-terminated wide strings that live through the call.
+        if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        // ERROR_ALREADY_EXISTS (183) and ERROR_FILE_EXISTS (80).
+        return Err(if matches!(e.raw_os_error(), Some(183) | Some(80)) { io::Error::from(io::ErrorKind::AlreadyExists) } else { e });
+    }
+    #[cfg(not(windows))]
+    {
+        if to.0.exists() {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        std::fs::rename(&from.0, &to.0)
+    }
+}
+
 pub fn copy(from: &LocalPath, to: &LocalPath) -> io::Result<u64> {
     std::fs::copy(&from.0, &to.0)
 }

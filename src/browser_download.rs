@@ -18,11 +18,11 @@ pub const PAGE_URL: &str = "iterm2-about:downloads";
 pub const HANDLER: &str = "iterm2-about:downloads";
 /// The longest file name kept (characters), before the `.download` suffix and a number.
 pub const MAX_NAME: usize = 150;
-/// Downloads one pane may have in flight, and the quiet time after one starts (a page cannot start
-/// a flood; 13x6: repeat automatic downloads are denied).
+/// Downloads one pane may have in flight, and all panes together. A page's repeat automatic download
+/// is Chromium's to refuse (its download limiter raises MULTIPLE_AUTOMATIC_DOWNLOADS, which 13x6
+/// denies, R13x6-D4/T1a); there is no second cooldown here, so a person's second click is never lost.
 pub const MAX_PER_PANE: usize = 3;
 pub const MAX_IN_FLIGHT: usize = 8;
-pub const REPEAT_MS: u64 = 3_000;
 /// Rows kept in the list (finished ones fall off the old end).
 pub const MAX_ROWS: usize = 200;
 /// Longest source URL a Mark of the Web carries.
@@ -45,7 +45,7 @@ pub struct Download {
     pub path: PathBuf,
     pub received: u64,
     pub total: Option<u64>,
-    /// The hidden `.download` file WebView2 writes while the download runs.
+    /// The dot-named `.download` file WebView2 writes while the download runs.
     pub temp: PathBuf,
     /// The last progress step shown (`progress_step`).
     pub step: u64,
@@ -181,17 +181,13 @@ pub enum Verdict {
 
 pub const DEV_NULL_TEXT: &str = "Downloads are off in a Dev Null tab: it writes nothing to disk. Use a normal browser tab.";
 pub const TOO_MANY_TEXT: &str = "Too many downloads at once: this one was blocked.";
-pub const REPEAT_TEXT: &str = "A page tried to start another download right away: it was blocked.";
 
-/// Whether a download may start: not in a Dev Null pane, not past the in-flight caps, and not a
-/// repeat from the same pane inside `REPEAT_MS`.
-pub fn verdict(dev_null: bool, pane_in_flight: usize, all_in_flight: usize, repeat_quiet: bool) -> Verdict {
+/// Whether a download may start: not in a Dev Null pane and not past the in-flight caps.
+pub fn verdict(dev_null: bool, pane_in_flight: usize, all_in_flight: usize) -> Verdict {
     if dev_null {
         Verdict::Deny(DEV_NULL_TEXT)
     } else if pane_in_flight >= MAX_PER_PANE || all_in_flight >= MAX_IN_FLIGHT {
         Verdict::Deny(TOO_MANY_TEXT)
-    } else if repeat_quiet {
-        Verdict::Deny(REPEAT_TEXT)
     } else {
         Verdict::Allow
     }
@@ -367,11 +363,12 @@ mod tests {
 
     #[test]
     fn a_page_cannot_start_a_flood() {
-        assert_eq!(verdict(false, 0, 0, false), Verdict::Allow);
-        assert_eq!(verdict(true, 0, 0, false), Verdict::Deny(DEV_NULL_TEXT));
-        assert_eq!(verdict(false, MAX_PER_PANE, 0, false), Verdict::Deny(TOO_MANY_TEXT));
-        assert_eq!(verdict(false, 0, MAX_IN_FLIGHT, false), Verdict::Deny(TOO_MANY_TEXT));
-        assert_eq!(verdict(false, 1, 1, true), Verdict::Deny(REPEAT_TEXT));
+        assert_eq!(verdict(false, 0, 0), Verdict::Allow);
+        assert_eq!(verdict(true, 0, 0), Verdict::Deny(DEV_NULL_TEXT));
+        assert_eq!(verdict(false, MAX_PER_PANE, 0), Verdict::Deny(TOO_MANY_TEXT));
+        assert_eq!(verdict(false, 0, MAX_IN_FLIGHT), Verdict::Deny(TOO_MANY_TEXT));
+        // A second click right after the first is allowed (no cooldown of ours).
+        assert_eq!(verdict(false, 1, 1), Verdict::Allow);
         assert!(mark_url("https://h/x").is_some() && mark_url("blob:https://h/x").is_none() && mark_url("javascript:1").is_none());
         assert!(mark_url("https://h/x\r\nHostUrl=evil").is_none());
         assert!(temp_path(Path::new("D:\\dl"), "u").to_string_lossy().ends_with(".download"));

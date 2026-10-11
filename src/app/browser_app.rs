@@ -678,7 +678,7 @@ impl App {
             // A `file:` page is Tandem's `iterm2-file:` page (13x8 Task 3).
             Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),
             Event::DataCleared { ok, .. } => self.browser_data_cleared(pane, *ok),
-            Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } => self.browser_download_event(pane, e),
+            Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } | Event::DownloadRefused { .. } => self.browser_download_event(pane, e),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
@@ -1282,7 +1282,6 @@ impl App {
         let target = match label {
             "Manage Bookmarks" => Some("iterm2-about:bookmarks"),
             "History" => Some("iterm2-about:history"),
-            "Downloads" => Some(crate::browser_download::PAGE_URL),
             "Settings" => Some(crate::browser_settings_page::SETTINGS_URL),
             _ => None,
         };

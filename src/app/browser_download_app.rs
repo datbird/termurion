@@ -1,6 +1,6 @@
 //! Browser downloads on the App side (13x8 Task 7; `DL:66-189`). The web view only writes where it
 //! is told (`webhost_win`); everything else is decided here, once: Dev Null refuses, the caps and
-//! the repeat cooldown deny a flood, the file is written as a hidden `.download` file in the
+//! the caps deny a flood, the file is written as a dot-named `.download` file in the
 //! Downloads folder and finished by `ssh_local::finish_with` (the Mark of the Web through
 //! `inert_files::mark_strict`, a refused type removed, then the final name from
 //! `browser_download::destination`). Nothing is opened or run: the page's "Show in folder" only
@@ -21,6 +21,8 @@ impl App {
             Event::DownloadStarting { token, url, total, .. } => self.download_starting(pane, *token, url, *total),
             Event::DownloadProgress { id, received, total, .. } => self.download_progress(*id, *received, *total),
             Event::DownloadDone { id, result, .. } => self.download_done(*id, result.clone()),
+            // The view's own caps cancelled one: said, never silent (Task 7 review I1).
+            Event::DownloadRefused { .. } => self.banners.set("action", bd::TOO_MANY_TEXT),
             _ => {}
         }
     }
@@ -38,11 +40,7 @@ impl App {
         let running = |d: &&bd::Download| d.phase == bd::Phase::Running;
         let in_pane = self.browser_downloads.values().filter(running).filter(|d| d.pane == pane).count();
         let all = self.browser_downloads.values().filter(running).count();
-        let now = crate::cooldown::mono_ms();
-        let quiet = self.download_quiet.active(&pane, now);
-        // Even a refused one holds the pane quiet: a page asking again at once is a repeat.
-        self.download_quiet.start(pane, now);
-        if let bd::Verdict::Deny(text) = bd::verdict(self.pane_dev_null(pane), in_pane, all, quiet) {
+        if let bd::Verdict::Deny(text) = bd::verdict(self.pane_dev_null(pane), in_pane, all) {
             self.banners.set("action", text);
             return self.download_answer(pane, token, id, None);
         }
@@ -116,11 +114,14 @@ impl App {
         };
         match outcome {
             Ok(path) => {
+                // The name the file really got (the final pick may differ from the first).
+                let final_name = path.file_name().map(|n| crate::inert_files::display_text(&n.to_string_lossy(), 200, false)).unwrap_or(shown);
                 if let Some(e) = self.browser_downloads.get_mut(&id) {
+                    e.name = final_name.clone();
                     e.path = path;
                     e.phase = bd::Phase::Finished;
                 }
-                Self::ssh_notify(&crate::ssh_local::download_finished(&shown), "");
+                Self::ssh_notify(&crate::ssh_local::download_finished(&final_name), "");
             }
             Err(why) => {
                 remove_temp(&d);
@@ -138,8 +139,18 @@ impl App {
     /// may have taken the first choice) and checked to sit directly in the Downloads folder.
     fn download_finish(&mut self, d: &bd::Download) -> Result<std::path::PathBuf, String> {
         let dir = d.temp.parent().ok_or_else(|| crate::ssh_local::NOT_ALLOWED.to_string())?.to_path_buf();
-        let dest = bd::destination(&dir, &d.url, &exists).map_err(str::to_string)?;
-        crate::ssh_local::finish_with(&d.temp, &dest, &d.url, &|p, u| crate::inert_files::mark_strict(p, bd::mark_url(u).as_deref()))
+        // The move never replaces: a file that appeared under the picked name since the pick makes the
+        // move fail with AlreadyExists, and the name is picked again (a few times at most).
+        let mark = |p: &std::path::Path, u: &str| crate::inert_files::mark_strict(p, bd::mark_url(u).as_deref());
+        for _ in 0..4 {
+            let dest = bd::destination(&dir, &d.url, &exists).map_err(str::to_string)?;
+            match crate::ssh_local::finish_no_replace(&d.temp, &dest, &d.url, &mark) {
+                Err(crate::ssh_local::NoReplace::Taken) => continue,
+                Err(crate::ssh_local::NoReplace::Failed(why)) => return Err(why),
+                Ok(p) => return Ok(p),
+            }
+        }
+        Err(crate::ssh_local::NOT_ALLOWED.to_string())
     }
 
     fn download_banner_clear(&mut self) {
@@ -253,8 +264,9 @@ mod tests {
         let answer = s.find("self.download_answer(pane, token, id, Some(&temp))").unwrap();
         assert!(v < dir && dir < dest && dest < answer);
         assert!(s.contains("bd::temp_path(&dir"));
-        assert!(s.contains("ssh_local::finish_with(&d.temp, &dest, &d.url"));
+        assert!(s.contains("ssh_local::finish_no_replace(&d.temp, &dest, &d.url") && !s.contains("finish_with("), "the move never replaces");
         assert!(s.contains("inert_files::mark_strict(p, bd::mark_url(u).as_deref())"));
+        assert!(!s.contains("download_quiet") && !s.contains("cooldown"), "no second flood owner");
         // Nothing here opens or runs a file: Explorer only selects.
         for banned in ["open_with_shell", "shell_verb", "Command::new", "ShellExecute", "run_external"] {
             assert!(!s.contains(banned), "{banned}");
@@ -267,7 +279,7 @@ mod tests {
     #[test]
     fn the_wiring_is_complete() {
         let app = include_str!("browser_app.rs");
-        assert!(app.contains("Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } => self.browser_download_event(pane, e),"));
+        assert!(app.contains("Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } | Event::DownloadRefused { .. } => self.browser_download_event(pane, e),"));
         assert!(app.contains("downloads: true,"));
         let scripts = include_str!("browser_scripts_app.rs");
         let reset = &scripts[scripts.find("pub(super) fn browser_reset_world").unwrap()..scripts.find("// --- Setup ---").unwrap()];

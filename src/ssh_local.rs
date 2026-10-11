@@ -228,6 +228,38 @@ pub fn finish_with(temp: &Path, final_path: &Path, host_url: &str, mark: &dyn Fn
     }
 }
 
+/// Why `finish_no_replace` did not finish.
+#[derive(Debug, PartialEq)]
+pub enum NoReplace {
+    /// A file is at the final name now (the temp is kept: pick another name and go again).
+    Taken,
+    Failed(String),
+}
+
+/// `finish_with` that never replaces a file (a browser download): the same checks and mark, then a move
+/// that fails with `Taken` when the name is occupied. Any other failure removes the temp.
+pub fn finish_no_replace(temp: &Path, final_path: &Path, host_url: &str, mark: &dyn Fn(&Path, &str) -> std::io::Result<()>) -> Result<PathBuf, NoReplace> {
+    let failed = |e: String| NoReplace::Failed(e);
+    let local = localfs::judge_io(temp).map_err(|e| failed(e.to_string()))?;
+    if refused_path(&final_path.to_string_lossy()) {
+        let _ = localfs::remove_file(&local);
+        return Err(failed(NOT_ALLOWED.to_string()));
+    }
+    if mark(temp, host_url).is_err() {
+        let gone = localfs::remove_file(&local).is_ok() || !localfs::exists(&local);
+        return Err(failed(if gone { FAILED_TO_QUARANTINE } else { NOT_REMOVED }.to_string()));
+    }
+    let to = localfs::judge_io(final_path).map_err(|e| failed(e.to_string()))?;
+    match localfs::rename_no_replace(&local, &to) {
+        Ok(()) => Ok(final_path.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(NoReplace::Taken),
+        Err(e) => {
+            let _ = localfs::remove_file(&local);
+            Err(failed(e.to_string()))
+        }
+    }
+}
+
 #[cfg(windows)]
 pub fn finish(temp: &Path, final_path: &Path, host_url: &str) -> Result<PathBuf, String> {
     finish_with(temp, final_path, host_url, &|p, u| crate::inert_files::mark_strict(p, Some(u)))
@@ -580,6 +612,23 @@ mod tests {
             assert_eq!(finish_with(&temp, &x, url, &refuse), Err(FAILED_TO_QUARANTINE.to_string()));
             assert!(!temp.exists());
             assert_eq!(std::fs::read(&x).unwrap(), b"one");
+            let _ = std::fs::remove_dir_all(&t);
+        }
+
+        /// Task 7 review minor 2: a browser download's final move never replaces a file that is there.
+        #[test]
+        fn a_download_finish_never_replaces() {
+            let t = fresh("noreplace");
+            let (x, temp) = (t.join("x.txt"), t.join(temp_name("N1")));
+            std::fs::write(&x, "mine").unwrap();
+            std::fs::write(&temp, "new").unwrap();
+            let ok = |_: &Path, _: &str| -> std::io::Result<()> { Ok(()) };
+            assert_eq!(finish_no_replace(&temp, &x, "https://h/x", &ok), Err(NoReplace::Taken));
+            assert_eq!(std::fs::read(&x).unwrap(), b"mine", "the existing file is untouched");
+            assert!(temp.exists(), "the temp is kept for the next name");
+            let y = t.join("x (1).txt");
+            assert_eq!(finish_no_replace(&temp, &y, "https://h/x", &ok), Ok(y.clone()));
+            assert_eq!(std::fs::read(&y).unwrap(), b"new");
             let _ = std::fs::remove_dir_all(&t);
         }
 

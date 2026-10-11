@@ -377,6 +377,8 @@ pub enum Event {
     DownloadProgress { view: ViewId, id: u64, received: u64, total: Option<u64> },
     /// Download `id` ended: Ok when complete; Err holds fixed words, never the page's text. Never dropped.
     DownloadDone { view: ViewId, id: u64, result: Result<(), String> },
+    /// The view's own caps cancelled a download (too many running, or too fast): the app says so. Carries nothing.
+    DownloadRefused { view: ViewId },
 }
 
 /// Longest challenge header text an event carries (characters); the rest is cut, and a cut
@@ -457,7 +459,8 @@ impl Event {
             | Event::BasicAuth { view, .. }
             | Event::DownloadStarting { view, .. }
             | Event::DownloadProgress { view, .. }
-            | Event::DownloadDone { view, .. } => *view,
+            | Event::DownloadDone { view, .. }
+            | Event::DownloadRefused { view } => *view,
         }
     }
 
@@ -2283,6 +2286,8 @@ mod tests {
         let done = Event::DownloadDone { view: 2, id: 9, result: Err("The download was interrupted".into()) };
         let progress = Event::DownloadProgress { view: 2, id: 9, received: 1, total: None };
         assert!(!start.droppable() && !done.droppable() && progress.droppable());
+        let refused = Event::DownloadRefused { view: 2 };
+        assert!(!refused.droppable() && refused.view() == 2 && refused.weight() == 0, "a refusal is always said");
         assert_eq!((start.view(), done.view(), progress.view()), (2, 2, 2));
         assert_eq!((start.weight(), done.weight()), (11, 28));
     }
