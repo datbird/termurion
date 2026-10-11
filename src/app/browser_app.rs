@@ -117,6 +117,10 @@ pub(super) struct BrowserView {
     pub(super) find_out: crate::browser_find::Outbox,
     /// The Find Globally search this page's global stream answers (`App.global_generation` at its start).
     pub(super) global_gen: u64,
+    /// The file or ssh page the main frame is on, and the URL of that navigation (13x8 Task 1): set
+    /// from an allowed `Event::Starting`, cleared by any other and by `browser_reset_world`.
+    pub(super) page_root: Option<crate::browser_pages::PageRoot>,
+    pub(super) page_url: Option<String>,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -192,7 +196,7 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
 pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<String>) -> ViewSetup {
     // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
     // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
-    let mut filters = vec!["iterm2-about:*".to_string()];
+    let mut filters = vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()];
     if adblock {
         filters.push("*".to_string());
     }
@@ -257,7 +261,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -658,6 +662,7 @@ impl App {
             Event::ContextMenuPicked { token, id, .. } => self.browser_ctx_event(pane, *token, *id, event_loop),
             // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
             Event::Starting { url, kind, user, redirect, .. } => {
+                self.browser_page_starting(pane, url);
                 // Every start counts, redirects included: a redirected load is a new document request.
                 self.marks_method_event(pane, e);
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
@@ -1841,9 +1846,9 @@ mod tests {
             assert_eq!(s.scripts, vec![page[0].clone(), crate::web_replay::sensitive_script()], "the bridge and the sensitive mark are the only injected scripts");
             assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__tandemClient"), "a Page script never holds the Client binding");
             assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
-            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string()], "only Tandem's own scheme is served");
+            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()], "only Tandem's own schemes are served");
             let on = browser_setup(dev_null, true, vec![]);
-            assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
+            assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
         }
     }
 

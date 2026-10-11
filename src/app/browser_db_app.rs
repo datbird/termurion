@@ -107,10 +107,16 @@ impl App {
     /// A request for an `iterm2-about:` URL: the page under the policy, or a 404 (P8).
     pub(super) fn browser_local_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
         // Tandem's own scheme keeps its answer; every other request is the ad blocker's to judge.
-        let source = if crate::webhost::scheme_of(url) == "iterm2-about" { self.browser_source_answer(pane, url, context) } else { None };
+        let scheme = crate::webhost::scheme_of(url);
+        // A file or ssh page is answered by its own owner, under the sandbox policy (13x8).
+        if matches!(scheme.as_str(), browser_pages::FILE_SCHEME | browser_pages::SSH_SCHEME) {
+            self.browser_page_request(pane, token, url, context);
+            return;
+        }
+        let source = if scheme == "iterm2-about" { self.browser_source_answer(pane, url, context) } else { None };
         let answer: Answer = if let Some(source) = source {
             source
-        } else if crate::webhost::scheme_of(url) == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
+        } else if scheme == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
         if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
             v.answer_request(token, answer);
         }

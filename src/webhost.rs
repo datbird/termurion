@@ -696,7 +696,20 @@ pub fn nav_gate(gate: Option<bool>, uri: &str, by_tandem: bool, over_long: bool)
 /// are never framed (their policy refuses framing), so only the main frame may request one; this
 /// leaves a frame no way to race the main frame for the View Source page.
 pub fn frame_nav_cancelled(uri: &str) -> bool {
-    scheme_of(uri) == "iterm2-about"
+    matches!(scheme_of(uri).as_str(), "iterm2-about" | "iterm2-file" | "iterm2-ssh")
+}
+
+/// How a custom scheme is registered (`ICoreWebView2CustomSchemeRegistration`; 13x8 review I4):
+/// the allowed origins and whether its URLs carry a host. None of them is secure-origin. `iterm2-file`
+/// pages link to folders and ".." (their own scheme) and may be opened from Tandem's pages;
+/// `iterm2-ssh` URLs carry a host.
+pub fn scheme_registration(scheme: &str) -> (Vec<String>, bool) {
+    let own = |other: &str| vec![format!("{other}:"), format!("{scheme}:")];
+    match scheme {
+        "iterm2-file" => (own("iterm2-about"), false),
+        "iterm2-ssh" => (own("iterm2-about"), true),
+        _ => (Vec::new(), false),
+    }
 }
 
 fn local_scheme(s: &str) -> bool {
@@ -721,10 +734,15 @@ pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redire
     if redirect && local_scheme(&t) {
         return false;
     }
+    let s = source.map(scheme_of).unwrap_or_default();
+    // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
+    // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
+    if user && !by_tandem && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
+        return matches!(s.as_str(), "iterm2-about" | "iterm2-file" | "iterm2-ssh");
+    }
     if by_tandem || user {
         return true;
     }
-    let s = source.map(scheme_of).unwrap_or_default();
     if s == "iterm2-file" || s == "iterm2-ssh" {
         return false;
     }
@@ -1669,7 +1687,12 @@ mod tests {
     fn navigation_guard_follows_the_rules() {
         let n = |s: Option<&str>, t: &str, user, redirect, tandem| navigation_allowed(s, t, user, redirect, tandem, true);
         assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", false, false, false));
-        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, false));
+        // A click the person makes on a hostile page still starts nothing (B5); a local page's link does.
+        assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, false));
+        assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/etc/shadow", true, false, false));
+        assert!(!n(Some("about:blank"), "iterm2-file:///C:/", true, false, false));
+        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, true), "Tandem's own load");
+        assert!(n(Some("iterm2-about:welcome"), "iterm2-file:///C:/", true, false, false));
         assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/dev/zero", false, false, false));
         assert!(!n(Some("https://evil.test/"), "file:///C:/Windows/", false, false, false));
         assert!(n(Some("iterm2-about:welcome"), "iterm2-file:///C:/", false, false, false));
@@ -1981,8 +2004,15 @@ mod tests {
     }
 
     #[test]
+    fn local_schemes_register_with_their_own_origins() {
+        assert_eq!(scheme_registration("iterm2-about"), (Vec::new(), false));
+        assert_eq!(scheme_registration("iterm2-file"), (vec!["iterm2-about:".to_string(), "iterm2-file:".to_string()], false));
+        assert_eq!(scheme_registration("iterm2-ssh"), (vec!["iterm2-about:".to_string(), "iterm2-ssh:".to_string()], true));
+    }
+
+    #[test]
     fn subframes_never_navigate_to_local_pages() {
-        for u in ["iterm2-about:source", "ITERM2-ABOUT:history", "iterm2-about:blank"] {
+        for u in ["iterm2-about:source", "ITERM2-ABOUT:history", "iterm2-about:blank", "iterm2-file:///C:/T/", "ITERM2-SSH://box/etc/passwd"] {
             assert!(frame_nav_cancelled(u), "{u}");
         }
         for u in ["https://a/", "about:blank", "iterm2-aboutx:y", "data:text/html,x", "https://a/iterm2-about:source"] {

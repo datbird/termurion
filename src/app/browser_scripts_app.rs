@@ -239,6 +239,9 @@ impl App {
                 l.secret = browser_js::new_secret();
             }
             bv.trigger_gate.reset();
+            // The old view's file or ssh page is not the new view's (13x8).
+            bv.page_root = None;
+            bv.page_url = None;
         }
         self.global_pane_gone(pane);
         for done in dones {
@@ -864,6 +867,11 @@ impl App {
     /// plan adds its arm; an arm for a Client handler ignores a Page message). Anything else is
     /// counted in the log, never its text.
     pub(super) fn browser_message(&mut self, pane: PaneId, r: Routed) {
+        // A file or ssh page is a document of the person's files or a remote host, not a page of
+        // the web and not Tandem's own: nothing it posts reaches a handler (13x8).
+        if self.browser_views.get(&pane).is_some_and(|b| b.page_root.is_some()) {
+            return;
+        }
         match r.handler.as_str() {
             _ if browser_js::local_page_ok(&r) => {
                 // The page's own words are rebuilt from the routed parts, never forwarded.

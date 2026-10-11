@@ -54,6 +54,9 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
         "history-page.html" => include_str!("../resources/browser/history-page.html"),
+        "file-page.css" => include_str!("../resources/browser/file-page.css"),
+        "onboarding-intro.html" => include_str!("../resources/browser/onboarding-intro.html"),
+        "onboarding-features.html" => include_str!("../resources/browser/onboarding-features.html"),
         "history-page.js" => include_str!("../resources/browser/history-page.js"),
         "permissions-page.html" => include_str!("../resources/browser/permissions-page.html"),
         "permissions-page.js" => include_str!("../resources/browser/permissions-page.js"),
@@ -272,6 +275,9 @@ pub fn wrap(script: &UserScript) -> String {
     let mut s = String::from("(function () {\n");
     s.push_str(capture(script.world));
     s.push('\n');
+    // No Tandem script runs in a file or ssh page: its content is the file's, not the web's, and
+    // gets none of the bridge, the buttons or the world (13x8).
+    s.push_str("if (location.protocol === 'iterm2-file:' || location.protocol === 'iterm2-ssh:') return;\n");
     if script.main_frame_only {
         s.push_str("if (window.top !== window) return;\n");
     }

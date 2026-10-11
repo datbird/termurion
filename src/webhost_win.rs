@@ -380,8 +380,11 @@ impl Env {
                 .custom_schemes
                 .iter()
                 .map(|s| {
-                    // Not secure, no authority component, no allowed origins (preflight P8).
+                    // Never secure; the origins and the host component come from `scheme_registration`.
                     let reg = CoreWebView2CustomSchemeRegistration::new(s.clone());
+                    let (origins, authority) = crate::webhost::scheme_registration(s);
+                    reg.set_allowed_origins(origins);
+                    reg.set_has_authority_component(authority);
                     Some(reg.into())
                 })
                 .collect();

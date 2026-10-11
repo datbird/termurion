@@ -25,6 +25,261 @@ pub fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
+// --- Local pages' scheme names, templates, glyphs and the static pages (13x8 Task 1) ---
+
+/// The scheme of Tandem's own pages (`LPM:58-64`), and of the file and ssh pages.
+pub const ABOUT: &str = "iterm2-about";
+pub const SSH_SCHEME: &str = "iterm2-ssh";
+pub const FILE_SCHEME: &str = "iterm2-file";
+
+/// The empty body of a refusal or a missing page (iTerm2 answers a 404 with no text).
+pub const NOT_FOUND_HTML: &str = "";
+
+/// The glyph spans' rule, appended to the common CSS wherever a page gets it (inlined by `page`,
+/// or served as `iterm-browser-common.css`).
+pub const GLYPH_CSS: &str = "\n.tandem-glyph { font-family: \"Segoe Fluent Icons\"; font-style: normal; }\n";
+
+/// iTerm2's emoji and the Segoe Fluent Icons glyph each becomes (the m12 "UI glyphs" ruling). A key
+/// ends in U+FE0F where iTerm2's text does; one without it takes a following U+FE0F with it. The
+/// check marks (U+2713), the trigram (U+2630) and a bare U+26A0 stay text.
+pub const GLYPHS: &[(&str, char)] = &[
+    ("\u{1F512}", '\u{E72E}'),
+    ("\u{1F4E6}", '\u{E7B8}'),
+    ("\u{1F511}", '\u{E8D7}'),
+    ("\u{1F310}", '\u{E774}'),
+    ("\u{1F4C1}", '\u{E8B7}'),
+    ("\u{1F4C4}", '\u{E8A5}'),
+    ("\u{2B06}\u{FE0F}", '\u{E74A}'),
+    ("\u{1F464}", '\u{E77B}'),
+    ("\u{1F6E1}\u{FE0F}", '\u{EA18}'),
+    ("\u{1F3AC}", '\u{E714}'),
+    ("\u{1F680}", '\u{E768}'),
+    ("\u{2728}", '\u{E734}'),
+    ("\u{26A0}\u{FE0F}", '\u{E7BA}'),
+];
+
+const VARIATION_SELECTOR: char = '\u{FE0F}';
+
+/// The glyph entry whose emoji starts `at`, with the bytes it and its selector take.
+fn glyph_at(at: &str) -> Option<(char, usize)> {
+    GLYPHS.iter().find_map(|(emoji, glyph)| {
+        let rest = at.strip_prefix(emoji)?;
+        let selector = if emoji.ends_with(VARIATION_SELECTOR) { 0 } else { rest.starts_with(VARIATION_SELECTOR) as usize * VARIATION_SELECTOR.len_utf8() };
+        Some((*glyph, emoji.len() + selector))
+    })
+}
+
+/// Whether `before` ends in a CSS `content: "` and `after` goes on with `"` and `;`: the emoji
+/// between them is a pseudo-element's content, not text.
+fn css_content(before: &str, after: &str) -> bool {
+    let Some(head) = before.strip_suffix('"') else { return false };
+    let head = head.trim_end();
+    let Some(head) = head.strip_suffix(':') else { return false };
+    head.trim_end().ends_with("content") && after.strip_prefix('"').is_some_and(|a| a.trim_start().starts_with(';'))
+}
+
+/// iTerm2's emoji in a template become Segoe Fluent Icons glyphs, scanned once: a CSS
+/// `content: "<emoji>";` keeps the glyph as the content and gains the icon font, any other emoji
+/// becomes a `tandem-glyph` span. Only template and included text goes through here, never a
+/// substituted value.
+pub fn glyph_page(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let rest = &html[i..];
+        let ch = rest.chars().next().unwrap_or('\0');
+        // Every emoji of the table starts with a non-ASCII character; skip the rest cheaply.
+        match Some(ch).filter(|c| !c.is_ascii()).and_then(|_| glyph_at(rest)) {
+            Some((glyph, taken)) => {
+                let after = &html[i + taken..];
+                if css_content(&html[..i], after) {
+                    // `"` + optional spaces + `;` follow: keep them, add the font after the `;`.
+                    let semi = after.find(';').map_or(0, |n| n + 1);
+                    out.push(glyph);
+                    out.push_str(&after[..semi]);
+                    out.push_str(" font-family: \"Segoe Fluent Icons\";");
+                    i += taken + semi;
+                } else {
+                    out.push_str("<span class=\"tandem-glyph\">");
+                    out.push(glyph);
+                    out.push_str("</span>");
+                    i += taken;
+                }
+            }
+            _ => {
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+/// The one template loader (ruling Q2): the common CSS (with the glyph rule) and every
+/// `{{INCLUDE:...}}` first, then the glyph step over template and included text only, then the
+/// `{{KEY}}` substitutions, so a substituted value is never rewritten (`TL:29-74`; review I9).
+pub fn page(template: &str, subs: &[(&str, &str)]) -> String {
+    use crate::browser_js::{fill_template, resource};
+    let css = format!("{}{GLYPH_CSS}", resource("iterm-browser-common.css").unwrap_or_default());
+    let with_css = template.replace("{{COMMON_CSS}}", &css);
+    fill_template(&glyph_page(&fill_template(&with_css, &[])), subs)
+}
+
+/// The copied intro page as served: iTerm2's file with Tandem's visible names, each target found
+/// exactly once or no page is served (R13x3-1/-2 pattern). (name, iTerm2's text, Tandem's text)
+pub const INTRO_PATCHES: [(&str, &str, &str); 4] = [
+    ("TITLE", "<title>Welcome to iTerm2 Browser</title>", "<title>Welcome to Tandem Browser</title>"),
+    ("HEADING", "Meet the iTerm2 Browser", "Meet the Tandem Browser"),
+    ("PROFILES", "In iTerm2, profiles define", "In Tandem, profiles define"),
+    ("EXPERIENCE", "same iTerm2 experience", "same Tandem experience"),
+];
+
+pub const FEATURES_PATCHES: [(&str, &str, &str); 5] = [
+    ("TITLE", "<title>iTerm2 Browser - Features</title>", "<title>Tandem Browser - Features</title>"),
+    ("SUPERPOWERS", "<strong>iTerm2 Superpowers:</strong>", "<strong>Tandem Superpowers:</strong>"),
+    ("PRODUCTIVITY", "bring iTerm2 features into the browser", "bring Tandem features into the browser"),
+    ("PASSWORDS", "Integrates with the iTerm2 password manager, Webkit adblock lists, and iTerm2\u{2019}s AI chat feature.", "Integrates with the Tandem password manager, Webkit adblock lists, and Tandem\u{2019}s AI chat feature."),
+    ("SECONDARY", "iTerm2 doesn\u{2019}t expect", "Tandem doesn\u{2019}t expect"),
+];
+
+/// The template of a static `iterm2-about:` page, patched, or None (iTerm2's debug-only pages
+/// answer None too: Tandem has no debug build of the browser, `SPH:170-187`).
+pub fn static_page(url: &str) -> Option<String> {
+    use crate::view_source::apply_patches;
+    let (file, patches): (&str, Vec<_>) = match page_name(url)? {
+        "onboarding-intro" => ("onboarding-intro.html", INTRO_PATCHES.to_vec()),
+        "onboarding-features" => ("onboarding-features.html", FEATURES_PATCHES.to_vec()),
+        _ => return None,
+    };
+    match apply_patches(crate::browser_js::resource(file)?, &patches) {
+        Ok(html) => Some(page(&html, &[])),
+        Err(e) => {
+            crate::rlog!("{}", crate::dlog::name(&e));
+            None
+        }
+    }
+}
+
+// --- File and ssh pages: what a page of those schemes may load (R13x8-1) ---
+
+/// The policy of every `iterm2-file:` and `iterm2-ssh:` response: sandboxed with no
+/// `allow-same-origin` (an opaque origin), so a page cannot read another file or reach any host;
+/// scripts may run for the page's own sake only.
+pub const SANDBOX_CSP: &str = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' iterm2-file: iterm2-ssh:; style-src 'unsafe-inline' iterm2-file: iterm2-ssh:; img-src iterm2-file: iterm2-ssh: data:; media-src iterm2-file: iterm2-ssh:; font-src iterm2-file: iterm2-ssh:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'";
+
+pub fn sandbox_headers() -> Vec<(String, String)> {
+    vec![("Content-Security-Policy".to_string(), SANDBOX_CSP.to_string())]
+}
+
+/// `COREWEBVIEW2_WEB_RESOURCE_CONTEXT` values this module judges.
+pub const CONTEXT_SCRIPT: i32 = 6;
+pub const CONTEXT_XML_HTTP_REQUEST: i32 = 7;
+pub const CONTEXT_FETCH: i32 = 8;
+pub const CONTEXT_EVENT_SOURCE: i32 = 10;
+pub const CONTEXT_WEBSOCKET: i32 = 11;
+
+/// The tree a file or ssh page may load from: its scheme, its host (ssh) and its folder, decoded,
+/// `/`-separated and ending in `/` (a listing's own folder, a file's parent).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageRoot {
+    pub scheme: &'static str,
+    pub host: Option<String>,
+    pub folder: String,
+}
+
+/// A local-scheme URL taken apart: (scheme, authority, decoded path). None for another scheme, a
+/// path that does not decode to UTF-8, or one holding `\`, a control character or a `..` segment.
+fn local_parts(url: &str) -> Option<(&'static str, String, String)> {
+    let (scheme, rest) = url.split_once(':')?;
+    let scheme = if scheme.eq_ignore_ascii_case(FILE_SCHEME) {
+        FILE_SCHEME
+    } else if scheme.eq_ignore_ascii_case(SSH_SCHEME) {
+        SSH_SCHEME
+    } else {
+        return None;
+    };
+    let rest = rest.strip_prefix("//")?;
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (authority, raw_path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    let path = percent_decode(raw_path)?;
+    let bad = path.chars().any(|c| c == '\\' || c.is_control()) || path.split('/').any(|seg| seg == "..");
+    (!bad && path.len() <= MAX_STRING).then(|| (scheme, authority.to_string(), path))
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = s.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The folder part of a decoded path in the form the roots use: a file page's path loses its
+/// leading `/` (`C:/T/a.html`), an ssh path keeps it.
+fn folder_of(scheme: &str, path: &str) -> String {
+    let path = if scheme == FILE_SCHEME { path.strip_prefix('/').unwrap_or(path) } else { path };
+    match path.rfind('/') {
+        Some(at) => path[..=at].to_string(),
+        None => String::new(),
+    }
+}
+
+/// The root of an `iterm2-file:` or `iterm2-ssh:` page (a trailing `/` marks a folder), or None.
+/// A file page has no host; an ssh page must have one.
+pub fn page_root(url: &str) -> Option<PageRoot> {
+    let (scheme, authority, path) = local_parts(url)?;
+    let host = match scheme {
+        FILE_SCHEME if authority.is_empty() => None,
+        SSH_SCHEME if !authority.is_empty() => Some(authority),
+        _ => return None,
+    };
+    Some(PageRoot { scheme, host, folder: folder_of(scheme, &path) })
+}
+
+/// Whether a page rooted at `root` may load `url` as a subresource: the same scheme and host, a
+/// path inside the root folder (a path prefix, not a string prefix), and never a script-driven
+/// request (fetch, XHR, WebSocket, EventSource).
+pub fn subresource_allowed(root: Option<&PageRoot>, url: &str, context: i32) -> bool {
+    let Some(root) = root else { return false };
+    if matches!(context, CONTEXT_FETCH | CONTEXT_XML_HTTP_REQUEST | CONTEXT_WEBSOCKET | CONTEXT_EVENT_SOURCE | CONTEXT_DOCUMENT) {
+        return false;
+    }
+    let Some((scheme, authority, path)) = local_parts(url) else { return false };
+    if scheme != root.scheme {
+        return false;
+    }
+    let host_ok = match &root.host {
+        Some(host) => authority.eq_ignore_ascii_case(host),
+        None => authority.is_empty(),
+    };
+    let shown = if scheme == FILE_SCHEME { path.strip_prefix('/').unwrap_or(&path) } else { path.as_str() };
+    let inside = shown.get(..root.folder.len()).is_some_and(|head| if scheme == FILE_SCHEME { head.eq_ignore_ascii_case(&root.folder) } else { head == root.folder });
+    host_ok && inside && shown.len() > root.folder.len()
+}
+
+/// Whether a request for a file or ssh URL may be answered at all: a Document request only for the
+/// URL of the pane's current main-frame navigation (`nav_url`, set from `Event::Starting`, so a
+/// frame or a script cannot ask for a page the person did not open), every other context only as
+/// a subresource of that page's tree.
+pub fn page_request_allowed(root: Option<&PageRoot>, nav_url: Option<&str>, url: &str, context: i32) -> bool {
+    if context == CONTEXT_DOCUMENT {
+        return root.is_some() && nav_url == Some(url);
+    }
+    subresource_allowed(root, url, context)
+}
+
 /// The script that makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call
 /// it) post to the host, on `iterm2-about:` pages only: `browser_js::local_page_script` through
 /// `browser_js::wrap`, the one bridge text every script uses. It holds no secret: the host decides by
@@ -71,7 +326,7 @@ pub fn page_name(url: &str) -> Option<&str> {
     if !scheme.eq_ignore_ascii_case("iterm2-about") || rest.is_empty() || rest.len() > 64 {
         return None;
     }
-    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "iterm-browser-common.css").then_some(rest)
+    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "onboarding-intro" | "onboarding-features" | "iterm-browser-common.css").then_some(rest)
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
@@ -89,7 +344,8 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
         "history" => (page(resource("history-page.html")?, "HISTORY_SCRIPT", resource("history-page.js")?), HTML),
         "bookmarks" => (page(resource("bookmarks-page.html")?, "BOOKMARKS_SCRIPT", resource("bookmarks-page.js")?), HTML),
         "permissions" => (permissions_document(nonce)?, HTML),
-        "iterm-browser-common.css" => (COMMON_CSS.to_string(), "text/css; charset=utf-8"),
+        "onboarding-intro" | "onboarding-features" => (static_page(&format!("{SCHEME_PREFIX}{name}"))?, HTML),
+        "iterm-browser-common.css" => (format!("{COMMON_CSS}{GLYPH_CSS}"), "text/css; charset=utf-8"),
         _ => return None,
     })
 }
@@ -877,5 +1133,125 @@ mod permissions_tests {
         }
         // A pane that is not the permissions page gets nothing (the app also checks its main frame).
         assert!(route(&db, &msg(json!({"action": "loadPermissions"})), "iterm2-about:welcome").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod plumbing_tests {
+    use super::*;
+
+    #[test]
+    fn glyph_page_follows_the_ui_glyph_ruling() {
+        assert_eq!(glyph_page("<h3>\u{1F512} /dev/null Mode Active</h3>"), "<h3><span class=\"tandem-glyph\">\u{E72E}</span> /dev/null Mode Active</h3>");
+        assert_eq!(glyph_page("a::before { content: \"\u{1F4C1}\"; }"), "a::before { content: \"\u{E8B7}\"; font-family: \"Segoe Fluent Icons\"; }");
+        assert_eq!(glyph_page("\u{26A0}\u{FE0F}"), "<span class=\"tandem-glyph\">\u{E7BA}</span>");
+        for kept in ["\u{26A0}", "\u{2713}", "\u{2630}"] {
+            assert_eq!(glyph_page(kept), kept);
+        }
+        for (emoji, glyph) in GLYPHS {
+            let out = glyph_page(&format!("<b>{emoji}</b>"));
+            assert_eq!(out, format!("<b><span class=\"tandem-glyph\">{glyph}</span></b>"), "{emoji:?}");
+        }
+        // A selector after an emoji whose entry has none goes with it.
+        assert_eq!(glyph_page("\u{1F512}\u{FE0F}"), "<span class=\"tandem-glyph\">\u{E72E}</span>");
+        assert!(page("{{COMMON_CSS}}x", &[]).starts_with(crate::browser_js::resource("iterm-browser-common.css").unwrap()));
+        assert!(page("<style>{{INCLUDE:file-page.css}}</style>", &[]).contains(".directory-content"));
+        assert_eq!(page("{{A}}", &[("A", "b")]), "b");
+        assert!(GLYPH_CSS.contains("font-family: \"Segoe Fluent Icons\"") && GLYPH_CSS.contains(".tandem-glyph"));
+        assert!(document("iterm-browser-common.css", "n").unwrap().0.contains(".tandem-glyph"));
+        assert!(page("{{COMMON_CSS}}", &[]).contains(".tandem-glyph"), "a page that inlines the common CSS draws its glyph spans");
+        assert_eq!(page("<p>{{U}}</p>", &[("U", "\u{1F512}")]), "<p>\u{1F512}</p>", "a substituted value is never rewritten");
+        // The CSS content of an included file is rewritten, too.
+        let css = page("{{INCLUDE:file-page.css}}", &[]);
+        assert!(!css.contains('\u{1F4C1}') && !css.contains('\u{2B06}') && css.contains("content: \"\u{E8B7}\"; font-family: \"Segoe Fluent Icons\";"));
+    }
+
+    #[test]
+    fn static_pages_follow_iterm2() {
+        let intro = static_page("iterm2-about:onboarding-intro").unwrap();
+        assert!(intro.contains("Meet the Tandem Browser") && !intro.contains("iTerm2"));
+        let features = static_page("iterm2-about:onboarding-features").unwrap();
+        assert!(!features.contains("iTerm2") && features.contains("Tandem"));
+        for none in ["iterm2-about:dev", "iterm2-about:notifications-demo", "iterm2-about:nope", "https://a/"] {
+            assert!(static_page(none).is_none(), "{none}");
+        }
+        // Served through the one nonce path: the policy header, no inline handler, glyphs drawn.
+        for name in ["onboarding-intro", "onboarding-features"] {
+            let url = format!("iterm2-about:{name}");
+            assert_eq!(page_name(&url), Some(name));
+            let Answer::Respond { status, mime, body, headers } = answer(&url, CONTEXT_DOCUMENT, "") else { panic!() };
+            let body = String::from_utf8(body).unwrap();
+            assert_eq!((status, mime.as_str()), (200, "text/html; charset=utf-8"));
+            assert!(headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("frame-ancestors 'none'") && v.contains("script-src 'nonce-")));
+            assert!(!body.contains("onclick") && !body.contains("<script") && !body.contains("{{") && !body.contains('\u{1F310}') && !body.contains('\u{2728}'), "{name}");
+            assert!(body.contains("class=\"tandem-glyph\""));
+        }
+        // The copies hold iTerm2's text; the changes are load-time, exactly once, and fail closed.
+        let raw = crate::browser_js::resource("onboarding-intro.html").unwrap();
+        assert!(raw.contains("iTerm2 Browser") && raw.contains('\u{1F310}'));
+        assert!(crate::view_source::apply_patches(&raw.replace("Meet the iTerm2 Browser", "x"), &INTRO_PATCHES).is_err());
+        assert!(crate::view_source::apply_patches(&format!("{raw}Meet the iTerm2 Browser"), &INTRO_PATCHES).is_err(), "a second copy of a target is a miss, too");
+    }
+
+    const IMG: i32 = 3;
+
+    #[test]
+    fn page_requests_follow_the_main_frame_navigation() {
+        let url = "iterm2-file:///C:/T/site/a.html";
+        let root = page_root(url);
+        assert!(page_request_allowed(root.as_ref(), Some(url), url, CONTEXT_DOCUMENT));
+        assert!(!page_request_allowed(root.as_ref(), Some(url), "iterm2-file:///C:/T/site/b.html", CONTEXT_DOCUMENT), "a document nobody navigated to");
+        assert!(!page_request_allowed(None, None, url, CONTEXT_DOCUMENT));
+        assert!(!page_request_allowed(root.as_ref(), None, url, CONTEXT_DOCUMENT));
+        assert!(page_request_allowed(root.as_ref(), Some(url), "iterm2-file:///C:/T/site/i.png", IMG));
+        assert!(!page_request_allowed(root.as_ref(), Some(url), "iterm2-file:///C:/T/x/i.png", IMG));
+    }
+
+    #[test]
+    fn pages_are_sandboxed() {
+        assert_eq!(sandbox_headers(), vec![("Content-Security-Policy".to_string(), SANDBOX_CSP.to_string())]);
+        assert!(SANDBOX_CSP.starts_with("sandbox allow-scripts;") && SANDBOX_CSP.contains("connect-src 'none'") && SANDBOX_CSP.contains("form-action 'none'"));
+        for never in ["allow-same-origin", "allow-popups", "allow-forms", "allow-top-navigation"] {
+            assert!(!SANDBOX_CSP.contains(never), "{never}");
+        }
+        let file = PageRoot { scheme: "iterm2-file", host: None, folder: "C:/T/site/".to_string() };
+        assert_eq!(page_root("iterm2-file:///C:/T/site/a.html"), Some(file.clone()));
+        assert_eq!(page_root("iterm2-file:///C:/T/site/"), Some(file.clone()));
+        assert_eq!(page_root("https://a/"), None);
+        assert_eq!(page_root("iterm2-file:///C:/T/site/../a.html"), None);
+        assert_eq!(page_root("iterm2-file:///C:/T/s%5Cx/a.html"), None);
+        assert_eq!(page_root("iterm2-file:///C:/T/s%00x/a.html"), None);
+        assert_eq!(page_root("iterm2-file://host/C:/T/a.html"), None, "a file page has no host");
+        let r = Some(&file);
+        for (url, ok) in [
+            ("iterm2-file:///C:/T/site/img/a.png", true),
+            ("iterm2-file:///C:/T/other/secret.txt", false),
+            ("iterm2-file:///C:/T/site/../other/secret.txt", false),
+            ("iterm2-file:///C:/T/site/%2E%2E/other/secret.txt", false),
+            ("iterm2-file:///C:/T/site/..%5Cother%5Csecret.txt", false),
+            ("iterm2-file:///C:/T/sitex/a.png", false),
+            ("iterm2-ssh://box/C:/T/site/a.png", false),
+            ("http://127.0.0.1/x", false),
+            ("iterm2-file:///C:/T/site/a%00.png", false),
+        ] {
+            assert_eq!(subresource_allowed(r, url, IMG), ok, "{url}");
+        }
+        for (ctx, ok) in [(CONTEXT_FETCH, false), (CONTEXT_XML_HTTP_REQUEST, false), (CONTEXT_WEBSOCKET, false), (CONTEXT_EVENT_SOURCE, false), (CONTEXT_SCRIPT, true)] {
+            assert_eq!(subresource_allowed(r, "iterm2-file:///C:/T/site/a.js", ctx), ok, "{ctx}");
+        }
+        assert!(!subresource_allowed(None, "iterm2-file:///C:/T/site/a.png", IMG));
+        let ssh = page_root("iterm2-ssh://box/home/u/a.html");
+        assert_eq!(ssh, Some(PageRoot { scheme: "iterm2-ssh", host: Some("box".to_string()), folder: "/home/u/".to_string() }));
+        let s = ssh.as_ref();
+        for (url, ok) in [
+            ("iterm2-ssh://box/home/u/i/a.png", true),
+            ("iterm2-ssh://BOX/home/u/a.png", true),
+            ("iterm2-ssh://other/home/u/a.png", false),
+            ("iterm2-ssh://box/etc/passwd", false),
+            ("iterm2-file:///C:/a.png", false),
+            ("iterm2-ssh://box/home/u/../../etc/passwd", false),
+        ] {
+            assert_eq!(subresource_allowed(s, url, IMG), ok, "{url}");
+        }
     }
 }

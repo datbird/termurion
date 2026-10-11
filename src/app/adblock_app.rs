@@ -434,6 +434,6 @@ mod tests {
         let src = include_str!("browser_db_app.rs");
         let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
         let f = &live[live.find("fn browser_local_request").unwrap()..];
-        assert!(f.contains("scheme_of(url) == \"iterm2-about\" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) }"));
+        assert!(f.contains("scheme == \"iterm2-about\" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) }"));
     }
 }
