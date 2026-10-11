@@ -704,6 +704,8 @@ pub struct App {
     param_prompts: Vec<session_params_app::Pending>,
     /// The profile with the answers in it, set only while the answered session starts.
     param_profile: Option<Profile>,
+    /// The answers each parameterised session started with, kept for its restarts (13y2 Task 9e I1).
+    param_answers: HashMap<PaneId, Vec<(String, String)>>,
     /// A session is being rebuilt from an arrangement: it never prompts.
     restoring_session: bool,
     /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
@@ -2291,6 +2293,7 @@ pub fn run() {
         start_command_override: None,
         param_prompts: Vec::new(),
         param_profile: None,
+        param_answers: HashMap::new(),
         restoring_session: false,
         start_jumps_override: None,
         start_env_override: None,
@@ -3910,7 +3913,8 @@ impl App {
     }
 
     fn restart_confirmed(&mut self, id: PaneId) {
-        if !self.restartable(id) {
+        // One still waiting for its answers starts only from the prompt (13y2 Task 9e I1).
+        if !self.restartable(id) || self.param_waiting(id) {
             return;
         }
         let in_tab = || {
@@ -3925,6 +3929,8 @@ impl App {
         // Instant Replay closes first; the new shell starts live.
         self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
+        // A parameterised session reruns its answered program (`PS:4889-4899`).
+        let answered = self.param_answers_of(id).map(<[_]>::to_vec);
         // The new shell never saw what a model typed into the old one.
         self.orch_held.remove(&id);
         // A slow Initial Text of the old shell must not type into the new one (13p); the new
@@ -3954,7 +3960,15 @@ impl App {
         }
         let start_dir = self.panes.get(&id).and_then(|p| p.start_dir.clone());
         // No folder recorded (a pane from before 13q's start) reads as a gone folder: the profile's rule.
-        let (fresh, profile) = match self.spawn_pane(id, rect, guid.as_deref(), Some(start_dir.as_deref().unwrap_or(std::path::Path::new("")))) {
+        let set_here = answered.is_some() && self.param_profile.is_none();
+        if set_here {
+            self.param_profile = session_params_app::restart_profile(&self.profile(guid.as_deref()), answered.as_deref());
+        }
+        let spawned = self.spawn_pane(id, rect, guid.as_deref(), Some(start_dir.as_deref().unwrap_or(std::path::Path::new(""))));
+        if set_here {
+            self.param_profile = None;
+        }
+        let (fresh, profile) = match spawned {
             Ok(started) => started,
             Err(e) => {
                 self.restart_failed(id, &e);
@@ -4231,20 +4245,25 @@ impl App {
         }
         self.browser_url_override = None;
         // A `$$NAME$$` left in the command, name or folder asks first (13y2 Task 9e).
-        match self.param_gate(id, rect, guid, &p) {
+        let answers = match self.param_gate(id, rect, &p) {
             session_params_app::Gate::Deferred => return true,
             session_params_app::Gate::Refused(why) => {
                 self.banners.set("start", why);
                 return false;
             }
-            session_params_app::Gate::Start(answered) => self.param_profile = answered,
-        }
+            session_params_app::Gate::Start(answers) => answers,
+        };
+        self.param_profile = session_params_app::restart_profile(&p, answers.as_deref());
+        let base = p;
         let handed = self.start_handoff.is_some();
         let spawned = self.spawn_pane(id, rect, guid, None);
         self.param_profile = None;
         match spawned {
             Ok((pane, p)) => {
                 self.install_pane(id, pane, &p, false);
+                if let Some(answers) = answers {
+                    self.param_settle(id, &base, answers);
+                }
                 // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
                 // `:2188`): a git window, an orchestrated or scripted command and an ssh: URL's
                 // copy never type the profile's text (B2). The API's CreateTab with custom
@@ -4325,7 +4344,12 @@ impl App {
         };
         match started {
             Ok(mut pane) => {
-                crate::rlog!("session started: profile {} program {}", crate::dlog::name(&p.name()), crate::dlog::program(&cmd));
+                // Never the answered profile's name or program (13y2 Task 9e I4): the shared profile's
+                // name, and for a parameterised start the program before the answers.
+                let base = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile());
+                let shared = base.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str().map(str::to_string)).and_then(|g| self.store.get(&g)).unwrap_or(base);
+                let unanswered = self.param_profile.is_some().then(|| profile::command_line(base, &self.shell, None));
+                crate::rlog!("session started: profile {} program {}", crate::dlog::name(&shared.name()), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref())));
                 pane.cookie = cookie;
                 pane.command = cmd;
                 pane.start_dir = Some(cwd);

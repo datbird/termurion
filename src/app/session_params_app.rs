@@ -3,14 +3,18 @@
 //! (`iTermSessionFactory.m:215-297`, `:484-523`). The pure half is `session_params`.
 //!
 //! The pane exists while the prompt is up (iTerm2 made the session before asking) but is idle:
-//! its program starts after the last answer, through the restart road with the answered profile.
+//! its program starts after the last answer, in the pane's own window, through the restart road
+//! with the answered profile. The answers stay with the pane (`param_answers`, iTerm2's
+//! `_substitutions`, `PTYSession.m:3507-3511`), so Restart Session reruns the answered program
+//! (`PS:4889-4899`), and the answered Name is the session's own value (`SF:260-268`).
 //! Cancel, or the window closed, closes the pane without the close question (`SF:223-242`).
 //! A restored arrangement never prompts: every name is "" (`PTYSession.m:2516`, canPrompt NO).
 //!
 //! Security (m13y2 B2): answers are the person's typed text, inserted as typed (no shell
 //! quoting, as iTerm2) and never into a URL (14e-D43); names are untrusted and shown cleaned and
 //! capped; the window drops input in its first second (`InputGuard`), since a URL, script or
-//! hotkey launch can raise it while the person types elsewhere; nothing typed is logged.
+//! hotkey launch can raise it while the person types elsewhere; nothing typed is logged (the start
+//! log line names the shared profile and the program before the answers, `start_log_command`).
 
 use super::*;
 use crate::prompt_ui::{InputGuard, PromptResult, PromptWindow};
@@ -29,8 +33,8 @@ pub(super) struct Pending {
 
 /// What `start_pane_as` does next.
 pub(super) enum Gate {
-    /// Start now, with this profile when the texts changed (an escape, or empty answers).
-    Start(Option<Profile>),
+    /// Start now; with the answers (an escape alone, or a restore's empty ones) when the texts change.
+    Start(Option<Vec<(String, String)>>),
     /// The pane is installed idle and the prompt will start it.
     Deferred,
     /// Not started, and why.
@@ -50,16 +54,36 @@ pub(super) fn answered(p: &Profile, answers: &[(String, String)]) -> Profile {
     out
 }
 
-/// The three texts a session start reads from `p`: command, name and custom folder.
+/// The three texts a session start reads from `p`: command, name and working directory. The folder
+/// is scanned whatever Custom Directory says (`SF:103`, `:279`).
 fn texts(p: &Profile) -> (String, String, String) {
-    let dir = if p.string("Custom Directory") == "Yes" { p.string("Working Directory") } else { String::new() };
-    (profile::command_line(p, "", None), p.string("Name"), dir)
+    (profile::command_line(p, "", None), p.string("Name"), p.string("Working Directory"))
+}
+
+/// The session's own Name after the answers (`SF:260-268`), when they change it.
+pub(super) fn answered_name(p: &Profile, answers: &[(String, String)]) -> Option<String> {
+    let before = p.string("Name");
+    let after = sp::apply(&before, answers);
+    (after != before).then_some(after)
+}
+
+/// The profile a (re)start of a pane with `answers` runs: `base` with the answers in, or None for a
+/// pane that never had a parameter.
+pub(super) fn restart_profile(base: &Profile, answers: Option<&[(String, String)]>) -> Option<Profile> {
+    answers.map(|a| answered(base, a))
+}
+
+/// The command whose program the start log line names (review I4): the command before the answers
+/// for a start that has them, so nothing typed into the prompt reaches the log. The line names the
+/// shared profile (a session's own Name may hold an answer).
+pub(super) fn start_log_command<'a>(cmd: &'a str, unanswered: Option<&'a str>) -> &'a str {
+    unanswered.unwrap_or(cmd)
 }
 
 impl App {
     /// Called by `start_pane_as` for a profile start. A command override or a handed-over console
     /// is not profile text and never prompts.
-    pub(super) fn param_gate(&mut self, id: PaneId, rect: Rect, guid: Option<&str>, p: &Profile) -> Gate {
+    pub(super) fn param_gate(&mut self, id: PaneId, rect: Rect, p: &Profile) -> Gate {
         if self.start_handoff.is_some() || self.start_command_override.is_some() {
             return Gate::Start(None);
         }
@@ -69,11 +93,10 @@ impl App {
         }
         let vars = sp::missing(&command, &name, &dir, &[]);
         if vars.is_empty() {
-            return Gate::Start(Some(answered(p, &[])));
+            return Gate::Start(Some(Vec::new()));
         }
         if self.restoring_session {
-            let answers: Vec<(String, String)> = vars.into_iter().map(|v| (v, sp::answer_when_disabled())).collect();
-            return Gate::Start(Some(answered(p, &answers)));
+            return Gate::Start(Some(vars.into_iter().map(|v| (v, sp::answer_when_disabled())).collect()));
         }
         if let Some(why) = sp::refusal(&vars) {
             return Gate::Refused(why);
@@ -82,8 +105,6 @@ impl App {
         let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, p));
         self.install_pane(id, Pane::idle(id, cols, rows), p, false);
         self.param_prompts.push(Pending { pane: id, queue: sp::Queue::new(vars), profile: p.clone(), window: None, guard: InputGuard::new(Instant::now()), cancelled: false });
-        // The guid is read again from the pane when the program starts.
-        let _ = guid;
         Gate::Deferred
     }
 
@@ -151,18 +172,39 @@ impl App {
         true
     }
 
-    /// Every name answered: the program starts in the waiting pane.
+    /// Every name answered: the program starts in the waiting pane, in its own window (review I3:
+    /// `restart_confirmed` finds a pane's rectangle in the current window only).
     fn param_launch(&mut self, done: Pending) {
         let answers = done.queue.answers().to_vec();
-        self.param_profile = Some(answered(&done.profile, &answers));
+        self.param_settle(done.pane, &done.profile, answers);
+        self.enter_pane_window(done.pane);
         self.restart_confirmed(done.pane);
-        self.param_profile = None;
         self.redraw();
     }
 
-    /// A pane that closed takes its waiting prompt with it.
+    /// A session that started with `answers` keeps them for its restarts and wears the answered
+    /// Name as its own value (iTerm2's `_substitutions` and `setSessionSpecificProfileValues`).
+    pub(super) fn param_settle(&mut self, pane: PaneId, p: &Profile, answers: Vec<(String, String)>) {
+        if let Some(name) = answered_name(p, &answers) {
+            self.set_session_values(pane, &[("Name".to_string(), Some(toml::Value::String(name)))]);
+        }
+        self.param_answers.insert(pane, answers);
+    }
+
+    /// The answers a restart of `pane` runs with (None: it never had a parameter).
+    pub(super) fn param_answers_of(&self, pane: PaneId) -> Option<&[(String, String)]> {
+        self.param_answers.get(&pane).map(Vec::as_slice)
+    }
+
+    /// Whether `pane` still waits for its answers: nothing restarts it before the last one.
+    pub(super) fn param_waiting(&self, pane: PaneId) -> bool {
+        self.param_prompts.iter().any(|p| p.pane == pane)
+    }
+
+    /// A pane that closed takes its waiting prompt and its answers with it.
     pub(super) fn param_pane_gone(&mut self, id: PaneId) {
         self.param_prompts.retain(|p| p.pane != id);
+        self.param_answers.remove(&id);
     }
 }
 
@@ -226,5 +268,69 @@ mod tests {
         assert!(!me.split("#[cfg(test)]").next().unwrap().contains("rlog!"));
         // No URL substitution anywhere in the prompt.
         assert!(!me.split("#[cfg(test)]").next().unwrap().contains("url_open"));
+    }
+
+    /// Review I1, I2, M1: the answers stay with the session. A restart reruns the answered command
+    /// and folder (`PS:3507-3511`, `:4889-4899`), the answered Name is the session's own value
+    /// (`SF:260-268`), and the working directory is scanned whatever Custom Directory says (`SF:103`).
+    #[test]
+    fn answers_stay_with_the_session() {
+        let mut p = Profile::default();
+        p.set("Custom Command", toml::Value::String("Yes".into()));
+        p.set("Command", toml::Value::String("ssh $$TARGET$$".into()));
+        p.set("Name", toml::Value::String("to $$TARGET$$".into()));
+        p.set("Working Directory", toml::Value::String("C:\\$$DIR$$".into()));
+        let answers = vec![("$$DIR$$".to_string(), "work".to_string()), ("$$TARGET$$".to_string(), "box".to_string())];
+        let again = restart_profile(&p, Some(&answers)).expect("a parameterised pane restarts answered");
+        assert_eq!(again.string("Command"), "ssh box");
+        assert_eq!(again.string("Working Directory"), "C:\\work");
+        assert!(restart_profile(&p, None).is_none(), "a pane with no parameter restarts from its profile");
+        // After the Name became the session's own value, a restart still answers the command.
+        let mut own = p.clone();
+        own.set("Name", toml::Value::String("to box".into()));
+        assert_eq!(restart_profile(&own, Some(&answers)).unwrap().string("Name"), "to box");
+        assert_eq!(answered_name(&p, &answers).as_deref(), Some("to box"));
+        assert_eq!(answered_name(&own, &answers), None, "nothing to set when the Name has no parameter");
+        // M1: the folder is asked for even with Custom Directory off.
+        assert_ne!(p.string("Custom Directory"), "Yes");
+        let (c, n, d) = texts(&p);
+        assert_eq!(sp::missing(&c, &n, &d, &[]), vec!["$$DIR$$".to_string(), "$$TARGET$$".to_string()]);
+    }
+
+    /// Review I4: the start log line never holds an answer.
+    #[test]
+    fn nothing_typed_reaches_the_start_log() {
+        let program = crate::dlog::program(start_log_command("secrethost --port 22", Some("$$TARGET$$ --port 22"))).to_string();
+        assert!(!program.contains("secrethost"), "{program}");
+        assert_eq!(crate::dlog::program(start_log_command("pwsh.exe -NoLogo", None)).to_string(), "pwsh");
+        let m = include_str!("mod.rs");
+        let spawn = body(m, "    fn spawn_pane(");
+        assert!(spawn.contains("crate::dlog::name(&shared.name()), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref()))"));
+        assert!(spawn.contains("self.param_profile.is_some().then(|| profile::command_line(base, &self.shell, None))"));
+        assert!(spawn.contains("crate::session_profile::ORIGINAL_GUID"), "a session's own Name is never logged");
+        assert!(!spawn.contains("crate::dlog::name(&p.name())"));
+    }
+
+    /// Review I1, I3: a restart applies the kept answers and never runs before the last answer; the
+    /// launch enters the pane's own window first; a closed pane drops its answers.
+    #[test]
+    fn restart_and_launch_use_the_answers() {
+        let m = include_str!("mod.rs");
+        let me = include_str!("session_params_app.rs");
+        let restart = body(m, "    fn restart_confirmed(");
+        assert!(restart.contains("if !self.restartable(id) || self.param_waiting(id)"));
+        let kept = restart.find("let answered = self.param_answers_of(id)").unwrap();
+        let applied = restart.find("session_params_app::restart_profile(&self.profile(guid.as_deref()), answered.as_deref())").unwrap();
+        assert!(kept < applied && applied < restart.find("self.spawn_pane(id, rect").unwrap());
+        let launch = body(me, "fn param_launch");
+        let settle = launch.find("self.param_settle(done.pane").unwrap();
+        let enter = launch.find("self.enter_pane_window(done.pane)").unwrap();
+        assert!(settle < enter && enter < launch.find("self.restart_confirmed(done.pane)").unwrap());
+        assert!(!launch.contains("self.param_profile"), "the restart road builds the answered profile");
+        let settle = body(me, "pub(super) fn param_settle");
+        assert!(settle.contains("self.set_session_values(pane, &[(\"Name\".to_string()") && settle.contains("self.param_answers.insert(pane, answers)"));
+        let start = body(m, "    fn start_pane_as(");
+        assert!(start.contains("self.param_settle(id, &base, answers)"), "a restore's and an escape's answers are kept too");
+        assert!(body(me, "pub(super) fn param_pane_gone").contains("self.param_answers.remove(&id)"));
     }
 }
