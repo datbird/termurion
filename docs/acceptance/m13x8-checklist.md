@@ -140,6 +140,7 @@ extensions folder, so the lines below are BLOCKED until the section is shown (on
 
 - [ ] Choose Folder opens a native folder picker; choosing an unpacked extension folder (or its parent) lists the extension with its name, version and description ("No description available" when none).
 - [ ] Enabling asks in a native Tandem window that lists every permission and every site and must be scrolled to its end; Cancel loads nothing; Enable loads it into the next browser tab and it acts.
+- [ ] A manifest with `optional_permissions` or `optional_host_permissions` lists them in the window under "It may ask later for:".
 - [ ] A manifest name with `<b>` or a script tag shows as text on the page and in the window.
 - [ ] The approval window says the extension is loaded into "all browser profiles that share this browser data"; after approving in one browser profile, a tab of another browser profile has it too, its switch on the settings page is the same switch, and a Dev Null pane has neither (ROBERT FLAG 8b).
 - [ ] Open a browser tab of a profile with no extensions folder chosen: the settings Extensions list still shows the approved ones, and deleting an approved extension's folder then opening any tab removes it.

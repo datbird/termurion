@@ -131,6 +131,9 @@ pub struct Manifest {
     pub version: String,
     pub permissions: Vec<String>,
     pub host_permissions: Vec<String>,
+    /// What it may ask for at run time (`chrome.permissions.request`): shown in the approval too.
+    pub optional_permissions: Vec<String>,
+    pub optional_host_permissions: Vec<String>,
     /// The `matches` of the content scripts: sites the extension reads and changes too.
     pub content_matches: Vec<String>,
 }
@@ -205,7 +208,7 @@ pub fn manifest(json: &str) -> Option<Manifest> {
             }
         }
     }
-    Some(Manifest { name, description, version, permissions: text_list(o.get("permissions")), host_permissions: text_list(o.get("host_permissions")), content_matches })
+    Some(Manifest { name, description, version, permissions: text_list(o.get("permissions")), host_permissions: text_list(o.get("host_permissions")), optional_permissions: text_list(o.get("optional_permissions")), optional_host_permissions: text_list(o.get("optional_host_permissions")), content_matches })
 }
 
 /// The page's list (`SH:461-472`): rows of (id, manifest, enabled).
@@ -257,6 +260,11 @@ pub fn approval_text(m: &Manifest, folder: &str) -> String {
     list(&mut t, &m.permissions, "  No special permissions.");
     t.push_str("\nIt can read and change pages on these sites:\n");
     list(&mut t, &m.sites(), "  No sites.");
+    let later: Vec<String> = m.optional_permissions.iter().chain(m.optional_host_permissions.iter()).cloned().collect();
+    if !later.is_empty() {
+        t.push_str("\nIt may ask later for:\n");
+        list(&mut t, &later, "");
+    }
     t.push_str("\nEnable only an extension you trust. It is loaded into all browser profiles that share this browser data, never into Dev Null windows.");
     t
 }
@@ -483,6 +491,21 @@ mod tests {
         let none = approval_text(&manifest(r#"{"name":"N","version":"1"}"#).unwrap(), "D:\\e");
         assert!(none.contains("No special permissions") && none.contains("No sites"), "{none}");
         assert!(!t.contains('\u{202e}'));
+    }
+
+    /// 13x8 Task 10 review I2: what an extension may ask for later is shown too.
+    #[test]
+    fn the_approval_lists_what_it_may_ask_for_later() {
+        let m = manifest(r#"{"name":"X","version":"1","optional_host_permissions":["<all_urls>"],"optional_permissions":["tabs","cookies"]}"#).unwrap();
+        assert_eq!(m.optional_permissions, vec!["tabs".to_string(), "cookies".to_string()]);
+        assert_eq!(m.optional_host_permissions, vec!["<all_urls>".to_string()]);
+        let t = approval_text(&m, "D:\\e");
+        assert!(t.contains("It may ask later for:") && t.contains("  tabs") && t.contains("  cookies") && t.contains("  <all_urls>"), "{t}");
+        let plain = approval_text(&manifest(r#"{"name":"X","version":"1"}"#).unwrap(), "D:\\e");
+        assert!(!plain.contains("It may ask later for:"), "{plain}");
+        let many: Vec<String> = (0..500).map(|i| format!("\"p{i}\"")).collect();
+        let big = manifest(&format!(r#"{{"name":"X","optional_permissions":[{}],"optional_host_permissions":[{}]}}"#, many.join(","), many.join(","))).unwrap();
+        assert_eq!((big.optional_permissions.len(), big.optional_host_permissions.len()), (MAX_ENTRIES, MAX_ENTRIES));
     }
 
     #[test]
