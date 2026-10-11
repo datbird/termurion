@@ -551,6 +551,7 @@ pub mod ai_tools;
 pub mod ai_context;
 pub mod ai_screen;
 pub mod ai_terminal;
+pub mod ai_browser;
 pub mod ai_shell;
 pub mod ai_exec;
 pub mod ai_actions;
