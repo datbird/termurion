@@ -259,6 +259,10 @@ impl AuthPane {
             // WebView2 retries a handed-over credential as a new navigation (`NavTracker`).
             self.tracker.supplied();
         }
+        if !self.coordinator.has_awaiting() {
+            // The retry only continues an awaiting supply (final review M3).
+            self.tracker.retry_lost();
+        }
         let mut out = self.actions(fx);
         if answered {
             out.extend(self.end_wait());
@@ -718,6 +722,31 @@ mod tests {
         p.prompt_answer(id, typed("u", "p", true));
         p.starting(3, "https://a.b/other", false);
         assert!(p.response(3, 200).is_empty(), "another URL is not the retry");
+    }
+
+    /// Final review M3: the retry continues the coordinator's awaiting credential, so once that is gone
+    /// (the navigation was parked, or the world reset) the next load of the same URL is a new
+    /// navigation, never the retry.
+    #[test]
+    fn the_retry_is_dropped_with_the_credential_it_continues() {
+        let url = "https://a.b/";
+        for end in ["parked", "reset"] {
+            let mut p = AuthPane::new(1, 1, true);
+            p.starting(2, url, false);
+            p.response(2, 401);
+            p.committed(2);
+            let id = lookup_id(&p.challenge(87, url, BASIC, &cx(false, true)));
+            p.looked(id, None);
+            p.want.take();
+            p.completed(2, false);
+            assert_eq!(answers(&p.prompt_answer(id, typed("u", "p", true))), vec![(87, true)]);
+            if end == "parked" {
+                p.parked();
+            } else {
+                p.feed(ba::Event::Reset);
+            }
+            assert_eq!(p.tracker.starting(3, url, false), vec![ba::Event::MainProvisionalStarted(ba::origin_of(url))], "{end}: the same URL is a new navigation");
+        }
     }
 
     /// Digest, NTLM and Negotiate are prompted, never remembered or looked up.

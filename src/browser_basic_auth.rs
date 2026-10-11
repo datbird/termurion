@@ -920,6 +920,12 @@ impl NavTracker {
         }
     }
 
+    /// The credential the retry would continue is gone (the coordinator holds no awaiting supply any
+    /// more: the navigation was parked, the world reset): the next load of the same URL is a new one.
+    pub fn retry_lost(&mut self) {
+        self.retry = false;
+    }
+
     /// The held 401/407 becomes the final response once the navigation completed, nothing is held
     /// any more (`held` false) and no credential was supplied: the server's own 401 page stays.
     pub fn end_wait(&mut self, held: bool) -> Vec<Event> {
