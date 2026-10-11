@@ -39,12 +39,24 @@ impl App {
                 let pieces = crate::bgimage::quads(*mode, image.size, container, area);
                 scene::background(&mut frame, area, &pieces, image, bg, *blend);
             }
-            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), &draw, None, face);
+            picture_pane(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, &draw, face);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
             out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
         }
         Ok((width as u32, total_h as u32, out))
     }
+}
+
+/// How every picture of a pane (Make Screenshot's minimap and image, the API screenshot, the
+/// Open Quickly preview) is highlighted: nothing, and no dim. A picture shows the pane as the
+/// text view draws it, undimmed whatever the focus.
+fn picture_highlights() -> scene::Highlights<'static> {
+    scene::Highlights { matches: &[], color: crate::palette::rgb(0, 0, 0), hover: None, link: crate::palette::rgb(0, 0, 0), labels: &[], notes: &[], dim: crate::dim::Dim::NONE, key_cursor: false, bg_alpha: 1.0, opaque_colors: false, text_blink_on: true, selections: &[], command_region: None, shade: None, outline: [crate::palette::rgb(0, 0, 0); 2] }
+}
+
+/// Draws one batch of a picture into `rect`: undimmed, with the cursor only when `cursor`.
+fn picture_pane(frame: &mut Frame, batch: &crate::screen::Screen, rect: Rect, cell: (f32, f32), cursor: bool, draw: &scene::DrawPrefs, face: u16) {
+    scene::pane_with(frame, batch, rect, cell, cursor, &crate::cursor_look::CursorLook::shown(cursor), draw, Some(&picture_highlights()), face);
 }
 
 /// An open Make Screenshot panel and the pane it shows a frozen copy in.
@@ -358,4 +370,38 @@ pub(super) fn desktop() -> Option<std::path::PathBuf> {
     let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(out, len) });
     unsafe { CoTaskMemFree(out as _) };
     Some(path.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frame `render_lines` lays for lines `first..=last` of `screen`, before it is drawn.
+    fn picture_frame(screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Frame {
+        use alacritty_terminal::grid::Dimensions;
+        let history = screen.term().grid().history_size() as i32;
+        let mut batch = screenshot::slice(screen, first as i32 - history, last + 1 - first);
+        if cursor {
+            screenshot::carry_cursor(screen, &mut batch, first as i32 - history);
+        }
+        let cell = (10.0, 20.0);
+        let mut frame = Frame::default();
+        let rect = Rect { x: 0.0, y: 0.0, w: screen.term().columns() as f32 * cell.0, h: (last + 1 - first) as f32 * cell.1 };
+        picture_pane(&mut frame, &batch, rect, cell, cursor, &scene::DrawPrefs::default(), crate::render::DEFAULT_FACE);
+        frame
+    }
+
+    #[test]
+    fn pictures_are_undimmed() {
+        let mut s = crate::screen::Screen::new(10, 2);
+        s.feed(b"ab\r\ncd");
+        let dim = scene::rgba(s.palette.bg, scene::DIM_ALPHA);
+        let cursor = scene::rgba(s.palette.cursor, 1.0);
+        let off = picture_frame(&s, 0, 1, false);
+        assert!(!off.overlay.iter().chain(&off.quads).any(|q| q.color == dim), "{:?}", off.overlay);
+        assert!(!off.quads.iter().any(|q| q.color == cursor));
+        let on = picture_frame(&s, 0, 1, true);
+        assert!(!on.overlay.iter().chain(&on.quads).any(|q| q.color == dim), "{:?}", on.overlay);
+        assert!(on.quads.iter().any(|q| q.color == cursor), "{:?}", on.quads);
+    }
 }
