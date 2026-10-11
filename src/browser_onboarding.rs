@@ -126,21 +126,26 @@ pub fn redirect_document(completed: bool, nonce: &str) -> Option<String> {
 
 /// The setup page: Tandem's name in the title, the nonce on its script, each inline `onclick`
 /// replaced by an attribute Tandem's delegated listener reads. (name, iTerm2's text, Tandem's text)
-pub const SETUP_PATCHES: [(&str, &str, &str); 6] = [
+pub const SETUP_PATCHES: [(&str, &str, &str); 7] = [
     ("TITLE", "<title>iTerm2 Browser - Setup</title>", "<title>Tandem Browser - Setup</title>"),
     ("SCRIPT", "    <script>\n        const sessionSecret = '{{SECRET}}';", "    <script nonce=\"{{NONCE}}\">\n        const sessionSecret = '{{SECRET}}';"),
     ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n</head>"),
     ("ADBLOCK", "onclick=\"enableAdBlocker()\"", "data-tandem-action=\"enableAdBlocker\""),
     ("REPLAY", "onclick=\"enableInstantReplay()\"", "data-tandem-action=\"enableInstantReplay\""),
     ("FINISH", "onclick=\"finishSetup()\"", "data-tandem-action=\"finishSetup\""),
+    // Completion is host-driven: Tandem completes, then loads the welcome page, so a lost race between
+    // the message and the page's own navigation cannot send the welcome redirect round again.
+    ("FINISH_NAV", "            // Navigate to a blank welcome page\n            window.location.href = 'iterm2-about:welcome';\n", ""),
 ];
 
-pub const PROFILE_PATCHES: [(&str, &str, &str); 5] = [
+pub const PROFILE_PATCHES: [(&str, &str, &str); 6] = [
     ("TITLE", "<title>iTerm2 Browser - Create Profile</title>", "<title>Tandem Browser - Create Profile</title>"),
     ("SCRIPT", "    <script>\n        const sessionSecret = '{{SECRET}}';", "    <script nonce=\"{{NONCE}}\">\n        const sessionSecret = '{{SECRET}}';"),
     ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n</head>"),
     ("CREATE", "onclick=\"createBrowserProfile()\"", "data-tandem-action=\"createBrowserProfile\""),
     ("CONTINUE", "onclick=\"continueToSetup()\"", "data-tandem-action=\"continueToSetup\""),
+    // Host-driven too: the switch is handled, then Tandem loads the setup page.
+    ("CONTINUE_NAV", "            // Navigate to setup page\n            window.location.href = 'iterm2-about:onboarding-setup';\n", ""),
 ];
 
 /// Tandem's own script for both pages: one delegated listener. A click a script made up
@@ -238,10 +243,16 @@ impl State {
         if !action.writes_profile() {
             return true;
         }
-        if self.limit.active(&0, now_ms) {
+        // One window per action: a Switch right after a Create is not the loop the limit is for.
+        let key = match action {
+            Action::CreateBrowserProfile => 1,
+            Action::SwitchToProfile => 2,
+            _ => 3,
+        };
+        if self.limit.active(&key, now_ms) {
             return false;
         }
-        self.limit.start(0, now_ms);
+        self.limit.start(key, now_ms);
         true
     }
 }
@@ -318,6 +329,8 @@ mod tests {
             assert!(html.contains("<title>Tandem Browser"));
             assert!(!html.contains("iTerm2"), "{name}: visible names are Tandem's");
         }
+        assert!(!document("onboarding-setup", "n").unwrap().contains("window.location.href = 'iterm2-about:welcome'"), "Finish is host-driven");
+        assert!(!document("onboarding-profile", "n").unwrap().contains("window.location.href = 'iterm2-about:onboarding-setup'"), "Continue is host-driven");
         assert_eq!(document("welcome", "n"), None);
         // The copies stay byte-identical to iTerm2's (the two tests above would fail on a drifted target).
         assert!(crate::browser_js::resource("onboarding-setup.html").unwrap().contains("onclick=\"enableAdBlocker()\""));
@@ -349,8 +362,11 @@ mod tests {
     fn profile_writes_are_rate_limited() {
         let mut s = State::default();
         assert!(s.allow(&Action::CreateBrowserProfile, 10_000));
-        assert!(!s.allow(&Action::SwitchToProfile, 10_500), "a second write within a second");
+        assert!(s.allow(&Action::SwitchToProfile, 10_500), "Switch right after Create is not dropped");
+        assert!(!s.allow(&Action::CreateBrowserProfile, 10_600), "a second Create within a second");
+        assert!(!s.allow(&Action::SwitchToProfile, 10_700), "a second Switch within a second");
         assert!(s.allow(&Action::EnableAdBlocker, 10_500), "a global is not a profile write");
         assert!(s.allow(&Action::EnableInstantReplay, 11_100));
+        assert!(s.allow(&Action::CreateBrowserProfile, 11_100));
     }
 }

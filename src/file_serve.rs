@@ -24,6 +24,12 @@ use std::sync::{Arc, Mutex};
 
 /// The largest file answered whole (a larger one is a 404 with a log line that names no path).
 pub const MAX_FILE: u64 = 64 * 1024 * 1024;
+/// The most of a non-HTML file shown as escaped text in a `<pre>` (a 64 MB file would grow past
+/// 256 MB once escaped; Task 3 review minor 7).
+pub const MAX_TEXT_PAGE: usize = 8 * 1024 * 1024;
+/// The most entries read from a folder before the hidden ones are dropped and the rest sorted, so a
+/// big folder shows its first `MAX_LISTED` names in order and says so (Task 3 review minor 4).
+const MAX_READ: usize = 50_000;
 
 fn answer(status: u16, mime: &str, body: Vec<u8>, headers: Vec<(String, String)>) -> Answer {
     Answer::Respond { status, mime: mime.to_string(), body, headers }
@@ -31,7 +37,7 @@ fn answer(status: u16, mime: &str, body: Vec<u8>, headers: Vec<(String, String)>
 
 /// A missing, refused or oversized path: 404, no text, the sandbox policy.
 pub fn not_found() -> Answer {
-    answer(404, "text/html; charset=utf-8", NOT_FOUND_HTML.as_bytes().to_vec(), browser_pages::file_headers())
+    answer(404, "text/html; charset=utf-8", NOT_FOUND_HTML.as_bytes().to_vec(), browser_pages::untrusted_headers())
 }
 
 /// `p` lies strictly inside `root`, compared as Windows compares: separators alike, case ignored,
@@ -122,6 +128,11 @@ pub fn serve_with(url: &str, context: i32, root: Option<&PageRoot>, max_file: u6
         return not_found();
     }
     // The Mark of the Web is read from the handle's verified final path: a copy of a downloaded file keeps it.
+    // The handle is asked once more: a file moved while it was read names another path now, and then
+    // nothing is served (the stream itself is a judged read of the verified path, R13x8-5).
+    if localfs::final_path(&file).as_deref() != Some(final_path.as_path()) {
+        return not_found();
+    }
     let marked = crate::inert_files::has_mark(&final_path);
     let mime = crate::mime_ext::mime_for_extension(&extension(&final_path)).unwrap_or("application/octet-stream");
     file_answer(&path, document, mime, marked, bytes)
@@ -137,16 +148,37 @@ fn file_answer(path: &Path, document: bool, mime: &str, marked: bool, bytes: Vec
     let untrusted = marked || mime.contains("xml") || (!document && html);
     let headers = if untrusted { browser_pages::untrusted_headers() } else { browser_pages::file_headers() };
     if document && (html || !(mime.starts_with("image/") || mime.starts_with("video/") || mime.starts_with("audio/") || markup(mime))) {
-        let page = browser_pages::file_page(path, &bytes);
+        let page = if html { browser_pages::file_page(path, &bytes) } else { browser_pages::file_page(path, &text_prefix(&bytes)) };
         return answer(200, "text/html; charset=utf-8", page.into_bytes(), headers);
     }
     answer(200, mime, bytes, headers)
 }
 
+/// The first `MAX_TEXT_PAGE` bytes of a file shown as text, cut at a character boundary, with a note
+/// when cut.
+fn text_prefix(bytes: &[u8]) -> Vec<u8> {
+    if bytes.len() <= MAX_TEXT_PAGE {
+        return bytes.to_vec();
+    }
+    let mut n = MAX_TEXT_PAGE;
+    // A UTF-8 file is cut where a character ends; anything else (Latin-1) anywhere.
+    if std::str::from_utf8(bytes).is_ok() {
+        while n > 0 && (bytes[n] & 0xC0) == 0x80 {
+            n -= 1;
+        }
+    }
+    let mut out = bytes[..n].to_vec();
+    out.extend_from_slice(b"\n[Only the first 8 MB are shown.]");
+    out
+}
+
 /// A folder as a page: its entries from the listing (kind read from the entry itself, never followed),
 /// hidden ones marked, a link that leads off the machine left out. At most `MAX_LISTED + 1` are read.
 fn listing(path: &Path, canon: &LocalPath) -> Answer {
-    let Ok(read) = localfs::entries_upto(canon, browser_pages::MAX_LISTED + 1) else { return not_found() };
+    // The folder is opened ONCE and what the handle names is checked (no share or device form) before
+    // anything is listed; the listing reads that verified final path, held open (Task 3 re-review).
+    let Some((_held, verified)) = open_folder(canon) else { return not_found() };
+    let Ok(read) = localfs::entries_upto(&verified, MAX_READ) else { return not_found() };
     let entries: Vec<browser_pages::Entry> = read
         .iter()
         .filter(|e| !e.stat.is_reparse || e.local().is_some())
@@ -158,7 +190,28 @@ fn listing(path: &Path, canon: &LocalPath) -> Answer {
         })
         .collect();
     let page = browser_pages::directory_page(path, &entries);
-    answer(200, "text/html; charset=utf-8", page.into_bytes(), browser_pages::file_headers())
+    answer(200, "text/html; charset=utf-8", page.into_bytes(), browser_pages::untrusted_headers())
+}
+
+/// The folder's handle (kept open by the caller while it lists) and the local path the handle names.
+#[cfg(windows)]
+fn open_folder(canon: &LocalPath) -> Option<(std::fs::File, LocalPath)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let handle = localfs::open_custom(canon, |o| {
+        o.read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    })
+    .ok()?;
+    let final_path = localfs::final_path(&handle)?;
+    if !confined(None, &final_path) {
+        return None;
+    }
+    Some((handle, LocalPath::judge(&final_path)?))
+}
+
+#[cfg(not(windows))]
+fn open_folder(_canon: &LocalPath) -> Option<(std::fs::File, LocalPath)> {
+    None
 }
 
 // --- The worker pool: the UI thread never reads a file ---
@@ -294,7 +347,7 @@ mod tests {
         let (s, mime, html, h) = body(&serve(&url(&t, true), CONTEXT_DOCUMENT, None));
         assert_eq!((s, mime.as_str()), (200, "text/html; charset=utf-8"));
         assert!(html.contains(">sub</a>") && html.contains(">b.txt</a>") && html.contains(">p.html</a>") && !html.contains(".hidden"));
-        assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
+        assert_eq!(csp(&h), browser_pages::UNTRUSTED_CSP, "a listing holds no script");
         let (s, _, text, h) = body(&serve(&url(&t.join("b.txt"), false), CONTEXT_DOCUMENT, None));
         assert_eq!((s, text.as_str()), (200, "<pre>a&lt;b</pre>"));
         assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
@@ -316,7 +369,7 @@ mod tests {
         ] {
             let (s, _, text, h) = body(&serve(&u, ctx, Some(&root)));
             assert_eq!((s, text.as_str()), (404, ""), "{u}");
-            assert_eq!(csp(&h), browser_pages::SANDBOX_CSP, "{u}");
+            assert_eq!(csp(&h), browser_pages::UNTRUSTED_CSP, "{u}");
         }
         std::fs::remove_dir_all(&t).unwrap();
     }
@@ -502,5 +555,15 @@ mod tests {
         }
         assert_eq!(accepted, MAX_QUEUED);
         drop(blocked);
+    }
+
+    #[test]
+    fn long_text_is_cut_at_a_character_and_says_so() {
+        let short = "abc".as_bytes();
+        assert_eq!(text_prefix(short), short.to_vec());
+        let long = "\u{e9}".repeat(MAX_TEXT_PAGE);
+        let cut = text_prefix(long.as_bytes());
+        let text = String::from_utf8(cut).expect("cut on a character boundary");
+        assert!(text.ends_with("[Only the first 8 MB are shown.]") && text.len() <= MAX_TEXT_PAGE + 40);
     }
 }
