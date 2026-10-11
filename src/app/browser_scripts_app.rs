@@ -254,6 +254,7 @@ impl App {
             bv.password.reset();
         }
         self.autofill_ask_drop(pane, true, |_, _| false);
+        self.basic_auth_reset(pane);
         self.global_pane_gone(pane);
         for done in dones {
             done(self, pane, Err("view closed".into()));

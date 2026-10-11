@@ -214,6 +214,8 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         context_menu: true,
         permissions: true,
         track_document_method: true,
+        main_responses: true,
+        basic_auth: true,
         ..Default::default()
     }
 }
@@ -286,7 +288,10 @@ impl App {
         for pane in panes {
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
             match rect {
-                Some(rect) => self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front && self.browser_page_may_focus(pane)),
+                Some(rect) => {
+                    self.show_browser_view(pane, rect, hwnd, focused == Some(pane) && in_front && self.browser_page_may_focus(pane));
+                    self.basic_auth_visible(pane, true);
+                }
                 None => {
                     // Its link tip goes with it (hidden, another tab, buried, zoomed away).
                     self.browser_tip_clear(pane);
@@ -300,6 +305,7 @@ impl App {
                         }
                     }
                     self.web_replay_shown(pane, false);
+                    self.basic_auth_visible(pane, false);
                 }
             }
         }
@@ -456,6 +462,7 @@ impl App {
             self.perm_menu = None;
         }
         self.browser_permission_pane_gone(pane);
+        self.basic_auth_pane_gone(pane);
         self.browser_web_note_dropped(pane);
         self.browser_bars_end(pane);
         self.browser_reset_world(pane);
@@ -505,6 +512,8 @@ impl App {
         if matches!(e, Event::Focus(_, false)) {
             self.browser_tip_clear(pane);
         }
+        // HTTP authentication sees every navigation fact first (it cancels what a new one supersedes).
+        self.basic_auth_event(pane, e);
         match e {
             // The world's own about:blank navigation (the isolation check) is not the page.
             Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::History { .. } if self.browser_views.get(&pane).is_some_and(|b| b.world.setup.is_some()) => {}

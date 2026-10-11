@@ -97,6 +97,8 @@ pub(super) struct PwmWin {
     focus_after_user: Option<(String, u64)>,
     /// A basic-auth picker's user name, which arrives before the password (`pendingUserName`).
     pending_user: Option<String>,
+    /// The challenge origin a picker lists for and picks within.
+    pick_page: Option<PwPage>,
 }
 
 impl PwmWin {
@@ -204,6 +206,9 @@ pub(super) struct PwmOpen {
     pub(super) focus_after_user: Option<(String, u64)>,
     /// A web page's button asked for it: the window carries the one input guard (`PwmWindow::guard_input`).
     pub(super) from_page: bool,
+    /// A basic-auth picker's challenge origin (https): the list shows only its accounts and a pick
+    /// must match it (`account_matches`). None with a picker target lists nothing.
+    pub(super) pick_page: Option<PwPage>,
 }
 
 /// What the manager's entries go to.
@@ -212,8 +217,7 @@ pub(super) enum PwmTarget {
     /// The session (a terminal's pty, or a browser page).
     #[default]
     Session,
-    /// A basic-auth challenge's picker: the entries finish this challenge (`BAP`). Task 10 opens it.
-    #[allow(dead_code)]
+    /// A basic-auth challenge's picker: the entries finish this challenge (`BAP`).
     BasicAuth(u64),
 }
 
@@ -298,7 +302,7 @@ fn button_state(i: &ButtonInputs) -> pwm::ButtonState {
 /// nothing. A picker and the terminal manager list everything.
 fn browser_listing(scope: Scope, target: PwmTarget, page: Option<&PwPage>, accounts: Vec<Account>) -> Vec<Account> {
     match (scope, target) {
-        (Scope::Browser, PwmTarget::Session) => match page {
+        (Scope::Browser, PwmTarget::Session | PwmTarget::BasicAuth(_)) => match page {
             Some(p) => accounts.into_iter().filter(|a| bp::account_matches(&a.account_name, p)).collect(),
             None => Vec::new(),
         },
@@ -398,6 +402,11 @@ impl PwmState {
             Done::Prompt { .. } | Done::Pick { .. } if owner.is_none() => None,
             done => Some(Reply { scope, owner, instance, token, busy, info: None, done }),
         }
+    }
+
+    /// The store answers the coordinator's owner has not taken yet.
+    pub(super) fn take_store_replies(&mut self) -> Vec<StoreReply> {
+        std::mem::take(&mut self.store_replies)
     }
 
     /// A basic-auth store job's answer, held for the coordinator's owner (Task 10) to take.
@@ -520,7 +529,7 @@ impl App {
     /// True when a manager opened (or the open was refused as iTerm2 refuses it); false when a picker's
     /// challenge must end because nothing opened.
     fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, o: PwmOpen, handled: &mut Vec<WindowId>) -> bool {
-        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page } = o;
+        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page, pick_page } = o;
         let session = target == PwmTarget::Session;
         if let Some(p) = pane {
             // Unburied first, else it has no window (`AD:650-653`).
@@ -623,6 +632,7 @@ impl App {
             target,
             focus_after_user,
             pending_user: None,
+            pick_page,
         });
         self.pwm_job(Work::Load, true);
         true
@@ -1250,14 +1260,48 @@ impl App {
         }
     }
 
+    /// The browser store can be read now with no prompt (REQUIRE_OPEN and REQUIRE_EVERY honored).
+    pub(super) fn basic_auth_unlocked(&self) -> bool {
+        let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
+        crate::browser_basic_auth::unlocked_without_prompt(self.pwm.browser_auth.authenticated, required, every)
+    }
+
+    /// Saving a remembered sign-in needs the browser store open: whether that is a prompt now. The
+    /// answer is for the BROWSER store only; the terminal's authentication is never touched.
+    pub(super) fn basic_auth_save_needs_prompt(&mut self) -> bool {
+        let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
+        let needs = self.pwm_auth(Scope::Browser).needs_prompt(required, every);
+        if !needs && !required {
+            self.pwm_auth(Scope::Browser).open_unprompted();
+        }
+        needs
+    }
+
+    /// A challenge ended elsewhere (answered, cancelled, superseded): its picker goes, queued opens
+    /// included; an open picker window closes.
+    pub(super) fn basic_auth_picker_gone(&mut self, id: u64) {
+        self.pwm.requests.retain(|o| o.target != PwmTarget::BasicAuth(id));
+        if self.pwm_window.as_ref().is_some_and(|w| w.target == PwmTarget::BasicAuth(id)) {
+            self.close_pwm();
+        }
+    }
+
     /// Sends a basic-auth store job to the browser store's worker (13x7 Task 9). The store is read only
     /// when it is unlocked without any prompt (`BAS:87-89`); a locked one answers a miss or a failed save
     /// at once, and never asks here. Returns false when it could not be sent.
-    #[allow(dead_code)] // Task 10 sends the jobs
     pub(super) fn basic_auth_store_job(&mut self, work: AuthWork) -> bool {
         let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
         let authenticated = self.pwm.browser_auth.authenticated;
-        if !crate::browser_basic_auth::unlocked_without_prompt(authenticated, required) {
+        // A read is silent only when no prompt is due (REQUIRE_EVERY asks each time, so a lookup is a
+        // miss). A save follows the authentication the caller just did, which `every` would not reuse.
+        let open = match work {
+            AuthWork::Lookup { .. } => crate::browser_basic_auth::unlocked_without_prompt(authenticated, required, every),
+            AuthWork::Save { .. } => authenticated || !required,
+        };
+        if !open {
             self.pwm.store_replies.push(match auth_failed(work) {
                 Done::AuthLooked { pane, id, found } => StoreReply::Looked { pane, id, found },
                 Done::AuthSaved { pane, space, host, success } => StoreReply::Saved { pane, space, host, success },
@@ -1462,7 +1506,10 @@ impl App {
             Done::Listed { accounts, warning } => {
                 // A browser manager over a page lists only the accounts for that page's exact origin.
                 let (scope, target) = self.pwm_window.as_ref().map_or((Scope::Terminal, PwmTarget::Session), |w| (w.scope, w.target));
-                let page = self.pwm_window.as_ref().and_then(|w| w.page_pane).and_then(|p| self.page_bound_now(p)).and_then(|(url, epoch)| PwPage::new(&url, epoch));
+                let page = match target {
+                    PwmTarget::BasicAuth(_) => self.pwm_window.as_ref().and_then(|w| w.pick_page.clone()),
+                    PwmTarget::Session => self.pwm_window.as_ref().and_then(|w| w.page_pane).and_then(|p| self.page_bound_now(p)).and_then(|(url, epoch)| PwPage::new(&url, epoch)),
+                };
                 let result = match accounts {
                     Ok(v) => browser_listing(scope, target, page.as_ref(), pwm::sorted(v)),
                     Err(e) => {
@@ -1687,8 +1734,17 @@ impl App {
     /// toasted) refuses the pick.
     fn pick_why(&mut self, a: &Account) -> Option<Why> {
         let w = self.pwm_window.as_ref()?;
-        if w.scope == Scope::Terminal || w.target != PwmTarget::Session {
+        if w.scope == Scope::Terminal {
             return Some(Why::Enter(None));
+        }
+        // A picker's pick must be for the challenge's own origin (the list already hides the rest).
+        if let PwmTarget::BasicAuth(_) = w.target {
+            let page = w.pick_page.clone()?;
+            if !bp::account_matches(&a.account_name, &page) {
+                self.show_toast(bp::WRONG_SITE);
+                return None;
+            }
+            return Some(Why::Enter(Some(page)));
         }
         let pane = w.page_pane?;
         let page = self.browser_pw_page(pane)?;
@@ -1763,12 +1819,6 @@ impl App {
                 self.close_pwm();
             }
         }
-    }
-
-    /// A basic-auth picker's outcome (`BAP:60-73`): Task 10's coordinator takes it. Until that lands the
-    /// credential is dropped (zeroed) and nothing is logged.
-    pub(super) fn basic_auth_picked(&mut self, challenge: u64, picked: Option<(String, Secret)>) {
-        let _ = (challenge, picked);
     }
 
     /// `-[PTYSession enterPassword:]`: the echo probe first, with the profile's Backspace; focus
@@ -2255,7 +2305,6 @@ struct AuthJob {
 }
 
 /// What the sign-in prompt asks of the store (`BAS:100-190`).
-#[allow(dead_code)]
 pub(super) enum AuthWork {
     /// The saved credential for the account name: it only prefills the prompt (R13x78-1).
     Lookup { pane: PaneId, id: u64, name: String, preferred_user: Option<String> },
@@ -2264,7 +2313,6 @@ pub(super) enum AuthWork {
 }
 
 /// A store job's answer, queued for the coordinator's owner (Task 10).
-#[allow(dead_code)]
 pub(super) enum StoreReply {
     Looked { pane: PaneId, id: u64, found: Option<(String, Secret)> },
     Saved { pane: PaneId, space: SpaceKey, host: String, success: bool },
@@ -3072,7 +3120,7 @@ mod tests {
         let un = between(prod, "pub(super) fn enter_username", "fn end_probe_of");
         assert!(un.contains("self.is_browser_pane(pane)") && un.find("is_browser_pane").unwrap() < un.find("user_write").unwrap(), "no pty write for a browser pane");
         assert!(prod.contains(".filter(|t| !self.is_tmux_gateway(*t) && !self.is_browser_pane(*t)).collect();"), "broadcast skips pages");
-        let eb = between(prod, "fn enter_browser", "pub(super) fn basic_auth_picked");
+        let eb = between(prod, "fn enter_browser", "/// `-[PTYSession enterPassword:]`");
         assert!(eb.contains("self.browser_fill_username(pane, page.clone(),") && eb.contains("self.browser_focus_password(pane, page.clone(),") && eb.contains("self.browser_fill_password(pane, page.clone(), p)"));
         assert!(eb.contains("page_steps(w.send_both, &a.user_name, w.focus_after_user.as_ref(), page.epoch)"));
         assert!(eb.contains("take_challenge(&mut w.target)") && eb.contains("self.basic_auth_picked(n, Some((user, password)))"));
@@ -3097,12 +3145,14 @@ mod tests {
         assert_eq!(names(browser_listing(Scope::Browser, PwmTarget::Session, Some(&page), all.clone())), vec!["https://shop.example", "https://shop.example (Realm)"]);
         assert!(browser_listing(Scope::Browser, PwmTarget::Session, None, all.clone()).is_empty(), "an http (or no) page lists nothing");
         assert_eq!(browser_listing(Scope::Terminal, PwmTarget::Session, None, all.clone()).len(), all.len(), "the terminal manager lists its own store");
-        assert_eq!(browser_listing(Scope::Browser, PwmTarget::BasicAuth(1), None, all.clone()).len(), all.len(), "a picker lists for the challenge (Task 10 binds its origin)");
+        assert_eq!(names(browser_listing(Scope::Browser, PwmTarget::BasicAuth(1), Some(&page), all.clone())), vec!["https://shop.example", "https://shop.example (Realm)"], "a picker lists only the challenge's own origin");
+        assert!(browser_listing(Scope::Browser, PwmTarget::BasicAuth(1), None, all.clone()).is_empty(), "a picker with no https origin lists nothing");
         // The pick is checked again against the page showing then.
         let src = include_str!("pwm_app.rs");
         let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
         let pick = between(prod, "fn pick_why", "fn pwm_enter_user");
         assert!(pick.contains("self.browser_pw_page(pane)?") && pick.contains("bp::account_matches(&a.account_name, &page)"), "the pick binds the page, then the account");
+        assert!(pick.contains("w.pick_page.clone()?") && pick.contains("PwmTarget::BasicAuth(_)"), "a picker's pick binds the challenge's origin first");
         let user = between(prod, "fn pwm_enter_user", "fn enter_browser");
         assert!(user.contains("bp::account_matches(account, &page)"));
         assert!(prod.contains("fn page_accepts") && prod.contains("bp::account_matches(account, &p)"));

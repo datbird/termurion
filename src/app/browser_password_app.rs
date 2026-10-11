@@ -66,6 +66,7 @@ impl App {
             target: PwmTarget::Session,
             focus_after_user: focus_after_user.map(|id| (id, at)),
             from_page: true,
+            pick_page: None,
         });
     }
 

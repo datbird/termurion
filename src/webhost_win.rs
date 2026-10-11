@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    AcceleratorKeyPressedEventHandler, BasicAuthenticationRequestedEventHandler, CallDevToolsProtocolMethodCompletedHandler, ContentLoadingEventHandler, WebResourceResponseReceivedEventHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
@@ -403,7 +403,9 @@ impl Env {
         let options = CoreWebView2EnvironmentOptions::default();
         // SAFETY: the setters write fields of an object no other thread has yet.
         unsafe {
-            options.set_additional_browser_arguments(opts.args.clone());
+            options.set_additional_browser_arguments(webhost::browser_arguments(&opts.args));
+            // Windows single sign-on with the OS primary account is off (it is also WebView2's default).
+            options.set_allow_single_sign_on_using_os_primary_account(false);
             // No second process shares this profile.
             options.set_exclusive_user_data_folder_access(true);
             // The system's Stable runtime only (the crate's default also searches Beta, Dev and Canary).
@@ -492,6 +494,13 @@ pub struct ViewSetup {
     /// The view reports the HTTP method of its main document requests (`Event::DocumentMethod`,
     /// 13x5): a second `WebResourceRequested` handler on a Document-context filter, no deferral.
     pub track_document_method: bool,
+    /// The view reports `Event::Committed` (ContentLoading) and `Event::Response` (the main
+    /// document's HTTP response) for the HTTP authentication state machine (13x7). The response
+    /// needs the Document filter `track_document_method` adds; browser panes set both.
+    pub main_responses: bool,
+    /// An HTTP (or proxy) authentication request is posted as `Event::BasicAuth` and held until
+    /// `answer_basic_auth`. Off: the host cancels it on the spot; WebView2's own dialog is never shown.
+    pub basic_auth: bool,
 }
 
 #[derive(Clone)]
@@ -509,6 +518,12 @@ struct Pending {
 struct PendingPerm {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2PermissionRequestedEventArgs,
+}
+
+/// An HTTP authentication request held back until the app answers (`answer_basic_auth`).
+struct PendingAuth {
+    deferral: ICoreWebView2Deferral,
+    args: ICoreWebView2BasicAuthenticationRequestedEventArgs,
 }
 
 /// A page's notification the app may still report on (`notification_report`).
@@ -587,6 +602,9 @@ struct Inner {
     key_gate: webhost::KeyGate,
     /// Permission requests waiting for an answer, by token (at most `MAX_PENDING_PERMISSIONS`).
     perms: HashMap<u64, PendingPerm>,
+    /// HTTP authentication requests waiting for an answer, by token. They share `perm_limit` and its
+    /// pending cap with `perms` (one owner of the deferral caps).
+    auths: HashMap<u64, PendingAuth>,
     perm_limit: webhost::PermissionLimiter,
     /// Page notifications the app holds a token for (at most `MAX_HELD_NOTES`).
     notes: HashMap<u64, HeldNote>,
@@ -654,6 +672,7 @@ impl WebView {
             menus: HashMap::new(),
             key_gate: webhost::KeyGate::default(),
             perms: HashMap::new(),
+            auths: HashMap::new(),
             perm_limit: webhost::PermissionLimiter::default(),
             notes: HashMap::new(),
             note_limit: webhost::NotificationLimiter::default(),
@@ -1123,6 +1142,18 @@ impl WebView {
         }
     }
 
+    /// Completes the deferral taken when `Event::BasicAuth { token, .. }` was posted, exactly once:
+    /// `Some((user, password))` hands the person's answer to WebView2 (the password goes through a
+    /// wiping UTF-16 copy and is wiped after the hand-over), `None` cancels. An unknown token
+    /// (already answered, or the view dropped it) does nothing. The request was cancelled when it
+    /// was taken, so any failure to hand the answer over leaves it cancelled.
+    pub fn answer_basic_auth(&self, token: u64, answer: Option<(String, crate::pwm::Secret)>) {
+        let pending = self.inner.borrow_mut().auths.remove(&token);
+        if let Some(p) = pending {
+            complete_auth(p, answer);
+        }
+    }
+
     /// Tells the view what happened to the notification held under `token` (see `NoteReport`).
     pub fn notification_report(&self, token: u64, r: NoteReport) {
         if r == NoteReport::Shown {
@@ -1325,6 +1356,23 @@ fn complete_permission(p: PendingPerm, answer: webhost::PermAnswer) {
     let _ = unsafe { p.deferral.Complete() };
 }
 
+/// Hands the person's answer to WebView2 and completes the deferral. The request was set to Cancel when
+/// it was taken (`register_basic_auth`); only a fully handed-over credential clears it.
+fn complete_auth(p: PendingAuth, answer: Option<(String, crate::pwm::Secret)>) {
+    if let Some((user, password)) = answer {
+        let (user, mut pw) = (wide(&user), WideSecret::new(password.expose()));
+        let given = unsafe { p.args.Response() }.and_then(|r| {
+            unsafe { r.SetUserName(PCWSTR(user.as_ptr())) }?;
+            unsafe { r.SetPassword(PCWSTR(pw.as_ptr())) }
+        });
+        if given.is_ok() {
+            let _ = unsafe { p.args.SetCancel(false) };
+        }
+        pw.wipe();
+    }
+    let _ = unsafe { p.deferral.Complete() };
+}
+
 /// Completes a view's pending requests with Continue and closes its controller (its browser
 /// process lets go of the user data folder). Twice is safe: the second finds nothing.
 fn shut(inner: &Rc<RefCell<Inner>>) {
@@ -1333,11 +1381,16 @@ fn shut(inner: &Rc<RefCell<Inner>>) {
     let (frames, watch) = (std::mem::take(&mut i.frames), i.frame_watch.take());
     let menus = std::mem::take(&mut i.menus);
     let (perms, notes) = (std::mem::take(&mut i.perms), std::mem::take(&mut i.notes));
+    let auths = std::mem::take(&mut i.auths);
     let (note_watch, audio_watch) = (i.note_watch.take(), i.audio_watch.take());
     drop(i);
     // A permission still waiting is refused, never left pending: nothing grants by the view going away.
     for (_, p) in perms {
         complete_permission(p, webhost::PermAnswer::Deny);
+    }
+    // An HTTP authentication request still waiting is cancelled, never left pending.
+    for (_, p) in auths {
+        complete_auth(p, None);
     }
     for (_, h) in notes {
         let _ = unsafe { h.note.remove_CloseRequested(h.close_token) };
@@ -1433,6 +1486,10 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     register_page_events(inner, view, &mut token).map_err(|x| e("page events", x))?;
     let workers_refused = register_worker_refusal(inner, view, &mut token);
     register_policy(inner, view, workers_refused, &mut token).map_err(|x| e("policy", x))?;
+    register_basic_auth(inner, view, &mut token);
+    if setup.main_responses {
+        register_main_responses(inner, view, &mut token).map_err(|x| e("main responses", x))?;
+    }
     if setup.permissions {
         register_notifications(inner, view);
         register_audio(inner, view);
@@ -2096,7 +2153,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_ref
         }
         let Some(inner) = weak.upgrade() else { return Ok(()) };
         let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
-        let pending = i.perms.len();
+        let pending = i.perms.len() + i.auths.len();
         if !i.perm_limit.allow(Instant::now(), pending) {
             return Ok(());
         }
@@ -2214,7 +2271,7 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         let _ = unsafe { args.ResourceContext(&mut context) };
         // Every handler sees every request any filter matched: a Document request that only the
         // method tracker's filter matched is not this handler's (B10), and takes no deferral.
-        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && inner.borrow().setup.track_document_method && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
+        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (inner.borrow().setup.track_document_method || inner.borrow().setup.main_responses) && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
             return Ok(());
         }
         let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
@@ -2259,6 +2316,97 @@ fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
     unsafe { view.add_WebResourceRequested(&handler, token) }?;
     let w = wide("*");
     unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
+}
+
+/// HTTP and proxy authentication (13x7 Task 10). Every view cancels a request on the spot (WebView2's
+/// own dialog is never shown); a view with `ViewSetup::basic_auth` holds it as a deferral and posts
+/// `Event::BasicAuth`, within the shared pending cap and rate. Needs runtime support for
+/// `ICoreWebView2_10`; without it the registration is skipped and said so.
+fn register_basic_auth(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) {
+    let Ok(v10) = view.cast::<ICoreWebView2_10>() else {
+        crate::dlog!("webhost: HTTP authentication events are not available in this runtime");
+        return;
+    };
+    let ask = inner.borrow().setup.basic_auth;
+    let weak = Rc::downgrade(inner);
+    let handler = BasicAuthenticationRequestedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let Some(args) = args else { return Ok(()) };
+        // Cancelled first: only a handed-over answer clears it.
+        let _ = unsafe { args.SetCancel(true) };
+        if !ask {
+            return Ok(());
+        }
+        let Some(inner) = weak.upgrade() else { return Ok(()) };
+        let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
+        let pending = i.perms.len() + i.auths.len();
+        if !i.perm_limit.allow(Instant::now(), pending) {
+            return Ok(());
+        }
+        let uri = pwstr_out(|p| unsafe { args.Uri(p) }).unwrap_or_default();
+        let challenge = pwstr_out(|p| unsafe { args.Challenge(p) }).unwrap_or_default();
+        // A challenge cut at the cap is not shown or judged by its start: cancelled.
+        if challenge.chars().count() > webhost::MAX_CHALLENGE {
+            return Ok(());
+        }
+        let (uri, cut) = webhost::cap_url(&uri);
+        if cut {
+            return Ok(());
+        }
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
+        let t = i.next_token;
+        i.next_token += 1;
+        i.auths.insert(t, PendingAuth { deferral, args: args.clone() });
+        let id = i.id;
+        i.poster.post(Event::BasicAuth { view: id, token: t, uri, challenge });
+        Ok(())
+    })));
+    if unsafe { v10.add_BasicAuthenticationRequested(&handler, token) }.is_err() {
+        crate::dlog!("webhost: the HTTP authentication handler could not be added");
+    }
+}
+
+/// `ContentLoading` and the main document's response (13x7), both by the navigation they belong to.
+/// A response counts only when its URI (fragment ignored) is the last main-frame navigation's and no
+/// browser-set `Sec-Fetch-Dest` says it is not a document; it carries that navigation's id.
+fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let weak = Rc::downgrade(inner);
+    let loading = ContentLoadingEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let mut nav = 0u64;
+        let _ = unsafe { args.NavigationId(&mut nav) };
+        let i = inner.borrow();
+        i.poster.post(Event::Committed { view: i.id, nav });
+        Ok(())
+    })));
+    unsafe { view.add_ContentLoading(&loading, token) }?;
+
+    let v2 = view.cast::<ICoreWebView2_2>()?;
+    let weak = Rc::downgrade(inner);
+    let response = WebResourceResponseReceivedEventHandler::create(Box::new(move |_sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let Ok(request) = (unsafe { args.Request() }) else { return Ok(()) };
+        let uri = webhost::cap_url(&pwstr_out(|p| unsafe { request.Uri(p) }).unwrap_or_default()).0;
+        let i = inner.borrow();
+        let Some((last, nav)) = i.last_main_nav.as_ref() else { return Ok(()) };
+        if crate::browser_basic_auth::strip_fragment(&uri) != crate::browser_basic_auth::strip_fragment(last) {
+            return Ok(());
+        }
+        if let Ok(h) = unsafe { request.Headers() } {
+            if bool_out(|b| unsafe { h.Contains(windows::core::w!("Sec-Fetch-Dest"), b) }) {
+                let dest = pwstr_out(|p| unsafe { h.GetHeader(windows::core::w!("Sec-Fetch-Dest"), p) }).unwrap_or_default();
+                if !dest.eq_ignore_ascii_case("document") {
+                    return Ok(());
+                }
+            }
+        }
+        let mut status = 0i32;
+        if let Ok(r) = unsafe { args.Response() } {
+            let _ = unsafe { r.StatusCode(&mut status) };
+        }
+        i.poster.post(Event::Response { view: i.id, nav: *nav, status });
+        Ok(())
+    })));
+    unsafe { v2.add_WebResourceResponseReceived(&response, token) }
 }
 
 #[cfg(test)]
@@ -2617,7 +2765,7 @@ mod tests {
                 if line.trim_start().starts_with("//") || line.contains("\"") {
                     continue;
                 }
-                let body = &text[at..(at + 600).min(text.len())];
+                let body = &text[at..(at + 1200).min(text.len())];
                 let close = body.find('}').unwrap_or(body.len());
                 assert!(body[..close].contains("..Default::default()"), "{}: a ViewSetup literal without ..Default::default()", f.display());
                 seen += 1;
@@ -3159,6 +3307,13 @@ mod probe {
         writes: Vec<(u64, bool)>,
         /// Each `PermissionStates`'s `complete`.
         reads_complete: Vec<bool>,
+        /// HTTP authentication (13x7 Task 10): requests held (token, uri, challenge), navigation ids
+        /// seen starting and finished, the main document's responses and commits.
+        auths: Vec<(u64, String, String)>,
+        starts: Vec<u64>,
+        finished: Vec<u64>,
+        responses: Vec<(u64, i32)>,
+        commits: Vec<u64>,
     }
 
     impl Probe {
@@ -3190,6 +3345,11 @@ mod probe {
         /// app's start-up sync does: that read clears the profile's service workers, and kind 4 is
         /// offered only after it did (last-gate LG-1).
         fn start_setup(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup) -> Option<Probe> {
+            Probe::start_args(pages, sources, schemes, setup, "")
+        }
+
+        /// `start_setup` with the environment's browser arguments (the proxy's, for a test).
+        fn start_args(pages: &[(&str, String)], sources: Vec<String>, schemes: &[&str], setup: ViewSetup, args: &str) -> Option<Probe> {
             let permissions = setup.permissions;
             if runtime_version(None).is_err() {
                 println!("SKIPPED (not a pass): WebView2 Runtime not installed; skipped");
@@ -3252,10 +3412,15 @@ mod probe {
                 state_reads: Vec::new(),
                 writes: Vec::new(),
                 reads_complete: Vec::new(),
+                auths: Vec::new(),
+                starts: Vec::new(),
+                finished: Vec::new(),
+                responses: Vec::new(),
+                commits: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
-            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), ..Default::default() };
             Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");
@@ -3403,8 +3568,17 @@ mod probe {
                 Event::Created(_) => self.created = true,
                 Event::Failed(_, why) => self.failed.push(why),
                 Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
-                Event::Navigated { ok, url, .. } => self.navigated.push((url, ok)),
-                Event::Starting { url, redirect: false, .. } => self.order.push(format!("starting {url}")),
+                Event::Navigated { ok, url, nav, .. } => {
+                    self.navigated.push((url, ok));
+                    self.finished.push(nav);
+                }
+                Event::Starting { url, redirect: false, nav, .. } => {
+                    self.order.push(format!("starting {url}"));
+                    self.starts.push(nav);
+                }
+                Event::BasicAuth { token, uri, challenge, .. } => self.auths.push((token, uri, challenge)),
+                Event::Response { nav, status, .. } => self.responses.push((nav, status)),
+                Event::Committed { nav, .. } => self.commits.push(nav),
                 Event::Request { token, url, context, .. } => {
                     self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
@@ -6108,5 +6282,167 @@ window.addEventListener('message', function (e) {
         p.settle(500);
         assert!(p.view().is_muted(), "the page cannot lift the view's mute");
         p.finish();
+    }
+
+    // --- 13x7 Task 10: HTTP authentication, against a server the test opens on 127.0.0.1 ---
+
+    /// A one-purpose HTTP server on 127.0.0.1: every request without `want` in its headers gets
+    /// `challenge_status` and `challenge_header`, one with it gets 200. `Connection: close`.
+    struct AuthServer {
+        port: u16,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl AuthServer {
+        fn start(want: &'static str, challenge_status: &'static str, challenge_header: &'static str) -> AuthServer {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+            let port = listener.local_addr().unwrap().port();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (stop2, seen2) = (stop.clone(), seen.clone());
+            let thread = std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let Ok(mut s) = stream else { continue };
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut buf = [0u8; 8192];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    seen2.lock().unwrap().push(head.lines().next().unwrap_or("").to_string());
+                    let ok = !want.is_empty() && head.contains(want);
+                    let reply = if ok {
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 27\r\nConnection: close\r\n\r\n<!doctype html><title>in</title>".to_string()
+                    } else {
+                        format!("HTTP/1.1 {challenge_status}\r\n{challenge_header}\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno")
+                    };
+                    let _ = s.write_all(reply.as_bytes());
+                }
+            });
+            AuthServer { port, stop, seen, thread: Some(thread) }
+        }
+
+        fn stop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    fn auth_setup() -> ViewSetup {
+        ViewSetup { guard_local_schemes: true, web_message: true, basic_auth: true, main_responses: true, track_document_method: true, ..Default::default() }
+    }
+
+    /// Answers every held challenge with `answer` until `done` holds.
+    fn drive_auth(p: &mut Probe, secs: u64, answer: Option<(&str, &str)>, done: impl Fn(&Probe) -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < end {
+            if done(p) {
+                return true;
+            }
+            if let Some((t, _, _)) = p.auths.pop() {
+                p.view().answer_basic_auth(t, answer.map(|(u, pw)| (u.to_string(), crate::pwm::Secret::new(pw.to_string()))));
+            }
+            p.wait(1, |p| !p.auths.is_empty() || done(p));
+        }
+        done(p)
+    }
+
+    /// A 401 with `Basic realm="T"` reaches the app as `BasicAuth`; the person's answer signs in; the
+    /// response and the finished navigation carry the starting navigation's id; a fragment is ignored;
+    /// an answer given twice or for an unknown token does nothing; a Cancel ends at the 401.
+    #[test]
+    #[ignore]
+    fn basic_auth_round_trip() {
+        let mut server = AuthServer::start("Authorization: Basic dTpw", "401 Unauthorized", "WWW-Authenticate: Basic realm=\"T\"");
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], auth_setup()) else { return server.stop() };
+        let url = format!("http://127.0.0.1:{}/", server.port);
+        p.view().navigate_tandem(&url);
+        assert!(p.wait(20, |p| !p.auths.is_empty()), "the challenge arrives: {:?}", p.order);
+        let (token, uri, challenge) = p.auths[0].clone();
+        assert!(challenge.contains("realm=\"T\""), "{challenge}");
+        assert!(uri.starts_with(&format!("http://127.0.0.1:{}", server.port)), "{uri}");
+        assert!(!p.view().is_muted());
+        // The held request is not answered by the page's own dialog: nothing finishes while it waits.
+        assert!(p.finished.is_empty());
+        p.auths.clear();
+        p.view().answer_basic_auth(token, Some(("u".into(), crate::pwm::Secret::new("p".into()))));
+        p.view().answer_basic_auth(token, None);
+        p.view().answer_basic_auth(token ^ 0xffff, None);
+        assert!(p.wait(20, |p| p.responses.iter().any(|r| r.1 == 200) && !p.finished.is_empty()), "signed in: responses {:?} finished {:?}", p.responses, p.finished);
+        let start = p.starts[0];
+        assert_eq!(p.finished[0], start, "the finished navigation is the starting one");
+        assert!(p.responses.iter().any(|r| r.0 == start && r.1 == 200), "the response carries the navigation id: {:?} / {start}", p.responses);
+        assert!(p.commits.contains(&start), "ContentLoading carries it too: {:?}", p.commits);
+        // A fragment on another path is the same document request: its response is posted too.
+        let n = p.responses.len();
+        p.view().navigate_tandem(&format!("{url}other#frag"));
+        assert!(drive_auth(&mut p, 20, Some(("u", "p")), |p| p.responses.len() > n && p.responses.last().is_some_and(|r| r.1 == 200)), "the fragment navigation's response: {:?}", p.responses);
+        // A Cancel ends at the server's own 401 page.
+        p.auths.clear();
+        let n = p.responses.len();
+        p.view().navigate_tandem(&format!("{url}cancel"));
+        assert!(drive_auth(&mut p, 20, None, |p| p.responses.len() > n), "a cancelled request still ends: {:?}", p.responses);
+        p.finish();
+        server.stop();
+    }
+
+    /// A view without `basic_auth` cancels the request on the spot and never posts it: WebView2's own
+    /// dialog never shows and no deferral is left.
+    #[test]
+    #[ignore]
+    fn a_view_without_basic_auth_cancels() {
+        let mut server = AuthServer::start("Authorization: Basic dTpw", "401 Unauthorized", "WWW-Authenticate: Basic realm=\"T\"");
+        let mut setup = auth_setup();
+        setup.basic_auth = false;
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return server.stop() };
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{}/", server.port));
+        assert!(p.wait(20, |p| !p.finished.is_empty()), "the navigation ends without a prompt: {:?}", p.order);
+        assert!(p.auths.is_empty(), "nothing was posted");
+        assert!(p.responses.iter().any(|r| r.1 == 401), "{:?}", p.responses);
+        p.finish();
+        server.stop();
+    }
+
+    /// NTLM and Negotiate reach the app like any other challenge (never answered by Windows itself).
+    #[test]
+    #[ignore]
+    fn integrated_challenges_reach_the_app() {
+        for scheme in ["NTLM", "Negotiate"] {
+            let header: &'static str = if scheme == "NTLM" { "WWW-Authenticate: NTLM" } else { "WWW-Authenticate: Negotiate" };
+            let mut server = AuthServer::start("", "401 Unauthorized", header);
+            let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], auth_setup()) else { return server.stop() };
+            p.view().navigate_tandem(&format!("http://127.0.0.1:{}/", server.port));
+            assert!(p.wait(20, |p| !p.auths.is_empty()), "{scheme}: the challenge arrives (Windows did not answer it): seen {:?}", server.seen.lock().unwrap());
+            assert!(p.auths[0].2.starts_with(scheme), "{}", p.auths[0].2);
+            let (t, ..) = p.auths[0].clone();
+            p.view().answer_basic_auth(t, None);
+            p.finish();
+            server.stop();
+        }
+    }
+
+    /// Review I10: a proxy's 407 reaches the app as a challenge, and the URI WebView2 reports tells the
+    /// proxy from the site (the app prints and asserts it).
+    #[test]
+    #[ignore]
+    fn proxy_challenge_reports_the_proxy() {
+        let mut proxy = AuthServer::start("Proxy-Authorization: Basic", "407 Proxy Authentication Required", "Proxy-Authenticate: Basic realm=\"P\"");
+        let args = crate::adblock::proxy_args(true, "127.0.0.1", proxy.port as i64);
+        let Some(mut p) = Probe::start_args(&[], Vec::new(), &[], auth_setup(), &args) else { return proxy.stop() };
+        p.view().navigate_tandem("http://example.invalid/");
+        assert!(p.wait(20, |p| !p.auths.is_empty()), "the proxy's challenge arrives: {:?}", p.order);
+        let (token, uri, challenge) = p.auths[0].clone();
+        println!("proxy challenge: uri {uri} challenge {challenge}");
+        assert!(crate::browser_basic_auth::is_proxy_challenge(&uri, Some(("127.0.0.1", proxy.port))), "WebView2 reports {uri}, not the proxy");
+        p.view().answer_basic_auth(token, None);
+        p.finish();
+        proxy.stop();
     }
 }

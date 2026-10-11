@@ -399,7 +399,6 @@ impl Coordinator {
                     ctx.in_picker = false;
                 }
                 if let Some(chosen) = chosen.as_ref().filter(|c| !c.user.is_empty()).cloned() {
-                    let space = self.contexts[&id].space.clone();
                     return self.supply(id, chosen, Source::Picked, false);
                 }
                 // Backed out, or an entry with no user name (Basic needs one): prompt again with
@@ -414,7 +413,7 @@ impl Coordinator {
                 };
                 vec![Effect::Prompt(
                     id,
-                    PromptRequest { space, prefill, offer_remember: offer, offer_password_manager: offer, remember_by_default: offer, cleartext, proxy },
+                    PromptRequest { space, prefill, offer_remember: offer, offer_password_manager: offer, remember_by_default: false, cleartext, proxy },
                 )]
             }
             Event::MainFrameResponse { origin, status } => {
@@ -799,6 +798,87 @@ pub fn parse_challenge(header: &str) -> (String, String) {
     (scheme, String::new())
 }
 
+/// `uri` without its fragment: the request for `/#frag` carries no fragment, so the two are the same
+/// document (BAM:121-130).
+pub fn strip_fragment(uri: &str) -> &str {
+    uri.split_once('#').map_or(uri, |(head, _)| head)
+}
+
+/// WebView2's navigation events (13x7 Task 10) as the coordinator's main-frame events, by
+/// `NavigationId`: only the live navigation counts, a superseded one answers nothing. WebView2 does
+/// not order `WebResourceResponseReceived` before `ContentLoading` (review I8), so a commit is held
+/// until the live navigation's final (non-3xx) response arrives or the navigation completes, and
+/// the response is always reduced before the commit (a typed Remember persists on the response).
+#[derive(Default)]
+pub struct NavTracker {
+    live: Option<u64>,
+    origin: Option<Origin>,
+    /// The final response was reduced.
+    responded: bool,
+    /// The commit arrived and waits for the response.
+    commit_held: bool,
+    /// The commit was reduced.
+    committed: bool,
+    /// The navigation completed (a later response is nothing).
+    done: bool,
+}
+
+impl NavTracker {
+    pub fn starting(&mut self, nav: u64, uri: &str, redirect: bool) -> Vec<Event> {
+        let origin = origin_of(uri);
+        if redirect && self.live == Some(nav) && !self.done {
+            self.origin = origin.clone();
+            self.responded = false;
+            return vec![Event::MainFrameRedirect(origin)];
+        }
+        *self = NavTracker { live: Some(nav), origin: origin.clone(), ..NavTracker::default() };
+        vec![Event::MainProvisionalStarted(origin)]
+    }
+
+    pub fn committed(&mut self, nav: u64) -> Vec<Event> {
+        if self.live != Some(nav) || self.done || self.committed || self.commit_held {
+            return Vec::new();
+        }
+        if self.responded || self.origin.is_none() {
+            self.committed = true;
+            return vec![Event::MainCommitted];
+        }
+        self.commit_held = true;
+        Vec::new()
+    }
+
+    pub fn completed(&mut self, nav: u64, ok: bool) -> Vec<Event> {
+        if self.live != Some(nav) || self.done {
+            return Vec::new();
+        }
+        self.done = true;
+        if self.commit_held {
+            self.commit_held = false;
+            self.committed = true;
+            return vec![Event::MainCommitted];
+        }
+        if !self.committed && !ok {
+            return vec![Event::MainEndedWithoutResponse];
+        }
+        Vec::new()
+    }
+
+    pub fn response(&mut self, nav: u64, status: u16) -> Vec<Event> {
+        if self.live != Some(nav) || self.done || self.responded || (300..400).contains(&status) {
+            return Vec::new();
+        }
+        let Some(origin) = self.origin.clone() else { return Vec::new() };
+        self.responded = true;
+        let mut out = vec![Event::MainFrameResponse { origin, status }];
+        if self.commit_held {
+            self.commit_held = false;
+            self.committed = true;
+            out.push(Event::MainCommitted);
+        }
+        out
+    }
+}
+
 /// `scheme://host[:port]` of an http or https URI, lower-cased, default ports 443 and 80; None for any
 /// other scheme (iTerm2's default port there is -1, `BAM:325`), no host, a bad port or user information.
 pub fn origin_of(uri: &str) -> Option<Origin> {
@@ -845,8 +925,8 @@ pub fn can_remember(dev_null: bool) -> bool {
 }
 
 /// The store may be read without any prompt (`BAS:87-89`).
-pub fn unlocked_without_prompt(authenticated: bool, require_open: bool) -> bool {
-    authenticated || !require_open
+pub fn unlocked_without_prompt(authenticated: bool, require_open: bool, require_every: bool) -> bool {
+    !require_open || (authenticated && !require_every)
 }
 
 /// The first account with the wanted name, preferring the proposed user when it is non-empty
@@ -1109,7 +1189,7 @@ mod tests {
         // A picked entry with no user name: typed user first, picked password first.
         let (_, req) = only_prompt(c.reduce(Event::PickerResult { id: id(1), chosen: Some(cred("", "pw")), typed_fallback: Some(cred("typed", "tp")) }));
         assert_eq!(req.prefill, Some(cred("typed", "pw")));
-        assert!(req.offer_remember && req.offer_password_manager && req.remember_by_default);
+        assert!(req.offer_remember && req.offer_password_manager && !req.remember_by_default, "the picker re-prompt starts with Remember off");
         // Backed out with nothing: no prefill.
         let fx = c.reduce(Event::PromptResult { id: id(1), outcome: PromptOutcome::OpenPasswordManager(None) });
         assert!(matches!(fx.as_slice(), [Effect::ShowPicker { .. }]));
@@ -1405,6 +1485,56 @@ mod tests {
         assert!(!src.contains(&format!("cancelled: {}", "HashMap")), "one cooldown owner");
     }
 
+    fn origin_at(host: &str) -> Origin {
+        Origin { scheme: "https".into(), host: host.into(), port: 443 }
+    }
+
+    #[test]
+    fn navigation_mapping_follows_iterm2() {
+        let mut t = NavTracker::default();
+        assert_eq!(t.starting(1, "https://a.b/", false), vec![Event::MainProvisionalStarted(Some(o()))]);
+        assert_eq!(t.starting(1, "https://c.d/", true), vec![Event::MainFrameRedirect(Some(origin_at("c.d")))]);
+        assert_eq!(t.response(1, 200), vec![Event::MainFrameResponse { origin: origin_at("c.d"), status: 200 }]);
+        assert_eq!(t.committed(1), vec![Event::MainCommitted]);
+        let mut t = NavTracker::default();
+        t.starting(1, "https://a.b/", false);
+        assert!(t.response(9, 200).is_empty(), "another navigation");
+        assert!(t.response(1, 302).is_empty(), "a redirect is never the final response");
+        assert!(t.committed(9).is_empty(), "a superseded load");
+        assert_eq!(t.completed(1, false), vec![Event::MainEndedWithoutResponse]);
+        let mut t = NavTracker::default();
+        t.starting(1, "https://a.b/", false);
+        t.response(1, 200);
+        t.committed(1);
+        assert!(t.completed(1, false).is_empty(), "after a commit");
+        let mut t = NavTracker::default();
+        assert_eq!(t.starting(2, "about:blank", false), vec![Event::MainProvisionalStarted(None)]);
+        assert_eq!(strip_fragment("https://a.b/x#f"), "https://a.b/x");
+        assert_eq!(strip_fragment("https://a.b/x"), "https://a.b/x");
+    }
+
+    #[test]
+    fn response_order_does_not_matter() {
+        let both = || vec![Event::MainFrameResponse { origin: o(), status: 200 }, Event::MainCommitted];
+        let mut t = NavTracker::default();
+        t.starting(1, "https://a.b/", false);
+        assert!(t.committed(1).is_empty(), "held until the response or completion");
+        assert_eq!(t.response(1, 200), both());
+        let mut t = NavTracker::default();
+        t.starting(1, "https://a.b/", false);
+        let mut got = t.response(1, 200);
+        got.extend(t.committed(1));
+        assert_eq!(got, both());
+        let mut t = NavTracker::default();
+        t.starting(1, "https://a.b/", false);
+        t.committed(1);
+        assert_eq!(t.completed(1, true), vec![Event::MainCommitted]);
+        assert!(t.response(1, 200).is_empty(), "a response after completion is nothing");
+        // A new navigation forgets the old one entirely.
+        t.starting(2, "https://a.b/", false);
+        assert!(t.committed(1).is_empty());
+    }
+
     #[test]
     fn a_dropped_coordinator_answers_everything_it_holds() {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -1427,9 +1557,11 @@ mod tests {
         assert_eq!(prompt_text("a.b", "R"), "The website \u{201c}a.b\u{201d} requires a user name and password for \u{201c}R\u{201d}.");
         assert_eq!(prompt_text("a.b", ""), "The website \u{201c}a.b\u{201d} requires a user name and password.");
         assert!(!can_remember(true) && can_remember(false));
-        assert!(!unlocked_without_prompt(false, true));
-        assert!(unlocked_without_prompt(true, true));
-        assert!(unlocked_without_prompt(false, false));
+        assert!(!unlocked_without_prompt(false, true, false));
+        assert!(unlocked_without_prompt(true, true, false));
+        assert!(unlocked_without_prompt(false, false, false));
+        assert!(!unlocked_without_prompt(true, true, true), "authenticate every time: never silent");
+        assert!(unlocked_without_prompt(true, false, true));
         let two = [acct("https://a.b", "x"), acct("https://a.b", "y")];
         assert_eq!(pick_saved(&two, "https://a.b", Some("y")).map(|a| a.user_name.as_str()), Some("y"));
         assert_eq!(pick_saved(&two, "https://a.b", None).map(|a| a.user_name.as_str()), Some("x"));

@@ -176,6 +176,19 @@ pub struct EnvOptions {
     pub custom_schemes: Vec<String>,
 }
 
+/// The one browser argument beyond the proxy's: the Windows integrated-authentication allowlist (NTLM,
+/// Negotiate/Kerberos default credentials) holds a single host that cannot exist, so WebView2 never
+/// sends the person's Windows credentials to any site by itself (Chromium otherwise allows them to
+/// intranet-zone hosts when the list is empty). An NTLM or Negotiate challenge then reaches the
+/// coordinator like any other and is prompt-only (R13x710-1).
+pub const INTEGRATED_AUTH_ARG: &str = "--auth-server-allowlist=tandem-no-integrated-auth.invalid";
+
+/// `AdditionalBrowserArguments` as the environment is made: `args` (the proxy's, already checked by
+/// `adblock::proxy_args_ok`) and the integrated-authentication allowlist.
+pub fn browser_arguments(args: &str) -> String {
+    if args.is_empty() { INTEGRATED_AUTH_ARG.to_string() } else { format!("{args} {INTEGRATED_AUTH_ARG}") }
+}
+
 /// The user agent a web view gets (`WVW:127-150`): a set agent is used as written; an empty one
 /// keeps the engine's with the application name appended.
 pub fn user_agent(setting: &str, engine_default: &str) -> String {
@@ -329,7 +342,23 @@ pub enum Event {
     /// set the profile or the write failed. Always posted once per call while the view lives (the
     /// app's write queue, `perm_queue`, waits for it).
     PermissionWritten { view: ViewId, seq: u64, ok: bool },
+    /// The main document of navigation `nav` began to load (`ContentLoading`; browser panes with
+    /// `ViewSetup::main_responses`). Never dropped.
+    Committed { view: ViewId, nav: u64 },
+    /// The final-or-redirect HTTP response of navigation `nav`'s main document (browser panes with
+    /// `main_responses`): `status` is its code. Never dropped.
+    Response { view: ViewId, nav: u64, status: i32 },
+    /// The server (or the proxy) asked for HTTP authentication (`BasicAuthenticationRequested`;
+    /// browser panes with `ViewSetup::basic_auth`). The view holds the request (a deferral) until
+    /// `answer_basic_auth(token, ..)`; a request over the limits (`PermissionLimiter`, shared with
+    /// permissions) or a view without `basic_auth` is cancelled by the host and never posted.
+    /// `uri` is the URI WebView2 reports, `challenge` the header text; both are capped.
+    BasicAuth { view: ViewId, token: u64, uri: String, challenge: String },
 }
+
+/// Longest challenge header text an event carries (characters); the rest is cut, and a cut
+/// challenge is cancelled by the host.
+pub const MAX_CHALLENGE: usize = 1024;
 
 /// How the app answers a `Event::Permission`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -397,7 +426,10 @@ impl Event {
             | Event::NotificationClosed { view, .. }
             | Event::AudioPlaying { view, .. }
             | Event::PermissionStates { view, .. }
-            | Event::PermissionWritten { view, .. } => *view,
+            | Event::PermissionWritten { view, .. }
+            | Event::Committed { view, .. }
+            | Event::Response { view, .. }
+            | Event::BasicAuth { view, .. } => *view,
         }
     }
 
@@ -450,6 +482,7 @@ impl Event {
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             Event::Permission { uri, .. } => uri.len(),
+            Event::BasicAuth { uri, challenge, .. } => uri.len() + challenge.len(),
             Event::NotificationShown { origin, title, body, .. } => origin.len() + title.len() + body.len(),
             Event::PermissionStates { states, .. } => states.iter().map(|(_, o, _)| o.len()).sum(),
             _ => 0,
@@ -2056,6 +2089,35 @@ mod tests {
         }
         assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::Deny);
         assert_ne!(PermAnswer::State { state: 2, saves: false }, PermAnswer::State { state: 2, saves: true });
+    }
+
+    /// 13x7 Task 10: the HTTP authentication events are never dropped (a challenge holds a COM
+    /// deferral), what the server chose is weighed, and the navigation ids reach the tracker unchanged.
+    #[test]
+    fn integrated_authentication_is_never_offered_to_sites() {
+        assert_eq!(browser_arguments(""), INTEGRATED_AUTH_ARG);
+        assert_eq!(browser_arguments("--proxy-server=http://h:1"), format!("--proxy-server=http://h:1 {INTEGRATED_AUTH_ARG}"));
+        assert!(INTEGRATED_AUTH_ARG.ends_with(".invalid"));
+        let host = include_str!("webhost_win.rs");
+        assert!(host.contains("set_allow_single_sign_on_using_os_primary_account(false)"));
+        assert!(host.contains("webhost::browser_arguments(&opts.args)"));
+    }
+
+    #[test]
+    fn navigation_ids_are_carried() {
+        let auth = Event::BasicAuth { view: 1, token: 2, uri: "https://a.b/".into(), challenge: "Basic realm=\"R\"".into() };
+        assert!(!auth.droppable() && !Event::Committed { view: 1, nav: 7 }.droppable() && !Event::Response { view: 1, nav: 7, status: 200 }.droppable());
+        assert_eq!(auth.weight(), 12 + 15);
+        assert_eq!((auth.view(), Event::Committed { view: 3, nav: 7 }.view(), Event::Response { view: 4, nav: 7, status: 401 }.view()), (1, 3, 4));
+        let (start, done) = (
+            Event::Starting { view: 1, url: "https://a.b/".into(), kind: 0, user: true, redirect: false, nav: 7 },
+            Event::Navigated { view: 1, ok: true, status: 0, url: "https://a.b/".into(), nav: 7 },
+        );
+        let mut t = crate::browser_basic_auth::NavTracker::default();
+        let (Event::Starting { url, redirect, nav, .. }, Event::Navigated { ok, nav: done_nav, .. }) = (&start, &done) else { unreachable!() };
+        assert!(!t.starting(*nav, url, *redirect).is_empty());
+        assert_eq!(*done_nav, 7);
+        assert!(t.completed(*done_nav, *ok).is_empty(), "the same id: a completed navigation after no commit still ends the live one once");
     }
 
     /// Pre-flight B2: the held ones are never dropped, the cheap state ones may be, and what a page
