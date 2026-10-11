@@ -402,6 +402,10 @@ pub const LP_ASK: &str = "Enter your LastPass master password:";
 /// The person canceled that prompt (iTerm2's `canceledByUser` has no text of its own).
 pub const LP_CANCELED: &str = "Canceled.";
 
+/// A command that asked for the master password again after the one answer (lastpass-cli says
+/// "Incorrect master password; please try again."); the next request asks afresh.
+pub const LP_WRONG_PASSWORD: &str = "Incorrect master password.";
+
 /// Whether `lpass`'s stderr shows the session needs a fresh login (`LP:43`): the CLI's own text
 /// mentions running `lpass login`. Also the `Interactive` watcher's rule.
 pub(crate) fn lastpass_needs_login(stderr: &str) -> bool {
@@ -900,12 +904,16 @@ impl<R: Runner> LastPass<R> {
 
     /// Runs one request; the person canceling the mid-command password prompt is `LP_CANCELED`.
     fn exec(&mut self, r: Request) -> Result<crate::pwm_run::Output, String> {
-        self.runner.run(r).map_err(|e| if e == crate::pwm_run::CANCELED { LP_CANCELED.to_string() } else { e })
+        self.runner.run(r).map_err(|e| match e.as_str() {
+            crate::pwm_run::CANCELED => LP_CANCELED.to_string(),
+            crate::pwm_run::WRONG_PASSWORD => LP_WRONG_PASSWORD.to_string(),
+            _ => e,
+        })
     }
 
     /// Where the runner's mid-command password prompts go (`ask`'s receiving end answers them
     /// on the UI thread). Without one an ask finds nobody and ends as canceled.
-    pub fn with_asker(mut self, ask: std::sync::mpsc::Sender<std::sync::mpsc::Sender<Option<Secret>>>) -> LastPass<R> {
+    pub fn with_asker(mut self, ask: std::sync::mpsc::Sender<crate::pwm_run::Ask>) -> LastPass<R> {
         self.interactive.ask = ask;
         self
     }
@@ -1261,11 +1269,13 @@ mod tests {
         runner.push(0, "iTerm2\t7\tsite\tbob", "");
         runner.push(0, "pw\n", "");
         runner.push_err(crate::pwm_run::CANCELED);
+        runner.push_err(crate::pwm_run::WRONG_PASSWORD);
         let mut lp = LastPass::new(runner, "lpass".to_string(), vec!["iTerm2".to_string()], Box::new(|_, _| None));
         let accounts = lp.accounts().expect("accounts");
         lp.password(&accounts[0]).expect("password");
         let err = lp.password(&accounts[0]).unwrap_err();
         assert_eq!(err, LP_CANCELED);
+        assert_eq!(lp.password(&accounts[0]).unwrap_err(), LP_WRONG_PASSWORD);
         assert!(lp.runner.calls().iter().all(|c| c.interactive), "{:?}", lp.runner.calls());
     }
 

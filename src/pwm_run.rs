@@ -55,16 +55,30 @@ pub const TIMED_OUT: &str = "pwm_run: timed out";
 /// (the child was killed), a sentinel like `TIMED_OUT`.
 pub const CANCELED: &str = "pwm_run: canceled";
 
+/// The exact error a `Runner` returns when a command that was given the master password asked
+/// for it again and then failed (the answer was wrong): the pipe was closed after the one
+/// answer, so the child failed instead of waiting for more.
+pub const WRONG_PASSWORD: &str = "pwm_run: wrong password";
+
+/// One mid-command ask: the channel its answer goes back on, and a flag the runner sets when the
+/// request has ended (the child exited, timed out or was canceled), so the asker can skip an
+/// ask nobody is waiting for any more.
+pub struct Ask {
+    pub reply: std::sync::mpsc::Sender<Option<Secret>>,
+    pub ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// Mid-command re-authentication (`LastPassDataSource.swift:36-54`). While the child runs its
 /// stderr is watched: a message `needs_login` accepts stops the watch (the caller maps it); the
 /// first other message sends a reply channel on `ask` and waits for the person's answer (the
-/// request's timeout keeps running), writes the password plus a newline to the still-open
-/// stdin on `Some`, and kills the child with `CANCELED` on `None`. Later messages write
-/// nothing. A request that carries its own `stdin` data closes that pipe after the write as
-/// ever and is not watched.
+/// request's clock stops while the person answers: Decision, 13y2 Task 5 review I1), writes the
+/// password plus a newline to the open stdin and closes it on `Some` (a second prompt then reads
+/// end of file and the command fails: `WRONG_PASSWORD`), and kills the child with `CANCELED` on
+/// `None`. A request that carries its own `stdin` data closes that pipe after the write as ever
+/// and is not watched.
 #[derive(Clone)]
 pub struct Interactive {
-    pub ask: std::sync::mpsc::Sender<std::sync::mpsc::Sender<Option<Secret>>>,
+    pub ask: std::sync::mpsc::Sender<Ask>,
     pub needs_login: fn(&str) -> bool,
 }
 
@@ -185,6 +199,10 @@ mod win {
             let stdin_slot: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(if watched.is_some() { child.stdin.take() } else { None }));
             let canceled = Arc::new(AtomicBool::new(false));
             let exited = Arc::new(AtomicBool::new(false));
+            // Set once the password was written and stdin closed; text after that is a re-prompt.
+            let answered = Arc::new(AtomicBool::new(false));
+            let reprompted = Arc::new(AtomicBool::new(false));
+            let clock = Arc::new(Clock::default());
             let (tx_out, rx_out) = mpsc::channel();
             let (tx_err, rx_err) = mpsc::channel();
             std::thread::spawn(move || {
@@ -192,7 +210,7 @@ mod win {
                 let _ = stdout_pipe.read_to_end(&mut buf);
                 let _ = tx_out.send(buf);
             });
-            let (slot, cancel_flag, exit_flag) = (stdin_slot.clone(), canceled.clone(), exited.clone());
+            let (slot, cancel_flag, exit_flag, answered_flag, reprompt_flag, ask_clock) = (stdin_slot.clone(), canceled.clone(), exited.clone(), answered.clone(), reprompted.clone(), clock.clone());
             std::thread::spawn(move || {
                 let mut buf = Vec::new();
                 match watched {
@@ -206,11 +224,23 @@ mod win {
                             if n == 0 {
                                 break;
                             }
-                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.len() < WATCH_CAP {
+                                buf.extend_from_slice(&chunk[..n]);
+                            }
+                            // Text after the one answer is the child asking again (or failing).
+                            if answered_flag.load(Ordering::SeqCst) {
+                                reprompt_flag.store(true, Ordering::SeqCst);
+                            }
                             // The text is only classified, never logged or shown.
                             if watch.feed(&String::from_utf8_lossy(&chunk[..n])) == Step::Ask && !exit_flag.load(Ordering::SeqCst) {
-                                match ask_for_password(&i) {
-                                    Some(password) => write_password(&slot, &password),
+                                ask_clock.pause();
+                                let answer = ask_for_password(&i, &exit_flag);
+                                ask_clock.resume();
+                                match answer {
+                                    Some(password) => {
+                                        write_password(&slot, &password);
+                                        answered_flag.store(true, Ordering::SeqCst);
+                                    }
                                     None => cancel_flag.store(true, Ordering::SeqCst),
                                 }
                             }
@@ -221,7 +251,7 @@ mod win {
             });
 
             let status = if r.timeout.is_some() || r.interactive.is_some() {
-                match wait_polling(&mut child, r.timeout, &canceled) {
+                match wait_polling(&mut child, r.timeout, &canceled, &clock) {
                     Waited::Done(status) => status,
                     Waited::TimedOut | Waited::Canceled => {
                         let canceled = canceled.load(Ordering::SeqCst);
@@ -242,7 +272,7 @@ mod win {
             // we started has already exited: a request with its own timeout gets whatever is
             // left of it (at least MIN_DRAIN), an untimed one gets a flat safety net.
             let drain = match r.timeout {
-                Some(d) => (start + d).saturating_duration_since(Instant::now()).max(MIN_DRAIN),
+                Some(d) => (start + d + clock.paused()).saturating_duration_since(Instant::now()).max(MIN_DRAIN),
                 None => UNTIMED_DRAIN,
             };
             let stdout_bytes = rx_out.recv_timeout(drain).unwrap_or_default();
@@ -259,7 +289,12 @@ mod win {
                     lossy
                 }
             };
-            Ok(Output { code: status.code().unwrap_or(-1), stdout, stderr: String::from_utf8_lossy(&stderr_bytes).into_owned() })
+            let code = status.code().unwrap_or(-1);
+            // The child asked again after its one answer and failed: the answer was wrong.
+            if code != 0 && reprompted.load(Ordering::SeqCst) {
+                return Err(WRONG_PASSWORD.to_string());
+            }
+            Ok(Output { code, stdout, stderr: String::from_utf8_lossy(&stderr_bytes).into_owned() })
         }
     }
 
@@ -278,9 +313,34 @@ mod win {
         Canceled,
     }
 
-    /// Polls the child until it exits, `timeout` passes (if any) or the person cancels; on the
-    /// last two the child is left running for the caller to kill.
-    fn wait_polling(child: &mut Child, timeout: Option<Duration>, canceled: &AtomicBool) -> Waited {
+    /// The request's clock stops while the person answers a prompt (a person cannot read an alert
+    /// and type a master password inside `ls`'s 5 s), so the time spent asking is not counted.
+    #[derive(Default)]
+    struct Clock {
+        total: Mutex<Duration>,
+        since: Mutex<Option<Instant>>,
+    }
+
+    impl Clock {
+        fn pause(&self) {
+            *self.since.lock().unwrap() = Some(Instant::now());
+        }
+
+        fn resume(&self) {
+            if let Some(t) = self.since.lock().unwrap().take() {
+                *self.total.lock().unwrap() += t.elapsed();
+            }
+        }
+
+        /// Time spent asking so far, including an ask still open.
+        fn paused(&self) -> Duration {
+            *self.total.lock().unwrap() + self.since.lock().unwrap().map(|t| t.elapsed()).unwrap_or_default()
+        }
+    }
+
+    /// Polls the child until it exits, `timeout` passes (if any, not counting time spent asking)
+    /// or the person cancels; on the last two the child is left running for the caller to kill.
+    fn wait_polling(child: &mut Child, timeout: Option<Duration>, canceled: &AtomicBool, clock: &Clock) -> Waited {
         let start = Instant::now();
         loop {
             if let Ok(Some(status)) = child.try_wait() {
@@ -289,7 +349,7 @@ mod win {
             if canceled.load(Ordering::SeqCst) {
                 return Waited::Canceled;
             }
-            if timeout.is_some_and(|t| start.elapsed() >= t) {
+            if timeout.is_some_and(|t| start.elapsed().saturating_sub(clock.paused()) >= t) {
                 return Waited::TimedOut;
             }
             std::thread::sleep(POLL);
@@ -297,17 +357,25 @@ mod win {
     }
 
     /// Asks the person (through the app's single asker, so two never open at once) and waits.
-    fn ask_for_password(i: &Interactive) -> Option<Secret> {
+    /// The wait gives up when the request ends (`ended`), so a stale ask never holds the thread.
+    fn ask_for_password(i: &Interactive, ended: &Arc<AtomicBool>) -> Option<Secret> {
         let (reply, answer) = mpsc::channel();
-        i.ask.send(reply).ok()?;
-        answer.recv().ok().flatten()
+        i.ask.send(Ask { reply, ended: ended.clone() }).ok()?;
+        loop {
+            match answer.recv_timeout(POLL) {
+                Ok(a) => return a,
+                Err(mpsc::RecvTimeoutError::Timeout) if !ended.load(Ordering::SeqCst) => {}
+                Err(_) => return None,
+            }
+        }
     }
 
-    /// Writes `password + "\n"` to the child's open stdin, then zeroes the copy.
+    /// Writes `password + "\n"` to the child's open stdin and closes it (a re-prompt then reads
+    /// end of file instead of hanging), then zeroes the copy.
     fn write_password(slot: &Mutex<Option<ChildStdin>>, password: &Secret) {
         let mut bytes = password.expose().as_bytes().to_vec();
         bytes.push(b'\n');
-        if let Some(stdin) = slot.lock().unwrap().as_mut() {
+        if let Some(mut stdin) = slot.lock().unwrap().take() {
             let _ = stdin.write_all(&bytes);
             let _ = stdin.flush();
         }
@@ -402,13 +470,13 @@ mod tests {
         }
 
         fn interactive(answer: Option<&'static str>) -> (Interactive, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-            let (ask, rx) = mpsc::channel::<mpsc::Sender<Option<Secret>>>();
+            let (ask, rx) = mpsc::channel::<Ask>();
             let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let c = count.clone();
             std::thread::spawn(move || {
-                for reply in rx {
+                for ask in rx {
                     c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let _ = reply.send(answer.map(|a| Secret::new(a.to_string())));
+                    let _ = ask.reply.send(answer.map(|a| Secret::new(a.to_string())));
                 }
             });
             (Interactive { ask, needs_login: |t| t.contains("lpass login") }, count)
@@ -447,22 +515,75 @@ mod tests {
             let _ = std::fs::remove_dir_all(dir);
         }
 
-        /// The request timeout keeps running while the ask waits for the person.
+        /// I1: the request's clock stops while the person answers (the ask takes 1.5 s against a
+        /// 500 ms timeout and the command still finishes); the clock runs again after the answer.
         #[test]
-        fn reauth_timeout_runs_while_waiting_for_the_answer() {
-            let (dir, file) = script("slow", "@echo off\r\necho Enter master password: 1>&2\r\nset /p L=\r\n");
-            let (ask, rx) = mpsc::channel::<mpsc::Sender<Option<Secret>>>();
+        fn reauth_clock_stops_while_waiting_for_the_answer() {
+            let (dir, file) = script("slow", "@echo off\r\necho Enter master password: 1>&2\r\nset /p L=\r\necho %L%\r\n");
+            let (ask, rx) = mpsc::channel::<Ask>();
             std::thread::spawn(move || {
-                for reply in rx {
-                    std::thread::sleep(Duration::from_secs(3));
-                    let _ = reply.send(None);
+                for ask in rx {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let _ = ask.reply.send(Some(Secret::new("pw".to_string())));
                 }
             });
             let mut r = request(&file, Interactive { ask, needs_login: |_| false });
             r.timeout = Some(Duration::from_millis(500));
-            let start = std::time::Instant::now();
+            assert_eq!(ProcessRunner::new().run(r).unwrap().stdout.expose().trim(), "pw");
+            let _ = std::fs::remove_dir_all(dir);
+
+            // After the answer the clock runs: a child that then hangs times out.
+            let (dir, file) = script("hang", "@echo off\r\necho Enter master password: 1>&2\r\nset /p L=\r\nping -n 30 127.0.0.1 >nul\r\n");
+            let (i, _) = interactive(Some("pw"));
+            let mut r = request(&file, i);
+            r.timeout = Some(Duration::from_millis(800));
             assert_eq!(ProcessRunner::new().run(r).unwrap_err(), TIMED_OUT);
-            assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        /// C1: a wrong password makes the child prompt a second time. Stdin was closed after the
+        /// one answer, so it reads end of file and fails; the request ends with `WRONG_PASSWORD`
+        /// (never a hang, even without a timeout) and the person is asked once.
+        #[test]
+        fn reauth_second_prompt_is_a_wrong_password() {
+            let body = "@echo off\r\necho Enter master password: 1>&2\r\nset /p L=\r\necho Incorrect master password; please try again. 1>&2\r\necho Enter master password: 1>&2\r\nset L=\r\nset /p L=\r\nif \"%L%\"==\"\" exit /b 1\r\n";
+            let (dir, file) = script("wrong", body);
+            let (i, count) = interactive(Some("bad"));
+            let mut r = request(&file, i);
+            r.timeout = None;
+            assert_eq!(ProcessRunner::new().run(r).unwrap_err(), WRONG_PASSWORD);
+            assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+            // The next request asks afresh.
+            let (i, count) = interactive(Some("bad"));
+            let mut r = request(&file, i);
+            r.timeout = None;
+            let _ = ProcessRunner::new().run(r);
+            assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+
+        /// I2: the ask carries a flag that is set once the request ends; an ask nobody waits for
+        /// is released at once.
+        #[test]
+        fn reauth_ask_is_released_when_the_request_ends() {
+            let (dir, file) = script("stale", "@echo off\r\necho Enter master password: 1>&2\r\nexit /b 1\r\n");
+            let (ask, rx) = mpsc::channel::<Ask>();
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<std::sync::Arc<std::sync::atomic::AtomicBool>>::new()));
+            let s = seen.clone();
+            std::thread::spawn(move || {
+                for ask in rx {
+                    s.lock().unwrap().push(ask.ended.clone());
+                    std::thread::sleep(Duration::from_secs(5));
+                    drop(ask);
+                }
+            });
+            let start = std::time::Instant::now();
+            let out = ProcessRunner::new().run(request(&file, Interactive { ask, needs_login: |_| false }));
+            assert!(out.is_ok() || out.is_err());
+            assert!(start.elapsed() < Duration::from_secs(4), "{:?}", start.elapsed());
+            for flag in seen.lock().unwrap().iter() {
+                assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+            }
             let _ = std::fs::remove_dir_all(dir);
         }
     }

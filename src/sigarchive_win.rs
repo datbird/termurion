@@ -112,10 +112,15 @@ impl Drop for Key {
 impl CryptoApi {
     /// The chain engine and the flags: the default engine online (its lookups bounded by
     /// `URL_TIMEOUT_MS`), cache-only offline; a test's engine trusts its own root alone.
-    fn engine(&self, anchor_store: Option<&Store>, offline: bool) -> Result<(Engine, u32), SigError> {
+    fn engine(&self, anchor_store: Option<&Store>, offline: bool, root_update: bool) -> Result<(Engine, u32), SigError> {
         let mut flags = CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
         if offline {
-            flags |= CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY | CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL | CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE;
+            flags |= CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY | CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL;
+            // The first pass lets Windows consult its own Microsoft root list (never a URL taken
+            // from the untrusted certificate); every other offline build stays fully offline.
+            if !root_update {
+                flags |= CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE;
+            }
         }
         // SAFETY: an all-zero configuration is the documented default.
         let mut config: CERT_CHAIN_ENGINE_CONFIG = unsafe { std::mem::zeroed() };
@@ -150,7 +155,7 @@ impl CryptoApi {
     /// `dwErrorStatus` of the chain built from the cache (`offline`) or with lookups.
     fn chain_error_status(&self, leaf: &Cert, extra: &Store, offline: bool) -> Result<u32, SigError> {
         let anchor = self.anchor_store()?;
-        let (engine, flags) = self.engine(anchor.as_ref(), offline)?;
+        let (engine, flags) = self.engine(anchor.as_ref(), offline, true)?;
         // SAFETY: zeroed parameters ask for no particular usage.
         let mut para: CERT_CHAIN_PARA = unsafe { std::mem::zeroed() };
         para.cbSize = std::mem::size_of::<CERT_CHAIN_PARA>() as u32;
@@ -182,7 +187,7 @@ impl CryptoApi {
 
     fn chain_checked(&self, leaf: &Cert, extra: &Store, offline: bool) -> Result<(), SigError> {
         let anchor = self.anchor_store()?;
-        let (engine, flags) = self.engine(anchor.as_ref(), offline)?;
+        let (engine, flags) = self.engine(anchor.as_ref(), offline, false)?;
         // SAFETY: zeroed parameters ask for no particular usage.
         let mut para: CERT_CHAIN_PARA = unsafe { std::mem::zeroed() };
         para.cbSize = std::mem::size_of::<CERT_CHAIN_PARA>() as u32;

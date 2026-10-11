@@ -2431,12 +2431,19 @@ impl Ctx {
     /// Answers `lpass`'s mid-command password asks one at a time (a second never opens a second
     /// window) through the same secret prompt as every master password, naming LastPass. The
     /// thread ends when the source (the only sender) is dropped.
-    fn lastpass_asker(&self) -> Sender<Sender<Option<Secret>>> {
-        let (ask, asks) = mpsc::channel::<Sender<Option<Secret>>>();
+    fn lastpass_asker(&self) -> Sender<crate::pwm_run::Ask> {
+        let (ask, asks) = mpsc::channel::<crate::pwm_run::Ask>();
         let mut prompt = self.master_prompt();
         let _ = std::thread::Builder::new().name("tandem-lpass-ask".into()).spawn(move || {
-            for reply in asks {
-                let _ = reply.send(prompt(pwm_cli::LP_ASK));
+            for ask in asks {
+                // An ask whose request already ended (timed out, canceled or the command
+                // failed) is skipped: nobody is waiting, and a stale prompt would teach the
+                // person to type the master password into dialogs that lead nowhere.
+                if ask.ended.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = ask.reply.send(None);
+                    continue;
+                }
+                let _ = ask.reply.send(prompt(pwm_cli::LP_ASK));
             }
         });
         ask
