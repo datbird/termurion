@@ -815,8 +815,11 @@ fn local_scheme(s: &str) -> bool {
 /// - a `file:` target that is not `file_ok` (a share, a mapped or remote drive, a link, a
 ///   verbatim form: `file_url_local`) is refused for every source and initiator;
 /// - a redirect to `file:`, `iterm2-file:` or `iterm2-ssh:` is refused;
-/// - a navigation Tandem started (`navigate_tandem`) or the person started is allowed;
-/// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere;
+/// - a redirect onto a power page is refused, and a web page's `file:` link is refused;
+/// - a navigation Tandem started (`navigate_tandem`) is allowed;
+/// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere but a reload of itself and a
+///   listing's click inside its root, whatever WebView2's user-initiated flag says (R13x8-P2);
+/// - a navigation the person started (as WebView2 reports it) is allowed;
 /// - a `file:`, `iterm2-file:` or `iterm2-ssh:` target is allowed only from an `iterm2-about:`
 ///   source, or from a folder listing to an entry inside the committed root (`listing_click_ok`; a
 ///   served file and an ssh page navigate to no local page, except a reload of themselves);
@@ -860,6 +863,12 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
     if t == "file" && !file_ok {
         return false;
     }
+    let s = source.map(scheme_of).unwrap_or_default();
+    // A web page's `file:` link (a click included) starts nothing, here in the one judge, not only at
+    // the `file:` redirect after it (13x8 final review M2, R13x8-5).
+    if t == "file" && !by_tandem && !matches!(s.as_str(), "" | "iterm2-about" | "iterm2-file" | "iterm2-ssh") {
+        return false;
+    }
     // A `file:` link in a local page becomes an `iterm2-file:` page at the redirect, so the rule judges
     // the FINAL target, not the typed scheme (13x8 Task 9 re-review I1 r1). A `file:` URL that cannot
     // become one (UNC, no drive) goes nowhere from a local page.
@@ -882,12 +891,13 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
     if !by_tandem && source.is_some_and(|src| local_page(src) && bare(src) == bare(target)) {
         return true;
     }
-    let s = source.map(scheme_of).unwrap_or_default();
     // A page that acts with power (settings, onboarding steps) is opened by Tandem, by the person
     // (no source: the address bar) or from a Tandem page, never from a web page, whether by a click,
-    // a script or a redirect (preflight B5, 13x8 Task 5).
+    // a script or a redirect (preflight B5, 13x8 Task 5). A redirect never lands on one, whatever page
+    // the navigation left: Tandem's own pages never redirect, so a 302 there is a server's (final
+    // review I1; the source is still the old page while a redirect is judged).
     if !by_tandem && power_page(target) {
-        return s == "iterm2-about" || (s.is_empty() && user && !redirect);
+        return !redirect && (s == "iterm2-about" || (s.is_empty() && user));
     }
     // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
     // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
@@ -898,11 +908,17 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
             _ => false,
         };
     }
-    if by_tandem || user {
+    if by_tandem {
         return true;
     }
+    // A file or ssh page leaves for no other page, click or not: WebView2 reports a script's
+    // `location.href` from such a page as user-initiated (probe run 2026-10-11b, R13x8-P2), so the
+    // flag cannot tell the person's click from a hostile file's script sending what it read.
     if s == "iterm2-file" || s == "iterm2-ssh" {
         return false;
+    }
+    if user {
+        return true;
     }
     if local_scheme(&t) {
         return s == "iterm2-about";
@@ -1958,6 +1974,28 @@ mod tests {
             assert!(!n(None, t, false, false, false));
         }
         assert!(n(Some("https://evil.test/"), "iterm2-about:permissions", true, false, false), "other pages keep ruling 4");
+        // Final review I1: a redirect never lands on a power page, whatever page the navigation left.
+        for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-about:onboarding-setup", "iterm2-about:onboarding-profile?x"] {
+            assert!(!n(Some("iterm2-about:bookmarks"), t, false, true, false), "{t}");
+            assert!(!n(Some("iterm2-about:error"), t, true, true, false), "{t}");
+            assert!(!n(None, t, true, true, false), "{t}");
+        }
+        // Probe run 2026-10-11b: WebView2 reports a script's `location.href` from a file page as
+        // user-initiated, so a file or ssh page leaves for no other scheme, click or not (R13x8-P2).
+        for src in ["iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/", "iterm2-ssh://box/a.html"] {
+            for (user, redirect) in [(true, false), (false, false), (true, true)] {
+                assert!(!n(Some(src), "http://127.0.0.1:1/nav?d=x", user, redirect, false), "{src} {user} {redirect}");
+                assert!(!n(Some(src), "https://evil.test/", user, redirect, false), "{src} {user} {redirect}");
+                assert!(!n(Some(src), "iterm2-about:history", user, redirect, false), "{src} {user} {redirect}");
+            }
+            assert!(n(Some(src), "https://a/", true, false, true), "Tandem's own load");
+        }
+        // Final review M2: a web page's file: link is refused by the one judge itself.
+        for src in ["https://evil.test/", "about:blank", "data:text/html,x"] {
+            assert!(!n(Some(src), "file:///C:/ok", true, false, false), "{src}");
+            assert!(!n(Some(src), "file:///C:/ok", false, false, false), "{src}");
+        }
+        assert!(n(Some("iterm2-file:///C:/T/"), "file:///C:/T/b.txt", true, false, false), "a listing's file: link inside its root");
         assert!(!power_page("iterm2-about:settingsx") && !power_page("iterm2-about:onboarding-intro") && !power_page("https://a/settings"));
         assert!(n(None, "iterm2-ssh://box/a.png", false, false, true));
         assert!(n(Some("https://a/"), "https://b/", false, false, false));
