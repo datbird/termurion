@@ -16,6 +16,12 @@ Each item says what is wrong, what it should do, and where it was seen.
    uxtheme `SetPreferredAppMode` / `AllowDarkModeForWindow` calls or an owner-drawn bar. Pick
    one in a short plan first.
 
+2. **The first menu says "iTerm2", not "Tandem".** The application menu (first item on the
+   menu bar) should be named "Tandem". Check the items inside it too (for example "About
+   iTerm2", "Quit iTerm2", "Hide iTerm2") and any other place the menu bar or its menus show
+   the iTerm2 product name to the person; keep iTerm2 names only where they are file formats or
+   compatibility keys (plists, escape sequences, the Python API). Seen 2026-10-11.
+
 ## In progress
 
 1. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: EXTREME has "Show
