@@ -53,6 +53,8 @@ use crate::pwm::Secret;
 
 /// Challenges held at once beyond the open prompt (the rest are cancelled).
 pub const MAX_QUEUED: usize = 4;
+/// After the person cancels a prompt, the same origin's challenges are cancelled at once this long.
+pub const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 /// Challenges accepted per navigation epoch (the rest are cancelled).
 pub const MAX_PER_NAV: usize = 16;
 /// Protection spaces remembered per pane (rejection flags and prompt prefill).
@@ -248,15 +250,30 @@ pub struct Coordinator {
     /// The challenge whose prompt (or picker) is on screen.
     open: Option<ChallengeId>,
     waiting: VecDeque<ChallengeId>,
-    hidden: bool,
+    /// The pane is shown only once it says so (fail closed: a new coordinator asks nothing).
+    shown: bool,
     epoch: u64,
+    /// Origins whose prompt the person cancelled, and when: a page that reloads itself into a 401
+    /// cannot bring the prompt back for `COOLDOWN` (M1).
+    cancelled: HashMap<Origin, Instant>,
+    /// Told what a coordinator dropped without `Reset` still held, answered Cancel (set by the owner).
+    drop_sink: Option<Box<dyn FnMut(Vec<Effect>)>>,
     nav_count: usize,
     limiter: crate::webhost::PermissionLimiter,
+    /// Tests that cancel and re-challenge at once switch the cooldown off.
+    #[cfg(test)]
+    no_cooldown: bool,
 }
 
 impl Coordinator {
     pub fn reduce(&mut self, e: Event) -> Vec<Effect> {
         self.reduce_at(e, Instant::now())
+    }
+
+    /// Tells `f` what a coordinator dropped without a `Reset` still held, answered Cancel (the owner
+    /// delivers each to WebView2, so no deferral is left hanging).
+    pub fn on_drop(&mut self, f: Box<dyn FnMut(Vec<Effect>)>) {
+        self.drop_sink = Some(f);
     }
 
     /// Challenges held now (a lookup, the open prompt, the queue).
@@ -304,7 +321,7 @@ impl Coordinator {
                 self.new_epoch()
             }
             Event::Visible(v) => {
-                self.hidden = !v;
+                self.shown = v;
                 if v {
                     Vec::new()
                 } else {
@@ -318,6 +335,7 @@ impl Coordinator {
                 self.main_spaces.clear();
                 let fx = self.new_epoch();
                 self.spaces.clear();
+                self.cancelled.clear();
                 fx
             }
             Event::Challenge { id, space, is_basic, is_proxy, proposed_user, saved_lookup_possible, store_can_remember } => {
@@ -343,14 +361,27 @@ impl Coordinator {
                     return Vec::new();
                 }
                 match outcome {
-                    PromptOutcome::Cancelled => self.cancel_one(id),
+                    PromptOutcome::Cancelled => {
+                        let origin = self.contexts[&id].space.origin();
+                        if self.cancelled.len() >= MAX_SPACES {
+                            self.cancelled.retain(|_, t| now.saturating_duration_since(*t) < COOLDOWN);
+                        }
+                        if self.cancelled.len() < MAX_SPACES {
+                            self.cancelled.insert(origin, now);
+                        }
+                        self.cancel_one(id)
+                    }
                     PromptOutcome::Submitted { credential, remember } => {
                         let (from_store, can_store) = {
                             let ctx = &self.contexts[&id];
                             (ctx.saved_prefill.as_ref() == Some(&credential), ctx.can_store)
                         };
                         let space = self.contexts[&id].space.clone();
-                        self.space_mut(&space).last_entered = Some(credential.clone());
+                        // Only what the person TYPED is remembered as a prefill; a stored credential has its own
+                        // slot (`saved_prefill`) and never becomes "last typed" (I1).
+                        if !from_store {
+                            self.space_mut(&space).last_entered = Some(credential.clone());
+                        }
                         let source = if from_store { Source::Saved } else { Source::Typed };
                         self.supply(id, credential, source, remember && can_store && !from_store)
                     }
@@ -374,7 +405,6 @@ impl Coordinator {
                 }
                 if let Some(chosen) = chosen.as_ref().filter(|c| !c.user.is_empty()).cloned() {
                     let space = self.contexts[&id].space.clone();
-                    self.space_mut(&space).last_entered = Some(chosen.clone());
                     return self.supply(id, chosen, Source::Picked, false);
                 }
                 // Backed out, or an entry with no user name (Basic needs one): prompt again with
@@ -428,7 +458,8 @@ impl Coordinator {
             return Vec::new();
         }
         // Refused, and answered at once: a hidden pane, server text over the caps, a flood.
-        if self.hidden
+        if !self.shown
+            || (self.in_cooldown(&space.origin(), now))
             || space.realm.chars().count() > MAX_REALM
             || space.host.chars().count() > MAX_HOST
             || self.nav_count >= MAX_PER_NAV
@@ -449,9 +480,7 @@ impl Coordinator {
                 // The credential supplied for this space this navigation was rejected (the server
                 // asks again): never offered as the default again.
                 if let Some(a) = self.awaiting.take() {
-                    if a.source != Source::Typed {
-                        self.space_mut(&space).saved_rejected_this_session = true;
-                    }
+                    self.rejected(&a.space, a.source);
                 }
                 return self.ready(id);
             }
@@ -484,6 +513,14 @@ impl Coordinator {
         Vec::new()
     }
 
+    fn in_cooldown(&self, origin: &Origin, now: Instant) -> bool {
+        #[cfg(test)]
+        if self.no_cooldown {
+            return false;
+        }
+        self.cancelled.get(origin).is_some_and(|t| now.saturating_duration_since(*t) < COOLDOWN)
+    }
+
     fn is_open(&self, id: ChallengeId) -> bool {
         self.open == Some(id) && self.contexts.get(&id).is_some_and(|c| c.epoch == self.epoch)
     }
@@ -499,7 +536,7 @@ impl Coordinator {
         let prefill = ctx.saved_prefill.clone().or_else(|| state.and_then(|s| s.last_entered.clone()));
         // Remember starts on only to replace a saved credential the server rejected (not because
         // the person typed one earlier with Remember off: that was a refusal).
-        let remember_by_default = ctx.can_store && state.is_some_and(|s| s.saved_rejected_this_session);
+        let remember_by_default = false;
         Effect::Prompt(
             id,
             PromptRequest {
@@ -521,7 +558,7 @@ impl Coordinator {
         if self.open == Some(id) {
             self.open = None;
         }
-        while !self.hidden && self.open.is_none() {
+        while self.shown && self.open.is_none() {
             let Some(next) = self.waiting.pop_front() else { break };
             if self.contexts.contains_key(&next) {
                 self.open = Some(next);
@@ -583,11 +620,22 @@ impl Coordinator {
         fx
     }
 
+    /// The server rejected a credential. A stored one (saved or picked) is never offered or resent: the
+    /// space is flagged, and the prefill keeps at most the user name (I1).
+    fn rejected(&mut self, space: &SpaceKey, source: Source) {
+        if source == Source::Typed {
+            return;
+        }
+        let st = self.space_mut(space);
+        st.saved_rejected_this_session = true;
+        if let Some(last) = st.last_entered.as_mut() {
+            last.password = Secret::new(String::new());
+        }
+    }
+
     fn resolve(&mut self, a: Awaiting, status: u16) -> Vec<Effect> {
         if status == 401 {
-            if a.source != Source::Typed {
-                self.space_mut(&a.space).saved_rejected_this_session = true;
-            }
+            self.rejected(&a.space, a.source);
             return Vec::new();
         }
         // Any other status means the sign-in itself worked. Only a saved credential's success
@@ -599,6 +647,17 @@ impl Coordinator {
             return vec![Effect::Persist(a.space, a.credential)];
         }
         Vec::new()
+    }
+}
+
+impl Drop for Coordinator {
+    fn drop(&mut self) {
+        if let Some(mut f) = self.drop_sink.take() {
+            let fx = self.cancel_all();
+            if !fx.is_empty() {
+                f(fx);
+            }
+        }
     }
 }
 
@@ -822,6 +881,11 @@ mod tests {
     fn o() -> Origin {
         Origin { scheme: "https".into(), host: "a.b".into(), port: 443 }
     }
+    fn quiet() -> Coordinator {
+        let mut c = Coordinator::default();
+        c.no_cooldown = true;
+        c
+    }
     fn sp(realm: &str) -> SpaceKey {
         SpaceKey { scheme: "https".into(), host: "a.b".into(), port: 443, realm: realm.into() }
     }
@@ -838,6 +902,8 @@ mod tests {
         chal_with(n, sp(realm), true, false, true, true)
     }
     fn start(c: &mut Coordinator) {
+        // A pane is not shown until it says so (I2): the tests' pane is on screen.
+        c.reduce(Event::Visible(true));
         assert!(c.reduce(Event::MainProvisionalStarted(Some(o()))).is_empty());
     }
     fn submit(n: u64, u: &str, p: &str, remember: bool) -> Event {
@@ -859,7 +925,7 @@ mod tests {
 
     #[test]
     fn coordinator_follows_iterm2() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let fx = c.reduce(chal(1, "r"));
         assert_eq!(fx, vec![Effect::LookupSaved { id: id(1), space: sp("r"), preferred_user: None }]);
@@ -885,7 +951,7 @@ mod tests {
         c.reduce(submit(4, "t", "w", true));
         assert!(c.reduce(Event::MainFrameResponse { origin: o(), status: 401 }).is_empty());
         // Remember off persists nothing (a new pane: the per-second limit is the pane's).
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         to_prompt(&mut c, 5, "r5", None);
         c.reduce(submit(5, "t", "w", false));
@@ -894,19 +960,20 @@ mod tests {
 
     #[test]
     fn rejected_saved_is_never_prefilled_by_default() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let req = to_prompt(&mut c, 1, "r", Some(cred("u", "bad")));
         assert!(!req.remember_by_default);
         c.reduce(submit(1, "u", "bad", false));
         // Re-challenged for the same space in the same navigation: the saved one was rejected.
         let (_, req) = only_prompt(c.reduce(chal(2, "r")));
-        assert!(req.remember_by_default && req.offer_remember);
+        assert!(!req.remember_by_default && req.offer_remember, "Remember stays off after a rejection (I1)");
+        assert!(req.prefill.is_none(), "a rejected saved credential is never prefilled again (I1)");
         c.reduce(Event::PromptResult { id: id(2), outcome: PromptOutcome::Cancelled });
         // A fresh navigation: no lookup, a prompt.
         start(&mut c);
         let (_, req) = only_prompt(c.reduce(chal(3, "r")));
-        assert!(req.remember_by_default);
+        assert!(!req.remember_by_default && req.prefill.is_none());
         c.reduce(Event::PromptResult { id: id(3), outcome: PromptOutcome::Cancelled });
         // A saved save that landed re-enables lookups.
         assert!(c.reduce(Event::SaveResult { space: sp("r"), host: "a.b".into(), success: true }).is_empty());
@@ -916,7 +983,7 @@ mod tests {
 
     #[test]
     fn a_401_after_a_picked_supply_marks_the_space() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         c.reduce(chal(1, "r"));
         c.reduce(Event::SavedLookupResult { id: id(1), credential: None });
@@ -927,14 +994,14 @@ mod tests {
         assert!(c.reduce(Event::MainFrameResponse { origin: o(), status: 401 }).is_empty());
         start(&mut c);
         let (_, req) = only_prompt(c.reduce(chal(2, "r")));
-        assert!(req.remember_by_default);
+        assert!(!req.remember_by_default && req.prefill.is_none());
     }
 
     #[test]
     fn subframes_and_digest_prompt_only() {
         let off = |req: &PromptRequest| !req.offer_remember && !req.offer_password_manager;
         // Cross-origin during the main navigation, before commit.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let other = SpaceKey { host: "x.y".into(), ..sp("r") };
         let (_, req) = only_prompt(c.reduce(chal_with(1, other.clone(), true, false, true, true)));
@@ -948,17 +1015,17 @@ mod tests {
         let (_, req) = only_prompt(c.reduce(chal_with(3, other, true, false, true, true)));
         assert!(off(&req));
         // Non-Basic main challenge.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let (_, req) = only_prompt(c.reduce(chal_with(1, sp("r"), false, false, true, true)));
         assert!(off(&req));
         // Dev Null: the store cannot remember.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let (_, req) = only_prompt(c.reduce(chal_with(1, sp("r"), true, false, true, false)));
         assert!(off(&req));
         // A cross-origin subframe never persists or marks anything: submit then a 200.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let other = SpaceKey { host: "x.y".into(), ..sp("r") };
         c.reduce(chal_with(1, other, true, false, true, true));
@@ -969,20 +1036,21 @@ mod tests {
     #[test]
     fn no_silent_supply_and_no_cleartext_lookup() {
         // The only effects that carry a credential to the server follow a person's answer.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         c.reduce(chal(1, "r"));
         let fx = c.reduce(Event::SavedLookupResult { id: id(1), credential: Some(cred("u", "p")) });
         assert!(fx.iter().all(|e| matches!(e, Effect::Prompt(..))), "{fx:?}");
         // Over http: no lookup, a prompt that says cleartext and offers nothing to remember.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         let http_o = Origin { scheme: "http".into(), host: "a.b".into(), port: 80 };
+        c.reduce(Event::Visible(true));
         c.reduce(Event::MainProvisionalStarted(Some(http_o)));
         let space = SpaceKey { scheme: "http".into(), port: 80, ..sp("r") };
         let (_, req) = only_prompt(c.reduce(chal_with(1, space, true, false, true, true)));
         assert!(req.cleartext && !req.offer_remember && !req.offer_password_manager);
         // Over https: not cleartext.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         c.reduce(chal(1, "r"));
         let req = only_prompt(c.reduce(Event::SavedLookupResult { id: id(1), credential: None })).1;
@@ -991,7 +1059,7 @@ mod tests {
 
     #[test]
     fn a_proxy_challenge_names_the_proxy_and_is_prompt_only() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let proxy = SpaceKey { scheme: "http".into(), host: "a.b".into(), port: 8080, realm: "corp".into() };
         let (_, req) = only_prompt(c.reduce(chal_with(1, proxy.clone(), true, true, true, true)));
@@ -1000,7 +1068,7 @@ mod tests {
         c.reduce(submit(1, "u", "p", true));
         assert!(c.reduce(Event::MainFrameResponse { origin: proxy.origin(), status: 200 }).is_empty());
         // Even when its origin equals the page's.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let same = sp("corp");
         let (_, req) = only_prompt(c.reduce(chal_with(1, same, true, true, true, true)));
@@ -1009,7 +1077,7 @@ mod tests {
 
     #[test]
     fn answers_exactly_once() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         to_prompt(&mut c, 1, "r", None);
         let cancelled = || Event::PromptResult { id: id(1), outcome: PromptOutcome::Cancelled };
@@ -1022,13 +1090,13 @@ mod tests {
         assert_eq!(c.reduce(submit(2, "u", "p", false)).len(), 1);
         assert!(c.reduce(submit(2, "u", "p", false)).is_empty());
         // A lookup answered twice prompts once.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         c.reduce(chal(1, "r"));
         assert_eq!(c.reduce(Event::SavedLookupResult { id: id(1), credential: None }).len(), 1);
         assert!(c.reduce(Event::SavedLookupResult { id: id(1), credential: Some(cred("u", "p")) }).is_empty());
         // The navigation moved on during the lookup: cancelled at the move, the late result is nothing.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         c.reduce(chal(1, "r"));
         assert_eq!(c.reduce(Event::MainProvisionalStarted(Some(o()))), vec![Effect::Cancel(id(1))]);
@@ -1038,7 +1106,7 @@ mod tests {
 
     #[test]
     fn the_picker_reprompts_with_merged_prefill() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         to_prompt(&mut c, 1, "r", None);
         let fx = c.reduce(Event::PromptResult { id: id(1), outcome: PromptOutcome::OpenPasswordManager(Some(cred("typed", "tp"))) });
@@ -1053,7 +1121,7 @@ mod tests {
         let (_, req) = only_prompt(c.reduce(Event::PickerResult { id: id(1), chosen: None, typed_fallback: None }));
         assert_eq!(req.prefill, None);
         // With the store unable to remember: every offer false.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let (_, req) = only_prompt(c.reduce(chal_with(1, sp("r"), true, false, false, false)));
         assert!(!req.offer_remember && !req.offer_password_manager && !req.remember_by_default);
@@ -1066,7 +1134,7 @@ mod tests {
 
     #[test]
     fn ambiguity_guard_follows_iterm2() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         to_prompt(&mut c, 1, "one", None);
         c.reduce(submit(1, "u", "p", true));
@@ -1075,7 +1143,8 @@ mod tests {
         c.reduce(submit(2, "u2", "p2", true));
         assert!(c.reduce(Event::MainFrameResponse { origin: o(), status: 200 }).is_empty());
         // A redirect chain across two origins persists on the final origin.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
+        c.reduce(Event::Visible(true));
         let o1 = Origin { host: "first.b".into(), ..o() };
         c.reduce(Event::MainProvisionalStarted(Some(o1.clone())));
         let s1 = SpaceKey { host: "first.b".into(), ..sp("one") };
@@ -1090,7 +1159,7 @@ mod tests {
 
     #[test]
     fn superseded_is_a_no_op() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         to_prompt(&mut c, 1, "r", None);
         c.reduce(submit(1, "u", "p", true));
@@ -1106,7 +1175,7 @@ mod tests {
 
     #[test]
     fn one_open_prompt_a_bounded_queue_and_the_rest_cancelled() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         // Subframe-style challenges (other origin) so each is prompt-only and immediate.
         let mk = |n: u64| SpaceKey { host: format!("h{n}.x"), ..sp("r") };
@@ -1131,7 +1200,7 @@ mod tests {
 
     #[test]
     fn the_flood_is_rate_limited_by_the_shared_deferral_caps() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let t = Instant::now();
         let mut cancelled = 0;
@@ -1148,7 +1217,7 @@ mod tests {
 
     #[test]
     fn at_most_max_per_nav_challenges_per_navigation() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let t = Instant::now();
         let mut held = 0;
@@ -1173,7 +1242,7 @@ mod tests {
     fn a_navigation_a_failure_or_a_reset_cancels_what_is_held() {
         let mk = |n: u64| SpaceKey { host: format!("h{n}.x"), ..sp("r") };
         for end in [Event::MainProvisionalStarted(None), Event::MainEndedWithoutResponse, Event::Reset] {
-            let mut c = Coordinator::default();
+            let mut c = quiet();
             start(&mut c);
             let t = Instant::now();
             c.reduce_at(chal_with(1, mk(1), true, false, false, true), t);
@@ -1186,7 +1255,7 @@ mod tests {
             assert!(c.reduce(submit(2, "u", "p", true)).is_empty());
         }
         // A commit keeps a later subresource challenge asked, and does not cancel an open one.
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         c.reduce(chal_with(1, mk(1), true, false, false, true));
         assert!(c.reduce(Event::MainCommitted).is_empty());
@@ -1195,12 +1264,12 @@ mod tests {
 
     #[test]
     fn reset_forgets_every_secret() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         to_prompt(&mut c, 1, "r", Some(cred("u", "bad")));
         c.reduce(submit(1, "u", "bad", false));
         let (_, req) = only_prompt(c.reduce(chal(2, "r")));
-        assert!(req.remember_by_default, "rejected");
+        assert!(req.prefill.is_none(), "rejected: nothing prefilled");
         c.reduce(Event::Reset);
         assert!(c.remembered() == 0 && !c.has_awaiting());
         // The rejection flag is gone: lookups resume on the next navigation.
@@ -1210,7 +1279,7 @@ mod tests {
 
     #[test]
     fn a_hidden_pane_is_never_asked() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         assert_eq!(c.reduce(Event::Visible(false)), vec![]);
         assert_eq!(c.reduce(chal(1, "r")), vec![Effect::Cancel(id(1))]);
@@ -1229,7 +1298,7 @@ mod tests {
 
     #[test]
     fn a_challenge_that_is_too_long_is_refused_not_cut() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         start(&mut c);
         let long = "x".repeat(MAX_REALM + 1);
         assert_eq!(c.reduce(chal(1, &long)), vec![Effect::Cancel(id(1))]);
@@ -1251,7 +1320,7 @@ mod tests {
 
     #[test]
     fn remembered_spaces_are_bounded_and_debug_is_redacted() {
-        let mut c = Coordinator::default();
+        let mut c = quiet();
         let t = Instant::now();
         for n in 0..(MAX_SPACES as u64 * 2) {
             start(&mut c);
@@ -1269,6 +1338,69 @@ mod tests {
 
     fn acct(name: &str, user: &str) -> crate::pwm::Account {
         crate::pwm::Account { id: format!("{name}|{user}"), account_name: name.into(), user_name: user.into(), display: name.into(), has_otp: false, send_otp: false, source_label: None }
+    }
+
+    #[test]
+    fn a_typed_then_rejected_stored_credential_leaves_at_most_the_user_name() {
+        let mut c = quiet();
+        start(&mut c);
+        // The person typed one, then picked a stored one that the server rejects: the stored password
+        // is gone from every prefill; the typed user name may stay.
+        c.reduce(chal(1, "r"));
+        c.reduce(Event::SavedLookupResult { id: id(1), credential: None });
+        c.reduce(submit(1, "typed", "typedpw", false));
+        c.reduce(Event::MainFrameResponse { origin: o(), status: 401 });
+        start(&mut c);
+        c.reduce(chal(2, "r"));
+        c.reduce(Event::SavedLookupResult { id: id(2), credential: None });
+        c.reduce(Event::PromptResult { id: id(2), outcome: PromptOutcome::OpenPasswordManager(None) });
+        c.reduce(Event::PickerResult { id: id(2), chosen: Some(cred("stored", "storedpw")), typed_fallback: None });
+        c.reduce(Event::MainFrameResponse { origin: o(), status: 401 });
+        start(&mut c);
+        let (_, req) = only_prompt(c.reduce(chal(3, "r")));
+        assert!(!req.remember_by_default);
+        let p = req.prefill.expect("the typed user name stays");
+        assert!(p.password.expose().is_empty() && p.user == "typed", "the stored credential never comes back");
+    }
+
+    #[test]
+    fn a_background_pane_raises_no_prompt() {
+        let mut c = Coordinator::default();
+        assert!(c.reduce(Event::MainProvisionalStarted(Some(o()))).is_empty());
+        assert_eq!(c.reduce(chal(1, "r")), vec![Effect::Cancel(id(1))], "a pane is not shown until it says so");
+        c.reduce(Event::Visible(true));
+        assert!(matches!(c.reduce(chal(2, "r")).as_slice(), [Effect::LookupSaved { .. }]));
+    }
+
+    #[test]
+    fn a_cancelled_origin_is_quiet_for_the_cooldown() {
+        let mut c = Coordinator::default();
+        let t = Instant::now();
+        c.reduce_at(Event::Visible(true), t);
+        c.reduce_at(Event::MainProvisionalStarted(Some(o())), t);
+        c.reduce_at(chal(1, "r"), t);
+        c.reduce_at(Event::SavedLookupResult { id: id(1), credential: None }, t);
+        c.reduce_at(Event::PromptResult { id: id(1), outcome: PromptOutcome::Cancelled }, t);
+        // A page that reloads itself into the same 401 cannot bring the prompt back.
+        c.reduce_at(Event::MainProvisionalStarted(Some(o())), t);
+        let soon = t + std::time::Duration::from_secs(30);
+        assert_eq!(c.reduce_at(chal(2, "r"), soon), vec![Effect::Cancel(id(2))]);
+        let later = t + COOLDOWN + std::time::Duration::from_secs(1);
+        assert!(matches!(c.reduce_at(chal(3, "r"), later).as_slice(), [Effect::LookupSaved { .. }]));
+    }
+
+    #[test]
+    fn a_dropped_coordinator_answers_everything_it_holds() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut c = Coordinator::default();
+        let sink = seen.clone();
+        c.on_drop(Box::new(move |fx| sink.borrow_mut().extend(fx)));
+        start(&mut c);
+        c.reduce(chal(1, "r"));
+        c.reduce(Event::SavedLookupResult { id: id(1), credential: None });
+        c.reduce(chal(2, "q"));
+        drop(c);
+        assert_eq!(*seen.borrow(), vec![Effect::ClosePrompt(id(1)), Effect::Cancel(id(1)), Effect::Cancel(id(2))]);
     }
 
     #[test]
