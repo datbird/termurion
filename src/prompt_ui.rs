@@ -338,6 +338,13 @@ impl InputGuard {
         Self::is_answer_input(event) && !self.armed(now)
     }
 
+    /// Whether a Win chord (Win+B, Win+U, Win+C: the low-level key hook hands them to the window
+    /// outside its event stream) is held at `now`: it is input like a key, so it waits for the same
+    /// delay. Every guarded window that takes chords asks this one rule.
+    pub fn drops_chord(&self, now: std::time::Instant) -> bool {
+        !self.armed(now)
+    }
+
     /// A window event: regaining the focus starts the delay over.
     pub fn window_event(&mut self, event: &WindowEvent, now: std::time::Instant) {
         if matches!(event, WindowEvent::Focused(true)) {
@@ -684,6 +691,18 @@ mod tests {
         let src = include_str!("prompt_ui.rs");
         let ev = &src[src.find("pub fn event(&mut self, event: &WindowEvent) -> bool {\n        let now").unwrap()..];
         assert!(ev[..ev.find("self.host.event(event)").unwrap()].contains("if g.drops(event, now) {"));
+    }
+
+    /// A Win chord that arrives through the hook (outside the window's events) waits for the guard.
+    #[test]
+    fn the_guard_holds_win_chords_until_armed() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut g = InputGuard::new(t0);
+        assert!(g.drops_chord(t0) && g.drops_chord(t0 + GUARD_DELAY - Duration::from_millis(1)));
+        assert!(!g.drops_chord(t0 + GUARD_DELAY));
+        g.refocus(t0 + Duration::from_secs(3));
+        assert!(g.drops_chord(t0 + Duration::from_secs(3)), "refocus restarts it for a chord too");
     }
 
     /// A long body scrolls, the buttons never leave the window, and a gated button (the entry

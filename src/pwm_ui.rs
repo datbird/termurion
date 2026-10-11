@@ -129,6 +129,10 @@ pub struct PwmWindow {
     /// appears and after it regains focus (`prompt_ui::InputGuard`, the one owner), so a lured click plus
     /// Return cannot fill.
     guard: Option<crate::prompt_ui::InputGuard>,
+    /// A page-opened manager has no keyboard default (pre-flight B4, R13x77-3): only the arrows,
+    /// Home, End, Page keys and Escape reach it, no chord (Win+U) is taken, and picking an
+    /// account needs a pointer click or a tap.
+    pointer_only: bool,
 }
 
 impl PwmWindow {
@@ -171,6 +175,7 @@ impl PwmWindow {
             win_down: false,
             chords: Vec::new(),
             guard: None,
+            pointer_only: false,
         })
     }
 
@@ -199,6 +204,9 @@ impl PwmWindow {
     /// A Win chord for the window (Win+B, Win+U, Win+C), from the low-level key hook: Windows
     /// keeps those chords for itself unless the hook takes them.
     pub fn win_chord(&mut self, key: char) {
+        if chord_dropped(self.pointer_only, self.guard.as_ref(), Instant::now()) {
+            return;
+        }
         self.chords.push(key.to_ascii_lowercase());
         self.host.request_redraw();
     }
@@ -223,9 +231,10 @@ impl PwmWindow {
         self.host.request_redraw();
     }
 
-    /// Guards the window against a stray key or click (see `guard`). Call right after opening.
+    /// Guards a manager a page opened (see `guard`, `pointer_only`). Call right after opening.
     pub fn guard_input(&mut self) {
         self.guard = Some(crate::prompt_ui::InputGuard::new(Instant::now()));
+        self.pointer_only = true;
     }
 
     /// Feeds a window event to egui. True when the window should redraw.
@@ -236,6 +245,9 @@ impl PwmWindow {
             if g.drops(e, now) {
                 return false;
             }
+        }
+        if self.pointer_only && pointer_only_drops(e) {
+            return false;
         }
         match e {
             WindowEvent::ModifiersChanged(m) => self.win_down = m.state().super_key(),
@@ -393,6 +405,28 @@ fn sheet_origin(owner: isize, size: winit::dpi::PhysicalSize<u32>) -> Option<win
 }
 
 /// The default button's action (`Buttons::default_act`).
+/// Whether a page-opened manager drops `e`: every key except the ones that move (arrows, Home,
+/// End, Page Up and Down) and Escape, so Return, Space, Tab, Delete, Ctrl+C and the Win+U key
+/// never act, and every input-method event. Pointer and focus events pass.
+fn pointer_only_drops(e: &WindowEvent) -> bool {
+    match e {
+        WindowEvent::KeyboardInput { event, .. } => !pointer_only_key_allowed(&event.logical_key),
+        WindowEvent::Ime(_) => true,
+        _ => false,
+    }
+}
+
+fn pointer_only_key_allowed(k: &Key) -> bool {
+    use winit::keyboard::NamedKey as K;
+    matches!(k, Key::Named(K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight | K::Home | K::End | K::PageUp | K::PageDown | K::Escape))
+}
+
+/// Whether a Win chord from the key hook is dropped: always in a pointer-only window, and in any
+/// guarded one until its guard is armed (the chord skips the window's event stream).
+fn chord_dropped(pointer_only: bool, guard: Option<&crate::prompt_ui::InputGuard>, now: Instant) -> bool {
+    pointer_only || guard.is_some_and(|g| g.drops_chord(now))
+}
+
 fn default_act(b: &Buttons) -> PwmAct {
     match b.default_act {
         pwm::DefaultAct::EnterUserName => PwmAct::EnterUserName,
@@ -832,6 +866,37 @@ fn busy_modal(ctx: &egui::Context, acts: &mut Vec<PwmAct>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R13x77-3: a manager a page opened has no keyboard default. Return, Space, Tab, Delete,
+    /// Ctrl+C and the typed `u` of Win+U never reach it; only moving and Escape do; the Win+U chord
+    /// from the hook is dropped for it, and for any guarded window until its guard is armed.
+    #[test]
+    fn a_page_opened_manager_takes_no_keyboard_default() {
+        use std::time::Duration;
+        use winit::keyboard::NamedKey as K;
+        for k in [Key::Named(K::Enter), Key::Named(K::Space), Key::Named(K::Tab), Key::Named(K::Delete), Key::Named(K::Backspace), Key::Character(" ".into()), Key::Character("u".into()), Key::Character("c".into())] {
+            assert!(!pointer_only_key_allowed(&k), "{k:?} must not reach a page-opened manager");
+        }
+        for k in [Key::Named(K::ArrowDown), Key::Named(K::ArrowUp), Key::Named(K::PageDown), Key::Named(K::Escape)] {
+            assert!(pointer_only_key_allowed(&k), "{k:?} moves or closes");
+        }
+        assert!(pointer_only_drops(&WindowEvent::Ime(winit::event::Ime::Enabled)));
+        assert!(!pointer_only_drops(&WindowEvent::Focused(true)) && !pointer_only_drops(&WindowEvent::RedrawRequested));
+        let t0 = Instant::now();
+        let g = crate::prompt_ui::InputGuard::new(t0);
+        let late = t0 + crate::prompt_ui::GUARD_DELAY + Duration::from_secs(5);
+        assert!(chord_dropped(true, Some(&g), late), "never in a page-opened window, even armed");
+        assert!(chord_dropped(false, Some(&g), t0), "any guarded window holds a chord until armed");
+        assert!(!chord_dropped(false, Some(&g), late));
+        assert!(!chord_dropped(false, None, t0), "an unguarded window keeps its chords");
+        let src = include_str!("pwm_ui.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let ev = &prod[prod.find("pub fn event(&mut self, e: &WindowEvent)").unwrap()..];
+        assert!(ev[..ev.find("match e {").unwrap()].contains("if self.pointer_only && pointer_only_drops(e) {"));
+        let wc = &prod[prod.find("pub fn win_chord").unwrap()..];
+        assert!(wc[..200].contains("chord_dropped(self.pointer_only"));
+        assert!(prod.contains("self.pointer_only = true;"));
+    }
 
     #[test]
     fn acts_never_print_secrets() {
